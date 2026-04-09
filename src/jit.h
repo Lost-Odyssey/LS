@@ -1,0 +1,62 @@
+/* jit.h — LLJIT-based JIT engine with incremental compilation */
+#ifndef LS_JIT_H
+#define LS_JIT_H
+
+#include "ast.h"
+#include "types.h"
+#include "common.h"
+
+#include <llvm-c/Core.h>
+#include <llvm-c/LLJIT.h>
+#include <llvm-c/Orc.h>
+#include <llvm-c/OrcEE.h>
+#include <llvm-c/Target.h>
+
+/* Function version entry for incremental compilation tracking */
+typedef struct {
+    char *name;
+    uint64_t hash;
+} JitFnEntry;
+
+/* JIT engine context */
+typedef struct {
+    LLVMOrcLLJITRef jit;
+    LLVMOrcJITDylibRef main_dylib;
+    LLVMOrcThreadSafeContextRef ts_context;
+
+    /* Function version registry for incremental recompilation */
+    JitFnEntry *fn_registry;
+    int fn_count;
+    int fn_cap;
+
+    bool initialized;
+} JitEngine;
+
+/* Initialize the JIT engine */
+int jit_init(JitEngine *engine);
+
+/* Destroy the JIT engine and free all resources */
+void jit_destroy(JitEngine *engine);
+
+/* Compile and add an LLVM module to the JIT. Transfers ownership of module. */
+int jit_add_module(JitEngine *engine, LLVMModuleRef module);
+
+/* Look up a symbol by name and return its address. Returns 0 on failure. */
+uint64_t jit_lookup(JitEngine *engine, const char *name);
+
+/* Execute a file via JIT: parse -> check -> codegen -> run main() */
+int jit_run_file(const char *path);
+
+/* Run the REPL (interactive incremental JIT) */
+int jit_repl(void);
+
+/* Compute a simple hash of an AST function node for change detection */
+uint64_t jit_hash_fn(AstNode *fn_node);
+
+/* Check whether a function needs recompilation based on AST hash */
+bool jit_needs_recompile(JitEngine *engine, const char *name, uint64_t new_hash);
+
+/* Update the function registry with a new hash */
+void jit_update_registry(JitEngine *engine, const char *name, uint64_t hash);
+
+#endif /* LS_JIT_H */

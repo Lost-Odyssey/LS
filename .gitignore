@@ -1,0 +1,47 @@
+# Build output
+build/
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Test artifacts
+Testing/
+CTestCostData.txt
+LastTest.log
+LastTestsFailed.log
+
+# IDE / editor
+.kilo/
+.vs/
+*.user
+
+# Scratch files at repo root
+test_multi_string.ls
+test_minimal.ls
+test_only_decl.ls
+test_with_main.ls
+vec_local_test.ls
+vec_trigger_bug.ls
+array_bounds_test.ls
+reserve_test.ls
+make_ls.bat
+output.exe.obj
+test_output.exe
+test_output.exe.obj
+
+# Python venvs
+.venv/
