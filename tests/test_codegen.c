@@ -567,8 +567,8 @@ static void test_global_int(void) {
     ASSERT_NOT_NULL(ir);
     /* Should have a global variable declaration */
     ASSERT_TRUE(ir_contains(ir, "@MAGIC = global i32"));
-    /* Should have __ls_global_init function */
-    ASSERT_TRUE(ir_contains(ir, "__ls_global_init"));
+    /* Should have __ls_global_stmts function (renamed from __ls_global_init) */
+    ASSERT_TRUE(ir_contains(ir, "__ls_global_stmts"));
     LLVMDisposeMessage(ir);
     printf(" ok\n");
 }
@@ -1537,6 +1537,75 @@ static void test_struct_drop_return_shadow(void) {
     printf(" ok\n");
 }
 
+/* ---- vec(T) bounds-check tests ---- */
+
+/* vec(T)[i] out-of-bounds should warn but not crash; IR must contain the
+   conditional branch + printf warning call. */
+static void test_vec_index_bounds_check_ir(void) {
+    printf("  test_vec_index_bounds_check_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(42)\n"
+        "    v.pop()\n"
+        "    int x = v[0]\n"   /* OOB: should warn, x=0 */
+        "    int y = v[1]\n"   /* OOB: should warn, y=0 */
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* IR must contain the bounds-check blocks and the warning printf */
+    ASSERT_TRUE(ir_contains(ir, "vi.ok"));
+    ASSERT_TRUE(ir_contains(ir, "vi.oob"));
+    ASSERT_TRUE(ir_contains(ir, "vi.merge"));
+    ASSERT_TRUE(ir_contains(ir, "vi.inb"));
+    ASSERT_TRUE(ir_contains(ir, "out of bounds"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+static void test_vec_string_index_bounds_check_ir(void) {
+    printf("  test_vec_string_index_bounds_check_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) vs\n"
+        "    vs.push(\"hello\")\n"
+        "    vs.pop()\n"
+        "    print(vs[0])\n"   /* OOB: should warn, print empty string */
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vi.ok"));
+    ASSERT_TRUE(ir_contains(ir, "vi.oob"));
+    ASSERT_TRUE(ir_contains(ir, "out of bounds"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* ---- vec(T) pop() regression test ---- */
+
+/* Regression: vec(string) pop() as a top-level statement used to crash with
+   "Terminator found in the middle of a basic block! label %sf.skip0"
+   because emit_vec_elem_drop_at called emit_string_free (which emits ret void)
+   instead of emit_string_free_with_cont (which emits a continuation block). */
+static void test_vec_string_pop_top_level(void) {
+    printf("  test_vec_string_pop_top_level...");
+    char *ir = compile_to_ir(
+        "vec(string) v\n"
+        "v.push(\"hello\")\n"
+        "v.pop()\n"
+        "fn main() -> int {\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* Verify the IR contains a free call (from the pop drop path) */
+    ASSERT_TRUE(ir_contains(ir, "call") && ir_contains(ir, "free"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
 /* ---- Main ---- */
 
 int main(void) {
@@ -1637,6 +1706,13 @@ int main(void) {
     test_struct_drop_return_move();
     test_string_return_shadow();
     test_struct_drop_return_shadow();
+
+    printf("\n=== vec(T) Bounds Check Tests ===\n");
+    test_vec_index_bounds_check_ir();
+    test_vec_string_index_bounds_check_ir();
+
+    printf("\n=== vec(T) pop() Bug Regression Tests ===\n");
+    test_vec_string_pop_top_level();
 
     printf("\n=== Sample File Codegen Tests ===\n");
     test_samples_hello();
