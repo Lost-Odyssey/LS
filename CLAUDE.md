@@ -209,6 +209,13 @@ cd build && ctest --output-on-failure -C Release
 
 ### 已完成（近期）
 
+- **Memcheck Phase C（AOT 集成）** — 2026-05-03
+  - CMakeLists 新增 `add_library(ls_memcheck STATIC runtime/memcheck.c)`，与 `ls.exe` 同目录产出（`ARCHIVE_OUTPUT_DIRECTORY` 同时覆盖 single-config Ninja 与 multi-config VS 生成器）；`runtime/memcheck.c` 同时仍编进 `ls.exe` 自身，让 JIT 路径的 `LLVMOrcAbsoluteSymbols` 注册不变
+  - `src/main.c` 新增 `get_executable_dir()`（Windows `GetModuleFileNameA` / macOS `_NSGetExecutablePath` / Linux `readlink("/proc/self/exe")` 三平台），`cmd_compile` 在 `--memcheck` 时把 `<libdir>/ls_memcheck.lib` 拼进 clang 链接命令；为避开 `<windows.h>` 中 `_TOKEN_INFORMATION_CLASS TokenType` 与 LS 自身 `TokenType` 枚举的命名冲突，对 `GetModuleFileNameA` 做单点 forward-declare 而不引入 `windows.h`
+  - `runtime/memcheck.c` 的 `ls_mc_report` 开头加 `fflush(stdout)`：AOT 报告由 `atexit` 触发，stdout 缓冲必须先 flush，否则 stderr 上的报告会比程序自身输出先到终端
+  - 新增 `tests/test_memcheck_aot.cmake`（cmake -P 驱动，跨平台），编译并运行 `memcheck_phase_a.ls` AOT 后断言 stderr 含 `[memcheck] OK clean` + `SUMMARY: 0 leak(s)`；注册为 ctest `test_memcheck_aot`，依赖 `test_memory`
+  - 验证：`memcheck_phase_a.ls` / `memcheck_kinds.ls` / `memcheck_edge.ls` AOT 均 ✓ clean，与 JIT 报告字面一致；ctest 9/9 通过；无 `--memcheck` 时 AOT 路径零回退
+
 - **Memcheck Phase B（vec/map/struct/enum 全跟踪 + 5 类真实 bug 修复）**
   - alloc/free 全路径替换：`emit_string_free` 系列 + vec/map/enum drop 全部走 `cg_emit_free` 带 kind 标签
   - 新增 `cg_install_memcheck_wrappers` 也拦截 `realloc` → `ls_mc_realloc`（vec.grow 路径）

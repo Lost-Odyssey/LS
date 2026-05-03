@@ -244,6 +244,13 @@ LS_MC_EXPORT void ls_mc_report(void) {
     int leaks = 0;
     size_t leaked_bytes = 0;
 
+    /* Drain stdout (where the user program writes) before emitting the
+       stderr report, so AOT runs print "program output -> report" rather
+       than the report appearing before any printf() output the CRT had
+       buffered. JIT was unaffected because reports go through the same
+       process at a clear point in time. */
+    fflush(stdout);
+
     fprintf(stderr, "\n=== LS memcheck report ===\n");
     for (size_t i = 0; i < g_cap; i++) {
         LsMcEntry *e = &g_table[i];

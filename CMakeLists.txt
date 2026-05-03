@@ -60,6 +60,27 @@ add_executable(ls ${LS_SOURCES})
 target_include_directories(ls PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(ls ${LLVM_LIBS})
 
+# ls_memcheck — standalone static library for AOT-compiled user programs.
+# ls.exe still links runtime/memcheck.c directly (above) so JIT can resolve
+# ls_mc_* symbols from within the host process. This separate archive is
+# what `ls compile --memcheck` passes to clang when linking the user binary.
+add_library(ls_memcheck STATIC runtime/memcheck.c)
+target_include_directories(ls_memcheck PRIVATE src/ include/)
+
+# Make ls_memcheck.lib end up next to ls.exe so main.c can locate it via
+# get_executable_dir() at runtime (works for both single-config Ninja and
+# multi-config Visual Studio generators).
+set_target_properties(ls_memcheck PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY            "${CMAKE_BINARY_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY_DEBUG      "${CMAKE_BINARY_DIR}/Debug"
+    ARCHIVE_OUTPUT_DIRECTORY_RELEASE    "${CMAKE_BINARY_DIR}/Release"
+    ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/RelWithDebInfo"
+    ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/MinSizeRel"
+)
+# Force ls.exe to depend on ls_memcheck so the static archive is always built
+# alongside the compiler — AOT --memcheck would fail otherwise.
+add_dependencies(ls ls_memcheck)
+
 # Windows: extra system libs needed for static LLVM linking
 if(WIN32)
     target_link_libraries(ls
@@ -255,3 +276,17 @@ else()
     target_link_libraries(test_memory dl)
 endif()
 add_test(NAME test_memory COMMAND test_memory)
+
+# AOT memcheck end-to-end test: compile a sample with `ls compile --memcheck`,
+# run the produced binary, assert the runtime report shows "OK clean".
+# Driven by a cmake -P script for cross-platform process invocation.
+add_test(
+    NAME test_memcheck_aot
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_phase_a.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
+)
+# Order this after test_memory so the JIT memcheck path is already validated.
+set_tests_properties(test_memcheck_aot PROPERTIES DEPENDS "test_memory")

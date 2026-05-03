@@ -8,6 +8,59 @@
 #include "debug.h"
 #include "jit.h"
 
+#ifdef _WIN32
+  /* Avoid <windows.h> here — it defines _TOKEN_INFORMATION_CLASS as TokenType
+     which collides with our own TokenType enum. Forward-declare the single
+     WinAPI we need. */
+  typedef unsigned long DWORD_W32;
+  __declspec(dllimport) DWORD_W32 __stdcall GetModuleFileNameA(
+      void *hModule, char *lpFilename, DWORD_W32 nSize);
+#elif defined(__APPLE__)
+  #include <mach-o/dyld.h>
+  #include <limits.h>
+#else
+  #include <unistd.h>
+  #include <limits.h>
+#endif
+
+/* Resolve the directory containing the running ls executable.
+   Returns 0 on success and writes a NUL-terminated path (no trailing
+   separator) to `out`. Used by AOT --memcheck to locate ls_memcheck.lib
+   alongside ls.exe. */
+static int get_executable_dir(char *out, size_t out_sz) {
+    if (out == NULL || out_sz == 0) return -1;
+    char buf[1024];
+    size_t len = 0;
+
+#ifdef _WIN32
+    DWORD_W32 n = GetModuleFileNameA(NULL, buf, (DWORD_W32)sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return -1;
+    len = (size_t)n;
+#elif defined(__APPLE__)
+    uint32_t n = (uint32_t)sizeof(buf);
+    if (_NSGetExecutablePath(buf, &n) != 0) return -1;
+    len = strlen(buf);
+#else
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return -1;
+    buf[n] = '\0';
+    len = (size_t)n;
+#endif
+
+    /* Strip trailing filename component, leaving the directory. */
+    while (len > 0 && buf[len - 1] != '/' && buf[len - 1] != '\\') {
+        len--;
+    }
+    /* Drop the trailing separator unless that would leave an empty string
+       (root on POSIX). */
+    if (len > 1) len--;
+
+    if (len + 1 > out_sz) return -1;
+    memcpy(out, buf, len);
+    out[len] = '\0';
+    return 0;
+}
+
 static char *read_file(const char *path) {
     FILE *file = fopen(path, "rb");
     if (file == NULL) {
@@ -86,9 +139,9 @@ static int cmd_check(const char *path) {
 }
 
 /* Compile source to object file, then link to executable.
-   memcheck: route all malloc/free through ls_mc_* tracker (Phase A; AOT
-   currently doesn't link the runtime archive — JIT is the supported path
-   for now). */
+   memcheck: route all malloc/free through ls_mc_* tracker. AOT path links
+   ls_memcheck.lib (located next to ls.exe) so ls_mc_alloc/free/realloc/report
+   are resolved at link time and the program prints a leak report at exit. */
 static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
                        bool memcheck) {
     char *source = read_file(path);
@@ -157,8 +210,29 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
 
     printf("Emitted object: %s\n", obj_path);
 
+    /* Resolve ls_memcheck archive path (next to ls.exe) when --memcheck is on.
+       If the archive is missing we still attempt the link — the user will get
+       a clear "unresolved external ls_mc_alloc" error from the linker, plus
+       our warning here. */
+    char mc_lib[1280] = "";
+    if (memcheck) {
+        char libdir[1024];
+        if (get_executable_dir(libdir, sizeof(libdir)) == 0) {
+#ifdef _WIN32
+            snprintf(mc_lib, sizeof(mc_lib), "\"%s\\ls_memcheck.lib\"", libdir);
+#else
+            /* Use -L<dir> -lls_memcheck so the linker resolves libls_memcheck.a */
+            snprintf(mc_lib, sizeof(mc_lib), "-L\"%s\" -lls_memcheck", libdir);
+#endif
+        } else {
+            fprintf(stderr,
+                    "warning: --memcheck enabled but could not locate ls.exe directory; "
+                    "linker may fail to resolve ls_mc_* symbols\n");
+        }
+    }
+
     /* Link to executable */
-    char link_cmd[2048];
+    char link_cmd[2560];
 #ifdef _WIN32
     {
         /* Use clang as linker driver via cmd.exe /c for proper quoting */
@@ -174,17 +248,18 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
         }
         if (clang) {
             snprintf(link_cmd, sizeof(link_cmd),
-                     "cmd.exe /c \"\"%s\" -o \"%s\" \"%s\" -llegacy_stdio_definitions\"",
-                     clang, exe_path, obj_path);
+                     "cmd.exe /c \"\"%s\" -o \"%s\" \"%s\" %s -llegacy_stdio_definitions\"",
+                     clang, exe_path, obj_path, mc_lib);
         } else {
             /* Fallback: assume clang is in PATH */
             snprintf(link_cmd, sizeof(link_cmd),
-                     "clang -o \"%s\" \"%s\" -llegacy_stdio_definitions", exe_path, obj_path);
+                     "clang -o \"%s\" \"%s\" %s -llegacy_stdio_definitions",
+                     exe_path, obj_path, mc_lib);
         }
     }
 #else
     snprintf(link_cmd, sizeof(link_cmd),
-             "cc \"%s\" -o \"%s\" -lm", obj_path, exe_path);
+             "cc \"%s\" -o \"%s\" %s -lm", obj_path, exe_path, mc_lib);
 #endif
 
     printf("Linking: %s\n", link_cmd);

@@ -331,28 +331,69 @@ INVALID FREE  memcheck_edge.ls:0:0  ptr=F2FCF0 — never allocated by LS
 
 ---
 
-## 八、Phase C：AOT 集成
+## 八、Phase C：AOT 集成 ✅ 已完成（2026-05-03）
 
-### 8.1 把 memcheck.c 打成静态库
+### 8.1 把 memcheck.c 打成静态库 ✅
 
-CMakeLists 新增：
+CMakeLists 新增（`runtime/memcheck.c` 仍**保留**在 ls.exe SOURCES 中，
+这样 JIT 进程内的 `ls_mc_*` 符号仍能由 `LLVMOrcAbsoluteSymbols` 注册；
+独立的 .lib 仅服务于 AOT 用户产物）：
 
 ```cmake
 add_library(ls_memcheck STATIC runtime/memcheck.c)
 target_include_directories(ls_memcheck PRIVATE src/ include/)
+
+# 让 ls_memcheck.lib 与 ls.exe 落在同一目录（兼顾 single-config Ninja
+# 与 multi-config Visual Studio 生成器），main.c 在运行期通过
+# get_executable_dir() 定位。
+set_target_properties(ls_memcheck PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY            "${CMAKE_BINARY_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY_DEBUG      "${CMAKE_BINARY_DIR}/Debug"
+    ARCHIVE_OUTPUT_DIRECTORY_RELEASE    "${CMAKE_BINARY_DIR}/Release"
+    ...
+)
+add_dependencies(ls ls_memcheck)
 ```
 
-输出：`build/Release/ls_memcheck.lib`（或 `.a`）。
+产出：`build/Debug/ls_memcheck.lib`（Windows）或 `build/libls_memcheck.a`（Linux/macOS）。
 
-### 8.2 ls.exe AOT 链接
+### 8.2 ls.exe AOT 链接 ✅
 
-`src/main.c` 中 AOT 路径已经调 clang 链接对象文件。`--memcheck` 时追加 `ls_memcheck.lib`。
+`src/main.c`：
+- 新增 `get_executable_dir()` helper（Windows `GetModuleFileNameA`、macOS
+  `_NSGetExecutablePath`、Linux `readlink("/proc/self/exe")` 三平台实现）
+- 为避开 `<windows.h>` 中 `_TOKEN_INFORMATION_CLASS TokenType` 与 LS
+  自身 `TokenType` 枚举的命名冲突，仅对 `GetModuleFileNameA` 做单点
+  forward-declare，不引入 `windows.h`
+- `cmd_compile` 在 `--memcheck` 为真时把 `<libdir>/ls_memcheck.lib`（或
+  POSIX 的 `-L<dir> -lls_memcheck`）拼进 `clang` 链接命令；找不到 ls.exe
+  目录时打印 warning，让用户能看到原因
 
-### 8.3 验收标准
+### 8.3 fflush(stdout) 修复输出顺序 ✅
 
-- [ ] CMake 输出 ls_memcheck 静态库
-- [ ] `ls compile --memcheck file.ls -o out.exe`，运行 out.exe 看 memcheck 报告
-- [ ] AOT 与 JIT 报告一致（同一 sample 跑两次）
+`runtime/memcheck.c` 的 `ls_mc_report` 开头加 `fflush(stdout)`。
+原因：AOT 运行时报告由 `atexit` 触发，stdout 上残留的程序输出此时
+还没 flush，stderr 上的报告会比 stdout 先到终端，导致看起来"报告
+出现在程序输出之前"。JIT 不受影响（同进程顺序流）。
+
+### 8.4 ctest 集成 ✅
+
+新增 `tests/test_memcheck_aot.cmake`（cmake -P 驱动，跨平台）：
+1. `ls compile --memcheck tests/samples/memcheck_phase_a.ls -o tmp.exe`
+2. 运行 tmp.exe
+3. 断言 stderr 包含 `[memcheck] OK clean` 与 `SUMMARY: 0 leak(s) ...`
+
+注册为 ctest `test_memcheck_aot`，依赖 `test_memory`（先验 JIT 路径）。
+
+### 8.5 验收记录（2026-05-03）
+
+- [x] CMake 输出 `build/Debug/ls_memcheck.lib`（18 KB）与 `ls.exe` 同目录
+- [x] `ls compile --memcheck memcheck_phase_a.ls -o phase_a.exe` → exe 跑出 `OK clean`
+- [x] `memcheck_kinds.ls` AOT → `OK clean`
+- [x] `memcheck_edge.ls` AOT → `OK clean`（与 JIT 一致：0 leak / 0 double-free / 0 invalid free）
+- [x] AOT 与 JIT 报告字面一致
+- [x] 全 ctest 9/9 通过（含 `test_memcheck_aot`），无回归
+- [x] 无 `--memcheck` flag 时 AOT 路径零回退（默认仍是普通可执行文件）
 
 ---
 
@@ -533,7 +574,7 @@ target_include_directories(ls_memcheck PRIVATE src/ include/)
 | A | ~2h | ✅ 已完成 |
 | A.5 | ~1h | ✅ 已完成 |
 | A.6 (Bug 1,3,4) | ~2h | ✅ 已完成 |
-| A.6 (Bug 2,5) | ~5h | ⚠️ P0/P1 待修 |
-| B | ~1h | 待做 |
-| C | ~1h | 待做 |
+| A.6 (Bug 2,5) | ~5h | ✅ 已完成（见 §13.4） |
+| B | ~1h | ✅ 通过 memcheck_edge.ls 全场景 clean 隐式覆盖 |
+| C | ~1h | ✅ 已完成（2026-05-03，见 §八） |
 | D | 按需 | — |
