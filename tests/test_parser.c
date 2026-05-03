@@ -258,6 +258,45 @@ static void test_struct_decl(void) {
     printf("  PASS: test_struct_decl\n");
 }
 
+static void test_enum_decl(void) {
+    /* Mix of: no-payload variant, named-payload variant, unnamed-payload variant.
+       Mix of separators: ';', ',', and none. */
+    AstNode *ast = parse_source(
+        "enum Shape {\n"
+        "    Point\n"
+        "    Circle(f64 radius);\n"
+        "    Rect(f64, f64),\n"
+        "}"
+    );
+    ASSERT(ast != NULL, "parse failed");
+    ASSERT_EQ(ast->as.program.decl_count, 1);
+    AstNode *e = ast->as.program.decls[0];
+    ASSERT_EQ(e->kind, AST_ENUM_DECL);
+    ASSERT_STR_EQ(e->as.enum_decl.name, "Shape");
+    ASSERT_EQ(e->as.enum_decl.variant_count, 3);
+
+    /* Variant 0: Point — no payload */
+    ASSERT_STR_EQ(e->as.enum_decl.variants[0].name, "Point");
+    ASSERT_EQ(e->as.enum_decl.variants[0].payload_count, 0);
+
+    /* Variant 1: Circle(f64 radius) — named */
+    ASSERT_STR_EQ(e->as.enum_decl.variants[1].name, "Circle");
+    ASSERT_EQ(e->as.enum_decl.variants[1].payload_count, 1);
+    ASSERT_EQ(e->as.enum_decl.variants[1].payload_types[0]->kind, TYPE_NODE_PRIMITIVE);
+    ASSERT_EQ(e->as.enum_decl.variants[1].payload_types[0]->as.primitive, TOKEN_TYPE_F64);
+    ASSERT_STR_EQ(e->as.enum_decl.variants[1].payload_names[0], "radius");
+
+    /* Variant 2: Rect(f64, f64) — unnamed payload */
+    ASSERT_STR_EQ(e->as.enum_decl.variants[2].name, "Rect");
+    ASSERT_EQ(e->as.enum_decl.variants[2].payload_count, 2);
+    ASSERT_EQ(e->as.enum_decl.variants[2].payload_types[0]->as.primitive, TOKEN_TYPE_F64);
+    ASSERT(e->as.enum_decl.variants[2].payload_names[0] == NULL, "expected unnamed payload");
+    ASSERT(e->as.enum_decl.variants[2].payload_names[1] == NULL, "expected unnamed payload");
+
+    ast_free(ast);
+    printf("  PASS: test_enum_decl\n");
+}
+
 static void test_load_lib(void) {
     AstNode *ast = parse_source("lib libc = load(\"libc.so\")");
     ASSERT(ast != NULL, "parse failed");
@@ -644,6 +683,7 @@ int main(void) {
     test_foreach_int();
     test_match_expr();
     test_struct_decl();
+    test_enum_decl();
     test_load_lib();
     test_module_decl();
     test_import_decl();

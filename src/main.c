@@ -85,8 +85,12 @@ static int cmd_check(const char *path) {
     return ok ? 0 : 1;
 }
 
-/* Compile source to object file, then link to executable */
-static int cmd_compile(const char *path, const char *output_path, bool dump_ir) {
+/* Compile source to object file, then link to executable.
+   memcheck: route all malloc/free through ls_mc_* tracker (Phase A; AOT
+   currently doesn't link the runtime archive — JIT is the supported path
+   for now). */
+static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
+                       bool memcheck) {
     char *source = read_file(path);
     if (source == NULL) return 1;
 
@@ -109,6 +113,7 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir) 
     /* Codegen */
     CodegenContext ctx;
     codegen_init(&ctx, path);
+    ctx.memcheck_enabled = memcheck;
 
     if (codegen_compile(&ctx, ast, reg) != 0) {
         codegen_destroy(&ctx);
@@ -289,28 +294,40 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(cmd, "compile") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "error: 'compile' requires a file path\n");
-            return 1;
-        }
         const char *output = NULL;
+        const char *file = NULL;
         bool dump_ir = false;
-        for (int i = 3; i < argc; i++) {
+        bool memcheck = false;
+        for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
                 output = argv[++i];
             } else if (strcmp(argv[i], "--dump-ir") == 0) {
                 dump_ir = true;
+            } else if (strcmp(argv[i], "--memcheck") == 0) {
+                memcheck = true;
+            } else if (file == NULL) {
+                file = argv[i];
             }
         }
-        return cmd_compile(argv[2], output, dump_ir);
+        if (file == NULL) {
+            fprintf(stderr, "error: 'compile' requires a file path\n");
+            return 1;
+        }
+        return cmd_compile(file, output, dump_ir, memcheck);
     }
 
     if (strcmp(cmd, "run") == 0) {
-        if (argc < 3) {
+        bool memcheck = false;
+        const char *file = NULL;
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--memcheck") == 0) memcheck = true;
+            else if (file == NULL) file = argv[i];
+        }
+        if (file == NULL) {
             fprintf(stderr, "error: 'run' requires a file path\n");
             return 1;
         }
-        return jit_run_file(argv[2]);
+        return memcheck ? jit_run_file_memcheck(file) : jit_run_file(file);
     }
 
     if (strcmp(cmd, "repl") == 0) {

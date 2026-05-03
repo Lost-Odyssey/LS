@@ -79,6 +79,16 @@ ModuleInfo *module_find(ModuleRegistry *reg, const char *name) {
     return NULL;
 }
 
+bool module_user_file_exists(const char *import_path, const char *current_file) {
+    char *path = module_resolve_path(import_path, current_file);
+    if (path == NULL) return false;
+    FILE *f = fopen(path, "rb");
+    bool exists = (f != NULL);
+    if (f) fclose(f);
+    free(path);
+    return exists;
+}
+
 char *module_resolve_path(const char *import_path, const char *current_file) {
     char *dir = get_directory(current_file);
 

@@ -30,6 +30,7 @@ typedef struct {
     int fn_cap;
 
     bool initialized;
+    bool memcheck_enabled;  /* propagate to CodegenContext for each module */
 } JitEngine;
 
 /* Initialize the JIT engine */
@@ -46,6 +47,10 @@ uint64_t jit_lookup(JitEngine *engine, const char *name);
 
 /* Execute a file via JIT: parse -> check -> codegen -> run main() */
 int jit_run_file(const char *path);
+
+/* Same as jit_run_file but with memcheck tracking enabled. Routes every
+   alloc/free through ls_mc_* and prints a leak/double-free report at exit. */
+int jit_run_file_memcheck(const char *path);
 
 /* Run the REPL (interactive incremental JIT) */
 int jit_repl(void);

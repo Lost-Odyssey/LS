@@ -466,6 +466,75 @@ static void test_samples_match(void) {
     printf(" ok\n");
 }
 
+/* ---- Enum tests (Phase 8) ---- */
+
+static void test_enum_decl_layout(void) {
+    printf("  test_enum_decl_layout...");
+    char *ir = compile_to_ir(
+        "enum Color { Red Green Blue }\n"
+        "fn main() -> int { Color c = Red  return 0 }\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* Color appears as a named LLVM struct type, referenced via alloca */
+    ASSERT_TRUE(ir_contains(ir, "Color"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
+static void test_enum_ctor_and_match(void) {
+    printf("  test_enum_ctor_and_match...");
+    char *ir = compile_to_ir(
+        "enum Shape { Point Circle(int r) Rect(int w, int h) }\n"
+        "fn area(Shape s) -> int {\n"
+        "    match s { Point => 0  Circle(r) => r * r * 3  Rect(w, h) => w * h }\n"
+        "}\n"
+        "fn main() -> int {\n"
+        "    Shape s = Circle(5)\n"
+        "    return area(s)\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* Match codegen uses LLVM switch on the discriminant byte */
+    ASSERT_TRUE(ir_contains(ir, "switch i8"));
+    /* Ctor uses an alloca for the enum struct */
+    ASSERT_TRUE(ir_contains(ir, "alloca"));
+    ASSERT_TRUE(ir_contains(ir, "Shape"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
+static void test_enum_drop_fn(void) {
+    printf("  test_enum_drop_fn...");
+    char *ir = compile_to_ir(
+        "enum Event { Quit  Message(string text) }\n"
+        "fn main() -> int {\n"
+        "    Event e = Message(\"hi\")\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* Auto-generated EnumName.__drop function (LLVM may or may not quote name) */
+    ASSERT_TRUE(ir_contains(ir, "Event.__drop"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
+static void test_option_template_instantiation(void) {
+    printf("  test_option_template_instantiation...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    Option(int) a = Some(42)\n"
+        "    Option(int) b = None\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* Mangled name appears as a named LLVM struct */
+    ASSERT_TRUE(ir_contains(ir, "Option(int)"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
 /* ---- Array tests ---- */
 
 static void test_array_local(void) {
@@ -928,6 +997,94 @@ static void test_string_replace_ir(void) {
     );
     ASSERT_NOT_NULL(ir);
     ASSERT_TRUE(ir_contains(ir, "@__ls_str_replace"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
+/* ---- String Batch 3 codegen tests ---- */
+
+static void test_string_rfind_ir(void) {
+    printf("  test_string_rfind_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    string s = \"hello world hello\"\n"
+        "    int pos = s.rfind(\"hello\")\n"
+        "    return pos\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "rf.cond"));
+    ASSERT_TRUE(ir_contains(ir, "rf.body"));
+    ASSERT_TRUE(ir_contains(ir, "rf.end"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
+static void test_string_count_ir(void) {
+    printf("  test_string_count_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    string s = \"abababab\"\n"
+        "    int n = s.count(\"ab\")\n"
+        "    return n\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "cn.cond"));
+    ASSERT_TRUE(ir_contains(ir, "cn.body"));
+    ASSERT_TRUE(ir_contains(ir, "cn.end"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
+static void test_string_substr_one_arg_ir(void) {
+    printf("  test_string_substr_one_arg_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    string s = \"hello world\"\n"
+        "    string tail = s.substr(6)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "ss1.len"));
+    ASSERT_TRUE(ir_contains(ir, "ss.cap64"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
+static void test_string_split_ir(void) {
+    printf("  test_string_split_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    string s = \"a,b,c\"\n"
+        "    vec(string) parts = s.split(\",\")\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "@__ls_str_split"));
+    ASSERT_TRUE(ir_contains(ir, "spl.cnt.cond"));
+    ASSERT_TRUE(ir_contains(ir, "spl.fill.cond"));
+    LLVMDisposeMessage(ir);
+    printf(" ok\n");
+}
+
+static void test_string_join_ir(void) {
+    printf("  test_string_join_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) words\n"
+        "    words.push(\"hello\")\n"
+        "    words.push(\"world\")\n"
+        "    string result = \", \".join(words)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "@__ls_str_join"));
+    ASSERT_TRUE(ir_contains(ir, "jn.tot.cond"));
+    ASSERT_TRUE(ir_contains(ir, "jn.fill.cond"));
     LLVMDisposeMessage(ir);
     printf(" ok\n");
 }
@@ -1576,9 +1733,603 @@ static void test_vec_string_index_bounds_check_ir(void) {
         "}\n"
     );
     ASSERT_NOT_NULL(ir);
-    ASSERT_TRUE(ir_contains(ir, "vi.ok"));
-    ASSERT_TRUE(ir_contains(ir, "vi.oob"));
+    /* print(vs[0]) uses auto-borrow path — block names are vb.ok / vb.oob */
+    ASSERT_TRUE(ir_contains(ir, "vb.ok"));
+    ASSERT_TRUE(ir_contains(ir, "vb.oob"));
     ASSERT_TRUE(ir_contains(ir, "out of bounds"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* ---- vec(T) Batch A: is_empty / first / last ---- */
+
+/* is_empty() on int vec: IR must contain the EQ compare and basic blocks */
+static void test_vec_is_empty_ir(void) {
+    printf("  test_vec_is_empty_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    bool e = v.is_empty()\n"
+        "    v.push(42)\n"
+        "    bool ne = v.is_empty()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* is_empty compares len == 0, should see icmp eq */
+    ASSERT_TRUE(ir_contains(ir, "icmp eq"));
+    /* vie prefix labels */
+    ASSERT_TRUE(ir_contains(ir, "vie.len") || ir_contains(ir, "vie.res") || ir_contains(ir, "vie.v"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* first() on int vec: IR must contain the not-empty branch and warning path */
+static void test_vec_first_int_ir(void) {
+    printf("  test_vec_first_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(10)\n"
+        "    v.push(20)\n"
+        "    int x = v.first()\n"
+        "    return x\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vfst.ok"));
+    ASSERT_TRUE(ir_contains(ir, "vfst.emp"));
+    ASSERT_TRUE(ir_contains(ir, "vfst.merge"));
+    ASSERT_TRUE(ir_contains(ir, "vec.first() called on empty vec"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* last() on int vec: IR must contain the not-empty branch and warning path */
+static void test_vec_last_int_ir(void) {
+    printf("  test_vec_last_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(10)\n"
+        "    v.push(20)\n"
+        "    int x = v.last()\n"
+        "    return x\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vlst.ok"));
+    ASSERT_TRUE(ir_contains(ir, "vlst.emp"));
+    ASSERT_TRUE(ir_contains(ir, "vlst.merge"));
+    ASSERT_TRUE(ir_contains(ir, "vec.last() called on empty vec"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* first() on string vec: IR must contain a free call (clone path) */
+static void test_vec_first_string_ir(void) {
+    printf("  test_vec_first_string_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) vs\n"
+        "    vs.push(\"hello\")\n"
+        "    string s = vs.first()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vfst.ok"));
+    ASSERT_TRUE(ir_contains(ir, "vfst.emp"));
+    /* clone path must malloc a new string */
+    ASSERT_TRUE(ir_contains(ir, "sc.copy") || ir_contains(ir, "malloc"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* last() on string vec: IR must contain a free call (clone path) */
+static void test_vec_last_string_ir(void) {
+    printf("  test_vec_last_string_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) vs\n"
+        "    vs.push(\"world\")\n"
+        "    vs.push(\"end\")\n"
+        "    string s = vs.last()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vlst.ok"));
+    ASSERT_TRUE(ir_contains(ir, "vlst.emp"));
+    ASSERT_TRUE(ir_contains(ir, "sc.copy") || ir_contains(ir, "malloc"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* ---- vec(T) Batch C: extend / insert ---- */
+
+/* extend() on trivial int vec: IR must have the grow/cpy structure + memcpy */
+static void test_vec_extend_int_ir(void) {
+    printf("  test_vec_extend_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) a\n"
+        "    a.push(1)\n"
+        "    a.push(2)\n"
+        "    vec(int) b\n"
+        "    b.push(3)\n"
+        "    b.push(4)\n"
+        "    a.extend(b)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vex.do"));
+    ASSERT_TRUE(ir_contains(ir, "vex.end"));
+    ASSERT_TRUE(ir_contains(ir, "vex.cpy"));
+    ASSERT_TRUE(ir_contains(ir, "memcpy"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* extend() on string vec: IR must use the clone loop blocks */
+static void test_vec_extend_string_ir(void) {
+    printf("  test_vec_extend_string_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) a\n"
+        "    a.push(\"hello\")\n"
+        "    vec(string) b\n"
+        "    b.push(\"world\")\n"
+        "    a.extend(b)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vex.do"));
+    ASSERT_TRUE(ir_contains(ir, "vex.lcond"));
+    ASSERT_TRUE(ir_contains(ir, "vex.lbody"));
+    ASSERT_TRUE(ir_contains(ir, "vex.lend"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* insert() on int vec: IR must have do/oob/shift/store structure + memmove */
+static void test_vec_insert_int_ir(void) {
+    printf("  test_vec_insert_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.push(3)\n"
+        "    v.insert(1, 2)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vins.do"));
+    ASSERT_TRUE(ir_contains(ir, "vins.oob"));
+    ASSERT_TRUE(ir_contains(ir, "vins.shift"));
+    ASSERT_TRUE(ir_contains(ir, "vins.store"));
+    ASSERT_TRUE(ir_contains(ir, "vins.end"));
+    ASSERT_TRUE(ir_contains(ir, "memmove"));
+    ASSERT_TRUE(ir_contains(ir, "vec.insert() index out of bounds"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* insert() on string vec: IR must contain oob warn path + memmove */
+static void test_vec_insert_string_ir(void) {
+    printf("  test_vec_insert_string_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) v\n"
+        "    v.push(\"a\")\n"
+        "    v.push(\"c\")\n"
+        "    v.insert(1, \"b\")\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vins.do"));
+    ASSERT_TRUE(ir_contains(ir, "memmove"));
+    ASSERT_TRUE(ir_contains(ir, "vins.store"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* ---- vec(T) Batch E: sort / sort_by / slice / shrink_to_fit ---- */
+
+/* sort() on int vec: IR must contain a generated comparator + qsort call */
+static void test_vec_sort_int_ir(void) {
+    printf("  test_vec_sort_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(3)\n"
+        "    v.push(1)\n"
+        "    v.push(2)\n"
+        "    v.sort()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* Comparator function prefix */
+    ASSERT_TRUE(ir_contains(ir, "__ls_vcmp_"));
+    /* qsort call */
+    ASSERT_TRUE(ir_contains(ir, "qsort"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* sort() on string vec: comparator must use strcmp */
+static void test_vec_sort_string_ir(void) {
+    printf("  test_vec_sort_string_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) v\n"
+        "    v.push(\"banana\")\n"
+        "    v.push(\"apple\")\n"
+        "    v.sort()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "__ls_vcmp_"));
+    ASSERT_TRUE(ir_contains(ir, "qsort"));
+    ASSERT_TRUE(ir_contains(ir, "strcmp"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* sort_by() passes function pointer to qsort */
+static void test_vec_sort_by_ir(void) {
+    printf("  test_vec_sort_by_ir...");
+    char *ir = compile_to_ir(
+        "fn my_cmp(int a, int b) -> int { return a - b }\n"
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(3)\n"
+        "    v.push(1)\n"
+        "    v.sort_by(my_cmp)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "qsort"));
+    ASSERT_TRUE(ir_contains(ir, "my_cmp"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* slice() on int vec: IR must have clamping + do/end structure + memcpy */
+static void test_vec_slice_int_ir(void) {
+    printf("  test_vec_slice_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.push(2)\n"
+        "    v.push(3)\n"
+        "    v.push(4)\n"
+        "    vec(int) s = v.slice(1, 3)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vsl.do"));
+    ASSERT_TRUE(ir_contains(ir, "vsl.end"));
+    ASSERT_TRUE(ir_contains(ir, "memcpy"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* slice() on string vec: IR uses clone loop */
+static void test_vec_slice_string_ir(void) {
+    printf("  test_vec_slice_string_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) v\n"
+        "    v.push(\"a\")\n"
+        "    v.push(\"b\")\n"
+        "    v.push(\"c\")\n"
+        "    vec(string) s = v.slice(0, 2)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vsl.lcond"));
+    ASSERT_TRUE(ir_contains(ir, "vsl.lbody"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* shrink_to_fit(): IR must have the do/free/ra/end structure */
+static void test_vec_shrink_to_fit_ir(void) {
+    printf("  test_vec_shrink_to_fit_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.push(2)\n"
+        "    v.shrink_to_fit()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vstf.do"));
+    ASSERT_TRUE(ir_contains(ir, "vstf.free") || ir_contains(ir, "vstf.ra"));
+    ASSERT_TRUE(ir_contains(ir, "vstf.end"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* ---- vec(T) Batch D: contains / index_of / resize / copy ---- */
+
+static void test_vec_contains_int_ir(void) {
+    printf("  test_vec_contains_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.push(2)\n"
+        "    v.push(3)\n"
+        "    bool b = v.contains(2)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vcnt.cond"));
+    ASSERT_TRUE(ir_contains(ir, "vcnt.body"));
+    ASSERT_TRUE(ir_contains(ir, "vcnt.found"));
+    ASSERT_TRUE(ir_contains(ir, "vcnt.end"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+static void test_vec_contains_string_ir(void) {
+    printf("  test_vec_contains_string_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) v\n"
+        "    v.push(\"hello\")\n"
+        "    bool b = v.contains(\"hello\")\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vcnt.body"));
+    /* String comparison uses strcmp */
+    ASSERT_TRUE(ir_contains(ir, "strcmp"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+static void test_vec_index_of_ir(void) {
+    printf("  test_vec_index_of_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(10)\n"
+        "    v.push(20)\n"
+        "    v.push(30)\n"
+        "    int idx = v.index_of(20)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vidx.cond"));
+    ASSERT_TRUE(ir_contains(ir, "vidx.found"));
+    ASSERT_TRUE(ir_contains(ir, "vidx.end"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+static void test_vec_resize_grow_ir(void) {
+    printf("  test_vec_resize_grow_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.resize(5)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vrsz.grow"));
+    ASSERT_TRUE(ir_contains(ir, "vrsz.fill") || ir_contains(ir, "vrsz.fcond"));
+    ASSERT_TRUE(ir_contains(ir, "vrsz.end"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+static void test_vec_resize_shrink_ir(void) {
+    printf("  test_vec_resize_shrink_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.push(2)\n"
+        "    v.push(3)\n"
+        "    v.resize(1)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vrsz.shrink"));
+    ASSERT_TRUE(ir_contains(ir, "vrsz.end"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+static void test_vec_copy_int_ir(void) {
+    printf("  test_vec_copy_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) a\n"
+        "    a.push(1)\n"
+        "    a.push(2)\n"
+        "    vec(int) b = a.copy()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vcpy.do"));
+    ASSERT_TRUE(ir_contains(ir, "vcpy.end"));
+    ASSERT_TRUE(ir_contains(ir, "memcpy"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+static void test_vec_copy_string_ir(void) {
+    printf("  test_vec_copy_string_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) a\n"
+        "    a.push(\"hello\")\n"
+        "    a.push(\"world\")\n"
+        "    vec(string) b = a.copy()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vcpy.do"));
+    /* Non-trivial path uses clone loop */
+    ASSERT_TRUE(ir_contains(ir, "vcpy.lcond"));
+    ASSERT_TRUE(ir_contains(ir, "vcpy.lbody"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* ---- vec(T) Batch B: truncate / remove / swap / reverse ---- */
+
+/* truncate(n) on int vec: IR must have the do/end branch structure */
+static void test_vec_truncate_int_ir(void) {
+    printf("  test_vec_truncate_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.push(2)\n"
+        "    v.push(3)\n"
+        "    v.truncate(1)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    /* truncate emits a conditional branch (do / end blocks) */
+    ASSERT_TRUE(ir_contains(ir, "vtr.do") || ir_contains(ir, "vtr.need"));
+    ASSERT_TRUE(ir_contains(ir, "vtr.end"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* truncate on string vec: IR must contain a free call (drop path for strings) */
+static void test_vec_truncate_string_drops_ir(void) {
+    printf("  test_vec_truncate_string_drops_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) v\n"
+        "    v.push(\"a\")\n"
+        "    v.push(\"b\")\n"
+        "    v.push(\"c\")\n"
+        "    v.truncate(1)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vtr.cond") || ir_contains(ir, "vtr.body"));
+    /* string drop path must call free */
+    ASSERT_TRUE(ir_contains(ir, "free"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* remove(i) on int vec: IR must contain memmove and oob warning path */
+static void test_vec_remove_int_ir(void) {
+    printf("  test_vec_remove_int_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(10)\n"
+        "    v.push(20)\n"
+        "    v.push(30)\n"
+        "    v.remove(1)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vrm.do"));
+    ASSERT_TRUE(ir_contains(ir, "vrm.oob"));
+    ASSERT_TRUE(ir_contains(ir, "memmove"));
+    ASSERT_TRUE(ir_contains(ir, "vec.remove() index out of bounds"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* remove(i) on string vec: IR must contain a free call (drop) + memmove */
+static void test_vec_remove_string_drops_ir(void) {
+    printf("  test_vec_remove_string_drops_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(string) vs\n"
+        "    vs.push(\"x\")\n"
+        "    vs.push(\"y\")\n"
+        "    vs.push(\"z\")\n"
+        "    vs.remove(0)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vrm.do"));
+    ASSERT_TRUE(ir_contains(ir, "memmove"));
+    ASSERT_TRUE(ir_contains(ir, "free"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* swap(i, j): IR must have the chk/oob/do/end blocks and no free/malloc */
+static void test_vec_swap_ir(void) {
+    printf("  test_vec_swap_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.push(2)\n"
+        "    v.push(3)\n"
+        "    v.swap(0, 2)\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vsw.do"));
+    ASSERT_TRUE(ir_contains(ir, "vsw.oob"));
+    ASSERT_TRUE(ir_contains(ir, "vsw.chk"));
+    ASSERT_TRUE(ir_contains(ir, "vsw.end"));
+    ASSERT_TRUE(ir_contains(ir, "vec.swap() index out of bounds"));
+    LLVMDisposeMessage(ir);
+    printf("OK\n");
+}
+
+/* reverse(): IR must have the loop structure (do/cond/body/end) */
+static void test_vec_reverse_ir(void) {
+    printf("  test_vec_reverse_ir...");
+    char *ir = compile_to_ir(
+        "fn main() -> int {\n"
+        "    vec(int) v\n"
+        "    v.push(1)\n"
+        "    v.push(2)\n"
+        "    v.push(3)\n"
+        "    v.push(4)\n"
+        "    v.reverse()\n"
+        "    return 0\n"
+        "}\n"
+    );
+    ASSERT_NOT_NULL(ir);
+    ASSERT_TRUE(ir_contains(ir, "vrev.do"));
+    ASSERT_TRUE(ir_contains(ir, "vrev.cond"));
+    ASSERT_TRUE(ir_contains(ir, "vrev.body"));
+    ASSERT_TRUE(ir_contains(ir, "vrev.end"));
     LLVMDisposeMessage(ir);
     printf("OK\n");
 }
@@ -1665,6 +2416,13 @@ int main(void) {
     test_string_copy_ir();
     test_string_replace_ir();
 
+    printf("\n=== String Method Batch 3 Codegen Tests ===\n");
+    test_string_rfind_ir();
+    test_string_count_ir();
+    test_string_substr_one_arg_ir();
+    test_string_split_ir();
+    test_string_join_ir();
+
     printf("\n=== Struct Method (implicit self + static) Codegen Tests ===\n");
     test_instance_method_ir();
     test_static_method_ir();
@@ -1714,11 +2472,53 @@ int main(void) {
     printf("\n=== vec(T) pop() Bug Regression Tests ===\n");
     test_vec_string_pop_top_level();
 
+    printf("\n=== vec(T) Batch A Tests (is_empty / first / last) ===\n");
+    test_vec_is_empty_ir();
+    test_vec_first_int_ir();
+    test_vec_last_int_ir();
+    test_vec_first_string_ir();
+    test_vec_last_string_ir();
+
+    printf("\n=== vec(T) Batch B Tests (truncate / remove / swap / reverse) ===\n");
+    test_vec_truncate_int_ir();
+    test_vec_truncate_string_drops_ir();
+    test_vec_remove_int_ir();
+    test_vec_remove_string_drops_ir();
+    test_vec_swap_ir();
+    test_vec_reverse_ir();
+
+    printf("\n=== vec(T) Batch C Tests (extend / insert) ===\n");
+    test_vec_extend_int_ir();
+    test_vec_extend_string_ir();
+    test_vec_insert_int_ir();
+    test_vec_insert_string_ir();
+
+    printf("\n=== vec(T) Batch E Tests (sort / sort_by / slice / shrink_to_fit) ===\n");
+    test_vec_sort_int_ir();
+    test_vec_sort_string_ir();
+    test_vec_sort_by_ir();
+    test_vec_slice_int_ir();
+    test_vec_slice_string_ir();
+    test_vec_shrink_to_fit_ir();
+
+    printf("\n=== vec(T) Batch D Tests (contains / index_of / resize / copy) ===\n");
+    test_vec_contains_int_ir();
+    test_vec_contains_string_ir();
+    test_vec_index_of_ir();
+    test_vec_resize_grow_ir();
+    test_vec_resize_shrink_ir();
+    test_vec_copy_int_ir();
+    test_vec_copy_string_ir();
+
     printf("\n=== Sample File Codegen Tests ===\n");
     test_samples_hello();
     test_samples_factorial();
     test_samples_struct();
     test_samples_match();
+    test_enum_decl_layout();
+    test_enum_ctor_and_match();
+    test_enum_drop_fn();
+    test_option_template_instantiation();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

@@ -117,10 +117,12 @@ static const Keyword keywords[] = {
     {"as",       2, TOKEN_AS},
     {"bool",     4, TOKEN_TYPE_BOOL},
     {"break",    5, TOKEN_BREAK},
+    {"char",     4, TOKEN_TYPE_CHAR},
     {"continue", 8, TOKEN_CONTINUE},
     {"do",       2, TOKEN_DO},
     {"else",     4, TOKEN_ELSE},
     {"end",      3, TOKEN_END},
+    {"enum",     4, TOKEN_ENUM},
     {"extern",   6, TOKEN_EXTERN},
     {"f32",      3, TOKEN_TYPE_F32},
     {"f64",      3, TOKEN_TYPE_F64},
@@ -139,6 +141,7 @@ static const Keyword keywords[] = {
     {"int",      3, TOKEN_TYPE_INT},
     {"lib",      3, TOKEN_TYPE_LIB},
     {"load",     4, TOKEN_LOAD},
+    {"map",      3, TOKEN_MAP},
     {"match",    5, TOKEN_MATCH},
     {"module",   6, TOKEN_MODULE},
     {"new",      3, TOKEN_NEW},
@@ -151,6 +154,7 @@ static const Keyword keywords[] = {
     {"string",   6, TOKEN_TYPE_STRING},
     {"struct",   6, TOKEN_STRUCT},
     {"true",     4, TOKEN_TRUE},
+    {"try",      3, TOKEN_TRY},
     {"u16",      3, TOKEN_TYPE_U16},
     {"u32",      3, TOKEN_TYPE_U32},
     {"u64",      3, TOKEN_TYPE_U64},
@@ -508,6 +512,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_IN:            return "IN";
     case TOKEN_MATCH:         return "MATCH";
     case TOKEN_STRUCT:        return "STRUCT";
+    case TOKEN_ENUM:          return "ENUM";
     case TOKEN_IMPL:          return "IMPL";
     case TOKEN_MODULE:        return "MODULE";
     case TOKEN_IMPORT:        return "IMPORT";
@@ -522,6 +527,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_FROM:          return "FROM";
     case TOKEN_PUB:           return "PUB";
     case TOKEN_NEW:           return "NEW";
+    case TOKEN_TRY:           return "TRY";
     case TOKEN_TYPE_INT:      return "TYPE_INT";
     case TOKEN_TYPE_I8:       return "TYPE_I8";
     case TOKEN_TYPE_I16:      return "TYPE_I16";
@@ -534,12 +540,14 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TYPE_F32:      return "TYPE_F32";
     case TOKEN_TYPE_F64:      return "TYPE_F64";
     case TOKEN_TYPE_BOOL:     return "TYPE_BOOL";
+    case TOKEN_TYPE_CHAR:     return "TYPE_CHAR";
     case TOKEN_TYPE_STRING:   return "TYPE_STRING";
     case TOKEN_TYPE_VOID:     return "TYPE_VOID";
     case TOKEN_TYPE_LIB:      return "TYPE_LIB";
     case TOKEN_TYPE_OBJECT:   return "TYPE_OBJECT";
     case TOKEN_ARRAY:         return "ARRAY";
     case TOKEN_VEC:           return "VEC";
+    case TOKEN_MAP:           return "MAP";
     case TOKEN_IDENTIFIER:    return "IDENTIFIER";
     case TOKEN_PLUS:          return "PLUS";
     case TOKEN_MINUS:         return "MINUS";
