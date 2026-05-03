@@ -17,7 +17,7 @@
 /* LsString minimum capacity — all dynamic strings allocate at least this many bytes */
 #define LS_MIN_STR_CAP 16
 
-/* CG_DEBUG: compile-time flag for compiler-managed memory tracing.
+/* CG_DEBUG: compile-time flag for *codegen-internal* memory tracing.
    When enabled (=1), the codegen layer injects runtime printf calls into the
    generated LLVM IR at every automatic alloc / clone / free / drop point.
    Output format examples:
@@ -32,8 +32,26 @@
      [cg] vec.grow   old_cap=4 new_cap=8
      [cg] vec.clone  len=3 cap=8
      [cg] arr.clone  size=5
-   Usage: add -DCG_DEBUG=1 to CMake compile options, or define before including common.h.
-   IMPORTANT: All new codegen code that manages memory MUST add a CG_DEBUG trace block. */
+
+   FOR ORDINARY LEAK / DOUBLE-FREE / USE-AFTER-FREE DEBUGGING — DO NOT enable
+   CG_DEBUG. Use the runtime memcheck instead:
+
+     ls run --memcheck file.ls                          # leak/dfree report
+     LS_MEMCHECK_VERBOSE=1 ls run --memcheck file.ls    # full alloc/free trace
+     LS_MEMCHECK_STRICT=1  ls run --memcheck file.ls    # exit 2 on violation
+
+   The runtime path covers every actual heap operation with full site info
+   (kind + file:line:col) plus a captured LS call-stack backtrace, and adds
+   zero noise to user binaries when off.
+
+   CG_DEBUG is reserved for debugging the codegen layer ITSELF — verifying
+   move tracking (str.skip / str.moved), scope cleanup decisions, and
+   non-heap events (vec.grow size announcements) that ls_mc_* doesn't see.
+
+   Default OFF — opt in via `cmake -DLS_CG_DEBUG=ON` when developing on
+   codegen.c. New codegen code that manages memory should still ADD a
+   CG_DEBUG trace block (the macro compiles to nothing when off, so the
+   trace is free in normal builds). */
 #ifndef CG_DEBUG
 #define CG_DEBUG 0
 #endif

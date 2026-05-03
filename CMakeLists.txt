@@ -18,13 +18,26 @@ llvm_map_components_to_libnames(LLVM_LIBS
     x86asmparser x86codegen x86desc x86info
 )
 
+# CG_DEBUG: opt-in compile-time flag that bakes [cg] str.free / scope.drop /
+# vec.grow / etc. printfs into the IR of every compiled program. Useful for
+# debugging codegen-internal logic (move tracking, scope cleanup decisions,
+# clone paths). For ordinary leak / double-free hunting, prefer
+# `--memcheck` + `LS_MEMCHECK_VERBOSE=1` (Phase D.2) — same coverage of
+# heap operations with richer site info and no impact on AOT user binaries.
+#
+# Default OFF so AOT-compiled user programs don't ship with [cg] noise.
+option(LS_CG_DEBUG "Inject codegen-internal memory tracing into user IR (developer only)" OFF)
+if(LS_CG_DEBUG)
+    add_compile_definitions(CG_DEBUG=1)
+    message(STATUS "CG_DEBUG=1 (codegen tracing enabled — user binaries will print [cg] events)")
+endif()
+
 # Compiler options
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     add_compile_options(/W4 /utf-8)
     # Don't treat warnings as errors for now (LLVM headers may trigger warnings)
     # add_compile_options(/WX)
-    add_compile_definitions(CG_DEBUG=1)
 else()
     add_compile_options(-Wall -Wextra -pedantic)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
