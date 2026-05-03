@@ -81,12 +81,16 @@ int jit_init(JitEngine *engine) {
         extern void *ls_mc_realloc(void *, unsigned long long, const void *);
         extern void  ls_mc_free(void *, const void *);
         extern void  ls_mc_report(void);
+        /* D.1 — call-stack tracking: codegen injects ls_mc_enter/ls_mc_leave
+           at function entry/return. Must be reachable from JIT-compiled code. */
+        extern void  ls_mc_enter(const char *, const char *, int);
+        extern void  ls_mc_leave(void);
 
         LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
         (void)sp;
 
-        LLVMOrcCSymbolMapPair pairs[4];
+        LLVMOrcCSymbolMapPair pairs[6];
         pairs[0].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_alloc");
         pairs[0].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_alloc;
         pairs[0].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
@@ -107,7 +111,17 @@ int jit_init(JitEngine *engine) {
         pairs[3].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
         pairs[3].Sym.Flags.TargetFlags = 0;
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 4);
+        pairs[4].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_enter");
+        pairs[4].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_enter;
+        pairs[4].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
+        pairs[4].Sym.Flags.TargetFlags = 0;
+
+        pairs[5].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_leave");
+        pairs[5].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_leave;
+        pairs[5].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
+        pairs[5].Sym.Flags.TargetFlags = 0;
+
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 6);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; --memcheck won't work but other JIT runs will. */

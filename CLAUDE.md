@@ -209,6 +209,13 @@ cd build && ctest --output-on-failure -C Release
 
 ### 已完成（近期）
 
+- **Memcheck Phase D.1/D.2/D.3（调用栈追踪 + verbose + strict）** — 2026-05-03
+  - **D.1 调用栈追踪**：每个用户函数在 `--memcheck` 下注入 `ls_mc_enter(fn,file,line)` prologue + `ls_mc_leave()` epilogue（5 个注入点：fn_decl entry / AST_RETURN 带值 + void / fn_decl 末尾隐式 ret-with-value + ret-void/null）；`runtime/memcheck.c` 维护全局 `g_frame_stack[256]`（v1 单线程；overflow 容忍）；`ls_mc_alloc` 捕获顶部 8 帧到 `LsMcEntry.backtrace`；`ls_mc_report` 打印每条 LEAK 的调用链。验证：3 层嵌套 leak 在 JIT/AOT 下都正确显示 `at deepest / at middle / at outer` 完整链
+  - **D.2 verbose 模式**：环境变量 `LS_MEMCHECK_VERBOSE=1` 触发；`runtime/memcheck.c` 在每个 alloc/free/realloc 末尾调 `trace_op()` 打印一行 `[mc] +alloc/.-free/realloc ptr=... size=... kind @ file:line:col`；off 时是单 int 比较；0 codegen 改动
+  - **D.3 strict 模式**：环境变量 `LS_MEMCHECK_STRICT=1` 触发；`ls_mc_report` 末尾若有 violation 则 `_Exit(2)`（C99 portable，不重入 atexit）；CI 可直接 `echo $?` 判断
+  - jit.c `AbsoluteSymbols` 注册从 4 项扩到 6 项含 `ls_mc_enter` / `ls_mc_leave`；编译器合成的 helper（`__ls_global_init`、`__ls_ffi_init`、`__drop` 字段清理、`__ls_str_replace` 等）走不同 codegen 路径，不进 enter/leave，保持平衡
+  - 验证：ctest 9/9 全过；`memcheck_phase_a/kinds/edge` AOT+JIT 双路径全部 ✓ clean，无 enter/leave 失衡
+
 - **Memcheck Phase C（AOT 集成）** — 2026-05-03
   - CMakeLists 新增 `add_library(ls_memcheck STATIC runtime/memcheck.c)`，与 `ls.exe` 同目录产出（`ARCHIVE_OUTPUT_DIRECTORY` 同时覆盖 single-config Ninja 与 multi-config VS 生成器）；`runtime/memcheck.c` 同时仍编进 `ls.exe` 自身，让 JIT 路径的 `LLVMOrcAbsoluteSymbols` 注册不变
   - `src/main.c` 新增 `get_executable_dir()`（Windows `GetModuleFileNameA` / macOS `_NSGetExecutablePath` / Linux `readlink("/proc/self/exe")` 三平台），`cmd_compile` 在 `--memcheck` 时把 `<libdir>/ls_memcheck.lib` 拼进 clang 链接命令；为避开 `<windows.h>` 中 `_TOKEN_INFORMATION_CLASS TokenType` 与 LS 自身 `TokenType` 枚举的命名冲突，对 `GetModuleFileNameA` 做单点 forward-declare 而不引入 `windows.h`

@@ -463,6 +463,76 @@ static LLVMValueRef cg_mc_free_fn(CodegenContext *ctx) {
     return LLVMAddFunction(ctx->module, "ls_mc_free", ft);
 }
 
+/* Forward decl — defined later in the file. Needed by cg_emit_mc_enter
+   which sits above cg_module_cstr in source order. */
+static LLVMValueRef cg_module_cstr(CodegenContext *ctx, const char *s,
+                                   const char *gv_name);
+
+/* D.1 — get-or-declare ls_mc_enter(const char *fn, const char *file, int line). */
+static LLVMValueRef cg_mc_enter_fn(CodegenContext *ctx) {
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "ls_mc_enter");
+    if (fn) return fn;
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef params[3] = { ptr, ptr, i32 };
+    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                      params, 3, 0);
+    return LLVMAddFunction(ctx->module, "ls_mc_enter", ft);
+}
+
+/* D.1 — get-or-declare ls_mc_leave(). */
+static LLVMValueRef cg_mc_leave_fn(CodegenContext *ctx) {
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "ls_mc_leave");
+    if (fn) return fn;
+    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                      NULL, 0, 0);
+    return LLVMAddFunction(ctx->module, "ls_mc_leave", ft);
+}
+
+/* D.1 — emit "call void @ls_mc_enter(fn_name, file, line)" at the current
+   builder position. No-op when memcheck is disabled. fn_name + file are
+   reused via the same private string cache as cg_make_site to keep the IR
+   compact across many functions. */
+static void cg_emit_mc_enter(CodegenContext *ctx, const char *fn_name,
+                              const char *file, int line)
+{
+    if (!ctx->memcheck_enabled) return;
+    if (!fn_name) fn_name = "?";
+    if (!file)    file = "?";
+
+    /* Allocate stable globals for fn_name and file. We could dedup against
+       a cache, but per-function strings are tiny relative to overall IR. */
+    static int seq = 0;
+    char fbuf[64], gbuf[64];
+    snprintf(fbuf, sizeof(fbuf), "ls_mc_fn_%d", seq);
+    snprintf(gbuf, sizeof(gbuf), "ls_mc_fn_file_%d", seq);
+    seq++;
+    LLVMValueRef fn_str = cg_module_cstr(ctx, fn_name, fbuf);
+    LLVMValueRef file_str = cg_module_cstr(ctx, file, gbuf);
+
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMValueRef args[3] = {
+        fn_str, file_str, LLVMConstInt(i32, (unsigned long long)line, 1)
+    };
+    LLVMTypeRef params[3] = { ptr, ptr, i32 };
+    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                      params, 3, 0);
+    LLVMBuildCall2(ctx->builder, ft, cg_mc_enter_fn(ctx), args, 3, "");
+}
+
+/* D.1 — emit "call void @ls_mc_leave()" at the current builder position.
+   No-op when memcheck is disabled. Must be inserted before every ret/retvoid
+   in user-written functions (compiler-synthesized helpers like __drop bodies
+   and runtime intrinsics are not balanced and must be skipped). */
+static void cg_emit_mc_leave(CodegenContext *ctx)
+{
+    if (!ctx->memcheck_enabled) return;
+    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                      NULL, 0, 0);
+    LLVMBuildCall2(ctx->builder, ft, cg_mc_leave_fn(ctx), NULL, 0, "");
+}
+
 /* Add a private constant i8 array global holding `s` + null terminator,
    returning a pointer to its first byte (i8*). Builder-independent — works
    even before any function exists. */
@@ -10083,6 +10153,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 }
 
                 emit_cleanup_to(ctx, NULL, return_alloca);
+                cg_emit_mc_leave(ctx);   /* D.1: pop frame */
                 LLVMBuildRet(ctx->builder, val);
             }
         }
@@ -10094,6 +10165,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             emit_drop_field_cleanup(ctx);
             if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
             {
+                cg_emit_mc_leave(ctx);   /* D.1: pop frame */
                 LLVMBuildRetVoid(ctx->builder);
             }
         }
@@ -10693,6 +10765,19 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx->context, fn, "entry");
     LLVMPositionBuilderAtEnd(ctx->builder, entry);
 
+    /* D.1 — push a frame for this user function so allocations made within
+       its dynamic extent capture this function in their backtrace. We pull
+       the file from the module identifier (same pattern as cg_make_site).
+       Synthesized helpers (drop bodies, __ls_global_init, runtime intrinsics)
+       take a different codegen path and are correctly skipped. */
+    {
+        const char *fn_file = "?";
+        size_t mn_len = 0;
+        const char *mn = LLVMGetModuleIdentifier(ctx->module, &mn_len);
+        if (mn && mn_len > 0) fn_file = mn;
+        cg_emit_mc_enter(ctx, name, fn_file, node->line);
+    }
+
     LLVMValueRef saved_fn = ctx->current_fn;
     Type *saved_fn_ret = ctx->current_fn_return_type;
     ctx->current_fn = fn;
@@ -10867,6 +10952,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             {
                 /* Emit cleanup BEFORE return */
                 emit_cleanup_to(ctx, NULL, NULL);
+                cg_emit_mc_leave(ctx);   /* D.1: pop frame */
                 LLVMBuildRet(ctx->builder, val);
             }
         }
@@ -10912,6 +10998,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
            already terminated the block. */
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
         {
+            cg_emit_mc_leave(ctx);   /* D.1: pop frame for implicit ret */
             if (!is_non_void)
             {
                 LLVMBuildRetVoid(ctx->builder);

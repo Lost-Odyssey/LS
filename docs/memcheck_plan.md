@@ -397,12 +397,72 @@ add_dependencies(ls ls_memcheck)
 
 ---
 
-## 九、Phase D：增强（可选，按需做）
+## 九、Phase D：增强
 
-### 9.1 LS 调用栈追踪
-### 9.2 verbose 模式
-### 9.3 strict 模式
-### 9.4 与 LS testing 框架集成
+### 9.1 LS 调用栈追踪 ✅ 已完成（2026-05-03）
+
+每个用户函数在 memcheck 模式下编译时注入 prologue/epilogue：
+`ls_mc_enter(fn_name, file, line)` / `ls_mc_leave()`。`ls_mc_alloc` 在
+分配时把当前 frame stack 顶部 8 帧 memcpy 进 `LsMcEntry.backtrace`，
+`ls_mc_report` 打印每个 leak 的完整调用链：
+
+```
+[memcheck] LEAK    64 bytes  foo.ls:0:0  (unknown)
+[memcheck]   at deepest          foo.ls:1
+[memcheck]   at middle           foo.ls:5
+[memcheck]   at outer            foo.ls:8
+```
+
+**实现细节：**
+- `runtime/memcheck.c`：`LsMcFrame { fn_name, file, call_line }`，全局
+  `g_frame_stack[256]`（LS v1 单线程，未来上线程改 `__thread`）；overflow
+  容忍（top 继续递增，leave 始终平衡）；alloc 捕获最深 8 帧
+- `src/codegen.c`：5 个注入点
+  1. `codegen_fn_decl` entry block 后 — emit_mc_enter
+  2. `AST_RETURN` 带值返回前 — emit_mc_leave
+  3. `AST_RETURN` void 返回前 — emit_mc_leave
+  4. fn_decl "last expr 作隐式 return" 路径 — emit_mc_leave
+  5. fn_decl 末尾隐式 ret void/null 前 — emit_mc_leave
+- 编译器合成的 helper（`__ls_global_init`、`__ls_ffi_init`、`__drop`
+  字段清理函数、`__ls_str_replace` 等运行时辅助函数）走不同 codegen
+  路径，不进 enter/leave，保持平衡
+- `src/jit.c`：`AbsoluteSymbols` 注册数组从 4 项扩到 6 项，加入
+  `ls_mc_enter` / `ls_mc_leave`
+- 全部 gated on `ctx->memcheck_enabled`；非 memcheck 模式零 IR 注入
+
+### 9.2 verbose 模式 ✅ 已完成（2026-05-03）
+
+环境变量 `LS_MEMCHECK_VERBOSE=1` 触发，每次 alloc/free/realloc 在
+stderr 打一行 trace：
+
+```
+[mc] +alloc  ptr=0x... size=16   string.upper @ foo.ls:42:7
+[mc] -free   ptr=0x... size=16   string.scope_drop @ foo.ls:48:1
+[mc] realloc ptr=0x... size=64   vec.grow @ foo.ls:30:5
+```
+
+实现：`runtime/memcheck.c` 中 `probe_modes_once` 在 `mc_init` 首次跑时
+读环境变量，`trace_op()` helper 在 alloc/realloc/free 末尾被调用，对
+verbose 关闭时是单 int 比较 + early return，零开销。0 codegen 改动。
+
+### 9.3 strict 模式 ✅ 已完成（2026-05-03）
+
+环境变量 `LS_MEMCHECK_STRICT=1` 触发。`ls_mc_report` 末尾若
+`leaks + double_frees + invalid_frees > 0`，调用 `_Exit(2)` 强制退出
+码为 2（区别于通常的 1=generic failure）。CI 用法：
+
+```bash
+LS_MEMCHECK_STRICT=1 ls run --memcheck integration.ls
+echo $?   # 0 = clean, 2 = violation
+```
+
+`_Exit` (C99) 而非 `exit()`：在 atexit handler 内调 `exit()` 是 UB；
+`_Exit` 不重入、不二次 flush。报告本身已手动 `fflush(stderr)`。
+
+### 9.4 与 LS testing 框架集成（待做）
+
+需要先实现 LS 内置 `assert` / `assert_eq` builtin + `ls test` 子命令。
+工作量大，建议作为独立 feature 拆出。
 
 ---
 
