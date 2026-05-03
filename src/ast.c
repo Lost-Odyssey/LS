@@ -12,6 +12,7 @@ void type_node_free(TypeNode *type) {
     case TYPE_NODE_PRIMITIVE:
         break;
     case TYPE_NODE_POINTER:
+    case TYPE_NODE_REFERENCE:
         type_node_free(type->as.pointee);
         break;
     case TYPE_NODE_ARRAY:
@@ -19,6 +20,10 @@ void type_node_free(TypeNode *type) {
         break;
     case TYPE_NODE_VECTOR:
         type_node_free(type->as.vec.elem);
+        break;
+    case TYPE_NODE_MAP:
+        type_node_free(type->as.map.key);
+        type_node_free(type->as.map.val);
         break;
     case TYPE_NODE_FN:
         for (int i = 0; i < type->as.fn.param_count; i++) {
@@ -29,6 +34,10 @@ void type_node_free(TypeNode *type) {
         break;
     case TYPE_NODE_NAMED:
         free(type->as.named.name);
+        for (int i = 0; i < type->as.named.arg_count; i++) {
+            type_node_free(type->as.named.args[i]);
+        }
+        free(type->as.named.args);
         break;
     }
     free(type);
@@ -64,11 +73,22 @@ void ast_free(AstNode *node) {
         }
         free(node->as.array_lit.elements);
         break;
+    case AST_MAP_LIT:
+        for (int i = 0; i < node->as.map_lit.pair_count; i++) {
+            ast_free(node->as.map_lit.keys[i]);
+            ast_free(node->as.map_lit.vals[i]);
+        }
+        free(node->as.map_lit.keys);
+        free(node->as.map_lit.vals);
+        break;
     case AST_IDENT:
         free(node->as.ident.name);
         break;
     case AST_UNARY:
         ast_free(node->as.unary.operand);
+        break;
+    case AST_MUT_BORROW:
+        ast_free(node->as.mut_borrow.operand);
         break;
     case AST_BINARY:
         ast_free(node->as.binary.left);
@@ -110,6 +130,9 @@ void ast_free(AstNode *node) {
     case AST_CAST:
         ast_free(node->as.cast.expr);
         type_node_free(node->as.cast.target_type);
+        break;
+    case AST_TRY:
+        ast_free(node->as.try_expr.expr);
         break;
     case AST_RANGE:
         ast_free(node->as.range.start);
@@ -179,6 +202,20 @@ void ast_free(AstNode *node) {
         free(node->as.struct_decl.field_types);
         free(node->as.struct_decl.field_names);
         break;
+    case AST_ENUM_DECL:
+        free(node->as.enum_decl.name);
+        for (int i = 0; i < node->as.enum_decl.variant_count; i++) {
+            free(node->as.enum_decl.variants[i].name);
+            for (int j = 0; j < node->as.enum_decl.variants[i].payload_count; j++) {
+                type_node_free(node->as.enum_decl.variants[i].payload_types[j]);
+                if (node->as.enum_decl.variants[i].payload_names)
+                    free(node->as.enum_decl.variants[i].payload_names[j]);
+            }
+            free(node->as.enum_decl.variants[i].payload_types);
+            free(node->as.enum_decl.variants[i].payload_names);
+        }
+        free(node->as.enum_decl.variants);
+        break;
     case AST_IMPL_DECL:
         free(node->as.impl_decl.name);
         for (int i = 0; i < node->as.impl_decl.method_count; i++) {
@@ -243,16 +280,19 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_STRING_LIT:   return "STRING_LIT";
     case AST_FORMAT_STRING:return "FORMAT_STRING";
     case AST_ARRAY_LIT:   return "ARRAY_LIT";
+    case AST_MAP_LIT:     return "MAP_LIT";
     case AST_BOOL_LIT:     return "BOOL_LIT";
     case AST_NIL_LIT:      return "NIL_LIT";
     case AST_IDENT:        return "IDENT";
     case AST_UNARY:        return "UNARY";
+    case AST_MUT_BORROW:   return "MUT_BORROW";
     case AST_BINARY:       return "BINARY";
     case AST_CALL:         return "CALL";
     case AST_INDEX:        return "INDEX";
     case AST_FIELD:        return "FIELD";
     case AST_CLOSURE:      return "CLOSURE";
     case AST_MATCH:        return "MATCH";
+    case AST_TRY:          return "TRY";
     case AST_CAST:         return "CAST";
     case AST_RANGE:        return "RANGE";
     case AST_VAR_DECL:     return "VAR_DECL";
@@ -268,6 +308,7 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_EXPR_STMT:    return "EXPR_STMT";
     case AST_FN_DECL:      return "FN_DECL";
     case AST_STRUCT_DECL:  return "STRUCT_DECL";
+    case AST_ENUM_DECL:    return "ENUM_DECL";
     case AST_IMPL_DECL:    return "IMPL_DECL";
     case AST_MODULE_DECL:  return "MODULE_DECL";
     case AST_IMPORT_DECL:  return "IMPORT_DECL";
@@ -296,6 +337,10 @@ void type_node_print(TypeNode *type) {
         printf("*");
         type_node_print(type->as.pointee);
         break;
+    case TYPE_NODE_REFERENCE:
+        printf(type->is_mut ? "&!" : "&");
+        type_node_print(type->as.pointee);
+        break;
     case TYPE_NODE_ARRAY:
         printf("array(");
         type_node_print(type->as.array.elem);
@@ -304,6 +349,13 @@ void type_node_print(TypeNode *type) {
     case TYPE_NODE_VECTOR:
         printf("vec(");
         type_node_print(type->as.vec.elem);
+        printf(")");
+        break;
+    case TYPE_NODE_MAP:
+        printf("map(");
+        type_node_print(type->as.map.key);
+        printf(", ");
+        type_node_print(type->as.map.val);
         printf(")");
         break;
     case TYPE_NODE_FN:
@@ -317,6 +369,14 @@ void type_node_print(TypeNode *type) {
         break;
     case TYPE_NODE_NAMED:
         printf("%s", type->as.named.name);
+        if (type->as.named.arg_count > 0) {
+            printf("(");
+            for (int i = 0; i < type->as.named.arg_count; i++) {
+                if (i > 0) printf(", ");
+                type_node_print(type->as.named.args[i]);
+            }
+            printf(")");
+        }
         break;
     }
 }
@@ -369,6 +429,15 @@ void ast_print(AstNode *node, int indent) {
             ast_print(node->as.array_lit.elements[i], indent + 1);
         }
         break;
+    case AST_MAP_LIT:
+        printf("MAP_LIT(%d pairs)\n", node->as.map_lit.pair_count);
+        for (int i = 0; i < node->as.map_lit.pair_count; i++) {
+            print_indent(indent + 1); printf("key:\n");
+            ast_print(node->as.map_lit.keys[i], indent + 2);
+            print_indent(indent + 1); printf("val:\n");
+            ast_print(node->as.map_lit.vals[i], indent + 2);
+        }
+        break;
     case AST_BOOL_LIT:
         printf("BOOL_LIT(%s)\n", node->as.bool_lit.value ? "true" : "false");
         break;
@@ -381,6 +450,10 @@ void ast_print(AstNode *node, int indent) {
     case AST_UNARY:
         printf("UNARY(%s)\n", token_type_name(node->as.unary.op));
         ast_print(node->as.unary.operand, indent + 1);
+        break;
+    case AST_MUT_BORROW:
+        printf("MUT_BORROW\n");
+        ast_print(node->as.mut_borrow.operand, indent + 1);
         break;
     case AST_BINARY:
         printf("BINARY(%s)\n", token_type_name(node->as.binary.op));
@@ -440,6 +513,10 @@ void ast_print(AstNode *node, int indent) {
         type_node_print(node->as.cast.target_type);
         printf("\n");
         ast_print(node->as.cast.expr, indent + 1);
+        break;
+    case AST_TRY:
+        printf("TRY\n");
+        ast_print(node->as.try_expr.expr, indent + 1);
         break;
     case AST_RANGE:
         printf("RANGE(..)\n");
@@ -550,6 +627,21 @@ void ast_print(AstNode *node, int indent) {
             print_indent(indent + 1);
             type_node_print(node->as.struct_decl.field_types[i]);
             printf(" %s\n", node->as.struct_decl.field_names[i]);
+        }
+        break;
+    case AST_ENUM_DECL:
+        printf("ENUM_DECL(%s)\n", node->as.enum_decl.name);
+        for (int i = 0; i < node->as.enum_decl.variant_count; i++) {
+            print_indent(indent + 1);
+            printf("VARIANT(%s)", node->as.enum_decl.variants[i].name);
+            for (int j = 0; j < node->as.enum_decl.variants[i].payload_count; j++) {
+                printf(j == 0 ? "(" : ", ");
+                type_node_print(node->as.enum_decl.variants[i].payload_types[j]);
+                if (node->as.enum_decl.variants[i].payload_names && node->as.enum_decl.variants[i].payload_names[j])
+                    printf(" %s", node->as.enum_decl.variants[i].payload_names[j]);
+            }
+            if (node->as.enum_decl.variants[i].payload_count > 0) printf(")");
+            printf("\n");
         }
         break;
     case AST_IMPL_DECL:

@@ -24,6 +24,7 @@ if(MSVC)
     add_compile_options(/W4 /utf-8)
     # Don't treat warnings as errors for now (LLVM headers may trigger warnings)
     # add_compile_options(/WX)
+    add_compile_definitions(CG_DEBUG=1)
 else()
     add_compile_options(-Wall -Wextra -pedantic)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -48,6 +49,11 @@ set(LS_SOURCES
     src/jit.c
     src/ffi.c
     src/module.c
+    src/builtins_math.c
+    src/builtins_math_cg.c
+    src/builtins_io.c
+    src/builtins_io_cg.c
+    runtime/memcheck.c
 )
 
 add_executable(ls ${LS_SOURCES})
@@ -89,6 +95,8 @@ add_executable(test_types
     src/symtable.c
     src/checker.c
     src/module.c
+    src/builtins_math.c
+    src/builtins_io.c
 )
 target_include_directories(test_types PRIVATE src/ include/)
 add_test(NAME test_types COMMAND test_types)
@@ -106,6 +114,11 @@ add_executable(test_codegen
     src/debug.c
     src/ffi.c
     src/module.c
+    src/builtins_math.c
+    src/builtins_math_cg.c
+    src/builtins_io.c
+    src/builtins_io_cg.c
+    runtime/memcheck.c
 )
 target_include_directories(test_codegen PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_codegen ${LLVM_LIBS})
@@ -132,6 +145,11 @@ add_executable(test_jit
     src/jit.c
     src/ffi.c
     src/module.c
+    src/builtins_math.c
+    src/builtins_math_cg.c
+    src/builtins_io.c
+    src/builtins_io_cg.c
+    runtime/memcheck.c
 )
 target_include_directories(test_jit PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_jit ${LLVM_LIBS})
@@ -158,6 +176,11 @@ add_executable(test_ffi
     src/jit.c
     src/ffi.c
     src/module.c
+    src/builtins_math.c
+    src/builtins_math_cg.c
+    src/builtins_io.c
+    src/builtins_io_cg.c
+    runtime/memcheck.c
 )
 target_include_directories(test_ffi PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_ffi ${LLVM_LIBS})
@@ -184,6 +207,11 @@ add_executable(test_module
     src/jit.c
     src/ffi.c
     src/module.c
+    src/builtins_math.c
+    src/builtins_math_cg.c
+    src/builtins_io.c
+    src/builtins_io_cg.c
+    runtime/memcheck.c
 )
 target_include_directories(test_module PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_module ${LLVM_LIBS})
@@ -211,6 +239,11 @@ add_executable(test_memory
     src/jit.c
     src/ffi.c
     src/module.c
+    src/builtins_math.c
+    src/builtins_math_cg.c
+    src/builtins_io.c
+    src/builtins_io_cg.c
+    runtime/memcheck.c
 )
 target_include_directories(test_memory PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_memory ${LLVM_LIBS})

@@ -5,23 +5,24 @@
 
 /* ---- Primitive singletons ---- */
 
-static Type PRIM_INT    = { TYPE_INT,    {{0}} };
-static Type PRIM_I8     = { TYPE_I8,     {{0}} };
-static Type PRIM_I16    = { TYPE_I16,    {{0}} };
-static Type PRIM_I32    = { TYPE_I32,    {{0}} };
-static Type PRIM_I64    = { TYPE_I64,    {{0}} };
-static Type PRIM_U8     = { TYPE_U8,     {{0}} };
-static Type PRIM_U16    = { TYPE_U16,    {{0}} };
-static Type PRIM_U32    = { TYPE_U32,    {{0}} };
-static Type PRIM_U64    = { TYPE_U64,    {{0}} };
-static Type PRIM_F32    = { TYPE_F32,    {{0}} };
-static Type PRIM_F64    = { TYPE_F64,    {{0}} };
-static Type PRIM_BOOL   = { TYPE_BOOL,   {{0}} };
-static Type PRIM_STRING = { TYPE_STRING, {{0}} };
-static Type PRIM_VOID   = { TYPE_VOID,   {{0}} };
-static Type PRIM_NIL    = { TYPE_NIL,    {{0}} };
-static Type PRIM_LIB    = { TYPE_LIB,    {{0}} };
-static Type PRIM_OBJECT = { TYPE_OBJECT, {{0}} };
+static Type PRIM_INT    = { TYPE_INT,    false, {{0}} };
+static Type PRIM_I8     = { TYPE_I8,     false, {{0}} };
+static Type PRIM_I16    = { TYPE_I16,    false, {{0}} };
+static Type PRIM_I32    = { TYPE_I32,    false, {{0}} };
+static Type PRIM_I64    = { TYPE_I64,    false, {{0}} };
+static Type PRIM_U8     = { TYPE_U8,     false, {{0}} };
+static Type PRIM_U16    = { TYPE_U16,    false, {{0}} };
+static Type PRIM_U32    = { TYPE_U32,    false, {{0}} };
+static Type PRIM_U64    = { TYPE_U64,    false, {{0}} };
+static Type PRIM_F32    = { TYPE_F32,    false, {{0}} };
+static Type PRIM_F64    = { TYPE_F64,    false, {{0}} };
+static Type PRIM_BOOL   = { TYPE_BOOL,   false, {{0}} };
+static Type PRIM_CHAR   = { TYPE_CHAR,   false, {{0}} };
+static Type PRIM_STRING = { TYPE_STRING, false, {{0}} };
+static Type PRIM_VOID   = { TYPE_VOID,   false, {{0}} };
+static Type PRIM_NIL    = { TYPE_NIL,    false, {{0}} };
+static Type PRIM_LIB    = { TYPE_LIB,    false, {{0}} };
+static Type PRIM_OBJECT = { TYPE_OBJECT, false, {{0}} };
 
 Type *type_int(void)    { return &PRIM_INT; }
 Type *type_i8(void)     { return &PRIM_I8; }
@@ -35,6 +36,7 @@ Type *type_u64(void)    { return &PRIM_U64; }
 Type *type_f32(void)    { return &PRIM_F32; }
 Type *type_f64(void)    { return &PRIM_F64; }
 Type *type_bool(void)   { return &PRIM_BOOL; }
+Type *type_char(void)   { return &PRIM_CHAR; }
 Type *type_string(void) { return &PRIM_STRING; }
 Type *type_void(void)   { return &PRIM_VOID; }
 Type *type_nil(void)    { return &PRIM_NIL; }
@@ -48,8 +50,8 @@ static bool is_singleton(const Type *t) {
            t == &PRIM_I32  || t == &PRIM_I64 || t == &PRIM_U8  ||
            t == &PRIM_U16  || t == &PRIM_U32 || t == &PRIM_U64 ||
            t == &PRIM_F32  || t == &PRIM_F64 || t == &PRIM_BOOL ||
-           t == &PRIM_STRING || t == &PRIM_VOID || t == &PRIM_NIL ||
-           t == &PRIM_LIB || t == &PRIM_OBJECT;
+           t == &PRIM_CHAR || t == &PRIM_STRING || t == &PRIM_VOID ||
+           t == &PRIM_NIL || t == &PRIM_LIB || t == &PRIM_OBJECT;
 }
 
 /* ---- Composite constructors ---- */
@@ -58,6 +60,24 @@ Type *type_pointer(Type *pointee) {
     Type *t = (Type *)malloc_safe(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_POINTER;
+    t->as.pointer_to = pointee;
+    return t;
+}
+
+Type *type_reference(Type *pointee) {
+    Type *t = (Type *)malloc_safe(sizeof(Type));
+    memset(t, 0, sizeof(Type));
+    t->kind = TYPE_REFERENCE;
+    t->is_mut = false;
+    t->as.pointer_to = pointee;
+    return t;
+}
+
+Type *type_mut_reference(Type *pointee) {
+    Type *t = (Type *)malloc_safe(sizeof(Type));
+    memset(t, 0, sizeof(Type));
+    t->kind = TYPE_REFERENCE;
+    t->is_mut = true;
     t->as.pointer_to = pointee;
     return t;
 }
@@ -76,6 +96,15 @@ Type *type_vector(Type *elem) {
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_VECTOR;
     t->as.vec.elem = elem;
+    return t;
+}
+
+Type *type_map(Type *key, Type *val) {
+    Type *t = (Type *)malloc_safe(sizeof(Type));
+    memset(t, 0, sizeof(Type));
+    t->kind = TYPE_MAP;
+    t->as.map.key = key;
+    t->as.map.val = val;
     return t;
 }
 
@@ -100,6 +129,26 @@ Type *type_struct(const char *name, int field_count) {
         size_t sz = (size_t)field_count * sizeof(t->as.strukt.fields[0]);
         t->as.strukt.fields = malloc_safe(sz);
         memset(t->as.strukt.fields, 0, sz);
+    }
+    return t;
+}
+
+Type *type_enum(const char *name, int variant_count) {
+    Type *t = (Type *)malloc_safe(sizeof(Type));
+    memset(t, 0, sizeof(Type));
+    t->kind = TYPE_ENUM;
+    /* Duplicate name so callers can free their source string independently. */
+    if (name) {
+        size_t len = strlen(name);
+        char *copy = (char *)malloc_safe(len + 1);
+        memcpy(copy, name, len + 1);
+        t->as.enom.name = copy;
+    }
+    t->as.enom.variant_count = variant_count;
+    if (variant_count > 0) {
+        size_t sz = (size_t)variant_count * sizeof(t->as.enom.variants[0]);
+        t->as.enom.variants = malloc_safe(sz);
+        memset(t->as.enom.variants, 0, sz);
     }
     return t;
 }
@@ -135,9 +184,11 @@ Type *type_clone(const Type *t) {
     Type *c = (Type *)malloc_safe(sizeof(Type));
     memset(c, 0, sizeof(Type));
     c->kind = t->kind;
+    c->is_mut = t->is_mut;
 
     switch (t->kind) {
     case TYPE_POINTER:
+    case TYPE_REFERENCE:
         c->as.pointer_to = type_clone(t->as.pointer_to);
         break;
     case TYPE_ARRAY:
@@ -146,6 +197,10 @@ Type *type_clone(const Type *t) {
         break;
     case TYPE_VECTOR:
         c->as.vec.elem = type_clone(t->as.vec.elem);
+        break;
+    case TYPE_MAP:
+        c->as.map.key = type_clone(t->as.map.key);
+        c->as.map.val = type_clone(t->as.map.val);
         break;
     case TYPE_FUNCTION: {
         int n = t->as.function.param_count;
@@ -189,6 +244,44 @@ Type *type_clone(const Type *t) {
         }
         break;
     }
+    case TYPE_ENUM: {
+        int n = t->as.enom.variant_count;
+        char *name_copy = NULL;
+        if (t->as.enom.name) {
+            size_t len = strlen(t->as.enom.name);
+            name_copy = (char *)malloc_safe(len + 1);
+            memcpy(name_copy, t->as.enom.name, len + 1);
+        }
+        c->as.enom.name = name_copy;
+        c->as.enom.variant_count = n;
+        c->as.enom.has_drop = t->as.enom.has_drop;
+        if (n > 0) {
+            size_t sz = (size_t)n * sizeof(c->as.enom.variants[0]);
+            c->as.enom.variants = malloc_safe(sz);
+            memset(c->as.enom.variants, 0, sz);
+            for (int i = 0; i < n; i++) {
+                const char *vn = t->as.enom.variants[i].name;
+                char *vn_copy = NULL;
+                if (vn) {
+                    size_t vlen = strlen(vn);
+                    vn_copy = (char *)malloc_safe(vlen + 1);
+                    memcpy(vn_copy, vn, vlen + 1);
+                }
+                c->as.enom.variants[i].name = vn_copy;
+                int pc = t->as.enom.variants[i].payload_count;
+                c->as.enom.variants[i].payload_count = pc;
+                if (pc > 0) {
+                    c->as.enom.variants[i].payload_types =
+                        (Type **)malloc_safe((size_t)pc * sizeof(Type *));
+                    for (int j = 0; j < pc; j++) {
+                        c->as.enom.variants[i].payload_types[j] =
+                            type_clone(t->as.enom.variants[i].payload_types[j]);
+                    }
+                }
+            }
+        }
+        break;
+    }
     default:
         /* Primitive kind but not a singleton (shouldn't happen, but safe) */
         break;
@@ -203,6 +296,7 @@ void type_free(Type *t) {
 
     switch (t->kind) {
     case TYPE_POINTER:
+    case TYPE_REFERENCE:
         type_free(t->as.pointer_to);
         break;
     case TYPE_ARRAY:
@@ -210,6 +304,10 @@ void type_free(Type *t) {
         break;
     case TYPE_VECTOR:
         type_free(t->as.vec.elem);
+        break;
+    case TYPE_MAP:
+        type_free(t->as.map.key);
+        type_free(t->as.map.val);
         break;
     case TYPE_FUNCTION:
         for (int i = 0; i < t->as.function.param_count; i++) {
@@ -225,6 +323,17 @@ void type_free(Type *t) {
         }
         free(t->as.strukt.fields);
         free((void *)t->as.strukt.name);
+        break;
+    case TYPE_ENUM:
+        for (int i = 0; i < t->as.enom.variant_count; i++) {
+            free((void *)t->as.enom.variants[i].name);
+            for (int j = 0; j < t->as.enom.variants[i].payload_count; j++) {
+                type_free(t->as.enom.variants[i].payload_types[j]);
+            }
+            free(t->as.enom.variants[i].payload_types);
+        }
+        free(t->as.enom.variants);
+        free((void *)t->as.enom.name);
         break;
     case TYPE_MODULE:
         /* exports are not owned — don't free them, just the array */
@@ -246,11 +355,18 @@ bool type_equals(const Type *a, const Type *b) {
     switch (a->kind) {
     case TYPE_POINTER:
         return type_equals(a->as.pointer_to, b->as.pointer_to);
+    case TYPE_REFERENCE:
+        /* &T and &!T are distinct types */
+        if (a->is_mut != b->is_mut) return false;
+        return type_equals(a->as.pointer_to, b->as.pointer_to);
     case TYPE_ARRAY:
         return a->as.array.size == b->as.array.size &&
                type_equals(a->as.array.elem, b->as.array.elem);
     case TYPE_VECTOR:
         return type_equals(a->as.vec.elem, b->as.vec.elem);
+    case TYPE_MAP:
+        return type_equals(a->as.map.key, b->as.map.key) &&
+               type_equals(a->as.map.val, b->as.map.val);
     case TYPE_FUNCTION:
         if (a->as.function.param_count != b->as.function.param_count) return false;
         if (a->as.function.is_vararg != b->as.function.is_vararg) return false;
@@ -263,6 +379,12 @@ bool type_equals(const Type *a, const Type *b) {
         /* Struct equality is by name (nominal typing) */
         if (a->as.strukt.name && b->as.strukt.name)
             return strcmp(a->as.strukt.name, b->as.strukt.name) == 0;
+        return false;
+    case TYPE_ENUM:
+        /* Enum equality is by mangled name (e.g. "Option(int)" vs "Option(string)"
+           are distinct nominal types post-monomorphization) */
+        if (a->as.enom.name && b->as.enom.name)
+            return strcmp(a->as.enom.name, b->as.enom.name) == 0;
         return false;
     default:
         /* Primitive types: same kind = equal */
@@ -277,6 +399,7 @@ bool type_is_integer(const Type *t) {
     switch (t->kind) {
     case TYPE_INT: case TYPE_I8: case TYPE_I16: case TYPE_I32: case TYPE_I64:
     case TYPE_U8: case TYPE_U16: case TYPE_U32: case TYPE_U64:
+    case TYPE_CHAR:
         return true;
     default:
         return false;
@@ -300,6 +423,70 @@ bool type_is_signed(const Type *t) {
     default:
         return false;
     }
+}
+
+int type_int_bits(const Type *t) {
+    if (t == NULL) return 0;
+    switch (t->kind) {
+    case TYPE_I8:  case TYPE_U8:  case TYPE_CHAR: return 8;
+    case TYPE_I16: case TYPE_U16: return 16;
+    case TYPE_INT: case TYPE_I32: case TYPE_U32: return 32;
+    case TYPE_I64: case TYPE_U64: return 64;
+    default: return 0;
+    }
+}
+
+int type_float_mantissa_bits(const Type *t) {
+    if (t == NULL) return 0;
+    if (t->kind == TYPE_F32) return 24;  /* IEEE 754 binary32 */
+    if (t->kind == TYPE_F64) return 53;  /* IEEE 754 binary64 */
+    return 0;
+}
+
+bool type_widens_to(const Type *src, const Type *dst) {
+    if (src == NULL || dst == NULL) return false;
+    if (type_equals(src, dst)) return false;  /* trivial: not a widening */
+
+    /* Float → float: only f32 → f64. */
+    if (type_is_float(src) && type_is_float(dst)) {
+        return src->kind == TYPE_F32 && dst->kind == TYPE_F64;
+    }
+
+    /* Int → float: dst's mantissa must hold every value of src. */
+    if (type_is_integer(src) && type_is_float(dst)) {
+        int sb = type_int_bits(src);
+        int mb = type_float_mantissa_bits(dst);
+        /* Signed: needs sb bits including sign; mantissa stores absolute
+           value so sb-1 magnitude bits must fit within mb. We use sb here
+           (worst case INT_MIN has sb-1 magnitude); conservative & safe. */
+        return sb > 0 && mb > 0 && sb <= mb;
+    }
+
+    /* Int → int. */
+    if (type_is_integer(src) && type_is_integer(dst)) {
+        int sb = type_int_bits(src);
+        int db = type_int_bits(dst);
+        bool ss = type_is_signed(src);
+        bool su = type_is_unsigned(src);
+        bool ds = type_is_signed(dst);
+        bool du = type_is_unsigned(dst);
+
+        if (ss && ds) return db >= sb;        /* signed → signed wider */
+        if (su && du) return db >= sb;        /* unsigned → unsigned wider */
+        if (su && ds) return db > sb;         /* unsigned → signed STRICTLY wider */
+        if (ss && du) return false;           /* signed → unsigned: never */
+    }
+
+    return false;
+}
+
+Type *type_numeric_common(Type *a, Type *b) {
+    if (a == NULL || b == NULL) return NULL;
+    if (!type_is_numeric(a) || !type_is_numeric(b)) return NULL;
+    if (type_equals(a, b)) return a;
+    if (type_widens_to(a, b)) return b;
+    if (type_widens_to(b, a)) return a;
+    return NULL;
 }
 
 bool type_is_unsigned(const Type *t) {
@@ -348,6 +535,7 @@ const char *type_name(const Type *t) {
     case TYPE_F32:    return "f32";
     case TYPE_F64:    return "f64";
     case TYPE_BOOL:   return "bool";
+    case TYPE_CHAR:   return "char";
     case TYPE_STRING: return "string";
     case TYPE_VOID:   return "void";
     case TYPE_NIL:    return "nil";
@@ -356,11 +544,18 @@ const char *type_name(const Type *t) {
     case TYPE_POINTER:
         snprintf(buf, 256, "*%s", type_name(t->as.pointer_to));
         return buf;
+    case TYPE_REFERENCE:
+        snprintf(buf, 256, "&%s%s", t->is_mut ? "!" : "", type_name(t->as.pointer_to));
+        return buf;
     case TYPE_ARRAY:
         snprintf(buf, 256, "array(%s, %d)", type_name(t->as.array.elem), t->as.array.size);
         return buf;
     case TYPE_VECTOR:
         snprintf(buf, 256, "vec(%s)", type_name(t->as.vec.elem));
+        return buf;
+    case TYPE_MAP:
+        snprintf(buf, 256, "map(%s, %s)",
+                 type_name(t->as.map.key), type_name(t->as.map.val));
         return buf;
     case TYPE_FUNCTION: {
         int pos = snprintf(buf, 256, "fn(");
@@ -379,6 +574,9 @@ const char *type_name(const Type *t) {
     case TYPE_STRUCT:
         if (t->as.strukt.name) return t->as.strukt.name;
         return "<struct>";
+    case TYPE_ENUM:
+        if (t->as.enom.name) return t->as.enom.name;
+        return "<enum>";
     case TYPE_MODULE:
         if (t->as.module.name) {
             snprintf(buf, 256, "module(%s)", t->as.module.name);

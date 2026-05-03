@@ -97,7 +97,7 @@ static void test_nested_comment(void) {
 
 static void test_all_keywords(void) {
     Scanner s;
-    scanner_init(&s, "fn return if else while for in match struct impl "
+    scanner_init(&s, "fn return if else while for in match struct enum impl "
                       "module import load self do end break continue extern as from pub");
 
     ASSERT_TOKEN(s, TOKEN_FN);
@@ -109,6 +109,7 @@ static void test_all_keywords(void) {
     ASSERT_TOKEN(s, TOKEN_IN);
     ASSERT_TOKEN(s, TOKEN_MATCH);
     ASSERT_TOKEN(s, TOKEN_STRUCT);
+    ASSERT_TOKEN(s, TOKEN_ENUM);
     ASSERT_TOKEN(s, TOKEN_IMPL);
     ASSERT_TOKEN(s, TOKEN_MODULE);
     ASSERT_TOKEN(s, TOKEN_IMPORT);

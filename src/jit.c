@@ -73,6 +73,47 @@ int jit_init(JitEngine *engine) {
         (void)es;
     }
 
+    /* Register memcheck runtime symbols explicitly. On Windows .exe symbols
+       aren't found by GetProcAddress unless the linker emitted an export
+       table; using AbsoluteSymbols sidesteps that and works on every platform. */
+    {
+        extern void *ls_mc_alloc(unsigned long long, const void *);
+        extern void *ls_mc_realloc(void *, unsigned long long, const void *);
+        extern void  ls_mc_free(void *, const void *);
+        extern void  ls_mc_report(void);
+
+        LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
+        LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
+        (void)sp;
+
+        LLVMOrcCSymbolMapPair pairs[4];
+        pairs[0].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_alloc");
+        pairs[0].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_alloc;
+        pairs[0].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
+        pairs[0].Sym.Flags.TargetFlags = 0;
+
+        pairs[1].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_free");
+        pairs[1].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_free;
+        pairs[1].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
+        pairs[1].Sym.Flags.TargetFlags = 0;
+
+        pairs[2].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_report");
+        pairs[2].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_report;
+        pairs[2].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
+        pairs[2].Sym.Flags.TargetFlags = 0;
+
+        pairs[3].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_realloc");
+        pairs[3].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_realloc;
+        pairs[3].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
+        pairs[3].Sym.Flags.TargetFlags = 0;
+
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 4);
+        LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
+        if (handle_error(e2)) {
+            /* Non-fatal; --memcheck won't work but other JIT runs will. */
+        }
+    }
+
     engine->initialized = true;
 
     /* Inject a builtins module (defines print with body) so later modules
@@ -333,6 +374,7 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
     cg.module = LLVMModuleCreateWithNameInContext(name, ctx);
     cg.builder = LLVMCreateBuilderInContext(ctx);
     cg.extern_builtins = true; /* builtins already defined in __builtins module */
+    cg.memcheck_enabled = engine->memcheck_enabled;
 
     /* Set target from JIT */
     const char *dl = LLVMOrcLLJITGetDataLayoutStr(engine->jit);
@@ -362,7 +404,12 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
 
 /* ---- jit_run_file ---- */
 
-int jit_run_file(const char *path) {
+static int jit_run_file_impl(const char *path, bool memcheck);
+
+int jit_run_file(const char *path) { return jit_run_file_impl(path, false); }
+int jit_run_file_memcheck(const char *path) { return jit_run_file_impl(path, true); }
+
+static int jit_run_file_impl(const char *path, bool memcheck) {
     char *source = read_file(path);
     if (source == NULL) return 1;
 
@@ -390,6 +437,7 @@ int jit_run_file(const char *path) {
         free(source);
         return 1;
     }
+    engine.memcheck_enabled = memcheck;
 
     /* Log incremental info */
     if (ast->kind == AST_PROGRAM) {
@@ -440,6 +488,14 @@ int jit_run_file(const char *path) {
     typedef int (*MainFn)(void);
     MainFn main_fn = (MainFn)(uintptr_t)main_addr;
     int result = main_fn();
+
+    /* Memcheck report MUST run before jit_destroy: the LsMcSite globals
+       referenced by tracked allocations live in the JIT module memory and
+       become invalid after teardown. atexit ordering would otherwise crash. */
+    if (memcheck) {
+        extern void ls_mc_report(void);
+        ls_mc_report();
+    }
 
     jit_destroy(&engine);
     module_registry_free(reg);

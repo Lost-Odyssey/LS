@@ -1,0 +1,9 @@
+/* Step 2: &!string can't be moved into a vec (checker must reject). */
+fn f(&!string s) {
+    vec(string) v
+    v.push(s)
+}
+
+fn main() -> int {
+    return 0
+}

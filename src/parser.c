@@ -107,6 +107,7 @@ static void synchronize(Parser *p) {
         switch (p->current.type) {
         case TOKEN_FN:
         case TOKEN_STRUCT:
+        case TOKEN_ENUM:
         case TOKEN_IMPL:
         case TOKEN_IF:
         case TOKEN_WHILE:
@@ -364,6 +365,7 @@ static AstNode *prefix_char_lit(Parser *p) {
     }
     AstNode *n = new_node(AST_INT_LIT, tok.line, tok.column);
     n->as.int_lit.value = val;
+    n->as.int_lit.is_char = true;
     return n;
 }
 
@@ -516,13 +518,31 @@ static AstNode *prefix_deref(Parser *p) {
     return n;
 }
 
-/* Prefix & for address-of */
+/* Prefix & for address-of, or &! for explicit writable-borrow */
 static AstNode *prefix_addr(Parser *p) {
     Token op = p->previous;
+    /* &!ident — explicit mutable borrow at call site. Wraps the operand in
+       AST_MUT_BORROW; the checker later verifies the operand is an IDENT
+       referring to a movable (owned) variable. */
+    if (match_tok(p, TOKEN_BANG)) {
+        AstNode *operand = parse_expr_prec(p, PREC_UNARY);
+        AstNode *n = new_node(AST_MUT_BORROW, op.line, op.column);
+        n->as.mut_borrow.operand = operand;
+        return n;
+    }
     AstNode *operand = parse_expr_prec(p, PREC_UNARY);
     AstNode *n = new_node(AST_UNARY, op.line, op.column);
     n->as.unary.op = TOKEN_AMP;
     n->as.unary.operand = operand;
+    return n;
+}
+
+/* try expr — Zig-style early return for Result/Option */
+static AstNode *prefix_try(Parser *p) {
+    Token tok = p->previous; /* TOKEN_TRY */
+    AstNode *operand = parse_expr_prec(p, PREC_UNARY);
+    AstNode *n = new_node(AST_TRY, tok.line, tok.column);
+    n->as.try_expr.expr = operand;
     return n;
 }
 
@@ -545,6 +565,16 @@ static AstNode *prefix_closure(Parser *p) {
             if (check(p, TOKEN_IDENTIFIER) || check(p, TOKEN_SELF)) {
                 advance(p);
                 pname = str_dup_n(p->previous.start, p->previous.length);
+            } else if (p->current.type >= TOKEN_FN && p->current.type <= TOKEN_TRY) {
+                /* Reserved keyword misused as parameter name — emit helpful error */
+                char buf[160];
+                snprintf(buf, sizeof(buf),
+                         "cannot use reserved keyword '%.*s' as parameter name; rename it (e.g. '%.*s_')",
+                         p->current.length, p->current.start,
+                         p->current.length, p->current.start);
+                error_at_current(p, buf);
+                advance(p); /* consume the keyword to avoid cascading errors */
+                pname = str_dup_n("_", 1);
             } else {
                 pname = str_dup_n("_", 1);
             }
@@ -707,6 +737,47 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
     return n;
 }
 
+/* Map literal: { key -> val, key -> val, ... }
+   An empty map literal {} is also allowed (type must be declared). */
+static AstNode *prefix_map_lit(Parser *p) {
+    Token tok = p->previous; /* the '{' token */
+    AstNode **keys = NULL;
+    AstNode **vals = NULL;
+    int count = 0;
+    int cap   = 0;
+
+    if (!check(p, TOKEN_RBRACE)) {
+        do {
+            /* Skip optional trailing comma before '}' */
+            if (check(p, TOKEN_RBRACE)) break;
+
+            AstNode *key = parse_expr_prec(p, PREC_NONE);
+            if (key == NULL) break;
+            consume(p, TOKEN_ARROW, "expected '->' between key and value in map literal");
+            AstNode *val = parse_expr_prec(p, PREC_NONE);
+            if (val == NULL) { ast_free(key); break; }
+
+            if (count >= cap) {
+                int old_cap = cap;
+                cap = GROW_CAPACITY(cap);
+                keys = GROW_ARRAY(AstNode *, keys, cap);
+                vals = GROW_ARRAY(AstNode *, vals, cap);
+                (void)old_cap;
+            }
+            keys[count] = key;
+            vals[count] = val;
+            count++;
+        } while (match_tok(p, TOKEN_COMMA));
+    }
+    consume(p, TOKEN_RBRACE, "expected '}' to close map literal");
+
+    AstNode *n = new_node(AST_MAP_LIT, tok.line, tok.column);
+    n->as.map_lit.keys       = keys;
+    n->as.map_lit.vals       = vals;
+    n->as.map_lit.pair_count = count;
+    return n;
+}
+
 /* Array literal: [expr, expr, ...] */
 static AstNode *prefix_array_lit(Parser *p) {
     Token tok = p->previous; /* the '[' token */
@@ -848,6 +919,7 @@ static void init_parse_rules(void) {
     /* Grouping */
     rules[TOKEN_LPAREN]     = (ParseRule){ prefix_grouping,  infix_call,        PREC_CALL };
     rules[TOKEN_LBRACKET]   = (ParseRule){ prefix_array_lit,  infix_index,       PREC_CALL };
+    rules[TOKEN_LBRACE]     = (ParseRule){ prefix_map_lit,    NULL,              PREC_NONE };
     rules[TOKEN_DOT]        = (ParseRule){ NULL,             infix_field,       PREC_CALL };
     rules[TOKEN_AS]         = (ParseRule){ NULL,             infix_cast,        PREC_CALL };
 
@@ -894,6 +966,7 @@ static void init_parse_rules(void) {
     rules[TOKEN_MATCH]      = (ParseRule){ prefix_match,     NULL,              PREC_NONE };
     rules[TOKEN_COLON]      = (ParseRule){ prefix_symbol,    NULL,              PREC_NONE };
     rules[TOKEN_NEW]        = (ParseRule){ prefix_new_expr,  NULL,              PREC_NONE };
+    rules[TOKEN_TRY]        = (ParseRule){ prefix_try,       NULL,              PREC_NONE };
 }
 
 static const ParseRule *get_rule(TokenType type) {
@@ -954,10 +1027,12 @@ static bool is_type_keyword(TokenType t) {
     case TOKEN_TYPE_I32: case TOKEN_TYPE_I64: case TOKEN_TYPE_U8:
     case TOKEN_TYPE_U16: case TOKEN_TYPE_U32: case TOKEN_TYPE_U64:
     case TOKEN_TYPE_F32: case TOKEN_TYPE_F64: case TOKEN_TYPE_BOOL:
+    case TOKEN_TYPE_CHAR:
     case TOKEN_TYPE_STRING: case TOKEN_TYPE_VOID:
     case TOKEN_TYPE_OBJECT:
     case TOKEN_ARRAY:
     case TOKEN_VEC:
+    case TOKEN_MAP:
         return true;
     default:
         return false;
@@ -977,6 +1052,19 @@ static TypeNode *parse_type(Parser *p) {
         return tn;
     }
 
+    /* &T — read-only borrow, &!T — writable borrow. Prefix-only in type
+       position, so unambiguous vs. infix bitwise '&' (which never appears
+       at the start of a type). */
+    if (match_tok(p, TOKEN_AMP)) {
+        bool is_mut = match_tok(p, TOKEN_BANG);  /* &! => writable reference */
+        TypeNode *pointee = parse_type(p);
+        if (pointee == NULL) return NULL;
+        TypeNode *tn = new_type_node(TYPE_NODE_REFERENCE, line, col);
+        tn->is_mut = is_mut;
+        tn->as.pointee = pointee;
+        return tn;
+    }
+
     /* vec(T) — dynamic array */
     if (match_tok(p, TOKEN_VEC)) {
         consume(p, TOKEN_LPAREN, "expected '(' after 'vec'");
@@ -985,6 +1073,21 @@ static TypeNode *parse_type(Parser *p) {
         consume(p, TOKEN_RPAREN, "expected ')' after vec element type");
         TypeNode *tn = new_type_node(TYPE_NODE_VECTOR, line, col);
         tn->as.vec.elem = elem;
+        return tn;
+    }
+
+    /* map(K, V) — chained hash map */
+    if (match_tok(p, TOKEN_MAP)) {
+        consume(p, TOKEN_LPAREN, "expected '(' after 'map'");
+        TypeNode *key_tn = parse_type(p);
+        if (key_tn == NULL) return NULL;
+        consume(p, TOKEN_COMMA, "expected ',' between map key and value types");
+        TypeNode *val_tn = parse_type(p);
+        if (val_tn == NULL) { type_node_free(key_tn); return NULL; }
+        consume(p, TOKEN_RPAREN, "expected ')' after map value type");
+        TypeNode *tn = new_type_node(TYPE_NODE_MAP, line, col);
+        tn->as.map.key = key_tn;
+        tn->as.map.val = val_tn;
         return tn;
     }
 
@@ -1066,12 +1169,31 @@ static TypeNode *parse_type(Parser *p) {
         return tn;
     }
 
-    /* Named type (user struct) */
+    /* Named type (user struct or generic instantiation like Option(int)) */
     if (check(p, TOKEN_IDENTIFIER)) {
         advance(p);
         Token name_tok = p->previous;
         TypeNode *tn = new_type_node(TYPE_NODE_NAMED, line, col);
         tn->as.named.name = str_dup_n(name_tok.start, name_tok.length);
+        tn->as.named.args = NULL;
+        tn->as.named.arg_count = 0;
+
+        /* Optional generic-style args: Name(T1, T2, ...) */
+        if (match_tok(p, TOKEN_LPAREN)) {
+            int cap = 0;
+            if (!check(p, TOKEN_RPAREN)) {
+                do {
+                    TypeNode *arg = parse_type(p);
+                    if (arg == NULL) { synchronize(p); break; }
+                    if (tn->as.named.arg_count >= cap) {
+                        cap = GROW_CAPACITY(cap);
+                        tn->as.named.args = GROW_ARRAY(TypeNode *, tn->as.named.args, cap);
+                    }
+                    tn->as.named.args[tn->as.named.arg_count++] = arg;
+                } while (match_tok(p, TOKEN_COMMA));
+            }
+            consume(p, TOKEN_RPAREN, "expected ')' after type arguments");
+        }
         return tn;
     }
 
@@ -1111,10 +1233,52 @@ static bool starts_var_decl(Parser *p) {
         return false;
     }
 
-    /* IDENTIFIER followed by another IDENTIFIER → named type + varname */
+    /* IDENTIFIER followed by another IDENTIFIER → named type + varname.
+       IDENTIFIER followed by '(' may be a generic type instantiation
+       (Option(int) o = ...) — disambiguate by skipping balanced parens
+       and checking whether the token AFTER the matching ')' is an IDENTIFIER
+       AND the token after that is '=' or ';' (i.e. a var decl, not adjacent
+       expression statements like `print(a1) print(a2)`). */
     if (cur == TOKEN_IDENTIFIER) {
         Token next = scanner_peek(&p->scanner);
         if (next.type == TOKEN_IDENTIFIER) return true;
+
+        if (next.type == TOKEN_LPAREN) {
+            Scanner saved = p->scanner;
+            Token saved_cur = p->current;
+            Token saved_prev = p->previous;
+            advance(p);  /* consume IDENT */
+            advance(p);  /* consume '(' */
+            int depth = 1;
+            bool ok = true;
+            while (depth > 0) {
+                if (p->current.type == TOKEN_EOF) { ok = false; break; }
+                if (p->current.type == TOKEN_LPAREN) depth++;
+                else if (p->current.type == TOKEN_RPAREN) {
+                    depth--;
+                    if (depth == 0) break;
+                }
+                advance(p);
+            }
+            bool result = false;
+            if (ok && p->current.type == TOKEN_RPAREN) {
+                /* Need: IDENT then '=' or ';' to qualify as a var decl. */
+                advance(p);  /* consume ')' */
+                if (p->current.type == TOKEN_IDENTIFIER) {
+                    Token after = scanner_peek(&p->scanner);
+                    if (after.type == TOKEN_ASSIGN ||
+                        after.type == TOKEN_SEMICOLON ||
+                        after.type == TOKEN_EOF)
+                    {
+                        result = true;
+                    }
+                }
+            }
+            p->scanner = saved;
+            p->current = saved_cur;
+            p->previous = saved_prev;
+            return result;
+        }
         return false;
     }
 
@@ -1130,7 +1294,16 @@ static AstNode *parse_var_decl(Parser *p) {
     if (var_type == NULL) return NULL;
 
     if (!check(p, TOKEN_IDENTIFIER)) {
-        error_at_current(p, "expected variable name");
+        if (p->current.type >= TOKEN_FN && p->current.type <= TOKEN_TRY) {
+            char buf[160];
+            snprintf(buf, sizeof(buf),
+                     "cannot use reserved keyword '%.*s' as variable name; rename it (e.g. '%.*s_')",
+                     p->current.length, p->current.start,
+                     p->current.length, p->current.start);
+            error_at_current(p, buf);
+        } else {
+            error_at_current(p, "expected variable name");
+        }
         type_node_free(var_type);
         return NULL;
     }
@@ -1184,6 +1357,16 @@ static bool parse_param_list(Parser *p,
             if (check(p, TOKEN_IDENTIFIER) || check(p, TOKEN_SELF)) {
                 advance(p);
                 pname = str_dup_n(p->previous.start, p->previous.length);
+            } else if (p->current.type >= TOKEN_FN && p->current.type <= TOKEN_TRY) {
+                /* Reserved keyword misused as parameter name — emit helpful error */
+                char buf[160];
+                snprintf(buf, sizeof(buf),
+                         "cannot use reserved keyword '%.*s' as parameter name; rename it (e.g. '%.*s_')",
+                         p->current.length, p->current.start,
+                         p->current.length, p->current.start);
+                error_at_current(p, buf);
+                advance(p); /* consume the keyword to avoid cascading errors */
+                pname = str_dup_n("_", 1);
             } else {
                 pname = str_dup_n("_", 1);
             }
@@ -1219,6 +1402,47 @@ static AstNode *parse_fn_decl(Parser *p) {
 
     consume(p, TOKEN_LPAREN, "expected '(' after function name");
 
+    /* Phase A1: detect explicit self-borrow at first param position.
+       Forms: (&self, ...)  → readonly  (Phase A2 — accepted but reserved)
+              (&!self, ...) → writable
+       The leading '&[!]self' has no type annotation; the rest of the
+       parameter list (after a comma, if any) parses normally. */
+    int self_borrow_kind = 0;
+    if (check(p, TOKEN_AMP)) {
+        /* Peek to see if this is &self or &!self (vs. &string / &vec / &map etc.).
+           Only consume '&' if it's truly an explicit self-borrow form. */
+        Token next = scanner_peek(&p->scanner);
+        bool is_self_borrow = false;
+        bool is_mut = false;
+        if (next.type == TOKEN_SELF) {
+            is_self_borrow = true;
+        } else if (next.type == TOKEN_BANG) {
+            /* 2-token lookahead: peek past '!' to find 'self' */
+            Scanner saved = p->scanner;
+            Token saved_cur = p->current;
+            Token saved_prev = p->previous;
+            advance(p); /* consume & */
+            advance(p); /* consume ! */
+            if (check(p, TOKEN_SELF)) {
+                is_self_borrow = true;
+                is_mut = true;
+            }
+            /* restore */
+            p->scanner = saved;
+            p->current = saved_cur;
+            p->previous = saved_prev;
+        }
+        if (is_self_borrow) {
+            advance(p); /* consume & */
+            if (is_mut) advance(p); /* consume ! */
+            advance(p); /* consume self */
+            self_borrow_kind = is_mut ? 2 : 1;
+            if (!check(p, TOKEN_RPAREN)) {
+                consume(p, TOKEN_COMMA, "expected ',' or ')' after self parameter");
+            }
+        }
+    }
+
     TypeNode **param_types = NULL;
     char **param_names = NULL;
     int param_count = 0;
@@ -1244,6 +1468,7 @@ static AstNode *parse_fn_decl(Parser *p) {
     n->as.fn_decl.body = body;
     n->as.fn_decl.is_static = false;
     n->as.fn_decl.impl_struct_name = NULL;
+    n->as.fn_decl.self_borrow_kind = self_borrow_kind;
     return n;
 }
 
@@ -1298,6 +1523,94 @@ static AstNode *parse_struct_decl(Parser *p) {
     n->as.struct_decl.field_types = field_types;
     n->as.struct_decl.field_names = field_names;
     n->as.struct_decl.field_count = field_count;
+    return n;
+}
+
+/* enum Name {
+ *     V1,                  // no payload
+ *     V2(Type),            // unnamed payload (Rust-style)
+ *     V3(Type name, ...);  // named payload (LS-style)
+ * }
+ * Variant separators (',' / ';' / nothing) are all accepted. */
+static AstNode *parse_enum_decl(Parser *p) {
+    /* 'enum' already consumed */
+    int line = p->previous.line;
+    int col  = p->previous.column;
+
+    if (!check(p, TOKEN_IDENTIFIER)) {
+        error_at_current(p, "expected enum name");
+        return NULL;
+    }
+    advance(p);
+    char *name = str_dup_n(p->previous.start, p->previous.length);
+
+    consume(p, TOKEN_LBRACE, "expected '{' after enum name");
+
+    AstNode *n = new_node(AST_ENUM_DECL, line, col);
+    n->as.enum_decl.name = name;
+    n->as.enum_decl.variants = NULL;
+    n->as.enum_decl.variant_count = 0;
+    int variant_cap = 0;
+
+    skip_semicolons(p);
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        if (!check(p, TOKEN_IDENTIFIER)) {
+            error_at_current(p, "expected variant name");
+            synchronize(p);
+            continue;
+        }
+        advance(p);
+        char *vname = str_dup_n(p->previous.start, p->previous.length);
+
+        TypeNode **ptypes = NULL;
+        char **pnames = NULL;
+        int pcount = 0;
+        int pcap = 0;
+
+        if (match_tok(p, TOKEN_LPAREN)) {
+            if (!check(p, TOKEN_RPAREN)) {
+                do {
+                    TypeNode *pt = parse_type(p);
+                    if (pt == NULL) {
+                        synchronize(p);
+                        break;
+                    }
+                    char *pn = NULL;
+                    if (check(p, TOKEN_IDENTIFIER)) {
+                        advance(p);
+                        pn = str_dup_n(p->previous.start, p->previous.length);
+                    }
+                    if (pcount >= pcap) {
+                        pcap = GROW_CAPACITY(pcap);
+                        ptypes = GROW_ARRAY(TypeNode *, ptypes, pcap);
+                        pnames = GROW_ARRAY(char *, pnames, pcap);
+                    }
+                    ptypes[pcount] = pt;
+                    pnames[pcount] = pn;
+                    pcount++;
+                } while (match_tok(p, TOKEN_COMMA));
+            }
+            consume(p, TOKEN_RPAREN, "expected ')' after variant payload");
+        }
+
+        /* Optional separator between variants */
+        match_tok(p, TOKEN_COMMA);
+        skip_semicolons(p);
+
+        if (n->as.enum_decl.variant_count >= variant_cap) {
+            variant_cap = GROW_CAPACITY(variant_cap);
+            n->as.enum_decl.variants = realloc_safe(
+                n->as.enum_decl.variants,
+                sizeof(*n->as.enum_decl.variants) * (size_t)variant_cap);
+        }
+        int idx = n->as.enum_decl.variant_count++;
+        n->as.enum_decl.variants[idx].name = vname;
+        n->as.enum_decl.variants[idx].payload_types = ptypes;
+        n->as.enum_decl.variants[idx].payload_names = pnames;
+        n->as.enum_decl.variants[idx].payload_count = pcount;
+    }
+    consume(p, TOKEN_RBRACE, "expected '}' after enum variants");
+
     return n;
 }
 
@@ -1767,6 +2080,8 @@ static AstNode *parse_statement(Parser *p) {
         /* else fall through to expression statement (closure) */
     } else if (match_tok(p, TOKEN_STRUCT)) {
         return parse_struct_decl(p);
+    } else if (match_tok(p, TOKEN_ENUM)) {
+        return parse_enum_decl(p);
     } else if (match_tok(p, TOKEN_IMPL)) {
         return parse_impl_decl(p);
     } else if (match_tok(p, TOKEN_MODULE)) {

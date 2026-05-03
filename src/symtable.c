@@ -49,7 +49,11 @@ Symbol *scope_define(Scope *s, const char *name, Type *type) {
     sym->is_mutable = true;
     sym->scope_depth = s->depth;
     sym->is_moved = false;
+    sym->is_maybe_moved = false;
+    sym->is_static_string = false;
     sym->is_returning = false;
+    sym->is_borrow = false;
+    sym->is_mut_borrow = false;
     return sym;
 }
 

@@ -9,8 +9,21 @@ typedef struct Symbol {
     Type *type;             /* Semantic type (not owned — points into type registry) */
     bool is_mutable;        /* All variables mutable for now */
     int scope_depth;
-    bool is_moved;          /* true if value has been moved (cannot be used) */
-    bool is_returning;     /* true if variable is in a return expression (skip drop) */
+    bool is_moved;          /* true if value has been moved on ALL paths (cannot be used) */
+    bool is_maybe_moved;    /* Phase B: true if value moved on SOME path (MAYBE_MOVED = death) */
+    bool is_returning;      /* true if variable is in a return expression (skip drop) */
+    bool is_borrow;         /* true for &T function parameters — cannot be moved, reassigned,
+                               or mutated. Sym->type holds the pointee (e.g. TYPE_STRING),
+                               NOT TYPE_REFERENCE — this flag is the sole marker. */
+    bool is_mut_borrow;     /* true for &!T function parameters — cannot be moved, but
+                               CAN be reassigned and mutated. Same type-unwrap convention
+                               as is_borrow (type is the pointee T). Mutually exclusive
+                               with is_borrow. */
+    bool is_static_string;  /* true if string is initialized from a literal (cap==0 at runtime).
+                               Static strings are never marked as moved by implicit operations
+                               (vec.push, map.set, direct assignment) because they have no
+                               heap ownership — they point into .rodata and are freely shared.
+                               Only __move() can force-move a static string. */
 } Symbol;
 
 typedef struct Scope {

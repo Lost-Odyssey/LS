@@ -39,6 +39,11 @@ void module_registry_free(ModuleRegistry *reg);
    Returns: allocated string, or NULL on failure. Caller owns. */
 char *module_resolve_path(const char *import_path, const char *current_file);
 
+/* Returns true if a source file exists for the given import path,
+   relative to current_file's directory. Used by the import handler to
+   decide whether a user file shadows a built-in stdlib module. */
+bool module_user_file_exists(const char *import_path, const char *current_file);
+
 /* Find a module by name in the registry. Returns NULL if not found */
 ModuleInfo *module_find(ModuleRegistry *reg, const char *name);
 

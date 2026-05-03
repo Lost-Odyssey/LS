@@ -22,6 +22,7 @@ typedef enum {
     TOKEN_IN,               /* in */
     TOKEN_MATCH,            /* match */
     TOKEN_STRUCT,           /* struct */
+    TOKEN_ENUM,             /* enum */
     TOKEN_IMPL,             /* impl */
     TOKEN_MODULE,           /* module */
     TOKEN_IMPORT,           /* import */
@@ -37,6 +38,7 @@ typedef enum {
     TOKEN_FROM,             /* from (FFI) */
     TOKEN_PUB,              /* pub (reserved) */
     TOKEN_NEW,              /* new (heap allocation) */
+    TOKEN_TRY,              /* try (early return for Result/Option) */
 
     /* Type keywords */
     TOKEN_TYPE_INT,         /* int */
@@ -51,12 +53,14 @@ typedef enum {
     TOKEN_TYPE_F32,         /* f32 */
     TOKEN_TYPE_F64,         /* f64 */
     TOKEN_TYPE_BOOL,        /* bool */
+    TOKEN_TYPE_CHAR,        /* char */
     TOKEN_TYPE_STRING,      /* string */
     TOKEN_TYPE_VOID,        /* void */
     TOKEN_TYPE_LIB,         /* lib */
     TOKEN_TYPE_OBJECT,      /* object (type-erased pointer, like void*) */
     TOKEN_ARRAY,            /* array (fixed-size array type) */
     TOKEN_VEC,              /* vec   (dynamic vector type) */
+    TOKEN_MAP,              /* map   (hash map type) */
 
     /* Identifier */
     TOKEN_IDENTIFIER,       /* foo, bar_baz */
