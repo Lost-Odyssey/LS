@@ -1753,13 +1753,10 @@ static AstNode *parse_load_lib(Parser *p) {
     return n;
 }
 
-static AstNode *parse_extern_fn(Parser *p) {
-    /* 'extern' already consumed */
-    int line = p->previous.line;
-    int col  = p->previous.column;
-
-    consume(p, TOKEN_FN, "expected 'fn' after 'extern'");
-
+/* Parse extern fn body starting after 'fn' keyword is consumed.
+   line/col: position of the 'extern' keyword for error reporting.
+   'from lib' clause is optional; lib_name = NULL means direct libc call. */
+static AstNode *parse_extern_fn_body(Parser *p, int line, int col) {
     if (!check(p, TOKEN_IDENTIFIER)) {
         error_at_current(p, "expected function name after 'extern fn'");
         return NULL;
@@ -1784,25 +1781,137 @@ static AstNode *parse_extern_fn(Parser *p) {
         return_type = parse_type(p);
     }
 
+    /* 'from lib' is now optional — absent = bind to process symbols (libc/CRT) */
     char *lib_name = NULL;
-    consume(p, TOKEN_FROM, "expected 'from' after extern function signature");
-    if (check(p, TOKEN_IDENTIFIER)) {
-        advance(p);
-        lib_name = str_dup_n(p->previous.start, p->previous.length);
-    } else {
-        error_at_current(p, "expected library name after 'from'");
-        lib_name = str_dup_n("?", 1);
+    if (match_tok(p, TOKEN_FROM)) {
+        if (check(p, TOKEN_IDENTIFIER)) {
+            advance(p);
+            lib_name = str_dup_n(p->previous.start, p->previous.length);
+        } else {
+            error_at_current(p, "expected library name after 'from'");
+        }
     }
     skip_semicolons(p);
 
     AstNode *n = new_node(AST_EXTERN_FN, line, col);
-    n->as.extern_fn.name = name;
+    n->as.extern_fn.name       = name;
     n->as.extern_fn.param_types = param_types;
     n->as.extern_fn.param_names = param_names;
     n->as.extern_fn.param_count = param_count;
     n->as.extern_fn.return_type = return_type;
-    n->as.extern_fn.is_vararg = is_vararg;
-    n->as.extern_fn.lib_name = lib_name;
+    n->as.extern_fn.is_vararg   = is_vararg;
+    n->as.extern_fn.lib_name    = lib_name;
+    return n;
+}
+
+/* Parse: extern fn Name(...) [-> T] ['from' lib]  — 'extern' already consumed */
+static AstNode *parse_extern_fn(Parser *p) {
+    int line = p->previous.line;
+    int col  = p->previous.column;
+    consume(p, TOKEN_FN, "expected 'fn' after 'extern'");
+    return parse_extern_fn_body(p, line, col);
+}
+
+/* Parse: extern struct Name { field_type field_name ... }
+   'extern' already consumed; current token is 'struct'. */
+static AstNode *parse_extern_struct(Parser *p) {
+    advance(p); /* consume 'struct' */
+    int line = p->previous.line;
+    int col  = p->previous.column;
+
+    if (!check(p, TOKEN_IDENTIFIER)) {
+        error_at_current(p, "expected struct name after 'extern struct'");
+        return NULL;
+    }
+    advance(p);
+    char *name = str_dup_n(p->previous.start, p->previous.length);
+
+    consume(p, TOKEN_LBRACE, "expected '{' after extern struct name");
+
+    TypeNode **field_types = NULL;
+    char     **field_names = NULL;
+    int        field_count = 0;
+    int        capacity    = 0;
+
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        skip_semicolons(p);
+        if (check(p, TOKEN_RBRACE)) break;
+
+        TypeNode *ft = parse_type(p);
+        if (ft == NULL) { free(name); free(field_types); free(field_names); return NULL; }
+
+        if (!check(p, TOKEN_IDENTIFIER)) {
+            error_at_current(p, "expected field name in extern struct");
+            type_node_free(ft);
+            free(name); free(field_types); free(field_names);
+            return NULL;
+        }
+        advance(p);
+        char *fn = str_dup_n(p->previous.start, p->previous.length);
+
+        if (field_count >= capacity) {
+            capacity = capacity == 0 ? 4 : capacity * 2;
+            field_types = (TypeNode **)realloc(field_types, (size_t)capacity * sizeof(TypeNode *));
+            field_names = (char     **)realloc(field_names, (size_t)capacity * sizeof(char *));
+        }
+        field_types[field_count] = ft;
+        field_names[field_count] = fn;
+        field_count++;
+        skip_semicolons(p);
+    }
+    consume(p, TOKEN_RBRACE, "expected '}' after extern struct body");
+    skip_semicolons(p);
+
+    AstNode *n = new_node(AST_EXTERN_STRUCT_DECL, line, col);
+    n->as.extern_struct_decl.name        = name;
+    n->as.extern_struct_decl.field_types = field_types;
+    n->as.extern_struct_decl.field_names = field_names;
+    n->as.extern_struct_decl.field_count = field_count;
+    return n;
+}
+
+/* Parse: extern { struct/fn decls... }  — 'extern' already consumed */
+static AstNode *parse_extern_block(Parser *p) {
+    int line = p->previous.line;
+    int col  = p->previous.column;
+
+    consume(p, TOKEN_LBRACE, "expected '{' after 'extern'");
+
+    AstNode **decls    = NULL;
+    int       decl_count = 0;
+    int       capacity   = 0;
+
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        skip_semicolons(p);
+        if (check(p, TOKEN_RBRACE)) break;
+
+        AstNode *d = NULL;
+        if (check(p, TOKEN_STRUCT)) {
+            d = parse_extern_struct(p);
+        } else if (match_tok(p, TOKEN_FN)) {
+            int fn_line = p->previous.line;
+            int fn_col  = p->previous.column;
+            d = parse_extern_fn_body(p, fn_line, fn_col);
+        } else {
+            error_at_current(p, "expected 'struct' or 'fn' inside extern block");
+            advance(p);
+            continue;
+        }
+
+        if (d != NULL) {
+            if (decl_count >= capacity) {
+                capacity = capacity == 0 ? 4 : capacity * 2;
+                decls = (AstNode **)realloc(decls, (size_t)capacity * sizeof(AstNode *));
+            }
+            decls[decl_count++] = d;
+        }
+    }
+    consume(p, TOKEN_RBRACE, "expected '}' to close extern block");
+    skip_semicolons(p);
+
+    AstNode *n = new_node(AST_EXTERN_BLOCK, line, col);
+    n->as.extern_block.decls      = decls;
+    n->as.extern_block.decl_count = decl_count;
     return n;
 }
 
@@ -2091,6 +2200,10 @@ static AstNode *parse_statement(Parser *p) {
     } else if (match_tok(p, TOKEN_TYPE_LIB)) {
         return parse_load_lib(p);
     } else if (match_tok(p, TOKEN_EXTERN)) {
+        if (check(p, TOKEN_LBRACE))
+            return parse_extern_block(p);
+        if (check(p, TOKEN_STRUCT))
+            return parse_extern_struct(p);
         return parse_extern_fn(p);
     } else if (match_tok(p, TOKEN_IF)) {
         return parse_if_stmt(p);

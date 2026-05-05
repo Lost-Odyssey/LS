@@ -111,17 +111,19 @@ bool builtin_math_lookup_const(const char *name, double *out_value) {
 
 /* ---- Public API: existence + type construction ---- */
 
-#include "builtins_io.h"
+/* Phase E.4: `io` migrated to pure-LS stdlib/io.ls. The compiler no longer
+   carries a built-in `io` module — `import io` resolves through the normal
+   stdlib path (LS_HOME/stdlib/io.ls). */
 
 bool builtin_module_exists(const char *name) {
     if (name == NULL) return false;
-    return strcmp(name, "math") == 0 || strcmp(name, "io") == 0;
+    return strcmp(name, "math") == 0;
 }
 
 Type *builtin_module_make_type(Checker *c, const char *name) {
+    (void)c;
     if (name == NULL) return NULL;
     if (strcmp(name, "math") == 0) return builtin_math_make_type();
-    if (strcmp(name, "io") == 0)   return builtin_io_make_type(c);
     return NULL;
 }
 

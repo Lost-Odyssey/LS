@@ -4,7 +4,7 @@
 #define LS_INCLUDE_CODEGEN 1
 #include "builtins_math.h"
 #define LS_INCLUDE_CODEGEN 1
-#include "builtins_io.h"
+/* Phase E.4: builtins_io.h removed — io is now pure-LS stdlib/io.ls. */
 #include "common.h"
 
 #include <llvm-c/Core.h>
@@ -23,6 +23,12 @@
 
 /* Global counter for unique basic block names */
 static int g_block_counter = 0;
+
+/* Forward declarations for Phase E.2 ABI lowering helpers (definitions live
+   near extern_fn_type lower in this file but are referenced from AST_CALL). */
+static int extern_struct_size(CodegenContext *ctx, Type *t);
+static bool extern_struct_fits_in_reg(int sz);
+static LLVMTypeRef extern_struct_reg_int_type(CodegenContext *ctx, int sz);
 
 /* Phase 4 (__move): unwrap `__move(x)` call wrappers so downstream AST-shape
    checks (e.g. vec.push testing `arg->kind == AST_IDENT` for ownership
@@ -3958,6 +3964,122 @@ static LLVMValueRef codegen_from_float(CodegenContext *ctx, AstNode *node)
     return result;
 }
 
+/* Phase E.3.1: errno() -> int  — read the C runtime's thread-local errno.
+   Both libc surfaces expose errno indirectly (it's a macro): on MSVCRT
+   `errno` expands to `*_errno()`, on glibc to `*__errno_location()`. We
+   emit the deref inline so users can write plain `errno()` in LS. */
+static LLVMValueRef codegen_errno_call(CodegenContext *ctx)
+{
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+
+#ifdef _WIN32
+    const char *fname = "_errno";
+#elif defined(__APPLE__)
+    const char *fname = "__error";
+#else
+    const char *fname = "__errno_location";
+#endif
+
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, fname);
+    if (fn == NULL) {
+        LLVMTypeRef ft = LLVMFunctionType(ptr_t, NULL, 0, 0);
+        fn = LLVMAddFunction(ctx->module, fname, ft);
+        LLVMSetLinkage(fn, LLVMExternalLinkage);
+    }
+    LLVMTypeRef ft = LLVMGlobalGetValueType(fn);
+    LLVMValueRef p = LLVMBuildCall2(ctx->builder, ft, fn, NULL, 0, "errno.p");
+    return LLVMBuildLoad2(ctx->builder, i32_t, p, "errno.v");
+}
+
+/* Phase E.3.3: from_cstr(object) -> string
+   Copies a C-style NUL-terminated string (returned by getenv/strerror/etc
+   via FFI) into a managed LsString. Returns an empty owned string when
+   the pointer is NULL, so call sites need not branch. */
+static LLVMValueRef codegen_from_cstr(CodegenContext *ctx, AstNode *node)
+{
+    if (node->as.call.arg_count != 1) return NULL;
+    LLVMValueRef p = codegen_expr(ctx, node->as.call.args[0]);
+    if (p == NULL) return NULL;
+
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+
+    /* Coerce input to ptr if it came in as a different pointer-like SSA. */
+    if (LLVMGetTypeKind(LLVMTypeOf(p)) != LLVMPointerTypeKind)
+        p = LLVMBuildIntToPtr(ctx->builder, p, ptr_t, "fromcstr.cast");
+
+    /* NULL guard: if p == null return empty static string ("") */
+    LLVMValueRef cur_fn = ctx->current_fn;
+    LLVMBasicBlockRef null_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn,
+                                                              "fromcstr.null");
+    LLVMBasicBlockRef ok_bb   = LLVMAppendBasicBlockInContext(ctx->context, cur_fn,
+                                                              "fromcstr.ok");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn,
+                                                              "fromcstr.cont");
+    LLVMValueRef null_v = LLVMConstNull(ptr_t);
+    LLVMValueRef is_null = LLVMBuildICmp(ctx->builder, LLVMIntEQ, p, null_v,
+                                          "fromcstr.isnull");
+    LLVMBuildCondBr(ctx->builder, is_null, null_bb, ok_bb);
+
+    /* null path: build empty static LsString and skip the malloc/memcpy. */
+    LLVMPositionBuilderAtEnd(ctx->builder, null_bb);
+    LLVMValueRef empty_str = ls_string_from_literal(ctx, "", "fromcstr.empty");
+    LLVMBuildBr(ctx->builder, cont_bb);
+
+    /* ok path: strlen → malloc(len+1) → memcpy → LsString {buf, len, len+1} */
+    LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
+
+    /* strlen(p) -> i64 */
+    LLVMValueRef strlen_fn = LLVMGetNamedFunction(ctx->module, "strlen");
+    if (strlen_fn == NULL) {
+        LLVMTypeRef strlen_t = LLVMFunctionType(i64_t, &ptr_t, 1, 0);
+        strlen_fn = LLVMAddFunction(ctx->module, "strlen", strlen_t);
+    }
+    LLVMTypeRef strlen_ty = LLVMGlobalGetValueType(strlen_fn);
+    LLVMValueRef len64 = LLVMBuildCall2(ctx->builder, strlen_ty, strlen_fn,
+                                         &p, 1, "fromcstr.len");
+    LLVMValueRef len32 = LLVMBuildTrunc(ctx->builder, len64, i32_t, "fromcstr.len32");
+
+    /* cap = len + 1 (room for terminating NUL) */
+    LLVMValueRef cap32 = LLVMBuildAdd(ctx->builder, len32,
+                                       LLVMConstInt(i32_t, 1, 0), "fromcstr.cap");
+    LLVMValueRef cap64 = LLVMBuildSExt(ctx->builder, cap32, i64_t, "fromcstr.cap64");
+
+    /* buf = malloc(cap) — through memcheck wrapper when enabled */
+    LLVMValueRef buf = cg_emit_alloc(ctx, cap64, "from_cstr",
+                                      node->line, node->column);
+
+    /* memcpy(buf, p, cap)  — includes the trailing NUL */
+    LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
+    if (memcpy_fn == NULL) {
+        LLVMTypeRef params[3] = { ptr_t, ptr_t, i64_t };
+        LLVMTypeRef memcpy_t = LLVMFunctionType(ptr_t, params, 3, 0);
+        memcpy_fn = LLVMAddFunction(ctx->module, "memcpy", memcpy_t);
+    }
+    LLVMTypeRef memcpy_ty = LLVMGlobalGetValueType(memcpy_fn);
+    LLVMValueRef mc_args[3] = { buf, p, cap64 };
+    LLVMBuildCall2(ctx->builder, memcpy_ty, memcpy_fn, mc_args, 3, "");
+
+    LLVMValueRef ok_str = ls_string_make(ctx, buf, len32, cap32);
+    LLVMBuildBr(ctx->builder, cont_bb);
+
+    /* phi the two paths */
+    LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+    LLVMTypeRef ls_str_t = ls_string_type(ctx);
+    LLVMValueRef phi = LLVMBuildPhi(ctx->builder, ls_str_t, "fromcstr.r");
+    LLVMValueRef vals[2] = { empty_str, ok_str };
+    LLVMBasicBlockRef blks[2] = { null_bb, ok_bb };
+    LLVMAddIncoming(phi, vals, blks, 2);
+
+    /* Register as a temp so scope cleanup will free the heap (cap > 0). */
+    cg_push_temp_string(ctx, phi);
+    (void)i8_t;
+    return phi;
+}
+
 /* ---- vec[i] auto-borrow for string elements ---- */
 
 /* Borrow a string element from vec[i] WITHOUT deep-cloning it.
@@ -4106,6 +4228,15 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
     {
         LLVMValueRef zero = LLVMConstInt(i32_type, 0, 0);
         return LLVMBuildICmp(ctx->builder, LLVMIntEQ, s_len, zero, "empty");
+    }
+
+    /* Phase E.3.3: s.to_cstr() -> object  — return raw i8* for FFI.
+       Caller must NOT free; the LS string retains ownership. The buffer
+       always has a NUL terminator (managed strings are heap-allocated as
+       len+1 bytes; static strings come from .rodata which is also NUL-terminated). */
+    if (strcmp(method, "to_cstr") == 0)
+    {
+        return s_data;
     }
 
     /* s.at(int i) -> int: bounds-checked load.
@@ -5343,6 +5474,15 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vie.len");
         LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
         return LLVMBuildICmp(ctx->builder, LLVMIntEQ, len_val, zero32, "vie.res");
+    }
+
+    /* Phase E.3.3: as_ptr() -> object  — raw data pointer for FFI buffer use.
+       Returned pointer aliases the vec's heap; valid until the vec is grown
+       or freed. Caller must NOT free. Empty vec returns NULL. */
+    if (strcmp(method, "as_ptr") == 0)
+    {
+        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vap.v");
+        return LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vap.data");
     }
 
     /* ---- first() -> T  (deep clone of element[0], default if empty) ---- */
@@ -7661,6 +7801,20 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return codegen_from_float(ctx, node);
         }
 
+        /* Phase E.3.3: intercept from_cstr() — copy C char* into LsString */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "from_cstr") == 0)
+        {
+            return codegen_from_cstr(ctx, node);
+        }
+
+        /* Phase E.3.1: intercept errno() — read libc thread-local errno */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "errno") == 0)
+        {
+            return codegen_errno_call(ctx);
+        }
+
         /* Intercept free() calls — call __drop before free for struct pointers */
         if (node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "free") == 0)
         {
@@ -7863,15 +8017,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                                                   node->as.call.args,
                                                   node->as.call.arg_count);
                 }
-                if (mod_t->as.module.is_builtin &&
-                    mod_t->as.module.name &&
-                    strcmp(mod_t->as.module.name, "io") == 0)
-                {
-                    return builtin_io_emit_call(ctx, fn_name,
-                                                node->as.call.args,
-                                                node->as.call.arg_count,
-                                                node->resolved_type);
-                }
+                /* Phase E.4: io has been migrated to pure-LS stdlib/io.ls.
+                   `import io` now goes through the normal user-module path
+                   (is_builtin == false). No special dispatch here. */
 
                 callee = LLVMGetNamedFunction(ctx->module, fn_name);
                 if (callee == NULL)
@@ -7903,13 +8051,50 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
         /* Build args */
         int user_argc = node->as.call.arg_count;
-        int total_argc = cg_is_method_call ? user_argc + 1 : user_argc;
+
+        /* Phase E.2: detect sret prepending. If callee is an extern fn
+           that returns a large extern struct (LLVM signature returns void
+           with a hidden sret pointer first arg), allocate the return slot
+           upfront and reserve args[0] for it. arg_offset is bumped so the
+           existing struct/string/method fixups naturally use correct LLVM
+           parameter indices via LLVMGetParam(callee, slot). */
+        Type *_e2_callee_lst = node->as.call.callee
+                               ? node->as.call.callee->resolved_type : NULL;
+        if (_e2_callee_lst && _e2_callee_lst->kind != TYPE_FUNCTION)
+            _e2_callee_lst = NULL;
+        bool _e2_needs_sret = false;
+        LLVMValueRef sret_slot = NULL;
+        if (_e2_callee_lst)
+        {
+            Type *rt = _e2_callee_lst->as.function.return_type;
+            if (rt && rt->kind == TYPE_STRUCT && rt->as.strukt.is_extern_c)
+            {
+                int sz = extern_struct_size(ctx, rt);
+                if (sz > 0 && !extern_struct_fits_in_reg(sz)
+                    && LLVMGetTypeKind(LLVMGetReturnType(fn_type)) == LLVMVoidTypeKind)
+                {
+                    _e2_needs_sret = true;
+                }
+            }
+        }
+        int sret_off = _e2_needs_sret ? 1 : 0;
+
+        int total_argc = (cg_is_method_call ? user_argc + 1 : user_argc) + sret_off;
         LLVMValueRef *args = NULL;
 
         if (total_argc > 0)
         {
             args = (LLVMValueRef *)malloc_safe((size_t)total_argc * sizeof(LLVMValueRef));
             int arg_offset = 0;
+
+            /* Phase E.2: sret slot occupies args[0] before any user args */
+            if (_e2_needs_sret)
+            {
+                LLVMTypeRef st_lt = type_to_llvm(ctx, _e2_callee_lst->as.function.return_type);
+                sret_slot = LLVMBuildAlloca(ctx->builder, st_lt, "sret.slot");
+                args[0] = sret_slot;
+                arg_offset = 1;
+            }
 
             /* For instance method call, prepend self (pointer to obj) */
             if (cg_is_method_call)
@@ -7924,8 +8109,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     free(args);
                     return NULL;
                 }
-                args[0] = self_ptr;
-                arg_offset = 1;
+                args[arg_offset] = self_ptr;
+                arg_offset += 1;
             }
 
             /* Lookup callee's LS function type so we can widen each arg to its
@@ -7951,8 +8136,11 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    The checker has already validated assignability. */
                 {
                     Type *arg_t = node->as.call.args[i]->resolved_type;
-                    int slot = i + arg_offset;
-                    if (callee_fn_lst && slot < callee_fn_lst->as.function.param_count)
+                    /* Phase E.2: callee_fn_lst (LS-side type) does NOT include
+                       a sret param, so subtract sret_off from the LLVM slot
+                       when indexing into the LS function's params. */
+                    int slot = i + arg_offset - sret_off;
+                    if (callee_fn_lst && slot >= 0 && slot < callee_fn_lst->as.function.param_count)
                     {
                         Type *param_t = callee_fn_lst->as.function.params[slot];
                         if (arg_t && param_t && type_is_numeric(arg_t) &&
@@ -8101,11 +8289,85 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             }
         }
 
+        /* ===== Phase E.2: small extern-struct args lowered to iN =====
+           Large extern-struct args naturally ride the existing struct→pointer
+           fixup pass (LLVM param is pointer for byval). Small ones need an
+           explicit struct→iN conversion since LLVM expects an integer. */
+        if (_e2_callee_lst && _e2_callee_lst->kind == TYPE_FUNCTION && args)
+        {
+            unsigned llvm_pc = LLVMCountParams(callee);
+            int e2_arg_off = sret_off + (cg_is_method_call ? 1 : 0);
+            for (int i = 0; i < user_argc; i++)
+            {
+                Type *at = node->as.call.args[i]->resolved_type;
+                if (!at || at->kind != TYPE_STRUCT || !at->as.strukt.is_extern_c)
+                    continue;
+                int sz = extern_struct_size(ctx, at);
+                if (sz <= 0 || !extern_struct_fits_in_reg(sz)) continue;
+
+                int slot = i + e2_arg_off;
+                if ((unsigned)slot >= llvm_pc) continue;
+                LLVMTypeRef ptype = LLVMTypeOf(LLVMGetParam(callee, (unsigned)slot));
+                if (LLVMGetTypeKind(ptype) != LLVMIntegerTypeKind) continue;
+
+                LLVMTypeRef int_t = extern_struct_reg_int_type(ctx, sz);
+                /* args[slot] may be a struct value or already a pointer
+                   (struct→ptr fixup may have converted it for some cases).
+                   Disambiguate via current LLVM type. */
+                LLVMTypeRef cur_t = LLVMTypeOf(args[slot]);
+                if (LLVMGetTypeKind(cur_t) == LLVMPointerTypeKind)
+                {
+                    args[slot] = LLVMBuildLoad2(ctx->builder, int_t, args[slot],
+                                                 "ext.arg.int");
+                }
+                else
+                {
+                    LLVMTypeRef st_lt = type_to_llvm(ctx, at);
+                    LLVMValueRef tmp = LLVMBuildAlloca(ctx->builder, st_lt,
+                                                       "ext.arg.tmp");
+                    LLVMBuildStore(ctx->builder, args[slot], tmp);
+                    args[slot] = LLVMBuildLoad2(ctx->builder, int_t, tmp,
+                                                 "ext.arg.int");
+                }
+            }
+        }
+
         LLVMValueRef result = LLVMBuildCall2(ctx->builder, fn_type, callee,
                                              args, (unsigned)total_argc, "");
-        /* If function returns void, we can't name the result */
-        if (node->resolved_type && node->resolved_type->kind != TYPE_VOID)
+
+        /* Phase E.2: convert lowered return value back to struct. The sret
+           slot prepending happened earlier inside the args build; here we
+           only need to load the struct out of it (if sret) or bitcast iN
+           back to struct (if small register return). */
+        Type *ls_ret_ty = (_e2_callee_lst && _e2_callee_lst->kind == TYPE_FUNCTION)
+                         ? _e2_callee_lst->as.function.return_type : NULL;
+        bool ret_is_extern = ls_ret_ty && ls_ret_ty->kind == TYPE_STRUCT
+                             && ls_ret_ty->as.strukt.is_extern_c;
+        if (ret_is_extern)
         {
+            LLVMTypeKind rk = LLVMGetTypeKind(LLVMGetReturnType(fn_type));
+            int sz = extern_struct_size(ctx, ls_ret_ty);
+            if (rk == LLVMVoidTypeKind && sz > 0 && !extern_struct_fits_in_reg(sz)
+                && sret_slot != NULL)
+            {
+                LLVMTypeRef st_lt = type_to_llvm(ctx, ls_ret_ty);
+                result = LLVMBuildLoad2(ctx->builder, st_lt, sret_slot,
+                                        "ext.ret.sret");
+            }
+            else if (rk == LLVMIntegerTypeKind && sz > 0
+                     && extern_struct_fits_in_reg(sz))
+            {
+                LLVMTypeRef st_lt = type_to_llvm(ctx, ls_ret_ty);
+                LLVMValueRef slot = LLVMBuildAlloca(ctx->builder, st_lt,
+                                                    "ext.ret.slot");
+                LLVMBuildStore(ctx->builder, result, slot);
+                result = LLVMBuildLoad2(ctx->builder, st_lt, slot,
+                                        "ext.ret.struct");
+            }
+        }
+        else if (node->resolved_type && node->resolved_type->kind != TYPE_VOID)
+        {
+            /* If function returns void, we can't name the result */
             LLVMSetValueName2(result, "call", 4);
         }
 
@@ -11493,21 +11755,121 @@ static LLVMTypeRef type_to_c_abi(CodegenContext *ctx, Type *t)
     return type_to_llvm(ctx, t);
 }
 
-/* Build an LLVM function type using C ABI mapping for extern fn declarations */
+/* ===== Phase E.2: Windows x64 ABI lowering helpers for extern struct ===== */
+
+/* Compute C ABI byte size of an extern struct. Returns -1 if not an extern
+   struct, or 0 if the LLVM type body has not been emitted yet. */
+static int extern_struct_size(CodegenContext *ctx, Type *t)
+{
+    if (!t || t->kind != TYPE_STRUCT || !t->as.strukt.is_extern_c) return -1;
+    LLVMTypeRef lt = type_to_llvm(ctx, t);
+    if (!lt) return -1;
+    /* If body not yet set the size query returns 0 — caller should arrange
+       struct decls before fn decls (see cg_predeclare_extern_structs). */
+    if (LLVMIsOpaqueStruct(lt)) return 0;
+    LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
+    if (!td) return -1;
+    return (int)LLVMABISizeOfType(td, lt);
+}
+
+/* Windows x64: a struct of size 1 / 2 / 4 / 8 fits in a single integer
+   register and is passed/returned as iN. Other sizes go via byval/sret. */
+static bool extern_struct_fits_in_reg(int sz)
+{
+    return sz == 1 || sz == 2 || sz == 4 || sz == 8;
+}
+
+/* Map a register-passable struct size to the integer LLVM type used for
+   bitcasting at the call boundary. */
+static LLVMTypeRef extern_struct_reg_int_type(CodegenContext *ctx, int sz)
+{
+    switch (sz) {
+        case 1: return LLVMInt8TypeInContext(ctx->context);
+        case 2: return LLVMInt16TypeInContext(ctx->context);
+        case 4: return LLVMInt32TypeInContext(ctx->context);
+        case 8: return LLVMInt64TypeInContext(ctx->context);
+        default: return NULL;
+    }
+}
+
+/* Test whether an LS type triggers Phase E.2 lowering when it appears as a
+   parameter or return value of an extern fn (i.e. it is an extern struct
+   whose layout has been established). */
+static bool extern_type_needs_lowering(CodegenContext *ctx, Type *t)
+{
+    if (!t || t->kind != TYPE_STRUCT || !t->as.strukt.is_extern_c) return false;
+    return extern_struct_size(ctx, t) > 0;
+}
+
+/* Build an LLVM function type for an `extern fn` declaration, applying
+   Windows x64 ABI lowering for any extern-struct params or return:
+     - small (1/2/4/8 bytes) struct param   → integer iN
+     - other-sized struct param             → pointer (byval at call site)
+     - small struct return                  → integer iN
+     - other-sized struct return            → void + sret pointer prepended */
 static LLVMTypeRef extern_fn_type(CodegenContext *ctx, Type *fn_type_ml)
 {
     int n = fn_type_ml->as.function.param_count;
-    LLVMTypeRef *params = NULL;
-    if (n > 0)
+    Type *ret_ml = fn_type_ml->as.function.return_type;
+
+    bool has_sret = false;
+    int ret_sz = -1;
+    if (ret_ml && ret_ml->kind == TYPE_STRUCT && ret_ml->as.strukt.is_extern_c)
     {
-        params = (LLVMTypeRef *)malloc_safe((size_t)n * sizeof(LLVMTypeRef));
-        for (int i = 0; i < n; i++)
+        ret_sz = extern_struct_size(ctx, ret_ml);
+        if (ret_sz > 0 && !extern_struct_fits_in_reg(ret_sz))
+            has_sret = true;
+    }
+
+    int extra = has_sret ? 1 : 0;
+    int total = n + extra;
+    LLVMTypeRef *params = NULL;
+    if (total > 0)
+    {
+        params = (LLVMTypeRef *)malloc_safe((size_t)total * sizeof(LLVMTypeRef));
+    }
+
+    int idx = 0;
+    if (has_sret)
+    {
+        /* Hidden first parameter: pointer to caller-allocated return slot */
+        params[idx++] = LLVMPointerTypeInContext(ctx->context, 0);
+    }
+
+    for (int i = 0; i < n; i++)
+    {
+        Type *pt = fn_type_ml->as.function.params[i];
+        if (pt && pt->kind == TYPE_STRUCT && pt->as.strukt.is_extern_c)
         {
-            params[i] = type_to_c_abi(ctx, fn_type_ml->as.function.params[i]);
+            int sz = extern_struct_size(ctx, pt);
+            if (sz > 0 && extern_struct_fits_in_reg(sz))
+                params[idx++] = extern_struct_reg_int_type(ctx, sz);
+            else
+                /* byval: caller copies struct to stack and passes pointer */
+                params[idx++] = LLVMPointerTypeInContext(ctx->context, 0);
+        }
+        else
+        {
+            params[idx++] = type_to_c_abi(ctx, pt);
         }
     }
-    LLVMTypeRef ret = type_to_c_abi(ctx, fn_type_ml->as.function.return_type);
-    LLVMTypeRef ft = LLVMFunctionType(ret, params, (unsigned)n,
+
+    LLVMTypeRef ret_llvm;
+    if (has_sret)
+    {
+        ret_llvm = LLVMVoidTypeInContext(ctx->context);
+    }
+    else if (ret_ml && ret_ml->kind == TYPE_STRUCT && ret_ml->as.strukt.is_extern_c
+             && ret_sz > 0)
+    {
+        ret_llvm = extern_struct_reg_int_type(ctx, ret_sz);
+    }
+    else
+    {
+        ret_llvm = type_to_c_abi(ctx, ret_ml);
+    }
+
+    LLVMTypeRef ft = LLVMFunctionType(ret_llvm, params, (unsigned)total,
                                       fn_type_ml->as.function.is_vararg ? 1 : 0);
     free(params);
     return ft;
@@ -11519,13 +11881,116 @@ static void codegen_extern_fn(CodegenContext *ctx, AstNode *node)
     if (fn_type_ml == NULL || fn_type_ml->kind != TYPE_FUNCTION)
         return;
 
-    /* Use C ABI type mapping: string → i8*, not LsString struct */
+    /* Use C ABI type mapping: string → i8*, extern struct → byval/sret/iN */
     LLVMTypeRef fn_type = extern_fn_type(ctx, fn_type_ml);
     LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, node->as.extern_fn.name);
-    if (fn == NULL)
+    if (fn != NULL) return;
+    fn = LLVMAddFunction(ctx->module, node->as.extern_fn.name, fn_type);
+    LLVMSetLinkage(fn, LLVMExternalLinkage);
+
+    /* Phase E.2: attach sret / byval LLVM attributes to the lowered params */
+    Type *ret_ml = fn_type_ml->as.function.return_type;
+    bool has_sret = false;
+    if (ret_ml && ret_ml->kind == TYPE_STRUCT && ret_ml->as.strukt.is_extern_c)
     {
-        fn = LLVMAddFunction(ctx->module, node->as.extern_fn.name, fn_type);
-        LLVMSetLinkage(fn, LLVMExternalLinkage);
+        int sz = extern_struct_size(ctx, ret_ml);
+        if (sz > 0 && !extern_struct_fits_in_reg(sz))
+        {
+            has_sret = true;
+            LLVMTypeRef ret_struct_t = type_to_llvm(ctx, ret_ml);
+            unsigned ak = LLVMGetEnumAttributeKindForName("sret", 4);
+            LLVMAttributeRef attr = LLVMCreateTypeAttribute(ctx->context, ak,
+                                                            ret_struct_t);
+            /* index 0 = return, 1 = first param */
+            LLVMAddAttributeAtIndex(fn, 1, attr);
+        }
+    }
+
+    int param_off = has_sret ? 1 : 0;
+    int n = fn_type_ml->as.function.param_count;
+    for (int i = 0; i < n; i++)
+    {
+        Type *pt = fn_type_ml->as.function.params[i];
+        if (pt && pt->kind == TYPE_STRUCT && pt->as.strukt.is_extern_c)
+        {
+            int sz = extern_struct_size(ctx, pt);
+            if (sz > 0 && !extern_struct_fits_in_reg(sz))
+            {
+                LLVMTypeRef pt_struct_t = type_to_llvm(ctx, pt);
+                unsigned ak = LLVMGetEnumAttributeKindForName("byval", 5);
+                LLVMAttributeRef attr = LLVMCreateTypeAttribute(ctx->context, ak,
+                                                                pt_struct_t);
+                LLVMAddAttributeAtIndex(fn, (unsigned)(param_off + i + 1), attr);
+            }
+        }
+    }
+}
+
+/* Emit a named LLVM struct type for an 'extern struct' declaration.
+   Non-packed (isPacked=0) so LLVM inserts C-compatible alignment padding. */
+static void codegen_extern_struct_decl(CodegenContext *ctx, AstNode *node)
+{
+    if (node->resolved_type == NULL) return;
+    const char *name = node->as.extern_struct_decl.name;
+
+    /* Idempotent: skip if already registered (module re-emit path) */
+    if (LLVMGetTypeByName2(ctx->context, name) != NULL) return;
+
+    int n = node->as.extern_struct_decl.field_count;
+    LLVMTypeRef *fields = NULL;
+    if (n > 0)
+    {
+        fields = (LLVMTypeRef *)malloc_safe((size_t)n * sizeof(LLVMTypeRef));
+        Type *ml_type = node->resolved_type;
+        for (int i = 0; i < n; i++)
+            fields[i] = type_to_llvm(ctx, ml_type->as.strukt.fields[i].type);
+    }
+    LLVMTypeRef st = LLVMStructCreateNamed(ctx->context, name);
+    LLVMStructSetBody(st, fields, (unsigned)n, 0 /* not packed = C-compatible layout */);
+    free(fields);
+}
+
+static void codegen_extern_block(CodegenContext *ctx, AstNode *node)
+{
+    /* Phase E.2: declare all extern structs first so subsequent extern fns
+       can compute byval/sret ABI lowering against fully-laid-out types. */
+    for (int i = 0; i < node->as.extern_block.decl_count; i++)
+    {
+        AstNode *d = node->as.extern_block.decls[i];
+        if (d->kind == AST_EXTERN_STRUCT_DECL)
+            codegen_extern_struct_decl(ctx, d);
+    }
+    for (int i = 0; i < node->as.extern_block.decl_count; i++)
+    {
+        AstNode *d = node->as.extern_block.decls[i];
+        if (d->kind == AST_EXTERN_FN)
+            codegen_extern_fn(ctx, d);
+    }
+}
+
+/* Phase E.2: walk top-level decls and emit only extern struct types so
+   that any subsequent extern fn declaration sees a fully laid-out LLVM
+   struct (LLVMABISizeOfType requires non-opaque). Idempotent — relies
+   on codegen_extern_struct_decl's LLVMGetTypeByName2 fast-path. */
+static void cg_predeclare_extern_structs(CodegenContext *ctx, AstNode *ast)
+{
+    if (!ast || ast->kind != AST_PROGRAM) return;
+    for (int i = 0; i < ast->as.program.decl_count; i++)
+    {
+        AstNode *d = ast->as.program.decls[i];
+        if (d->kind == AST_EXTERN_STRUCT_DECL)
+        {
+            codegen_extern_struct_decl(ctx, d);
+        }
+        else if (d->kind == AST_EXTERN_BLOCK)
+        {
+            for (int j = 0; j < d->as.extern_block.decl_count; j++)
+            {
+                AstNode *e = d->as.extern_block.decls[j];
+                if (e->kind == AST_EXTERN_STRUCT_DECL)
+                    codegen_extern_struct_decl(ctx, e);
+            }
+        }
     }
 }
 
@@ -11710,6 +12175,12 @@ static void codegen_decl(CodegenContext *ctx, AstNode *node)
         break;
     case AST_EXTERN_FN:
         codegen_extern_fn(ctx, node);
+        break;
+    case AST_EXTERN_STRUCT_DECL:
+        codegen_extern_struct_decl(ctx, node);
+        break;
+    case AST_EXTERN_BLOCK:
+        codegen_extern_block(ctx, node);
         break;
     case AST_MODULE_DECL:
     case AST_IMPORT_DECL:
@@ -13633,6 +14104,18 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 {
                     codegen_struct_decl(ctx, decl);
                 }
+                else if (decl->kind == AST_EXTERN_STRUCT_DECL)
+                {
+                    codegen_extern_struct_decl(ctx, decl);
+                }
+                else if (decl->kind == AST_EXTERN_BLOCK)
+                {
+                    codegen_extern_block(ctx, decl);
+                }
+                else if (decl->kind == AST_EXTERN_FN)
+                {
+                    codegen_extern_fn(ctx, decl);
+                }
                 else if (decl->kind == AST_ENUM_DECL)
                 {
                     codegen_enum_decl(ctx, decl);
@@ -13645,7 +14128,16 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                         LLVMTypeRef fn_type = type_to_llvm(ctx, fn_type_ml);
                         if (!LLVMGetNamedFunction(ctx->module, decl->as.fn_decl.name))
                         {
-                            LLVMAddFunction(ctx->module, decl->as.fn_decl.name, fn_type);
+                            LLVMValueRef fn_g = LLVMAddFunction(ctx->module,
+                                decl->as.fn_decl.name, fn_type);
+                            /* Phase E.4: imported user-module functions get
+                               internal linkage so their symbols don't collide
+                               with libc/runtime names at AOT link time
+                               (e.g. stdlib/io.ls's `fn remove` would otherwise
+                               clash with libucrt.lib's `remove`). All inter-LS
+                               calls happen within the same LLVM module so
+                               internal linkage is sufficient. */
+                            LLVMSetLinkage(fn_g, LLVMInternalLinkage);
                         }
                     }
                 }
@@ -13685,6 +14177,11 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         }
     }
 
+    /* Phase E.2: ensure all extern struct LLVM types are emitted with their
+       bodies set BEFORE any extern fn declaration runs through extern_fn_type
+       (which calls LLVMABISizeOfType and requires non-opaque struct). */
+    cg_predeclare_extern_structs(ctx, ast);
+
     /* Pass 1: Declare all structs, function signatures, and FFI lib globals */
     for (int i = 0; i < ast->as.program.decl_count; i++)
     {
@@ -13714,6 +14211,14 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         else if (decl->kind == AST_EXTERN_FN)
         {
             codegen_extern_fn(ctx, decl);
+        }
+        else if (decl->kind == AST_EXTERN_STRUCT_DECL)
+        {
+            codegen_extern_struct_decl(ctx, decl);
+        }
+        else if (decl->kind == AST_EXTERN_BLOCK)
+        {
+            codegen_extern_block(ctx, decl);
         }
         else if (decl->kind == AST_LOAD_LIB)
         {
@@ -13780,6 +14285,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 case AST_ENUM_DECL:
                 case AST_IMPL_DECL:
                 case AST_EXTERN_FN:
+                case AST_EXTERN_STRUCT_DECL:
+                case AST_EXTERN_BLOCK:
                 case AST_LOAD_LIB:
                 case AST_MODULE_DECL:
                 case AST_IMPORT_DECL:
@@ -13849,6 +14356,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 case AST_ENUM_DECL:
                 case AST_IMPL_DECL:
                 case AST_EXTERN_FN:
+                case AST_EXTERN_STRUCT_DECL:
+                case AST_EXTERN_BLOCK:
                 case AST_LOAD_LIB:
                 case AST_MODULE_DECL:
                 case AST_IMPORT_DECL:
@@ -14074,6 +14583,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             /* Already handled in Pass 2a */
             break;
         case AST_EXTERN_FN:
+        case AST_EXTERN_STRUCT_DECL:
+        case AST_EXTERN_BLOCK:
         case AST_LOAD_LIB:
         case AST_VAR_DECL:
             /* Handled in Pass 1 (__ls_global_stmts for VAR_DECL init) */

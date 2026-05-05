@@ -1066,6 +1066,20 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
         return type_bool();
     }
 
+    /* Phase E.3.3: s.to_cstr() -> object  — raw i8* for FFI calls.
+       Always available (works on owned, static, borrowed). Caller must not
+       free; LS retains ownership and frees on scope exit. */
+    if (strcmp(method, "to_cstr") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.to_cstr() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return type_object();
+    }
+
     /* s.at(int i) -> int */
     if (strcmp(method, "at") == 0)
     {
@@ -1511,6 +1525,19 @@ static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
             return NULL;
         }
         return type_bool();
+    }
+
+    /* Phase E.3.3: v.as_ptr() -> object  — raw data pointer for FFI buffers.
+       Aliases the vec's heap; valid until the vec is grown/freed. */
+    if (strcmp(method, "as_ptr") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.as_ptr() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return type_object();
     }
 
     /* v.first() -> T  — deep clone of first element; zero/empty default on empty vec */
@@ -2099,6 +2126,44 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return type_f64();
     }
 
+    /* Phase E.3.1: errno() -> int  — read C runtime errno (thread-local).
+       On Windows uses _errno(), on POSIX uses __errno_location(). The codegen
+       emits the platform-specific dereference inline. */
+    if (strcmp(name, "errno") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "errno() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return type_int();
+    }
+
+    /* Phase E.3.3: from_cstr(object) -> string
+       Copies a C-style NUL-terminated char* (received via FFI as `object`)
+       into a managed LsString. Critical glue for getenv/strerror/readdir. */
+    if (strcmp(name, "from_cstr") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "from_cstr() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (arg_type->kind != TYPE_OBJECT && arg_type->kind != TYPE_POINTER &&
+            arg_type->kind != TYPE_NIL)
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "from_cstr() requires object/pointer type, got '%s'",
+                          type_name(arg_type));
+            return NULL;
+        }
+        return type_string();
+    }
+
     /* __move(var) -> T  — explicit move annotation.
        Marks the argument variable as MOVED and returns its type transparently.
        Works on any movable type; also force-moves static strings (unlike implicit moves). */
@@ -2167,6 +2232,8 @@ static bool is_builtin_function(const char *name)
     return strcmp(name, "to_string") == 0 ||
            strcmp(name, "from_int") == 0 ||
            strcmp(name, "from_float") == 0 ||
+           strcmp(name, "from_cstr") == 0 ||
+           strcmp(name, "errno") == 0 ||
            strcmp(name, "__move") == 0;
 }
 
@@ -4101,7 +4168,13 @@ static void check_stmt(Checker *c, AstNode *node)
             bool saved_in_return = c->in_return_expr;
             c->in_return_expr = true;
 
+            /* Plumb expected_type so bare variant ctors (e.g. `Err("msg")`) in
+               `return` can disambiguate against the function's declared return
+               type when several Result/Option instantiations are in scope. */
+            Type *saved_expected = c->expected_type;
+            c->expected_type = c->current_fn_return;
             Type *val = check_expr(c, node->as.return_stmt.value);
+            c->expected_type = saved_expected;
             if (val != NULL && !type_assignable(c->current_fn_return, val))
             {
                 checker_error(c, node->line, node->column,
@@ -4891,6 +4964,91 @@ static void check_extern_fn(Checker *c, AstNode *node)
     node->resolved_type = fn_type;
 }
 
+/* Returns true iff type t is valid as an extern struct field (C-ABI compatible). */
+static bool type_is_c_compatible(const Type *t)
+{
+    if (t == NULL) return false;
+    switch (t->kind)
+    {
+    case TYPE_INT: case TYPE_I8:  case TYPE_I16: case TYPE_I32: case TYPE_I64:
+    case TYPE_U8:  case TYPE_U16: case TYPE_U32: case TYPE_U64:
+    case TYPE_F32: case TYPE_F64: case TYPE_BOOL:
+    case TYPE_OBJECT:  /* void* */
+        return true;
+    case TYPE_POINTER: /* *T — any pointer is C-compatible */
+        return true;
+    case TYPE_STRUCT:
+        return t->as.strukt.is_extern_c; /* only extern struct, not LS struct */
+    default:
+        return false; /* string/vec/map/enum/etc. */
+    }
+}
+
+static void check_extern_struct_decl(Checker *c, AstNode *node)
+{
+    const char *name = node->as.extern_struct_decl.name;
+    int n = node->as.extern_struct_decl.field_count;
+
+    if (find_struct_type(c, name))
+    {
+        checker_error(c, node->line, node->column,
+                      "extern struct '%s' already defined", name);
+        return;
+    }
+
+    Type *st = type_struct(name, n);
+    st->as.strukt.is_extern_c = true;
+    /* extern structs have no LS drop — C manages the memory */
+    st->as.strukt.has_drop = false;
+
+    for (int i = 0; i < n; i++)
+    {
+        Type *ft = resolve_type_node(c, node->as.extern_struct_decl.field_types[i],
+                                     node->line, node->column);
+        if (ft == NULL) continue;
+
+        if (!type_is_c_compatible(ft))
+        {
+            checker_error(c, node->line, node->column,
+                          "extern struct '%s' field '%s' has non-C-compatible type '%s';"
+                          " only primitive / pointer / extern struct types are allowed",
+                          name, node->as.extern_struct_decl.field_names[i],
+                          type_name(ft));
+        }
+
+        const char *fn = node->as.extern_struct_decl.field_names[i];
+        size_t len = strlen(fn);
+        char *fn_copy = (char *)malloc_safe(len + 1);
+        memcpy(fn_copy, fn, len + 1);
+        st->as.strukt.fields[i].name = fn_copy;
+        st->as.strukt.fields[i].type = ft;
+
+        for (int j = 0; j < i; j++)
+        {
+            if (strcmp(st->as.strukt.fields[j].name, fn) == 0)
+            {
+                checker_error(c, node->line, node->column,
+                              "duplicate field '%s' in extern struct '%s'", fn, name);
+            }
+        }
+    }
+
+    register_struct_type(c, name, st);
+    node->resolved_type = st;
+}
+
+static void check_extern_block(Checker *c, AstNode *node)
+{
+    for (int i = 0; i < node->as.extern_block.decl_count; i++)
+    {
+        AstNode *d = node->as.extern_block.decls[i];
+        if (d->kind == AST_EXTERN_STRUCT_DECL)
+            check_extern_struct_decl(c, d);
+        else if (d->kind == AST_EXTERN_FN)
+            check_extern_fn(c, d);
+    }
+}
+
 static void check_load_lib(Checker *c, AstNode *node)
 {
     if (!scope_define(c->current_scope, node->as.load_lib.var_name, type_lib()))
@@ -4922,6 +5080,12 @@ static void check_decl(Checker *c, AstNode *node)
         break;
     case AST_EXTERN_FN:
         check_extern_fn(c, node);
+        break;
+    case AST_EXTERN_STRUCT_DECL:
+        check_extern_struct_decl(c, node);
+        break;
+    case AST_EXTERN_BLOCK:
+        check_extern_block(c, node);
         break;
     case AST_LOAD_LIB:
         check_load_lib(c, node);
@@ -4986,6 +5150,12 @@ static void forward_pass(Checker *c, AstNode *program)
         }
         case AST_EXTERN_FN:
             check_extern_fn(c, decl);
+            break;
+        case AST_EXTERN_STRUCT_DECL:
+            check_extern_struct_decl(c, decl);
+            break;
+        case AST_EXTERN_BLOCK:
+            check_extern_block(c, decl);
             break;
         case AST_LOAD_LIB:
             check_load_lib(c, decl);
@@ -5061,6 +5231,22 @@ static void forward_pass(Checker *c, AstNode *program)
                 {
                     type_module_add_export(mod_type,
                                            d->as.struct_decl.name, d->resolved_type);
+                    /* Phase E.4: register the imported struct type into the
+                       importer's struct registry so user code can name it
+                       directly (e.g. `File f` after `import io`). */
+                    checker_register_struct(c, d->as.struct_decl.name,
+                                            d->resolved_type);
+                }
+                else if (d->kind == AST_ENUM_DECL && d->resolved_type)
+                {
+                    type_module_add_export(mod_type,
+                                           d->as.enum_decl.name, d->resolved_type);
+                    /* Phase E.4: register the imported enum into the importer's
+                       enum registry so bare variant names (e.g. `ReadBinary`,
+                       `Start`) resolve at call sites without qualification —
+                       matching the behaviour the built-in io module had. */
+                    checker_register_enum(c, d->as.enum_decl.name,
+                                          d->resolved_type);
                 }
                 else if (d->kind == AST_VAR_DECL && d->resolved_type)
                 {
@@ -5143,6 +5329,8 @@ static void check_pass(Checker *c, AstNode *program)
             check_impl_decl(c, decl);
             break;
         case AST_EXTERN_FN:
+        case AST_EXTERN_STRUCT_DECL:
+        case AST_EXTERN_BLOCK:
         case AST_LOAD_LIB:
             /* Already handled in forward pass */
             break;

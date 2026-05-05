@@ -260,6 +260,21 @@ void ast_free(AstNode *node) {
         type_node_free(node->as.extern_fn.return_type);
         free(node->as.extern_fn.lib_name);
         break;
+    case AST_EXTERN_STRUCT_DECL:
+        free(node->as.extern_struct_decl.name);
+        for (int i = 0; i < node->as.extern_struct_decl.field_count; i++) {
+            type_node_free(node->as.extern_struct_decl.field_types[i]);
+            free(node->as.extern_struct_decl.field_names[i]);
+        }
+        free(node->as.extern_struct_decl.field_types);
+        free(node->as.extern_struct_decl.field_names);
+        break;
+    case AST_EXTERN_BLOCK:
+        for (int i = 0; i < node->as.extern_block.decl_count; i++) {
+            ast_free(node->as.extern_block.decls[i]);
+        }
+        free(node->as.extern_block.decls);
+        break;
     case AST_PROGRAM:
         for (int i = 0; i < node->as.program.decl_count; i++) {
             ast_free(node->as.program.decls[i]);
@@ -315,8 +330,10 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_NEW_EXPR:     return "NEW_EXPR";
     case AST_LOAD_LIB:     return "LOAD_LIB";
     case AST_FFI_CALL:     return "FFI_CALL";
-    case AST_EXTERN_FN:    return "EXTERN_FN";
-    case AST_PROGRAM:      return "PROGRAM";
+    case AST_EXTERN_FN:          return "EXTERN_FN";
+    case AST_EXTERN_STRUCT_DECL: return "EXTERN_STRUCT_DECL";
+    case AST_EXTERN_BLOCK:       return "EXTERN_BLOCK";
+    case AST_PROGRAM:            return "PROGRAM";
     }
     return "UNKNOWN";
 }
@@ -677,9 +694,21 @@ void ast_print(AstNode *node, int indent) {
         }
         break;
     case AST_EXTERN_FN:
-        printf("EXTERN_FN(%s from %s)\n",
+        printf("EXTERN_FN(%s%s%s)\n",
                node->as.extern_fn.name,
-               node->as.extern_fn.lib_name ? node->as.extern_fn.lib_name : "?");
+               node->as.extern_fn.lib_name ? " from " : "",
+               node->as.extern_fn.lib_name ? node->as.extern_fn.lib_name : "");
+        break;
+    case AST_EXTERN_STRUCT_DECL:
+        printf("EXTERN_STRUCT_DECL(%s, %d fields)\n",
+               node->as.extern_struct_decl.name,
+               node->as.extern_struct_decl.field_count);
+        break;
+    case AST_EXTERN_BLOCK:
+        printf("EXTERN_BLOCK(%d decls)\n", node->as.extern_block.decl_count);
+        for (int i = 0; i < node->as.extern_block.decl_count; i++) {
+            ast_print(node->as.extern_block.decls[i], indent + 1);
+        }
         break;
     case AST_PROGRAM:
         printf("PROGRAM(%d decls)\n", node->as.program.decl_count);

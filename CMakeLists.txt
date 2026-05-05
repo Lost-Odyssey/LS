@@ -64,8 +64,6 @@ set(LS_SOURCES
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
-    src/builtins_io.c
-    src/builtins_io_cg.c
     runtime/memcheck.c
 )
 
@@ -130,7 +128,6 @@ add_executable(test_types
     src/checker.c
     src/module.c
     src/builtins_math.c
-    src/builtins_io.c
 )
 target_include_directories(test_types PRIVATE src/ include/)
 add_test(NAME test_types COMMAND test_types)
@@ -150,8 +147,6 @@ add_executable(test_codegen
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
-    src/builtins_io.c
-    src/builtins_io_cg.c
     runtime/memcheck.c
 )
 target_include_directories(test_codegen PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -181,8 +176,6 @@ add_executable(test_jit
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
-    src/builtins_io.c
-    src/builtins_io_cg.c
     runtime/memcheck.c
 )
 target_include_directories(test_jit PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -212,8 +205,6 @@ add_executable(test_ffi
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
-    src/builtins_io.c
-    src/builtins_io_cg.c
     runtime/memcheck.c
 )
 target_include_directories(test_ffi PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -243,8 +234,6 @@ add_executable(test_module
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
-    src/builtins_io.c
-    src/builtins_io_cg.c
     runtime/memcheck.c
 )
 target_include_directories(test_module PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -275,8 +264,6 @@ add_executable(test_memory
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
-    src/builtins_io.c
-    src/builtins_io_cg.c
     runtime/memcheck.c
 )
 target_include_directories(test_memory PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -303,3 +290,98 @@ add_test(
 )
 # Order this after test_memory so the JIT memcheck path is already validated.
 set_tests_properties(test_memcheck_aot PROPERTIES DEPENDS "test_memory")
+
+# Phase E.1 end-to-end test: extern struct + extern { } block + extern fn without 'from'
+add_test(
+    NAME test_extern_struct
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/extern_struct_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_extern_struct.cmake
+)
+set_tests_properties(test_extern_struct PROPERTIES DEPENDS "test_memory")
+
+# Phase E.2 end-to-end test: Windows x64 ABI lowering — extern struct
+# returned in iN register (small) and via sret slot (large).
+add_test(
+    NAME test_extern_struct_byval
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/extern_struct_byval.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_extern_struct_byval.cmake
+)
+set_tests_properties(test_extern_struct_byval PROPERTIES DEPENDS "test_extern_struct")
+
+# Phase E.3.3: glue functions (from_cstr / to_cstr / vec.as_ptr)
+add_test(
+    NAME test_e3_glue
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/glue_funcs_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=glue_funcs
+        -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
+)
+set_tests_properties(test_e3_glue PROPERTIES DEPENDS "test_extern_struct_byval")
+
+# Phase E.3.1: errno() builtin
+add_test(
+    NAME test_e3_errno
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/errno_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=errno
+        -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
+)
+set_tests_properties(test_e3_errno PROPERTIES DEPENDS "test_e3_glue")
+
+# Phase E.3.2: conditional compilation #if WINDOWS / LINUX / MACOS
+add_test(
+    NAME test_e3_condcomp
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/condcomp_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=condcomp
+        -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
+)
+set_tests_properties(test_e3_condcomp PROPERTIES DEPENDS "test_e3_errno")
+
+# Phase E.3.4: stdlib path resolution (LS_HOME/stdlib lookup)
+add_test(
+    NAME test_e3_stdlib_path
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdlib_path_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=stdlib_path
+        -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
+)
+set_tests_properties(test_e3_stdlib_path PROPERTIES DEPENDS "test_e3_condcomp")
+
+# Phase E.4: pure-LS io stdlib (replaces builtins_io.c). Same .ls test files
+# the built-in version used to pass; output must include "ALL PASS".
+add_test(
+    NAME test_e4_io_basic
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/io_basic_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=io_basic
+        -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
+)
+set_tests_properties(test_e4_io_basic PROPERTIES DEPENDS "test_e3_stdlib_path")
+
+add_test(
+    NAME test_e4_io_seek
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/io_seek_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=io_seek
+        -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
+)
+set_tests_properties(test_e4_io_seek PROPERTIES DEPENDS "test_e4_io_basic")

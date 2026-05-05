@@ -375,9 +375,134 @@ void scanner_init(Scanner *s, const char *source) {
     s->start_column = 1;
     s->in_fstring = false;
     s->fstring_brace_depth = 0;
+    s->cond_depth = 0;
 }
 
+/* ---- Phase E.3.2: Conditional compilation (#if / #else / #end) ---- */
+
+/* Compile-time platform name. Source compares against this case-sensitively. */
+static const char *cond_platform_name(void) {
+#ifdef _WIN32
+    return "WINDOWS";
+#elif defined(__APPLE__)
+    return "MACOS";
+#else
+    return "LINUX";
+#endif
+}
+
+/* True if the scanner is currently emitting tokens (i.e. all enclosing
+   conditional frames have active=true). */
+static bool cond_is_emitting(const Scanner *s) {
+    if (s->cond_depth == 0) return true;
+    return s->cond_stack[s->cond_depth - 1].active;
+}
+
+/* Read an identifier-like word starting at s->current into a small buffer.
+   Stops at whitespace, newline, or EOF. Returns length written (clamped). */
+static int read_directive_word(Scanner *s, char *out, int max_len) {
+    int n = 0;
+    while (!is_at_end(s) && (isalnum((unsigned char)*s->current) || *s->current == '_')) {
+        if (n + 1 < max_len) out[n++] = *s->current;
+        advance(s);
+    }
+    out[n] = '\0';
+    return n;
+}
+
+/* Skip whitespace within a directive line (does NOT advance over newlines). */
+static void skip_inline_ws(Scanner *s) {
+    while (!is_at_end(s) && (peek(s) == ' ' || peek(s) == '\t')) advance(s);
+}
+
+/* Process a `#name [arg]` directive starting at the `#`. The `#` itself
+   should not have been consumed yet. Returns true on success; sets
+   *had_error if the directive was malformed (caller still continues). */
+static bool process_directive(Scanner *s, bool *had_error) {
+    *had_error = false;
+    /* consume `#` */
+    advance(s);
+
+    char word[32];
+    int n = read_directive_word(s, word, (int)sizeof(word));
+    if (n == 0) {
+        *had_error = true;
+        return false;
+    }
+
+    if (strcmp(word, "if") == 0) {
+        skip_inline_ws(s);
+        char arg[32];
+        int an = read_directive_word(s, arg, (int)sizeof(arg));
+        if (an == 0) { *had_error = true; return false; }
+
+        if (s->cond_depth >= (int)(sizeof(s->cond_stack)/sizeof(s->cond_stack[0]))) {
+            *had_error = true;
+            return false;
+        }
+        bool parent_emit = cond_is_emitting(s);
+        bool match_plat = (strcmp(arg, cond_platform_name()) == 0);
+        bool active = parent_emit && match_plat;
+        s->cond_stack[s->cond_depth].parent_active = parent_emit;
+        s->cond_stack[s->cond_depth].active = active;
+        s->cond_stack[s->cond_depth].branch_taken = active;
+        s->cond_depth++;
+        return true;
+    }
+    if (strcmp(word, "else") == 0) {
+        if (s->cond_depth == 0) { *had_error = true; return false; }
+        int top = s->cond_depth - 1;
+        bool already_taken = s->cond_stack[top].branch_taken;
+        bool parent_emit = s->cond_stack[top].parent_active;
+        s->cond_stack[top].active = parent_emit && !already_taken;
+        if (s->cond_stack[top].active) s->cond_stack[top].branch_taken = true;
+        return true;
+    }
+    if (strcmp(word, "end") == 0 || strcmp(word, "endif") == 0) {
+        if (s->cond_depth == 0) { *had_error = true; return false; }
+        s->cond_depth--;
+        return true;
+    }
+
+    /* Unknown directive — consume to end-of-line and report error. */
+    *had_error = true;
+    while (!is_at_end(s) && peek(s) != '\n') advance(s);
+    return false;
+}
+
+/* Forward declaration so scanner_next_inner can recurse via wrapper. */
+static Token scanner_next_inner(Scanner *s);
+
 Token scanner_next(Scanner *s) {
+    /* Phase E.3.2: loop until we get a token from an active branch.
+       Handles `#if`/`#else`/`#end` directives in either branch and
+       silently discards lexed tokens whose conditional frame is inactive. */
+    for (;;) {
+        skip_whitespace(s);
+        /* Process directives at the start of a line/inline. The `#` must
+           appear with only whitespace between it and the start of file or
+           a newline; we accept it anywhere whitespace-skipped, simpler. */
+        if (!s->in_fstring && peek(s) == '#') {
+            bool err = false;
+            process_directive(s, &err);
+            if (err) {
+                /* Surface a clean error token so parser can synchronise. */
+                return error_token(s, "malformed preprocessor directive");
+            }
+            continue;
+        }
+        if (cond_is_emitting(s)) {
+            return scanner_next_inner(s);
+        }
+        /* Inactive branch: lex and discard one token, retry. */
+        Token discarded = scanner_next_inner(s);
+        if (discarded.type == TOKEN_EOF) return discarded;
+        if (discarded.type == TOKEN_ERROR) return discarded;
+        /* loop continues, discarding silently */
+    }
+}
+
+static Token scanner_next_inner(Scanner *s) {
     /* If inside f-string and NOT inside an expression, scan text/end */
     if (s->in_fstring && s->fstring_brace_depth == 0) {
         return scan_fstring_text(s);

@@ -98,5 +98,6 @@ fn main() -> int {
         Err(e) => print(e)                // io: remove failed
     }
 
+    print("ALL PASS")
     return 0
 }

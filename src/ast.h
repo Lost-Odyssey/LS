@@ -120,6 +120,8 @@ typedef enum
     AST_LOAD_LIB,
     AST_FFI_CALL,
     AST_EXTERN_FN,
+    AST_EXTERN_STRUCT_DECL, /* extern struct Name { fields } */
+    AST_EXTERN_BLOCK,       /* extern { struct/fn decls... } */
     /* Root */
     AST_PROGRAM,
 } AstNodeType;
@@ -373,6 +375,18 @@ struct AstNode
             bool is_vararg;
             char *lib_name;
         } extern_fn;
+        struct
+        {
+            char *name;
+            TypeNode **field_types;
+            char **field_names;
+            int field_count;
+        } extern_struct_decl;
+        struct
+        {
+            AstNode **decls; /* AST_EXTERN_STRUCT_DECL / AST_EXTERN_FN nodes */
+            int decl_count;
+        } extern_block;
         struct
         {
             AstNode **decls;

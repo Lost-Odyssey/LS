@@ -57,5 +57,6 @@ fn main() -> int {
         Err(e) => print(e)            // io: open failed
     }
 
+    print("ALL PASS")
     return 0
 }

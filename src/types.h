@@ -47,6 +47,7 @@ struct Type {
             bool has_drop;           /* true if struct has a __drop destructor */
             bool has_user_drop;      /* true if __drop was user-defined (not auto-generated) */
             void *drop_fn;           /* LLVMValueRef: complete __drop function (codegen use) */
+            bool is_extern_c;        /* true = declared via 'extern struct', C-ABI layout, no drop */
         } strukt;
         struct {                                        /* TYPE_ENUM */
             const char *name;        /* mangled when instantiated, e.g. "Option(int)" */
