@@ -355,7 +355,7 @@ add_test(
     NAME test_e3_stdlib_path
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdlib_path_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdlib_path_test/main.ls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=stdlib_path
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake

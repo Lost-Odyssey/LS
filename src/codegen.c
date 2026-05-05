@@ -4080,6 +4080,79 @@ static LLVMValueRef codegen_from_cstr(CodegenContext *ctx, AstNode *node)
     return phi;
 }
 
+/* __string_take_buffer(*u8 ptr, i64 len) -> string
+   Zero-copy ownership transfer: wraps a malloc'd buffer in an LsString
+   with cap=len+1, len=len. Writes a NUL at buf[len] for to_cstr/print safety
+   (buffer must therefore have >= len+1 bytes). The eventual LsString free
+   reclaims the buffer, so callers must not free it themselves.
+   NULL ptr → returns empty static string (caller-friendly). */
+static LLVMValueRef codegen_string_take_buffer(CodegenContext *ctx, AstNode *node)
+{
+    if (node->as.call.arg_count != 2) return NULL;
+    LLVMValueRef p = codegen_expr(ctx, node->as.call.args[0]);
+    LLVMValueRef l = codegen_expr(ctx, node->as.call.args[1]);
+    if (p == NULL || l == NULL) return NULL;
+
+    LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+
+    /* Coerce ptr-like SSA to opaque pointer. */
+    if (LLVMGetTypeKind(LLVMTypeOf(p)) != LLVMPointerTypeKind)
+        p = LLVMBuildIntToPtr(ctx->builder, p, ptr_t, "takebuf.cast");
+
+    /* Normalize length to i64 for compare/GEP, then i32 for LsString fields. */
+    LLVMTypeRef l_ty = LLVMTypeOf(l);
+    LLVMValueRef len64;
+    if (l_ty == i64_t) {
+        len64 = l;
+    } else {
+        unsigned bw = LLVMGetIntTypeWidth(l_ty);
+        if (bw < 64)
+            len64 = LLVMBuildSExt(ctx->builder, l, i64_t, "takebuf.len64");
+        else
+            len64 = LLVMBuildTrunc(ctx->builder, l, i64_t, "takebuf.len64");
+    }
+    LLVMValueRef len32 = LLVMBuildTrunc(ctx->builder, len64, i32_t, "takebuf.len32");
+    LLVMValueRef cap32 = LLVMBuildAdd(ctx->builder, len32,
+                                       LLVMConstInt(i32_t, 1, 0), "takebuf.cap");
+
+    /* NULL guard: return empty static LsString (cap=0) so RAII won't free. */
+    LLVMValueRef cur_fn = ctx->current_fn;
+    LLVMBasicBlockRef null_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn,
+                                                              "takebuf.null");
+    LLVMBasicBlockRef ok_bb   = LLVMAppendBasicBlockInContext(ctx->context, cur_fn,
+                                                              "takebuf.ok");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn,
+                                                              "takebuf.cont");
+    LLVMValueRef is_null = LLVMBuildICmp(ctx->builder, LLVMIntEQ, p,
+                                          LLVMConstNull(ptr_t), "takebuf.isnull");
+    LLVMBuildCondBr(ctx->builder, is_null, null_bb, ok_bb);
+
+    LLVMPositionBuilderAtEnd(ctx->builder, null_bb);
+    LLVMValueRef empty_str = ls_string_from_literal(ctx, "", "takebuf.empty");
+    LLVMBuildBr(ctx->builder, cont_bb);
+
+    /* ok path: write NUL at buf[len], wrap in LsString (no copy, no strlen). */
+    LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
+    LLVMValueRef nul_slot = LLVMBuildGEP2(ctx->builder, i8_t, p, &len64, 1,
+                                           "takebuf.nul");
+    LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 0, 0), nul_slot);
+    LLVMValueRef ok_str = ls_string_make(ctx, p, len32, cap32);
+    LLVMBuildBr(ctx->builder, cont_bb);
+
+    LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+    LLVMTypeRef ls_str_t = ls_string_type(ctx);
+    LLVMValueRef phi = LLVMBuildPhi(ctx->builder, ls_str_t, "takebuf.r");
+    LLVMValueRef vals[2] = { empty_str, ok_str };
+    LLVMBasicBlockRef blks[2] = { null_bb, ok_bb };
+    LLVMAddIncoming(phi, vals, blks, 2);
+
+    cg_push_temp_string(ctx, phi);
+    return phi;
+}
+
 /* ---- vec[i] auto-borrow for string elements ---- */
 
 /* Borrow a string element from vec[i] WITHOUT deep-cloning it.
@@ -7806,6 +7879,13 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             strcmp(node->as.call.callee->as.ident.name, "from_cstr") == 0)
         {
             return codegen_from_cstr(ctx, node);
+        }
+
+        /* Intercept __string_take_buffer() — zero-copy ownership transfer */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "__string_take_buffer") == 0)
+        {
+            return codegen_string_take_buffer(ctx, node);
         }
 
         /* Phase E.3.1: intercept errno() — read libc thread-local errno */

@@ -5,6 +5,28 @@
 #include <stdio.h>
 #include <string.h>
 
+/* ---- Stdlib gate ----
+   Internal builtins (named with `__` prefix by convention) are only callable
+   from files physically located under a `stdlib/` directory — typically
+   <LS_HOME>/stdlib/. Detected by looking for a "/stdlib/" or "\stdlib\"
+   segment in the source path. Imperfect (a user could name their own
+   directory "stdlib"), but good enough to keep these footguns out of normal
+   user code while staying allocator-policy-free. */
+static bool path_is_under_stdlib(const char *path)
+{
+    if (path == NULL) return false;
+    for (const char *p = path; *p; p++) {
+        if ((p[0] == '/' || p[0] == '\\') &&
+            p[1] == 's' && p[2] == 't' && p[3] == 'd' &&
+            p[4] == 'l' && p[5] == 'i' && p[6] == 'b' &&
+            (p[7] == '/' || p[7] == '\\'))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ---- Error reporting ---- */
 
 static void checker_error(Checker *c, int line, int col, const char *fmt, ...)
@@ -2140,6 +2162,47 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return type_int();
     }
 
+    /* __string_take_buffer(*u8 ptr, i64 len) -> string
+       Wraps a malloc'd buffer in an LsString, transferring ownership. Zero-copy.
+       INTERNAL: only safe when `ptr` was allocated via the LS-visible malloc
+       (so memcheck wrappers see the eventual free) and the allocation is
+       at least len+1 bytes. Used by stdlib io/fs to avoid the calloc+strlen+
+       memcpy round-trip in from_cstr. Not for end-user code. */
+    if (strcmp(name, "__string_take_buffer") == 0)
+    {
+        if (!path_is_under_stdlib(c->source_path))
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__string_take_buffer() is internal: callable only from stdlib/ files");
+            return NULL;
+        }
+        if (argc != 2)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__string_take_buffer() takes 2 arguments, got %d", argc);
+            return NULL;
+        }
+        Type *p_type = check_expr(c, args[0]);
+        Type *l_type = check_expr(c, args[1]);
+        if (p_type == NULL || l_type == NULL) return NULL;
+        if (p_type->kind != TYPE_OBJECT && p_type->kind != TYPE_POINTER &&
+            p_type->kind != TYPE_NIL)
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__string_take_buffer() arg 1 requires *T/object, got '%s'",
+                          type_name(p_type));
+            return NULL;
+        }
+        if (!type_is_integer(l_type))
+        {
+            checker_error(c, args[1]->line, args[1]->column,
+                          "__string_take_buffer() arg 2 requires integer length, got '%s'",
+                          type_name(l_type));
+            return NULL;
+        }
+        return type_string();
+    }
+
     /* Phase E.3.3: from_cstr(object) -> string
        Copies a C-style NUL-terminated char* (received via FFI as `object`)
        into a managed LsString. Critical glue for getenv/strerror/readdir. */
@@ -2233,6 +2296,7 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "from_int") == 0 ||
            strcmp(name, "from_float") == 0 ||
            strcmp(name, "from_cstr") == 0 ||
+           strcmp(name, "__string_take_buffer") == 0 ||
            strcmp(name, "errno") == 0 ||
            strcmp(name, "__move") == 0;
 }

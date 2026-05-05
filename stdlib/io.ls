@@ -20,7 +20,6 @@ extern {
     fn fclose(object fp) -> int
     fn fread(*u8 buf, i64 sz, i64 n, object fp) -> i64
     fn fwrite(*u8 buf, i64 sz, i64 n, object fp) -> i64
-    fn calloc(i64 n, i64 sz) -> *u8
     fn strlen(string s) -> i64
 }
 
@@ -127,12 +126,10 @@ fn read_file(string path) -> Result(string, string) {
         fclose(fp)
         return Err(_err("read_file: tell failed"))
     }
-    i64 cap = sz + 1
-    *u8 buf = calloc(cap, 1)
+    *u8 buf = malloc(sz + 1)
     i64 nread = fread(buf, 1, sz, fp)
     fclose(fp)
-    string s = from_cstr(buf)
-    free(buf)
+    string s = __string_take_buffer(buf, nread)
     if nread != sz {
         return Err(_err("read_file: read incomplete"))
     }
@@ -208,11 +205,9 @@ fn read_all(File f) -> Result(string, string) {
         string empty = ""
         return Ok(empty)
     }
-    i64 cap = sz + 1
-    *u8 buf = calloc(cap, 1)
+    *u8 buf = malloc(sz + 1)
     i64 nread = fread(buf, 1, sz, f.handle)
-    string s = from_cstr(buf)
-    free(buf)
+    string s = __string_take_buffer(buf, nread)
     if nread != sz {
         return Err(_err("read_all: read incomplete"))
     }
