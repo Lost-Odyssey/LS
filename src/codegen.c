@@ -11646,9 +11646,24 @@ static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                 /* Clone string into the enum so it owns its own heap copy.
                    Static literals (cap==0) clone to themselves cheaply; owned
                    sources get a fresh malloc'd buffer.  Without this the enum
-                   would alias the source and trigger double-free at scope exit. */
-                LLVMValueRef cloned = emit_string_clone_val(ctx, v);
-                LLVMBuildStore(ctx->builder, cloned, field_ptr);
+                   would alias the source and trigger double-free at scope exit.
+                   Exception: rvalue from a call / try expression already gave
+                   up ownership — cloning would leak the callee's heap (e.g.
+                   `Err(_err("..."))` where _err returns a fresh concat). */
+                AstNode *arg_node = ast_unwrap_move(args[i]);
+                bool is_rvalue_transfer =
+                    arg_node &&
+                    (arg_node->kind == AST_CALL ||
+                     arg_node->kind == AST_TRY);
+                if (is_rvalue_transfer)
+                {
+                    LLVMBuildStore(ctx->builder, v, field_ptr);
+                }
+                else
+                {
+                    LLVMValueRef cloned = emit_string_clone_val(ctx, v);
+                    LLVMBuildStore(ctx->builder, cloned, field_ptr);
+                }
             }
             else
             {
