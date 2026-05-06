@@ -546,6 +546,89 @@ static AstNode *prefix_try(Parser *p) {
     return n;
 }
 
+/* Phase A.5: Ruby-style closure literal. Param list already past the leading
+   '|' (or, for the no-arg ||, past the '||' itself). When `parse_params` is
+   true, we still need to consume identifiers and the trailing '|'.
+
+   Body grammar: either `{ block }` or a single expression (auto-returned).
+   Param types are NULL — to be inferred from the call site (Phase B/C).
+   The resulting AST_CLOSURE has param_types[i] == NULL for every i; the
+   checker treats this as the "Ruby-style, needs context" case. */
+static AstNode *parse_ruby_closure_after_bar(Parser *p, Token start_tok,
+                                             bool parse_params) {
+    TypeNode **param_types = NULL;
+    char **param_names = NULL;
+    int param_count = 0;
+    int param_cap = 0;
+
+    if (parse_params) {
+        if (!check(p, TOKEN_PIPE)) {
+            do {
+                if (!check(p, TOKEN_IDENTIFIER)) {
+                    error_at_current(p, "expected parameter name in `|...|`");
+                    break;
+                }
+                advance(p);
+                char *pname = str_dup_n(p->previous.start, p->previous.length);
+                if (param_count >= param_cap) {
+                    param_cap = GROW_CAPACITY(param_cap);
+                    param_types = GROW_ARRAY(TypeNode *, param_types, param_cap);
+                    param_names = GROW_ARRAY(char *, param_names, param_cap);
+                }
+                /* No type annotation in v1 — inferred from call site. */
+                param_types[param_count] = NULL;
+                param_names[param_count] = pname;
+                param_count++;
+            } while (match_tok(p, TOKEN_COMMA));
+        }
+        consume(p, TOKEN_PIPE, "expected closing '|' after closure parameters");
+    }
+
+    AstNode *body = NULL;
+    if (check(p, TOKEN_LBRACE)) {
+        body = parse_block(p);
+    } else {
+        /* Single expression body: auto-return. Wrap as { return expr }. */
+        AstNode *expr = parse_expr_prec(p, PREC_NONE);
+        if (expr == NULL) {
+            for (int i = 0; i < param_count; i++) free(param_names[i]);
+            free(param_types);
+            free(param_names);
+            return NULL;
+        }
+        AstNode *ret = new_node(AST_RETURN, expr->line, expr->column);
+        ret->as.return_stmt.value = expr;
+        AstNode *blk = new_node(AST_BLOCK, expr->line, expr->column);
+        blk->as.block.stmts = (AstNode **)malloc_safe(sizeof(AstNode *));
+        blk->as.block.stmts[0] = ret;
+        blk->as.block.stmt_count = 1;
+        body = blk;
+    }
+
+    AstNode *n = new_node(AST_CLOSURE, start_tok.line, start_tok.column);
+    n->as.closure.param_types = param_types;
+    n->as.closure.param_names = param_names;
+    n->as.closure.param_count = param_count;
+    n->as.closure.return_type = NULL;
+    n->as.closure.body = body;
+    n->as.closure.is_ruby_form = true;
+    return n;
+}
+
+/* Prefix `|x, y| body` — Ruby-style closure. */
+static AstNode *prefix_ruby_closure(Parser *p) {
+    /* `|` already consumed (we are the prefix handler) */
+    Token bar_tok = p->previous;
+    return parse_ruby_closure_after_bar(p, bar_tok, true);
+}
+
+/* Prefix `|| body` — zero-argument Ruby closure. The lexer fuses `||` into a
+   single TOKEN_OR; both '|' bars are gone by the time this fires. */
+static AstNode *prefix_no_arg_closure(Parser *p) {
+    Token bar_tok = p->previous;
+    return parse_ruby_closure_after_bar(p, bar_tok, false);
+}
+
 /* Closure: fn(params) -> ret { body } */
 static AstNode *prefix_closure(Parser *p) {
     Token fn_tok = p->previous;
@@ -603,6 +686,7 @@ static AstNode *prefix_closure(Parser *p) {
     n->as.closure.param_count = param_count;
     n->as.closure.return_type = return_type;
     n->as.closure.body = body;
+    n->as.closure.is_ruby_form = false;
     return n;
 }
 
@@ -729,6 +813,98 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
         } while (match_tok(p, TOKEN_COMMA));
     }
     consume(p, TOKEN_RPAREN, "expected ')' after arguments");
+
+    /* Phase A.5: trailing closure sugar. If the next token is `{` AND the
+       *first* token inside the brace is `|` or `||` (Ruby pipe pair), parse
+       it as a closure literal and append as the last argument. Plain `{`
+       blocks (struct literals, map literals, if-bodies) are NOT consumed —
+       the `|` lookahead is the unambiguous gate per closures_plan §11. */
+    if (check(p, TOKEN_LBRACE)) {
+        Token next = scanner_peek(&p->scanner);
+        if (next.type == TOKEN_PIPE || next.type == TOKEN_OR) {
+            advance(p); /* consume '{' */
+            /* Now current is '|' or '||'; treat the '{' as the body opener
+               of a desugared `f(args, |x| { ... })` form. We construct the
+               closure inline: parse `|x|` (or `||`), then statements until
+               '}'. */
+            Token bar_tok = p->current;
+            advance(p); /* consume '|' or '||' */
+            bool parse_params = (bar_tok.type == TOKEN_PIPE);
+            /* Build the closure: params + body-as-block-of-statements */
+            TypeNode **cp_types = NULL;
+            char **cp_names = NULL;
+            int cp_count = 0;
+            int cp_cap = 0;
+            if (parse_params) {
+                if (!check(p, TOKEN_PIPE)) {
+                    do {
+                        if (!check(p, TOKEN_IDENTIFIER)) {
+                            error_at_current(p, "expected parameter name in `|...|`");
+                            break;
+                        }
+                        advance(p);
+                        char *pname = str_dup_n(p->previous.start, p->previous.length);
+                        if (cp_count >= cp_cap) {
+                            cp_cap = GROW_CAPACITY(cp_cap);
+                            cp_types = GROW_ARRAY(TypeNode *, cp_types, cp_cap);
+                            cp_names = GROW_ARRAY(char *, cp_names, cp_cap);
+                        }
+                        cp_types[cp_count] = NULL;
+                        cp_names[cp_count] = pname;
+                        cp_count++;
+                    } while (match_tok(p, TOKEN_COMMA));
+                }
+                consume(p, TOKEN_PIPE, "expected closing '|' after closure parameters");
+            }
+            /* Body: read statements until '}'. */
+            AstNode **stmts = NULL;
+            int stmt_count = 0;
+            int stmt_cap = 0;
+            skip_semicolons(p);
+            while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+                AstNode *s = parse_statement(p);
+                if (s == NULL) { synchronize(p); continue; }
+                if (stmt_count >= stmt_cap) {
+                    stmt_cap = GROW_CAPACITY(stmt_cap);
+                    stmts = GROW_ARRAY(AstNode *, stmts, stmt_cap);
+                }
+                stmts[stmt_count++] = s;
+                skip_semicolons(p);
+            }
+            consume(p, TOKEN_RBRACE, "expected '}' after trailing closure body");
+
+            /* Implicit return for single-expression trailing-closure bodies:
+               `f(x) { |y| y * 2 }` is the trailing form of `f(x, |y| y*2)`,
+               which the prefix path already auto-returns. Match that here so
+               both forms behave identically when the body is one expression. */
+            if (stmt_count == 1 && stmts[0]->kind == AST_EXPR_STMT) {
+                AstNode *expr = stmts[0]->as.expr_stmt.expr;
+                stmts[0]->as.expr_stmt.expr = NULL; /* detach so ast_free skips */
+                ast_free(stmts[0]);
+                AstNode *ret = new_node(AST_RETURN, expr->line, expr->column);
+                ret->as.return_stmt.value = expr;
+                stmts[0] = ret;
+            }
+
+            AstNode *body = new_node(AST_BLOCK, bar_tok.line, bar_tok.column);
+            body->as.block.stmts = stmts;
+            body->as.block.stmt_count = stmt_count;
+
+            AstNode *closure = new_node(AST_CLOSURE, bar_tok.line, bar_tok.column);
+            closure->as.closure.param_types = cp_types;
+            closure->as.closure.param_names = cp_names;
+            closure->as.closure.param_count = cp_count;
+            closure->as.closure.return_type = NULL;
+            closure->as.closure.body = body;
+            closure->as.closure.is_ruby_form = true;
+
+            if (arg_count >= arg_cap) {
+                arg_cap = GROW_CAPACITY(arg_cap);
+                args = GROW_ARRAY(AstNode *, args, arg_cap);
+            }
+            args[arg_count++] = closure;
+        }
+    }
 
     AstNode *n = new_node(AST_CALL, call_tok.line, call_tok.column);
     n->as.call.callee = left;
@@ -936,14 +1112,14 @@ static void init_parse_rules(void) {
     rules[TOKEN_AMP]        = (ParseRule){ prefix_addr,      infix_binary_real, PREC_BITAND };
 
     /* Bitwise */
-    rules[TOKEN_PIPE]       = (ParseRule){ NULL,             infix_binary_real, PREC_BITOR };
+    rules[TOKEN_PIPE]       = (ParseRule){ prefix_ruby_closure, infix_binary_real, PREC_BITOR };
     rules[TOKEN_CARET]      = (ParseRule){ NULL,             infix_binary_real, PREC_BITXOR };
     rules[TOKEN_LSHIFT]     = (ParseRule){ NULL,             infix_binary_real, PREC_SHIFT };
     rules[TOKEN_RSHIFT]     = (ParseRule){ NULL,             infix_binary_real, PREC_SHIFT };
 
     /* Logical */
     rules[TOKEN_AND]        = (ParseRule){ NULL,             infix_binary_real, PREC_AND };
-    rules[TOKEN_OR]         = (ParseRule){ NULL,             infix_binary_real, PREC_OR };
+    rules[TOKEN_OR]         = (ParseRule){ prefix_no_arg_closure, infix_binary_real, PREC_OR };
 
     /* Comparison */
     rules[TOKEN_DOTDOT]     = (ParseRule){ NULL,             infix_range,       PREC_COMPARISON };
@@ -1128,6 +1304,66 @@ static TypeNode *parse_type(Parser *p) {
         TypeNode *tn = new_type_node(TYPE_NODE_ARRAY, line, col);
         tn->as.array.elem = elem;
         tn->as.array.size = 0;  /* size 0 = unsized, will be rejected by checker */
+        return tn;
+    }
+
+    /* Block(types) -> ret — closure type (Phase A). Forbidden in return
+       position; the user must define a type alias instead. */
+    if (check(p, TOKEN_BLOCK)) {
+        if (p->in_return_type) {
+            error_at_current(p,
+                "Block type cannot appear directly here (return type / struct "
+                "field / nested closure type); define a type alias first "
+                "(e.g. `type Adder = Block(int) -> int`)");
+            advance(p); /* consume 'Block' to avoid cascading errors */
+            /* Best-effort: skip through balanced parens then optional -> T */
+            if (check(p, TOKEN_LPAREN)) {
+                advance(p);
+                int depth = 1;
+                while (depth > 0 && !check(p, TOKEN_EOF)) {
+                    if (check(p, TOKEN_LPAREN)) depth++;
+                    else if (check(p, TOKEN_RPAREN)) { depth--; if (depth == 0) { advance(p); break; } }
+                    advance(p);
+                }
+            }
+            if (check(p, TOKEN_ARROW)) { advance(p); type_node_free(parse_type(p)); }
+            return NULL;
+        }
+        advance(p); /* consume 'Block' */
+        consume(p, TOKEN_LPAREN, "expected '(' after 'Block'");
+        TypeNode **params = NULL;
+        int param_count = 0;
+        int param_cap = 0;
+        if (!check(p, TOKEN_RPAREN)) {
+            do {
+                /* Inside Block(...) parameter list, return-type guard does
+                   not apply — Block params can themselves be Block. */
+                bool save = p->in_return_type;
+                p->in_return_type = false;
+                TypeNode *pt = parse_type(p);
+                p->in_return_type = save;
+                if (pt == NULL) break;
+                if (param_count >= param_cap) {
+                    param_cap = GROW_CAPACITY(param_cap);
+                    params = GROW_ARRAY(TypeNode *, params, param_cap);
+                }
+                params[param_count++] = pt;
+            } while (match_tok(p, TOKEN_COMMA));
+        }
+        consume(p, TOKEN_RPAREN, "expected ')' in Block type");
+        TypeNode *ret = NULL;
+        if (match_tok(p, TOKEN_ARROW)) {
+            /* Disallow chained `Block(...) -> Block(...)` in any position —
+               require a type alias for the inner Block too. */
+            bool save = p->in_return_type;
+            p->in_return_type = true;
+            ret = parse_type(p);
+            p->in_return_type = save;
+        }
+        TypeNode *tn = new_type_node(TYPE_NODE_BLOCK, line, col);
+        tn->as.fn.params = params;
+        tn->as.fn.param_count = param_count;
+        tn->as.fn.ret = ret;
         return tn;
     }
 
@@ -1454,7 +1690,10 @@ static AstNode *parse_fn_decl(Parser *p) {
 
     TypeNode *return_type = NULL;
     if (match_tok(p, TOKEN_ARROW)) {
+        bool save = p->in_return_type;
+        p->in_return_type = true;
         return_type = parse_type(p);
+        p->in_return_type = save;
     }
 
     AstNode *body = parse_block(p);
@@ -1492,7 +1731,10 @@ static AstNode *parse_struct_decl(Parser *p) {
     int field_cap = 0;
 
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        bool save_rt = p->in_return_type;
+        p->in_return_type = true;  /* struct fields require Block alias */
         TypeNode *ft = parse_type(p);
+        p->in_return_type = save_rt;
         if (ft == NULL) {
             synchronize(p);
             continue;
@@ -1664,6 +1906,35 @@ static AstNode *parse_impl_decl(Parser *p) {
     return n;
 }
 
+/* type Name = T — type alias (Phase A closure prerequisite). The target
+   type is parsed without the return-type guard, so `type X = Block(...) -> Y`
+   is the canonical site where Block appears. */
+static AstNode *parse_type_alias_decl(Parser *p) {
+    /* 'type' already consumed */
+    int line = p->previous.line;
+    int col  = p->previous.column;
+    if (!check(p, TOKEN_IDENTIFIER)) {
+        error_at_current(p, "expected name after 'type'");
+        return NULL;
+    }
+    advance(p);
+    char *name = str_dup_n(p->previous.start, p->previous.length);
+    consume(p, TOKEN_ASSIGN, "expected '=' after type alias name");
+    bool save = p->in_return_type;
+    p->in_return_type = false;
+    TypeNode *target = parse_type(p);
+    p->in_return_type = save;
+    skip_semicolons(p);
+    if (target == NULL) {
+        free(name);
+        return NULL;
+    }
+    AstNode *n = new_node(AST_TYPE_ALIAS_DECL, line, col);
+    n->as.type_alias_decl.name = name;
+    n->as.type_alias_decl.target = target;
+    return n;
+}
+
 static AstNode *parse_module_decl(Parser *p) {
     /* 'module' already consumed */
     int line = p->previous.line;
@@ -1778,7 +2049,10 @@ static AstNode *parse_extern_fn_body(Parser *p, int line, int col) {
 
     TypeNode *return_type = NULL;
     if (match_tok(p, TOKEN_ARROW)) {
+        bool save = p->in_return_type;
+        p->in_return_type = true;
         return_type = parse_type(p);
+        p->in_return_type = save;
     }
 
     /* 'from lib' is now optional — absent = bind to process symbols (libc/CRT) */
@@ -2197,6 +2471,8 @@ static AstNode *parse_statement(Parser *p) {
         return parse_module_decl(p);
     } else if (match_tok(p, TOKEN_IMPORT)) {
         return parse_import_decl(p);
+    } else if (match_tok(p, TOKEN_TYPE_ALIAS)) {
+        return parse_type_alias_decl(p);
     } else if (match_tok(p, TOKEN_TYPE_LIB)) {
         return parse_load_lib(p);
     } else if (match_tok(p, TOKEN_EXTERN)) {
@@ -2252,6 +2528,7 @@ AstNode *parse(const char *source, const char *source_path) {
     p.source_path = source_path;
     p.had_error = false;
     p.panic_mode = false;
+    p.in_return_type = false;
 
     /* Prime the parser */
     advance(&p);

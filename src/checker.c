@@ -103,6 +103,31 @@ static Type *find_struct_type(Checker *c, const char *name)
     return NULL;
 }
 
+/* ---- Type alias registry ---- */
+
+static void register_type_alias(Checker *c, const char *name, Type *type)
+{
+    if (c->type_alias_count >= c->type_alias_cap)
+    {
+        c->type_alias_cap = GROW_CAPACITY(c->type_alias_cap);
+        c->type_aliases = realloc_safe(c->type_aliases,
+                                       (size_t)c->type_alias_cap * sizeof(c->type_aliases[0]));
+    }
+    c->type_aliases[c->type_alias_count].name = name;
+    c->type_aliases[c->type_alias_count].type = type;
+    c->type_alias_count++;
+}
+
+static Type *find_type_alias(Checker *c, const char *name)
+{
+    for (int i = 0; i < c->type_alias_count; i++)
+    {
+        if (strcmp(c->type_aliases[i].name, name) == 0)
+            return c->type_aliases[i].type;
+    }
+    return NULL;
+}
+
 /* ---- Enum type registry ---- */
 
 static void register_enum_type(Checker *c, const char *name, Type *type)
@@ -557,13 +582,30 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
         Type *ret = resolve_type_node(c, tn->as.fn.ret, line, col);
         return type_function(params, n, ret, false);
     }
+    case TYPE_NODE_BLOCK:
+    {
+        int n = tn->as.fn.param_count;
+        Type **params = NULL;
+        if (n > 0)
+        {
+            params = (Type **)malloc_safe((size_t)n * sizeof(Type *));
+            for (int i = 0; i < n; i++)
+            {
+                params[i] = resolve_type_node(c, tn->as.fn.params[i], line, col);
+            }
+        }
+        Type *ret = resolve_type_node(c, tn->as.fn.ret, line, col);
+        return type_block(params, n, ret);
+    }
     case TYPE_NODE_NAMED:
     {
-        /* Plain named type: try struct first, then enum (for recursive enum payloads
-           like Tree where the variant payload references the enum being defined,
-           or Color used as a non-instantiated enum). */
+        /* Plain named type: try alias, then struct, then enum (for recursive
+           enum payloads like Tree where the variant payload references the
+           enum being defined, or Color used as a non-instantiated enum). */
         if (tn->as.named.arg_count == 0)
         {
+            Type *al = find_type_alias(c, tn->as.named.name);
+            if (al) return al;
             Type *st = find_struct_type(c, tn->as.named.name);
             if (st) return st;
             Type *et = find_enum_type(c, tn->as.named.name);
@@ -3128,7 +3170,12 @@ static Type *check_expr(Checker *c, AstNode *node)
             break;
         }
 
-        if (callee_type->kind != TYPE_FUNCTION)
+        /* Phase B: Block-typed callees use the same param/return layout as
+           TYPE_FUNCTION (the only difference is ABI — codegen lowers as an
+           indirect call through a fat pointer). The arity / arg-type checks
+           below treat both kinds identically. */
+        if (callee_type->kind != TYPE_FUNCTION &&
+            callee_type->kind != TYPE_BLOCK)
         {
             checker_error(c, node->line, node->column,
                           "cannot call non-function type '%s'", type_name(callee_type));
@@ -3181,13 +3228,19 @@ static Type *check_expr(Checker *c, AstNode *node)
            No move tracking needed — the caller retains ownership of its variables. */
         for (int i = 0; i < user_expected && i < actual; i++)
         {
+            /* Phase B closure: propagate the declared param type as expected_type
+               so a Ruby-style closure literal (`|x| body`) at this position can
+               infer its untyped params from the callee's `Block(...)` signature. */
+            Type *param_type = callee_type->as.function.params[i + param_offset];
+            Type *saved_exp = c->expected_type;
+            c->expected_type = param_type;
             Type *arg_type = check_expr(c, node->as.call.args[i]);
+            c->expected_type = saved_exp;
             if (arg_type == NULL)
             {
                 args_ok = false;
                 continue;
             }
-            Type *param_type = callee_type->as.function.params[i + param_offset];
             if (!type_assignable(param_type, arg_type))
             {
                 checker_error(c, node->as.call.args[i]->line, node->as.call.args[i]->column,
@@ -3475,18 +3528,49 @@ static Type *check_expr(Checker *c, AstNode *node)
     case AST_CLOSURE:
     {
         int n = node->as.closure.param_count;
+        /* Ruby-style literals (`|x| body`, `|| body`) carry is_ruby_form=true
+           and inherit their param/return types from the call-site's
+           expected_type (a TYPE_BLOCK / TYPE_FUNCTION with matching arity).
+           The legacy `fn(int x) -> R { ... }` form supplies its own types. */
+        bool ruby_form = node->as.closure.is_ruby_form;
         Type **params = NULL;
-        if (n > 0)
-        {
-            params = (Type **)malloc_safe((size_t)n * sizeof(Type *));
-            for (int i = 0; i < n; i++)
+        Type *ret = NULL;
+
+        if (ruby_form) {
+            /* Phase B: pull param/return types from c->expected_type. */
+            Type *exp = c->expected_type;
+            if (exp == NULL ||
+                (exp->kind != TYPE_BLOCK && exp->kind != TYPE_FUNCTION) ||
+                exp->as.function.param_count != n)
             {
-                params[i] = resolve_type_node(c, node->as.closure.param_types[i],
-                                              node->line, node->column);
+                checker_error(c, node->line, node->column,
+                              "cannot infer closure parameter types: %s "
+                              "(declare a typed `Block(...)` parameter at the "
+                              "call site, or capture the closure into a typed "
+                              "variable: `Adder f = |x| ...`)",
+                              exp == NULL ? "no expected type at this position"
+                                          : "expected type does not match closure shape");
+                result = NULL;
+                break;
             }
+            if (n > 0) {
+                params = (Type **)malloc_safe((size_t)n * sizeof(Type *));
+                for (int i = 0; i < n; i++) {
+                    params[i] = exp->as.function.params[i];
+                }
+            }
+            ret = exp->as.function.return_type;
+        } else {
+            if (n > 0) {
+                params = (Type **)malloc_safe((size_t)n * sizeof(Type *));
+                for (int i = 0; i < n; i++) {
+                    params[i] = resolve_type_node(c, node->as.closure.param_types[i],
+                                                  node->line, node->column);
+                }
+            }
+            ret = resolve_type_node(c, node->as.closure.return_type,
+                                    node->line, node->column);
         }
-        Type *ret = resolve_type_node(c, node->as.closure.return_type,
-                                      node->line, node->column);
 
         /* Check body in new scope */
         push_scope(c);
@@ -3499,12 +3583,21 @@ static Type *check_expr(Checker *c, AstNode *node)
         }
 
         Type *saved_ret = c->current_fn_return;
+        Type *saved_exp = c->expected_type;
         c->current_fn_return = ret;
+        c->expected_type = NULL;  /* don't leak Block expected to body */
         check_stmt(c, node->as.closure.body);
         c->current_fn_return = saved_ret;
+        c->expected_type = saved_exp;
         pop_scope(c);
 
-        result = type_function(params, n, ret, false);
+        /* A Ruby-form literal materialises as a TYPE_BLOCK (closure value).
+           Legacy fn(...) literals stay TYPE_FUNCTION for backward compat. */
+        if (ruby_form) {
+            result = type_block(params, n, ret);
+        } else {
+            result = type_function(params, n, ret, false);
+        }
         break;
     }
 
@@ -5160,6 +5253,9 @@ static void check_decl(Checker *c, AstNode *node)
     case AST_IMPORT_DECL:
         /* Handled in forward_pass */
         break;
+    case AST_TYPE_ALIAS_DECL:
+        /* Handled in forward_pass */
+        break;
     case AST_FFI_CALL:
         /* FFI dynamic call: check lib expr, skip type checking of args */
         check_expr(c, node->as.ffi_call.lib_expr);
@@ -5191,6 +5287,27 @@ static void forward_pass(Checker *c, AstNode *program)
         case AST_ENUM_DECL:
             check_enum_decl(c, decl);
             break;
+        case AST_TYPE_ALIAS_DECL:
+        {
+            /* Resolve target type and register under the alias name. Source-
+               order rule: struct/enum names referenced by the alias must
+               appear earlier in the file (we don't do a separate pre-pass). */
+            if (find_type_alias(c, decl->as.type_alias_decl.name) ||
+                find_struct_type(c, decl->as.type_alias_decl.name) ||
+                find_enum_type(c, decl->as.type_alias_decl.name))
+            {
+                checker_error(c, decl->line, decl->column,
+                              "type name '%s' already defined",
+                              decl->as.type_alias_decl.name);
+                break;
+            }
+            Type *target = resolve_type_node(c, decl->as.type_alias_decl.target,
+                                             decl->line, decl->column);
+            if (target == NULL) break;
+            register_type_alias(c, decl->as.type_alias_decl.name, target);
+            decl->resolved_type = target;
+            break;
+        }
         case AST_FN_DECL:
         {
             /* Register function signature only (don't check body yet) */
@@ -5338,6 +5455,7 @@ static void check_pass(Checker *c, AstNode *program)
         {
         case AST_STRUCT_DECL:
         case AST_ENUM_DECL:
+        case AST_TYPE_ALIAS_DECL:
             /* Already handled in forward pass */
             break;
         case AST_FN_DECL:
@@ -5472,6 +5590,7 @@ bool checker_check(AstNode *program, const char *source_path,
        when the full compilation pipeline is in place. */
     free(c.struct_types);
     free(c.enum_types);
+    free(c.type_aliases);
     for (int i = 0; i < c.enum_template_count; i++)
     {
         for (int v = 0; v < c.enum_templates[i].variant_count; v++)

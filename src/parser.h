@@ -12,6 +12,9 @@ typedef struct {
     bool had_error;
     bool panic_mode;
     const char *source_path;
+    /* Phase A (closures): when parsing a `-> RET` return type, this is set so
+       parse_type can reject a bare `Block(...)` and force a type alias. */
+    bool in_return_type;
 } Parser;
 
 /* Parse source text -> AST_PROGRAM node.

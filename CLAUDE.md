@@ -132,6 +132,8 @@ cd build && ctest --output-on-failure -C Release
 | 9 (memcheck A) | LS 自带内存检查器：`ls run --memcheck` JIT 路径，泄漏/重复释放/无效释放报告 | ✅ |
 | 9 (memcheck A.5) | 细粒度 site 标签：每处 alloc 带 kind (`string.upper` / `io.slurp` / ...) + LS 源码行/列号 | ✅ |
 | 9 (memcheck B) | vec/map/struct/enum 路径全跟踪 + 修复 5 类真实内存 bug（try / 字段 clone / 递归 enum） | ✅ |
+| 10 (closure A) | type 别名 + `Block(...) -> R` 类型语法 + Ruby 风 `\|x\| body` 字面量 + trailing closure 糖 + 强制别名规则（return/struct field 拒绝裸 Block）；Phase A 仅 parse + check，codegen 在 Phase B/C | ✅ |
+| 10 (closure B) | 无捕获闭包 codegen：lambda lifting (`__closure_N(env, ...)`) + LsBlock 16B 胖指针 + 间接 call；类型推导从 callee `Block(...)` 形参反推 `\|x\|` 字面量类型；trailing closure 单表达式自动 return | ✅ |
 
 > 各 Phase 详细规范见 [docs/phases.md](docs/phases.md)
 
@@ -208,6 +210,27 @@ cd build && ctest --output-on-failure -C Release
 - f16 半精度浮点数原生支持
 
 ### 已完成（近期）
+
+- **闭包 Phase B（无捕获闭包 codegen：lambda lifting + 胖指针 + 间接 call）** — 2026-05-06
+  - **B.1 Lambda lifting**：每个 `\|x\| body` 字面量 codegen 时合成一个顶层 LLVM 函数 `__closure_<N>(env_ptr, params...)`，命名走 `ctx->closure_id_counter` 单调计数器（per-module，AOT/JIT 一致）；body 在新函数 entry block 编译，detach 外层 scope（Phase B 无捕获），完成后恢复 builder/scope/current_fn 状态；尾部缺 terminator 时按返回类型自动补 `ret 0` / `ret void`
+  - **B.2 LsBlock 胖指针**：`TYPE_BLOCK` lowered 为 LLVM `{ptr, ptr}` 16-byte struct（`type_to_llvm` case）；闭包字面量 codegen 末尾 `LLVMBuildInsertValue` 装配 `{__closure_N_fn_ptr, NULL_env}` 返回；env=NULL 占位（Phase C 接堆 env）
+  - **B.3 闭包调用 ABI**：`codegen_block_call` 在 AST_CALL 顶部拦截（callee resolved_type==TYPE_BLOCK），`extractvalue 0/1` 取 fn_ptr + env_ptr，按 `ret(env_ptr, params...)` 重建 LLVM fn type，args 数组 prepend env_ptr，`LLVMBuildCall2` 间接调用；走 `cg_widen` 给每个用户参数应用 Zig 风隐式扩展
+  - **B.4 类型推导**：Checker AST_CALL arg 循环把 `c->expected_type` 设为 callee 的形参 LS Type，AST_CLOSURE 检测 `is_ruby_form==true` 时直接从 expected_type（必须是 TYPE_BLOCK/TYPE_FUNCTION + 形参数匹配）拷贝 param_types + return_type；找不到合适 expected_type 报 "cannot infer closure parameter types ..."；body 检查时 expected_type 清空避免污染嵌套表达式
+  - **AST 改动**：`closure.is_ruby_form` 新增 bool flag，由 parser 在 3 处 AST_CLOSURE 创建点（prefix `\|x\|` / prefix `\|\|` / trailing closure desugar）置 true，legacy `fn(...) {}` 字面量置 false；checker 用这个 flag 选择推导 vs 解析
+  - **Trailing closure 单表达式自动 return**：`f(x) { \|y\| y * 2 }` 与 prefix `f(x, \|y\| y*2)` 现在语义一致 —— 解析器在 trailing closure body 只有 1 个 AST_EXPR_STMT 时把它原地转成 AST_RETURN
+  - **Checker 放宽**：AST_CALL 的 "cannot call non-function" 检查同时接受 TYPE_FUNCTION 和 TYPE_BLOCK；后续 arg/arity 校验代码无需改动（共用 function 联合体字段）
+  - 测试：`tests/samples/closure_phase_b_test.ls` 6 个用例（prefix `\|x\| x+1` / trailing `f(x){\|y\|y*2}` / multi-arg `\|x,y\|` / 零参 `\|\|` / 返回 bool / 多语句 body 显式 return），AOT + JIT 双跑全 ✓；`tests/test_phase_b_closure.cmake` 注册为 ctest `test_phase_b_closure`，依赖 `test_phase_a_closure`
+  - Phase A 的 `test_phase_a_closure` 第 4 步（"closure literal accept-then-defer"）已删除 —— Phase B 让那个延期解除，等价断言迁到 Phase B 测试
+  - 验证：ctest 19/19 通过；Phase C（捕获 + 堆 env + RAII）接续
+
+- **闭包 Phase A（type 别名 + Block 类型语法 + Ruby 风字面量 + trailing closure 糖）** — 2026-05-06
+  - **A.1 type 别名（L1 透明结构别名）**：新增 `TOKEN_TYPE_ALIAS` keyword，`AST_TYPE_ALIAS_DECL { name; target }`，Checker 加 `type_aliases[]` 注册表；`resolve_type_node` 在 `TYPE_NODE_NAMED`（arg_count==0）时优先查 alias 表再回落 struct/enum；前向声明规则：alias 必须在引用之前声明（同源文件内顺序）
+  - **A.2/A.4 Block 类型**：新增 `TOKEN_BLOCK` keyword（"Block" 大小写敏感，binary search 表头新增），`TYPE_NODE_BLOCK`（AST 层）+ `TYPE_BLOCK`（语义层，复用 `function` 联合体），`type_block(params, n, ret)` 构造器；`type_clone` / `type_free` / `type_equals` / `type_name` 全部 fall-through 到 function 路径；codegen 暂未涉及 TYPE_BLOCK lowering（Phase B/C 任务）
+  - **A.3 强制别名规则**：Parser 加 `Parser.in_return_type` 标志位，`fn`/`extern fn` 的 `-> RET` 与 `struct { ... }` 字段类型解析期间置 true；`parse_type` 看到 `TOKEN_BLOCK` 且 `in_return_type==true` 时立即报 `[error] Block type cannot appear directly here ...; define a type alias first`；嵌套 `Block(...) -> Block(...)` 也禁，强制内层 Block 也走别名
+  - **A.5 Ruby 风闭包字面量 + trailing closure 糖**：`TOKEN_PIPE` / `TOKEN_OR` 新增 prefix handler `prefix_ruby_closure` / `prefix_no_arg_closure` —— `|x, y| body` / `|| body` 字面量；body 可为 `{ block }` 或单表达式（自动包成 `{ return expr }`）；param_types 全 NULL（占位），由 callee 期望签名推导（Phase B/C）；`infix_call` 在 `)` 之后看到 `{` 紧跟 `|` 则消费为 trailing closure 并 append 到 args（`f(args) { \|x\| body }` ≡ `f(args, \|x\| body)`）；`{` 后必须以 `\|` 开头才识别为闭包，避免与 if/while/struct literal 的 `{` 冲突
+  - **Checker 优雅失败**：AST_CLOSURE 检测到任一 `param_types[i] == NULL`（Ruby form 标记）时，单点报错 `Ruby-style closure literal '|...| body' requires context-driven type inference (Phase B/C of the closure plan); not yet implemented`，不向下递归 body 检查；fn(...) 形式 closure（旧路径，显式 type）保持原行为
+  - 测试：`tests/samples/type_alias_block_test.ls`（type 别名 + Block 类型声明，AOT+JIT 双跑 print 42/hello/3）；`tests/samples/block_return_reject.ls` / `block_field_reject.ls`（裸 Block 在禁区位置编译错）；`tests/samples/closure_literal_phase_a_reject.ls`（`|x| x+1` + trailing form 都进 checker，都报 Phase B/C 延期 message，确认两个form 都 parse 通过）；`tests/test_phase_a_closure.cmake` 注册为 ctest `test_phase_a_closure`，4 个子用例
+  - 验证：ctest 18/18 通过（17 旧 + 1 新 Phase A）；闭包 codegen 在 Phase B 接续
 
 - **Memcheck Phase D.1/D.2/D.3（调用栈追踪 + verbose + strict）** — 2026-05-03
   - **D.1 调用栈追踪**：每个用户函数在 `--memcheck` 下注入 `ls_mc_enter(fn,file,line)` prologue + `ls_mc_leave()` epilogue（5 个注入点：fn_decl entry / AST_RETURN 带值 + void / fn_decl 末尾隐式 ret-with-value + ret-void/null）；`runtime/memcheck.c` 维护全局 `g_frame_stack[256]`（v1 单线程；overflow 容忍）；`ls_mc_alloc` 捕获顶部 8 帧到 `LsMcEntry.backtrace`；`ls_mc_report` 打印每条 LEAK 的调用链。验证：3 层嵌套 leak 在 JIT/AOT 下都正确显示 `at deepest / at middle / at outer` 完整链

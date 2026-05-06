@@ -18,6 +18,7 @@ typedef enum {
     TYPE_VECTOR,        /* vec(T)      — dynamic array */
     TYPE_MAP,           /* map(K, V)   — chained hash map */
     TYPE_FUNCTION,      /* fn(A, B) -> R */
+    TYPE_BLOCK,         /* Block(A, B) -> R — heap closure fat pointer (Phase A: type only) */
     TYPE_STRUCT,        /* struct { ... } */
     TYPE_ENUM,          /* enum { Variant, Variant(T, ...), ... } — tagged union */
     TYPE_MODULE,        /* module reference */
@@ -100,6 +101,7 @@ Type *type_array(Type *elem, int size);
 Type *type_vector(Type *elem);  /* vec(T) — dynamic array */
 Type *type_map(Type *key, Type *val); /* map(K, V) — chained hash map */
 Type *type_function(Type **params, int param_count, Type *return_type, bool is_vararg);
+Type *type_block(Type **params, int param_count, Type *return_type);
 Type *type_struct(const char *name, int field_count);
 
 /* Create an enum type shell. Caller fills variants[i].{name, payload_types, payload_count}

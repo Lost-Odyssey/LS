@@ -385,3 +385,28 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
 )
 set_tests_properties(test_e4_io_seek PROPERTIES DEPENDS "test_e4_io_basic")
+
+# Phase A (closure prerequisite): type alias + Block keyword + closure literal
+# parsing + return/field-position rejection. No closure codegen yet; the test
+# verifies the parser/checker contract documented in docs/closures_plan.md.
+add_test(
+    NAME test_phase_a_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_a_closure.cmake
+)
+set_tests_properties(test_phase_a_closure PROPERTIES DEPENDS "test_e4_io_seek")
+
+# Phase B (closure codegen, no captures): synthesised __closure_N + indirect
+# call through {fn_ptr, env_ptr} fat pointer. AOT + JIT verified.
+add_test(
+    NAME test_phase_b_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_b_closure.cmake
+)
+set_tests_properties(test_phase_b_closure PROPERTIES DEPENDS "test_phase_a_closure")
