@@ -205,6 +205,9 @@ static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type);
 static void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type);
 static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_type);
 static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, Type *map_type);
+/* Phase B closures: lifted-fn synthesiser + indirect-call lowering. */
+static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node);
+static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node);
 static LLVMBasicBlockRef emit_vec_elem_drop_at(CodegenContext *ctx, LLVMValueRef elem_ptr,
                                                Type *elem_type, int idx_suffix,
                                                const char *label);
@@ -2675,6 +2678,15 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
                                                t->as.function.is_vararg ? 1 : 0);
         free(params);
         return fn_type;
+    }
+    case TYPE_BLOCK:
+    {
+        /* Phase B: closure value = 16-byte fat pointer { fn_ptr, env_ptr }.
+           Both slots are opaque ptr; the actual signature lives in the LS
+           type system (callee uses it to type-cast at the call site). */
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+        LLVMTypeRef fields[2] = { ptr_t, ptr_t };
+        return LLVMStructTypeInContext(ctx->context, fields, 2, 0);
     }
     case TYPE_STRUCT:
     {
@@ -7819,8 +7831,21 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
     case AST_FORMAT_STRING:
         return codegen_format_string(ctx, node);
 
+    case AST_CLOSURE:
+        return codegen_closure_literal(ctx, node);
+
     case AST_CALL:
     {
+        /* Phase B closures: callee is a Block-typed expression (local var or
+           an inline `|x| body` literal). Lower as indirect call through the
+           {fn_ptr, env_ptr} fat pointer. Must come before the user-fn lookup
+           paths, which assume LLVMGetNamedFunction. */
+        if (node->as.call.callee->resolved_type &&
+            node->as.call.callee->resolved_type->kind == TYPE_BLOCK)
+        {
+            return codegen_block_call(ctx, node);
+        }
+
         /* Variant ctor short-circuit: callee is an IDENT and the checker
            resolved this CALL to a TYPE_ENUM (which only happens for variant
            constructors).  Skip method/function dispatch entirely. */
@@ -11075,6 +11100,183 @@ static void emit_drop_field_cleanup(CodegenContext *ctx)
     }
 }
 
+/* ---- Phase B closure codegen ----
+   Lifts a `|x| body` literal into a synthesised top-level LLVM function
+   `__closure_<N>` and returns an LsBlock fat-pointer value `{fn_ptr, NULL}`
+   (env is NULL in Phase B — no captures yet; Phase C wires up the heap env).
+   The closure body sees ONLY its own parameters; outer-scope lookups would
+   require the capture analysis that arrives in Phase C and currently produce
+   "undefined variable" errors at body codegen time. */
+static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
+{
+    Type *block_t = node->resolved_type;
+    if (block_t == NULL ||
+        (block_t->kind != TYPE_BLOCK && block_t->kind != TYPE_FUNCTION))
+    {
+        cg_error(ctx, node->line, node->column,
+                 "internal: closure literal has no resolved Block type");
+        return NULL;
+    }
+
+    int n = block_t->as.function.param_count;
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+
+    /* 1) Build LLVM signature: ret(env_ptr, params...) */
+    LLVMTypeRef *params_llvm = (LLVMTypeRef *)malloc_safe(
+        (size_t)(n + 1) * sizeof(LLVMTypeRef));
+    params_llvm[0] = ptr_t; /* env */
+    for (int i = 0; i < n; i++)
+    {
+        params_llvm[i + 1] = type_to_llvm(ctx, block_t->as.function.params[i]);
+    }
+    Type *ret_lst = block_t->as.function.return_type;
+    LLVMTypeRef ret_llvm = type_to_llvm(ctx, ret_lst);
+    LLVMTypeRef fn_type_llvm = LLVMFunctionType(ret_llvm, params_llvm,
+                                                (unsigned)(n + 1), 0);
+    free(params_llvm);
+
+    /* 2) Create the function under a unique name. */
+    char fn_name[64];
+    int id = ctx->closure_id_counter++;
+    snprintf(fn_name, sizeof(fn_name), "__closure_%d", id);
+    LLVMValueRef fn = LLVMAddFunction(ctx->module, fn_name, fn_type_llvm);
+
+    /* 3) Save outer codegen state and switch to the new function's body. */
+    LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(ctx->builder);
+    LLVMValueRef saved_fn = ctx->current_fn;
+    Type *saved_fn_ret = ctx->current_fn_return_type;
+    CgScope *saved_scope = ctx->current_scope;
+    int saved_temp_count = ctx->temp_string_count;
+
+    LLVMBasicBlockRef entry =
+        LLVMAppendBasicBlockInContext(ctx->context, fn, "entry");
+    LLVMPositionBuilderAtEnd(ctx->builder, entry);
+    ctx->current_fn = fn;
+    ctx->current_fn_return_type = ret_lst;
+    ctx->temp_string_count = 0;
+
+    /* Phase B: no capture environment, so detach from outer scope chain.
+       Phase C will instead push an env-backed scope. */
+    ctx->current_scope = NULL;
+    push_scope(ctx);
+
+    /* 4) Define each user parameter as alloca + store. The LLVM param at slot
+       (i+1) skips the env at slot 0. */
+    for (int i = 0; i < n; i++)
+    {
+        Type *pt = block_t->as.function.params[i];
+        LLVMTypeRef pt_llvm = type_to_llvm(ctx, pt);
+        LLVMValueRef param_val = LLVMGetParam(fn, (unsigned)(i + 1));
+        LLVMValueRef alloca = LLVMBuildAlloca(ctx->builder, pt_llvm,
+                                              node->as.closure.param_names[i]);
+        LLVMBuildStore(ctx->builder, param_val, alloca);
+        cg_scope_define(ctx->current_scope,
+                        node->as.closure.param_names[i],
+                        alloca, pt, NULL);
+    }
+
+    /* 5) Compile the body. */
+    codegen_stmt(ctx, node->as.closure.body);
+
+    /* 6) Ensure the entry block (and any continuation block) has a terminator.
+       If the user body has no explicit return, default to ret 0 / ret void. */
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
+    if (cur && LLVMGetBasicBlockTerminator(cur) == NULL)
+    {
+        if (LLVMGetTypeKind(ret_llvm) == LLVMVoidTypeKind)
+        {
+            LLVMBuildRetVoid(ctx->builder);
+        }
+        else
+        {
+            LLVMBuildRet(ctx->builder, LLVMConstNull(ret_llvm));
+        }
+    }
+
+    pop_scope(ctx);
+
+    /* 7) Restore outer state. */
+    ctx->current_scope = saved_scope;
+    ctx->current_fn = saved_fn;
+    ctx->current_fn_return_type = saved_fn_ret;
+    ctx->temp_string_count = saved_temp_count;
+    if (saved_block) LLVMPositionBuilderAtEnd(ctx->builder, saved_block);
+
+    /* 8) Materialise the LsBlock value: { fn_ptr, NULL_env }. */
+    LLVMTypeRef block_llvm = type_to_llvm(ctx, block_t);
+    LLVMValueRef val = LLVMGetUndef(block_llvm);
+    val = LLVMBuildInsertValue(ctx->builder, val, fn, 0, "blk.fn");
+    val = LLVMBuildInsertValue(ctx->builder, val,
+                               LLVMConstNull(ptr_t), 1, "blk.env");
+    return val;
+}
+
+/* Lower `closure(args)` to an indirect call through the fat pointer.
+   The callee expression has already been type-checked as TYPE_BLOCK. */
+static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
+{
+    Type *block_t = node->as.call.callee->resolved_type;
+    if (block_t == NULL ||
+        (block_t->kind != TYPE_BLOCK && block_t->kind != TYPE_FUNCTION))
+    {
+        cg_error(ctx, node->line, node->column,
+                 "internal: block call without Block type on callee");
+        return NULL;
+    }
+
+    LLVMValueRef closure_val = codegen_expr(ctx, node->as.call.callee);
+    if (closure_val == NULL) return NULL;
+
+    LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0,
+                                                 "blk.fn");
+    LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1,
+                                                 "blk.env");
+
+    /* Build the actual fn type at the call site: ret(env_ptr, params...). */
+    int n = block_t->as.function.param_count;
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef *params_llvm = (LLVMTypeRef *)malloc_safe(
+        (size_t)(n + 1) * sizeof(LLVMTypeRef));
+    params_llvm[0] = ptr_t;
+    for (int i = 0; i < n; i++)
+    {
+        params_llvm[i + 1] = type_to_llvm(ctx, block_t->as.function.params[i]);
+    }
+    LLVMTypeRef ret_llvm = type_to_llvm(ctx, block_t->as.function.return_type);
+    LLVMTypeRef fn_type = LLVMFunctionType(ret_llvm, params_llvm,
+                                           (unsigned)(n + 1), 0);
+    free(params_llvm);
+
+    /* Build args: env_ptr first, then user args (with widening per param). */
+    int argc = node->as.call.arg_count;
+    if (argc != n)
+    {
+        cg_error(ctx, node->line, node->column,
+                 "internal: closure call argc mismatch (%d vs %d)", argc, n);
+        return NULL;
+    }
+    LLVMValueRef *args = (LLVMValueRef *)malloc_safe(
+        (size_t)(n + 1) * sizeof(LLVMValueRef));
+    args[0] = env_ptr;
+    for (int i = 0; i < n; i++)
+    {
+        LLVMValueRef av = codegen_expr(ctx, node->as.call.args[i]);
+        if (av == NULL) { free(args); return NULL; }
+        Type *src_t = node->as.call.args[i]->resolved_type;
+        Type *dst_t = block_t->as.function.params[i];
+        av = cg_widen(ctx, av, src_t, dst_t);
+        args[i + 1] = av;
+    }
+
+    bool void_ret = (LLVMGetTypeKind(ret_llvm) == LLVMVoidTypeKind);
+    LLVMValueRef result = LLVMBuildCall2(ctx->builder, fn_type, fn_ptr,
+                                         args, (unsigned)(n + 1),
+                                         void_ret ? "" : "blk.call");
+    free(args);
+    (void)env_ptr; /* env unused in Phase B (no captures yet) */
+    return result;
+}
+
 static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
 {
     const char *name = node->as.fn_decl.name;
@@ -12279,6 +12481,7 @@ static void codegen_decl(CodegenContext *ctx, AstNode *node)
         break;
     case AST_MODULE_DECL:
     case AST_IMPORT_DECL:
+    case AST_TYPE_ALIAS_DECL:
         break; /* no codegen needed */
     case AST_LOAD_LIB:
         codegen_load_lib(ctx, node);

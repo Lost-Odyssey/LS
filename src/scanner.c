@@ -113,6 +113,9 @@ typedef struct {
 } Keyword;
 
 static const Keyword keywords[] = {
+    /* Capital letters sort first in ASCII (B < a). Keep this list strictly
+       sorted by the byte sequence — the lookup uses binary search. */
+    {"Block",    5, TOKEN_BLOCK},
     {"array",    5, TOKEN_ARRAY},
     {"as",       2, TOKEN_AS},
     {"bool",     4, TOKEN_TYPE_BOOL},
@@ -155,6 +158,7 @@ static const Keyword keywords[] = {
     {"struct",   6, TOKEN_STRUCT},
     {"true",     4, TOKEN_TRUE},
     {"try",      3, TOKEN_TRY},
+    {"type",     4, TOKEN_TYPE_ALIAS},
     {"u16",      3, TOKEN_TYPE_U16},
     {"u32",      3, TOKEN_TYPE_U32},
     {"u64",      3, TOKEN_TYPE_U64},
@@ -653,6 +657,8 @@ const char *token_type_name(TokenType type) {
     case TOKEN_PUB:           return "PUB";
     case TOKEN_NEW:           return "NEW";
     case TOKEN_TRY:           return "TRY";
+    case TOKEN_TYPE_ALIAS:    return "TYPE_ALIAS";
+    case TOKEN_BLOCK:         return "BLOCK";
     case TOKEN_TYPE_INT:      return "TYPE_INT";
     case TOKEN_TYPE_I8:       return "TYPE_I8";
     case TOKEN_TYPE_I16:      return "TYPE_I16";

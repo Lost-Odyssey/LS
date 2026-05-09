@@ -39,6 +39,8 @@ typedef enum {
     TOKEN_PUB,              /* pub (reserved) */
     TOKEN_NEW,              /* new (heap allocation) */
     TOKEN_TRY,              /* try (early return for Result/Option) */
+    TOKEN_TYPE_ALIAS,       /* type (type alias keyword: `type Name = T`) */
+    TOKEN_BLOCK,            /* Block (closure type keyword: `Block(args) -> ret`) */
 
     /* Type keywords */
     TOKEN_TYPE_INT,         /* int */

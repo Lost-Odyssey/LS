@@ -26,6 +26,7 @@ void type_node_free(TypeNode *type) {
         type_node_free(type->as.map.val);
         break;
     case TYPE_NODE_FN:
+    case TYPE_NODE_BLOCK:
         for (int i = 0; i < type->as.fn.param_count; i++) {
             type_node_free(type->as.fn.params[i]);
         }
@@ -229,6 +230,10 @@ void ast_free(AstNode *node) {
     case AST_IMPORT_DECL:
         free(node->as.import_decl.path);
         break;
+    case AST_TYPE_ALIAS_DECL:
+        free(node->as.type_alias_decl.name);
+        type_node_free(node->as.type_alias_decl.target);
+        break;
     case AST_NEW_EXPR:
         free(node->as.new_expr.struct_name);
         for (int i = 0; i < node->as.new_expr.field_init_count; i++) {
@@ -327,6 +332,7 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_IMPL_DECL:    return "IMPL_DECL";
     case AST_MODULE_DECL:  return "MODULE_DECL";
     case AST_IMPORT_DECL:  return "IMPORT_DECL";
+    case AST_TYPE_ALIAS_DECL: return "TYPE_ALIAS_DECL";
     case AST_NEW_EXPR:     return "NEW_EXPR";
     case AST_LOAD_LIB:     return "LOAD_LIB";
     case AST_FFI_CALL:     return "FFI_CALL";
@@ -376,7 +382,8 @@ void type_node_print(TypeNode *type) {
         printf(")");
         break;
     case TYPE_NODE_FN:
-        printf("fn(");
+    case TYPE_NODE_BLOCK:
+        printf("%s(", type->kind == TYPE_NODE_BLOCK ? "Block" : "fn");
         for (int i = 0; i < type->as.fn.param_count; i++) {
             if (i > 0) printf(", ");
             type_node_print(type->as.fn.params[i]);
@@ -672,6 +679,11 @@ void ast_print(AstNode *node, int indent) {
         break;
     case AST_IMPORT_DECL:
         printf("IMPORT_DECL(%s)\n", node->as.import_decl.path);
+        break;
+    case AST_TYPE_ALIAS_DECL:
+        printf("TYPE_ALIAS_DECL(%s = ", node->as.type_alias_decl.name);
+        type_node_print(node->as.type_alias_decl.target);
+        printf(")\n");
         break;
     case AST_NEW_EXPR:
         printf("NEW_EXPR(%s, %d fields)\n",

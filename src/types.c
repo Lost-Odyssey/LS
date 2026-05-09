@@ -119,6 +119,17 @@ Type *type_function(Type **params, int param_count, Type *return_type, bool is_v
     return t;
 }
 
+Type *type_block(Type **params, int param_count, Type *return_type) {
+    Type *t = (Type *)malloc_safe(sizeof(Type));
+    memset(t, 0, sizeof(Type));
+    t->kind = TYPE_BLOCK;
+    t->as.function.params = params;
+    t->as.function.param_count = param_count;
+    t->as.function.return_type = return_type;
+    t->as.function.is_vararg = false;
+    return t;
+}
+
 Type *type_struct(const char *name, int field_count) {
     Type *t = (Type *)malloc_safe(sizeof(Type));
     memset(t, 0, sizeof(Type));
@@ -202,7 +213,8 @@ Type *type_clone(const Type *t) {
         c->as.map.key = type_clone(t->as.map.key);
         c->as.map.val = type_clone(t->as.map.val);
         break;
-    case TYPE_FUNCTION: {
+    case TYPE_FUNCTION:
+    case TYPE_BLOCK: {
         int n = t->as.function.param_count;
         Type **params = NULL;
         if (n > 0) {
@@ -310,6 +322,7 @@ void type_free(Type *t) {
         type_free(t->as.map.val);
         break;
     case TYPE_FUNCTION:
+    case TYPE_BLOCK:
         for (int i = 0; i < t->as.function.param_count; i++) {
             type_free(t->as.function.params[i]);
         }
@@ -368,6 +381,7 @@ bool type_equals(const Type *a, const Type *b) {
         return type_equals(a->as.map.key, b->as.map.key) &&
                type_equals(a->as.map.val, b->as.map.val);
     case TYPE_FUNCTION:
+    case TYPE_BLOCK:
         if (a->as.function.param_count != b->as.function.param_count) return false;
         if (a->as.function.is_vararg != b->as.function.is_vararg) return false;
         if (!type_equals(a->as.function.return_type, b->as.function.return_type)) return false;
@@ -557,8 +571,9 @@ const char *type_name(const Type *t) {
         snprintf(buf, 256, "map(%s, %s)",
                  type_name(t->as.map.key), type_name(t->as.map.val));
         return buf;
-    case TYPE_FUNCTION: {
-        int pos = snprintf(buf, 256, "fn(");
+    case TYPE_FUNCTION:
+    case TYPE_BLOCK: {
+        int pos = snprintf(buf, 256, "%s(", t->kind == TYPE_BLOCK ? "Block" : "fn");
         for (int i = 0; i < t->as.function.param_count && pos < (int)256 - 10; i++) {
             if (i > 0) pos += snprintf(buf + pos, 256 - (size_t)pos, ", ");
             pos += snprintf(buf + pos, 256 - (size_t)pos, "%s",

@@ -52,6 +52,14 @@ typedef struct Checker {
        used by find_variant to prefer matches in this enum. */
     Type *expected_type;
 
+    /* Type alias registry (Phase A closure prerequisite). Each entry maps a
+       user-declared name (`type Adder = Block(int) -> int`) to its resolved
+       target Type. resolve_type_node consults this before falling back to
+       struct/enum lookups. */
+    struct { const char *name; Type *type; } *type_aliases;
+    int type_alias_count;
+    int type_alias_cap;
+
     /* Method registry (struct_name -> methods) */
     struct {
         const char *struct_name;

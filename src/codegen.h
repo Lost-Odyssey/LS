@@ -83,6 +83,11 @@ typedef struct {
     LLVMValueRef *temp_string_slots;
     int temp_string_count;
     int temp_string_cap;
+
+    /* Phase B closures: monotonic counter for synthesised top-level functions
+       (`__closure_<N>`) lifted from `|x| body` literals. Per-module, so AOT
+       and JIT both see stable names without cross-call collisions. */
+    int closure_id_counter;
 } CodegenContext;
 
 /* Initialize the codegen context (creates LLVM module, target, etc.) */

@@ -20,6 +20,7 @@ typedef enum
     TYPE_NODE_VECTOR,    /* vec(T)      — dynamic array */
     TYPE_NODE_MAP,       /* map(K, V)   — chained hash map */
     TYPE_NODE_FN,        /* fn(A, B) -> R */
+    TYPE_NODE_BLOCK,     /* Block(A, B) -> R — closure type (Phase A) */
     TYPE_NODE_NAMED,     /* user-defined struct name */
 } TypeNodeKind;
 
@@ -114,6 +115,7 @@ typedef enum
     AST_IMPL_DECL,
     AST_MODULE_DECL,
     AST_IMPORT_DECL,
+    AST_TYPE_ALIAS_DECL, /* type Name = Type — Phase A closure prerequisite */
     /* Heap allocation */
     AST_NEW_EXPR, /* new StructName { field: val, ... } */
     /* FFI */
@@ -217,6 +219,11 @@ struct AstNode
             int param_count;
             TypeNode *return_type;
             AstNode *body;
+            /* Phase B: true for Ruby-form `|x| body` literals (param types
+               and return type inferred from call-site expected Block(...));
+               false for the legacy `fn(int x) -> R { ... }` form (explicit
+               types in the AST). */
+            bool is_ruby_form;
         } closure;
         struct
         {
@@ -342,6 +349,11 @@ struct AstNode
         {
             char *path;
         } import_decl;
+        struct
+        {
+            char *name;
+            TypeNode *target;
+        } type_alias_decl;
         struct
         {
             char *struct_name;
