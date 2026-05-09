@@ -134,6 +134,7 @@ cd build && ctest --output-on-failure -C Release
 | 9 (memcheck B) | vec/map/struct/enum 路径全跟踪 + 修复 5 类真实内存 bug（try / 字段 clone / 递归 enum） | ✅ |
 | 10 (closure A) | type 别名 + `Block(...) -> R` 类型语法 + Ruby 风 `\|x\| body` 字面量 + trailing closure 糖 + 强制别名规则（return/struct field 拒绝裸 Block）；Phase A 仅 parse + check，codegen 在 Phase B/C | ✅ |
 | 10 (closure B) | 无捕获闭包 codegen：lambda lifting (`__closure_N(env, ...)`) + LsBlock 16B 胖指针 + 间接 call；类型推导从 callee `Block(...)` 形参反推 `\|x\|` 字面量类型；trailing closure 单表达式自动 return | ✅ |
+| 10 (closure C) | POD 捕获 + 堆 env + RAII：自由变量扫描 → AST `captures[]` → 合成匿名 env struct → `cg_emit_alloc("closure.env")` → body 入口 alloca+load 还原；闭包 var 离开作用域自动 free env（emit_scope_cleanup / emit_cleanup_to 双路径）；POD-only 限制（int/i64/f64/bool/char/*T/object）；嵌套闭包暂不支持 | ✅ |
 
 > 各 Phase 详细规范见 [docs/phases.md](docs/phases.md)
 
@@ -210,6 +211,16 @@ cd build && ctest --output-on-failure -C Release
 - f16 半精度浮点数原生支持
 
 ### 已完成（近期）
+
+- **闭包 Phase C（POD 捕获 + 堆 env + RAII）** — 2026-05-09
+  - **C.1 自由变量扫描**：`capture_walk()` (checker.c) 在 AST_CLOSURE body 上递归遍历，`bound[]` 跟踪当前作用域内已绑定的名字（params + 内部 var_decl + for 循环变量 + match arm binders + block 边界 snapshot/restore）；遇到 AST_IDENT 不在 bound 中、能在 outer scope 找到 → 记录为 capture（dedup by name）。捕获列表存到 AST 节点的 `closure.captures[]`（自有所有权）；后续 codegen 直接读
+  - **C.2 Env struct 合成**：codegen 用 capture list 顺序构造匿名 LLVM struct（每个 capture 一个字段，类型来自 outer 时刻的 LS Type）；用 `LLVMABISizeOfType` 求 layout size 给 malloc 用
+  - **C.3 Closure 字面量 codegen 升级**：构造前在 outer scope `LLVMBuildLoad2` 抓取每个 capture 的当前值；`cg_emit_alloc(size, "closure.env", line, col)` 走 memcheck 标签；逐字段 `LLVMBuildStructGEP2 + Store` 装填 env；body 入口（`__closure_N` entry block）反向：`StructGEP + Load + alloca + Store + cg_scope_define` 把每个 capture 还原成普通 local sym，AST_IDENT 解析自然命中
+  - **C.4 RAII**：`emit_scope_cleanup` 与 `emit_cleanup_to` 双路径都加 TYPE_BLOCK 分支：`load LsBlock → extractvalue 1 (env_ptr) → ICmpNE NULL → 条件 free`；env=NULL 时跳过 free（兼容 Phase B 无捕获闭包）；`cg_emit_free` 走 memcheck wrapper，kind 标 `closure.env`
+  - **AST/Parser 改动**：`closure.captures[] / capture_count` 新字段（ast.h）；3 处 AST_CLOSURE 创建点初始化为 NULL/0；ast_free 释放 capture name 数组
+  - **Phase C v1 限制**：(a) POD-only 捕获 —— string/vec/map/struct(drop)/enum 捕获报「not yet implemented」（错误信息列出允许的 POD 类型）；(b) 嵌套闭包字面量（闭包 body 内再写 `\|y\| ...`）报错（capture 透传留给 v2）；(c) 闭包字面量传函数后 callee param 也是 TYPE_BLOCK，env 由 callee scope cleanup 释放（make_adder 模式 ✓ clean，但同一 closure 同时存 local + 传函数会 double-free —— 需要 move 标记，留给 Phase C.5）
+  - 测试：`tests/samples/closure_phase_c_test.ls` 7 用例（单 int capture / make_adder × 2 / mixed POD (int+bool+f64) / 形参 shadow outer 同名 / capture 用 2 次）；`tests/test_phase_c_closure.cmake` JIT + AOT + memcheck `0 leaks` 三重断言；ctest `test_phase_c_closure` 依赖 `test_phase_b_closure`
+  - 验证：ctest 20/20 通过；Phase C.5 (by-move 接 Move 检查器) + C.7 (string capture / 跨函数 closure 转移) 待续
 
 - **闭包 Phase B（无捕获闭包 codegen：lambda lifting + 胖指针 + 间接 call）** — 2026-05-06
   - **B.1 Lambda lifting**：每个 `\|x\| body` 字面量 codegen 时合成一个顶层 LLVM 函数 `__closure_<N>(env_ptr, params...)`，命名走 `ctx->closure_id_counter` 单调计数器（per-module，AOT/JIT 一致）；body 在新函数 entry block 编译，detach 外层 scope（Phase B 无捕获），完成后恢复 builder/scope/current_fn 状态；尾部缺 terminator 时按返回类型自动补 `ret 0` / `ret void`

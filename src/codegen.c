@@ -1872,6 +1872,37 @@ static void emit_scope_cleanup(CodegenContext *ctx)
                 LLVMBuildCall2(ctx->builder, mft, mfn, &sym->value, 1, "");
             }
         }
+        else if (sym->type->kind == TYPE_BLOCK)
+        {
+            /* Phase C closure RAII: free the heap env if non-NULL.
+               sym->value is an alloca-of-LsBlock; load it, extract slot 1
+               (env_ptr), and pass to the memcheck-aware free wrapper.
+               POD-only captures in v1 → no field __drop sweep needed. */
+            LLVMTypeRef block_llvm = type_to_llvm(ctx, sym->type);
+            LLVMValueRef blk_val = LLVMBuildLoad2(ctx->builder, block_llvm,
+                                                  sym->value, "blk.cleanup");
+            LLVMValueRef env_ptr = LLVMBuildExtractValue(
+                ctx->builder, blk_val, 1, "blk.env.cleanup");
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+            LLVMValueRef is_nn = LLVMBuildICmp(
+                ctx->builder, LLVMIntNE, env_ptr,
+                LLVMConstNull(ptr_t), "blk.env.nn");
+            LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
+                LLVMGetInsertBlock(ctx->builder));
+            LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
+                ctx->context, cur_fn, "blk.free");
+            LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(
+                ctx->context, cur_fn, "blk.cont");
+            LLVMBuildCondBr(ctx->builder, is_nn, do_bb, cont_bb);
+            LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
+            LLVMValueRef free_fn = LLVMGetNamedFunction(ctx->module, "free");
+            if (free_fn) {
+                LLVMTypeRef ft = LLVMGlobalGetValueType(free_fn);
+                LLVMBuildCall2(ctx->builder, ft, free_fn, &env_ptr, 1, "");
+            }
+            LLVMBuildBr(ctx->builder, cont_bb);
+            LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+        }
         /* Trivial types (int, float, bool, vec, etc.) need no cleanup here. */
     }
     /* After this returns, the builder is positioned at the last cont_bb,
@@ -1939,6 +1970,10 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
             else if (sym->type->kind == TYPE_MAP)
             {
                 count++; /* map cleanup: traverse all nodes + free buckets */
+            }
+            else if (sym->type->kind == TYPE_BLOCK)
+            {
+                count++; /* Phase C closure cleanup: free env_ptr if non-NULL */
             }
         }
     }
@@ -2286,6 +2321,34 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
                     LLVMTypeRef fnt = LLVMGlobalGetValueType(drop_fn);
                     LLVMBuildCall2(ctx->builder, fnt, drop_fn, &sym->value, 1, "");
                 }
+                idx++;
+            }
+            else if (sym->type->kind == TYPE_BLOCK)
+            {
+                /* Phase C closure cleanup: load LsBlock, conditionally free
+                   env_ptr (POD-only captures in v1 — no nested __drop sweep). */
+                LLVMTypeRef block_llvm = type_to_llvm(ctx, sym->type);
+                LLVMValueRef blk_val = LLVMBuildLoad2(ctx->builder, block_llvm,
+                                                      sym->value, "blk.cleanup");
+                LLVMValueRef env_ptr = LLVMBuildExtractValue(
+                    ctx->builder, blk_val, 1, "blk.env.cleanup");
+                LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+                LLVMValueRef is_nn = LLVMBuildICmp(
+                    ctx->builder, LLVMIntNE, env_ptr,
+                    LLVMConstNull(ptr_t), "blk.env.nn");
+                char free_name[32], cont_name[32];
+                snprintf(free_name, sizeof(free_name), "blk.free%d", idx);
+                snprintf(cont_name, sizeof(cont_name), "blk.cont%d", idx);
+                LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, cur_fn, free_name);
+                LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, cur_fn, cont_name);
+                LLVMBuildCondBr(ctx->builder, is_nn, do_bb, cont_bb);
+                LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
+                cg_emit_free(ctx, env_ptr, "closure.env",
+                             CG_LINE(ctx), CG_COL(ctx));
+                LLVMBuildBr(ctx->builder, cont_bb);
+                LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
                 idx++;
             }
         }
@@ -11100,13 +11163,19 @@ static void emit_drop_field_cleanup(CodegenContext *ctx)
     }
 }
 
-/* ---- Phase B closure codegen ----
+/* ---- Phase B/C closure codegen ----
    Lifts a `|x| body` literal into a synthesised top-level LLVM function
-   `__closure_<N>` and returns an LsBlock fat-pointer value `{fn_ptr, NULL}`
-   (env is NULL in Phase B — no captures yet; Phase C wires up the heap env).
-   The closure body sees ONLY its own parameters; outer-scope lookups would
-   require the capture analysis that arrives in Phase C and currently produce
-   "undefined variable" errors at body codegen time. */
+   `__closure_<N>(env_ptr, params...)` and returns an LsBlock fat-pointer
+   value `{ fn_ptr, env_ptr }`.
+
+   Phase B: closures with no captures used env=NULL.
+   Phase C: when the checker recorded captures on the AST node, this routine:
+     1) builds an LLVM struct type matching the capture list,
+     2) heap-allocates one (`cg_emit_alloc(... "closure.env" ...)`),
+     3) stores the live outer values into the env at construction time,
+     4) inside the synthesised body, copies each capture out of env_ptr into
+        a fresh local alloca that the body sees by name (CgSymbol). POD-only
+        in v1 — string/vec/map captures are rejected at the checker. */
 static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
 {
     Type *block_t = node->resolved_type;
@@ -11121,7 +11190,48 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     int n = block_t->as.function.param_count;
     LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
 
-    /* 1) Build LLVM signature: ret(env_ptr, params...) */
+    int cap_n = node->as.closure.capture_count;
+
+    /* 0) Resolve current outer-scope values for each capture BEFORE we
+       detach the scope chain. Each capture must already be defined as a
+       CgSymbol in the caller's scope (params + locals follow that pattern).
+       We snapshot the LOADED value here so the env stores the value at
+       construction time, not lazily. */
+    LLVMValueRef *cap_outer_vals = NULL;
+    if (cap_n > 0) {
+        cap_outer_vals = (LLVMValueRef*)malloc_safe(
+            (size_t)cap_n * sizeof(LLVMValueRef));
+        for (int i = 0; i < cap_n; i++) {
+            const char *name = node->as.closure.captures[i].name;
+            CgSymbol *sym = cg_scope_resolve(ctx->current_scope, name);
+            if (sym == NULL) {
+                cg_error(ctx, node->line, node->column,
+                         "internal: capture '%s' not in scope at codegen",
+                         name);
+                free(cap_outer_vals);
+                return NULL;
+            }
+            LLVMTypeRef ct_llvm =
+                type_to_llvm(ctx, node->as.closure.captures[i].type);
+            cap_outer_vals[i] = LLVMBuildLoad2(ctx->builder, ct_llvm,
+                                               sym->value, "cap.load");
+        }
+    }
+
+    /* 1) Build env struct LLVM type from captures (or skip when none). */
+    LLVMTypeRef env_struct_t = NULL;
+    if (cap_n > 0) {
+        LLVMTypeRef *fields = (LLVMTypeRef*)malloc_safe(
+            (size_t)cap_n * sizeof(LLVMTypeRef));
+        for (int i = 0; i < cap_n; i++) {
+            fields[i] = type_to_llvm(ctx, node->as.closure.captures[i].type);
+        }
+        env_struct_t = LLVMStructTypeInContext(ctx->context, fields,
+                                               (unsigned)cap_n, 0);
+        free(fields);
+    }
+
+    /* 2) Build LLVM signature: ret(env_ptr, params...) */
     LLVMTypeRef *params_llvm = (LLVMTypeRef *)malloc_safe(
         (size_t)(n + 1) * sizeof(LLVMTypeRef));
     params_llvm[0] = ptr_t; /* env */
@@ -11135,13 +11245,13 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                                                 (unsigned)(n + 1), 0);
     free(params_llvm);
 
-    /* 2) Create the function under a unique name. */
+    /* 3) Create the function under a unique name. */
     char fn_name[64];
     int id = ctx->closure_id_counter++;
     snprintf(fn_name, sizeof(fn_name), "__closure_%d", id);
     LLVMValueRef fn = LLVMAddFunction(ctx->module, fn_name, fn_type_llvm);
 
-    /* 3) Save outer codegen state and switch to the new function's body. */
+    /* 4) Save outer codegen state and switch to the new function's body. */
     LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(ctx->builder);
     LLVMValueRef saved_fn = ctx->current_fn;
     Type *saved_fn_ret = ctx->current_fn_return_type;
@@ -11155,13 +11265,34 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     ctx->current_fn_return_type = ret_lst;
     ctx->temp_string_count = 0;
 
-    /* Phase B: no capture environment, so detach from outer scope chain.
-       Phase C will instead push an env-backed scope. */
+    /* Detach from outer scope chain — only params + captures should be
+       visible inside the closure body. */
     ctx->current_scope = NULL;
     push_scope(ctx);
 
-    /* 4) Define each user parameter as alloca + store. The LLVM param at slot
-       (i+1) skips the env at slot 0. */
+    /* 5a) Materialise captures inside the body: alloca + load-from-env →
+       register CgSymbol so AST_IDENT lookups resolve naturally. */
+    if (cap_n > 0) {
+        LLVMValueRef env_param = LLVMGetParam(fn, 0);
+        for (int i = 0; i < cap_n; i++) {
+            Type *ct = node->as.closure.captures[i].type;
+            LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(
+                ctx->builder, env_struct_t, env_param, (unsigned)i, "cap.gep");
+            LLVMValueRef field_val = LLVMBuildLoad2(
+                ctx->builder, ct_llvm, field_ptr, "cap.fromenv");
+            LLVMValueRef alloca = LLVMBuildAlloca(
+                ctx->builder, ct_llvm,
+                node->as.closure.captures[i].name);
+            LLVMBuildStore(ctx->builder, field_val, alloca);
+            cg_scope_define(ctx->current_scope,
+                            node->as.closure.captures[i].name,
+                            alloca, ct, NULL);
+        }
+    }
+
+    /* 5b) Define each user parameter as alloca + store. The LLVM param at
+       slot (i+1) skips the env at slot 0. */
     for (int i = 0; i < n; i++)
     {
         Type *pt = block_t->as.function.params[i];
@@ -11175,10 +11306,10 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                         alloca, pt, NULL);
     }
 
-    /* 5) Compile the body. */
+    /* 6) Compile the body. */
     codegen_stmt(ctx, node->as.closure.body);
 
-    /* 6) Ensure the entry block (and any continuation block) has a terminator.
+    /* 7) Ensure the entry block (and any continuation block) has a terminator.
        If the user body has no explicit return, default to ret 0 / ret void. */
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
     if (cur && LLVMGetBasicBlockTerminator(cur) == NULL)
@@ -11195,19 +11326,37 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
 
     pop_scope(ctx);
 
-    /* 7) Restore outer state. */
+    /* 8) Restore outer state. */
     ctx->current_scope = saved_scope;
     ctx->current_fn = saved_fn;
     ctx->current_fn_return_type = saved_fn_ret;
     ctx->temp_string_count = saved_temp_count;
     if (saved_block) LLVMPositionBuilderAtEnd(ctx->builder, saved_block);
 
-    /* 8) Materialise the LsBlock value: { fn_ptr, NULL_env }. */
+    /* 9) Construct the env value (heap) and store each capture into it.
+       For zero captures we pass NULL so codegen + memcheck stay quiet. */
+    LLVMValueRef env_val = LLVMConstNull(ptr_t);
+    if (cap_n > 0 && cap_outer_vals) {
+        unsigned long long env_size_const =
+            LLVMABISizeOfType(LLVMGetModuleDataLayout(ctx->module),
+                              env_struct_t);
+        LLVMValueRef sz_v = LLVMConstInt(LLVMInt64TypeInContext(ctx->context),
+                                         env_size_const, 0);
+        env_val = cg_emit_alloc(ctx, sz_v, "closure.env",
+                                node->line, node->column);
+        for (int i = 0; i < cap_n; i++) {
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(
+                ctx->builder, env_struct_t, env_val, (unsigned)i, "cap.slot");
+            LLVMBuildStore(ctx->builder, cap_outer_vals[i], field_ptr);
+        }
+    }
+    free(cap_outer_vals);
+
+    /* 10) Materialise the LsBlock value: { fn_ptr, env_ptr }. */
     LLVMTypeRef block_llvm = type_to_llvm(ctx, block_t);
     LLVMValueRef val = LLVMGetUndef(block_llvm);
     val = LLVMBuildInsertValue(ctx->builder, val, fn, 0, "blk.fn");
-    val = LLVMBuildInsertValue(ctx->builder, val,
-                               LLVMConstNull(ptr_t), 1, "blk.env");
+    val = LLVMBuildInsertValue(ctx->builder, val, env_val, 1, "blk.env");
     return val;
 }
 

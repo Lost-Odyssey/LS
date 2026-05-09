@@ -410,3 +410,16 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_phase_b_closure.cmake
 )
 set_tests_properties(test_phase_b_closure PROPERTIES DEPENDS "test_phase_a_closure")
+
+# Phase C (closure POD captures + heap env + RAII): make_adder pattern works,
+# multiple captures, mixed POD types, env freed at scope cleanup.
+# Memcheck verifies 0 leaks.
+add_test(
+    NAME test_phase_c_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_c_closure.cmake
+)
+set_tests_properties(test_phase_c_closure PROPERTIES DEPENDS "test_phase_b_closure")

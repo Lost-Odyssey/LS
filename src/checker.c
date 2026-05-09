@@ -2343,6 +2343,269 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "__move") == 0;
 }
 
+/* ---- Phase C closure capture analysis ----
+   Walks an AST_CLOSURE body to collect free variables (names referenced in
+   the body that aren't bound by the closure's params or by inner local
+   declarations). Each free variable that resolves to a symbol in the outer
+   scope is recorded as a capture on the closure node. POD-only in v1 —
+   non-POD captures (string/vec/map/struct/enum) are rejected with a
+   "not yet implemented" diagnostic so users get a clean message instead of
+   silent corruption.
+
+   `bound[]` tracks names currently in scope WITHIN the closure body. We
+   pre-populate it with the closure's parameter names. Block boundaries
+   snapshot/restore the bound count so var decls don't leak across siblings.
+*/
+typedef struct {
+    /* Borrowed name pointers — owned by the AST itself. */
+    const char **bound;
+    int bound_count;
+    int bound_cap;
+
+    /* Output list (deep-owned names). */
+    struct {
+        char *name;
+        Type *type;
+    } *captures;
+    int capture_count;
+    int capture_cap;
+
+    Checker *c;
+    Scope   *outer_scope;
+    AstNode *closure_node;
+    bool     had_error;
+} CaptureScan;
+
+static bool cap_is_bound(CaptureScan *s, const char *name) {
+    for (int i = 0; i < s->bound_count; i++)
+        if (strcmp(s->bound[i], name) == 0) return true;
+    return false;
+}
+
+static bool cap_already(CaptureScan *s, const char *name) {
+    for (int i = 0; i < s->capture_count; i++)
+        if (strcmp(s->captures[i].name, name) == 0) return true;
+    return false;
+}
+
+static void cap_push_bound(CaptureScan *s, const char *name) {
+    if (name == NULL) return;
+    if (s->bound_count >= s->bound_cap) {
+        s->bound_cap = GROW_CAPACITY(s->bound_cap);
+        s->bound = (const char **)realloc_safe(
+            (void*)s->bound, sizeof(const char *) * (size_t)s->bound_cap);
+    }
+    s->bound[s->bound_count++] = name;
+}
+
+/* POD types eligible for by-copy capture in Phase C v1.
+   Non-POD captures are recorded but flagged as an error so the user sees
+   exactly which variable the capture failed on. Phase C.5 will widen this
+   to by-move for string/vec/map/struct. */
+static bool capture_type_is_pod(const Type *t) {
+    if (t == NULL) return false;
+    switch (t->kind) {
+    case TYPE_INT: case TYPE_I8: case TYPE_I16: case TYPE_I32: case TYPE_I64:
+    case TYPE_U8:  case TYPE_U16: case TYPE_U32: case TYPE_U64:
+    case TYPE_F32: case TYPE_F64:
+    case TYPE_BOOL: case TYPE_CHAR:
+    case TYPE_OBJECT: case TYPE_POINTER:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t) {
+    if (cap_already(s, name)) return;
+    if (!capture_type_is_pod(t)) {
+        checker_error(s->c, site->line, site->column,
+                      "capturing variable '%s' of type '%s' in a closure is "
+                      "not yet implemented (Phase C v1 supports POD captures: "
+                      "int / i8..i64 / u8..u64 / f32 / f64 / bool / char / "
+                      "*T / object). Move the value via parameter or use a "
+                      "POD intermediate.",
+                      name, type_name(t));
+        s->had_error = true;
+        return;
+    }
+    if (s->capture_count >= s->capture_cap) {
+        s->capture_cap = GROW_CAPACITY(s->capture_cap);
+        s->captures = realloc_safe(s->captures,
+            sizeof(s->captures[0]) * (size_t)s->capture_cap);
+    }
+    /* deep-copy name so AST ownership is self-contained */
+    size_t nl = strlen(name);
+    char *dup = (char*)malloc_safe(nl + 1);
+    memcpy(dup, name, nl + 1);
+    s->captures[s->capture_count].name = dup;
+    s->captures[s->capture_count].type = t;
+    s->capture_count++;
+}
+
+static void capture_walk(CaptureScan *s, AstNode *node);
+
+static void capture_walk_arms(CaptureScan *s, AstNode *node) {
+    /* MATCH arms each introduce a fresh binding scope. */
+    int n = node->as.match.arm_count;
+    capture_walk(s, node->as.match.subject);
+    for (int i = 0; i < n; i++) {
+        int saved = s->bound_count;
+        /* Pattern may bind names (variant constructors with payloads).
+           For POD-only v1 we conservatively treat AST_IDENT in pattern
+           position as a binding. */
+        AstNode *pat = node->as.match.arms[i].pattern;
+        if (pat && pat->kind == AST_IDENT) {
+            cap_push_bound(s, pat->as.ident.name);
+        } else if (pat && pat->kind == AST_CALL) {
+            /* Variant ctor with payload binders: each arg ident → binding. */
+            for (int k = 0; k < pat->as.call.arg_count; k++) {
+                AstNode *a = pat->as.call.args[k];
+                if (a && a->kind == AST_IDENT)
+                    cap_push_bound(s, a->as.ident.name);
+            }
+        }
+        capture_walk(s, node->as.match.arms[i].body);
+        s->bound_count = saved;
+    }
+}
+
+static void capture_walk(CaptureScan *s, AstNode *node) {
+    if (node == NULL || s->had_error) return;
+    switch (node->kind) {
+    case AST_INT_LIT: case AST_FLOAT_LIT: case AST_STRING_LIT:
+    case AST_BOOL_LIT: case AST_NIL_LIT: case AST_BREAK: case AST_CONTINUE:
+        return;
+    case AST_IDENT: {
+        const char *name = node->as.ident.name;
+        if (cap_is_bound(s, name)) return;
+        Symbol *sym = scope_resolve(s->outer_scope, name);
+        if (sym == NULL) return;  /* will error in normal type-check pass */
+        cap_record(s, node, name, sym->type);
+        return;
+    }
+    case AST_UNARY:
+        capture_walk(s, node->as.unary.operand);
+        return;
+    case AST_MUT_BORROW:
+        capture_walk(s, node->as.mut_borrow.operand);
+        return;
+    case AST_BINARY:
+        capture_walk(s, node->as.binary.left);
+        capture_walk(s, node->as.binary.right);
+        return;
+    case AST_CALL:
+        capture_walk(s, node->as.call.callee);
+        for (int i = 0; i < node->as.call.arg_count; i++)
+            capture_walk(s, node->as.call.args[i]);
+        return;
+    case AST_INDEX:
+        capture_walk(s, node->as.index_expr.object);
+        capture_walk(s, node->as.index_expr.index);
+        return;
+    case AST_FIELD:
+        capture_walk(s, node->as.field_access.object);
+        return;
+    case AST_FORMAT_STRING:
+        for (int i = 0; i < node->as.format_string.expr_count; i++)
+            capture_walk(s, node->as.format_string.exprs[i]);
+        return;
+    case AST_ARRAY_LIT:
+        for (int i = 0; i < node->as.array_lit.count; i++)
+            capture_walk(s, node->as.array_lit.elements[i]);
+        return;
+    case AST_MAP_LIT:
+        for (int i = 0; i < node->as.map_lit.pair_count; i++) {
+            capture_walk(s, node->as.map_lit.keys[i]);
+            capture_walk(s, node->as.map_lit.vals[i]);
+        }
+        return;
+    case AST_CAST:
+        capture_walk(s, node->as.cast.expr);
+        return;
+    case AST_RANGE:
+        capture_walk(s, node->as.range.start);
+        capture_walk(s, node->as.range.end);
+        return;
+    case AST_TRY:
+        capture_walk(s, node->as.try_expr.expr);
+        return;
+    case AST_NEW_EXPR:
+        for (int i = 0; i < node->as.new_expr.field_init_count; i++)
+            capture_walk(s, node->as.new_expr.field_inits[i].value);
+        return;
+    case AST_VAR_DECL:
+        capture_walk(s, node->as.var_decl.init);
+        cap_push_bound(s, node->as.var_decl.name);
+        return;
+    case AST_ASSIGN:
+        capture_walk(s, node->as.assign.target);
+        capture_walk(s, node->as.assign.value);
+        return;
+    case AST_RETURN:
+        capture_walk(s, node->as.return_stmt.value);
+        return;
+    case AST_IF: {
+        capture_walk(s, node->as.if_stmt.cond);
+        int sv = s->bound_count;
+        capture_walk(s, node->as.if_stmt.then_block);
+        s->bound_count = sv;
+        capture_walk(s, node->as.if_stmt.else_block);
+        s->bound_count = sv;
+        return;
+    }
+    case AST_WHILE: {
+        capture_walk(s, node->as.while_stmt.cond);
+        int sv = s->bound_count;
+        capture_walk(s, node->as.while_stmt.body);
+        s->bound_count = sv;
+        return;
+    }
+    case AST_FOR: {
+        capture_walk(s, node->as.for_stmt.iter);
+        int sv = s->bound_count;
+        cap_push_bound(s, node->as.for_stmt.var);
+        capture_walk(s, node->as.for_stmt.body);
+        s->bound_count = sv;
+        return;
+    }
+    case AST_FOR_C: {
+        int sv = s->bound_count;
+        capture_walk(s, node->as.for_c_stmt.init);  /* may add a var */
+        capture_walk(s, node->as.for_c_stmt.cond);
+        capture_walk(s, node->as.for_c_stmt.update);
+        capture_walk(s, node->as.for_c_stmt.body);
+        s->bound_count = sv;
+        return;
+    }
+    case AST_BLOCK: {
+        int sv = s->bound_count;
+        for (int i = 0; i < node->as.block.stmt_count; i++)
+            capture_walk(s, node->as.block.stmts[i]);
+        s->bound_count = sv;
+        return;
+    }
+    case AST_EXPR_STMT:
+        capture_walk(s, node->as.expr_stmt.expr);
+        return;
+    case AST_MATCH:
+        capture_walk_arms(s, node);
+        return;
+    case AST_CLOSURE:
+        /* Phase C v1: nested closures are not supported — they would need
+           transitive capture propagation. */
+        checker_error(s->c, node->line, node->column,
+                      "nested closure literals are not yet supported "
+                      "(Phase C v1 limitation)");
+        s->had_error = true;
+        return;
+    default:
+        /* Decls / FFI / module nodes — should not appear inside closure body
+           in well-formed input; just skip. */
+        return;
+    }
+}
+
 /* ---- Expression checking ---- */
 
 static Type *check_expr(Checker *c, AstNode *node)
@@ -3533,6 +3796,11 @@ static Type *check_expr(Checker *c, AstNode *node)
            expected_type (a TYPE_BLOCK / TYPE_FUNCTION with matching arity).
            The legacy `fn(int x) -> R { ... }` form supplies its own types. */
         bool ruby_form = node->as.closure.is_ruby_form;
+        /* Save outer scope BEFORE we push the closure body scope below, so
+           the Phase C capture scan can resolve free variables against the
+           caller's environment. */
+        Scope *outer_scope_for_caps = c->current_scope;
+        (void)outer_scope_for_caps;
         Type **params = NULL;
         Type *ret = NULL;
 
@@ -3572,6 +3840,25 @@ static Type *check_expr(Checker *c, AstNode *node)
                                     node->line, node->column);
         }
 
+        /* Phase C: scan body for free variables → record captures on the
+           AST node so codegen can build the env struct. Walk runs against
+           the OUTER scope (still current at this point) and seeds `bound`
+           with the closure's parameter names. */
+        if (ruby_form && node->as.closure.captures == NULL) {
+            CaptureScan cs;
+            memset(&cs, 0, sizeof(cs));
+            cs.c = c;
+            cs.outer_scope = outer_scope_for_caps;
+            cs.closure_node = node;
+            for (int i = 0; i < n; i++) {
+                cap_push_bound(&cs, node->as.closure.param_names[i]);
+            }
+            capture_walk(&cs, node->as.closure.body);
+            free((void*)cs.bound);
+            node->as.closure.captures = (void*)cs.captures;
+            node->as.closure.capture_count = cs.capture_count;
+        }
+
         /* Check body in new scope */
         push_scope(c);
         for (int i = 0; i < n; i++)
@@ -3580,6 +3867,15 @@ static Type *check_expr(Checker *c, AstNode *node)
             {
                 scope_define(c->current_scope, node->as.closure.param_names[i], params[i]);
             }
+        }
+        /* Define captures inside the closure scope so the body type-checker
+           treats them as locally-bound (with the captured types from outer
+           scope). Codegen will materialise these as alloca-of-loaded-from-env
+           inside the synthesised __closure_<N> body. */
+        for (int i = 0; i < node->as.closure.capture_count; i++) {
+            scope_define(c->current_scope,
+                         node->as.closure.captures[i].name,
+                         node->as.closure.captures[i].type);
         }
 
         Type *saved_ret = c->current_fn_return;
