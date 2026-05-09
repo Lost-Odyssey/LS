@@ -423,3 +423,16 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_phase_c_closure.cmake
 )
 set_tests_properties(test_phase_c_closure PROPERTIES DEPENDS "test_phase_b_closure")
+
+# Phase C.5 (string by-move captures + per-closure env_drop + Block-param
+# borrowing): make_greeter pattern with owned + static + mixed string +
+# POD captures. Memcheck verifies 0 leaks / 0 double-free.
+add_test(
+    NAME test_phase_c5_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_c5_closure.cmake
+)
+set_tests_properties(test_phase_c5_closure PROPERTIES DEPENDS "test_phase_c_closure")

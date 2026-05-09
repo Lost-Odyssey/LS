@@ -2398,10 +2398,7 @@ static void cap_push_bound(CaptureScan *s, const char *name) {
     s->bound[s->bound_count++] = name;
 }
 
-/* POD types eligible for by-copy capture in Phase C v1.
-   Non-POD captures are recorded but flagged as an error so the user sees
-   exactly which variable the capture failed on. Phase C.5 will widen this
-   to by-move for string/vec/map/struct. */
+/* POD types eligible for by-copy capture (no drop needed). */
 static bool capture_type_is_pod(const Type *t) {
     if (t == NULL) return false;
     switch (t->kind) {
@@ -2416,18 +2413,60 @@ static bool capture_type_is_pod(const Type *t) {
     }
 }
 
+/* Phase C.5: by-move capture types — env owns the value, outer is marked
+   moved. Currently only string; vec/map/struct(drop) follow the same
+   template once their codegen lands. */
+static bool capture_type_is_by_move(const Type *t) {
+    return t != NULL && t->kind == TYPE_STRING;
+}
+
+static bool capture_type_supported(const Type *t) {
+    return capture_type_is_pod(t) || capture_type_is_by_move(t);
+}
+
 static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t) {
     if (cap_already(s, name)) return;
-    if (!capture_type_is_pod(t)) {
+    if (!capture_type_supported(t)) {
         checker_error(s->c, site->line, site->column,
                       "capturing variable '%s' of type '%s' in a closure is "
-                      "not yet implemented (Phase C v1 supports POD captures: "
-                      "int / i8..i64 / u8..u64 / f32 / f64 / bool / char / "
-                      "*T / object). Move the value via parameter or use a "
-                      "POD intermediate.",
+                      "not yet implemented (Phase C.5 supports POD captures "
+                      "and string by-move; vec/map/struct(drop) capture is "
+                      "Phase C.7). Move the value via parameter or use a "
+                      "supported intermediate.",
                       name, type_name(t));
         s->had_error = true;
         return;
+    }
+    /* Phase C.5: by-move capture (string in v1) transfers ownership from
+       the outer variable into the closure's env. Run the same outer-symbol
+       checks vec.push uses, then mark the outer as moved so subsequent
+       outer uses are caught at compile time. Borrows are silently rejected
+       (closure cannot promise a borrow lives long enough yet). */
+    if (capture_type_is_by_move(t)) {
+        Symbol *outer = scope_resolve(s->outer_scope, name);
+        if (outer == NULL) {
+            /* Defensive — capture_walk only records if outer-scope hit.   */
+            return;
+        }
+        if (outer->is_borrow || outer->is_mut_borrow) {
+            checker_move_error(s->c, site->line, site->column,
+                "cannot capture '%s' by-move into a closure: it is a "
+                "borrow parameter (no transferable ownership)", name);
+            s->had_error = true;
+            return;
+        }
+        if (outer->is_moved || outer->is_maybe_moved) {
+            checker_move_error(s->c, site->line, site->column,
+                "cannot capture '%s' by-move: already moved on a prior path",
+                name);
+            s->had_error = true;
+            return;
+        }
+        /* Static strings have no heap ownership and remain freely shareable
+           (cap==0 at runtime); env's drop wrapper safely no-ops on them. */
+        if (!(t->kind == TYPE_STRING && outer->is_static_string)) {
+            outer->is_moved = true;
+        }
     }
     if (s->capture_count >= s->capture_cap) {
         s->capture_cap = GROW_CAPACITY(s->capture_cap);

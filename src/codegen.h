@@ -88,6 +88,15 @@ typedef struct {
        (`__closure_<N>`) lifted from `|x| body` literals. Per-module, so AOT
        and JIT both see stable names without cross-call collisions. */
     int closure_id_counter;
+
+    /* Phase C.5 temporary closure tracking: env_ptr values for closure
+       literals appearing as rvalue expressions (e.g. function-call args
+       that aren't bound to a local Block var). Flushed at statement
+       boundaries via cg_flush_temps — the caller of the closure, not
+       the callee, owns the env (callee Block params are borrowed). */
+    LLVMValueRef *temp_block_envs;
+    int temp_block_env_count;
+    int temp_block_env_cap;
 } CodegenContext;
 
 /* Initialize the codegen context (creates LLVM module, target, etc.) */
