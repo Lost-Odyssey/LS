@@ -612,6 +612,8 @@ static AstNode *parse_ruby_closure_after_bar(Parser *p, Token start_tok,
     n->as.closure.return_type = NULL;
     n->as.closure.body = body;
     n->as.closure.is_ruby_form = true;
+    n->as.closure.captures = NULL;
+    n->as.closure.capture_count = 0;
     return n;
 }
 
@@ -687,6 +689,8 @@ static AstNode *prefix_closure(Parser *p) {
     n->as.closure.return_type = return_type;
     n->as.closure.body = body;
     n->as.closure.is_ruby_form = false;
+    n->as.closure.captures = NULL;
+    n->as.closure.capture_count = 0;
     return n;
 }
 
@@ -897,6 +901,8 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
             closure->as.closure.return_type = NULL;
             closure->as.closure.body = body;
             closure->as.closure.is_ruby_form = true;
+            closure->as.closure.captures = NULL;
+            closure->as.closure.capture_count = 0;
 
             if (arg_count >= arg_cap) {
                 arg_cap = GROW_CAPACITY(arg_cap);

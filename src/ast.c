@@ -119,6 +119,10 @@ void ast_free(AstNode *node) {
         free(node->as.closure.param_names);
         type_node_free(node->as.closure.return_type);
         ast_free(node->as.closure.body);
+        for (int i = 0; i < node->as.closure.capture_count; i++) {
+            free(node->as.closure.captures[i].name);
+        }
+        free(node->as.closure.captures);
         break;
     case AST_MATCH:
         ast_free(node->as.match.subject);

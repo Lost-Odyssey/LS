@@ -224,6 +224,15 @@ struct AstNode
                false for the legacy `fn(int x) -> R { ... }` form (explicit
                types in the AST). */
             bool is_ruby_form;
+            /* Phase C captures (filled in by the checker via free-variable
+               scan over the body). Each capture is a name+type pair owned
+               by the AST node — codegen reads this to build the env struct
+               and emit per-capture loads at body entry. */
+            struct {
+                char *name;
+                Type *type;     /* shared, not owned */
+            } *captures;
+            int capture_count;
         } closure;
         struct
         {
