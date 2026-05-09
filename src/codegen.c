@@ -209,11 +209,44 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
 static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node);
 
-/* Phase C.5: capture types whose env-side ownership requires explicit
-   drop (mirrors checker's capture_type_is_by_move). Currently only
-   string; vec/map/struct(drop) follow the same template later. */
+/* Phase C.5/C.7: capture types that need release work in env_drop.
+   Currently:
+     TYPE_STRING — env_drop frees data when cap > 0 (cap is 0 when the
+                   capture aliases a caller-owned string via the by-value
+                   param-borrow ABI; non-zero when cloned/owned).
+     TYPE_STRUCT(has_drop) — env_drop calls Struct.__drop on the slot.
+   Notably absent (Phase C.7 v1):
+     TYPE_VECTOR / TYPE_MAP — captured as a non-owning borrow: env stores
+       cap=0 in the slot so env_drop is a no-op; the original owner
+       (typically the caller of the closure-defining function) stays
+       responsible for release. Closure must not outlive the source vec/map.
+       Phase D will revisit when we have proper Block move semantics. */
 static inline bool capture_type_is_by_move_cg(const Type *t) {
-    return t != NULL && t->kind == TYPE_STRING;
+    if (t == NULL) return false;
+    switch (t->kind) {
+    case TYPE_STRING: return true;
+    case TYPE_STRUCT: return t->as.strukt.has_drop;
+    default:          return false;
+    }
+}
+
+/* True when the capture should be stored into env with cap=0 (borrow
+   semantics) — applies to all the LsString-shape types where the env
+   aliases the caller's heap rather than taking ownership. Struct uses
+   moved_flag and is excluded. */
+static inline bool capture_borrows_in_env(const Type *t) {
+    if (t == NULL) return false;
+    return t->kind == TYPE_STRING ||
+           t->kind == TYPE_VECTOR ||
+           t->kind == TYPE_MAP;
+}
+
+/* Whether marking the outer-as-moved is done via the cap=-1 idiom
+   (string only — vec/map are pure borrows in v1) versus a separate i1
+   moved_flag (struct). */
+static inline bool capture_outer_marker_uses_cap(const Type *t) {
+    if (t == NULL) return false;
+    return t->kind == TYPE_STRING;
 }
 static LLVMBasicBlockRef emit_vec_elem_drop_at(CodegenContext *ctx, LLVMValueRef elem_ptr,
                                                Type *elem_type, int idx_suffix,
@@ -1854,6 +1887,15 @@ static bool expr_produces_dynamic_string(AstNode *node)
         Type *rt = node->resolved_type;
         if (rt && rt->kind == TYPE_STRING)
         {
+            /* Phase C.7: closure-block calls are tracked by temp_string_slots
+               at the codegen_block_call site, so print's own __argtmp scope
+               registration would double-free. Skip this branch when the
+               callee is Block-typed. */
+            Type *ct = node->as.call.callee
+                       ? node->as.call.callee->resolved_type : NULL;
+            if (ct && ct->kind == TYPE_BLOCK) {
+                return false;
+            }
             /* Check if it's not a string method (already handled above) */
             if (node->as.call.callee->kind == AST_IDENT)
             {
@@ -11331,13 +11373,12 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
        calling a per-closure synthesised __env_drop_<id> before freeing the
        env block itself. POD-only envs store NULL there and skip the call.
 
-       has_drop_n counts captures whose env-side ownership requires a drop.
-       For Phase C.5 v1 that's TYPE_STRING; vec/map/struct(drop) follow the
-       same template once their capture path lands. */
+       has_drop_n counts captures whose env-side ownership requires a drop:
+       string + vec + map + struct(has_drop) — see capture_type_is_by_move_cg. */
     int has_drop_n = 0;
     for (int i = 0; i < cap_n; i++) {
-        Type *ct = node->as.closure.captures[i].type;
-        if (ct && ct->kind == TYPE_STRING) has_drop_n++;
+        if (capture_type_is_by_move_cg(node->as.closure.captures[i].type))
+            has_drop_n++;
     }
 
     /* 0) Snapshot outer alloca pointers (for the post-capture cap=-1 mark
@@ -11451,8 +11492,15 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             CgSymbol *cs = cg_scope_define(ctx->current_scope,
                             node->as.closure.captures[i].name,
                             alloca, ct, NULL);
-            if (cs && capture_type_is_by_move_cg(ct)) {
-                cs->is_borrowed = true; /* env owns the heap, not body */
+            /* Body must never run a drop helper on the captured local —
+               the heap is owned either by env (string/struct) or by the
+               original caller (vec/map borrow). Marking is_borrowed
+               uniformly for every heap-bearing capture type prevents
+               body-side scope cleanup from frying the shared buffer. */
+            if (cs && (capture_type_is_by_move_cg(ct) ||
+                       ct->kind == TYPE_VECTOR ||
+                       ct->kind == TYPE_MAP)) {
+                cs->is_borrowed = true;
             }
         }
     }
@@ -11522,10 +11570,15 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         LLVMPositionBuilderAtEnd(ctx->builder, d_entry);
         LLVMValueRef d_env = LLVMGetParam(drop_fn, 0);
 
-        /* For each by-move capture (string), free its data field if cap > 0.
-           Mirrors the inline string scope-cleanup logic in emit_cleanup_to
-           but compressed to a single conditional free per slot. */
+        /* For each by-move capture, dispatch on type:
+             string : cap > 0 → free(data)                       (C.5)
+             vec(T) : cap > 0 → drop elements + free(data)        (C.7)
+             map(K,V): call __ls_map_XX_drop(slot_ptr)            (C.7)
+             struct : call Struct.__drop(slot_ptr)                (C.7)
+           Maps/structs rely on their pre-existing helpers that take a
+           pointer to the value — slot_ptr is exactly that. */
         LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
         LLVMTypeRef str_t = ls_string_type(ctx);
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
@@ -11533,25 +11586,127 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             LLVMValueRef slot = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, d_env,
                 (unsigned)(i + 1), "cap.slot");
-            LLVMValueRef strv = LLVMBuildLoad2(ctx->builder, str_t, slot,
-                                               "cap.str");
-            LLVMValueRef cap = LLVMBuildExtractValue(ctx->builder, strv, 2,
-                                                     "cap.cap");
-            LLVMValueRef is_owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT,
-                                                  cap, LLVMConstInt(i32_t, 0, 0),
-                                                  "cap.owned");
-            LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
-                ctx->context, drop_fn, "drop.free");
-            LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
-                ctx->context, drop_fn, "drop.cont");
-            LLVMBuildCondBr(ctx->builder, is_owned, do_bb, done_bb);
-            LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-            LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, strv, 0,
-                                                      "cap.data");
-            cg_emit_free(ctx, data, "closure.capture",
-                         node->line, node->column);
-            LLVMBuildBr(ctx->builder, done_bb);
-            LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+
+            if (ct->kind == TYPE_STRING) {
+                LLVMValueRef strv = LLVMBuildLoad2(ctx->builder, str_t, slot,
+                                                   "cap.str");
+                LLVMValueRef capv = LLVMBuildExtractValue(ctx->builder, strv, 2,
+                                                          "cap.cap");
+                LLVMValueRef is_owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT,
+                                                      capv, LLVMConstInt(i32_t, 0, 0),
+                                                      "cap.owned");
+                LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, drop_fn, "drop.free");
+                LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, drop_fn, "drop.cont");
+                LLVMBuildCondBr(ctx->builder, is_owned, do_bb, done_bb);
+                LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
+                LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, strv, 0,
+                                                          "cap.data");
+                cg_emit_free(ctx, data, "closure.capture.str",
+                             node->line, node->column);
+                LLVMBuildBr(ctx->builder, done_bb);
+                LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+            }
+            else if (ct->kind == TYPE_VECTOR) {
+                /* Inline vec drop: load LsVec, if cap > 0 then drop elements
+                   (when has_drop) and free data buffer. Mirrors the scope
+                   cleanup vec branch but compressed for one slot. */
+                LLVMTypeRef vec_t  = ls_vec_type(ctx);
+                LLVMValueRef vecv  = LLVMBuildLoad2(ctx->builder, vec_t, slot,
+                                                    "cap.vec");
+                LLVMValueRef capv  = LLVMBuildExtractValue(ctx->builder, vecv, 2,
+                                                           "cap.veccap");
+                LLVMValueRef lenv  = LLVMBuildExtractValue(ctx->builder, vecv, 1,
+                                                           "cap.veclen");
+                LLVMValueRef datav = LLVMBuildExtractValue(ctx->builder, vecv, 0,
+                                                           "cap.vecdata");
+                LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT,
+                                                     capv, LLVMConstInt(i32_t, 0, 0),
+                                                     "cap.hasbuf");
+                LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, drop_fn, "drop.vfree");
+                LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, drop_fn, "drop.vcont");
+                LLVMBuildCondBr(ctx->builder, has_buf, do_bb, done_bb);
+                LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
+
+                Type *elem_type = ct->as.vec.elem;
+                bool elem_needs_drop = elem_type &&
+                    (elem_type->kind == TYPE_STRING ||
+                     (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop));
+                if (elem_needs_drop) {
+                    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
+                    LLVMBasicBlockRef el_cond = LLVMAppendBasicBlockInContext(
+                        ctx->context, drop_fn, "drop.el.cond");
+                    LLVMBasicBlockRef el_body = LLVMAppendBasicBlockInContext(
+                        ctx->context, drop_fn, "drop.el.body");
+                    LLVMBasicBlockRef el_end = LLVMAppendBasicBlockInContext(
+                        ctx->context, drop_fn, "drop.el.end");
+
+                    LLVMBuilderRef tb2 = LLVMCreateBuilderInContext(ctx->context);
+                    LLVMBasicBlockRef fn_entry = LLVMGetEntryBasicBlock(drop_fn);
+                    LLVMValueRef fi2 = LLVMGetFirstInstruction(fn_entry);
+                    if (fi2) LLVMPositionBuilderBefore(tb2, fi2);
+                    else     LLVMPositionBuilderAtEnd(tb2, fn_entry);
+                    LLVMValueRef ei = LLVMBuildAlloca(tb2, i32_t, "drop.ei");
+                    LLVMDisposeBuilder(tb2);
+
+                    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), ei);
+                    LLVMBuildBr(ctx->builder, el_cond);
+
+                    LLVMPositionBuilderAtEnd(ctx->builder, el_cond);
+                    LLVMValueRef ci = LLVMBuildLoad2(ctx->builder, i32_t, ei, "drop.ci");
+                    LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, ci, lenv, "drop.lt");
+                    LLVMBuildCondBr(ctx->builder, cmp, el_body, el_end);
+
+                    LLVMPositionBuilderAtEnd(ctx->builder, el_body);
+                    LLVMValueRef ei64 = LLVMBuildSExt(ctx->builder, ci, i64_t, "drop.ei64");
+                    LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, datav,
+                                                    &ei64, 1, "drop.ep");
+                    emit_vec_elem_drop_at(ctx, ep, elem_type, i, "cap.vec[i]");
+                    LLVMBasicBlockRef after = LLVMGetInsertBlock(ctx->builder);
+                    if (LLVMGetBasicBlockTerminator(after) == NULL) {
+                        LLVMValueRef nxt = LLVMBuildAdd(ctx->builder, ci,
+                            LLVMConstInt(i32_t, 1, 0), "drop.nxt");
+                        LLVMBuildStore(ctx->builder, nxt, ei);
+                        LLVMBuildBr(ctx->builder, el_cond);
+                    }
+                    LLVMPositionBuilderAtEnd(ctx->builder, el_end);
+                }
+                cg_emit_free(ctx, datav, "closure.capture.vec",
+                             node->line, node->column);
+                LLVMBuildBr(ctx->builder, done_bb);
+                LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+            }
+            else if (ct->kind == TYPE_MAP) {
+                /* Reuse the per-(K,V) map drop helper — slot_ptr is *LsMap. */
+                emit_map_helpers_for(ctx, ct->as.map.key, ct->as.map.val);
+                char msuffix[64];
+                map_type_id(ct->as.map.key, ct->as.map.val,
+                            msuffix, sizeof(msuffix));
+                char mnm[96];
+                snprintf(mnm, sizeof(mnm), "__ls_map_%s_drop", msuffix);
+                LLVMValueRef mfn = LLVMGetNamedFunction(ctx->module, mnm);
+                if (mfn) {
+                    LLVMTypeRef mft = LLVMGlobalGetValueType(mfn);
+                    LLVMBuildCall2(ctx->builder, mft, mfn, &slot, 1, "");
+                }
+            }
+            else if (ct->kind == TYPE_STRUCT && ct->as.strukt.has_drop) {
+                /* Call the struct's auto/user-defined __drop on its slot. */
+                LLVMValueRef sdfn = (LLVMValueRef)ct->as.strukt.drop_fn;
+                if (sdfn == NULL) {
+                    /* Defensive: if the struct's __drop hasn't been emitted
+                       yet, force-emit it now. */
+                    emit_auto_drop_fn(ctx, ct);
+                    sdfn = (LLVMValueRef)ct->as.strukt.drop_fn;
+                }
+                if (sdfn) {
+                    LLVMTypeRef sft = LLVMGlobalGetValueType(sdfn);
+                    LLVMBuildCall2(ctx->builder, sft, sdfn, &slot, 1, "");
+                }
+            }
         }
         LLVMBuildRetVoid(ctx->builder);
 
@@ -11588,35 +11743,97 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 (unsigned)(i + 1), "cap.slot");
             LLVMBuildStore(ctx->builder, cap_outer_vals[i], field_ptr);
 
-            /* Phase C.5 by-move marker: outer alloca's cap field → -1 if
-               currently > 0. Static strings (cap=0) and already-moved
-               (cap<0) stay untouched. */
-            if (capture_type_is_by_move_cg(ct) &&
-                ct->kind == TYPE_STRING && cap_outer_allocas[i])
-            {
-                LLVMTypeRef str_t2 = ls_string_type(ctx);
-                LLVMTypeRef i32_t  = LLVMInt32TypeInContext(ctx->context);
-                LLVMValueRef cap_ptr = LLVMBuildStructGEP2(
-                    ctx->builder, str_t2, cap_outer_allocas[i], 2u,
-                    "outer.cap.ptr");
-                LLVMValueRef cur_cap = LLVMBuildLoad2(
-                    ctx->builder, i32_t, cap_ptr, "outer.cap.cur");
-                LLVMValueRef is_owned = LLVMBuildICmp(
-                    ctx->builder, LLVMIntSGT, cur_cap,
-                    LLVMConstInt(i32_t, 0, 0), "outer.owned");
-                LLVMValueRef cur_fn_ll = LLVMGetBasicBlockParent(
-                    LLVMGetInsertBlock(ctx->builder));
-                LLVMBasicBlockRef mark_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, cur_fn_ll, "cap.mark");
-                LLVMBasicBlockRef ckdone_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, cur_fn_ll, "cap.markdone");
-                LLVMBuildCondBr(ctx->builder, is_owned, mark_bb, ckdone_bb);
-                LLVMPositionBuilderAtEnd(ctx->builder, mark_bb);
-                LLVMBuildStore(ctx->builder,
-                               LLVMConstInt(i32_t, (unsigned)(int)-1, 1),
-                               cap_ptr);
-                LLVMBuildBr(ctx->builder, ckdone_bb);
-                LLVMPositionBuilderAtEnd(ctx->builder, ckdone_bb);
+            /* Phase C.7 vec/map: env stores the full {data/buckets, len, cap}
+               verbatim — DON'T zero the cap field, because the closure body
+               needs it for vec.length / map.contains_key / map.get etc.
+               Safety against double-free comes from `capture_type_is_by_move_cg`
+               returning false for vec/map: env_drop never touches these
+               slots, and the caller's scope cleanup runs the type's drop
+               helper as usual. (Function params for vec/map are marked
+               is_borrowed in codegen_fn_decl, so callee cleanup skips.)
+
+               Lifetime caveat: the captured data ptr aliases the source's
+               buffer. Closure must not outlive the original owner. Phase D
+               adds Block move semantics to make this enforceable. */
+
+            /* Phase C.5/C.7 by-move marker on the outer alloca:
+                 string/vec/map: cap field (offset 2 in their LsString-shape
+                                 layout) gets `-1` when currently `> 0`.
+                                 Static strings (cap=0) stay 0 — env_drop's
+                                 own `cap > 0` guard then no-ops, so the env
+                                 doesn't double-free .rodata.
+                 struct: cap=-1 doesn't apply; the existing per-instance
+                         moved_flag i1 alloca (CgSymbol.moved_flag) is set
+                         to `true`. If the struct local lacks a moved_flag
+                         (e.g. function parameter without one) we skip — it
+                         just means the outer scope cleanup will run drop
+                         again on a struct whose owned heap is now aliased
+                         by env, which IS unsafe. For Phase C.7 v1 we treat
+                         that as a TODO surface. */
+            if (capture_type_is_by_move_cg(ct) && cap_outer_allocas[i]) {
+                if (capture_outer_marker_uses_cap(ct)) {
+                    /* string / vec(T) / map(K,V) — all share `{ptr, i32, i32}`
+                       layout, cap at field 2. The marker value differs:
+                         string/vec: scope cleanup checks `cap > 0` to free,
+                                     so writing -1 (the canonical MOVED marker)
+                                     skips it — and env's drop guard is also
+                                     `cap > 0`, harmlessly skipping `.rodata`
+                                     statics whose cap is 0.
+                         map:        the per-(K,V) drop helper checks
+                                     `cap == 0` for skip, so the marker
+                                     must be 0 (not -1) for outer cleanup
+                                     to be a no-op without confusing the
+                                     env's drop call (which sees the
+                                     original cap > 0 in its own slot).
+                       Both cases keep the bucket / data pointer untouched
+                       — the env owns it now and frees it via env_drop. */
+                    LLVMTypeRef shell_t = (ct->kind == TYPE_STRING)
+                        ? ls_string_type(ctx)
+                        : (ct->kind == TYPE_VECTOR
+                            ? ls_vec_type(ctx)
+                            : ls_map_type(ctx));
+                    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+                    LLVMValueRef cap_ptr = LLVMBuildStructGEP2(
+                        ctx->builder, shell_t, cap_outer_allocas[i], 2u,
+                        "outer.cap.ptr");
+                    LLVMValueRef cur_cap = LLVMBuildLoad2(
+                        ctx->builder, i32_t, cap_ptr, "outer.cap.cur");
+                    LLVMValueRef is_owned = LLVMBuildICmp(
+                        ctx->builder, LLVMIntSGT, cur_cap,
+                        LLVMConstInt(i32_t, 0, 0), "outer.owned");
+                    LLVMValueRef cur_fn_ll = LLVMGetBasicBlockParent(
+                        LLVMGetInsertBlock(ctx->builder));
+                    LLVMBasicBlockRef mark_bb = LLVMAppendBasicBlockInContext(
+                        ctx->context, cur_fn_ll, "cap.mark");
+                    LLVMBasicBlockRef ckdone_bb = LLVMAppendBasicBlockInContext(
+                        ctx->context, cur_fn_ll, "cap.markdone");
+                    LLVMBuildCondBr(ctx->builder, is_owned, mark_bb, ckdone_bb);
+                    LLVMPositionBuilderAtEnd(ctx->builder, mark_bb);
+                    int marker = (ct->kind == TYPE_MAP) ? 0 : -1;
+                    LLVMBuildStore(ctx->builder,
+                                   LLVMConstInt(i32_t, (unsigned)marker, 1),
+                                   cap_ptr);
+                    LLVMBuildBr(ctx->builder, ckdone_bb);
+                    LLVMPositionBuilderAtEnd(ctx->builder, ckdone_bb);
+                } else if (ct->kind == TYPE_STRUCT) {
+                    /* Look up the captured outer's CgSymbol to find its
+                       moved_flag i1 alloca. The captured-name resolution
+                       was done above (cap_outer_allocas[i] = sym->value);
+                       re-resolve here to also fetch moved_flag. */
+                    const char *cap_name = node->as.closure.captures[i].name;
+                    CgSymbol *outer_sym =
+                        cg_scope_resolve(saved_scope, cap_name);
+                    if (outer_sym && outer_sym->moved_flag) {
+                        LLVMTypeRef i1_t = LLVMInt1TypeInContext(ctx->context);
+                        LLVMBuildStore(ctx->builder,
+                                       LLVMConstInt(i1_t, 1, 0),
+                                       outer_sym->moved_flag);
+                    }
+                    /* Otherwise: outer scope cleanup will still run
+                       struct.__drop, leading to double-free. The checker
+                       prevents user code from re-using a moved struct, so
+                       only the outer cleanup remains unguarded. v1 TODO. */
+                }
             }
         }
     }
@@ -11701,7 +11918,18 @@ static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
                                          args, (unsigned)(n + 1),
                                          void_ret ? "" : "blk.call");
     free(args);
-    (void)env_ptr; /* env unused in Phase B (no captures yet) */
+    (void)env_ptr;
+
+    /* Phase C.7: if the closure returned a string, register it as a temp
+       so cg_flush_temps reclaims it at the statement boundary. Without
+       this, code like `print(stamper(":"))` leaks the heap returned from
+       the closure body (non-Block calls do this in their own codegen
+       paths, but block_call has its own dispatch). */
+    if (!void_ret && block_t->as.function.return_type &&
+        block_t->as.function.return_type->kind == TYPE_STRING)
+    {
+        return cg_push_temp_string(ctx, result);
+    }
     return result;
 }
 
@@ -11870,8 +12098,13 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             LLVMBuildStore(ctx->builder, str_val, alloca);
         }
         CgSymbol *psym = cg_scope_define(ctx->current_scope, node->as.fn_decl.param_names[i], alloca, param_type, moved_flag);
-        /* vec parameters are borrowed: the caller owns the data buffer, so don't free on return */
-        if (psym && param_type && param_type->kind == TYPE_VECTOR)
+        /* vec / map parameters are borrowed: the caller owns the data
+           buffer / bucket array. Without this, the callee's scope cleanup
+           would call the type's drop helper on the param alloca, freeing
+           heap that the caller still owns. (Phase C.7 surfaced this for
+           map; vec was already correct.) */
+        if (psym && param_type &&
+            (param_type->kind == TYPE_VECTOR || param_type->kind == TYPE_MAP))
             psym->is_borrowed = true;
         /* Phase C.5: Block-typed parameters are call-borrowed — the caller
            owns the closure's env block, so the callee's scope cleanup must

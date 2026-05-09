@@ -2413,11 +2413,21 @@ static bool capture_type_is_pod(const Type *t) {
     }
 }
 
-/* Phase C.5: by-move capture types — env owns the value, outer is marked
-   moved. Currently only string; vec/map/struct(drop) follow the same
-   template once their codegen lands. */
+/* Phase C.5/C.7: by-move capture types — env owns the value, outer is
+   marked moved.
+     C.5: TYPE_STRING
+     C.7: TYPE_VECTOR / TYPE_MAP / TYPE_STRUCT(has_drop)
+   Enum captures remain unsupported (Phase C.8 — needs box / payload
+   walk inside env_drop). */
 static bool capture_type_is_by_move(const Type *t) {
-    return t != NULL && t->kind == TYPE_STRING;
+    if (t == NULL) return false;
+    switch (t->kind) {
+    case TYPE_STRING: return true;
+    case TYPE_VECTOR: return true;
+    case TYPE_MAP:    return true;
+    case TYPE_STRUCT: return t->as.strukt.has_drop;
+    default:          return false;
+    }
 }
 
 static bool capture_type_supported(const Type *t) {
@@ -2429,10 +2439,9 @@ static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t)
     if (!capture_type_supported(t)) {
         checker_error(s->c, site->line, site->column,
                       "capturing variable '%s' of type '%s' in a closure is "
-                      "not yet implemented (Phase C.5 supports POD captures "
-                      "and string by-move; vec/map/struct(drop) capture is "
-                      "Phase C.7). Move the value via parameter or use a "
-                      "supported intermediate.",
+                      "not yet implemented (supported: POD types + string + "
+                      "vec(T) + map(K,V) + struct(has_drop). Enum captures "
+                      "are Phase C.8.)",
                       name, type_name(t));
         s->had_error = true;
         return;

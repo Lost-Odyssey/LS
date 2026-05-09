@@ -136,6 +136,7 @@ cd build && ctest --output-on-failure -C Release
 | 10 (closure B) | 无捕获闭包 codegen：lambda lifting (`__closure_N(env, ...)`) + LsBlock 16B 胖指针 + 间接 call；类型推导从 callee `Block(...)` 形参反推 `\|x\|` 字面量类型；trailing closure 单表达式自动 return | ✅ |
 | 10 (closure C) | POD 捕获 + 堆 env + RAII：自由变量扫描 → AST `captures[]` → 合成匿名 env struct → `cg_emit_alloc("closure.env")` → body 入口 alloca+load 还原；闭包 var 离开作用域自动 free env（emit_scope_cleanup / emit_cleanup_to 双路径）；POD-only 限制（int/i64/f64/bool/char/*T/object）；嵌套闭包暂不支持 | ✅ |
 | 10 (closure C.5) | string by-move 捕获：env 布局加 `drop_fn` slot（field 0），按 closure id 合成 `__env_drop_<N>`；外层 alloca 写 cap=-1 标 MOVED；Block 形参标 borrowed（callee 不再 free env，避免 double-free）；temp_block_envs 跟踪 rvalue 闭包字面量，var_decl/return 消费时 pop，否则 cg_flush_temps 在语句边界 free | ✅ |
+| 10 (closure C.7) | vec(T) / map(K,V) / struct(has_drop) 捕获：vec/map 走 borrow 语义（env 不释放，body 标 is_borrowed，map 形参补 is_borrowed=true），struct 走完整 by-move（env 调 `Struct.__drop`，外层 moved_flag=true）；env_drop 按 capture kind 分派（string/vec inline，map/struct 复用现有 `__ls_map_drop` / `Struct.__drop`）；Block-call 返回 string 自动 `cg_push_temp_string`，避免 print 路径双注册（`expr_produces_dynamic_string` 对 Block 拒绝） | ✅ |
 
 > 各 Phase 详细规范见 [docs/phases.md](docs/phases.md)
 
@@ -212,6 +213,19 @@ cd build && ctest --output-on-failure -C Release
 - f16 半精度浮点数原生支持
 
 ### 已完成（近期）
+
+- **闭包 Phase C.7（vec/map/struct(drop) 捕获 + 双语义 ABI）** — 2026-05-09
+  - **C.7.1 类型扩展**：`capture_type_supported = POD || string || vec(T) || map(K,V) || struct(has_drop)`；checker 路径与 C.5 共用，由 `capture_type_is_by_move` 决定是否标 outer Symbol moved（vec/map 不标 — 走 borrow；struct 标）
+  - **C.7.2 双 ABI 策略**：codegen 区分两种 env 所有权模型，避免一刀切：
+    - **borrow 语义**（vec/map/string）：env 存 `{data/buckets, len, cap}` 字段原样（cap > 0 保留以便 body 用 `.length` / `.contains_key` 等读操作），但 env_drop **跳过** 这些 slot；原始 owner（caller 或 closure-defining fn 的 caller）继续负责释放；body 端 CgSymbol 标 `is_borrowed = true` 防止 body 自己 drop。string 走 C.5 路径已工作（param ABI 已 cap=0 borrow），vec/map 新增「不进 env_drop loop」即可
+    - **ownership transfer**（struct(has_drop)）：env 实际接管，env_drop 调 `Struct.__drop(slot_ptr)`；outer 通过 `moved_flag = true` 跳过自己的 drop；caller 仍持有 struct 容器但 __drop 被 RAII 跳过
+  - **C.7.3 env_drop 分派**：合成 `__env_drop_<id>(env_ptr)` 内按 capture kind 走不同分支：string `cap > 0 → free(data)`；struct `Struct.__drop(slot_ptr)`（必要时 emit_auto_drop_fn 兜底）；vec/map 不进 loop
+  - **C.7.4 map 形参 borrowed 修复**：`codegen_fn_decl` 把 `TYPE_MAP` 形参也加入 `is_borrowed = true` 列表（之前只有 vec），否则 callee 的 scope cleanup 会调 `__ls_map_XX_drop` 释放 caller 持有的 buckets → 双释放
+  - **C.7.5 Block-call 返回 string 临时跟踪**：`codegen_block_call` 末尾若 ret type 是 string，`cg_push_temp_string(result)` 注册到 `temp_string_slots`；同时 `expr_produces_dynamic_string` 对 Block-call 返回 false，避免 print 的 `__argtmp` scope 注册和 temp_string_slots 同时管同一指针 → 双释放
+  - **C.7.6 has_drop_n 修复**：之前只数 `TYPE_STRING`，导致 struct(has_drop) 捕获时 drop_fn slot 为 NULL，env_drop 不生成，struct 字段泄漏；改为 `capture_type_is_by_move_cg` 真正包含的所有 has_drop 类型
+  - **测试**：`tests/samples/closure_phase_c7_test.ls` 4 大用例 8 行输出（vec(int) picker / vec(string) joiner / map(string,int) lookup with default / struct(has_drop) stamper）；`tests/test_phase_c7_closure.cmake` JIT + AOT + memcheck 0 leaks / 0 double-free 三重；ctest `test_phase_c7_closure` 依赖 `test_phase_c5_closure`
+  - 已知限制：vec/map 是 borrow（closure 不能 outlive 源），future Block move 语义解决；嵌套闭包仍拒；enum capture 仍未实现（payload walk 需要单独工作）
+  - 验证：ctest 22/22 通过；Phase D（stdlib io.each_line + with_file）接续
 
 - **闭包 Phase C.5（string by-move 捕获 + 每闭包 env_drop + Block 形参借用）** — 2026-05-09
   - **C.5.1 capture_walk 接受 string**：`capture_type_supported = POD || string`；`cap_record` 对 string 走 by-move 路径：检查 outer Symbol 不是 borrow / 不是已 moved；非 static-string 时 `outer->is_moved = true`（接入现有 Move 检查器，subsequent outer 使用编译错）
