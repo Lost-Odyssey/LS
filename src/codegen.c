@@ -2946,8 +2946,7 @@ static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
         return;
 
     /* Create function type: void __drop(*Struct) */
-    LLVMTypeRef llvm_struct = type_to_llvm(ctx, struct_type);
-    LLVMTypeRef ptr_struct = LLVMPointerType(llvm_struct, 0);
+    LLVMTypeRef ptr_struct = LLVMPointerTypeInContext(ctx->context, 0);
     LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
                                            &ptr_struct, 1, 0);
 
@@ -3230,7 +3229,7 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
                 unsigned long long sz = LLVMABISizeOfType(td, vstruct);
                 if ((int)sz > max_payload) max_payload = (int)sz;
             }
-            LLVMTypeRef payload = LLVMArrayType(i8, (unsigned)max_payload);
+            LLVMTypeRef payload = LLVMArrayType2(i8, (uint64_t)max_payload);
             LLVMTypeRef body[2] = { i8, payload };
             LLVMTypeRef llvm_type = LLVMStructCreateNamed(ctx->context, t->as.enom.name);
             LLVMStructSetBody(llvm_type, body, 2, 0);
@@ -3240,7 +3239,7 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
             return llvm_type;
         }
         LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
-        LLVMTypeRef payload = LLVMArrayType(i8, 0);
+        LLVMTypeRef payload = LLVMArrayType2(i8, 0);
         LLVMTypeRef fields[2] = { i8, payload };
         return LLVMStructTypeInContext(ctx->context, fields, 2, 0);
     }
@@ -4314,7 +4313,7 @@ static LLVMValueRef codegen_to_string(CodegenContext *ctx, AstNode *node)
     LLVMTypeRef i8_type = LLVMInt8TypeInContext(ctx->context);
     LLVMTypeRef i32_type = LLVMInt32TypeInContext(ctx->context);
     LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
-    LLVMTypeRef ptr_type = LLVMPointerType(i8_type, 0);
+    LLVMTypeRef ptr_type = LLVMPointerTypeInContext(ctx->context, 0);
 
     /* Allocate a buffer for the formatted string (256 bytes should be enough) */
     LLVMValueRef buf_size = LLVMConstInt(i32_type, 256, 0);
@@ -4431,7 +4430,7 @@ static LLVMValueRef codegen_from_int(CodegenContext *ctx, AstNode *node)
 
     /* Declare atoi if not already declared */
     LLVMTypeRef i32_type = LLVMInt32TypeInContext(ctx->context);
-    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
+    LLVMTypeRef ptr_type = LLVMPointerTypeInContext(ctx->context, 0);
     LLVMValueRef atoi_fn = LLVMGetNamedFunction(ctx->module, "atoi");
     if (atoi_fn == NULL)
     {
@@ -4458,7 +4457,7 @@ static LLVMValueRef codegen_from_float(CodegenContext *ctx, AstNode *node)
 
     /* Declare atof if not already declared */
     LLVMTypeRef f64_type = LLVMDoubleTypeInContext(ctx->context);
-    LLVMTypeRef ptr_type = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
+    LLVMTypeRef ptr_type = LLVMPointerTypeInContext(ctx->context, 0);
     LLVMValueRef atof_fn = LLVMGetNamedFunction(ctx->module, "atof");
     if (atof_fn == NULL)
     {
@@ -12836,7 +12835,7 @@ static void codegen_enum_decl(CodegenContext *ctx, AstNode *node)
     }
 
     /* Build {i8 disc, [N x i8] payload} as a named opaque struct */
-    LLVMTypeRef payload = LLVMArrayType(i8, (unsigned)max_payload);
+    LLVMTypeRef payload = LLVMArrayType2(i8, (uint64_t)max_payload);
     LLVMTypeRef body[2] = { i8, payload };
     LLVMTypeRef llvm_type = LLVMStructCreateNamed(ctx->context, name);
     LLVMStructSetBody(llvm_type, body, 2, 0);
@@ -12879,12 +12878,10 @@ static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
 
     LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(ctx->builder);
 
-    LLVMTypeRef enum_llvm = type_to_llvm(ctx, enum_type);
-    LLVMTypeRef ptr_enum = LLVMPointerType(enum_llvm, 0);
     LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
     LLVMTypeRef ptr_type = LLVMPointerTypeInContext(ctx->context, 0);
     LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
-                                            &ptr_enum, 1, 0);
+                                            &ptr_type, 1, 0);
 
     LLVMValueRef drop_fn = LLVMAddFunction(ctx->module, drop_fn_name, fn_type);
     LLVMSetFunctionCallConv(drop_fn, LLVMCCallConv);
@@ -13305,8 +13302,7 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
                 /* Step 2: generate wrapper __drop = call user, then reverse-order cleanup */
                 if (st != NULL && user_fn != NULL)
                 {
-                    LLVMTypeRef llvm_struct = type_to_llvm(ctx, st);
-                    LLVMTypeRef ptr_struct = LLVMPointerType(llvm_struct, 0);
+                    LLVMTypeRef ptr_struct = LLVMPointerTypeInContext(ctx->context, 0);
                     LLVMTypeRef wrapper_type = LLVMFunctionType(
                         LLVMVoidTypeInContext(ctx->context), &ptr_struct, 1, 0);
 
@@ -16483,8 +16479,9 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
 int codegen_emit_object(CodegenContext *ctx, const char *output_path)
 {
     /* Run optimization passes */
-    LLVMRunPasses(ctx->module, "default<O2>", ctx->target_machine,
-                  LLVMCreatePassBuilderOptions());
+    LLVMPassBuilderOptionsRef pass_opts = LLVMCreatePassBuilderOptions();
+    LLVMRunPasses(ctx->module, "default<O2>", ctx->target_machine, pass_opts);
+    LLVMDisposePassBuilderOptions(pass_opts);
 
     char *error = NULL;
     if (LLVMTargetMachineEmitToFile(ctx->target_machine, ctx->module,

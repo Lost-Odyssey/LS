@@ -9,8 +9,8 @@ Secondary targets: Ubuntu 22.04, Debian 12, and other glibc-based distros should
 ## Table of Contents
 
 1. [Prerequisites](#1-prerequisites)
-2. [LLVM 18 — Online Installation (apt)](#2-llvm-18--online-installation-apt)
-3. [LLVM 18 — Offline Installation](#3-llvm-18--offline-installation)
+2. [LLVM 19 — Online Installation (apt)](#2-llvm-19--online-installation-apt)
+3. [LLVM 19 — Offline Installation](#3-llvm-19--offline-installation)
    - [Method A: Pre-built tarball (recommended)](#method-a-pre-built-tarball-recommended)
    - [Method B: Offline .deb packages](#method-b-offline-deb-packages)
    - [Method C: Build from source](#method-c-build-from-source)
@@ -34,7 +34,7 @@ sudo apt-get install -y \
     ninja-build \       # recommended generator (faster than make)
     git \               # to clone the repo
     zlib1g-dev \        # zlib (LLVM uses it for bitcode compression)
-    libzstd-dev         # zstd (optional but recommended for LLVM 18)
+    libzstd-dev         # zstd (optional but recommended for LLVM 19)
 ```
 
 Verify cmake version:
@@ -51,7 +51,7 @@ sudo snap install cmake --classic
 
 ---
 
-## 2. LLVM 18 — Online Installation (apt)
+## 2. LLVM 19 — Online Installation (apt)
 
 Use this method when the target machine has unrestricted internet access.
 
@@ -60,27 +60,27 @@ Use this method when the target machine has unrestricted internet access.
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
     | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
 
-echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" \
-    | sudo tee /etc/apt/sources.list.d/llvm-18.list
+echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+    | sudo tee /etc/apt/sources.list.d/llvm-19.list
 
 sudo apt-get update
 
-# Step 2: Install LLVM 18 development headers + clang
-sudo apt-get install -y llvm-18-dev clang-18
+# Step 2: Install LLVM 19 development headers + clang
+sudo apt-get install -y llvm-19-dev clang-19 libclang-19-dev
 
 # Step 3: Verify the cmake config file is present
-ls /usr/lib/llvm-18/lib/cmake/llvm/LLVMConfig.cmake
+ls /usr/lib/llvm-19/lib/cmake/llvm/LLVMConfig.cmake
 ```
 
 **LLVM_DIR** to pass to cmake:
 
 ```
-/usr/lib/llvm-18/lib/cmake/llvm
+/usr/lib/llvm-19/lib/cmake/llvm
 ```
 
 ---
 
-## 3. LLVM 18 — Offline Installation
+## 3. LLVM 19 — Offline Installation
 
 Choose the method that best matches your situation.
 
@@ -97,50 +97,50 @@ Choose the method that best matches your situation.
 #### Step 1 — Download on a machine with internet access
 
 ```bash
-# Official LLVM 18.1.8 pre-built binary for Linux x86_64
+# Official LLVM 19.1.7 pre-built binary for Linux x86_64
 # (Compiled against Ubuntu 22.04; fully compatible with Ubuntu 24.04)
-wget https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+wget https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/clang+llvm-19.1.7-x86_64-linux-gnu-ubuntu-22.04.tar.xz
 
 # Optional: verify checksum (compare against the SHA256 listed on the GitHub release page)
-sha256sum clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+sha256sum clang+llvm-19.1.7-x86_64-linux-gnu-ubuntu-22.04.tar.xz
 ```
 
 #### Step 2 — Transfer to the offline machine
 
 ```bash
 # Via USB drive
-cp clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz /media/usb/
+cp clang+llvm-19.1.7-x86_64-linux-gnu-ubuntu-22.04.tar.xz /media/usb/
 
 # Via scp (from any machine that can reach the target)
-scp clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz user@offline-host:~/
+scp clang+llvm-19.1.7-x86_64-linux-gnu-ubuntu-22.04.tar.xz user@offline-host:~/
 
 # Via rsync
-rsync -avz clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz user@offline-host:~/
+rsync -avz clang+llvm-19.1.7-x86_64-linux-gnu-ubuntu-22.04.tar.xz user@offline-host:~/
 ```
 
 #### Step 3 — Install on the offline machine
 
 ```bash
-# Extract into /opt/llvm-18  (--strip-components=1 removes the top-level directory)
-sudo mkdir -p /opt/llvm-18
-sudo tar -xJf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz \
-    -C /opt/llvm-18 \
+# Extract into /opt/llvm-19  (--strip-components=1 removes the top-level directory)
+sudo mkdir -p /opt/llvm-19
+sudo tar -xJf clang+llvm-19.1.7-x86_64-linux-gnu-ubuntu-22.04.tar.xz \
+    -C /opt/llvm-19 \
     --strip-components=1
 
 # Verify key files
-ls /opt/llvm-18/lib/cmake/llvm/LLVMConfig.cmake   # cmake config
-ls /opt/llvm-18/lib/libLLVMCore.a                 # static library
-ls /opt/llvm-18/bin/llvm-config                   # config tool
+ls /opt/llvm-19/lib/cmake/llvm/LLVMConfig.cmake   # cmake config
+ls /opt/llvm-19/lib/libLLVMCore.a                 # static library
+ls /opt/llvm-19/bin/llvm-config                   # config tool
 
 # Optional: add clang/llvm tools to PATH
-echo 'export PATH=/opt/llvm-18/bin:$PATH' >> ~/.bashrc
+echo 'export PATH=/opt/llvm-19/bin:$PATH' >> ~/.bashrc
 source ~/.bashrc
 ```
 
 **LLVM_DIR** to pass to cmake:
 
 ```
-/opt/llvm-18/lib/cmake/llvm
+/opt/llvm-19/lib/cmake/llvm
 ```
 
 ---
@@ -155,14 +155,14 @@ Use this method when you have a second Ubuntu 24.04 machine with internet access
 # Add the LLVM apt source (same as online method)
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
     | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" \
-    | sudo tee /etc/apt/sources.list.d/llvm-18.list
+echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+    | sudo tee /etc/apt/sources.list.d/llvm-19.list
 sudo apt-get update
 
 # Create a staging directory and download every .deb (with recursive deps)
-mkdir ~/llvm18-debs && cd ~/llvm18-debs
+mkdir ~/llvm19-debs && cd ~/llvm19-debs
 
-TARGET_PKGS="llvm-18-dev clang-18 libllvm18 llvm-18-runtime llvm-18"
+TARGET_PKGS="llvm-19-dev clang-19 libllvm19 llvm-19-runtime llvm-19"
 
 for pkg in $TARGET_PKGS; do
     apt-get download $(apt-cache depends --recurse \
@@ -174,18 +174,18 @@ done
 apt-get download $TARGET_PKGS
 
 # Bundle into a single archive
-cd ~ && tar -czf llvm18-debs.tar.gz llvm18-debs/
+cd ~ && tar -czf llvm19-debs.tar.gz llvm19-debs/
 ```
 
 #### Step 2 — Transfer and install on the offline machine
 
 ```bash
 # Transfer
-scp llvm18-debs.tar.gz user@offline-host:~/
+scp llvm19-debs.tar.gz user@offline-host:~/
 
 # On the offline machine:
-tar -xzf llvm18-debs.tar.gz
-cd llvm18-debs
+tar -xzf llvm19-debs.tar.gz
+cd llvm19-debs
 
 # Install (dpkg does not resolve ordering, so run twice or use the fix-broken step)
 sudo dpkg -i *.deb || true
@@ -193,13 +193,13 @@ sudo dpkg -i *.deb || true
 sudo dpkg -i *.deb
 
 # Verify
-llvm-config-18 --version   # should print 18.1.x
+llvm-config-19 --version   # should print 19.1.x
 ```
 
 **LLVM_DIR** to pass to cmake:
 
 ```
-/usr/lib/llvm-18/lib/cmake/llvm
+/usr/lib/llvm-19/lib/cmake/llvm
 ```
 
 ---
@@ -214,7 +214,7 @@ Use this as a last resort when no pre-built binary is available.
 
 ```bash
 # Source-only archive — much smaller than the pre-built tarball (~130 MB)
-wget https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/llvm-project-18.1.8.src.tar.xz
+wget https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/llvm-project-19.1.7.src.tar.xz
 ```
 
 #### Step 2 — Transfer to the offline machine (same as Method A step 2)
@@ -224,12 +224,12 @@ wget https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/llvm-
 The cmake flags below build **only the components that LS needs**, cutting build time by roughly 70 % compared to a full LLVM build.
 
 ```bash
-tar -xJf llvm-project-18.1.8.src.tar.xz
-cd llvm-project-18.1.8.src
+tar -xJf llvm-project-19.1.7.src.tar.xz
+cd llvm-project-19.1.7.src
 
 cmake -B build-llvm -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/opt/llvm-18 \
+    -DCMAKE_INSTALL_PREFIX=/opt/llvm-19 \
     -DLLVM_TARGETS_TO_BUILD="X86" \        # only x86; skip ARM, RISC-V, etc.
     -DLLVM_ENABLE_PROJECTS="" \            # no clang, no lld — LS only needs the LLVM C API
     -DLLVM_BUILD_TOOLS=OFF \              # skip llvm-objdump, llvm-nm, etc.
@@ -243,14 +243,14 @@ cmake -B build-llvm -G Ninja \
 # Build using all available CPU cores
 cmake --build build-llvm -j$(nproc)
 
-# Install to /opt/llvm-18
+# Install to /opt/llvm-19
 sudo cmake --install build-llvm
 ```
 
 **LLVM_DIR** to pass to cmake:
 
 ```
-/opt/llvm-18/lib/cmake/llvm
+/opt/llvm-19/lib/cmake/llvm
 ```
 
 ---
@@ -415,7 +415,7 @@ The `LS_UNIX_EXTRA_LIBS` variable in `CMakeLists.txt` automatically pulls in `LL
 If you still see missing symbols, print what LLVM reports:
 
 ```bash
-/opt/llvm-18/bin/llvm-config --system-libs --link-static
+/opt/llvm-19/bin/llvm-config --system-libs --link-static
 ```
 
 Add any missing libraries to `target_link_libraries` in `CMakeLists.txt`.
@@ -450,7 +450,7 @@ cc --version
 If you installed clang from the tarball and prefer to use it as the linker driver:
 
 ```bash
-sudo ln -sf /opt/llvm-18/bin/clang /usr/local/bin/cc
+sudo ln -sf /opt/llvm-19/bin/clang /usr/local/bin/cc
 ```
 
 ### JIT test failures on `test_ffi`
