@@ -449,3 +449,26 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_phase_c7_closure.cmake
 )
 set_tests_properties(test_phase_c7_closure PROPERTIES DEPENDS "test_phase_c5_closure")
+
+# Phase E.1 (by-ref capture: vec/map captures store pointer to outer alloca;
+# mutations after capture visible in closure body; no double-free / no clone leak).
+add_test(
+    NAME test_phase_e1_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_e1_closure.cmake
+)
+set_tests_properties(test_phase_e1_closure PROPERTIES DEPENDS "test_phase_c7_closure")
+
+# Phase E.2 + E.4 (closure param borrowed for vec/map; array(POD,N) by-value capture).
+add_test(
+    NAME test_phase_e2_e4_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_e2_e4_closure.cmake
+)
+set_tests_properties(test_phase_e2_e4_closure PROPERTIES DEPENDS "test_phase_e1_closure")
