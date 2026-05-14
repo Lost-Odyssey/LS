@@ -24,7 +24,9 @@ llvm_map_components_to_libnames(LLVM_LIBS
 # We always add dl (dlopen for FFI) and m explicitly as a safety net.
 if(NOT WIN32)
     find_package(Threads REQUIRED)
-    set(LS_UNIX_EXTRA_LIBS dl m Threads::Threads)
+    # stdc++ is needed because LLVM is a C++ library; project(ls C) uses the C
+    # linker which does not pull it in automatically on all distros.
+    set(LS_UNIX_EXTRA_LIBS dl m stdc++ Threads::Threads)
     if(LLVM_SYSTEM_LIBS)
         list(APPEND LS_UNIX_EXTRA_LIBS ${LLVM_SYSTEM_LIBS})
     endif()

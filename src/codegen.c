@@ -2962,6 +2962,8 @@ static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
     LLVMValueRef self_ptr = LLVMGetParam(drop_fn, 0);
     LLVMSetValueName(self_ptr, "self");
 
+    LLVMTypeRef llvm_struct = type_to_llvm(ctx, struct_type);
+
     /* Generate cleanup for each field **in reverse order** */
     for (int i = struct_type->as.strukt.field_count - 1; i >= 0; i--)
     {
@@ -12895,6 +12897,8 @@ static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
     LLVMValueRef self_ptr = LLVMGetParam(drop_fn, 0);
     LLVMSetValueName(self_ptr, "self");
 
+    LLVMTypeRef enum_llvm = type_to_llvm(ctx, enum_type);
+
     LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, self_ptr, 0, "disc.p");
     LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "disc");
     LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, self_ptr, 1, "payload.p");
@@ -13325,6 +13329,8 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
                     /* Call user body first */
                     LLVMTypeRef user_fn_type = LLVMGlobalGetValueType(user_fn);
                     LLVMBuildCall2(ctx->builder, user_fn_type, user_fn, &self_ptr, 1, "");
+
+                    LLVMTypeRef llvm_struct = type_to_llvm(ctx, st);
 
                     /* Reverse-order compiler cleanup: strings + nested struct drops */
                     for (int fi = st->as.strukt.field_count - 1; fi >= 0; fi--)
