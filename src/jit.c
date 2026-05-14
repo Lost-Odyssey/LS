@@ -479,6 +479,19 @@ static int jit_run_file_impl(const char *path, bool memcheck) {
         return 1;
     }
 
+    /* Inspect main()'s return type before transferring the module to the JIT.
+       We need this to call it with the correct ABI later. */
+    bool main_returns_int = false;
+    {
+        LLVMValueRef main_fn_val = LLVMGetNamedFunction(module, "main");
+        if (main_fn_val) {
+            LLVMTypeRef fn_t   = LLVMGlobalGetValueType(main_fn_val);
+            LLVMTypeRef ret_t  = LLVMGetReturnType(fn_t);
+            LLVMTypeKind ret_k = LLVMGetTypeKind(ret_t);
+            main_returns_int = (ret_k == LLVMIntegerTypeKind);
+        }
+    }
+
     /* Add module to JIT */
     if (jit_add_module(&engine, module) != 0) {
         jit_destroy(&engine);
@@ -499,9 +512,21 @@ static int jit_run_file_impl(const char *path, bool memcheck) {
         return 1;
     }
 
-    typedef int (*MainFn)(void);
-    MainFn main_fn = (MainFn)(uintptr_t)main_addr;
-    int result = main_fn();
+    /* Call main() with the correct ABI.
+       - fn main()        → void return; always exit 0.
+       - fn main() -> int → int return; propagate as exit code.
+         If the user writes fn main() -> int but omits explicit return,
+         codegen emits 'ret i32 0' automatically (LLVMConstNull fallback). */
+    int result = 0;
+    if (main_returns_int) {
+        typedef int (*MainFnInt)(void);
+        MainFnInt main_fn = (MainFnInt)(uintptr_t)main_addr;
+        result = main_fn();
+    } else {
+        typedef void (*MainFnVoid)(void);
+        MainFnVoid main_fn = (MainFnVoid)(uintptr_t)main_addr;
+        main_fn();
+    }
 
     /* Memcheck report MUST run before jit_destroy: the LsMcSite globals
        referenced by tracked allocations live in the JIT module memory and

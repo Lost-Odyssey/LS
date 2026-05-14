@@ -230,9 +230,15 @@ struct AstNode
                and emit per-capture loads at body entry. */
             struct {
                 char *name;
-                Type *type;     /* shared, not owned */
+                Type *type;            /* shared, not owned */
+                bool  is_explicit_move; /* F.1: user wrote [move v] for this */
             } *captures;
             int capture_count;
+            /* F.1: [move v1, v2] capture spec from parser.
+               Checker resolves these into captures[i].is_explicit_move.
+               Owned; freed by ast_free. */
+            char **move_names;
+            int    move_count;
         } closure;
         struct
         {

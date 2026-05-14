@@ -765,6 +765,7 @@ static bool type_is_movable(Type *t)
     case TYPE_VECTOR: return true;
     case TYPE_MAP:    return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
+    case TYPE_BLOCK:  return true;  /* F.2: Block owns its env heap */
     default:          return false;
     }
 }
@@ -882,6 +883,80 @@ static bool checker_reject_struct_borrow_copy_source(Checker *c, AstNode *src, c
                        "cannot %s: '%s' is a %sborrow of struct — value cannot be copied out",
                        what, src->as.ident.name,
                        sym->is_mut_borrow ? "writable " : "read-only ");
+    return true;
+}
+
+/* F.2: reject moving a Block parameter (is_borrow=true).
+   Block pass-by-value is a shallow copy: both caller and callee share env_ptr.
+   Moving from a Block param would drop the env the caller still holds → double-free. */
+static bool checker_reject_block_param_move(Checker *c, AstNode *src, const char *what)
+{
+    if (!src || src->kind != AST_IDENT) return false;
+    Symbol *sym = scope_resolve(c->current_scope, src->as.ident.name);
+    if (!sym) return false;
+    if (!sym->type || sym->type->kind != TYPE_BLOCK) return false;
+    if (!sym->is_borrow) return false;
+    checker_move_error(c, src->line, src->column,
+                       "cannot %s: '%s' is a Block parameter — call it directly; "
+                       "Block parameters cannot be moved (they share env with the caller)",
+                       what, src->as.ident.name);
+    return true;
+}
+
+/* F.3: reading a Block field out of a struct and storing it into a variable
+   would create a second live reference to the same env — double-free on scope exit.
+   Only allow direct call `p.step1(args)`; reject `Block g = p.step1`. */
+static bool checker_reject_block_field_read(Checker *c, AstNode *src, const char *what)
+{
+    if (!src || src->kind != AST_FIELD) return false;
+    if (!src->resolved_type || src->resolved_type->kind != TYPE_BLOCK) return false;
+    checker_move_error(c, src->line, src->column,
+                       "cannot %s: reading a Block field out of a struct creates a "
+                       "second reference to the same env (double-free); "
+                       "call it directly: p.step1(args)",
+                       what);
+    return true;
+}
+
+/* F.4A: extracting a Block from a vec via index `vec[i]` would create a second
+   live reference to the same env — double-free when both the local var and the
+   vec element are dropped.  Only allow direct call: vec[i](args). */
+static bool checker_reject_block_vec_index(Checker *c, AstNode *src)
+{
+    if (!src || src->kind != AST_INDEX) return false;
+    if (!src->resolved_type || src->resolved_type->kind != TYPE_BLOCK) return false;
+    /* Confirm the container is a vec (not an array or map) */
+    AstNode *obj = src->as.index_expr.object;
+    if (!obj || !obj->resolved_type) return false;
+    if (obj->resolved_type->kind != TYPE_VECTOR) return false;
+    checker_move_error(c, src->line, src->column,
+                       "cannot copy Block out of vec: the env would be shared between "
+                       "the new variable and the vec element (double-free on drop); "
+                       "call it directly instead: vec[i](args)");
+    return true;
+}
+
+/* F.4A: extracting a Block from a map via map.get(k) would create a second
+   live reference to the same env — double-free hazard.
+   Only allow direct call: map.get(k)(args). */
+static bool checker_reject_block_map_get(Checker *c, AstNode *src)
+{
+    if (!src || src->kind != AST_CALL) return false;
+    if (!src->resolved_type || src->resolved_type->kind != TYPE_BLOCK) return false;
+    /* Detect map.get(key) call pattern */
+    AstNode *callee = src->as.call.callee;
+    if (!callee || callee->kind != AST_FIELD) return false;
+    if (strcmp(callee->as.field_access.field, "get") != 0) return false;
+    AstNode *map_obj = callee->as.field_access.object;
+    if (!map_obj || !map_obj->resolved_type) return false;
+    if (map_obj->resolved_type->kind != TYPE_MAP) return false;
+    /* Confirm the map value type is Block */
+    Type *val_t = map_obj->resolved_type->as.map.val;
+    if (!val_t || val_t->kind != TYPE_BLOCK) return false;
+    checker_move_error(c, src->line, src->column,
+                       "cannot copy Block out of map: the env would be shared between "
+                       "the new variable and the map entry (double-free on drop); "
+                       "call it directly instead: map.get(k)(args)");
     return true;
 }
 
@@ -1519,7 +1594,12 @@ static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
                           "vec.push() takes 1 argument, got %d", argc);
             return NULL;
         }
+        /* F.4: propagate expected_type for Block elem so closure literals can infer types */
+        Type *saved_exp_push = c->expected_type;
+        if (elem && elem->kind == TYPE_BLOCK)
+            c->expected_type = elem;
         Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp_push;
         if (arg && !type_equals(arg, elem))
         {
             checker_error(c, call_node->as.call.args[0]->line,
@@ -1997,7 +2077,12 @@ static Type *check_map_method(Checker *c, AstNode *call_node, Type *map_type)
             checker_error(c, call_node->as.call.args[0]->line,
                           call_node->as.call.args[0]->column,
                           "map.set() key expects '%s', got '%s'", type_name(K), type_name(k));
+        /* F.4: propagate expected_type for Block value so closure literals can infer types */
+        Type *saved_exp_set = c->expected_type;
+        if (V && V->kind == TYPE_BLOCK)
+            c->expected_type = V;
         Type *v = check_expr(c, call_node->as.call.args[1]);
+        c->expected_type = saved_exp_set;
         if (v && !type_equals(v, V))
             checker_error(c, call_node->as.call.args[1]->line,
                           call_node->as.call.args[1]->column,
@@ -2362,10 +2447,12 @@ typedef struct {
     int bound_count;
     int bound_cap;
 
-    /* Output list (deep-owned names). */
+    /* Output list (deep-owned names). Must match AstClosureNode.captures
+       layout exactly — the pointer is transferred directly to the AST node. */
     struct {
         char *name;
         Type *type;
+        bool  is_explicit_move;  /* F.1: set after capture_walk from move_names */
     } *captures;
     int capture_count;
     int capture_cap;
@@ -2428,6 +2515,7 @@ static bool capture_type_is_by_move(const Type *t) {
     case TYPE_VECTOR: return false;   /* by-ref: env borrows outer alloca */
     case TYPE_MAP:    return false;   /* by-ref: env borrows outer alloca */
     case TYPE_STRUCT: return t->as.strukt.has_drop;
+    case TYPE_ENUM:   return t->as.enom.has_drop;   /* F.5: has_drop enum → by-move */
     default:          return false;
     }
 }
@@ -2449,6 +2537,9 @@ static bool capture_type_is_pod_array(const Type *t) {
 }
 
 static bool capture_type_supported(const Type *t) {
+    if (t == NULL) return false;
+    /* F.5: non-has_drop enum (disc-only or POD payloads) is by-copy — no drop. */
+    if (t->kind == TYPE_ENUM && !t->as.enom.has_drop) return true;
     return capture_type_is_pod(t) ||
            capture_type_is_pod_array(t) ||
            capture_type_is_by_move(t) ||
@@ -2462,7 +2553,8 @@ static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t)
                       "capturing variable '%s' of type '%s' in a closure is "
                       "not yet implemented (supported: POD types, "
                       "array(POD,N) (by-copy), string (by-move), "
-                      "vec(T)/map(K,V) (by-ref), struct(has_drop) (by-move))",
+                      "vec(T)/map(K,V) (by-ref), struct(has_drop) (by-move), "
+                      "enum (by-copy or by-move depending on has_drop))",
                       name, type_name(t));
         s->had_error = true;
         return;
@@ -2509,6 +2601,7 @@ static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t)
     memcpy(dup, name, nl + 1);
     s->captures[s->capture_count].name = dup;
     s->captures[s->capture_count].type = t;
+    s->captures[s->capture_count].is_explicit_move = false;
     s->capture_count++;
 }
 
@@ -3930,6 +4023,50 @@ static Type *check_expr(Checker *c, AstNode *node)
             free((void*)cs.bound);
             node->as.closure.captures = (void*)cs.captures;
             node->as.closure.capture_count = cs.capture_count;
+
+            /* F.1: Process [move v1, v2] capture spec.
+               For each name in move_names:
+               - Find the matching capture and set is_explicit_move=true.
+               - If not found in captures, report an error.
+               For explicitly-moved vec/map: apply by-move outer-symbol checks
+               (these were skipped in cap_record, which treats vec/map as by-ref). */
+            for (int mi = 0; mi < node->as.closure.move_count; mi++) {
+                const char *mname = node->as.closure.move_names[mi];
+                bool found = false;
+                for (int ci = 0; ci < node->as.closure.capture_count; ci++) {
+                    if (strcmp(node->as.closure.captures[ci].name, mname) == 0) {
+                        node->as.closure.captures[ci].is_explicit_move = true;
+                        found = true;
+                        /* For vec/map: apply by-move semantics (outer marking).
+                           string/struct: already handled in cap_record (by-move).
+                           POD/array: harmless no-op (warn about redundancy). */
+                        Type *ct = node->as.closure.captures[ci].type;
+                        if (ct && (ct->kind == TYPE_VECTOR || ct->kind == TYPE_MAP)) {
+                            Symbol *outer = scope_resolve(outer_scope_for_caps, mname);
+                            if (outer) {
+                                if (outer->is_borrow || outer->is_mut_borrow) {
+                                    checker_move_error(c, node->line, node->column,
+                                        "cannot [move] capture '%s' into closure: "
+                                        "it is a borrow parameter (no ownership to transfer)",
+                                        mname);
+                                } else if (outer->is_moved || outer->is_maybe_moved) {
+                                    checker_move_error(c, node->line, node->column,
+                                        "cannot [move] capture '%s' into closure: "
+                                        "already moved on a prior path", mname);
+                                } else {
+                                    outer->is_moved = true;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                if (!found) {
+                    checker_error(c, node->line, node->column,
+                        "'%s' in [move ...] list is not referenced inside "
+                        "the closure body and cannot be captured", mname);
+                }
+            }
         }
 
         /* Check body in new scope */
@@ -3938,7 +4075,10 @@ static Type *check_expr(Checker *c, AstNode *node)
         {
             if (params[i])
             {
-                scope_define(c->current_scope, node->as.closure.param_names[i], params[i]);
+                Symbol *psym = scope_define(c->current_scope, node->as.closure.param_names[i], params[i]);
+                /* F.2: Block closure params share env_ptr with caller — treat as borrow */
+                if (psym && params[i]->kind == TYPE_BLOCK)
+                    psym->is_borrow = true;
             }
         }
         /* Define captures inside the closure scope so the body type-checker
@@ -4361,17 +4501,27 @@ static Type *check_expr(Checker *c, AstNode *node)
                               node->as.new_expr.struct_name, fname);
                 goto new_expr_done;
             }
-            /* Type-check the value */
+            /* Type-check the value; set expected_type so closure literals can
+               infer their param/return types from the field's Block type. */
+            Type *field_expected = st->as.strukt.fields[field_idx].type;
+            Type *saved_expected2 = c->expected_type;
+            if (field_expected && field_expected->kind == TYPE_BLOCK)
+                c->expected_type = field_expected;
             Type *vt = check_expr(c, node->as.new_expr.field_inits[i].value);
-            if (vt && !type_equals(vt, st->as.strukt.fields[field_idx].type))
+            c->expected_type = saved_expected2;
+            if (vt && !type_equals(vt, field_expected))
             {
                 checker_error(c, node->as.new_expr.field_inits[i].value->line,
                               node->as.new_expr.field_inits[i].value->column,
                               "field '%s': expected '%s', got '%s'",
                               fname,
-                              type_name(st->as.strukt.fields[field_idx].type),
+                              type_name(field_expected),
                               type_name(vt));
             }
+            /* F.3: Block field value ownership transfers into the struct.
+               Mark source identifier as moved so it cannot be used again. */
+            if (vt && vt->kind == TYPE_BLOCK)
+                checker_try_mark_moved(c, node->as.new_expr.field_inits[i].value);
         }
     new_expr_done:
         /* on_stack = struct value literal  S1{...} → resolves to TYPE_STRUCT
@@ -4531,6 +4681,15 @@ static void check_stmt(Checker *c, AstNode *node)
             /* Phase 5.8: same for struct borrows. */
             checker_reject_struct_borrow_copy_source(c, node->as.var_decl.init,
                                                  "initialize new variable from struct borrow");
+            /* F.2: Block parameters are shallow-copy borrows; cannot be moved out. */
+            checker_reject_block_param_move(c, node->as.var_decl.init,
+                                            "move Block into new variable");
+            /* F.3: Block struct fields cannot be aliased out; call them directly. */
+            checker_reject_block_field_read(c, node->as.var_decl.init,
+                                            "copy Block field into new variable");
+            /* F.4A: Block vec elements / map values cannot be aliased out either. */
+            checker_reject_block_vec_index(c, node->as.var_decl.init);
+            checker_reject_block_map_get(c, node->as.var_decl.init);
             /* Move tracking: if the initializer is a dynamic string IDENT, the source is moved.
                Static strings, borrow params, and non-string types are left untouched
                (checker_try_mark_moved skips them). Reading a borrow into a new local
@@ -4658,7 +4817,16 @@ static void check_stmt(Checker *c, AstNode *node)
             /* Phase 5.8: same for struct borrows. */
             checker_reject_struct_borrow_copy_source(c, node->as.assign.value,
                                                  "assign struct borrow contents to another variable");
-            /* If RHS is a dynamic string IDENT, mark it as moved */
+            /* F.2: Block parameters are shallow-copy borrows; cannot be moved out. */
+            checker_reject_block_param_move(c, node->as.assign.value,
+                                            "assign Block parameter to another variable");
+            /* F.3: Block struct fields cannot be aliased out; call them directly. */
+            checker_reject_block_field_read(c, node->as.assign.value,
+                                            "assign Block field to another variable");
+            /* F.4A: Block vec elements / map values cannot be aliased out either. */
+            checker_reject_block_vec_index(c, node->as.assign.value);
+            checker_reject_block_map_get(c, node->as.assign.value);
+            /* If RHS is a dynamic string/Block/movable IDENT, mark it as moved */
             checker_try_mark_moved(c, node->as.assign.value);
 
             /* Update is_static_string on the target variable to reflect its new value */
@@ -5035,6 +5203,10 @@ static void check_fn_decl(Checker *c, AstNode *node)
                    Borrow / mut-borrow params: is_static_string stays false. */
                 if (sym_type->kind == TYPE_STRING)
                     param_sym->is_static_string = false;
+                /* F.2: Block params are shallow copies (caller and callee share env_ptr).
+                   Mark as borrow so checker_reject_block_param_move catches F1 h = g. */
+                if (sym_type->kind == TYPE_BLOCK)
+                    param_sym->is_borrow = true;
             }
         }
     }
@@ -5084,7 +5256,7 @@ static void check_struct_decl(Checker *c, AstNode *node)
         }
     }
 
-    /* Auto-set has_drop if struct contains string fields (for auto-destruction) */
+    /* Auto-set has_drop if struct contains string/Block/has_drop-struct fields */
     bool needs_drop = false;
     for (int i = 0; i < n && !needs_drop; i++)
     {
@@ -5094,6 +5266,10 @@ static void check_struct_decl(Checker *c, AstNode *node)
             needs_drop = true;
         }
         else if (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop)
+        {
+            needs_drop = true;
+        }
+        else if (ft->kind == TYPE_BLOCK)
         {
             needs_drop = true;
         }
@@ -5421,6 +5597,9 @@ static void check_impl_decl(Checker *c, AstNode *node)
                     /* String method parameters receive deep copies — always dynamic */
                     if (pt->kind == TYPE_STRING)
                         param_sym->is_static_string = false;
+                    /* F.2: Block params are shallow-copy borrows of caller's env */
+                    if (pt->kind == TYPE_BLOCK)
+                        param_sym->is_borrow = true;
                 }
             }
         }
@@ -5867,6 +6046,9 @@ static void check_pass(Checker *c, AstNode *program)
                     /* String parameters receive deep copies from caller — always dynamic */
                     if (pt && pt->kind == TYPE_STRING)
                         param_sym->is_static_string = false;
+                    /* F.2: Block params are shallow-copy borrows of caller's env */
+                    if (pt && pt->kind == TYPE_BLOCK)
+                        param_sym->is_borrow = true;
                 }
             }
             Type *saved_ret = c->current_fn_return;

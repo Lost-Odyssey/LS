@@ -140,6 +140,13 @@ cd build && ctest --output-on-failure -C Release
 | 10 (closure E.1) | by-ref capture 重构：vec/map 捕获 env 存外层 alloca 指针（非值拷贝）；closure body 读写直达外层变量，捕获后 push/新增 key 对闭包可见；outer 变量不标 moved，可多次调用；修复 call site `arg_type` 未声明导致结构体克隆逻辑跳过的编译错 | ✅ |
 | 10 (closure E.2) | 闭包参数 `\|v\|` 的 vec/map/Block 标 `is_borrowed=true`（与普通 fn 参数一致），防止 closure body scope cleanup 释放调用方持有的 heap → double-free | ✅ |
 | 10 (closure E.4) | `array(POD,N)` by-value 捕获：checker 放行 POD-element 数组，codegen 走 by-copy 路径（env 字段类型 `[N x T]`，全量值拷贝，outer 不标 moved） | ✅ |
+| 10 (closure F.1) | `[move v]` 语法：vec/map 显式 by-move 捕获，解决工厂模式悬垂（by-ref 默认改 by-move：env 字段存值而非指针，env_drop 调 drop helper，outer cap 字段置 0 防 scope 双释放） | ✅ |
+| 10 (closure F.2) | Block 赋值 + 移动语义：`type_is_movable` 加 TYPE_BLOCK；fn/closure/method 的 Block 参数标 `is_borrow=true`；`F h = g` 后 g.env_ptr 置 NULL；`g = h` 先 drop 旧 env 再 null source；`return g` 正确 skip scope cleanup；memcheck 0 leak / 0 dfree | ✅ |
+| 10 (closure F.3) | Block 作为 struct 字段：has_drop 扩展接受 TYPE_BLOCK；struct literal 构造时 pop temp_block_envs / null source env（env 转移给 struct）；emit_auto_drop_fn 按字段 emit env drop；checker 禁 `Block g = p.step1` aliasing 读；struct literal 字段 expected_type 传播让 closure 字面量正确推导类型；memcheck 0 leak / 0 dfree | ✅ |
+| 10 (closure F.4) | vec(Block) / map(K, Block)：vec 元素为 Block 时 push 转移 env 所有权（null source），drop 调 emit_vec_elem_drop_at；map value 为 Block 时 set 转移 env，MAP_EMIT_FREE_VAL 扩展 val_is_block；checker push/set 传播 expected_type；直接下标调用 `vec[i](args)` / `map.get(k)(args)` 避免 env 别名（aliasing）；parser 修复 starts_var_decl 行号检查防止 `fn(x)` 后接多行被误判为 var_decl；F.4A checker 拒绝 `Block g = ns[i]` / `Block g = ops.get(k)` aliasing 读（报错并提示直接调用）；memcheck 0 leak / 0 dfree | ✅ |
+| 10 (closure F.5) | enum capture + 完整 drop 模型：非 has_drop enum（disc-only/POD payload）by-copy 捕获（env 无额外 drop）；has_drop enum（含 string/struct payload）by-move 捕获（outer 标 moved_flag=1，body is_borrowed=true，env_drop 调 enum.__drop）；`emit_enum_drop_cond` 新函数（类似 `emit_struct_drop_cond`，按 moved_flag 有条件 drop）；`emit_auto_enum_drop_fn` 扩展支持 vec(T)/map(K,V)/嵌套 has_drop enum payload；`emit_scope_cleanup`/`emit_cleanup_to` enum 分支改用 `emit_enum_drop_cond`；修复 match codegen "Terminator found in middle of basic block" bug（match arm 含 `return` 语句时 `LLVMBuildBr` 前加终结符检查）；memcheck 0 leak / 0 dfree | ✅ |
+| 10 (closure F.6) | CG_DEBUG 全面铺开：闭包 capture/move/borrow/drop 全操作路径结构化日志；四个 helper（`cg_dbg_capture`/`cg_dbg_outer_mark`/`cg_dbg_env_alloc`/`cg_dbg_block_op`）均 `#if CG_DEBUG` 包裹，`CG_DEBUG=0` 时零开销；注入点：`codegen_closure_literal` step 0（cap_outer_vals 加载区分 borrow/move-expl/move/copy）、step 9b（env.alloc + outer.mark cap=-1/moved_flag=1/vec.cap=0）；`cg_emit_block_env_drop`（env.drop）；`cg_null_block_env`（block.move src→null）；`emit_scope_cleanup`/`emit_cleanup_to` TYPE_BLOCK 分支（block.drop var='name'）；`emit_auto_drop_fn` TYPE_BLOCK 字段（field.drop）；`emit_vec_elem_drop_at` TYPE_BLOCK（elem.drop）；CMake 选项 `-DLS_CG_DEBUG=ON`（非 `-DCG_DEBUG=1`）；ctest 29/29 | ✅ |
+| 10 (closure F.7) | Memcheck 压力测试（1000 次迭代，S1–S6 六种捕获模式）+ 两个真实 bug 修复：(1) `emit_enum_clone_val` 新函数：has_drop enum 函数参数按值传递时深拷贝 string/struct/enum payload，防双释放（与 struct 的 `emit_struct_clone_val` 对称）；AST_CALL argument clone 加 `TYPE_ENUM && has_drop` 分支；(2) enum match arm string binder 独立所有权：`Some(s) => { return s }` 场景下 binder `s` 现在克隆 payload 字符串（`emit_string_clone_val`），不再与 enum 共享数据指针，消除 `return` 后 env_drop + caller scope cleanup 双 free；ctest 30/30 | ✅ |
 
 > 各 Phase 详细规范见 [docs/phases.md](docs/phases.md)
 
@@ -212,10 +219,102 @@ cd build && ctest --output-on-failure -C Release
 - 借用作为返回类型 / 变量声明 / struct 字段（需引入生命期系统）
 - enum 含 vec/map payload 的 drop（当前 string + struct + 自递归 box 已支持）
 - enum binder 的 move 跟踪（当前为只读借用语义；自递归复杂复用场景待 Phase B）
+- **Phase G（可选）：Block env 深拷贝**（`Block g = ns[i]` / `Block g = ops.get(k)` 当前 checker 拒绝）；需合成 `__env_clone_N`，env 增加 clone_fn slot；仅支持 POD + string capture；详细设计见 [`docs/block_clone_plan.md`](docs/block_clone_plan.md)
+- **Phase H（独立）：struct 深拷贝**（`MyStruct b = vec_of_struct[i]` 含 has_drop 时 double-free，与 Phase G 共用 clone 基础设施）
 - 正则表达式 builtin
 - f16 半精度浮点数原生支持
 
 ### 已完成（近期）
+
+- **闭包 Phase F.7（Memcheck 压力测试 + 两个真实 bug 修复）** — 2026-05-14
+  - **压力测试**：`tests/samples/closure_f7_stress_test.ls`（1000 次迭代，每次 6 种捕获模式：S1 POD by-copy / S2 string by-move factory / S3 struct(has_drop)+Block field / S4 vec(Block) push+call+drop / S5 has_drop enum by-move capture / S6 inline [move] vec capture）；`tests/test_phase_f7_stress.cmake` JIT + JIT-memcheck + AOT + AOT-memcheck 四重；ctest `test_phase_f7_stress` 依赖 `test_phase_f5_closure`
+  - **Bug 1 修复：`emit_enum_clone_val`（has_drop enum 函数参数未深拷贝）**
+    - 根因：`AST_CALL` argument codegen 对 `TYPE_STRUCT && has_drop` 会调 `emit_struct_clone_val` 深拷贝，但对 `TYPE_ENUM && has_drop` 没有对应处理。当 `Option(string) opt` 传给 `make_opt_getter(opt)` 时，参数和 outer `opt` 共享同一 string data 指针 → double-free
+    - 修复：新增 `emit_enum_clone_val(ctx, enum_val, enum_type)`（在 `emit_struct_clone_val` 之后）：alloca 临时存储 → load disc → switch on disc → 每个 has_drop variant 按字段类型克隆（string: `emit_string_clone_val`；has_drop struct: `emit_struct_clone_val`；嵌套 has_drop enum: 递归）→ load 并返回新值；前向声明加到 line ~252
+    - AST_CALL argument codegen（line ~8694 struct clone 块之后）新增 `else if (TYPE_ENUM && has_drop)` 分支，调用 `emit_enum_clone_val`；同样支持 `__move(e)` 显式转移（设 moved_flag）
+  - **Bug 2 修复：enum match arm string binder 独立所有权**
+    - 根因：`Some(s) => { return s }` 中 binder `s` 直接 load 了 enum payload 的 string struct（共享 data 指针），标 `is_borrowed=true` 防止 scope cleanup 释放。但 `return s` 把这个共享指针传给 caller → `ov`（caller）和 env_drop（closure）各自 free 同一指针 → double-free
+    - 修复：enum match binder 对 `TYPE_STRING` 字段调 `emit_string_clone_val`，给 binder 独立所有权；此时 `is_borrowed = !binder_owns`（string binder 标 false，允许 scope cleanup 在 arm 正常退出时释放克隆；return 路径由 return_alloca skip 机制保护）
+  - **验证**：ctest 30/30 通过；JIT + AOT memcheck 均 0 leaks / 0 double-free
+
+- **闭包 Phase F.5（enum capture + 完整 drop 模型）** — 2026-05-14
+  - **F.5.1 checker：capture_type_supported 接受 enum**：非 has_drop enum（disc-only / POD payload，如 Direction、Color）走 by-copy；has_drop enum（含 string/struct payload，如 Result/Option-with-string）走 by-move；`capture_type_is_by_move` 新增 `case TYPE_ENUM: return t->as.enom.has_drop`
+  - **F.5.2 codegen：by-copy 路径**：非 has_drop enum 的捕获与 POD 一致（env 字段直接存值，body 端 alloca+store，scope cleanup 跳过——enum 无堆内存），无额外 drop
+  - **F.5.3 codegen：by-move 路径**：has_drop enum 捕获时 env 接管堆内存；outer 变量通过 `moved_flag`（i1 alloca）标记移动（与 struct 一致）；body 端 `is_borrowed=true` 防止 scope cleanup 双 drop；`var_decl`/`fn_decl` 参数注册处扩展为 `(has_drop struct || has_drop enum)` 分配 moved_flag
+  - **F.5.4 `emit_enum_drop_cond`**：新合成辅助函数，类似 `emit_struct_drop_cond`，按 moved_flag 有条件调用 `Enum.__drop(ptr)`；`emit_scope_cleanup` 和 `emit_cleanup_to` 的 enum has_drop 分支改用此函数
+  - **F.5.5 env_drop（`__env_drop_N`）enum slot**：枚举捕获进 env_drop 循环，调用 `emit_auto_enum_drop_fn` 确保 drop_fn 已生成，然后 `call enum.__drop(slot_ptr)`
+  - **F.5.6 `emit_auto_enum_drop_fn` 完整 drop 模型**：扩展 payload 处理，新增：`TYPE_VECTOR` payload（load LsVec，cap>0 时元素逐个 drop + free data buffer）；`TYPE_MAP` payload（调 `__ls_map_XX_drop`）；嵌套 has_drop enum payload（递归调 `emit_auto_enum_drop_fn`）
+  - **F.5.7 match codegen 终结符 bug 修复**：`AST_MATCH` 的 enum switch arm 和 非 enum if/else arm 在编译完 arm body 后，若 body 含 `return` 语句，该 block 已有终结符，再调 `LLVMBuildBr` 会产生 "Terminator found in middle of basic block"；在所有 `LLVMBuildBr(ctx->builder, merge_bb)` 调用前加 `LLVMGetBasicBlockTerminator(...) == NULL` 检查，共 5 处（enum wildcard / enum case / 非 enum wildcard / 非 enum then / 非 enum fallthrough）
+  - **测试**：`tests/samples/closure_f5_test.ls`（8 组：Direction 非 has_drop by-copy / Option(int) by-copy / Result(int,string) by-move / 工厂函数 / Direction+int 混合 / Color POD payload by-copy / vec(OptGetter) / 多次调用）；`tests/test_phase_f5_closure.cmake` JIT + memcheck + AOT + AOT-memcheck 四重；ctest `test_phase_f5_closure` 依赖 `test_phase_f4_closure`
+  - 验证：ctest 29/29 通过；memcheck 0 leaks / 0 double-free
+
+- **闭包 Phase F.6（CG_DEBUG 全面铺开）** — 2026-05-14
+  - **目的**：为闭包 capture/env/drop 全流程注入结构化运行期日志，方便调试 codegen 内部的内存管理决策（Phase C 起每次改动都可 `-DLS_CG_DEBUG=ON` 验证路径正确性）
+  - **四个 helper（`codegen.c` lines ~115-176）**：
+    - `cg_dbg_capture(ctx, name, t, kind)` — 每个捕获变量记录一行 `[cg] cap.<kind> name='...' type='...'`，kind 为 copy/move/move-expl/borrow
+    - `cg_dbg_outer_mark(ctx, name, marker)` — outer 变量被标 MOVED 时记录（cap=-1 / moved_flag=1 / vec.cap=0 / map.cap=0）
+    - `cg_dbg_env_alloc(ctx, id, size, env_ptr)` — env 堆分配时记录 closure_id + size + 运行期 ptr
+    - `cg_dbg_block_op(ctx, op, label, env_ptr)` — 通用 block 操作（drop/move/field.drop/elem.drop/env.drop）
+  - **所有 helper 全部包裹 `#if CG_DEBUG ... #else (void)... #endif`**；涉及 LLVM 指令构建的也在 `#if CG_DEBUG` 内（`cg_null_block_env` 的 load+log、`emit_vec_elem_drop_at` 的 load+log），`CG_DEBUG=0` 时零 IR 开销
+  - **注入点完整列表**：
+    - `codegen_closure_literal` step 0（cap_outer_vals 加载循环）：按 is_default_by_ref / capture_type_is_by_move_cg / explicit_move+vec/map / copy 四分支各调 `cg_dbg_capture`
+    - `codegen_closure_literal` step 9b（env alloc 后）：`cg_dbg_env_alloc`；outer 标记处（string cap=-1、struct/enum moved_flag=1、[move] vec.cap=0、[move] map.cap=0）各调 `cg_dbg_outer_mark`
+    - `cg_emit_block_env_drop`：`cg_dbg_block_op(env.drop)` — 每次 env 被释放时记录运行期 ptr
+    - `cg_null_block_env`（`#if CG_DEBUG`）：读出 old_env → `cg_dbg_block_op(move, src->null)`
+    - `emit_scope_cleanup` TYPE_BLOCK 分支（`#if CG_DEBUG`）：`cg_dbg_block_op(drop, var='name')`
+    - `emit_cleanup_to` TYPE_BLOCK 分支（`#if CG_DEBUG`）：`cg_dbg_block_op(drop, var='name')`
+    - `emit_auto_drop_fn` TYPE_BLOCK 字段：`cg_dbg_block_op(field.drop, field_name)`
+    - `emit_vec_elem_drop_at` TYPE_BLOCK（`#if CG_DEBUG`）：load env ptr → `cg_dbg_block_op(elem.drop, label)`
+  - **CMake 使用方式**：`cmake ... -DLS_CG_DEBUG=ON`（注意是 `LS_CG_DEBUG`，不是 `CG_DEBUG`）；正式 build 保持 OFF
+  - **示例输出**（F.5 test）：
+    ```
+    [cg] cap.copy    name='d           ' type='Direction'
+    [cg] env.alloc  closure_id=0    size=16     ptr=0x...
+    [cg] block.drop     var='f'            env=0x...
+    [cg] cap.move    name='r           ' type='Result(int,string)'
+    [cg] outer.mark name='r           ' state='MOVED'  marker='moved_flag=1'
+    [cg] block.env.drop                   env=0x...
+    ```
+  - 验证：ctest 29/29（正式 `build/`，CG_DEBUG=0）；`build_dbg/`（CG_DEBUG=1）编译通过，F.5 日志输出完整覆盖所有 8 个测试用例的捕获路径
+
+- **闭包 Phase F.4（vec(Block) / map(K, Block)）** — 2026-05-14
+  - **F.4.1 vec(Block) push 所有权转移**：`vec.push` codegen 新增 TYPE_BLOCK 分支：RHS 为 IDENT Block 变量时 `cg_null_block_env` null source env，RHS 为 closure 字面量时 `temp_block_env_count--`（pop rvalue env）
+  - **F.4.2 vec(Block) 元素 drop**：`emit_vec_elem_drop_at` 新增 TYPE_BLOCK case：调 `cg_emit_block_drop_at(ctx, elem_ptr)`（4-block 条件释放流）；`emit_cleanup_to` 的 `elem_needs_drop` 判断加入 `TYPE_BLOCK`
+  - **F.4.3 map(K, Block) set 所有权转移**：`map.set` codegen value 参数为 TYPE_BLOCK 时，调用后 null source env；MAP_EMIT_FREE_VAL 宏增 `val_is_block` 分支调 `cg_emit_block_env_drop`；`emit_map_helpers_for` 按 `val_is_block` flag 合成 drop/clear 辅助函数
+  - **F.4.4 checker expected_type 传播**：`check_vec_method` push 和 `check_map_method` set 对 Block 元素/值类型设 `c->expected_type`，让 closure 字面量 `|x| ...` 正确推导参数和返回类型
+  - **F.4.5 直接下标调用语义**：`vec[i](args)` / `map.get(k)(args)` 直接对临时 Block SSA 值发起 block_call，不经过 alloca → 不触发 scope cleanup → 无 env aliasing double-free；这是 vec(Block)/map(Block) 的惯用调用模式
+  - **F.4.6 parser 修复 `starts_var_decl` 行号检查**：`starts_var_decl` 的 `TypeName(Args)` → `varname` 推断路径中，增加 `p->current.line == saved_cur.line` 检查：变量名必须与类型在同一行，防止 `fn(x)\n varname =` 跨行误判为 var_decl（根因：`print(cur(10))` 后接 `i = i + 1` 被误识别为 `print(cur_type) i = ...`）
+  - **F.4A checker 拒绝容器 Block aliasing**：新增 `checker_reject_block_vec_index` 和 `checker_reject_block_map_get` 两个检查函数；在 `check_var_decl` 和 `check_assign` 的 TYPE_BLOCK 路径调用；拒绝 `Block g = ns[i]`（vec 元素读出）和 `Block g = ops.get(k)`（map 值读出），报错并提示使用直接调用形式；未来 env clone 方案见 `docs/block_clone_plan.md`（Phase G）
+  - **测试**：`tests/samples/closure_f4_test.ls`（3 组：vec(H) push 3 lambdas + 直接下标调用 / vec(Namer) push string [move] closures + 直接下标调用 / map(string,H) set lambda + 直接 get+call）；`tests/test_phase_f4_closure.cmake` JIT + AOT + memcheck 四重；ctest `test_phase_f4_closure` 依赖 `test_phase_f3_closure`
+  - 验证：ctest 28/28 通过；memcheck 0 leaks / 0 double-free
+
+- **闭包 Phase F.3（Block 作为 struct 字段）** — 2026-05-14
+  - **F.3.1 has_drop 扩展**：`check_struct_decl` has_drop 推导循环新增 `TYPE_BLOCK` 分支，含 Block 字段的 struct 自动标 `has_drop=true`，触发 `__drop` 方法合成及注册
+  - **F.3.2 expected_type 传播**：AST_NEW_EXPR 字段初始化时对 Block 类型字段设 `c->expected_type = field_type`，让 closure 字面量 `|x| ...` 正确推导 param/return 类型（与函数调用参数推导一致）
+  - **F.3.3 Block 字段 env 所有权转移**：struct literal 构造时，若字段值为 closure 字面量则 pop `temp_block_envs`（literal rvalue），若为 IDENT Block 变量则 `cg_null_block_env` 置 null source env；两者均标 `checker_try_mark_moved`
+  - **F.3.4 emit_auto_drop_fn Block 字段**：`emit_auto_drop_fn` 字段遍历新增 TYPE_BLOCK 分支：从 struct self_ptr GEP 取字段，load Block struct，提取 env_ptr，调 `cg_emit_block_env_drop`（4-block 有条件 drop+free 流）
+  - **F.3.5 AST_FIELD 读 Block 字段**：直接返回 field_val（struct 保持 env 所有权）；不注册 temp，不 clone；checker 通过 `checker_reject_block_field_read` 拒绝 `Block g = p.step1` aliasing 读（只允许 `p.step1(args)` 直接调用）
+  - **测试**：`tests/samples/closure_f3_test.ls`（5 组：无 capture 双字段 Pipe / 工厂函数返回 Pipe / string by-move capture Maker / MultiDrop 三种 has_drop 字段混合 / 命名 Block 变量移入字段）；`tests/test_phase_f3_closure.cmake` JIT + AOT + memcheck 四重；ctest `test_phase_f3_closure` 依赖 `test_phase_f2_closure`
+  - 验证：ctest 27/27 通过；memcheck 0 leaks / 0 double-free
+
+- **闭包 Phase F.2（Block 赋值 + 移动语义）** — 2026-05-14
+  - **F.2.1 type_is_movable 加 TYPE_BLOCK**：`checker_try_mark_moved` 现在会对 Block IDENT 赋值来源标 `is_moved`，后续使用报「use of moved variable」
+  - **F.2.2 Block 参数标 is_borrow**：fn_decl / impl 方法 / closure 字面量三处参数注册路径统一将 TYPE_BLOCK 形参的 checker Symbol 标 `is_borrow=true`；新增 `checker_reject_block_param_move`，在 var_decl / assign 两处拒绝把 Block 形参赋给新 Block 变量（防 env 双释放）
+  - **F.2.3 codegen 两个辅助函数**：`cg_null_block_env(ctx, alloca)` 将 Block 的 env_ptr 字段（field 1）存 NULL；`cg_emit_block_drop_at(ctx, alloca)` 加载 Block → 提取 env_ptr → 调 `cg_emit_block_env_drop`
+  - **F.2.4 var_decl TYPE_BLOCK 拆分路径**：RHS 为 IDENT（Block 变量移入）→ 调 `cg_null_block_env` 置 null source env；RHS 为 closure 字面量 → 沿用 pop temp_block_envs
+  - **F.2.5 assign TYPE_BLOCK 新分支**：先 `cg_emit_block_drop_at` drop 目标旧 env，再 store 新值，再对 IDENT source 调 `cg_null_block_env`（closure literal 则 pop temp_block_envs）
+  - **F.2.6 return TYPE_BLOCK skip**：AST_RETURN 的 return_alloca skip 列表加入 TYPE_BLOCK，使 `return g` 正确跳过 g 的 scope cleanup，env 转移给 caller
+  - **测试**：`tests/samples/closure_f2_test.ls`（5 组用例：简单移动 / POD capture 移动 / 赋值后原变量失效 / 无 capture 移动 / 工厂函数返回 named Block）；`tests/test_phase_f2_closure.cmake` JIT + AOT + memcheck 四重；ctest `test_phase_f2_closure` 依赖 `test_phase_f1_closure`
+  - 验证：ctest 26/26 通过；memcheck 0 leaks / 0 double-free
+
+- **闭包 Phase F.1（`[move v]` 语法：vec/map 显式 by-move 捕获）** — 2026-05-14
+  - **F.1.1 Parser**：`prefix_array_lit` 检测 `[move ident, ...]` 前缀 → 调 `prefix_capture_spec` → 解析 move_names 列表 → 接着解析闭包字面量并赋给 AST_CLOSURE.move_names / move_count
+  - **F.1.2 AST**：`AstCapture.is_explicit_move` 新字段；`AstClosureNode.move_names / move_count` 新字段；ast_free 释放 move_names
+  - **F.1.3 Checker**：capture_walk 后处理 move_names → 找到对应 capture 标 `is_explicit_move=true`；对 vec/map 的 explicit move 做 outer moved 检查并标 `outer->is_moved=true`；未捕获名报错
+  - **F.1.4 Codegen**：by-ref 分支按 `is_explicit_move` 拆出 by-move 路径：env 字段存值类型（非 `ptr_t`），cap_outer_vals 做 Load（非 alloca 地址），outer cap 字段置 0
+  - **F.1.5 env_drop**：explicit-move vec/map 字段进入 drop loop，调对应 `__ls_vec/map_<T>_drop`
+  - **测试**：`closure_f1_test.ls`（4 组：vec move factory + pollute 验证 / map move factory / vec move counter / map move string）；ctest 25/25 通过
+  - 已知限制：`[move v]` 对 vec/map 函数参数（浅拷贝）不安全（调用方和被调方共享 data 指针），仅安全用于局部声明变量
 
 - **闭包 Phase E.2 + E.4（closure 参数借用 + array 捕获）** — 2026-05-10
   - **E.2 closure 参数 is_borrowed**：`codegen_closure_literal` step 5b 对 `vec(T)` / `map(K,V)` / `Block` 参数设 `is_borrowed=true`，与 `codegen_fn_decl`（line ~12117）保持一致；修复 `|v| { return sum_vec(v) }` 被调时的 double-free（closure body scope cleanup 误 free 调用方的 data buffer）
@@ -540,6 +639,7 @@ print(s)                 // ❌ 编译错误（即使 else 分支未 move）
 | `string` | ✅ | cap>0 时有堆内存所有权 |
 | `struct`（含 string 字段或自定义 `__drop`） | ✅ | Phase A/B 实现 |
 | `vec(T)`, `map(K,V)` | ✅ | 含堆内存 |
+| `Block(...)` | ✅ | Phase F.2：env_ptr 非 NULL 时持有堆 env；赋值后 source.env_ptr 置 NULL |
 | `int/f64/bool` | ❌ | 值语义，拷贝即可 |
 | `*T`, `object` | ❌ | 裸指针，不做 RAII |
 

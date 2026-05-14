@@ -472,3 +472,65 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_phase_e2_e4_closure.cmake
 )
 set_tests_properties(test_phase_e2_e4_closure PROPERTIES DEPENDS "test_phase_e1_closure")
+
+# Phase F.1 ([move v] capture spec + vec/map by-move): factory pattern solves
+# dangling-pointer issue; [move nums] captures vec by-value (owns data in env).
+add_test(
+    NAME test_phase_f1_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_f1_closure.cmake
+)
+set_tests_properties(test_phase_f1_closure PROPERTIES DEPENDS "test_phase_e2_e4_closure")
+
+add_test(
+    NAME test_phase_f2_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_f2_closure.cmake
+)
+set_tests_properties(test_phase_f2_closure PROPERTIES DEPENDS "test_phase_f1_closure")
+
+add_test(
+    NAME test_phase_f3_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_f3_closure.cmake
+)
+set_tests_properties(test_phase_f3_closure PROPERTIES DEPENDS "test_phase_f2_closure")
+
+add_test(
+    NAME test_phase_f4_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_f4_closure.cmake
+)
+set_tests_properties(test_phase_f4_closure PROPERTIES DEPENDS "test_phase_f3_closure")
+
+add_test(
+    NAME test_phase_f5_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_f5_closure.cmake
+)
+set_tests_properties(test_phase_f5_closure PROPERTIES DEPENDS "test_phase_f4_closure")
+
+add_test(
+    NAME test_phase_f7_stress
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_f7_stress.cmake
+)
+set_tests_properties(test_phase_f7_stress PROPERTIES DEPENDS "test_phase_f5_closure")

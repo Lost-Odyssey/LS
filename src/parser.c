@@ -614,6 +614,8 @@ static AstNode *parse_ruby_closure_after_bar(Parser *p, Token start_tok,
     n->as.closure.is_ruby_form = true;
     n->as.closure.captures = NULL;
     n->as.closure.capture_count = 0;
+    n->as.closure.move_names = NULL;
+    n->as.closure.move_count = 0;
     return n;
 }
 
@@ -691,6 +693,8 @@ static AstNode *prefix_closure(Parser *p) {
     n->as.closure.is_ruby_form = false;
     n->as.closure.captures = NULL;
     n->as.closure.capture_count = 0;
+    n->as.closure.move_names = NULL;
+    n->as.closure.move_count = 0;
     return n;
 }
 
@@ -903,6 +907,8 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
             closure->as.closure.is_ruby_form = true;
             closure->as.closure.captures = NULL;
             closure->as.closure.capture_count = 0;
+            closure->as.closure.move_names = NULL;
+            closure->as.closure.move_count = 0;
 
             if (arg_count >= arg_cap) {
                 arg_cap = GROW_CAPACITY(arg_cap);
@@ -960,9 +966,75 @@ static AstNode *prefix_map_lit(Parser *p) {
     return n;
 }
 
+/* F.1: [move v1, v2] capture spec + closure literal.
+   Called from prefix_array_lit when 'move' keyword is detected.
+   `bracket_tok` is the '[' that was already consumed. */
+static AstNode *prefix_capture_spec(Parser *p, Token bracket_tok) {
+    advance(p); /* consume the 'move' identifier */
+
+    char **move_names = NULL;
+    int move_count = 0;
+    int move_cap = 0;
+
+    do {
+        if (!check(p, TOKEN_IDENTIFIER)) {
+            error_at_current(p, "expected variable name in '[move ...]' capture list");
+            for (int i = 0; i < move_count; i++) free(move_names[i]);
+            free(move_names);
+            return NULL;
+        }
+        advance(p);
+        char *nm = str_dup_n(p->previous.start, p->previous.length);
+        if (move_count >= move_cap) {
+            move_cap = GROW_CAPACITY(move_cap);
+            move_names = GROW_ARRAY(char *, move_names, move_cap);
+        }
+        move_names[move_count++] = nm;
+    } while (match_tok(p, TOKEN_COMMA));
+
+    consume(p, TOKEN_RBRACKET, "expected ']' after '[move ...]' capture list");
+
+    /* Immediately following must be a Ruby-style closure literal. */
+    AstNode *cls = NULL;
+    if (check(p, TOKEN_PIPE)) {
+        advance(p); /* consume '|' */
+        cls = parse_ruby_closure_after_bar(p, p->previous, true);
+    } else if (check(p, TOKEN_OR)) {
+        advance(p); /* consume '||' */
+        cls = parse_ruby_closure_after_bar(p, p->previous, false);
+    } else {
+        error_at_current(p,
+            "expected closure literal '|...|' or '||' after '[move ...]'");
+        for (int i = 0; i < move_count; i++) free(move_names[i]);
+        free(move_names);
+        return NULL;
+    }
+
+    if (cls) {
+        cls->as.closure.move_names = move_names;
+        cls->as.closure.move_count = move_count;
+        /* Update location to the '[' for better error messages. */
+        cls->line   = bracket_tok.line;
+        cls->column = bracket_tok.column;
+    } else {
+        for (int i = 0; i < move_count; i++) free(move_names[i]);
+        free(move_names);
+    }
+    return cls;
+}
+
 /* Array literal: [expr, expr, ...] */
 static AstNode *prefix_array_lit(Parser *p) {
     Token tok = p->previous; /* the '[' token */
+
+    /* F.1: [move v1, v2] capture spec — detect 'move' as the first token.
+       'move' is not a reserved keyword; check by lexeme. */
+    if (check(p, TOKEN_IDENTIFIER) &&
+        p->current.length == 4 &&
+        strncmp(p->current.start, "move", 4) == 0) {
+        return prefix_capture_spec(p, tok);
+    }
+
     AstNode **elements = NULL;
     int count = 0;
     int cap = 0;
@@ -1504,9 +1576,15 @@ static bool starts_var_decl(Parser *p) {
             }
             bool result = false;
             if (ok && p->current.type == TOKEN_RPAREN) {
-                /* Need: IDENT then '=' or ';' to qualify as a var decl. */
+                /* Need: IDENT then '=' or ';' to qualify as a var decl.
+                   Also require the variable name is on the SAME LINE as the
+                   type — this prevents mistaking `fn(cur(10))` followed by
+                   `varname =` on the NEXT line (a separate statement) from
+                   being mis-parsed as a generic type declaration. */
                 advance(p);  /* consume ')' */
-                if (p->current.type == TOKEN_IDENTIFIER) {
+                if (p->current.type == TOKEN_IDENTIFIER &&
+                    p->current.line == saved_cur.line)
+                {
                     Token after = scanner_peek(&p->scanner);
                     if (after.type == TOKEN_ASSIGN ||
                         after.type == TOKEN_SEMICOLON ||

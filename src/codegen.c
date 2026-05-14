@@ -108,6 +108,73 @@ static void cg_emit_debug_printf(CodegenContext *ctx,
 }
 #endif /* CG_DEBUG */
 
+/* ---- F.6: CG_DEBUG helper wrappers for closure operations ----
+   All helpers are no-ops when CG_DEBUG==0; the compiler eliminates them.
+   When CG_DEBUG==1 they emit a runtime printf via cg_emit_debug_printf.   */
+
+/* Log a capture decision (one line per captured variable). */
+static void cg_dbg_capture(CodegenContext *ctx,
+                           const char *name, Type *t, const char *kind)
+{
+#if CG_DEBUG
+    char fmt[256];
+    snprintf(fmt, sizeof(fmt),
+             "[cg] cap.%-7s name='%-12s' type='%s'\n",
+             kind, name ? name : "?", t ? type_name(t) : "?");
+    cg_emit_debug_printf(ctx, fmt, NULL, 0);
+#else
+    (void)ctx; (void)name; (void)t; (void)kind;
+#endif
+}
+
+/* Log an outer-variable move marker (cap=-1 or moved_flag). */
+static void cg_dbg_outer_mark(CodegenContext *ctx,
+                              const char *name, const char *marker)
+{
+#if CG_DEBUG
+    char fmt[256];
+    snprintf(fmt, sizeof(fmt),
+             "[cg] outer.mark name='%-12s' state='MOVED'  marker='%s'\n",
+             name ? name : "?", marker ? marker : "?");
+    cg_emit_debug_printf(ctx, fmt, NULL, 0);
+#else
+    (void)ctx; (void)name; (void)marker;
+#endif
+}
+
+/* Log env.alloc with a runtime pointer value. */
+static void cg_dbg_env_alloc(CodegenContext *ctx, int closure_id,
+                             unsigned long long size, LLVMValueRef env_ptr)
+{
+#if CG_DEBUG
+    char fmt[256];
+    snprintf(fmt, sizeof(fmt),
+             "[cg] env.alloc  closure_id=%-4d size=%-6llu ptr=%%p\n",
+             closure_id, size);
+    LLVMValueRef args[1] = { env_ptr };
+    cg_emit_debug_printf(ctx, fmt, args, 1);
+#else
+    (void)ctx; (void)closure_id; (void)size; (void)env_ptr;
+#endif
+}
+
+/* Log a block operation (drop / move / assign) with a runtime env pointer. */
+static void cg_dbg_block_op(CodegenContext *ctx,
+                            const char *op, const char *label,
+                            LLVMValueRef env_ptr)
+{
+#if CG_DEBUG
+    char fmt[256];
+    snprintf(fmt, sizeof(fmt),
+             "[cg] block.%-8s %-18s env=%%p\n",
+             op, label ? label : "");
+    LLVMValueRef args[1] = { env_ptr };
+    cg_emit_debug_printf(ctx, fmt, args, 1);
+#else
+    (void)ctx; (void)op; (void)label; (void)env_ptr;
+#endif
+}
+
 /* ---- CgScope management ---- */
 
 static CgScope *cg_scope_new(CgScope *parent)
@@ -182,6 +249,9 @@ static LLVMValueRef emit_string_clone_val(CodegenContext *ctx, LLVMValueRef str_
 /* Clone a struct VALUE: deep-copy all owned string fields, returns new struct value */
 static LLVMValueRef emit_struct_clone_val(CodegenContext *ctx, LLVMValueRef struct_val,
                                           LLVMTypeRef llvm_struct_type, Type *struct_type);
+/* Clone a has_drop enum VALUE: deep-copy string/struct payload fields, returns new enum value */
+static LLVMValueRef emit_enum_clone_val(CodegenContext *ctx, LLVMValueRef enum_val,
+                                        Type *enum_type);
 /* Clone an array VALUE: deep-copy each has_drop element, returns new array value */
 static LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val,
                                          LLVMTypeRef llvm_arr_type, Type *arr_type);
@@ -206,6 +276,8 @@ static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                                    AstNode **args, int arg_count);
 static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type);
 static void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type);
+static void emit_enum_drop_cond(CodegenContext *ctx, LLVMValueRef enum_ptr,
+                                Type *enum_type, LLVMValueRef moved_flag);
 static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_type);
 static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, Type *map_type);
 /* Phase B closures: lifted-fn synthesiser + indirect-call lowering. */
@@ -230,6 +302,7 @@ static inline bool capture_type_is_by_move_cg(const Type *t) {
     case TYPE_VECTOR: return false;  /* by-ref: env stores ptr to outer alloca */
     case TYPE_MAP:    return false;  /* by-ref: env stores ptr to outer alloca */
     case TYPE_STRUCT: return t->as.strukt.has_drop;
+    case TYPE_ENUM:   return t->as.enom.has_drop;  /* F.5: has_drop enum → by-move */
     default:          return false;
     }
 }
@@ -244,7 +317,7 @@ static inline bool capture_type_is_by_ref_cg(const Type *t) {
 }
 
 /* Whether marking the outer-as-moved is done via the cap idiom.
-   Only string uses this (cap=-1). Struct uses moved_flag (i1 alloca).
+   Only string uses this (cap=-1). Struct and enum use moved_flag (i1 alloca).
    vec/map are now by-ref and never mark the outer moved. */
 static inline bool capture_outer_marker_uses_cap(const Type *t) {
     if (t == NULL) return false;
@@ -1485,6 +1558,119 @@ static LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
     return result;
 }
 
+/* Clone a has_drop enum VALUE: perform a bitwise copy first (already embedded in the value),
+   then deep-clone any string / has_drop-struct / has_drop-enum payload fields by patching
+   them in-place via a temp alloca.
+   Self-recursive (boxed) payload fields are left as shallow copies — cloning a full
+   recursive tree requires additional infrastructure not needed for the common case. */
+static LLVMValueRef emit_enum_clone_val(CodegenContext *ctx,
+                                        LLVMValueRef enum_val,
+                                        Type *enum_type)
+{
+    if (enum_type == NULL || enum_type->kind != TYPE_ENUM)
+        return enum_val;
+    if (!enum_type->as.enom.has_drop)
+        return enum_val;
+
+    /* Check if any variant actually has heap-owning payload. */
+    int needs_count = 0;
+    for (int v = 0; v < enum_type->as.enom.variant_count; v++)
+    {
+        for (int fi = 0; fi < enum_type->as.enom.variants[v].payload_count; fi++)
+        {
+            Type *pt = enum_type->as.enom.variants[v].payload_types[fi];
+            if (pt && (pt->kind == TYPE_STRING ||
+                       (pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop) ||
+                       (pt->kind == TYPE_ENUM   && pt->as.enom.has_drop)))
+            {
+                needs_count++;
+                break;
+            }
+        }
+    }
+    if (needs_count == 0)
+        return enum_val; /* no heap fields — bitwise copy is correct */
+
+    LLVMTypeRef enum_llvm = type_to_llvm(ctx, enum_type);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
+
+    /* Store the (already-copied) value to a temp alloca so we can patch fields via GEP. */
+    LLVMValueRef tmp = LLVMBuildAlloca(ctx->builder, enum_llvm, "ec.tmp");
+    LLVMBuildStore(ctx->builder, enum_val, tmp);
+
+    /* disc = tmp->field[0] */
+    LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 0, "ec.discp");
+    LLVMValueRef disc     = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "ec.disc");
+
+    /* payload_ptr = &tmp->field[1]  (the [N x i8] payload bytes) */
+    LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 1, "ec.payp");
+
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ec.end");
+
+    LLVMValueRef sw = LLVMBuildSwitch(ctx->builder, disc, end_bb, (unsigned)needs_count);
+
+    for (int v = 0; v < enum_type->as.enom.variant_count; v++)
+    {
+        bool needs = false;
+        for (int fi = 0; fi < enum_type->as.enom.variants[v].payload_count; fi++)
+        {
+            Type *pt = enum_type->as.enom.variants[v].payload_types[fi];
+            if (pt && (pt->kind == TYPE_STRING ||
+                       (pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop) ||
+                       (pt->kind == TYPE_ENUM   && pt->as.enom.has_drop)))
+            {
+                needs = true;
+                break;
+            }
+        }
+        if (!needs)
+            continue;
+
+        LLVMBasicBlockRef case_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ec.case");
+        LLVMAddCase(sw, LLVMConstInt(i8, (unsigned long long)v, 0), case_bb);
+        LLVMPositionBuilderAtEnd(ctx->builder, case_bb);
+
+        LLVMTypeRef variant_struct = build_variant_payload_struct(ctx, enum_type, v);
+
+        for (int fi = 0; fi < enum_type->as.enom.variants[v].payload_count; fi++)
+        {
+            Type *pt = enum_type->as.enom.variants[v].payload_types[fi];
+            if (pt == NULL || pt == enum_type) /* skip null & self-recursive box */ continue;
+
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, variant_struct,
+                                                          payload_ptr, (unsigned)fi, "ec.fp");
+            if (pt->kind == TYPE_STRING)
+            {
+                LLVMTypeRef str_t  = ls_string_type(ctx);
+                LLVMValueRef old_s = LLVMBuildLoad2(ctx->builder, str_t, field_ptr, "ec.olds");
+                LLVMValueRef new_s = emit_string_clone_val(ctx, old_s);
+                LLVMBuildStore(ctx->builder, new_s, field_ptr);
+            }
+            else if (pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop)
+            {
+                LLVMTypeRef  st_t   = type_to_llvm(ctx, pt);
+                LLVMValueRef old_sv = LLVMBuildLoad2(ctx->builder, st_t, field_ptr, "ec.oldsv");
+                LLVMValueRef new_sv = emit_struct_clone_val(ctx, old_sv, st_t, pt);
+                LLVMBuildStore(ctx->builder, new_sv, field_ptr);
+            }
+            else if (pt->kind == TYPE_ENUM && pt->as.enom.has_drop)
+            {
+                LLVMTypeRef  et_t   = type_to_llvm(ctx, pt);
+                LLVMValueRef old_ev = LLVMBuildLoad2(ctx->builder, et_t, field_ptr, "ec.oldev");
+                LLVMValueRef new_ev = emit_enum_clone_val(ctx, old_ev, pt); /* recursive */
+                LLVMBuildStore(ctx->builder, new_ev, field_ptr);
+            }
+        }
+
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+            LLVMBuildBr(ctx->builder, end_bb);
+    }
+
+    LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+    return LLVMBuildLoad2(ctx->builder, enum_llvm, tmp, "ec.r");
+}
+
 /* emit_array_clone_val — deep-copy each element that owns heap data.
    For arrays with trivial element types, the value is returned as-is (no alloc).
    For arrays with string/has_drop struct elements, each element is cloned via
@@ -1747,6 +1933,8 @@ static void cg_emit_block_env_drop(CodegenContext *ctx, LLVMValueRef env_ptr)
     LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
     if (cur_bb == NULL) return;
     if (LLVMGetBasicBlockTerminator(cur_bb) != NULL) return;
+    /* F.6: log block env drop (runtime ptr). */
+    cg_dbg_block_op(ctx, "env.drop", "", env_ptr);
     LLVMValueRef cur_fn = LLVMGetBasicBlockParent(cur_bb);
     LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
     LLVMValueRef is_nn = LLVMBuildICmp(ctx->builder, LLVMIntNE, env_ptr,
@@ -1773,6 +1961,41 @@ static void cg_emit_block_env_drop(CodegenContext *ctx, LLVMValueRef env_ptr)
     cg_emit_free(ctx, env_ptr, "closure.env.tmp", CG_LINE(ctx), CG_COL(ctx));
     LLVMBuildBr(ctx->builder, cont_bb);
     LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+}
+
+/* F.2: Drop the Block env stored at blk_alloca:
+   load the Block, extract env_ptr, then call cg_emit_block_env_drop on it. */
+static void cg_emit_block_drop_at(CodegenContext *ctx, LLVMValueRef blk_alloca)
+{
+    LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
+    if (cur_bb == NULL || LLVMGetBasicBlockTerminator(cur_bb) != NULL) return;
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef fields[2] = { ptr_t, ptr_t };
+    LLVMTypeRef blk_t = LLVMStructTypeInContext(ctx->context, fields, 2, 0);
+    LLVMValueRef blk_val = LLVMBuildLoad2(ctx->builder, blk_t, blk_alloca, "blk.old.load");
+    LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, blk_val, 1, "blk.old.env");
+    cg_emit_block_env_drop(ctx, env_ptr);
+}
+
+/* F.2: Zero the env_ptr field (field 1) of the Block stored at blk_alloca.
+   Called after moving a Block to another variable so scope cleanup skips this alloca. */
+static void cg_null_block_env(CodegenContext *ctx, LLVMValueRef blk_alloca)
+{
+    LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
+    if (cur_bb == NULL || LLVMGetBasicBlockTerminator(cur_bb) != NULL) return;
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef fields[2] = { ptr_t, ptr_t };
+    LLVMTypeRef blk_t = LLVMStructTypeInContext(ctx->context, fields, 2, 0);
+#if CG_DEBUG
+    {
+        /* F.6: log block.move (source env being zeroed). */
+        LLVMValueRef env_field_p = LLVMBuildStructGEP2(ctx->builder, blk_t, blk_alloca, 1, "blk.mv.ep");
+        LLVMValueRef old_env = LLVMBuildLoad2(ctx->builder, ptr_t, env_field_p, "blk.mv.oldenv");
+        cg_dbg_block_op(ctx, "move", "src->null", old_env);
+    }
+#endif
+    LLVMValueRef env_field = LLVMBuildStructGEP2(ctx->builder, blk_t, blk_alloca, 1, "blk.mv.envf");
+    LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_t), env_field);
 }
 
 /* Free temp string slots in [mark, count) and reset count to mark.
@@ -1984,9 +2207,9 @@ static void emit_scope_cleanup(CodegenContext *ctx)
         }
         else if (sym->type->kind == TYPE_ENUM && sym->type->as.enom.has_drop)
         {
-            /* Owned enum value: call the auto-generated EnumName.__drop on its alloca.
-               sym->value is &enum (alloca pointer). */
-            emit_enum_drop(ctx, sym->value, sym->type);
+            /* F.5: Owned enum value. Use moved_flag if present (set when
+               captured by-move into a closure) to avoid double-free. */
+            emit_enum_drop_cond(ctx, sym->value, sym->type, sym->moved_flag);
         }
         else if (sym->type->kind == TYPE_MAP)
         {
@@ -2014,6 +2237,14 @@ static void emit_scope_cleanup(CodegenContext *ctx)
                                                   sym->value, "blk.cleanup");
             LLVMValueRef env_ptr = LLVMBuildExtractValue(
                 ctx->builder, blk_val, 1, "blk.env.cleanup");
+#if CG_DEBUG
+            {
+                /* F.6: log block.drop at scope exit. */
+                char lbl[64];
+                snprintf(lbl, sizeof(lbl), "var='%s'", sym->name ? sym->name : "?");
+                cg_dbg_block_op(ctx, "drop", lbl, env_ptr);
+            }
+#endif
             LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
             LLVMValueRef is_nn = LLVMBuildICmp(
                 ctx->builder, LLVMIntNE, env_ptr,
@@ -2362,7 +2593,8 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
                 /* Drop each element if elem type needs it */
                 bool elem_needs_drop = (elem_type &&
                                         (elem_type->kind == TYPE_STRING ||
-                                         (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)));
+                                         (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
+                                         elem_type->kind == TYPE_BLOCK));
 
                 if (elem_needs_drop)
                 {
@@ -2467,13 +2699,8 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
             }
             else if (sym->type->kind == TYPE_ENUM && sym->type->as.enom.has_drop)
             {
-                /* Enum with heap payload: call EnumName.__drop(alloca). */
-                LLVMValueRef drop_fn = (LLVMValueRef)sym->type->as.enom.drop_fn;
-                if (drop_fn)
-                {
-                    LLVMTypeRef fnt = LLVMGlobalGetValueType(drop_fn);
-                    LLVMBuildCall2(ctx->builder, fnt, drop_fn, &sym->value, 1, "");
-                }
+                /* F.5: Enum with heap payload — conditional on moved_flag. */
+                emit_enum_drop_cond(ctx, sym->value, sym->type, sym->moved_flag);
                 idx++;
             }
             else if (sym->type->kind == TYPE_BLOCK)
@@ -2485,6 +2712,14 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
                                                       sym->value, "blk.cleanup");
                 LLVMValueRef env_ptr = LLVMBuildExtractValue(
                     ctx->builder, blk_val, 1, "blk.env.cleanup");
+#if CG_DEBUG
+                {
+                    /* F.6: log block.drop at scope exit (emit_cleanup_to path). */
+                    char lbl[64];
+                    snprintf(lbl, sizeof(lbl), "var='%s'", sym->name ? sym->name : "?");
+                    cg_dbg_block_op(ctx, "drop", lbl, env_ptr);
+                }
+#endif
                 LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
                 LLVMValueRef is_nn = LLVMBuildICmp(
                     ctx->builder, LLVMIntNE, env_ptr,
@@ -2746,6 +2981,25 @@ static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
                                                          self_ptr, (unsigned)i, "drop.strfield");
             /* emit_string_free leaves the builder at the cont block — safe to continue */
             emit_string_free(ctx, field_ptr);
+            continue;
+        }
+
+        /* Drop Block fields (call env drop_fn then free env) */
+        if (field_type->kind == TYPE_BLOCK)
+        {
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+            LLVMTypeRef blk_fields[2] = { ptr_t, ptr_t };
+            LLVMTypeRef blk_t = LLVMStructTypeInContext(ctx->context, blk_fields, 2, 0);
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, llvm_struct,
+                                                         self_ptr, (unsigned)i, "drop.blkfield");
+            LLVMValueRef blk_val = LLVMBuildLoad2(ctx->builder, blk_t, field_ptr, "drop.blk");
+            LLVMValueRef env_p = LLVMBuildExtractValue(ctx->builder, blk_val, 1, "drop.blk.env");
+            cg_dbg_block_op(ctx, "field.drop",
+                            struct_type->as.strukt.fields[i].name
+                                ? struct_type->as.strukt.fields[i].name
+                                : "block.field",
+                            env_p);
+            cg_emit_block_env_drop(ctx, env_p);
             continue;
         }
 
@@ -5469,6 +5723,22 @@ static LLVMBasicBlockRef emit_vec_elem_drop_at(CodegenContext *ctx,
             LLVMBuildCall2(ctx->builder, fn_t, drop_fn_val, &elem_ptr, 1, "");
         }
     }
+    /* F.4: Block element — drop env_ptr if non-NULL */
+    if (elem_type->kind == TYPE_BLOCK)
+    {
+#if CG_DEBUG
+        {
+            /* Load block to get env ptr for logging */
+            LLVMTypeRef ptr_t2 = LLVMPointerTypeInContext(ctx->context, 0);
+            LLVMTypeRef blk_fields2[2] = { ptr_t2, ptr_t2 };
+            LLVMTypeRef blk_t2 = LLVMStructTypeInContext(ctx->context, blk_fields2, 2, 0);
+            LLVMValueRef blk_v2 = LLVMBuildLoad2(ctx->builder, blk_t2, elem_ptr, "dbg.blkv");
+            LLVMValueRef env_p2 = LLVMBuildExtractValue(ctx->builder, blk_v2, 1, "dbg.env");
+            cg_dbg_block_op(ctx, "elem.drop", label ? label : "vec[i]", env_p2);
+        }
+#endif
+        cg_emit_block_drop_at(ctx, elem_ptr);
+    }
     return LLVMGetInsertBlock(ctx->builder);
 }
 
@@ -5647,6 +5917,20 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
                     LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 1, 0), argsym->moved_flag);
                 }
             }
+        }
+        /* F.4: Block element — vec takes ownership of the env.
+           Null the source's env_ptr so its scope cleanup doesn't double-free. */
+        if (elem_type->kind == TYPE_BLOCK)
+        {
+            AstNode *barg = ast_unwrap_move(call_node->as.call.args[0]);
+            if (barg->kind == AST_IDENT)
+            {
+                CgSymbol *bsym = cg_scope_resolve(ctx->current_scope, barg->as.ident.name);
+                if (bsym && !bsym->is_borrowed)
+                    cg_null_block_env(ctx, bsym->value);
+            }
+            else if (ctx->temp_block_env_count > 0)
+                ctx->temp_block_env_count--;
         }
 
         /* len++ */
@@ -7508,6 +7792,19 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
             return NULL;
         LLVMValueRef args[] = {map_alloca, kv, vv};
         LLVMBuildCall2(ctx->builder, ft, fn, args, 3, "");
+        /* F.4: Block value — map node takes ownership; null source env_ptr */
+        if (val_type && val_type->kind == TYPE_BLOCK)
+        {
+            AstNode *varg = call_node->as.call.args[1];
+            if (varg->kind == AST_IDENT)
+            {
+                CgSymbol *vsym = cg_scope_resolve(ctx->current_scope, varg->as.ident.name);
+                if (vsym && !vsym->is_borrowed)
+                    cg_null_block_env(ctx, vsym->value);
+            }
+            else if (ctx->temp_block_env_count > 0)
+                ctx->temp_block_env_count--;
+        }
         return LLVMGetUndef(LLVMVoidTypeInContext(ctx->context));
     }
     /* ---- get(key) ---- */
@@ -8553,6 +8850,48 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         }
                     }
                 }
+                /* Argument ownership policy for enum-with-drop (mirrors struct above):
+                     - default: deep-clone so caller retains its copy
+                     - __move(e): skip clone, transfer ownership; mark caller's moved_flag */
+                else if (arg_val && arg_type && arg_type->kind == TYPE_ENUM &&
+                         arg_type->as.enom.has_drop)
+                {
+                    bool callee_takes_ptr = false;
+                    {
+                        unsigned pc2 = LLVMCountParams(callee);
+                        unsigned slot = (unsigned)(i + arg_offset);
+                        if (slot < pc2) {
+                            LLVMTypeRef pt = LLVMTypeOf(LLVMGetParam(callee, slot));
+                            if (LLVMGetTypeKind(pt) == LLVMPointerTypeKind)
+                                callee_takes_ptr = true;
+                        }
+                    }
+                    if (!callee_takes_ptr)
+                    {
+                        AstNode *raw      = node->as.call.args[i];
+                        AstNode *unwrapped = ast_unwrap_move(raw);
+                        bool is_move_expr  = (raw != unwrapped);
+                        if (unwrapped->kind == AST_IDENT)
+                        {
+                            if (is_move_expr)
+                            {
+                                CgSymbol *argsym = cg_scope_resolve(ctx->current_scope,
+                                                                    unwrapped->as.ident.name);
+                                if (argsym && argsym->moved_flag)
+                                {
+                                    LLVMTypeRef i1_t = LLVMInt1TypeInContext(ctx->context);
+                                    LLVMBuildStore(ctx->builder,
+                                                   LLVMConstInt(i1_t, 1, 0),
+                                                   argsym->moved_flag);
+                                }
+                            }
+                            else
+                            {
+                                arg_val = emit_enum_clone_val(ctx, arg_val, arg_type);
+                            }
+                        }
+                    }
+                }
                 args[i + arg_offset] = arg_val;
             }
 
@@ -8975,6 +9314,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         }
         else if (field_type && field_type->kind == TYPE_STRUCT && field_type->as.strukt.has_drop)
             field_val = emit_struct_clone_val(ctx, field_val, field_llvm, field_type);
+        /* F.3: Block field read — struct retains env ownership; return value directly.
+           checker already rejected `Block g = p.step1`; direct call `p.step1(args)`
+           is allowed — codegen_block_call will use the loaded value. */
         return field_val;
     }
 
@@ -9063,7 +9405,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                    LLVMBuildBr(ctx->builder, merge_bb);
+                    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+                        LLVMBuildBr(ctx->builder, merge_bb);
                     continue;
                 }
 
@@ -9126,10 +9469,26 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             val = LLVMBuildLoad2(ctx->builder, field_llvm, field_ptr, bname);
                         }
 
+                        /* Determine whether the binder needs an independent owned copy.
+                           Without cloning, a string binder shares the enum's data pointer.
+                           If the binder escapes the arm (via `return s`), both the caller
+                           and the enum's drop (env_drop or scope cleanup) would free the
+                           same allocation → double-free.
+                           Fix: clone string payloads so each binder independently owns
+                           its data.  With independent ownership, is_borrowed=false and
+                           scope cleanup frees the binder's copy when the arm exits
+                           (unless the binder is being returned, in which case the
+                           return_alloca skip list suppresses the scope drop). */
+                        bool binder_owns = false;
+                        if (pt && pt->kind == TYPE_STRING) {
+                            val = emit_string_clone_val(ctx, val);
+                            binder_owns = true;
+                        }
+
                         /* Materialise an alloca so existing IDENT-load paths work,
-                           then bind in current scope.  Mark as borrowed so scope
-                           cleanup leaves heap ownership with the enum (move
-                           tracking for binders is a future Phase B item). */
+                           then bind in current scope.  Non-string (or non-cloned)
+                           binders are marked borrowed so scope cleanup leaves heap
+                           ownership with the enum subject. */
                         LLVMBuilderRef bb_tmp = LLVMCreateBuilderInContext(ctx->context);
                         LLVMValueRef first_i = LLVMGetFirstInstruction(entry);
                         if (first_i) LLVMPositionBuilderBefore(bb_tmp, first_i);
@@ -9139,7 +9498,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         LLVMBuildStore(ctx->builder, val, bind_alloca);
                         CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
                                                         bind_alloca, pt, NULL);
-                        if (sym) sym->is_borrowed = true;
+                        if (sym) sym->is_borrowed = !binder_owns;
                     }
                 }
 
@@ -9147,7 +9506,11 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 pop_scope(ctx);
                 if (result_alloca && body_val)
                     LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                LLVMBuildBr(ctx->builder, merge_bb);
+                /* Guard: arm body may end with 'return', which already terminates
+                   the block.  Only emit the merge-branch when the block is still
+                   open (no terminator yet). */
+                if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+                    LLVMBuildBr(ctx->builder, merge_bb);
             }
 
             /* Fill in the default block with unreachable when no wildcard arm. */
@@ -9218,7 +9581,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 {
                     LLVMBuildStore(ctx->builder, body_val, result_alloca);
                 }
-                LLVMBuildBr(ctx->builder, merge_bb);
+                if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+                    LLVMBuildBr(ctx->builder, merge_bb);
             }
             else
             {
@@ -9263,7 +9627,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 {
                     LLVMBuildStore(ctx->builder, body_val, result_alloca);
                 }
-                LLVMBuildBr(ctx->builder, merge_bb);
+                /* Guard: arm body may end with 'return', terminating the block. */
+                if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+                    LLVMBuildBr(ctx->builder, merge_bb);
 
                 LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
             }
@@ -9277,7 +9643,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                                     strcmp(last->pattern->as.ident.name, "_") == 0;
             if (!last_is_wildcard)
             {
-                LLVMBuildBr(ctx->builder, merge_bb);
+                if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+                    LLVMBuildBr(ctx->builder, merge_bb);
             }
         }
 
@@ -9874,6 +10241,23 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             Type *field_type = struct_type->as.strukt.fields[field_idx].type;
             if (field_type && field_type->kind == TYPE_STRING)
                 val = emit_string_clone_val(ctx, val);
+            /* F.3: Block field — the struct takes ownership of the env.
+               If from a rvalue closure literal, pop temp_block_envs so the
+               statement-boundary flush doesn't free it again.
+               If from a named variable, null that variable's env_ptr (move). */
+            if (field_type && field_type->kind == TYPE_BLOCK)
+            {
+                AstNode *fval_node = node->as.new_expr.field_inits[i].value;
+                if (fval_node->kind == AST_IDENT)
+                {
+                    CgSymbol *src_sym = cg_scope_resolve(ctx->current_scope,
+                                                         fval_node->as.ident.name);
+                    if (src_sym && !src_sym->is_borrowed)
+                        cg_null_block_env(ctx, src_sym->value);
+                }
+                else if (ctx->temp_block_env_count > 0)
+                    ctx->temp_block_env_count--;
+            }
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
                                                          storage, (unsigned)field_idx,
                                                          "field_ptr");
@@ -9962,9 +10346,12 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMValueRef alloca = LLVMBuildAlloca(tmp, llvm_type, node->as.var_decl.name);
         LLVMDisposeBuilder(tmp);
 
-        /* Allocate moved_flag for struct-with-drop types */
+        /* Allocate moved_flag for struct-with-drop and has_drop enum types.
+           F.5: enum with heap payload also needs move tracking so closure
+           by-move capture can prevent double-free via scope cleanup. */
         LLVMValueRef moved_flag = NULL;
-        if (var_type->kind == TYPE_STRUCT && var_type->as.strukt.has_drop)
+        if ((var_type->kind == TYPE_STRUCT && var_type->as.strukt.has_drop) ||
+            (var_type->kind == TYPE_ENUM   && var_type->as.enom.has_drop))
         {
             LLVMTypeRef i1_type = LLVMInt1TypeInContext(ctx->context);
             moved_flag = LLVMBuildAlloca(ctx->builder, i1_type, "var.moved");
@@ -10220,16 +10607,25 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         LLVMTypeRef llvm_st = type_to_llvm(ctx, var_type);
                         init = emit_struct_clone_val(ctx, init, llvm_st, var_type);
                     }
-                    else if (var_type->kind == TYPE_BLOCK &&
-                             ctx->temp_block_env_count > 0)
+                    else if (var_type->kind == TYPE_BLOCK)
                     {
-                        /* Phase C.5: a closure literal (or call returning a
-                           Block whose env was just minted) is being captured
-                           into a typed Block local. Pop the trailing temp
-                           env so the next cg_flush_temps doesn't free it —
-                           the var now owns it and scope cleanup is the sole
-                           releaser. */
-                        ctx->temp_block_env_count--;
+                        AstNode *blk_init = ast_unwrap_move(node->as.var_decl.init);
+                        if (blk_init && blk_init->kind == AST_IDENT)
+                        {
+                            /* F.2: Block variable initialized from another Block variable.
+                               Move semantics: zero source's env_ptr so its scope cleanup
+                               skips (this new variable now owns the env). */
+                            CgSymbol *src = cg_scope_resolve(ctx->current_scope,
+                                                              blk_init->as.ident.name);
+                            if (src && !src->is_borrowed)
+                                cg_null_block_env(ctx, src->value); /* logs block.move internally */
+                        }
+                        else if (ctx->temp_block_env_count > 0)
+                        {
+                            /* Phase C.5: closure literal → pop trailing temp env;
+                               the var now owns it and scope cleanup is the sole releaser. */
+                            ctx->temp_block_env_count--;
+                        }
                     }
 
                     LLVMBuildStore(ctx->builder, init, alloca);
@@ -10390,6 +10786,29 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     {
                         LLVMTypeRef i1 = LLVMInt1TypeInContext(ctx->context);
                         LLVMBuildStore(ctx->builder, LLVMConstInt(i1, 0, 0), sym->moved_flag);
+                    }
+                    ctx->temp_string_count = temp_mark;
+                }
+                else if (sym->type && sym->type->kind == TYPE_BLOCK)
+                {
+                    /* F.2: Block assignment — move semantics.
+                       1. Drop old env in destination (if any).
+                       2. Store new Block value.
+                       3. If source is an owned IDENT, zero its env_ptr. */
+                    cg_emit_block_drop_at(ctx, sym->value);
+                    LLVMBuildStore(ctx->builder, val, sym->value);
+                    AstNode *rhs_node = node->as.assign.value;
+                    if (rhs_node->kind == AST_IDENT)
+                    {
+                        CgSymbol *src = cg_scope_resolve(ctx->current_scope,
+                                                          rhs_node->as.ident.name);
+                        if (src && !src->is_borrowed)
+                            cg_null_block_env(ctx, src->value);
+                    }
+                    else if (ctx->temp_block_env_count > 0)
+                    {
+                        /* Closure literal on RHS — pop temp env; dst now owns it */
+                        ctx->temp_block_env_count--;
                     }
                     ctx->temp_string_count = temp_mark;
                 }
@@ -10710,11 +11129,12 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             node->as.return_stmt.value->resolved_type)
         {
             Type *ret_type = node->as.return_stmt.value->resolved_type;
-            /* For string/struct/vec IDENT returns: ownership transfers to caller —
-               skip scope cleanup for this variable so we don't free its data. */
+            /* For string/struct/vec/Block IDENT returns: ownership transfers to caller —
+               skip scope cleanup for this variable so we don't free its data/env. */
             if (ret_type->kind == TYPE_STRING ||
                 ret_type->kind == TYPE_STRUCT ||
-                ret_type->kind == TYPE_VECTOR)
+                ret_type->kind == TYPE_VECTOR ||
+                ret_type->kind == TYPE_BLOCK)
             {
                 const char *name = node->as.return_stmt.value->as.ident.name;
                 CgSymbol *sym = cg_scope_resolve(ctx->current_scope, name);
@@ -10807,9 +11227,15 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
     case AST_IF:
     {
+        int cond_temp_mark = ctx->temp_string_count;
         LLVMValueRef cond = codegen_expr(ctx, node->as.if_stmt.cond);
         if (cond == NULL)
             return;
+        /* Free temporary strings produced during condition evaluation
+           (e.g. f"..." interpolations, string concatenations used in
+           comparisons).  The condition result is an i1 bool already
+           materialised, so the strings are no longer needed. */
+        cg_flush_temps(ctx, cond_temp_mark, false);
 
         LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(
             ctx->context, ctx->current_fn, "if.then");
@@ -10870,9 +11296,15 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMBuildBr(ctx->builder, cond_bb);
 
         LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef cond = codegen_expr(ctx, node->as.while_stmt.cond);
-        if (cond)
-            LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
+        {
+            int cond_temp_mark = ctx->temp_string_count;
+            LLVMValueRef cond = codegen_expr(ctx, node->as.while_stmt.cond);
+            /* Free temporary strings from the condition before branching.
+               They are re-created (and re-freed) on every loop iteration. */
+            cg_flush_temps(ctx, cond_temp_mark, false);
+            if (cond)
+                LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
+        }
 
         LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
         codegen_stmt(ctx, node->as.while_stmt.body);
@@ -11206,7 +11638,10 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
         if (node->as.for_c_stmt.cond)
         {
+            int cond_temp_mark = ctx->temp_string_count;
             LLVMValueRef cond = codegen_expr(ctx, node->as.for_c_stmt.cond);
+            /* Free temporary strings produced by the condition expression. */
+            cg_flush_temps(ctx, cond_temp_mark, false);
             if (cond)
                 LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
         }
@@ -11403,17 +11838,25 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
        env block itself. POD-only envs store NULL there and skip the call.
 
        has_drop_n counts captures whose env-side ownership requires a drop:
-       string + vec + map + struct(has_drop) — see capture_type_is_by_move_cg. */
+       string + struct(has_drop): always by-move
+       vec/map: by-move only when is_explicit_move ([move v]) */
     int has_drop_n = 0;
     for (int i = 0; i < cap_n; i++) {
-        if (capture_type_is_by_move_cg(node->as.closure.captures[i].type))
+        Type *ct_i = node->as.closure.captures[i].type;
+        bool explicit_move = node->as.closure.captures[i].is_explicit_move;
+        if (capture_type_is_by_move_cg(ct_i))
             has_drop_n++;
+        else if (explicit_move &&
+                 (ct_i->kind == TYPE_VECTOR || ct_i->kind == TYPE_MAP))
+            has_drop_n++;   /* F.1: explicit [move] on vec/map → needs env_drop */
     }
 
     /* 0) Snapshot outer alloca pointers (for the post-capture cap=-1 mark
        on by-move strings) AND load each current value into a register. We
        have to do this BEFORE detaching the scope chain, since the closure
-       body runs in a fresh isolated scope. */
+       body runs in a fresh isolated scope.
+       F.1: vec/map with is_explicit_move load the VALUE (full LsVec/LsMap
+       struct) rather than storing the outer alloca pointer (by-ref). */
     LLVMValueRef *cap_outer_vals    = NULL;
     LLVMValueRef *cap_outer_allocas = NULL;
     if (cap_n > 0) {
@@ -11423,6 +11866,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             (size_t)cap_n * sizeof(LLVMValueRef));
         for (int i = 0; i < cap_n; i++) {
             const char *name = node->as.closure.captures[i].name;
+            bool explicit_move = node->as.closure.captures[i].is_explicit_move;
             CgSymbol *sym = cg_scope_resolve(ctx->current_scope, name);
             if (sym == NULL) {
                 cg_error(ctx, node->line, node->column,
@@ -11434,15 +11878,30 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             }
             cap_outer_allocas[i] = sym->value;
             Type *ct = node->as.closure.captures[i].type;
-            if (capture_type_is_by_ref_cg(ct)) {
-                /* By-ref: store the outer alloca pointer itself into env.
-                   The closure body will load the pointer and use it directly,
-                   so mutations to the outer vec/map are visible inside. */
+            bool is_default_by_ref = capture_type_is_by_ref_cg(ct) && !explicit_move;
+            if (is_default_by_ref) {
+                /* By-ref (default vec/map): store outer alloca pointer.
+                   Mutations to the outer variable are visible inside. */
                 cap_outer_vals[i] = sym->value;
-            } else {
+                cg_dbg_capture(ctx, name, ct, "borrow");
+            } else if (capture_type_is_by_move_cg(ct)) {
                 LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
                 cap_outer_vals[i] = LLVMBuildLoad2(ctx->builder, ct_llvm,
                                                    sym->value, "cap.load");
+                /* Distinguish auto by-move vs. explicit [move] enum/string */
+                cg_dbg_capture(ctx, name, ct, explicit_move ? "move-expl" : "move");
+            } else if (explicit_move &&
+                       (ct->kind == TYPE_VECTOR || ct->kind == TYPE_MAP)) {
+                LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
+                cap_outer_vals[i] = LLVMBuildLoad2(ctx->builder, ct_llvm,
+                                                   sym->value, "cap.load");
+                cg_dbg_capture(ctx, name, ct, "move-expl");
+            } else {
+                /* by-copy (POD / array / non-has_drop enum) */
+                LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
+                cap_outer_vals[i] = LLVMBuildLoad2(ctx->builder, ct_llvm,
+                                                   sym->value, "cap.load");
+                cg_dbg_capture(ctx, name, ct, "copy");
             }
         }
     }
@@ -11450,9 +11909,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     /* 1) Build env struct LLVM type. Field 0 is the drop_fn pointer slot
        (always present so the cleanup logic stays uniform); user captures
        follow at fields 1..N.
-       - by-move captures (string/struct): field type = value type
-       - by-ref captures (vec/map):        field type = ptr (opaque pointer
-         to the outer alloca; no copy, no ownership transfer)
+       - by-move captures (string/struct/[move vec]/[move map]): value type
+       - by-ref captures (default vec/map without [move]): ptr to outer alloca
        When cap_n == 0 we still skip env entirely and pass NULL. */
     LLVMTypeRef env_struct_t = NULL;
     if (cap_n > 0) {
@@ -11461,7 +11919,9 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         fields[0] = ptr_t; /* drop_fn slot */
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
-            if (capture_type_is_by_ref_cg(ct)) {
+            bool explicit_move = node->as.closure.captures[i].is_explicit_move;
+            bool is_default_by_ref = capture_type_is_by_ref_cg(ct) && !explicit_move;
+            if (is_default_by_ref) {
                 fields[i + 1] = ptr_t; /* pointer to outer alloca */
             } else {
                 fields[i + 1] = type_to_llvm(ctx, ct);
@@ -11527,21 +11987,25 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
             const char *cap_name = node->as.closure.captures[i].name;
+            bool explicit_move = node->as.closure.captures[i].is_explicit_move;
+            bool is_default_by_ref = capture_type_is_by_ref_cg(ct) && !explicit_move;
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, env_param,
                 (unsigned)(i + 1), "cap.gep");
 
-            if (capture_type_is_by_ref_cg(ct)) {
-                /* By-ref: load the outer alloca pointer stored in env.
+            if (is_default_by_ref) {
+                /* By-ref (default vec/map): load the outer alloca pointer.
                    sym->value = that pointer = the outer alloca itself.
-                   The body accesses the outer vec/map in-place. */
+                   Body accesses the outer vec/map in-place. is_borrowed
+                   prevents scope cleanup from dropping what it doesn't own. */
                 LLVMValueRef outer_ptr = LLVMBuildLoad2(
                     ctx->builder, ptr_t, field_ptr, "cap.refptr");
                 CgSymbol *cs = cg_scope_define(ctx->current_scope,
                                 cap_name, outer_ptr, ct, NULL);
                 if (cs) cs->is_borrowed = true;
             } else {
-                /* By-move (or POD): load value, alloca, store, register. */
+                /* By-move (or POD or explicit [move] vec/map): load value,
+                   alloca, store, register. */
                 LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
                 LLVMValueRef field_val = LLVMBuildLoad2(
                     ctx->builder, ct_llvm, field_ptr, "cap.fromenv");
@@ -11550,11 +12014,14 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 LLVMBuildStore(ctx->builder, field_val, alloca);
                 CgSymbol *cs = cg_scope_define(ctx->current_scope,
                                 cap_name, alloca, ct, NULL);
-                /* Body must not drop env-owned heap (string/struct).
-                   POD has no heap, but is_borrowed is harmless for it. */
-                if (cs && capture_type_is_by_move_cg(ct)) {
+                /* Body must not drop env-owned heap.
+                   For [move] vec/map: env owns the data buffer; mark borrowed
+                   so scope cleanup doesn't free it (env_drop handles it). */
+                bool needs_borrow = capture_type_is_by_move_cg(ct) ||
+                    (explicit_move &&
+                     (ct->kind == TYPE_VECTOR || ct->kind == TYPE_MAP));
+                if (cs && needs_borrow)
                     cs->is_borrowed = true;
-                }
             }
         }
     }
@@ -11644,7 +12111,12 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         LLVMTypeRef str_t = ls_string_type(ctx);
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
-            if (!capture_type_is_by_move_cg(ct)) continue;
+            bool explicit_move_i = node->as.closure.captures[i].is_explicit_move;
+            /* Drop this slot if it's a by-move type OR explicitly [move]'d. */
+            bool needs_drop = capture_type_is_by_move_cg(ct) ||
+                (explicit_move_i &&
+                 (ct->kind == TYPE_VECTOR || ct->kind == TYPE_MAP));
+            if (!needs_drop) continue;
             LLVMValueRef slot = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, d_env,
                 (unsigned)(i + 1), "cap.slot");
@@ -11769,6 +12241,18 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                     LLVMBuildCall2(ctx->builder, sft, sdfn, &slot, 1, "");
                 }
             }
+            else if (ct->kind == TYPE_ENUM && ct->as.enom.has_drop) {
+                /* F.5: Call the enum's auto-generated __drop on its slot. */
+                LLVMValueRef edfn = (LLVMValueRef)ct->as.enom.drop_fn;
+                if (edfn == NULL) {
+                    emit_auto_enum_drop_fn(ctx, ct);
+                    edfn = (LLVMValueRef)ct->as.enom.drop_fn;
+                }
+                if (edfn) {
+                    LLVMTypeRef eft = LLVMGlobalGetValueType(edfn);
+                    LLVMBuildCall2(ctx->builder, eft, edfn, &slot, 1, "");
+                }
+            }
         }
         LLVMBuildRetVoid(ctx->builder);
 
@@ -11792,6 +12276,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                                          env_size_const, 0);
         env_val = cg_emit_alloc(ctx, sz_v, "closure.env",
                                 node->line, node->column);
+        /* F.6: log env allocation (closure id + size + runtime ptr). */
+        cg_dbg_env_alloc(ctx, id, env_size_const, env_val);
 
         /* drop_fn slot first (NULL for POD-only envs). */
         LLVMValueRef drop_slot = LLVMBuildStructGEP2(
@@ -11812,11 +12298,17 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                  value; env takes ownership of the heap data. */
             LLVMBuildStore(ctx->builder, cap_outer_vals[i], field_ptr);
 
-            /* By-move marker on the outer alloca (by-ref types skip this):
+            /* By-move marker on the outer alloca:
                  string: cap field gets -1 when currently > 0 (skip .rodata).
                  struct: moved_flag i1 alloca set to true.
-               vec/map are now by-ref — the outer is NOT marked moved. */
-            if (capture_type_is_by_move_cg(ct) && cap_outer_allocas[i]) {
+                 [move] vec: zero out outer vec's cap field → scope cleanup skips.
+                 [move] map: zero out outer map's cap field → __drop skips.
+               Default by-ref vec/map: outer is NOT marked at all. */
+            bool explicit_move_i = node->as.closure.captures[i].is_explicit_move;
+            bool is_default_by_ref_i = capture_type_is_by_ref_cg(ct) && !explicit_move_i;
+            if (is_default_by_ref_i) {
+                /* By-ref: outer is still live; do nothing. */
+            } else if (capture_type_is_by_move_cg(ct) && cap_outer_allocas[i]) {
                 if (capture_outer_marker_uses_cap(ct)) {
                     /* Only string uses the cap=-1 trick. */
                     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
@@ -11843,7 +12335,11 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                                    cap_ptr);
                     LLVMBuildBr(ctx->builder, ckdone_bb);
                     LLVMPositionBuilderAtEnd(ctx->builder, ckdone_bb);
-                } else if (ct->kind == TYPE_STRUCT) {
+                    /* F.6: log outer cap=-1 mark for string capture. */
+                    cg_dbg_outer_mark(ctx, node->as.closure.captures[i].name,
+                                      "cap=-1");
+                } else if (ct->kind == TYPE_STRUCT || ct->kind == TYPE_ENUM) {
+                    /* F.5: enum uses the same moved_flag mechanism as struct. */
                     const char *cap_name = node->as.closure.captures[i].name;
                     CgSymbol *outer_sym =
                         cg_scope_resolve(saved_scope, cap_name);
@@ -11852,7 +12348,32 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                         LLVMBuildStore(ctx->builder,
                                        LLVMConstInt(i1_t, 1, 0),
                                        outer_sym->moved_flag);
+                        /* F.6: log moved_flag=1 mark. */
+                        cg_dbg_outer_mark(ctx, cap_name, "moved_flag=1");
                     }
+                }
+            } else if (explicit_move_i && cap_outer_allocas[i]) {
+                /* F.1: [move] vec/map — zero out outer's cap field so scope
+                   cleanup sees cap==0 and skips the free (env now owns it). */
+                LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+                if (ct->kind == TYPE_VECTOR) {
+                    /* vec layout: {ptr data, i32 len, i32 cap} — field 2 */
+                    LLVMValueRef vec_cap_ptr = LLVMBuildStructGEP2(
+                        ctx->builder, ls_vec_type(ctx), cap_outer_allocas[i],
+                        2u, "outer.vec.cap.ptr");
+                    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0),
+                                   vec_cap_ptr);
+                    cg_dbg_outer_mark(ctx, node->as.closure.captures[i].name,
+                                      "vec.cap=0 ([move])");
+                } else if (ct->kind == TYPE_MAP) {
+                    /* map layout: {ptr buckets, i32 count, i32 cap} — field 2 */
+                    LLVMValueRef map_cap_ptr = LLVMBuildStructGEP2(
+                        ctx->builder, ls_map_type(ctx), cap_outer_allocas[i],
+                        2u, "outer.map.cap.ptr");
+                    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0),
+                                   map_cap_ptr);
+                    cg_dbg_outer_mark(ctx, node->as.closure.captures[i].name,
+                                      "map.cap=0 ([move])");
                 }
             }
         }
@@ -12097,9 +12618,12 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         LLVMValueRef alloca = LLVMBuildAlloca(ctx->builder, param_llvm,
                                               node->as.fn_decl.param_names[i]);
         LLVMBuildStore(ctx->builder, LLVMGetParam(fn, (unsigned)llvm_idx), alloca);
-        /* Allocate moved_flag for struct-with-drop parameters */
+        /* Allocate moved_flag for struct-with-drop and has_drop enum parameters.
+           F.5: enum params also need move tracking for closure by-move capture. */
         LLVMValueRef moved_flag = NULL;
-        if (param_type && param_type->kind == TYPE_STRUCT && param_type->as.strukt.has_drop)
+        if (param_type &&
+            ((param_type->kind == TYPE_STRUCT && param_type->as.strukt.has_drop) ||
+             (param_type->kind == TYPE_ENUM   && param_type->as.enom.has_drop)))
         {
             LLVMTypeRef i1_type = LLVMInt1TypeInContext(ctx->context);
             moved_flag = LLVMBuildAlloca(ctx->builder, i1_type, "param.moved");
@@ -12174,13 +12698,22 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) != NULL)
                 break;
         }
-        /* Last statement: if it's an expression stmt, return its value */
+        /* Last statement: if it's an expression stmt whose resolved type matches
+           the function's return type, return its value (implicit return).
+           Guard: if the expression resolves to void (e.g. a print() call whose
+           underlying printf returns int), do NOT use it as the return value —
+           fall through to the implicit 'ret 0' path below instead. */
         AstNode *last = body->as.block.stmts[last_idx];
         if (last->kind == AST_EXPR_STMT &&
             LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
         {
-            LLVMValueRef val = codegen_expr(ctx, last->as.expr_stmt.expr);
-            if (val && LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+            AstNode *expr_node = last->as.expr_stmt.expr;
+            Type    *expr_type = expr_node->resolved_type;
+            bool     expr_is_void = (expr_type == NULL ||
+                                     expr_type->kind == TYPE_VOID);
+            LLVMValueRef val = codegen_expr(ctx, expr_node);
+            if (val && !expr_is_void &&
+                LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
             {
                 /* Emit cleanup BEFORE return */
                 emit_cleanup_to(ctx, NULL, NULL);
@@ -12420,7 +12953,106 @@ static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
             {
                 emit_struct_drop(ctx, field_ptr, pt);
             }
-            /* TODO: vec / map / nested-enum cases (8b minimal: string + struct + self-recursive) */
+            else if (pt && pt->kind == TYPE_VECTOR)
+            {
+                /* F.5: vec(T) payload — drop elements then free data buffer. */
+                LLVMTypeRef vec_t  = ls_vec_type(ctx);
+                LLVMTypeRef i32_t2 = LLVMInt32TypeInContext(ctx->context);
+                LLVMValueRef vecv  = LLVMBuildLoad2(ctx->builder, vec_t,
+                                                    field_ptr, "ep.vec");
+                LLVMValueRef capv  = LLVMBuildExtractValue(ctx->builder, vecv, 2,
+                                                           "ep.veccap");
+                LLVMValueRef lenv  = LLVMBuildExtractValue(ctx->builder, vecv, 1,
+                                                           "ep.veclen");
+                LLVMValueRef datav = LLVMBuildExtractValue(ctx->builder, vecv, 0,
+                                                           "ep.vecdata");
+                LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT,
+                                                     capv,
+                                                     LLVMConstInt(i32_t2, 0, 0),
+                                                     "ep.hasbuf");
+                LLVMBasicBlockRef vdo_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, drop_fn, "ep.vfree");
+                LLVMBasicBlockRef vdn_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, drop_fn, "ep.vcont");
+                LLVMBuildCondBr(ctx->builder, has_buf, vdo_bb, vdn_bb);
+                LLVMPositionBuilderAtEnd(ctx->builder, vdo_bb);
+                Type *elem_t = pt->as.vec.elem;
+                bool elem_drop = elem_t &&
+                    (elem_t->kind == TYPE_STRING ||
+                     (elem_t->kind == TYPE_STRUCT && elem_t->as.strukt.has_drop) ||
+                     (elem_t->kind == TYPE_ENUM   && elem_t->as.enom.has_drop));
+                if (elem_drop) {
+                    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_t);
+                    LLVMTypeRef i64_t2 = LLVMInt64TypeInContext(ctx->context);
+                    LLVMBuilderRef tb2 = LLVMCreateBuilderInContext(ctx->context);
+                    LLVMBasicBlockRef fn_ent = LLVMGetEntryBasicBlock(drop_fn);
+                    LLVMValueRef fi2 = LLVMGetFirstInstruction(fn_ent);
+                    if (fi2) LLVMPositionBuilderBefore(tb2, fi2);
+                    else     LLVMPositionBuilderAtEnd(tb2, fn_ent);
+                    LLVMValueRef ei = LLVMBuildAlloca(tb2, i32_t2, "ep.ei");
+                    LLVMDisposeBuilder(tb2);
+                    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t2, 0, 0), ei);
+                    LLVMBasicBlockRef elc = LLVMAppendBasicBlockInContext(
+                        ctx->context, drop_fn, "ep.elcond");
+                    LLVMBasicBlockRef elb = LLVMAppendBasicBlockInContext(
+                        ctx->context, drop_fn, "ep.elbody");
+                    LLVMBasicBlockRef ele = LLVMAppendBasicBlockInContext(
+                        ctx->context, drop_fn, "ep.elend");
+                    LLVMBuildBr(ctx->builder, elc);
+                    LLVMPositionBuilderAtEnd(ctx->builder, elc);
+                    LLVMValueRef ci = LLVMBuildLoad2(ctx->builder, i32_t2, ei, "ep.ci");
+                    LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT,
+                                                     ci, lenv, "ep.lt");
+                    LLVMBuildCondBr(ctx->builder, cmp, elb, ele);
+                    LLVMPositionBuilderAtEnd(ctx->builder, elb);
+                    LLVMValueRef ei64 = LLVMBuildSExt(ctx->builder, ci, i64_t2,
+                                                      "ep.ei64");
+                    LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, datav,
+                                                    &ei64, 1, "ep.ep");
+                    emit_vec_elem_drop_at(ctx, ep, elem_t, v * 100 + i,
+                                         "ep.vec[i]");
+                    LLVMBasicBlockRef aft = LLVMGetInsertBlock(ctx->builder);
+                    if (LLVMGetBasicBlockTerminator(aft) == NULL) {
+                        LLVMValueRef nxt = LLVMBuildAdd(ctx->builder, ci,
+                            LLVMConstInt(i32_t2, 1, 0), "ep.nxt");
+                        LLVMBuildStore(ctx->builder, nxt, ei);
+                        LLVMBuildBr(ctx->builder, elc);
+                    }
+                    LLVMPositionBuilderAtEnd(ctx->builder, ele);
+                }
+                cg_emit_free(ctx, datav, "enum.vec.payload",
+                             CG_LINE(ctx), CG_COL(ctx));
+                LLVMBuildBr(ctx->builder, vdn_bb);
+                LLVMPositionBuilderAtEnd(ctx->builder, vdn_bb);
+            }
+            else if (pt && pt->kind == TYPE_MAP)
+            {
+                /* F.5: map(K,V) payload — call the map drop helper. */
+                emit_map_helpers_for(ctx, pt->as.map.key, pt->as.map.val);
+                char msuf[64];
+                map_type_id(pt->as.map.key, pt->as.map.val, msuf, sizeof(msuf));
+                char mnm[96];
+                snprintf(mnm, sizeof(mnm), "__ls_map_%s_drop", msuf);
+                LLVMValueRef mfn = LLVMGetNamedFunction(ctx->module, mnm);
+                if (mfn) {
+                    LLVMTypeRef mft = LLVMGlobalGetValueType(mfn);
+                    LLVMBuildCall2(ctx->builder, mft, mfn, &field_ptr, 1, "");
+                }
+            }
+            else if (pt && pt->kind == TYPE_ENUM && pt->as.enom.has_drop &&
+                     pt != enum_type)
+            {
+                /* F.5: nested has_drop enum payload (non-self-recursive). */
+                LLVMValueRef nedfn = (LLVMValueRef)pt->as.enom.drop_fn;
+                if (nedfn == NULL) {
+                    emit_auto_enum_drop_fn(ctx, pt);
+                    nedfn = (LLVMValueRef)pt->as.enom.drop_fn;
+                }
+                if (nedfn) {
+                    LLVMTypeRef neft = LLVMGlobalGetValueType(nedfn);
+                    LLVMBuildCall2(ctx->builder, neft, nedfn, &field_ptr, 1, "");
+                }
+            }
         }
 
         LLVMBuildBr(ctx->builder, end_bb);
@@ -12442,6 +13074,43 @@ static void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enu
     if (drop_fn == NULL) return;
     LLVMTypeRef fn_type = LLVMGlobalGetValueType(drop_fn);
     LLVMBuildCall2(ctx->builder, fn_type, drop_fn, &enum_ptr, 1, "");
+}
+
+/* F.5: Conditional enum drop — skip if moved_flag == 1 (by-move captured).
+   When moved_flag is NULL, drops unconditionally. */
+static void emit_enum_drop_cond(CodegenContext *ctx, LLVMValueRef enum_ptr,
+                                Type *enum_type, LLVMValueRef moved_flag)
+{
+    if (!enum_type || enum_type->kind != TYPE_ENUM) return;
+    if (!enum_type->as.enom.has_drop) return;
+    LLVMValueRef drop_fn_v = (LLVMValueRef)enum_type->as.enom.drop_fn;
+    if (drop_fn_v == NULL) return;
+    if (moved_flag == NULL) {
+        /* Unconditional drop (no move tracking for this variable). */
+        LLVMTypeRef fnt = LLVMGlobalGetValueType(drop_fn_v);
+        LLVMBuildCall2(ctx->builder, fnt, drop_fn_v, &enum_ptr, 1, "");
+        return;
+    }
+    /* Conditional: if moved_flag == 1, skip the drop. */
+    LLVMTypeRef i1_t  = LLVMInt1TypeInContext(ctx->context);
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    LLVMValueRef is_moved = LLVMBuildLoad2(ctx->builder, i1_t, moved_flag,
+                                           "enum.moved");
+    static int enum_drop_ctr = 0;
+    char skip_name[40], call_name[40];
+    snprintf(skip_name, sizeof(skip_name), "edrop.skip%d", enum_drop_ctr);
+    snprintf(call_name, sizeof(call_name), "edrop.call%d", enum_drop_ctr);
+    enum_drop_ctr++;
+    LLVMBasicBlockRef call_bb = LLVMAppendBasicBlockInContext(
+        ctx->context, cur_fn, call_name);
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(
+        ctx->context, cur_fn, skip_name);
+    LLVMBuildCondBr(ctx->builder, is_moved, cont_bb, call_bb);
+    LLVMPositionBuilderAtEnd(ctx->builder, call_bb);
+    LLVMTypeRef fnt = LLVMGlobalGetValueType(drop_fn_v);
+    LLVMBuildCall2(ctx->builder, fnt, drop_fn_v, &enum_ptr, 1, "");
+    LLVMBuildBr(ctx->builder, cont_bb);
+    LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
 }
 
 /* Build the enum value for a variant constructor call/identifier.
@@ -14114,6 +14783,7 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
     bool val_is_str = (val_type && val_type->kind == TYPE_STRING);
     bool val_is_struct_drop = (val_type && val_type->kind == TYPE_STRUCT &&
                                val_type->as.strukt.has_drop);
+    bool val_is_block = (val_type && val_type->kind == TYPE_BLOCK);
     if (key_is_str)
         emit_map_hash_s_helper(ctx);
 
@@ -14315,6 +14985,11 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
                 LLVMTypeRef vdft = LLVMGlobalGetValueType(vdrop);                    \
                 LLVMBuildCall2(ctx->builder, vdft, vdrop, &(val_alloca_ptr), 1, ""); \
             }                                                                        \
+        }                                                                            \
+        else if (val_is_block)                                                       \
+        {                                                                            \
+            /* val_alloca_ptr is &LsBlock inside node; drop env via helper */        \
+            cg_emit_block_drop_at(ctx, (val_alloca_ptr));                            \
         }                                                                            \
     } while (0)
 
@@ -14604,6 +15279,10 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
                         LLVMBuildCall2(ctx->builder, vdft, vdrop, &val_p_in_node, 1, "");
                     }
                 }
+                else if (val_is_block)
+                {
+                    cg_emit_block_drop_at(ctx, val_p_in_node);
+                }
                 LLVMValueRef val_copy;
                 MAP_EMIT_COPY_VAL(p_val, val_copy);
                 LLVMBuildStore(ctx->builder, val_copy, val_p_in_node);
@@ -14837,6 +15516,10 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
                     LLVMBuildCall2(ctx->builder, vdft, vdrop, &nd_vp, 1, "");
                 }
             }
+            else if (val_is_block)
+            {
+                cg_emit_block_drop_at(ctx, nd_vp);
+            }
             cg_emit_free(ctx, cur_nd, "map.scope_drop", CG_LINE(ctx), CG_COL(ctx));
             /* map.len-- */
             LLVMValueRef lp2 = LLVMBuildStructGEP2(ctx->builder, map_t, p_map, 1, "lp2");
@@ -14955,6 +15638,10 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
                     LLVMTypeRef vdt2 = LLVMGlobalGetValueType(vd2);
                     LLVMBuildCall2(ctx->builder, vdt2, vd2, &fv2_p, 1, "");
                 }
+            }
+            else if (val_is_block)
+            {
+                cg_emit_block_drop_at(ctx, fv2_p);
             }
             cg_emit_free(ctx, nd2, "map.scope_drop", CG_LINE(ctx), CG_COL(ctx));
             LLVMBuildStore(ctx->builder, nx2_v2, nd_a2);
