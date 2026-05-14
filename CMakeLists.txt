@@ -18,6 +18,18 @@ llvm_map_components_to_libnames(LLVM_LIBS
     x86asmparser x86codegen x86desc x86info
 )
 
+# Linux/macOS: collect system libraries required for LLVM static linking + FFI.
+# LLVM_SYSTEM_LIBS (exported by the LLVM cmake config) typically contains
+# -lz -lzstd -lrt -ldl -lpthread -lm on Ubuntu/Debian.
+# We always add dl (dlopen for FFI) and m explicitly as a safety net.
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    set(LS_UNIX_EXTRA_LIBS dl m Threads::Threads)
+    if(LLVM_SYSTEM_LIBS)
+        list(APPEND LS_UNIX_EXTRA_LIBS ${LLVM_SYSTEM_LIBS})
+    endif()
+endif()
+
 # CG_DEBUG: opt-in compile-time flag that bakes [cg] str.free / scope.drop /
 # vec.grow / etc. printfs into the IR of every compiled program. Useful for
 # debugging codegen-internal logic (move tracking, scope cleanup decisions,
@@ -98,8 +110,7 @@ if(WIN32)
         Shlwapi Version Ole32 Uuid Advapi32 Shell32 Ws2_32
     )
 else()
-    # Linux/macOS: dlopen/dlsym for FFI
-    target_link_libraries(ls dl)
+    target_link_libraries(ls ${LS_UNIX_EXTRA_LIBS})
 endif()
 
 # Tests (Phase 1 & 2: no LLVM dependency)
@@ -156,7 +167,7 @@ if(WIN32)
         Shlwapi Version Ole32 Uuid Advapi32 Shell32 Ws2_32
     )
 else()
-    target_link_libraries(test_codegen dl)
+    target_link_libraries(test_codegen ${LS_UNIX_EXTRA_LIBS})
 endif()
 add_test(NAME test_codegen COMMAND test_codegen)
 
@@ -185,7 +196,7 @@ if(WIN32)
         Shlwapi Version Ole32 Uuid Advapi32 Shell32 Ws2_32
     )
 else()
-    target_link_libraries(test_jit dl)
+    target_link_libraries(test_jit ${LS_UNIX_EXTRA_LIBS})
 endif()
 add_test(NAME test_jit COMMAND test_jit)
 
@@ -214,7 +225,7 @@ if(WIN32)
         Shlwapi Version Ole32 Uuid Advapi32 Shell32 Ws2_32
     )
 else()
-    target_link_libraries(test_ffi dl)
+    target_link_libraries(test_ffi ${LS_UNIX_EXTRA_LIBS})
 endif()
 add_test(NAME test_ffi COMMAND test_ffi)
 
@@ -243,7 +254,7 @@ if(WIN32)
         Shlwapi Version Ole32 Uuid Advapi32 Shell32 Ws2_32
     )
 else()
-    target_link_libraries(test_module dl)
+    target_link_libraries(test_module ${LS_UNIX_EXTRA_LIBS})
 endif()
 add_test(NAME test_module COMMAND test_module)
 set_tests_properties(test_module PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
@@ -273,7 +284,7 @@ if(WIN32)
         Shlwapi Version Ole32 Uuid Advapi32 Shell32 Ws2_32
     )
 else()
-    target_link_libraries(test_memory dl)
+    target_link_libraries(test_memory ${LS_UNIX_EXTRA_LIBS})
 endif()
 add_test(NAME test_memory COMMAND test_memory)
 
@@ -304,6 +315,9 @@ set_tests_properties(test_extern_struct PROPERTIES DEPENDS "test_memory")
 
 # Phase E.2 end-to-end test: Windows x64 ABI lowering — extern struct
 # returned in iN register (small) and via sret slot (large).
+# Skip on Linux/macOS: System V AMD64 ABI differs from Windows x64; the
+# codegen ABI-lowering path is Windows-specific.
+if(WIN32)
 add_test(
     NAME test_extern_struct_byval
     COMMAND ${CMAKE_COMMAND}
@@ -313,6 +327,7 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_extern_struct_byval.cmake
 )
 set_tests_properties(test_extern_struct_byval PROPERTIES DEPENDS "test_extern_struct")
+endif()
 
 # Phase E.3.3: glue functions (from_cstr / to_cstr / vec.as_ptr)
 add_test(
@@ -324,7 +339,13 @@ add_test(
         -DTEST_NAME=glue_funcs
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
 )
-set_tests_properties(test_e3_glue PROPERTIES DEPENDS "test_extern_struct_byval")
+# On Windows the full chain runs through test_extern_struct_byval.
+# On Linux/macOS that test is skipped, so depend directly on test_extern_struct.
+if(WIN32)
+    set_tests_properties(test_e3_glue PROPERTIES DEPENDS "test_extern_struct_byval")
+else()
+    set_tests_properties(test_e3_glue PROPERTIES DEPENDS "test_extern_struct")
+endif()
 
 # Phase E.3.1: errno() builtin
 add_test(
