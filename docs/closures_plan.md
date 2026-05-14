@@ -18,12 +18,67 @@
 | 维度 | 决策 |
 |------|------|
 | 表示形式 | **方案 B：堆闭包胖指针**，`{fn_ptr: *T, env_ptr: *Env}` 16 字节 POD |
-| 捕获策略 | 默认 by-move（owned types） + by-copy（值类型）；显式 `&x` / `&!x` 标注借用 |
-| 逃逸支持 | **默认全部支持** —— 闭包可 return / 存 vec / 存 struct / 跨作用域传递 |
+| 捕获策略 | 按类型静态决定（见下表）；无生命期系统，不支持显式 `&x` / `&!x` 捕获标注 |
+| 逃逸支持 | **string/struct 全部支持**（by-move 保证 env 持有堆内存）；vec/map 闭包不能 outlive 外层变量（by-ref，无编译期检查） |
 | 内存管理 | env struct 由编译器合成，参与 RAII；闭包变量退出作用域 → free env |
 | 调用形态 | `closure(args)` —— 用户写法和普通函数一致；编译器 lower 为 `closure.fn(closure.env, args...)` |
 | 语法风格 | **Ruby 风** —— `\|args\|` 参数列表，trailing closure 糖（`f(a) { \|x\| ... }`） |
 | 函数类型语法 | `Block(args) -> ret`，**返回位置强制走 type 别名** |
+
+#### 捕获策略详表（已实现）
+
+| 捕获类型 | 策略 | env 存放 | outer 变量 | 设计理由 |
+|----------|------|----------|------------|----------|
+| `int / f64 / bool / char / *T / object` | **by-copy** | 值副本 | 保持 live | POD，无堆内存，复制零代价 |
+| `array(POD, N)` | **by-copy** | `[N x T]` 副本 | 保持 live（snapshot） | 固定大小值类型，元素无堆内存 |
+| `string` | **by-move** | string 值（含 data ptr） | 标 MOVED（cap = -1） | 逃逸场景（`make_greeter` 工厂）必须持有堆内存，by-ref 会产生悬垂指针 |
+| `struct(has_drop)` | **by-move** | struct 值 | 标 MOVED（moved_flag） | 同上，struct 常作函数参数传入后被工厂闭包捕获 |
+| `vec(T)` | **by-ref** | 外层 alloca 指针 | 保持 live，可继续 push | vec 几乎不作"工厂捕获"；by-ref 让捕获后的 push 对闭包可见，更直觉 |
+| `map(K,V)` | **by-ref** | 外层 alloca 指针 | 保持 live，可继续 set | 同 vec |
+
+#### 为什么 string/struct 不能像 vec/map 一样走 by-ref？
+
+**by-ref 要求闭包不能 outlive 外层变量**。这对 vec/map 通常成立（它们活在 main 或 struct 里），但 string/struct 经常出现在函数参数里，函数返回后即销毁：
+
+```ls
+type Greeter = Block() -> string
+
+fn make_greeter(string name) -> Greeter {
+    // name 是栈上的函数参数
+    return || { return "Hello, " + name }
+    //   若 name by-ref → 函数返回后 name 消亡 → 悬垂指针 → crash
+}
+// make_greeter("Alice") 的 name 在这里已经不存在了
+```
+
+by-move 把 `name` 的所有权转入 env（堆分配），工厂模式安全：
+
+```ls
+fn make_greeter(string name) -> Greeter {
+    // name by-move → env 接管 heap，闭包可安全逃逸
+    return || { return "Hello, " + name }  // ✓
+}
+```
+
+#### by-ref 捕获的悬垂风险（vec/map 同样存在）
+
+by-ref 捕获要求**闭包不能 outlive 外层变量**。vec/map 的工厂模式同样会产生悬垂指针——这与 string/struct 面对的风险在底层是完全相同的：
+
+```ls
+fn make_summer() -> Summer {
+    vec(int) nums = [1, 2, 3]
+    return || { ... nums ... }   // nums by-ref → 函数返回后栈帧消亡 → 悬垂
+}
+```
+
+选择 vec/map by-ref 的理由是**经验性**的（工厂模式在 vec/map 上远比 string/struct 少见），而非结构性安全保证。**编译器不检查 by-ref 闭包是否逃逸，用户须自行保证生存期。**
+
+#### 为什么不统一所有类型为 by-ref 或 by-move？
+
+- **统一 by-ref**：工厂模式（string/struct 核心用例）必然悬垂，无编译期保护
+- **统一 by-move**：vec/map by-move 后，outer 标 moved，捕获后的 push/set 对闭包不可见，用户体验差
+
+当前策略（**vec/map by-ref，string/struct by-move**）是"没有生命期系统"约束下的最优折中。未来引入生命期标注后，可以改为：默认 by-ref + `move` 关键字显式转移（Rust 路线）。
 
 ### 1.3 非目标
 

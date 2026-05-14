@@ -1,14 +1,14 @@
-# test_phase_c7_closure.cmake — Phase C.7 (revised): vec/map by-ref + struct by-move.
-# vec/map captured by reference — outer remains live, mutations visible in closure.
-# struct(has_drop) still captured by move via factory pattern.
-# Expected output: 10, 30, 99, hello-world, 90, 75, 0, LVL:7
+# test_phase_e1_closure.cmake — Phase E.1: by-ref capture of vec/map passed to fn.
+# Verifies that vec(int)/map(string,int) captures store a pointer to the outer alloca;
+# mutations after capture are visible inside closure; no clone / no double-free.
+# Expected output: 60, 100, 5, 24, 24, 2, 2
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/closure_phase_c7_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/closure_e1_test.ls")
 
-set(_expected "10" "30" "99" "hello-world" "90" "75" "0" "LVL:7")
+set(_expected "60" "100" "5" "24" "2")
 
 # ---- JIT ----
 execute_process(
@@ -19,14 +19,14 @@ execute_process(
 foreach(_line ${_expected})
     if(NOT "${jit_out}" MATCHES "(^|\n)${_line}(\r?\n|$)")
         message(FATAL_ERROR
-            "Phase C.7 JIT FAILED: missing line '${_line}' in output\n"
+            "Phase E.1 JIT FAILED: missing line '${_line}' in output\n"
             "stdout:\n${jit_out}\nstderr:\n${jit_err}")
     endif()
 endforeach()
-message(STATUS "phase_c7 JIT: OK")
+message(STATUS "phase_e1 JIT: OK")
 
 # ---- AOT ----
-set(aot_bin "${WORK_DIR}/closure_phase_c7_aot")
+set(aot_bin "${WORK_DIR}/closure_e1_aot")
 if(WIN32)
     set(aot_bin "${aot_bin}.exe")
 endif()
@@ -36,7 +36,7 @@ execute_process(
     ERROR_VARIABLE  aot_err
 )
 if(NOT aot_rc EQUAL 0)
-    message(FATAL_ERROR "Phase C.7 AOT compile FAILED:\n${aot_err}")
+    message(FATAL_ERROR "Phase E.1 AOT compile FAILED:\n${aot_err}")
 endif()
 execute_process(
     COMMAND "${aot_bin}"
@@ -45,11 +45,11 @@ execute_process(
 foreach(_line ${_expected})
     if(NOT "${aot_out}" MATCHES "(^|\n)${_line}(\r?\n|$)")
         message(FATAL_ERROR
-            "Phase C.7 AOT FAILED: missing line '${_line}' in output\n"
+            "Phase E.1 AOT FAILED: missing line '${_line}' in output\n"
             "stdout:\n${aot_out}")
     endif()
 endforeach()
-message(STATUS "phase_c7 AOT: OK")
+message(STATUS "phase_e1 AOT: OK")
 
 # ---- Memcheck ----
 execute_process(
@@ -57,11 +57,11 @@ execute_process(
     ERROR_VARIABLE  mc_err
 )
 if(NOT "${mc_err}" MATCHES "SUMMARY: 0 leak\\(s\\)")
-    message(FATAL_ERROR "Phase C.7 memcheck FAILED: leaks reported\n${mc_err}")
+    message(FATAL_ERROR "Phase E.1 memcheck FAILED: leaks reported\n${mc_err}")
 endif()
 if(NOT "${mc_err}" MATCHES "0 double-free")
-    message(FATAL_ERROR "Phase C.7 memcheck FAILED: double-free reported\n${mc_err}")
+    message(FATAL_ERROR "Phase E.1 memcheck FAILED: double-free reported\n${mc_err}")
 endif()
-message(STATUS "phase_c7 memcheck: 0 leaks / 0 double-free OK")
+message(STATUS "phase_e1 memcheck: 0 leaks / 0 double-free OK")
 
-message(STATUS "Phase C.7 vec/map/struct captures: ALL OK")
+message(STATUS "Phase E.1 by-ref capture vec/map: ALL OK")

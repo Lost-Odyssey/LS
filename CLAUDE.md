@@ -137,6 +137,9 @@ cd build && ctest --output-on-failure -C Release
 | 10 (closure C) | POD 捕获 + 堆 env + RAII：自由变量扫描 → AST `captures[]` → 合成匿名 env struct → `cg_emit_alloc("closure.env")` → body 入口 alloca+load 还原；闭包 var 离开作用域自动 free env（emit_scope_cleanup / emit_cleanup_to 双路径）；POD-only 限制（int/i64/f64/bool/char/*T/object）；嵌套闭包暂不支持 | ✅ |
 | 10 (closure C.5) | string by-move 捕获：env 布局加 `drop_fn` slot（field 0），按 closure id 合成 `__env_drop_<N>`；外层 alloca 写 cap=-1 标 MOVED；Block 形参标 borrowed（callee 不再 free env，避免 double-free）；temp_block_envs 跟踪 rvalue 闭包字面量，var_decl/return 消费时 pop，否则 cg_flush_temps 在语句边界 free | ✅ |
 | 10 (closure C.7) | vec(T) / map(K,V) / struct(has_drop) 捕获：vec/map 走 borrow 语义（env 不释放，body 标 is_borrowed，map 形参补 is_borrowed=true），struct 走完整 by-move（env 调 `Struct.__drop`，外层 moved_flag=true）；env_drop 按 capture kind 分派（string/vec inline，map/struct 复用现有 `__ls_map_drop` / `Struct.__drop`）；Block-call 返回 string 自动 `cg_push_temp_string`，避免 print 路径双注册（`expr_produces_dynamic_string` 对 Block 拒绝） | ✅ |
+| 10 (closure E.1) | by-ref capture 重构：vec/map 捕获 env 存外层 alloca 指针（非值拷贝）；closure body 读写直达外层变量，捕获后 push/新增 key 对闭包可见；outer 变量不标 moved，可多次调用；修复 call site `arg_type` 未声明导致结构体克隆逻辑跳过的编译错 | ✅ |
+| 10 (closure E.2) | 闭包参数 `\|v\|` 的 vec/map/Block 标 `is_borrowed=true`（与普通 fn 参数一致），防止 closure body scope cleanup 释放调用方持有的 heap → double-free | ✅ |
+| 10 (closure E.4) | `array(POD,N)` by-value 捕获：checker 放行 POD-element 数组，codegen 走 by-copy 路径（env 字段类型 `[N x T]`，全量值拷贝，outer 不标 moved） | ✅ |
 
 > 各 Phase 详细规范见 [docs/phases.md](docs/phases.md)
 
@@ -213,6 +216,22 @@ cd build && ctest --output-on-failure -C Release
 - f16 半精度浮点数原生支持
 
 ### 已完成（近期）
+
+- **闭包 Phase E.2 + E.4（closure 参数借用 + array 捕获）** — 2026-05-10
+  - **E.2 closure 参数 is_borrowed**：`codegen_closure_literal` step 5b 对 `vec(T)` / `map(K,V)` / `Block` 参数设 `is_borrowed=true`，与 `codegen_fn_decl`（line ~12117）保持一致；修复 `|v| { return sum_vec(v) }` 被调时的 double-free（closure body scope cleanup 误 free 调用方的 data buffer）
+  - **E.4 array(POD,N) by-value 捕获**：checker `capture_type_is_pod_array()` 辅助函数判断 element 是否 POD；`capture_type_supported` 接受后，codegen 自动走 by-copy 路径（`[N x T]` 整体 load→store 进 env，无额外 drop 注册）；外层数组不标 moved，snapshot 语义（捕获时刻的副本）
+  - **测试**：`tests/samples/closure_e2_e4_test.ls`（5 组用例：E.2.1 vec param / E.2.2 map param / E.4.1 基础 index / E.4.2 snapshot / E.4.3 多闭包独立副本）；`tests/test_phase_e2_e4_closure.cmake` JIT + AOT + memcheck 三重；ctest `test_phase_e2_e4_closure` 依赖 `test_phase_e1_closure`
+  - 验证：ctest 24/24 通过
+
+- **闭包 Phase E.1（by-ref capture 重构：vec/map 捕获存外层指针）** — 2026-05-10
+  - **E.1.1 env layout 变更**：vec/map 的 by-ref 捕获在 env struct 字段中存储的是 `ptr`（指向外层 alloca），而非值拷贝（之前 C.7 存的是 `{ptr, i32, i32}` 值）；env 字段类型由 `type_to_llvm(ct)` 改为 `ptr_t`
+  - **E.1.2 body 端恢复**：在 `codegen_closure_literal` step 5a 中，by-ref 路径通过 `LLVMBuildLoad2(ptr_t, field_ptr, "cap.refptr")` 从 env 取出外层 alloca 地址，直接将其设为 `sym->value`；`is_borrowed=true` 防止 body scope cleanup 误 drop
+  - **E.1.3 capture 阶段**：`cap_outer_vals[i] = sym->value`（alloca 地址，非 load 值），之后 store 到 env 字段（存指针不存值）；外层变量不标 moved
+  - **E.1.4 可见性**：outer 变量的 push/set 在 capture 之后发生时，closure body 读取时能看到最新状态（`nums.push(40)` 后再 `adder()` 返回 100）
+  - **E.1.5 bug 修复（call site `arg_type` 未声明）**：由-ref 重构引入的编译错 —— AST_CALL codegen 中 struct-with-drop 克隆路径使用了 `arg_type` 但未声明（在作用域外）；添加 `Type *arg_type = node->as.call.args[i]->resolved_type;` 修复；此 bug 导致 MSVC 在 Release 下将 struct 克隆代码路径作为 UB 处理，也造成了 vec.clone 的意外调用引发泄漏
+  - **测试**：`tests/samples/closure_e1_test.ls` 4 大用例（E.1.1 vec nums + push后再调 / E.1.2 vec items len / E.1.3 data summer 多次调用 / E.1.4 map scores key_counter）；`tests/test_phase_e1_closure.cmake` JIT + AOT + memcheck 0 leaks / 0 double-free 三重；ctest `test_phase_e1_closure` 依赖 `test_phase_c7_closure`
+  - 已知限制：closure 不能 outlive 外层变量（by-ref 语义栈安全性，运行时无检查）；嵌套闭包仍拒；enum capture 仍未实现
+  - 验证：ctest 23/23 通过
 
 - **闭包 Phase C.7（vec/map/struct(drop) 捕获 + 双语义 ABI）** — 2026-05-09
   - **C.7.1 类型扩展**：`capture_type_supported = POD || string || vec(T) || map(K,V) || struct(has_drop)`；checker 路径与 C.5 共用，由 `capture_type_is_by_move` 决定是否标 outer Symbol moved（vec/map 不标 — 走 borrow；struct 标）
@@ -529,3 +548,62 @@ print(s)                 // ❌ 编译错误（即使 else 分支未 move）
 String Phase A（顺序语句线性分析）→ String Phase B（if/else + 循环控制流）→ Struct Phase A/B → 借用语义
 
 > 详细计划见 [docs/move_semantics_plan.md](docs/move_semantics_plan.md)
+
+---
+
+## 8. 闭包捕获策略（设计已固化）
+
+### 8.1 捕获策略总表
+
+| 捕获类型 | 策略 | outer 变量 | 设计理由 |
+|----------|------|------------|----------|
+| `int / f64 / bool / char / *T / object` | **by-copy** | 保持 live | POD，无堆内存 |
+| `array(POD, N)` | **by-copy** | 保持 live（snapshot） | 固定大小值类型，元素无堆内存 |
+| `string` | **by-move** | 标 MOVED（cap = −1） | 工厂模式必须持有堆内存（见 §8.2） |
+| `struct(has_drop)` | **by-move** | 标 MOVED（moved_flag） | 同上 |
+| `vec(T)` | **by-ref** | 保持 live，可继续 push | 逃逸场景极少；by-ref 让捕获后的 push 可见 |
+| `map(K,V)` | **by-ref** | 保持 live，可继续 set | 同 vec |
+| `enum`（含 has_drop） | 未实现 | — | 需要 payload walk + env_drop 分派 |
+| `array(has_drop elem, N)` | 未实现 | — | 需要 element-wise clone |
+
+### 8.2 by-ref 捕获的悬垂风险（所有 by-ref 类型通用）
+
+**by-ref 捕获有一个根本限制：闭包不能 outlive 外层变量。** 这对 vec/map 同样成立——工厂函数返回捕获了局部 vec 的闭包，会在运行时产生悬垂指针（编译器不检查）：
+
+```ls
+type Summer = Block() -> int
+
+fn make_summer() -> Summer {
+    vec(int) nums = [1, 2, 3]
+    return || {                       // nums by-ref → env 存 &nums（栈帧指针）
+        int s = 0; int i = 0
+        while i < nums.length { s = s + nums[i]; i = i + 1 }
+        return s
+    }
+}   // ← 函数返回，nums 栈帧消亡，env 里的指针悬空
+
+fn pollute() -> int {
+    vec(int) trash = [999, 888, 777]
+    return trash[0]
+}
+
+fn main() {
+    Summer f = make_summer()
+    int x = pollute()    // pollute 的栈帧覆盖 make_summer 遗留内存
+    print(f())           // 实测输出 0（nums.length 被覆写），而非预期的 6
+}
+```
+
+string/struct 之所以用 by-move，正是因为它们**更频繁**地出现在工厂模式里（函数参数 → 捕获后返回）；vec/map 在工厂模式里较少见，才"侥幸"不易出问题。这个区别是**经验性的**，不是结构性的——两者面对的底层风险完全相同。
+
+**当前编译器不检查 by-ref 闭包是否逃逸。用户必须手动保证：捕获了 vec/map 的闭包，其生存期不超过被捕获变量所在的作用域。**
+
+### 8.3 为什么不统一所有类型为 by-ref？
+
+无生命期系统时无法在编译期区分"内联闭包（安全）"和"逃逸闭包（不安全）"，统一 by-ref 会让工厂模式产生无法检测的悬垂指针（string/struct 工厂模式是语言核心用例）。
+
+### 8.4 未来演进路径
+
+引入生命期标注后，可以改为：**默认 by-ref + `move` 关键字显式转移**（Rust `move |...| ...` 路线）——编译器用生命期分析强制 by-ref 闭包不逃逸，`move` 捕获的闭包可逃逸。在此之前，当前按类型静态决定策略是最稳妥的折中。
+
+> 详细设计见 [docs/closures_plan.md §1.2](docs/closures_plan.md)

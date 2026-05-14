@@ -188,6 +188,9 @@ static LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_v
 /* Clone a vec VALUE (struct {data*, len, cap}): malloc new data, copy+clone elements */
 static LLVMValueRef emit_vec_clone_val(CodegenContext *ctx, LLVMValueRef vec_val,
                                        Type *elem_type);
+/* Clone a map VALUE (borrowed closure capture): traverse chains, re-insert via set */
+static LLVMValueRef emit_map_clone_val(CodegenContext *ctx, LLVMValueRef map_val,
+                                       Type *key_type, Type *val_type);
 static void emit_scope_cleanup(CodegenContext *ctx);
 static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloca);
 static void emit_struct_drop(CodegenContext *ctx, LLVMValueRef drop_ptr, Type *struct_type);
@@ -215,35 +218,34 @@ static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node);
                    capture aliases a caller-owned string via the by-value
                    param-borrow ABI; non-zero when cloned/owned).
      TYPE_STRUCT(has_drop) — env_drop calls Struct.__drop on the slot.
-   Notably absent (Phase C.7 v1):
-     TYPE_VECTOR / TYPE_MAP — captured as a non-owning borrow: env stores
-       cap=0 in the slot so env_drop is a no-op; the original owner
-       (typically the caller of the closure-defining function) stays
-       responsible for release. Closure must not outlive the source vec/map.
-       Phase D will revisit when we have proper Block move semantics. */
+   Phase E by-ref change:
+     TYPE_VECTOR / TYPE_MAP — env stores a pointer to the outer alloca
+       (by-ref semantics); outer is NOT marked moved; the closure must
+       not outlive the outer variable's scope. env_drop skips these slots
+       (outer owner is responsible for release). */
 static inline bool capture_type_is_by_move_cg(const Type *t) {
     if (t == NULL) return false;
     switch (t->kind) {
     case TYPE_STRING: return true;
+    case TYPE_VECTOR: return false;  /* by-ref: env stores ptr to outer alloca */
+    case TYPE_MAP:    return false;  /* by-ref: env stores ptr to outer alloca */
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     default:          return false;
     }
 }
 
-/* True when the capture should be stored into env with cap=0 (borrow
-   semantics) — applies to all the LsString-shape types where the env
-   aliases the caller's heap rather than taking ownership. Struct uses
-   moved_flag and is excluded. */
-static inline bool capture_borrows_in_env(const Type *t) {
+/* True for vec(T)/map(K,V) captures: env stores a pointer to the outer
+   alloca rather than a copy of the value. The closure body reads/writes
+   through that pointer, so mutations are reflected bidirectionally.
+   Constraint: closure must not outlive the enclosing scope. */
+static inline bool capture_type_is_by_ref_cg(const Type *t) {
     if (t == NULL) return false;
-    return t->kind == TYPE_STRING ||
-           t->kind == TYPE_VECTOR ||
-           t->kind == TYPE_MAP;
+    return t->kind == TYPE_VECTOR || t->kind == TYPE_MAP;
 }
 
-/* Whether marking the outer-as-moved is done via the cap=-1 idiom
-   (string only — vec/map are pure borrows in v1) versus a separate i1
-   moved_flag (struct). */
+/* Whether marking the outer-as-moved is done via the cap idiom.
+   Only string uses this (cap=-1). Struct uses moved_flag (i1 alloca).
+   vec/map are now by-ref and never mark the outer moved. */
 static inline bool capture_outer_marker_uses_cap(const Type *t) {
     if (t == NULL) return false;
     return t->kind == TYPE_STRING;
@@ -1652,6 +1654,27 @@ static LLVMValueRef emit_vec_clone_val(CodegenContext *ctx, LLVMValueRef vec_val
     result = LLVMBuildInsertValue(ctx->builder, result, orig_len, 1, "vc.r1");
     result = LLVMBuildInsertValue(ctx->builder, result, new_cap32, 2, "vc.r2");
     return result;
+}
+
+/* Phase E.1: deep-clone a map VALUE from a borrowed closure capture.
+   Calls the lazily-generated __ls_map_XX_clone helper which traverses
+   the original bucket chains and re-inserts each entry via __ls_map_XX_set
+   (handles key/val deep-copy). Returns a fresh independent map value. */
+static LLVMValueRef emit_map_clone_val(CodegenContext *ctx, LLVMValueRef map_val,
+                                       Type *key_type, Type *val_type)
+{
+    if (!key_type || !val_type) return map_val;
+    emit_map_helpers_for(ctx, key_type, val_type);
+    char suffix[64], nm[96];
+    map_type_id(key_type, val_type, suffix, sizeof(suffix));
+    snprintf(nm, sizeof(nm), "__ls_map_%s_clone", suffix);
+    LLVMValueRef clone_fn = LLVMGetNamedFunction(ctx->module, nm);
+    if (!clone_fn) return map_val;
+    LLVMTypeRef map_t = ls_map_type(ctx);
+    LLVMValueRef tmp = LLVMBuildAlloca(ctx->builder, map_t, "mc.tmp");
+    LLVMBuildStore(ctx->builder, map_val, tmp);
+    LLVMTypeRef clone_ft = LLVMGlobalGetValueType(clone_fn);
+    return LLVMBuildCall2(ctx->builder, clone_ft, clone_fn, &tmp, 1, "map.clone");
 }
 
 /* ---- Temporary string slot management ---- */
@@ -8473,6 +8496,12 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         }
                     }
                 }
+                /* Phase E.1 note: with by-ref vec/map capture semantics, the
+                   closure body's captured sym->value IS the outer alloca pointer.
+                   Loading from it gives the outer's {data, len, cap}. Passing to
+                   a value-ABI fn: callee marks its vec/map param as is_borrowed
+                   (Phase C.7.4 fix) so the callee does NOT free the data — the
+                   outer's scope cleanup does it. No clone needed; no double-free. */
                 /* Argument ownership policy for struct-with-drop:
                      - default (`take(p)`):          deep-clone; caller retains p
                      - explicit (`take(__move(p))`): skip clone, transfer ownership;
@@ -11404,24 +11433,39 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 return NULL;
             }
             cap_outer_allocas[i] = sym->value;
-            LLVMTypeRef ct_llvm =
-                type_to_llvm(ctx, node->as.closure.captures[i].type);
-            cap_outer_vals[i] = LLVMBuildLoad2(ctx->builder, ct_llvm,
-                                               sym->value, "cap.load");
+            Type *ct = node->as.closure.captures[i].type;
+            if (capture_type_is_by_ref_cg(ct)) {
+                /* By-ref: store the outer alloca pointer itself into env.
+                   The closure body will load the pointer and use it directly,
+                   so mutations to the outer vec/map are visible inside. */
+                cap_outer_vals[i] = sym->value;
+            } else {
+                LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
+                cap_outer_vals[i] = LLVMBuildLoad2(ctx->builder, ct_llvm,
+                                                   sym->value, "cap.load");
+            }
         }
     }
 
     /* 1) Build env struct LLVM type. Field 0 is the drop_fn pointer slot
        (always present so the cleanup logic stays uniform); user captures
-       follow at fields 1..N. When cap_n == 0 we still skip env entirely
-       and pass NULL — the LsBlock value itself encodes "no env". */
+       follow at fields 1..N.
+       - by-move captures (string/struct): field type = value type
+       - by-ref captures (vec/map):        field type = ptr (opaque pointer
+         to the outer alloca; no copy, no ownership transfer)
+       When cap_n == 0 we still skip env entirely and pass NULL. */
     LLVMTypeRef env_struct_t = NULL;
     if (cap_n > 0) {
         LLVMTypeRef *fields = (LLVMTypeRef*)malloc_safe(
             (size_t)(cap_n + 1) * sizeof(LLVMTypeRef));
         fields[0] = ptr_t; /* drop_fn slot */
         for (int i = 0; i < cap_n; i++) {
-            fields[i + 1] = type_to_llvm(ctx, node->as.closure.captures[i].type);
+            Type *ct = node->as.closure.captures[i].type;
+            if (capture_type_is_by_ref_cg(ct)) {
+                fields[i + 1] = ptr_t; /* pointer to outer alloca */
+            } else {
+                fields[i + 1] = type_to_llvm(ctx, ct);
+            }
         }
         env_struct_t = LLVMStructTypeInContext(ctx->context, fields,
                                                (unsigned)(cap_n + 1), 0);
@@ -11467,46 +11511,60 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     ctx->current_scope = NULL;
     push_scope(ctx);
 
-    /* 5a) Materialise captures inside the body: alloca + load-from-env →
-       register CgSymbol so AST_IDENT lookups resolve naturally. Field 0
-       is the drop_fn slot, so user captures live at indices 1..N.
+    /* 5a) Materialise captures inside the body. Field 0 is the drop_fn
+       slot, so user captures live at indices 1..N.
 
-       Body-side captures are marked is_borrowed: the env owns the heap
-       (e.g. a captured string's data ptr); the body sees a snapshot copy
-       and must not free it on its own scope cleanup. The env's __drop
-       (synthesised below) is the single owner of release. */
+       Two strategies depending on capture kind:
+       - by-move (string/struct): load value from env slot → alloca →
+         cg_scope_define with is_borrowed=true (env is sole owner of heap).
+       - by-ref (vec/map): env slot holds a pointer to the OUTER alloca.
+         Load the pointer from env, use it directly as sym->value. Body
+         reads/writes go straight to the outer variable, so mutations are
+         visible bidirectionally. Mark is_borrowed=true so scope cleanup
+         doesn't call drop on what it doesn't own. */
     if (cap_n > 0) {
         LLVMValueRef env_param = LLVMGetParam(fn, 0);
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
-            LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
+            const char *cap_name = node->as.closure.captures[i].name;
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, env_param,
                 (unsigned)(i + 1), "cap.gep");
-            LLVMValueRef field_val = LLVMBuildLoad2(
-                ctx->builder, ct_llvm, field_ptr, "cap.fromenv");
-            LLVMValueRef alloca = LLVMBuildAlloca(
-                ctx->builder, ct_llvm,
-                node->as.closure.captures[i].name);
-            LLVMBuildStore(ctx->builder, field_val, alloca);
-            CgSymbol *cs = cg_scope_define(ctx->current_scope,
-                            node->as.closure.captures[i].name,
-                            alloca, ct, NULL);
-            /* Body must never run a drop helper on the captured local —
-               the heap is owned either by env (string/struct) or by the
-               original caller (vec/map borrow). Marking is_borrowed
-               uniformly for every heap-bearing capture type prevents
-               body-side scope cleanup from frying the shared buffer. */
-            if (cs && (capture_type_is_by_move_cg(ct) ||
-                       ct->kind == TYPE_VECTOR ||
-                       ct->kind == TYPE_MAP)) {
-                cs->is_borrowed = true;
+
+            if (capture_type_is_by_ref_cg(ct)) {
+                /* By-ref: load the outer alloca pointer stored in env.
+                   sym->value = that pointer = the outer alloca itself.
+                   The body accesses the outer vec/map in-place. */
+                LLVMValueRef outer_ptr = LLVMBuildLoad2(
+                    ctx->builder, ptr_t, field_ptr, "cap.refptr");
+                CgSymbol *cs = cg_scope_define(ctx->current_scope,
+                                cap_name, outer_ptr, ct, NULL);
+                if (cs) cs->is_borrowed = true;
+            } else {
+                /* By-move (or POD): load value, alloca, store, register. */
+                LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
+                LLVMValueRef field_val = LLVMBuildLoad2(
+                    ctx->builder, ct_llvm, field_ptr, "cap.fromenv");
+                LLVMValueRef alloca = LLVMBuildAlloca(
+                    ctx->builder, ct_llvm, cap_name);
+                LLVMBuildStore(ctx->builder, field_val, alloca);
+                CgSymbol *cs = cg_scope_define(ctx->current_scope,
+                                cap_name, alloca, ct, NULL);
+                /* Body must not drop env-owned heap (string/struct).
+                   POD has no heap, but is_borrowed is harmless for it. */
+                if (cs && capture_type_is_by_move_cg(ct)) {
+                    cs->is_borrowed = true;
+                }
             }
         }
     }
 
     /* 5b) Define each user parameter as alloca + store. The LLVM param at
-       slot (i+1) skips the env at slot 0. */
+       slot (i+1) skips the env at slot 0.
+       vec/map/Block params are marked is_borrowed=true — the caller owns
+       the underlying heap (data buffer / bucket array / env block), so the
+       closure body's scope cleanup must not free it (matches the behaviour
+       of regular fn params, codegen_fn_decl line ~12117). */
     for (int i = 0; i < n; i++)
     {
         Type *pt = block_t->as.function.params[i];
@@ -11515,9 +11573,13 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         LLVMValueRef alloca = LLVMBuildAlloca(ctx->builder, pt_llvm,
                                               node->as.closure.param_names[i]);
         LLVMBuildStore(ctx->builder, param_val, alloca);
-        cg_scope_define(ctx->current_scope,
+        CgSymbol *psym = cg_scope_define(ctx->current_scope,
                         node->as.closure.param_names[i],
                         alloca, pt, NULL);
+        if (psym && pt &&
+            (pt->kind == TYPE_VECTOR || pt->kind == TYPE_MAP ||
+             pt->kind == TYPE_BLOCK))
+            psym->is_borrowed = true;
     }
 
     /* 6) Compile the body. */
@@ -11741,61 +11803,27 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, env_val,
                 (unsigned)(i + 1), "cap.slot");
+
+            /* Store capture into env:
+               - by-ref (vec/map): cap_outer_vals[i] IS the outer alloca ptr,
+                 so we're storing a pointer-to-alloca into the ptr-typed slot.
+                 No ownership transfer; outer remains live.
+               - by-move (string/struct/POD): cap_outer_vals[i] is a loaded
+                 value; env takes ownership of the heap data. */
             LLVMBuildStore(ctx->builder, cap_outer_vals[i], field_ptr);
 
-            /* Phase C.7 vec/map: env stores the full {data/buckets, len, cap}
-               verbatim — DON'T zero the cap field, because the closure body
-               needs it for vec.length / map.contains_key / map.get etc.
-               Safety against double-free comes from `capture_type_is_by_move_cg`
-               returning false for vec/map: env_drop never touches these
-               slots, and the caller's scope cleanup runs the type's drop
-               helper as usual. (Function params for vec/map are marked
-               is_borrowed in codegen_fn_decl, so callee cleanup skips.)
-
-               Lifetime caveat: the captured data ptr aliases the source's
-               buffer. Closure must not outlive the original owner. Phase D
-               adds Block move semantics to make this enforceable. */
-
-            /* Phase C.5/C.7 by-move marker on the outer alloca:
-                 string/vec/map: cap field (offset 2 in their LsString-shape
-                                 layout) gets `-1` when currently `> 0`.
-                                 Static strings (cap=0) stay 0 — env_drop's
-                                 own `cap > 0` guard then no-ops, so the env
-                                 doesn't double-free .rodata.
-                 struct: cap=-1 doesn't apply; the existing per-instance
-                         moved_flag i1 alloca (CgSymbol.moved_flag) is set
-                         to `true`. If the struct local lacks a moved_flag
-                         (e.g. function parameter without one) we skip — it
-                         just means the outer scope cleanup will run drop
-                         again on a struct whose owned heap is now aliased
-                         by env, which IS unsafe. For Phase C.7 v1 we treat
-                         that as a TODO surface. */
+            /* By-move marker on the outer alloca (by-ref types skip this):
+                 string: cap field gets -1 when currently > 0 (skip .rodata).
+                 struct: moved_flag i1 alloca set to true.
+               vec/map are now by-ref — the outer is NOT marked moved. */
             if (capture_type_is_by_move_cg(ct) && cap_outer_allocas[i]) {
                 if (capture_outer_marker_uses_cap(ct)) {
-                    /* string / vec(T) / map(K,V) — all share `{ptr, i32, i32}`
-                       layout, cap at field 2. The marker value differs:
-                         string/vec: scope cleanup checks `cap > 0` to free,
-                                     so writing -1 (the canonical MOVED marker)
-                                     skips it — and env's drop guard is also
-                                     `cap > 0`, harmlessly skipping `.rodata`
-                                     statics whose cap is 0.
-                         map:        the per-(K,V) drop helper checks
-                                     `cap == 0` for skip, so the marker
-                                     must be 0 (not -1) for outer cleanup
-                                     to be a no-op without confusing the
-                                     env's drop call (which sees the
-                                     original cap > 0 in its own slot).
-                       Both cases keep the bucket / data pointer untouched
-                       — the env owns it now and frees it via env_drop. */
-                    LLVMTypeRef shell_t = (ct->kind == TYPE_STRING)
-                        ? ls_string_type(ctx)
-                        : (ct->kind == TYPE_VECTOR
-                            ? ls_vec_type(ctx)
-                            : ls_map_type(ctx));
+                    /* Only string uses the cap=-1 trick. */
                     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
                     LLVMValueRef cap_ptr = LLVMBuildStructGEP2(
-                        ctx->builder, shell_t, cap_outer_allocas[i], 2u,
-                        "outer.cap.ptr");
+                        ctx->builder, ls_string_type(ctx), cap_outer_allocas[i],
+                        2u, "outer.cap.ptr");
+                    /* Conditional: only mark when cap > 0 (skip .rodata). */
                     LLVMValueRef cur_cap = LLVMBuildLoad2(
                         ctx->builder, i32_t, cap_ptr, "outer.cap.cur");
                     LLVMValueRef is_owned = LLVMBuildICmp(
@@ -11809,17 +11837,13 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                         ctx->context, cur_fn_ll, "cap.markdone");
                     LLVMBuildCondBr(ctx->builder, is_owned, mark_bb, ckdone_bb);
                     LLVMPositionBuilderAtEnd(ctx->builder, mark_bb);
-                    int marker = (ct->kind == TYPE_MAP) ? 0 : -1;
                     LLVMBuildStore(ctx->builder,
-                                   LLVMConstInt(i32_t, (unsigned)marker, 1),
+                                   LLVMConstInt(i32_t,
+                                       (unsigned long long)(long long)-1, 1),
                                    cap_ptr);
                     LLVMBuildBr(ctx->builder, ckdone_bb);
                     LLVMPositionBuilderAtEnd(ctx->builder, ckdone_bb);
                 } else if (ct->kind == TYPE_STRUCT) {
-                    /* Look up the captured outer's CgSymbol to find its
-                       moved_flag i1 alloca. The captured-name resolution
-                       was done above (cap_outer_allocas[i] = sym->value);
-                       re-resolve here to also fetch moved_flag. */
                     const char *cap_name = node->as.closure.captures[i].name;
                     CgSymbol *outer_sym =
                         cg_scope_resolve(saved_scope, cap_name);
@@ -11829,10 +11853,6 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                                        LLVMConstInt(i1_t, 1, 0),
                                        outer_sym->moved_flag);
                     }
-                    /* Otherwise: outer scope cleanup will still run
-                       struct.__drop, leading to double-free. The checker
-                       prevents user code from re-using a moved struct, so
-                       only the outer cleanup remains unguarded. v1 TODO. */
                 }
             }
         }
@@ -15014,6 +15034,158 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
 
             LLVMPositionBuilderAtEnd(ctx->builder, bb_ret);
             LLVMBuildRetVoid(ctx->builder);
+        }
+    }
+
+    /* ====================================================
+       8. __ls_map_XX_YY_clone(*LsMap) -> LsMap   (Phase E.1)
+          Deep-clone a map: traverse orig bucket chains, re-insert each
+          entry into a fresh map via __ls_map_XX_set (handles key/val
+          deep-copy). Used by Phase E.1 to prevent double-free when a
+          borrowed closure capture is passed to a value-ABI function.
+       ==================================================== */
+    {
+        char nm_clone[96];
+        snprintf(nm_clone, sizeof(nm_clone), "__ls_map_%s_clone", suffix);
+
+        LLVMValueRef fn_set2  = LLVMGetNamedFunction(ctx->module, nm_set);
+        LLVMTypeRef  ft_set2  = LLVMGlobalGetValueType(fn_set2);
+
+        LLVMValueRef fn_cl3 = LLVMGetNamedFunction(ctx->module, nm_clone);
+        if (fn_cl3 == NULL)
+        {
+            LLVMTypeRef ftype = LLVMFunctionType(map_t, &ptr_t, 1, 0);
+            fn_cl3 = LLVMAddFunction(ctx->module, nm_clone, ftype);
+        }
+        if (LLVMCountBasicBlocks(fn_cl3) == 0)
+        {
+            /* fn_cl3(orig_ptr: *LsMap) -> LsMap
+               Produces a fresh independent copy of the map pointed to by
+               orig_ptr. Returns the new LsMap value (caller owns it). */
+            LLVMValueRef p_orig = LLVMGetParam(fn_cl3, 0);
+            LLVMBasicBlockRef bb_entry  = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "entry");
+            LLVMBasicBlockRef bb_empty  = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "empty");
+            LLVMBasicBlockRef bb_loop   = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "lp.cond");
+            LLVMBasicBlockRef bb_body   = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "lp.body");
+            LLVMBasicBlockRef bb_chain  = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "chain.cond");
+            LLVMBasicBlockRef bb_cnode  = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "chain.body");
+            LLVMBasicBlockRef bb_done   = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "done");
+
+            /* entry: if orig.cap == 0 return empty map */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_entry);
+            LLVMValueRef orig_mv = LLVMBuildLoad2(ctx->builder, map_t, p_orig, "orig");
+            LLVMValueRef orig_cap = LLVMBuildExtractValue(ctx->builder, orig_mv, 2, "ocap");
+            LLVMValueRef is_empty = LLVMBuildICmp(ctx->builder, LLVMIntEQ, orig_cap,
+                                                  LLVMConstInt(i32_t, 0, 0), "ie");
+            LLVMBuildCondBr(ctx->builder, is_empty, bb_empty, bb_loop);
+
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_empty);
+            LLVMBuildRet(ctx->builder, LLVMConstNull(map_t));
+
+            /* Allocate loop-counter alloca in entry block */
+            LLVMBuilderRef tb_cl = LLVMCreateBuilderInContext(ctx->context);
+            LLVMValueRef eb_fi = LLVMGetFirstInstruction(bb_entry);
+            if (eb_fi) LLVMPositionBuilderBefore(tb_cl, eb_fi);
+            else LLVMPositionBuilderAtEnd(tb_cl, bb_entry);
+            LLVMValueRef bidx_a = LLVMBuildAlloca(tb_cl, i32_t, "bidx");
+            /* new_map alloca */
+            LLVMValueRef nmap_a = LLVMBuildAlloca(tb_cl, map_t, "nmap");
+            /* node ptr alloca */
+            LLVMValueRef nd_a   = LLVMBuildAlloca(tb_cl, ptr_t, "nd.a");
+            LLVMDisposeBuilder(tb_cl);
+
+            /* Init new_map = zeroed */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_loop);
+            /* But first init happens before loop — insert at start of loop bb.
+               Actually use a phi-less design: init nmap and bidx before loop. */
+            /* We'll do this differently: init in "entry before jmp to loop" */
+            /* Re-structure: entry → init → loop */
+            /* For simplicity, emit init at bb_loop using a separate bb */
+            /* Actually let's build a simpler approach: */
+            /* bb_loop is the loop condition block. We need an init block. */
+            /* Insert a bb_init between bb_entry and bb_loop */
+            LLVMBasicBlockRef bb_init = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "init");
+            /* Move bb_init before bb_loop */
+            LLVMMoveBasicBlockBefore(bb_init, bb_loop);
+
+            /* Fix entry branch to go to bb_init (not bb_loop) */
+            /* The condBr at bb_entry goes to bb_empty or bb_loop.
+               We need to change the false branch from bb_loop to bb_init.
+               Since we built it before bb_init existed, we need to remove and recreate. */
+            LLVMValueRef entry_term = LLVMGetBasicBlockTerminator(bb_entry);
+            LLVMInstructionEraseFromParent(entry_term);
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_entry);
+            LLVMBuildCondBr(ctx->builder, is_empty, bb_empty, bb_init);
+
+            /* bb_init: initialize nmap = {NULL, 0, 0} and bidx = 0 */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_init);
+            LLVMBuildStore(ctx->builder, LLVMConstNull(map_t), nmap_a);
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), bidx_a);
+            LLVMBuildBr(ctx->builder, bb_loop);
+
+            /* bb_loop: while bidx < orig.cap */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_loop);
+            LLVMValueRef bidx = LLVMBuildLoad2(ctx->builder, i32_t, bidx_a, "bidx");
+            LLVMValueRef orig_mv2 = LLVMBuildLoad2(ctx->builder, map_t, p_orig, "orig2");
+            LLVMValueRef orig_cap2 = LLVMBuildExtractValue(ctx->builder, orig_mv2, 2, "ocap2");
+            LLVMValueRef loop_cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, bidx, orig_cap2, "lc");
+            LLVMBuildCondBr(ctx->builder, loop_cmp, bb_body, bb_done);
+
+            /* bb_body: nd = orig.buckets[bidx]; store nd in nd_a */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_body);
+            LLVMValueRef orig_bkts = LLVMBuildExtractValue(ctx->builder, orig_mv2, 0, "obkts");
+            LLVMValueRef bidx64 = LLVMBuildSExt(ctx->builder, bidx, i64_t, "bidx64");
+            LLVMValueRef slot_p = LLVMBuildGEP2(ctx->builder, ptr_t, orig_bkts,
+                                                 &bidx64, 1, "slotp");
+            LLVMValueRef nd0 = LLVMBuildLoad2(ctx->builder, ptr_t, slot_p, "nd0");
+            LLVMBuildStore(ctx->builder, nd0, nd_a);
+            LLVMBuildBr(ctx->builder, bb_chain);
+
+            /* bb_chain: while nd != NULL */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_chain);
+            LLVMValueRef nd_cur = LLVMBuildLoad2(ctx->builder, ptr_t, nd_a, "nd");
+            LLVMValueRef nd_nonnull = LLVMBuildICmp(ctx->builder, LLVMIntNE, nd_cur,
+                                                    LLVMConstNull(ptr_t), "nn");
+            LLVMBuildCondBr(ctx->builder, nd_nonnull, bb_cnode, bb_loop);
+            /* (advance bidx at bb_loop exit — we fall through bb_chain→bb_loop
+               only when nd==NULL, so increment bidx at that transition) */
+            /* Actually we need to increment bidx when chain is done.
+               Let's insert a bb_next between bb_chain-false and bb_loop. */
+            LLVMBasicBlockRef bb_next = LLVMAppendBasicBlockInContext(ctx->context, fn_cl3, "lp.next");
+            /* Redo the branch: bb_chain → bb_cnode (true) or bb_next (false) */
+            LLVMValueRef chain_term = LLVMGetBasicBlockTerminator(bb_chain);
+            LLVMInstructionEraseFromParent(chain_term);
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_chain);
+            LLVMBuildCondBr(ctx->builder, nd_nonnull, bb_cnode, bb_next);
+
+            /* bb_next: bidx++; goto loop */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_next);
+            LLVMValueRef bidx_inc = LLVMBuildAdd(ctx->builder, bidx,
+                                                  LLVMConstInt(i32_t, 1, 0), "bidx1");
+            LLVMBuildStore(ctx->builder, bidx_inc, bidx_a);
+            LLVMBuildBr(ctx->builder, bb_loop);
+
+            /* bb_cnode: insert node into new map, advance nd */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_cnode);
+            /* Get node struct type: {i64 hash, key_lt, val_lt, ptr next} */
+            LLVMTypeRef node_fields[4] = {i64_t, key_lt, val_lt, ptr_t};
+            LLVMTypeRef node_t = LLVMStructTypeInContext(ctx->context, node_fields, 4, 0);
+            LLVMValueRef key_gep = LLVMBuildStructGEP2(ctx->builder, node_t, nd_cur, 1, "kgep");
+            LLVMValueRef val_gep = LLVMBuildStructGEP2(ctx->builder, node_t, nd_cur, 2, "vgep");
+            LLVMValueRef nxt_gep = LLVMBuildStructGEP2(ctx->builder, node_t, nd_cur, 3, "ngep");
+            LLVMValueRef k_val = LLVMBuildLoad2(ctx->builder, key_lt, key_gep, "kv");
+            LLVMValueRef v_val = LLVMBuildLoad2(ctx->builder, val_lt, val_gep, "vv");
+            LLVMValueRef next_nd = LLVMBuildLoad2(ctx->builder, ptr_t, nxt_gep, "nxt");
+            /* call set(nmap_a, k, v) — deep-copies key/val into fresh node */
+            LLVMValueRef set_args[3] = {nmap_a, k_val, v_val};
+            LLVMBuildCall2(ctx->builder, ft_set2, fn_set2, set_args, 3, "");
+            LLVMBuildStore(ctx->builder, next_nd, nd_a);
+            LLVMBuildBr(ctx->builder, bb_chain);
+
+            /* bb_done: return nmap value */
+            LLVMPositionBuilderAtEnd(ctx->builder, bb_done);
+            LLVMValueRef nmap_val = LLVMBuildLoad2(ctx->builder, map_t, nmap_a, "nmv");
+            LLVMBuildRet(ctx->builder, nmap_val);
         }
     }
 

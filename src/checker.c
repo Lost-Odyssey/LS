@@ -2413,25 +2413,46 @@ static bool capture_type_is_pod(const Type *t) {
     }
 }
 
-/* Phase C.5/C.7: by-move capture types — env owns the value, outer is
+/* Phase C.5/C.7+: by-move capture types — env owns the value, outer is
    marked moved.
      C.5: TYPE_STRING
-     C.7: TYPE_VECTOR / TYPE_MAP / TYPE_STRUCT(has_drop)
+     C.7: TYPE_STRUCT(has_drop)
+   Note: TYPE_VECTOR and TYPE_MAP use by-ref semantics (env stores a pointer
+   to the outer alloca; outer remains live and usable after capture).
    Enum captures remain unsupported (Phase C.8 — needs box / payload
    walk inside env_drop). */
 static bool capture_type_is_by_move(const Type *t) {
     if (t == NULL) return false;
     switch (t->kind) {
     case TYPE_STRING: return true;
-    case TYPE_VECTOR: return true;
-    case TYPE_MAP:    return true;
+    case TYPE_VECTOR: return false;   /* by-ref: env borrows outer alloca */
+    case TYPE_MAP:    return false;   /* by-ref: env borrows outer alloca */
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     default:          return false;
     }
 }
 
+/* Phase E (by-ref capture): vec(T) and map(K,V) are captured by reference.
+   The env stores a pointer to the outer alloca; the outer variable remains
+   live and its mutations are visible inside the closure body.
+   Constraint: the closure must not outlive the scope that defines the outer. */
+static bool capture_type_is_by_ref(const Type *t) {
+    if (t == NULL) return false;
+    return t->kind == TYPE_VECTOR || t->kind == TYPE_MAP;
+}
+
+/* array(T, N) with POD element type is captured by value (full copy into env).
+   String-element or struct-element arrays would need deep clone — reject for now. */
+static bool capture_type_is_pod_array(const Type *t) {
+    if (t == NULL || t->kind != TYPE_ARRAY) return false;
+    return capture_type_is_pod(t->as.array.elem);
+}
+
 static bool capture_type_supported(const Type *t) {
-    return capture_type_is_pod(t) || capture_type_is_by_move(t);
+    return capture_type_is_pod(t) ||
+           capture_type_is_pod_array(t) ||
+           capture_type_is_by_move(t) ||
+           capture_type_is_by_ref(t);
 }
 
 static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t) {
@@ -2439,9 +2460,9 @@ static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t)
     if (!capture_type_supported(t)) {
         checker_error(s->c, site->line, site->column,
                       "capturing variable '%s' of type '%s' in a closure is "
-                      "not yet implemented (supported: POD types + string + "
-                      "vec(T) + map(K,V) + struct(has_drop). Enum captures "
-                      "are Phase C.8.)",
+                      "not yet implemented (supported: POD types, "
+                      "array(POD,N) (by-copy), string (by-move), "
+                      "vec(T)/map(K,V) (by-ref), struct(has_drop) (by-move))",
                       name, type_name(t));
         s->had_error = true;
         return;
@@ -2529,6 +2550,10 @@ static void capture_walk(CaptureScan *s, AstNode *node) {
         if (cap_is_bound(s, name)) return;
         Symbol *sym = scope_resolve(s->outer_scope, name);
         if (sym == NULL) return;  /* will error in normal type-check pass */
+        /* Global functions (TYPE_FUNCTION) are never captured in the env —
+           they are accessed directly by the lifted closure body just like
+           any top-level name in a normal function. */
+        if (sym->type && sym->type->kind == TYPE_FUNCTION) return;
         cap_record(s, node, name, sym->type);
         return;
     }
