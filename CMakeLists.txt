@@ -557,3 +557,53 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_phase_f7_stress.cmake
 )
 set_tests_properties(test_phase_f7_stress PROPERTIES DEPENDS "test_phase_f5_closure")
+
+add_test(
+    NAME test_vec_functional_v1
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_functional_v1.cmake
+)
+set_tests_properties(test_vec_functional_v1 PROPERTIES DEPENDS "test_phase_f7_stress")
+
+add_test(
+    NAME test_vec_functional_v2
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_functional_v2.cmake
+)
+set_tests_properties(test_vec_functional_v2 PROPERTIES DEPENDS "test_vec_functional_v1")
+
+add_test(
+    NAME test_vec_functional_v3
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_functional_v3.cmake
+)
+set_tests_properties(test_vec_functional_v3 PROPERTIES DEPENDS "test_vec_functional_v2")
+
+add_test(
+    NAME test_vec_functional_v4
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_functional_v4.cmake
+)
+set_tests_properties(test_vec_functional_v4 PROPERTIES DEPENDS "test_vec_functional_v3")
+
+add_test(
+    NAME test_vec_functional_v5
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_functional_v5.cmake
+)
+set_tests_properties(test_vec_functional_v5 PROPERTIES DEPENDS "test_vec_functional_v4")

@@ -76,6 +76,10 @@ typedef struct Checker {
 
     /* __drop detection: true if currently checking a user-defined __drop() method */
     bool in_user_defined_drop;
+
+    /* map() closure return-type inference: when non-NULL, AST_RETURN writes the
+       inferred return type here instead of erroring about NULL current_fn_return. */
+    Type **closure_infer_return_slot;
 } Checker;
 
 /* Type-check an AST_PROGRAM node. Returns true if no errors.

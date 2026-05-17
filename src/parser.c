@@ -1072,8 +1072,11 @@ static AstNode *infix_index(Parser *p, AstNode *left) {
 /* Field access: left.field or lib.call(:fn, ...) */
 static AstNode *infix_field(Parser *p, AstNode *left) {
     Token dot_tok = p->previous;
-    /* Field names can be identifiers or 'self', or other keywords used as names */
-    if (!check(p, TOKEN_IDENTIFIER) && !check(p, TOKEN_SELF)) {
+    /* Field names can be identifiers, 'self', or type-keywords used as method names
+       (e.g. vec/map/array are keywords for types but also valid method names). */
+    if (!check(p, TOKEN_IDENTIFIER) && !check(p, TOKEN_SELF) &&
+        !check(p, TOKEN_MAP) && !check(p, TOKEN_VEC) && !check(p, TOKEN_ARRAY))
+    {
         error_at_current(p, "expected field name after '.'");
         ast_free(left);
         return NULL;

@@ -1979,7 +1979,7 @@ static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
         return type_void();
     }
 
-    /* v.sort_by(fn(T,T)->int) -> void  — in-place sort with user comparator */
+    /* v.sort_by(fn(T,T)->int or Block(T,T)->int) -> void */
     if (strcmp(method, "sort_by") == 0)
     {
         if (argc != 1)
@@ -1988,14 +1988,23 @@ static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
                           "vec.sort_by() takes 1 argument, got %d", argc);
             return NULL;
         }
+        /* Propagate expected Block type so |a,b| lambda infers T */
+        Type **blk_params = (Type **)malloc_safe(2 * sizeof(Type *));
+        blk_params[0] = type_clone(elem);
+        blk_params[1] = type_clone(elem);
+        Type *expected_blk = type_block(blk_params, 2, type_int());
+        Type *saved_et = c->expected_type;
+        c->expected_type = expected_blk;
         Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_et;
+        type_free(expected_blk);
         if (arg == NULL)
             return NULL;
-        if (arg->kind != TYPE_FUNCTION)
+        if (arg->kind != TYPE_FUNCTION && arg->kind != TYPE_BLOCK)
         {
             checker_error(c, call_node->as.call.args[0]->line,
                           call_node->as.call.args[0]->column,
-                          "vec.sort_by() expects a comparator function, got '%s'",
+                          "vec.sort_by() expects a comparator (fn or Block(T,T)->int), got '%s'",
                           type_name(arg));
             return NULL;
         }
@@ -2042,11 +2051,328 @@ static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
         return type_void();
     }
 
+    /* v.any(Block(T)->bool) -> bool */
+    if (strcmp(method, "any") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.any() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *saved_exp = c->expected_type;
+        {
+            Type **pp = (Type **)malloc_safe(sizeof(Type *));
+            pp[0] = type_clone(elem);
+            c->expected_type = type_block(pp, 1, type_bool());
+        }
+        Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp;
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.any() expects a Block, got '%s'",
+                          type_name(arg));
+            return NULL;
+        }
+        return type_bool();
+    }
+
+    /* v.all(Block(T)->bool) -> bool */
+    if (strcmp(method, "all") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.all() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *saved_exp = c->expected_type;
+        {
+            Type **pp = (Type **)malloc_safe(sizeof(Type *));
+            pp[0] = type_clone(elem);
+            c->expected_type = type_block(pp, 1, type_bool());
+        }
+        Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp;
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.all() expects a Block, got '%s'",
+                          type_name(arg));
+            return NULL;
+        }
+        return type_bool();
+    }
+
+    /* v.count(Block(T)->bool) -> int */
+    if (strcmp(method, "count") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.count() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *saved_exp = c->expected_type;
+        {
+            Type **pp = (Type **)malloc_safe(sizeof(Type *));
+            pp[0] = type_clone(elem);
+            c->expected_type = type_block(pp, 1, type_bool());
+        }
+        Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp;
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.count() expects a Block, got '%s'",
+                          type_name(arg));
+            return NULL;
+        }
+        return type_int();
+    }
+
+    /* v.each(Block(T)->void) -> void */
+    if (strcmp(method, "each") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.each() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *saved_exp = c->expected_type;
+        {
+            Type **pp = (Type **)malloc_safe(sizeof(Type *));
+            pp[0] = type_clone(elem);
+            c->expected_type = type_block(pp, 1, type_void());
+        }
+        Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp;
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.each() expects a Block, got '%s'",
+                          type_name(arg));
+            return NULL;
+        }
+        return type_void();
+    }
+
+    /* v.filter(Block(T)->bool) -> vec(T) */
+    if (strcmp(method, "filter") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.filter() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *saved_exp = c->expected_type;
+        {
+            Type **pp = (Type **)malloc_safe(sizeof(Type *));
+            pp[0] = type_clone(elem);
+            c->expected_type = type_block(pp, 1, type_bool());
+        }
+        Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp;
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.filter() expects a Block, got '%s'",
+                          type_name(arg));
+            return NULL;
+        }
+        return vec_type;
+    }
+
+    /* v.find(Block(T)->bool) -> Option(T) */
+    if (strcmp(method, "find") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.find() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *saved_exp = c->expected_type;
+        {
+            Type **pp = (Type **)malloc_safe(sizeof(Type *));
+            pp[0] = type_clone(elem);
+            c->expected_type = type_block(pp, 1, type_bool());
+        }
+        Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp;
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.find() expects a Block, got '%s'",
+                          type_name(arg));
+            return NULL;
+        }
+        return checker_instantiate_option(c, elem);
+    }
+
+    /* v.find_index(Block(T)->bool) -> int */
+    if (strcmp(method, "find_index") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.find_index() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *saved_exp = c->expected_type;
+        {
+            Type **pp = (Type **)malloc_safe(sizeof(Type *));
+            pp[0] = type_clone(elem);
+            c->expected_type = type_block(pp, 1, type_bool());
+        }
+        Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp;
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.find_index() expects a Block, got '%s'",
+                          type_name(arg));
+            return NULL;
+        }
+        return type_int();
+    }
+
+    /* v.reduce(init: A, Block(A,T)->A) -> A */
+    if (strcmp(method, "reduce") == 0)
+    {
+        if (argc != 2)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.reduce() takes 2 arguments (init, block), got %d", argc);
+            return NULL;
+        }
+
+        /* Check init expression to determine accumulator type A */
+        Type *saved_exp0 = c->expected_type;
+        c->expected_type = NULL;
+        Type *acc_type = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp0;
+        if (acc_type == NULL) return NULL;
+
+        /* Build expected Block type: Block(A, T) -> A */
+        Type **pp = (Type **)malloc_safe(2 * sizeof(Type *));
+        pp[0] = type_clone(acc_type);
+        pp[1] = type_clone(elem);
+        Type *expected_block = type_block(pp, 2, type_clone(acc_type));
+
+        Type *saved_exp = c->expected_type;
+        c->expected_type = expected_block;
+        Type *arg = check_expr(c, call_node->as.call.args[1]);
+        c->expected_type = saved_exp;
+        type_free(expected_block);
+
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[1]->line,
+                          call_node->as.call.args[1]->column,
+                          "vec.reduce() second argument must be a Block(A,T)->A, got '%s'",
+                          type_name(arg));
+            return NULL;
+        }
+        if (arg->as.function.param_count != 2)
+        {
+            checker_error(c, call_node->as.call.args[1]->line,
+                          call_node->as.call.args[1]->column,
+                          "vec.reduce() closure must take exactly 2 arguments (accumulator, element)");
+            return NULL;
+        }
+
+        return acc_type; /* result type = accumulator type */
+    }
+
+    /* v.map(Block(T)->U) -> vec(U) */
+    if (strcmp(method, "map") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.map() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+
+        /* Try to get U from outer expected_type (e.g. vec(U) result = v.map(...)) */
+        Type *u_type = NULL;
+        if (c->expected_type && c->expected_type->kind == TYPE_VECTOR)
+            u_type = c->expected_type->as.vec.elem;
+
+        /* Build expected Block type: Block(T)->U (U may be NULL → infer from body) */
+        Type **pp = (Type **)malloc_safe(sizeof(Type *));
+        pp[0] = type_clone(elem);
+        Type *expected_block = type_block(pp, 1, u_type ? type_clone(u_type) : NULL);
+
+        /* Enable inference slot when U is unknown */
+        Type *inferred_u = NULL;
+        Type **saved_infer_slot = c->closure_infer_return_slot;
+        if (!u_type)
+            c->closure_infer_return_slot = &inferred_u;
+
+        Type *saved_exp = c->expected_type;
+        c->expected_type = expected_block;
+        Type *arg = check_expr(c, call_node->as.call.args[0]);
+        c->expected_type = saved_exp;
+        c->closure_infer_return_slot = saved_infer_slot;
+        type_free(expected_block);
+
+        if (arg == NULL) return NULL;
+        if (arg->kind != TYPE_BLOCK)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.map() expects a Block(T)->U, got '%s'", type_name(arg));
+            return NULL;
+        }
+        if (arg->as.function.param_count != 1)
+        {
+            checker_error(c, call_node->as.call.args[0]->line,
+                          call_node->as.call.args[0]->column,
+                          "vec.map() closure must take exactly 1 argument");
+            return NULL;
+        }
+
+        /* Resolve U: from explicit context, from body inference, or from Block ret type */
+        if (!u_type)
+            u_type = inferred_u ? inferred_u : arg->as.function.return_type;
+
+        if (!u_type)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "vec.map() cannot infer result element type; "
+                          "assign to a typed variable: vec(T) result = v.map(...)");
+            return NULL;
+        }
+
+        return type_vector(u_type);
+    }
+
     checker_error(c, call_node->line, call_node->column,
                   "vec has no method '%s' (available: push, pop, clear, reserve, "
                   "is_empty, get, first, last, truncate, remove, swap, reverse, "
                   "extend, insert, contains, index_of, resize, copy, "
-                  "sort, sort_by, slice, shrink_to_fit)",
+                  "sort, sort_by, slice, shrink_to_fit, "
+                  "any, all, count, each, filter, find, find_index, map, reduce)",
                   method);
     return NULL;
 }
@@ -4853,6 +5179,17 @@ static void check_stmt(Checker *c, AstNode *node)
     {
         if (c->current_fn_return == NULL)
         {
+            /* Inference mode (map() return type): capture type instead of erroring. */
+            if (c->closure_infer_return_slot && node->as.return_stmt.value)
+            {
+                bool saved_in_return = c->in_return_expr;
+                c->in_return_expr = true;
+                Type *val = check_expr(c, node->as.return_stmt.value);
+                c->in_return_expr = saved_in_return;
+                if (*c->closure_infer_return_slot == NULL)
+                    *c->closure_infer_return_slot = val;
+                break;
+            }
             checker_error(c, node->line, node->column, "return outside of function");
             break;
         }
