@@ -1577,6 +1577,80 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
         return checker_instantiate_result(c, type_f64(), type_string());
     }
 
+    /* s.to_bool() -> Result(bool, string) */
+    if (strcmp(method, "to_bool") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.to_bool() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return checker_instantiate_result(c, type_bool(), type_string());
+    }
+
+    /* s.lines() -> vec(string) */
+    if (strcmp(method, "lines") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.lines() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return type_vector(type_string());
+    }
+
+    /* s.repeat(int n) -> string */
+    if (strcmp(method, "repeat") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.repeat() takes 1 argument (count), got %d", argc);
+            return NULL;
+        }
+        Type *n_type = check_expr(c, call_node->as.call.args[0]);
+        if (n_type && !type_is_integer(n_type))
+            checker_error(c, call_node->line, call_node->column,
+                          "string.repeat() count must be an integer");
+        return type_string();
+    }
+
+    /* s.pad_left(int width, int fill_char) -> string */
+    /* s.pad_right(int width, int fill_char) -> string */
+    if (strcmp(method, "pad_left") == 0 || strcmp(method, "pad_right") == 0)
+    {
+        if (argc != 2)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.%s() takes 2 arguments (width, fill_char), got %d",
+                          method, argc);
+            return NULL;
+        }
+        Type *w = check_expr(c, call_node->as.call.args[0]);
+        if (w && !type_is_integer(w))
+            checker_error(c, call_node->line, call_node->column,
+                          "string.%s() width must be an integer", method);
+        Type *ch = check_expr(c, call_node->as.call.args[1]);
+        if (ch && ch->kind != TYPE_CHAR && !type_is_integer(ch))
+            checker_error(c, call_node->line, call_node->column,
+                          "string.%s() fill_char must be char or integer", method);
+        return type_string();
+    }
+
+    /* s.chars() -> vec(int)  (byte-level codepoints, v1) */
+    if (strcmp(method, "chars") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.chars() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return type_vector(type_int());
+    }
+
     checker_error(c, call_node->line, call_node->column,
                   "string has no method '%s'", method);
     return NULL;

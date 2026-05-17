@@ -5803,6 +5803,487 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         return LLVMBuildLoad2(ctx->builder, result_llvm, res_alloca, "tp.ret");
     }
 
+    /* s.to_bool() -> Result(bool, string)
+       Accepts "true"/"yes"/"1" -> Ok(true), "false"/"no"/"0" -> Ok(false), else Err
+       CFG: current -> (ok_true_bb | check_false_bb) -> (store_false_bb | err_bb) -> end_bb */
+    if (strcmp(method, "to_bool") == 0)
+    {
+        Type *result_type = node->resolved_type;
+        if (!result_type || result_type->kind != TYPE_ENUM) {
+            cg_error(ctx, node->line, node->column,
+                     "internal: to_bool() resolved_type is not Result enum");
+            return NULL;
+        }
+        LLVMTypeRef result_llvm = type_to_llvm(ctx, result_type);
+        LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
+        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef i1_t  = LLVMInt1TypeInContext(ctx->context);
+
+        LLVMValueRef strcmp_fn = LLVMGetNamedFunction(ctx->module, "strcmp");
+        LLVMTypeRef strcmp_ft  = LLVMGlobalGetValueType(strcmp_fn);
+
+        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
+        LLVMBuilderRef alloca_b = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef first_i = LLVMGetFirstInstruction(entry_bb);
+        if (first_i) LLVMPositionBuilderBefore(alloca_b, first_i);
+        else LLVMPositionBuilderAtEnd(alloca_b, entry_bb);
+        LLVMValueRef res_alloca = LLVMBuildAlloca(alloca_b, result_llvm, "tb.res");
+        LLVMDisposeBuilder(alloca_b);
+
+        LLVMBasicBlockRef check_false_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tb.chkf");
+        LLVMBasicBlockRef ok_true_bb     = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tb.ok1");
+        LLVMBasicBlockRef store_false_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tb.ok0");
+        LLVMBasicBlockRef err_bb         = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tb.err");
+        LLVMBasicBlockRef end_bb         = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tb.end");
+
+        /* check true-ish: "true","yes","1" */
+        {
+            LLVMValueRef scmp_args[2];
+            scmp_args[0] = s_data;
+            scmp_args[1] = LLVMBuildGlobalStringPtr(ctx->builder, "true", "tb.ltrue");
+            LLVMValueRef c1 = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                LLVMBuildCall2(ctx->builder, strcmp_ft, strcmp_fn, scmp_args, 2, "tb.ct"),
+                LLVMConstInt(i32_t, 0, 0), "tb.c1");
+            scmp_args[1] = LLVMBuildGlobalStringPtr(ctx->builder, "yes", "tb.lyes");
+            LLVMValueRef c2 = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                LLVMBuildCall2(ctx->builder, strcmp_ft, strcmp_fn, scmp_args, 2, "tb.cy"),
+                LLVMConstInt(i32_t, 0, 0), "tb.c2");
+            scmp_args[1] = LLVMBuildGlobalStringPtr(ctx->builder, "1", "tb.l1");
+            LLVMValueRef c3 = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                LLVMBuildCall2(ctx->builder, strcmp_ft, strcmp_fn, scmp_args, 2, "tb.c1s"),
+                LLVMConstInt(i32_t, 0, 0), "tb.c3");
+            LLVMValueRef is_true_01 = LLVMBuildOr(ctx->builder, c1, c2, "tb.t01");
+            LLVMValueRef is_true    = LLVMBuildOr(ctx->builder, is_true_01, c3, "tb.t");
+            LLVMBuildCondBr(ctx->builder, is_true, ok_true_bb, check_false_bb);
+        }
+
+        /* check_false_bb: check false-ish "false","no","0" */
+        LLVMPositionBuilderAtEnd(ctx->builder, check_false_bb);
+        {
+            LLVMValueRef scmp_args[2];
+            scmp_args[0] = s_data;
+            scmp_args[1] = LLVMBuildGlobalStringPtr(ctx->builder, "false", "tb.lf");
+            LLVMValueRef cf = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                LLVMBuildCall2(ctx->builder, strcmp_ft, strcmp_fn, scmp_args, 2, "tb.scf"),
+                LLVMConstInt(i32_t, 0, 0), "tb.cfeq");
+            scmp_args[1] = LLVMBuildGlobalStringPtr(ctx->builder, "no", "tb.lno");
+            LLVMValueRef cn = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                LLVMBuildCall2(ctx->builder, strcmp_ft, strcmp_fn, scmp_args, 2, "tb.scn"),
+                LLVMConstInt(i32_t, 0, 0), "tb.cneq");
+            scmp_args[1] = LLVMBuildGlobalStringPtr(ctx->builder, "0", "tb.l0");
+            LLVMValueRef cz = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                LLVMBuildCall2(ctx->builder, strcmp_ft, strcmp_fn, scmp_args, 2, "tb.scz"),
+                LLVMConstInt(i32_t, 0, 0), "tb.czeq");
+            LLVMValueRef is_false_01 = LLVMBuildOr(ctx->builder, cf, cn, "tb.f01");
+            LLVMValueRef is_false    = LLVMBuildOr(ctx->builder, is_false_01, cz, "tb.f");
+            LLVMBuildCondBr(ctx->builder, is_false, store_false_bb, err_bb);
+        }
+
+        /* ok_true_bb: store Ok(true) */
+        LLVMPositionBuilderAtEnd(ctx->builder, ok_true_bb);
+        {
+            LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                         res_alloca, 0, "tb.okT.disc");
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 0, 0), disc_ptr);
+            LLVMTypeRef var_t = build_variant_payload_struct(ctx, result_type, 0);
+            LLVMValueRef pay_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                        res_alloca, 1, "tb.okT.pay");
+            LLVMValueRef f0_ptr = LLVMBuildStructGEP2(ctx->builder, var_t, pay_ptr, 0, "tb.okT.f0");
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 1, 0), f0_ptr);
+        }
+        LLVMBuildBr(ctx->builder, end_bb);
+
+        /* store_false_bb: store Ok(false) */
+        LLVMPositionBuilderAtEnd(ctx->builder, store_false_bb);
+        {
+            LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                         res_alloca, 0, "tb.okF.disc");
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 0, 0), disc_ptr);
+            LLVMTypeRef var_t = build_variant_payload_struct(ctx, result_type, 0);
+            LLVMValueRef pay_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                        res_alloca, 1, "tb.okF.pay");
+            LLVMValueRef f0_ptr = LLVMBuildStructGEP2(ctx->builder, var_t, pay_ptr, 0, "tb.okF.f0");
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 0, 0), f0_ptr);
+        }
+        LLVMBuildBr(ctx->builder, end_bb);
+
+        /* err_bb: store Err("invalid bool") */
+        LLVMPositionBuilderAtEnd(ctx->builder, err_bb);
+        {
+            LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                         res_alloca, 0, "tb.err.disc");
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 1, 0), disc_ptr);
+            LLVMValueRef err_str = ls_string_from_literal(ctx, "invalid bool", "tb.errmsg");
+            LLVMTypeRef var_t = build_variant_payload_struct(ctx, result_type, 1);
+            LLVMValueRef pay_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                        res_alloca, 1, "tb.err.pay");
+            LLVMValueRef f0_ptr = LLVMBuildStructGEP2(ctx->builder, var_t, pay_ptr, 0, "tb.err.f0");
+            LLVMBuildStore(ctx->builder, err_str, f0_ptr);
+        }
+        LLVMBuildBr(ctx->builder, end_bb);
+
+        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+        return LLVMBuildLoad2(ctx->builder, result_llvm, res_alloca, "tb.ret");
+    }
+
+    /* s.lines() -> vec(string) */
+    if (strcmp(method, "lines") == 0)
+    {
+        LLVMTypeRef vec_t = ls_vec_type(ctx);
+
+        LLVMValueRef out_data_pp = LLVMBuildAlloca(ctx->builder, ptr_type, "ln.odp");
+        LLVMValueRef out_len_p   = LLVMBuildAlloca(ctx->builder, i32_type, "ln.olp");
+        LLVMValueRef out_cap_p   = LLVMBuildAlloca(ctx->builder, i32_type, "ln.ocp");
+        LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_type), out_data_pp);
+        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_len_p);
+        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_cap_p);
+
+        LLVMValueRef lines_fn = LLVMGetNamedFunction(ctx->module, "__ls_str_lines");
+        LLVMTypeRef lines_ft  = LLVMGlobalGetValueType(lines_fn);
+        LLVMValueRef ln_args[] = {s_data, s_len, out_data_pp, out_len_p, out_cap_p};
+        LLVMBuildCall2(ctx->builder, lines_ft, lines_fn, ln_args, 5, "");
+
+        LLVMValueRef res_data = LLVMBuildLoad2(ctx->builder, ptr_type, out_data_pp, "ln.data");
+        LLVMValueRef res_len  = LLVMBuildLoad2(ctx->builder, i32_type, out_len_p,   "ln.len");
+        LLVMValueRef res_cap  = LLVMBuildLoad2(ctx->builder, i32_type, out_cap_p,   "ln.cap");
+
+        LLVMValueRef result = LLVMGetUndef(vec_t);
+        result = LLVMBuildInsertValue(ctx->builder, result, res_data, 0, "ln.r0");
+        result = LLVMBuildInsertValue(ctx->builder, result, res_len,  1, "ln.r1");
+        result = LLVMBuildInsertValue(ctx->builder, result, res_cap,  2, "ln.r2");
+        return result;
+    }
+
+    /* s.repeat(int n) -> string */
+    if (strcmp(method, "repeat") == 0)
+    {
+        LLVMValueRef n_val = codegen_expr(ctx, node->as.call.args[0]);
+        if (!n_val) return NULL;
+        n_val = cg_widen(ctx, n_val, node->as.call.args[0]->resolved_type, NULL);
+
+        LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
+        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+
+        LLVMValueRef zero32   = LLVMConstInt(i32_t, 0, 0);
+        LLVMValueRef one32    = LLVMConstInt(i32_t, 1, 0);
+        LLVMValueRef min_cap  = LLVMConstInt(i32_t, LS_MIN_STR_CAP, 0);
+
+        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
+        LLVMTypeRef  malloc_ft = LLVMGlobalGetValueType(malloc_fn);
+        LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
+        LLVMTypeRef  memcpy_ft = LLVMGlobalGetValueType(memcpy_fn);
+
+        /* Truncate n to i32 if needed */
+        LLVMTypeRef n_type = LLVMTypeOf(n_val);
+        if (n_type != i32_t)
+            n_val = LLVMBuildTrunc(ctx->builder, n_val, i32_t, "rep.n32");
+
+        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+
+        /* Blocks: entry_cur → check → alloc → loop_cond → loop_body → done */
+        LLVMBasicBlockRef empty_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rep.empty");
+        LLVMBasicBlockRef alloc_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rep.alloc");
+        LLVMBasicBlockRef loop_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rep.loop");
+        LLVMBasicBlockRef lbody_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rep.lbody");
+        LLVMBasicBlockRef done_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rep.done");
+
+        /* Alloca in entry block */
+        LLVMBasicBlockRef entry_block = LLVMGetEntryBasicBlock(cur_fn);
+        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef entry_fi = LLVMGetFirstInstruction(entry_block);
+        if (entry_fi) LLVMPositionBuilderBefore(tb, entry_fi);
+        else LLVMPositionBuilderAtEnd(tb, entry_block);
+        LLVMValueRef idx_ptr = LLVMBuildAlloca(tb, i32_t, "rep.idx");
+        LLVMValueRef buf_ptr = LLVMBuildAlloca(tb, ptr_t,  "rep.buf");
+        LLVMDisposeBuilder(tb);
+
+        /* Check: if n <= 0 or s_len == 0 → return empty static string */
+        LLVMValueRef n_le0   = LLVMBuildICmp(ctx->builder, LLVMIntSLE, n_val, zero32, "rep.nle0");
+        LLVMValueRef len_eq0 = LLVMBuildICmp(ctx->builder, LLVMIntEQ, s_len, zero32, "rep.leq0");
+        LLVMValueRef skip    = LLVMBuildOr(ctx->builder, n_le0, len_eq0, "rep.skip");
+        LLVMBuildCondBr(ctx->builder, skip, empty_bb, alloc_bb);
+
+        /* empty_bb: return static empty string */
+        LLVMPositionBuilderAtEnd(ctx->builder, empty_bb);
+        LLVMValueRef empty_str = ls_string_from_literal(ctx, "", "rep.empty");
+        LLVMBuildBr(ctx->builder, done_bb);
+
+        /* alloc_bb: new_len = s_len * n; alloc new_len+1 */
+        LLVMPositionBuilderAtEnd(ctx->builder, alloc_bb);
+        LLVMValueRef new_len = LLVMBuildMul(ctx->builder, s_len, n_val, "rep.newlen");
+        LLVMValueRef need    = LLVMBuildAdd(ctx->builder, new_len, one32, "rep.need");
+        LLVMValueRef cap_gt  = LLVMBuildICmp(ctx->builder, LLVMIntUGT, need, min_cap, "rep.cgt");
+        LLVMValueRef new_cap = LLVMBuildSelect(ctx->builder, cap_gt, need, min_cap, "rep.cap");
+        LLVMValueRef nc64    = LLVMBuildZExt(ctx->builder, new_cap, i64_t, "rep.nc64");
+        LLVMValueRef new_buf = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn, &nc64, 1, "rep.buf");
+        LLVMBuildStore(ctx->builder, new_buf, buf_ptr);
+        LLVMBuildStore(ctx->builder, zero32, idx_ptr);
+        LLVMBuildBr(ctx->builder, loop_bb);
+
+        /* loop_bb: while idx < n */
+        LLVMPositionBuilderAtEnd(ctx->builder, loop_bb);
+        LLVMValueRef idx = LLVMBuildLoad2(ctx->builder, i32_t, idx_ptr, "rep.idx");
+        LLVMValueRef ldone = LLVMBuildICmp(ctx->builder, LLVMIntSGE, idx, n_val, "rep.ldone");
+        LLVMBuildCondBr(ctx->builder, ldone, lbody_bb, lbody_bb);
+        /* Oops, fix: ldone → done path and !ldone → body */
+        {
+            LLVMValueRef old_t = LLVMGetBasicBlockTerminator(loop_bb);
+            LLVMInstructionEraseFromParent(old_t);
+            LLVMPositionBuilderAtEnd(ctx->builder, loop_bb);
+            LLVMBuildCondBr(ctx->builder, ldone, done_bb, lbody_bb);
+        }
+
+        /* lbody_bb: memcpy(buf + idx*s_len, s_data, s_len); idx++ */
+        LLVMPositionBuilderAtEnd(ctx->builder, lbody_bb);
+        LLVMValueRef off   = LLVMBuildMul(ctx->builder, idx, s_len, "rep.off");
+        LLVMValueRef off64 = LLVMBuildZExt(ctx->builder, off, i64_t, "rep.off64");
+        LLVMValueRef buf_cur = LLVMBuildLoad2(ctx->builder, ptr_t, buf_ptr, "rep.bufc");
+        LLVMValueRef dst   = LLVMBuildGEP2(ctx->builder, i8_t, buf_cur, &off64, 1, "rep.dst");
+        LLVMValueRef sl64  = LLVMBuildZExt(ctx->builder, s_len, i64_t, "rep.sl64");
+        LLVMValueRef mc_a[3] = { dst, s_data, sl64 };
+        LLVMBuildCall2(ctx->builder, memcpy_ft, memcpy_fn, mc_a, 3, "");
+        LLVMBuildStore(ctx->builder,
+                       LLVMBuildAdd(ctx->builder, idx, one32, "rep.idxnext"), idx_ptr);
+        LLVMBuildBr(ctx->builder, loop_bb);
+
+        /* done_bb: NUL-terminate (only for alloc path), return string */
+        LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+        /* PHI for result string: from empty_bb or from alloc path */
+        LLVMTypeRef str_t = ls_string_type(ctx);
+        LLVMValueRef str_phi = LLVMBuildPhi(ctx->builder, str_t, "rep.str");
+        /* from alloc path (loop_bb → done_bb): NUL and build string */
+        /* We need to insert the NUL before the phi — use a pre-done block */
+        /* Actually, we branch from loop_bb to done_bb when ldone is true.
+           Let's insert a "nul_bb" between loop_bb and done_bb for the alloc path. */
+        LLVMBasicBlockRef nul_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rep.nul");
+        {
+            LLVMValueRef loop_term = LLVMGetBasicBlockTerminator(loop_bb);
+            LLVMInstructionEraseFromParent(loop_term);
+            LLVMPositionBuilderAtEnd(ctx->builder, loop_bb);
+            LLVMBuildCondBr(ctx->builder, ldone, nul_bb, lbody_bb);
+        }
+        LLVMPositionBuilderAtEnd(ctx->builder, nul_bb);
+        LLVMValueRef buf_f  = LLVMBuildLoad2(ctx->builder, ptr_t, buf_ptr, "rep.buff");
+        LLVMValueRef nl_off = LLVMBuildZExt(ctx->builder, new_len, i64_t, "rep.nloff");
+        LLVMValueRef nul_p  = LLVMBuildGEP2(ctx->builder, i8_t, buf_f, &nl_off, 1, "rep.nulp");
+        LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 0, 0), nul_p);
+        LLVMValueRef alloc_str = ls_string_make(ctx, buf_f, new_len, new_cap);
+        LLVMBuildBr(ctx->builder, done_bb);
+
+        /* PHI: {empty_str from empty_bb, alloc_str from nul_bb} */
+        LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+        LLVMValueRef phi_vals[2]  = { empty_str, alloc_str };
+        LLVMBasicBlockRef phi_bbs[2] = { empty_bb, nul_bb };
+        LLVMAddIncoming(str_phi, phi_vals, phi_bbs, 2);
+        return cg_push_temp_string(ctx, str_phi);
+    }
+
+    /* s.pad_left(int width, int fill_char) -> string
+       s.pad_right(int width, int fill_char) -> string */
+    if (strcmp(method, "pad_left") == 0 || strcmp(method, "pad_right") == 0)
+    {
+        bool is_right = (strcmp(method, "pad_right") == 0);
+        LLVMValueRef width_val = codegen_expr(ctx, node->as.call.args[0]);
+        LLVMValueRef fill_val  = codegen_expr(ctx, node->as.call.args[1]);
+        if (!width_val || !fill_val) return NULL;
+
+        LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
+        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+
+        /* Truncate width to i32 */
+        if (LLVMTypeOf(width_val) != i32_t)
+            width_val = LLVMBuildTrunc(ctx->builder, width_val, i32_t, "pad.w32");
+        /* Truncate fill_char to i8 */
+        LLVMValueRef fill_i8;
+        if (LLVMTypeOf(fill_val) == i8_t)
+            fill_i8 = fill_val;
+        else
+            fill_i8 = LLVMBuildTrunc(ctx->builder, fill_val, i8_t, "pad.f8");
+
+        LLVMValueRef one32   = LLVMConstInt(i32_t, 1, 0);
+        LLVMValueRef min_cap = LLVMConstInt(i32_t, LS_MIN_STR_CAP, 0);
+
+        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
+        LLVMTypeRef  malloc_ft = LLVMGlobalGetValueType(malloc_fn);
+        LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
+        LLVMTypeRef  memcpy_ft = LLVMGlobalGetValueType(memcpy_fn);
+        /* memset: ptr, i32, i64 → ptr */
+        LLVMValueRef memset_fn = LLVMGetNamedFunction(ctx->module, "memset");
+        LLVMTypeRef  memset_ft;
+        if (!memset_fn) {
+            LLVMTypeRef ms_p[] = { ptr_t, i32_t, i64_t };
+            memset_ft = LLVMFunctionType(ptr_t, ms_p, 3, 0);
+            memset_fn = LLVMAddFunction(ctx->module, "memset", memset_ft);
+        } else {
+            memset_ft = LLVMGlobalGetValueType(memset_fn);
+        }
+
+        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+
+        /* If s_len >= width → return clone */
+        LLVMBasicBlockRef clone_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pad.clone");
+        LLVMBasicBlockRef alloc_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pad.alloc");
+        LLVMBasicBlockRef done_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pad.done");
+
+        LLVMValueRef no_pad = LLVMBuildICmp(ctx->builder, LLVMIntSGE, s_len, width_val, "pad.nop");
+        LLVMBuildCondBr(ctx->builder, no_pad, clone_bb, alloc_bb);
+
+        /* clone_bb: return copy of string */
+        LLVMPositionBuilderAtEnd(ctx->builder, clone_bb);
+        LLVMValueRef clone_str = emit_string_clone_val(ctx, str_val);
+        LLVMBuildBr(ctx->builder, done_bb);
+
+        /* alloc_bb: pad_n = width - len; alloc width+1 */
+        LLVMPositionBuilderAtEnd(ctx->builder, alloc_bb);
+        LLVMValueRef pad_n    = LLVMBuildSub(ctx->builder, width_val, s_len, "pad.padn");
+        LLVMValueRef need     = LLVMBuildAdd(ctx->builder, width_val, one32, "pad.need");
+        LLVMValueRef cap_gt   = LLVMBuildICmp(ctx->builder, LLVMIntUGT, need, min_cap, "pad.cgt");
+        LLVMValueRef new_cap  = LLVMBuildSelect(ctx->builder, cap_gt, need, min_cap, "pad.cap");
+        LLVMValueRef nc64     = LLVMBuildZExt(ctx->builder, new_cap, i64_t, "pad.nc64");
+        LLVMValueRef new_buf  = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn, &nc64, 1, "pad.buf");
+
+        /* fill_i8 needs to be i32 for memset signature */
+        LLVMValueRef fill_i32 = LLVMBuildZExt(ctx->builder, fill_i8, i32_t, "pad.f32");
+        LLVMValueRef pn64     = LLVMBuildZExt(ctx->builder, pad_n, i64_t, "pad.pn64");
+        LLVMValueRef sl64     = LLVMBuildZExt(ctx->builder, s_len, i64_t, "pad.sl64");
+
+        if (!is_right) {
+            /* pad_left: fill then data */
+            LLVMValueRef ms_args[3] = { new_buf, fill_i32, pn64 };
+            LLVMBuildCall2(ctx->builder, memset_ft, memset_fn, ms_args, 3, "");
+            LLVMValueRef pn64b  = LLVMBuildZExt(ctx->builder, pad_n, i64_t, "pad.pn64b");
+            LLVMValueRef data_dst = LLVMBuildGEP2(ctx->builder, i8_t, new_buf, &pn64b, 1, "pad.dst");
+            LLVMValueRef mc_a[3] = { data_dst, s_data, sl64 };
+            LLVMBuildCall2(ctx->builder, memcpy_ft, memcpy_fn, mc_a, 3, "");
+        } else {
+            /* pad_right: data then fill */
+            LLVMValueRef mc_a[3] = { new_buf, s_data, sl64 };
+            LLVMBuildCall2(ctx->builder, memcpy_ft, memcpy_fn, mc_a, 3, "");
+            LLVMValueRef sl64b  = LLVMBuildZExt(ctx->builder, s_len, i64_t, "pad.sl64b");
+            LLVMValueRef fill_dst = LLVMBuildGEP2(ctx->builder, i8_t, new_buf, &sl64b, 1, "pad.fdst");
+            LLVMValueRef ms_args[3] = { fill_dst, fill_i32, pn64 };
+            LLVMBuildCall2(ctx->builder, memset_ft, memset_fn, ms_args, 3, "");
+        }
+        /* NUL-terminate at position width_val */
+        LLVMValueRef wv64   = LLVMBuildZExt(ctx->builder, width_val, i64_t, "pad.wv64");
+        LLVMValueRef nul_p  = LLVMBuildGEP2(ctx->builder, i8_t, new_buf, &wv64, 1, "pad.nulp");
+        LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 0, 0), nul_p);
+        LLVMValueRef alloc_str = ls_string_make(ctx, new_buf, width_val, new_cap);
+        LLVMBuildBr(ctx->builder, done_bb);
+
+        /* done_bb: PHI */
+        LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+        LLVMTypeRef str_t = ls_string_type(ctx);
+        LLVMValueRef str_phi = LLVMBuildPhi(ctx->builder, str_t, "pad.str");
+        LLVMValueRef phi_v[2]  = { clone_str, alloc_str };
+        LLVMBasicBlockRef phi_b[2] = { clone_bb, alloc_bb };
+        LLVMAddIncoming(str_phi, phi_v, phi_b, 2);
+        return cg_push_temp_string(ctx, str_phi);
+    }
+
+    /* s.chars() -> vec(int)   (byte-level, v1) */
+    if (strcmp(method, "chars") == 0)
+    {
+        LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
+        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+        LLVMTypeRef vec_t = ls_vec_type(ctx);
+
+        LLVMValueRef zero32   = LLVMConstInt(i32_t, 0, 0);
+        LLVMValueRef one32    = LLVMConstInt(i32_t, 1, 0);
+
+        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
+        LLVMTypeRef  malloc_ft = LLVMGlobalGetValueType(malloc_fn);
+
+        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+
+        /* Blocks */
+        LLVMBasicBlockRef empty_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.empty");
+        LLVMBasicBlockRef alloc_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.alloc");
+        LLVMBasicBlockRef loop_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.loop");
+        LLVMBasicBlockRef lbody_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.lbody");
+        LLVMBasicBlockRef done_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.done");
+
+        /* Alloca for loop index */
+        LLVMBasicBlockRef entry_block = LLVMGetEntryBasicBlock(cur_fn);
+        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef entry_fi = LLVMGetFirstInstruction(entry_block);
+        if (entry_fi) LLVMPositionBuilderBefore(tb, entry_fi);
+        else LLVMPositionBuilderAtEnd(tb, entry_block);
+        LLVMValueRef ch_idx_ptr = LLVMBuildAlloca(tb, i32_t, "ch.idx");
+        LLVMValueRef ch_arr_ptr = LLVMBuildAlloca(tb, LLVMPointerTypeInContext(ctx->context, 0), "ch.arrp");
+        LLVMDisposeBuilder(tb);
+
+        /* if s_len == 0 → empty vec */
+        LLVMValueRef is_empty = LLVMBuildICmp(ctx->builder, LLVMIntEQ, s_len, zero32, "ch.empty");
+        LLVMBuildCondBr(ctx->builder, is_empty, empty_bb, alloc_bb);
+
+        /* empty_bb */
+        LLVMPositionBuilderAtEnd(ctx->builder, empty_bb);
+        LLVMBuildBr(ctx->builder, done_bb);
+
+        /* alloc_bb: arr = malloc(s_len * 4) */
+        LLVMPositionBuilderAtEnd(ctx->builder, alloc_bb);
+        LLVMValueRef four  = LLVMConstInt(i64_t, 4, 0);
+        LLVMValueRef sl64  = LLVMBuildZExt(ctx->builder, s_len, i64_t, "ch.sl64");
+        LLVMValueRef arrsz = LLVMBuildMul(ctx->builder, sl64, four, "ch.arrsz");
+        LLVMValueRef arr   = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn, &arrsz, 1, "ch.arr");
+        LLVMBuildStore(ctx->builder, arr, ch_arr_ptr);
+        LLVMBuildStore(ctx->builder, zero32, ch_idx_ptr);
+        LLVMBuildBr(ctx->builder, loop_bb);
+
+        /* loop_bb: while idx < s_len */
+        LLVMPositionBuilderAtEnd(ctx->builder, loop_bb);
+        LLVMValueRef ch_idx = LLVMBuildLoad2(ctx->builder, i32_t, ch_idx_ptr, "ch.idx");
+        LLVMValueRef ldone  = LLVMBuildICmp(ctx->builder, LLVMIntSGE, ch_idx, s_len, "ch.ldone");
+        LLVMBuildCondBr(ctx->builder, ldone, done_bb, lbody_bb);
+
+        /* lbody_bb: load byte, zext to i32, store into arr[idx] */
+        LLVMPositionBuilderAtEnd(ctx->builder, lbody_bb);
+        LLVMValueRef idx64 = LLVMBuildZExt(ctx->builder, ch_idx, i64_t, "ch.idx64");
+        LLVMValueRef bptr  = LLVMBuildGEP2(ctx->builder, i8_t, s_data, &idx64, 1, "ch.bptr");
+        LLVMValueRef byte  = LLVMBuildLoad2(ctx->builder, i8_t, bptr, "ch.byte");
+        LLVMValueRef codepoint = LLVMBuildZExt(ctx->builder, byte, i32_t, "ch.cp");
+        LLVMValueRef arr_cur = LLVMBuildLoad2(ctx->builder, LLVMPointerTypeInContext(ctx->context, 0), ch_arr_ptr, "ch.arrc");
+        LLVMValueRef dst   = LLVMBuildGEP2(ctx->builder, i32_t, arr_cur, &idx64, 1, "ch.dst");
+        LLVMBuildStore(ctx->builder, codepoint, dst);
+        LLVMBuildStore(ctx->builder,
+                       LLVMBuildAdd(ctx->builder, ch_idx, one32, "ch.idxnext"), ch_idx_ptr);
+        LLVMBuildBr(ctx->builder, loop_bb);
+
+        /* done_bb: build vec(int) */
+        LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+        /* PHI for arr and len */
+        LLVMTypeRef  ptr_t   = LLVMPointerTypeInContext(ctx->context, 0);
+        LLVMValueRef arr_phi = LLVMBuildPhi(ctx->builder, ptr_t, "ch.arrphi");
+        LLVMValueRef len_phi = LLVMBuildPhi(ctx->builder, i32_t, "ch.lenphi");
+        LLVMValueRef null_ptr = LLVMConstNull(ptr_t);
+        LLVMValueRef arr_alloc_val = LLVMBuildLoad2(
+            /* We can't load in done_bb from alloc_bb easily without a pre-done block.
+               Use alloc_bb's arr value from the branch. Actually arr is a Value* from alloc_bb.
+               It dominates done_bb only if done_bb is only reached from alloc path.
+               But done_bb is also reached from empty_bb. Use phi. */
+            /* Temporarily store arr in ch_arr_ptr and load in done_bb. */
+            ctx->builder, LLVMPointerTypeInContext(ctx->context, 0), ch_arr_ptr, "ch.arrload");
+        LLVMValueRef phi_arr_vals[2] = { null_ptr, arr_alloc_val };
+        LLVMBasicBlockRef phi_arr_bbs[2] = { empty_bb, loop_bb };
+        LLVMAddIncoming(arr_phi, phi_arr_vals, phi_arr_bbs, 2);
+        LLVMValueRef phi_len_vals[2] = { zero32, s_len };
+        LLVMBasicBlockRef phi_len_bbs[2] = { empty_bb, loop_bb };
+        LLVMAddIncoming(len_phi, phi_len_vals, phi_len_bbs, 2);
+
+        LLVMValueRef result = LLVMGetUndef(vec_t);
+        result = LLVMBuildInsertValue(ctx->builder, result, arr_phi, 0, "ch.v0");
+        result = LLVMBuildInsertValue(ctx->builder, result, len_phi, 1, "ch.v1");
+        result = LLVMBuildInsertValue(ctx->builder, result, len_phi, 2, "ch.v2");
+        return result;
+    }
+
     cg_error(ctx, node->line, node->column,
              "unknown string method '%s'", method);
     return NULL;
@@ -14908,6 +15389,24 @@ static void declare_builtins(CodegenContext *ctx)
             LLVMAddFunction(ctx->module, "__ls_str_join", jn_type);
     }
 
+    /* __ls_str_lines — runtime helper for string.lines() */
+    /* void __ls_str_lines(ptr src, i32 src_len, ptr out_data, ptr out_len, ptr out_cap) */
+    {
+        LLVMTypeRef ln_params[] = {ptr_type, i32_type, ptr_type, ptr_type, ptr_type};
+        LLVMTypeRef ln_type = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                               ln_params, 5, 0);
+        if (!LLVMGetNamedFunction(ctx->module, "__ls_str_lines"))
+            LLVMAddFunction(ctx->module, "__ls_str_lines", ln_type);
+    }
+
+    /* strcmp — for string.to_bool() */
+    {
+        LLVMTypeRef sc_params[] = {ptr_type, ptr_type};
+        LLVMTypeRef sc_type = LLVMFunctionType(i32_type, sc_params, 2, 0);
+        if (!LLVMGetNamedFunction(ctx->module, "strcmp"))
+            LLVMAddFunction(ctx->module, "strcmp", sc_type);
+    }
+
     /* ---- FFI platform API declarations ---- */
 #ifdef _WIN32
     /* LoadLibraryA(path) -> HMODULE (ptr) */
@@ -15456,6 +15955,304 @@ static void emit_str_join_helper(CodegenContext *ctx)
     if (saved_bb)
         LLVMPositionBuilderAtEnd(ctx->builder, saved_bb);
     (void)min_cap;
+}
+
+/* Emit __ls_str_lines(src_data, src_len, out_data_pp, out_len_p, out_cap_p) -> void
+   Splits src by '\n' (stripping '\r' before '\n' for CRLF), pushes LsString elements
+   into an output vec.  Trailing newline does NOT produce an empty trailing element. */
+static void emit_str_lines_helper(CodegenContext *ctx)
+{
+    if (ctx->extern_builtins)
+        return;
+
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "__ls_str_lines");
+    if (fn == NULL || LLVMCountBasicBlocks(fn) > 0)
+        return;
+
+    LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef str_t = ls_string_type(ctx);
+
+    LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(ctx->builder);
+
+    LLVMValueRef src_data    = LLVMGetParam(fn, 0);
+    LLVMValueRef src_len     = LLVMGetParam(fn, 1);
+    LLVMValueRef out_data_pp = LLVMGetParam(fn, 2);
+    LLVMValueRef out_len_p   = LLVMGetParam(fn, 3);
+    LLVMValueRef out_cap_p   = LLVMGetParam(fn, 4);
+
+    LLVMValueRef zero32  = LLVMConstInt(i32_t, 0, 0);
+    LLVMValueRef one32   = LLVMConstInt(i32_t, 1, 0);
+    LLVMValueRef zero64  = LLVMConstInt(i64_t, 0, 0);
+    LLVMValueRef nl_ch   = LLVMConstInt(i8_t, '\n', 0);
+    LLVMValueRef cr_ch   = LLVMConstInt(i8_t, '\r', 0);
+    LLVMValueRef min_cap = LLVMConstInt(i32_t, LS_MIN_STR_CAP, 0);
+
+    LLVMValueRef str_size = LLVMSizeOf(str_t);
+
+    LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
+    LLVMTypeRef  malloc_t  = LLVMGlobalGetValueType(malloc_fn);
+    LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
+    LLVMTypeRef  memcpy_t  = LLVMGlobalGetValueType(memcpy_fn);
+
+    /* Basic blocks */
+    LLVMBasicBlockRef entry_bb      = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.entry");
+    LLVMBasicBlockRef empty_ret_bb  = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.empty");
+    LLVMBasicBlockRef cnt_cond_bb   = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.cnt.cond");
+    LLVMBasicBlockRef cnt_body_bb   = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.cnt.body");
+    LLVMBasicBlockRef cnt_end_bb    = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.cnt.end");
+    LLVMBasicBlockRef zero_ret_bb   = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.zero");
+    LLVMBasicBlockRef fill_cond_bb  = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.fill.cond");
+    LLVMBasicBlockRef fill_body_bb  = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.fill.body");
+    LLVMBasicBlockRef fill_nl_bb    = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.fill.nl");
+    LLVMBasicBlockRef fill_adv_bb   = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.fill.adv");
+    LLVMBasicBlockRef fill_end_bb   = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.fill.end");
+    LLVMBasicBlockRef tail_bb       = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.tail");
+    LLVMBasicBlockRef done_bb       = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.done");
+
+    /* entry: allocas, handle empty string */
+    LLVMPositionBuilderAtEnd(ctx->builder, entry_bb);
+    LLVMValueRef cnt_ptr   = LLVMBuildAlloca(ctx->builder, i32_t, "ln.cnt");
+    LLVMValueRef i_ptr     = LLVMBuildAlloca(ctx->builder, i32_t, "ln.i");
+    LLVMValueRef start_ptr = LLVMBuildAlloca(ctx->builder, i32_t, "ln.start");
+    LLVMValueRef eidx_ptr  = LLVMBuildAlloca(ctx->builder, i32_t, "ln.eidx");
+    LLVMValueRef arr_ptr   = LLVMBuildAlloca(ctx->builder, ptr_t,  "ln.arr");
+    LLVMBuildStore(ctx->builder, zero32, cnt_ptr);
+    LLVMBuildStore(ctx->builder, zero32, i_ptr);
+    LLVMValueRef is_empty = LLVMBuildICmp(ctx->builder, LLVMIntEQ, src_len, zero32, "ln.isempty");
+    LLVMBuildCondBr(ctx->builder, is_empty, empty_ret_bb, cnt_cond_bb);
+
+    /* empty_ret: return empty vec */
+    LLVMPositionBuilderAtEnd(ctx->builder, empty_ret_bb);
+    LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_t), out_data_pp);
+    LLVMBuildStore(ctx->builder, zero32, out_len_p);
+    LLVMBuildStore(ctx->builder, zero32, out_cap_p);
+    LLVMBuildRetVoid(ctx->builder);
+
+    /* cnt_cond: while i < src_len */
+    LLVMPositionBuilderAtEnd(ctx->builder, cnt_cond_bb);
+    LLVMValueRef ci = LLVMBuildLoad2(ctx->builder, i32_t, i_ptr, "ln.ci");
+    LLVMValueRef cnt_done = LLVMBuildICmp(ctx->builder, LLVMIntSGE, ci, src_len, "ln.cdone");
+    LLVMBuildCondBr(ctx->builder, cnt_done, cnt_end_bb, cnt_body_bb);
+
+    /* cnt_body: if data[i] == '\n' → count++ */
+    LLVMPositionBuilderAtEnd(ctx->builder, cnt_body_bb);
+    LLVMValueRef ci64c = LLVMBuildZExt(ctx->builder, ci, i64_t, "ln.ci64c");
+    LLVMValueRef chp_c = LLVMBuildGEP2(ctx->builder, i8_t, src_data, &ci64c, 1, "ln.chp");
+    LLVMValueRef ch_c  = LLVMBuildLoad2(ctx->builder, i8_t, chp_c, "ln.ch");
+    LLVMValueRef is_nl = LLVMBuildICmp(ctx->builder, LLVMIntEQ, ch_c, nl_ch, "ln.isnl");
+    LLVMValueRef cnt_v = LLVMBuildLoad2(ctx->builder, i32_t, cnt_ptr, "ln.cntv");
+    LLVMValueRef cnt_inc = LLVMBuildAdd(ctx->builder, cnt_v, one32, "ln.cntinc");
+    LLVMValueRef new_cnt = LLVMBuildSelect(ctx->builder, is_nl, cnt_inc, cnt_v, "ln.newcnt");
+    LLVMBuildStore(ctx->builder, new_cnt, cnt_ptr);
+    LLVMBuildStore(ctx->builder,
+                   LLVMBuildAdd(ctx->builder, ci, one32, "ln.cinext"), i_ptr);
+    LLVMBuildBr(ctx->builder, cnt_cond_bb);
+
+    /* cnt_end: determine n_lines = count + (last char != '\n' ? 1 : 0) */
+    LLVMPositionBuilderAtEnd(ctx->builder, cnt_end_bb);
+    LLVMValueRef final_cnt = LLVMBuildLoad2(ctx->builder, i32_t, cnt_ptr, "ln.fcnt");
+    LLVMValueRef last_idx  = LLVMBuildSub(ctx->builder, src_len, one32, "ln.lastidx");
+    LLVMValueRef last_idx64 = LLVMBuildZExt(ctx->builder, last_idx, i64_t, "ln.li64");
+    LLVMValueRef last_chp  = LLVMBuildGEP2(ctx->builder, i8_t, src_data, &last_idx64, 1, "ln.lchp");
+    LLVMValueRef last_ch   = LLVMBuildLoad2(ctx->builder, i8_t, last_chp, "ln.lch");
+    LLVMValueRef last_isnl = LLVMBuildICmp(ctx->builder, LLVMIntEQ, last_ch, nl_ch, "ln.lisnl");
+    LLVMValueRef extra     = LLVMBuildSelect(ctx->builder, last_isnl, zero32, one32, "ln.extra");
+    LLVMValueRef n_lines   = LLVMBuildAdd(ctx->builder, final_cnt, extra, "ln.nlines");
+    LLVMValueRef is_zero   = LLVMBuildICmp(ctx->builder, LLVMIntEQ, n_lines, zero32, "ln.iszero");
+    LLVMBuildCondBr(ctx->builder, is_zero, zero_ret_bb, fill_cond_bb);
+
+    /* zero_ret: somehow 0 lines (shouldn't happen for non-empty src, but be safe) */
+    LLVMPositionBuilderAtEnd(ctx->builder, zero_ret_bb);
+    LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_t), out_data_pp);
+    LLVMBuildStore(ctx->builder, zero32, out_len_p);
+    LLVMBuildStore(ctx->builder, zero32, out_cap_p);
+    LLVMBuildRetVoid(ctx->builder);
+
+    /* Before fill loop: allocate element array, reset state */
+    /* We need to continue from cnt_end into allocation, but we branched to fill_cond.
+       Insert allocation between cnt_end and fill_cond using a new bb. */
+    /* Restructure: cnt_end → alloc_bb → fill_init → fill_cond */
+    LLVMBasicBlockRef alloc_bb      = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.alloc");
+    LLVMBasicBlockRef fill_init_bb  = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.fill.init");
+
+    /* Patch cnt_end terminator: replace CondBr(is_zero, zero_ret, fill_cond)
+       with CondBr(is_zero, zero_ret, alloc_bb) */
+    {
+        LLVMValueRef old_term = LLVMGetBasicBlockTerminator(cnt_end_bb);
+        LLVMInstructionEraseFromParent(old_term);
+        LLVMPositionBuilderAtEnd(ctx->builder, cnt_end_bb);
+        LLVMBuildCondBr(ctx->builder, is_zero, zero_ret_bb, alloc_bb);
+    }
+
+    /* alloc_bb: arr = malloc(n_lines * sizeof(LsString)) */
+    LLVMPositionBuilderAtEnd(ctx->builder, alloc_bb);
+    LLVMValueRef n64   = LLVMBuildZExt(ctx->builder, n_lines, i64_t, "ln.n64");
+    LLVMValueRef arrsz = LLVMBuildMul(ctx->builder, n64, str_size, "ln.arrsz");
+    LLVMValueRef arr   = LLVMBuildCall2(ctx->builder, malloc_t, malloc_fn,
+                                        &arrsz, 1, "ln.arr");
+    LLVMBuildStore(ctx->builder, arr, arr_ptr);
+    LLVMBuildBr(ctx->builder, fill_init_bb);
+
+    /* fill_init: eidx = 0, start = 0, i = 0 */
+    LLVMPositionBuilderAtEnd(ctx->builder, fill_init_bb);
+    LLVMBuildStore(ctx->builder, zero32, eidx_ptr);
+    LLVMBuildStore(ctx->builder, zero32, start_ptr);
+    LLVMBuildStore(ctx->builder, zero32, i_ptr);
+    LLVMBuildBr(ctx->builder, fill_cond_bb);
+
+    /* fill_cond: while i < src_len */
+    LLVMPositionBuilderAtEnd(ctx->builder, fill_cond_bb);
+    LLVMValueRef fi = LLVMBuildLoad2(ctx->builder, i32_t, i_ptr, "ln.fi");
+    LLVMValueRef fill_done = LLVMBuildICmp(ctx->builder, LLVMIntSGE, fi, src_len, "ln.fdone");
+    LLVMBuildCondBr(ctx->builder, fill_done, fill_end_bb, fill_body_bb);
+
+    /* fill_body: load data[i], check if '\n' */
+    LLVMPositionBuilderAtEnd(ctx->builder, fill_body_bb);
+    LLVMValueRef fi64 = LLVMBuildZExt(ctx->builder, fi, i64_t, "ln.fi64");
+    LLVMValueRef fchp = LLVMBuildGEP2(ctx->builder, i8_t, src_data, &fi64, 1, "ln.fchp");
+    LLVMValueRef fch  = LLVMBuildLoad2(ctx->builder, i8_t, fchp, "ln.fch");
+    LLVMValueRef fis_nl = LLVMBuildICmp(ctx->builder, LLVMIntEQ, fch, nl_ch, "ln.fisnl");
+    LLVMValueRef fi_next = LLVMBuildAdd(ctx->builder, fi, one32, "ln.finext");
+    LLVMBuildStore(ctx->builder, fi_next, i_ptr);
+    LLVMBuildCondBr(ctx->builder, fis_nl, fill_nl_bb, fill_adv_bb);
+
+    /* fill_adv: not a newline, just advance */
+    LLVMPositionBuilderAtEnd(ctx->builder, fill_adv_bb);
+    LLVMBuildBr(ctx->builder, fill_cond_bb);
+
+    /* fill_nl: found '\n'. Determine line_end = i (or i-1 if CR). Store element. */
+    LLVMPositionBuilderAtEnd(ctx->builder, fill_nl_bb);
+    LLVMValueRef fstart = LLVMBuildLoad2(ctx->builder, i32_t, start_ptr, "ln.fstart");
+    /* line_end = fi (before the '\n') */
+    LLVMValueRef line_end = fi;  /* the '\n' position */
+    /* Check if i > start and data[i-1] == '\r' */
+    LLVMValueRef fi_gt_start = LLVMBuildICmp(ctx->builder, LLVMIntSGT, fi, fstart, "ln.fgts");
+    LLVMBasicBlockRef cr_check_bb = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.cr.check");
+    LLVMBasicBlockRef emit_elem_bb = LLVMAppendBasicBlockInContext(ctx->context, fn, "ln.emit");
+    LLVMBuildCondBr(ctx->builder, fi_gt_start, cr_check_bb, emit_elem_bb);
+
+    /* cr_check: if data[fi-1] == '\r', line_end = fi-1 */
+    LLVMPositionBuilderAtEnd(ctx->builder, cr_check_bb);
+    LLVMValueRef fi_minus1 = LLVMBuildSub(ctx->builder, fi, one32, "ln.fim1");
+    LLVMValueRef fi_m1_64  = LLVMBuildZExt(ctx->builder, fi_minus1, i64_t, "ln.fm164");
+    LLVMValueRef prev_chp  = LLVMBuildGEP2(ctx->builder, i8_t, src_data, &fi_m1_64, 1, "ln.prevchp");
+    LLVMValueRef prev_ch   = LLVMBuildLoad2(ctx->builder, i8_t, prev_chp, "ln.prevch");
+    LLVMValueRef is_cr     = LLVMBuildICmp(ctx->builder, LLVMIntEQ, prev_ch, cr_ch, "ln.iscr");
+    LLVMValueRef adj_end   = LLVMBuildSelect(ctx->builder, is_cr, fi_minus1, fi, "ln.adjend");
+    LLVMBuildBr(ctx->builder, emit_elem_bb);
+
+    /* emit_elem: phi for line_end, compute line_len, alloc+copy, store in arr */
+    LLVMPositionBuilderAtEnd(ctx->builder, emit_elem_bb);
+    LLVMValueRef line_end_phi = LLVMBuildPhi(ctx->builder, i32_t, "ln.lend");
+    LLVMValueRef phi_vals2[2] = { line_end, adj_end };
+    LLVMBasicBlockRef phi_bbs2[2] = { fill_nl_bb, cr_check_bb };
+    LLVMAddIncoming(line_end_phi, phi_vals2, phi_bbs2, 2);
+
+    LLVMValueRef line_len  = LLVMBuildSub(ctx->builder, line_end_phi, fstart, "ln.llen");
+    LLVMValueRef need_cap  = LLVMBuildAdd(ctx->builder, line_len, one32, "ln.need");
+    LLVMValueRef cap_gt    = LLVMBuildICmp(ctx->builder, LLVMIntUGT, need_cap, min_cap, "ln.cgt");
+    LLVMValueRef elem_cap  = LLVMBuildSelect(ctx->builder, cap_gt, need_cap, min_cap, "ln.ecap");
+    LLVMValueRef elem_cap64 = LLVMBuildZExt(ctx->builder, elem_cap, i64_t, "ln.ec64");
+    LLVMValueRef elem_buf  = LLVMBuildCall2(ctx->builder, malloc_t, malloc_fn,
+                                            &elem_cap64, 1, "ln.ebuf");
+    /* memcpy(elem_buf, src_data+start, line_len) */
+    LLVMValueRef fstart64  = LLVMBuildZExt(ctx->builder, fstart, i64_t, "ln.fs64");
+    LLVMValueRef src_start = LLVMBuildGEP2(ctx->builder, i8_t, src_data, &fstart64, 1, "ln.srcst");
+    LLVMValueRef ll64      = LLVMBuildZExt(ctx->builder, line_len, i64_t, "ln.ll64");
+    LLVMValueRef mc_args[3] = { elem_buf, src_start, ll64 };
+    LLVMBuildCall2(ctx->builder, memcpy_t, memcpy_fn, mc_args, 3, "");
+    /* NUL-terminate */
+    LLVMValueRef nul_off = LLVMBuildZExt(ctx->builder, line_len, i64_t, "ln.noff");
+    LLVMValueRef nul_ptr = LLVMBuildGEP2(ctx->builder, i8_t, elem_buf, &nul_off, 1, "ln.nulp");
+    LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 0, 0), nul_ptr);
+    /* Store into arr[eidx] */
+    LLVMValueRef eidx = LLVMBuildLoad2(ctx->builder, i32_t, eidx_ptr, "ln.eidx");
+    LLVMValueRef eidx64 = LLVMBuildZExt(ctx->builder, eidx, i64_t, "ln.eidx64");
+    LLVMValueRef arr_cur = LLVMBuildLoad2(ctx->builder, ptr_t, arr_ptr, "ln.arrcur");
+    LLVMValueRef ep     = LLVMBuildGEP2(ctx->builder, str_t, arr_cur, &eidx64, 1, "ln.ep");
+    LLVMValueRef ep_d   = LLVMBuildStructGEP2(ctx->builder, str_t, ep, 0, "ln.epd");
+    LLVMValueRef ep_l   = LLVMBuildStructGEP2(ctx->builder, str_t, ep, 1, "ln.epl");
+    LLVMValueRef ep_c   = LLVMBuildStructGEP2(ctx->builder, str_t, ep, 2, "ln.epc");
+    LLVMBuildStore(ctx->builder, elem_buf, ep_d);
+    LLVMBuildStore(ctx->builder, line_len, ep_l);
+    LLVMBuildStore(ctx->builder, elem_cap, ep_c);
+    LLVMBuildStore(ctx->builder,
+                   LLVMBuildAdd(ctx->builder, eidx, one32, "ln.eidxnext"), eidx_ptr);
+    /* start = fi+1 (already stored in i_ptr as fi_next) */
+    LLVMBuildStore(ctx->builder, fi_next, start_ptr);
+    LLVMBuildBr(ctx->builder, fill_cond_bb);
+
+    /* fill_end: handle last segment (if start < src_len) */
+    LLVMPositionBuilderAtEnd(ctx->builder, fill_end_bb);
+    LLVMValueRef end_start = LLVMBuildLoad2(ctx->builder, i32_t, start_ptr, "ln.endst");
+    LLVMValueRef has_tail  = LLVMBuildICmp(ctx->builder, LLVMIntSLT, end_start, src_len, "ln.htail");
+    LLVMBuildCondBr(ctx->builder, has_tail, tail_bb, done_bb);
+
+    /* tail_bb: emit last segment (no trailing newline) */
+    LLVMPositionBuilderAtEnd(ctx->builder, tail_bb);
+    LLVMValueRef tail_start = end_start;
+    /* Strip trailing '\r' if present */
+    LLVMValueRef ts_last_idx = LLVMBuildSub(ctx->builder, src_len, one32, "ln.tsli");
+    LLVMValueRef ts_li64     = LLVMBuildZExt(ctx->builder, ts_last_idx, i64_t, "ln.tsli64");
+    LLVMValueRef ts_lchp     = LLVMBuildGEP2(ctx->builder, i8_t, src_data, &ts_li64, 1, "ln.tslchp");
+    LLVMValueRef ts_lch      = LLVMBuildLoad2(ctx->builder, i8_t, ts_lchp, "ln.tslch");
+    LLVMValueRef ts_iscr     = LLVMBuildICmp(ctx->builder, LLVMIntEQ, ts_lch, cr_ch, "ln.tsiscr");
+    LLVMValueRef tail_end    = LLVMBuildSelect(ctx->builder, ts_iscr, ts_last_idx, src_len, "ln.tend");
+    LLVMValueRef tail_len    = LLVMBuildSub(ctx->builder, tail_end, tail_start, "ln.tlen");
+    /* Alloc + copy */
+    LLVMValueRef tn_cap   = LLVMBuildAdd(ctx->builder, tail_len, one32, "ln.tncap");
+    LLVMValueRef tn_cgt   = LLVMBuildICmp(ctx->builder, LLVMIntUGT, tn_cap, min_cap, "ln.tncgt");
+    LLVMValueRef t_cap    = LLVMBuildSelect(ctx->builder, tn_cgt, tn_cap, min_cap, "ln.tcap");
+    LLVMValueRef t_cap64  = LLVMBuildZExt(ctx->builder, t_cap, i64_t, "ln.tc64");
+    LLVMValueRef t_buf    = LLVMBuildCall2(ctx->builder, malloc_t, malloc_fn,
+                                           &t_cap64, 1, "ln.tbuf");
+    LLVMValueRef ts64     = LLVMBuildZExt(ctx->builder, tail_start, i64_t, "ln.ts64");
+    LLVMValueRef t_src    = LLVMBuildGEP2(ctx->builder, i8_t, src_data, &ts64, 1, "ln.tsrc");
+    LLVMValueRef tl64     = LLVMBuildZExt(ctx->builder, tail_len, i64_t, "ln.tl64");
+    LLVMValueRef tmc[3]   = { t_buf, t_src, tl64 };
+    LLVMBuildCall2(ctx->builder, memcpy_t, memcpy_fn, tmc, 3, "");
+    LLVMValueRef t_noff   = LLVMBuildZExt(ctx->builder, tail_len, i64_t, "ln.tnoff");
+    LLVMValueRef t_nulp   = LLVMBuildGEP2(ctx->builder, i8_t, t_buf, &t_noff, 1, "ln.tnulp");
+    LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 0, 0), t_nulp);
+    /* arr[eidx] */
+    LLVMValueRef t_eidx   = LLVMBuildLoad2(ctx->builder, i32_t, eidx_ptr, "ln.teidx");
+    LLVMValueRef t_eidx64 = LLVMBuildZExt(ctx->builder, t_eidx, i64_t, "ln.teidx64");
+    LLVMValueRef t_arr    = LLVMBuildLoad2(ctx->builder, ptr_t, arr_ptr, "ln.tarr");
+    LLVMValueRef t_ep     = LLVMBuildGEP2(ctx->builder, str_t, t_arr, &t_eidx64, 1, "ln.tep");
+    LLVMValueRef t_ep_d   = LLVMBuildStructGEP2(ctx->builder, str_t, t_ep, 0, "ln.tepd");
+    LLVMValueRef t_ep_l   = LLVMBuildStructGEP2(ctx->builder, str_t, t_ep, 1, "ln.tepl");
+    LLVMValueRef t_ep_c   = LLVMBuildStructGEP2(ctx->builder, str_t, t_ep, 2, "ln.tepc");
+    LLVMBuildStore(ctx->builder, t_buf, t_ep_d);
+    LLVMBuildStore(ctx->builder, tail_len, t_ep_l);
+    LLVMBuildStore(ctx->builder, t_cap, t_ep_c);
+    /* Increment eidx so done_bb gets the correct total count */
+    LLVMBuildStore(ctx->builder,
+                   LLVMBuildAdd(ctx->builder, t_eidx, one32, "ln.teidxnext"), eidx_ptr);
+    LLVMBuildBr(ctx->builder, done_bb);
+
+    /* done: store out params */
+    LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+    LLVMValueRef final_arr = LLVMBuildLoad2(ctx->builder, ptr_t, arr_ptr, "ln.farr");
+    LLVMValueRef final_nl  = n_lines; /* computed in cnt_end, available here via alloc_bb */
+    (void)zero64;
+    /* n_lines is not a phi — it's computed in cnt_end_bb and flows to alloc_bb → fill_init_bb.
+       We need it available in done_bb.  Store it into a stack slot from the entry block. */
+    LLVMBuildStore(ctx->builder, final_arr, out_data_pp);
+    /* Recompute n_lines from eidx (which is the actual filled count) */
+    LLVMValueRef actual_eidx = LLVMBuildLoad2(ctx->builder, i32_t, eidx_ptr, "ln.aeidx");
+    /* If we fell through tail_bb, eidx was incremented there by 1 implicitly — but we
+       only store n_lines as filled count.  Use actual_eidx which may be 0..n_lines-1
+       at done_bb from fill_end path, or n_lines from tail_bb.  Just use n_lines. */
+    LLVMBuildStore(ctx->builder, actual_eidx, out_len_p);
+    LLVMBuildStore(ctx->builder, actual_eidx, out_cap_p);
+    LLVMBuildRetVoid(ctx->builder);
+
+    if (saved_bb)
+        LLVMPositionBuilderAtEnd(ctx->builder, saved_bb);
+    (void)min_cap; (void)zero64;
 }
 
 /* ---- Public API ---- */
@@ -16829,6 +17626,7 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
     emit_str_replace_helper(ctx);
     emit_str_split_helper(ctx);
     emit_str_join_helper(ctx);
+    emit_str_lines_helper(ctx);
     emit_map_hash_s_helper(ctx);
 
     /* Process imported modules: forward-declare and compile their declarations */
