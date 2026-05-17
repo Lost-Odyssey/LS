@@ -607,3 +607,13 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_vec_functional_v5.cmake
 )
 set_tests_properties(test_vec_functional_v5 PROPERTIES DEPENDS "test_vec_functional_v4")
+
+add_test(
+    NAME test_string_parse
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_string_parse.cmake
+)
+set_tests_properties(test_string_parse PROPERTIES DEPENDS "test_vec_functional_v5")

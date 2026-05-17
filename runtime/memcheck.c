@@ -96,6 +96,15 @@ static int        g_frame_overflow_warned = 0;
 
 LS_MC_EXPORT void ls_mc_report(void);   /* forward */
 
+/* Guarantee ls_mc_report runs at exit even if no alloc ever fires mc_init.
+   Called from codegen-generated main() prologue when memcheck is enabled. */
+LS_MC_EXPORT void ls_mc_ensure_report(void) {
+    static int registered = 0;
+    if (registered) return;
+    registered = 1;
+    atexit(ls_mc_report);
+}
+
 /* Read an env var as a 0/1 flag, treating any non-empty non-"0" value as 1. */
 static int env_flag(const char *name) {
     const char *v = getenv(name);
@@ -350,9 +359,19 @@ LS_MC_EXPORT void ls_mc_free(void *p, const LsMcSite *site) {
 }
 
 LS_MC_EXPORT void ls_mc_report(void) {
-    if (!g_initialized) return;
     if (g_reported) return;             /* idempotent: explicit + atexit safe */
     g_reported = 1;
+
+    if (!g_initialized) {
+        fflush(stdout);
+        fprintf(stderr, "\n=== LS memcheck report ===\n");
+        fprintf(stderr,
+                "[memcheck] SUMMARY: 0 leak(s) (0 bytes), 0 double-free, 0 invalid free\n");
+        fprintf(stderr, "[memcheck] OK clean\n");
+        fprintf(stderr, "=== end ===\n");
+        fflush(stderr);
+        return;
+    }
     int leaks = 0;
     size_t leaked_bytes = 0;
 

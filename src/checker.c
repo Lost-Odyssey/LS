@@ -1541,6 +1541,42 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
         return type_string();
     }
 
+    /* s.to_int() -> Result(int, string) */
+    if (strcmp(method, "to_int") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.to_int() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return checker_instantiate_result(c, type_int(), type_string());
+    }
+
+    /* s.to_i64() -> Result(i64, string) */
+    if (strcmp(method, "to_i64") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.to_i64() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return checker_instantiate_result(c, type_i64(), type_string());
+    }
+
+    /* s.to_float() -> Result(f64, string) */
+    if (strcmp(method, "to_float") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "string.to_float() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return checker_instantiate_result(c, type_f64(), type_string());
+    }
+
     checker_error(c, call_node->line, call_node->column,
                   "string has no method '%s'", method);
     return NULL;

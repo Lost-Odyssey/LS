@@ -5672,6 +5672,137 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         return cg_push_temp_string(ctx, ls_string_make(ctx, result_buf, result_len, cap));
     }
 
+    /* s.to_int() -> Result(int, string)
+       s.to_i64() -> Result(i64, string)
+       s.to_float() -> Result(f64, string)
+       All three share the same pattern: call libc parser, check endptr,
+       construct Result enum with Ok(value) or Err(static error message). */
+    if (strcmp(method, "to_int") == 0 || strcmp(method, "to_i64") == 0 ||
+        strcmp(method, "to_float") == 0)
+    {
+        bool is_float = (strcmp(method, "to_float") == 0);
+        bool is_i64   = (strcmp(method, "to_i64") == 0);
+
+        Type *result_type = node->resolved_type;
+        if (!result_type || result_type->kind != TYPE_ENUM) {
+            cg_error(ctx, node->line, node->column,
+                     "internal: %s() resolved_type is not Result enum", method);
+            return NULL;
+        }
+
+        LLVMTypeRef result_llvm = type_to_llvm(ctx, result_type);
+        LLVMTypeRef i8_type  = LLVMInt8TypeInContext(ctx->context);
+        LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
+        LLVMTypeRef f64_type = LLVMDoubleTypeInContext(ctx->context);
+        LLVMTypeRef ptr_t    = LLVMPointerTypeInContext(ctx->context, 0);
+
+        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+
+        /* Alloca in entry block for mem2reg */
+        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
+        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
+        if (fi) LLVMPositionBuilderBefore(tb, fi);
+        else    LLVMPositionBuilderAtEnd(tb, entry);
+        LLVMValueRef res_alloca = LLVMBuildAlloca(tb, result_llvm, "tp.res");
+        LLVMValueRef endp_alloca = LLVMBuildAlloca(tb, ptr_t, "tp.endp");
+        LLVMDisposeBuilder(tb);
+
+        /* Zero-init result alloca */
+        LLVMBuildStore(ctx->builder, LLVMConstNull(result_llvm), res_alloca);
+
+        /* Compute end-of-string pointer: data + len */
+        LLVMValueRef s_end = LLVMBuildGEP2(ctx->builder, i8_type, s_data,
+                                            &s_len, 1, "tp.end");
+
+        LLVMValueRef parsed_val;
+        if (is_float) {
+            /* declare strtod if needed */
+            LLVMValueRef strtod_fn = LLVMGetNamedFunction(ctx->module, "strtod");
+            if (!strtod_fn) {
+                LLVMTypeRef strtod_params[2] = { ptr_t, ptr_t };
+                LLVMTypeRef strtod_ft = LLVMFunctionType(f64_type, strtod_params, 2, 0);
+                strtod_fn = LLVMAddFunction(ctx->module, "strtod", strtod_ft);
+            }
+            LLVMTypeRef strtod_ft = LLVMGlobalGetValueType(strtod_fn);
+            LLVMValueRef args[2] = { s_data, endp_alloca };
+            parsed_val = LLVMBuildCall2(ctx->builder, strtod_ft, strtod_fn,
+                                        args, 2, "tp.fval");
+        } else {
+            /* declare strtoll if needed: i64 strtoll(ptr, ptr*, i32) */
+            LLVMValueRef strtoll_fn = LLVMGetNamedFunction(ctx->module, "strtoll");
+            if (!strtoll_fn) {
+                LLVMTypeRef strtoll_params[3] = { ptr_t, ptr_t, i32_type };
+                LLVMTypeRef strtoll_ft = LLVMFunctionType(i64_type, strtoll_params, 3, 0);
+                strtoll_fn = LLVMAddFunction(ctx->module, "strtoll", strtoll_ft);
+            }
+            LLVMTypeRef strtoll_ft = LLVMGlobalGetValueType(strtoll_fn);
+            LLVMValueRef args[3] = { s_data, endp_alloca,
+                                     LLVMConstInt(i32_type, 0, 0) };
+            parsed_val = LLVMBuildCall2(ctx->builder, strtoll_ft, strtoll_fn,
+                                        args, 3, "tp.ival");
+        }
+
+        /* Check: endptr == s_end && endptr != s_data (consumed > 0 && all consumed) */
+        LLVMValueRef endp = LLVMBuildLoad2(ctx->builder, ptr_t, endp_alloca, "tp.ep");
+        LLVMValueRef all_consumed = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                                                   endp, s_end, "tp.allc");
+        LLVMValueRef any_consumed = LLVMBuildICmp(ctx->builder, LLVMIntNE,
+                                                   endp, s_data, "tp.anyc");
+        LLVMValueRef ok_cond = LLVMBuildAnd(ctx->builder, all_consumed,
+                                             any_consumed, "tp.ok");
+
+        LLVMBasicBlockRef ok_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tp.ok");
+        LLVMBasicBlockRef err_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tp.err");
+        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tp.end");
+        LLVMBuildCondBr(ctx->builder, ok_cond, ok_bb, err_bb);
+
+        /* ---- Ok path: store disc=0, payload=value ---- */
+        LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
+        {
+            LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                         res_alloca, 0, "tp.ok.disc");
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i8_type, 0, 0), disc_ptr);
+
+            LLVMTypeRef variant_struct = build_variant_payload_struct(ctx, result_type, 0);
+            LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                            res_alloca, 1, "tp.ok.pay");
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, variant_struct,
+                                                          payload_ptr, 0, "tp.ok.f0");
+            LLVMValueRef to_store = parsed_val;
+            if (!is_float && !is_i64) {
+                to_store = LLVMBuildTrunc(ctx->builder, parsed_val,
+                                          i32_type, "tp.trunc");
+            }
+            LLVMBuildStore(ctx->builder, to_store, field_ptr);
+        }
+        LLVMBuildBr(ctx->builder, end_bb);
+
+        /* ---- Err path: store disc=1, payload=static error string ---- */
+        LLVMPositionBuilderAtEnd(ctx->builder, err_bb);
+        {
+            LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                         res_alloca, 0, "tp.err.disc");
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i8_type, 1, 0), disc_ptr);
+
+            const char *err_msg = is_float ? "invalid float"
+                                 : is_i64  ? "invalid i64"
+                                           : "invalid integer";
+            LLVMValueRef err_str = ls_string_from_literal(ctx, err_msg, "tp.errmsg");
+
+            LLVMTypeRef variant_struct = build_variant_payload_struct(ctx, result_type, 1);
+            LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, result_llvm,
+                                                            res_alloca, 1, "tp.err.pay");
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, variant_struct,
+                                                          payload_ptr, 0, "tp.err.f0");
+            LLVMBuildStore(ctx->builder, err_str, field_ptr);
+        }
+        LLVMBuildBr(ctx->builder, end_bb);
+
+        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+        return LLVMBuildLoad2(ctx->builder, result_llvm, res_alloca, "tp.ret");
+    }
+
     cg_error(ctx, node->line, node->column,
              "unknown string method '%s'", method);
     return NULL;
@@ -17224,6 +17355,16 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 LLVMPositionBuilderBefore(tmp, first);
                 LLVMTypeRef init_type = LLVMFunctionType(
                     LLVMVoidTypeInContext(ctx->context), NULL, 0, 0);
+                if (ctx->memcheck_enabled)
+                {
+                    LLVMValueRef mc_ensure = LLVMGetNamedFunction(ctx->module,
+                                                                  "ls_mc_ensure_report");
+                    if (!mc_ensure) {
+                        mc_ensure = LLVMAddFunction(ctx->module, "ls_mc_ensure_report",
+                                                    init_type);
+                    }
+                    LLVMBuildCall2(tmp, init_type, mc_ensure, NULL, 0, "");
+                }
                 if (ffi_init)
                     LLVMBuildCall2(tmp, init_type, ffi_init, NULL, 0, "");
                 if (global_stmts)

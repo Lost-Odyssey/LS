@@ -85,12 +85,13 @@ int jit_init(JitEngine *engine) {
            at function entry/return. Must be reachable from JIT-compiled code. */
         extern void  ls_mc_enter(const char *, const char *, int);
         extern void  ls_mc_leave(void);
+        extern void  ls_mc_ensure_report(void);
 
         LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
         (void)sp;
 
-        LLVMOrcCSymbolMapPair pairs[6];
+        LLVMOrcCSymbolMapPair pairs[7];
         pairs[0].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_alloc");
         pairs[0].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_alloc;
         pairs[0].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
@@ -121,7 +122,12 @@ int jit_init(JitEngine *engine) {
         pairs[5].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
         pairs[5].Sym.Flags.TargetFlags = 0;
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 6);
+        pairs[6].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_ensure_report");
+        pairs[6].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_ensure_report;
+        pairs[6].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
+        pairs[6].Sym.Flags.TargetFlags = 0;
+
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 7);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; --memcheck won't work but other JIT runs will. */
