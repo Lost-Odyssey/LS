@@ -1,0 +1,199 @@
+// tests/samples/regex_test.ls — Integration tests for std.regex
+import std.regex as re
+
+fn test_basic() {
+    // matches
+    if !re.matches("hello world", "\\w+") { print("FAIL: matches pos"); return }
+    if re.matches("hello", "\\d+") { print("FAIL: matches neg"); return }
+    // full_match
+    if !re.full_match("2024-01-15", "\\d{4}-\\d{2}-\\d{2}") { print("FAIL: full_match pos"); return }
+    if re.full_match("2024-01-15 extra", "\\d{4}-\\d{2}-\\d{2}") { print("FAIL: full_match neg"); return }
+    print("PASS: basic")
+}
+
+fn test_quantifiers() {
+    // greedy *
+    vec(string) v = re.find_all("aabbb", "a*")
+    if v.length == 0 { print("FAIL: greedy star"); return }
+    // + requires at least one
+    if re.matches("b", "a+") { print("FAIL: plus neg"); return }
+    if !re.matches("aa", "a+") { print("FAIL: plus pos"); return }
+    // {n,m}
+    if !re.matches("aaa", "a{3}") { print("FAIL: {n}"); return }
+    if re.matches("aa", "a{3}") { print("FAIL: {n} neg"); return }
+    if !re.matches("aaaa", "a{2,4}") { print("FAIL: {n,m}"); return }
+    // lazy — capture returns vec(string), empty = no match
+    vec(string) c = re.capture("aXbXc", "(a.*?c)")
+    if c.length == 0 { print("FAIL: lazy none"); return }
+    if c[0] != "aXbXc" { print(f"FAIL: lazy wrong: {c[0]}"); return }
+    print("PASS: quantifiers")
+}
+
+fn test_charclass() {
+    if !re.matches("abc123", "[a-z]+") { print("FAIL: range"); return }
+    if re.matches("ABC", "[a-z]+") { print("FAIL: range neg"); return }
+    if !re.matches("123", "[^a-z]+") { print("FAIL: negate"); return }
+    if !re.matches("42", "\\d+") { print("FAIL: digit"); return }
+    if !re.matches("hello_world", "\\w+") { print("FAIL: word"); return }
+    if !re.matches("  \t", "\\s+") { print("FAIL: space"); return }
+    if !re.matches("hello world", "\\bhello\\b") { print("FAIL: wordbnd"); return }
+    if re.matches("helloworld", "\\bhello\\b") { print("FAIL: wordbnd neg"); return }
+    print("PASS: charclass")
+}
+
+fn test_alternation() {
+    if !re.matches("cat", "cat|dog") { print("FAIL: alt cat"); return }
+    if !re.matches("dog", "cat|dog") { print("FAIL: alt dog"); return }
+    if re.matches("bird", "cat|dog") { print("FAIL: alt neg"); return }
+    if !re.matches("red sky", "(red|blue) sky") { print("FAIL: group alt"); return }
+    if !re.matches("blue sky", "(red|blue) sky") { print("FAIL: group alt 2"); return }
+    print("PASS: alternation")
+}
+
+fn test_find() {
+    Option(string) m = re.find("price: 42.5 USD", "\\d+\\.\\d+")
+    match m {
+        Some(s) => { if s != "42.5" { print("FAIL: find got " + s); return } }
+        None    => { print("FAIL: find none"); return }
+    }
+    vec(string) all = re.find_all("a1 b2 c3", "\\d+")
+    if all.length != 3 { print("FAIL: find_all count"); return }
+    if all[0] != "1" { print("FAIL: find_all[0]"); return }
+    if all[1] != "2" { print("FAIL: find_all[1]"); return }
+    if all[2] != "3" { print("FAIL: find_all[2]"); return }
+    print("PASS: find")
+}
+
+fn test_capture() {
+    // capture returns vec(string): [full, g1, g2, ...]  empty = no match
+    vec(string) caps = re.capture("2024-01-15", "(\\d{4})-(\\d{2})-(\\d{2})")
+    if caps.length == 0 { print("FAIL: capture none"); return }
+    if caps.length != 4 { print(f"FAIL: capture length {caps.length}"); return }
+    if caps[0] != "2024-01-15" { print("FAIL: cap[0]"); return }
+    if caps[1] != "2024" { print("FAIL: cap[1]"); return }
+    if caps[2] != "01" { print("FAIL: cap[2]"); return }
+    if caps[3] != "15" { print("FAIL: cap[3]"); return }
+
+    // capture_all returns flat vec; stride = group_count + 1
+    // pattern "(\\w+)=(\\d+)" has 2 groups → stride = 3
+    // "a=1 b=2 c=3" → 3 matches → 9 elements
+    string cap_all_pat = "(\\w+)=(\\d+)"
+    int stride = re.group_count(cap_all_pat) + 1
+    if stride != 3 { print(f"FAIL: group_count {stride}"); return }
+    vec(string) flat = re.capture_all("a=1 b=2 c=3", cap_all_pat)
+    if flat.length != 9 { print(f"FAIL: capture_all count {flat.length}"); return }
+    // match 0: flat[0]="a=1"  flat[1]="a"  flat[2]="1"
+    // match 1: flat[3]="b=2"  flat[4]="b"  flat[5]="2"
+    // match 2: flat[6]="c=3"  flat[7]="c"  flat[8]="3"
+    if flat[1] != "a" { print("FAIL: capture_all[0][1]"); return }
+    if flat[5] != "2" { print("FAIL: capture_all[1][2]"); return }
+    if flat[7] != "c" { print("FAIL: capture_all[2][1]"); return }
+    print("PASS: capture")
+}
+
+fn test_named_capture() {
+    // capture_named returns map(string,string); empty map = no match
+    map(string, string) mp = re.capture_named(
+        "2024-01-15",
+        "(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})"
+    )
+    if mp.length == 0 { print("FAIL: capture_named none"); return }
+    if !mp.contains_key("year")  { print("FAIL: named year missing"); return }
+    if !mp.contains_key("month") { print("FAIL: named month missing"); return }
+    if !mp.contains_key("day")   { print("FAIL: named day missing"); return }
+    string y = mp.get("year")
+    string mo = mp.get("month")
+    string d = mp.get("day")
+    if y != "2024" { print("FAIL: named year=" + y); return }
+    if mo != "01"  { print("FAIL: named month=" + mo); return }
+    if d != "15"   { print("FAIL: named day=" + d); return }
+    print("PASS: named_capture")
+}
+
+fn test_lookahead() {
+    // positive lookahead: foo only when followed by bar
+    vec(string) v = re.find_all("foobar foobaz", "foo(?=bar)")
+    if v.length != 1 { print(f"FAIL: pos lookahead count {v.length}"); return }
+    if v[0] != "foo"  { print("FAIL: pos lookahead val"); return }
+
+    // negative lookahead: foo when NOT followed by bar
+    vec(string) v2 = re.find_all("foobar foobaz", "foo(?!bar)")
+    if v2.length != 1 { print(f"FAIL: neg lookahead count {v2.length}"); return }
+    if v2[0] != "foo"  { print("FAIL: neg lookahead val"); return }
+    print("PASS: lookahead")
+}
+
+fn test_flags() {
+    // case insensitive via inline flag
+    if !re.matches("Hello World", "(?i)hello") { print("FAIL: (?i)"); return }
+    if !re.matches("HELLO", "(?i)hello") { print("FAIL: (?i) upper"); return }
+    // multiline ^ $
+    if !re.matches("line1\nline2", "(?m)^line2") { print("FAIL: (?m)"); return }
+    // dotall . matches newline
+    if !re.matches("foo\nbar", "(?s)foo.bar") { print("FAIL: (?s)"); return }
+    if re.matches("foo\nbar", "foo.bar") { print("FAIL: dotall default"); return }
+    print("PASS: flags")
+}
+
+fn test_replace() {
+    string r1 = re.replace("hello world", "\\bworld\\b", "LS")
+    if r1 != "hello LS" { print("FAIL: replace: " + r1); return }
+
+    string r2 = re.replace_all("2024/01/15", "/", "-")
+    if r2 != "2024-01-15" { print("FAIL: replace_all: " + r2); return }
+
+    // replace_all with digits
+    string r3 = re.replace_all("a1 b2 c3", "\\d+", "X")
+    if r3 != "aX bX cX" { print("FAIL: replace_all digits: " + r3); return }
+    print("PASS: replace")
+}
+
+fn test_split() {
+    vec(string) parts = re.split("one,,two,,,three", ",+")
+    if parts.length != 3 { print(f"FAIL: split count {parts.length}"); return }
+    if parts[0] != "one"   { print("FAIL: split[0]"); return }
+    if parts[1] != "two"   { print("FAIL: split[1]"); return }
+    if parts[2] != "three" { print("FAIL: split[2]"); return }
+
+    vec(string) ws = re.split("  hello   world  ", "\\s+")
+    // leading/trailing empty strings dropped
+    bool found_hello = false
+    bool found_world = false
+    int i = 0
+    while i < ws.length {
+        if ws[i] == "hello" { found_hello = true }
+        if ws[i] == "world" { found_world = true }
+        i = i + 1
+    }
+    if !found_hello { print("FAIL: split ws hello"); return }
+    if !found_world { print("FAIL: split ws world"); return }
+    print("PASS: split")
+}
+
+fn test_error_handling() {
+    // Invalid pattern — unclosed group — should return safe defaults
+    bool m = re.matches("hello", "(unclosed")
+    if m { print("FAIL: error handling matched"); return }
+    Option(string) f = re.find("hello", "[invalid")
+    match f {
+        Some(_) => { print("FAIL: error find matched"); return }
+        None    => { }
+    }
+    print("PASS: error_handling")
+}
+
+fn main() {
+    test_basic()
+    test_quantifiers()
+    test_charclass()
+    test_alternation()
+    test_find()
+    test_capture()
+    test_named_capture()
+    test_lookahead()
+    test_flags()
+    test_replace()
+    test_split()
+    test_error_handling()
+    print("ALL PASS")
+}

@@ -62,6 +62,13 @@ else()
     endif()
 endif()
 
+# Platform-specific OS backend (defines ls_os_* symbols used by std.* modules)
+if(WIN32)
+    set(LS_OS_SOURCE runtime/os_win32.c)
+else()
+    set(LS_OS_SOURCE runtime/os_posix.c)
+endif()
+
 # Main executable sources
 set(LS_SOURCES
     src/main.c
@@ -79,6 +86,8 @@ set(LS_SOURCES
     src/builtins_math.c
     src/builtins_math_cg.c
     runtime/memcheck.c
+    runtime/profiler.c
+    ${LS_OS_SOURCE}
 )
 
 add_executable(ls ${LS_SOURCES})
@@ -105,6 +114,35 @@ set_target_properties(ls_memcheck PROPERTIES
 # Force ls.exe to depend on ls_memcheck so the static archive is always built
 # alongside the compiler — AOT --memcheck would fail otherwise.
 add_dependencies(ls ls_memcheck)
+
+# ls_profiler — standalone static library for AOT-compiled user programs.
+# Contains profiler.c + a minimal perf_now implementation so the user binary
+# can resolve ls_prof_enter/leave/report + ls_os_perf_now without ls.exe.
+add_library(ls_profiler STATIC runtime/profiler.c runtime/perf_now.c)
+target_include_directories(ls_profiler PRIVATE src/ include/)
+set_target_properties(ls_profiler PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY            "${CMAKE_BINARY_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY_DEBUG      "${CMAKE_BINARY_DIR}/Debug"
+    ARCHIVE_OUTPUT_DIRECTORY_RELEASE    "${CMAKE_BINARY_DIR}/Release"
+    ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/RelWithDebInfo"
+    ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/MinSizeRel"
+)
+add_dependencies(ls ls_profiler)
+
+# ls_os_backend — standalone static library for AOT-compiled user programs.
+# Contains os_win32.c or os_posix.c (defines ls_os_* symbols used by std.os /
+# std.time). ls.exe already links the same file via LS_SOURCES; this archive is
+# passed unconditionally by `ls compile` so any AOT binary can import std.time.
+add_library(ls_os_backend STATIC ${LS_OS_SOURCE})
+target_include_directories(ls_os_backend PRIVATE src/ include/)
+set_target_properties(ls_os_backend PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY            "${CMAKE_BINARY_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY_DEBUG      "${CMAKE_BINARY_DIR}/Debug"
+    ARCHIVE_OUTPUT_DIRECTORY_RELEASE    "${CMAKE_BINARY_DIR}/Release"
+    ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/RelWithDebInfo"
+    ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/MinSizeRel"
+)
+add_dependencies(ls ls_os_backend)
 
 # Windows: extra system libs needed for static LLVM linking
 if(WIN32)
@@ -190,6 +228,8 @@ add_executable(test_jit
     src/builtins_math.c
     src/builtins_math_cg.c
     runtime/memcheck.c
+    runtime/profiler.c
+    ${LS_OS_SOURCE}
 )
 target_include_directories(test_jit PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_jit ${LLVM_LIBS})
@@ -219,6 +259,8 @@ add_executable(test_ffi
     src/builtins_math.c
     src/builtins_math_cg.c
     runtime/memcheck.c
+    runtime/profiler.c
+    ${LS_OS_SOURCE}
 )
 target_include_directories(test_ffi PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_ffi ${LLVM_LIBS})
@@ -248,6 +290,8 @@ add_executable(test_module
     src/builtins_math.c
     src/builtins_math_cg.c
     runtime/memcheck.c
+    runtime/profiler.c
+    ${LS_OS_SOURCE}
 )
 target_include_directories(test_module PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_module ${LLVM_LIBS})
@@ -278,6 +322,8 @@ add_executable(test_memory
     src/builtins_math.c
     src/builtins_math_cg.c
     runtime/memcheck.c
+    runtime/profiler.c
+    ${LS_OS_SOURCE}
 )
 target_include_directories(test_memory PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(test_memory ${LLVM_LIBS})

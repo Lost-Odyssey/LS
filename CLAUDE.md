@@ -132,6 +132,7 @@ cd build && ctest --output-on-failure -C Release
 | 9 (memcheck A) | LS 自带内存检查器：`ls run --memcheck` JIT 路径，泄漏/重复释放/无效释放报告 | ✅ |
 | 9 (memcheck A.5) | 细粒度 site 标签：每处 alloc 带 kind (`string.upper` / `io.slurp` / ...) + LS 源码行/列号 | ✅ |
 | 9 (memcheck B) | vec/map/struct/enum 路径全跟踪 + 修复 5 类真实内存 bug（try / 字段 clone / 递归 enum） | ✅ |
+| 9 (std.time) | 纯 LS 标准库 `std.time`：DateTime struct、now_local/now_utc、format/parse/iso8601、add/diff_s/duration_*、sleep_ms/sleep_us；C 后端 `runtime/os_win32.c`（`ls_os_time_*` / `ls_os_sleep_*`）；`ls_os_backend.lib` AOT 静态库；`import X as Y` 别名语法；codegen 两阶段（forward-declare + body）解决跨模块依赖排序；ctest `test_std_time` | ✅ |
 | 10 (closure A) | type 别名 + `Block(...) -> R` 类型语法 + Ruby 风 `\|x\| body` 字面量 + trailing closure 糖 + 强制别名规则（return/struct field 拒绝裸 Block）；Phase A 仅 parse + check，codegen 在 Phase B/C | ✅ |
 | 10 (closure B) | 无捕获闭包 codegen：lambda lifting (`__closure_N(env, ...)`) + LsBlock 16B 胖指针 + 间接 call；类型推导从 callee `Block(...)` 形参反推 `\|x\|` 字面量类型；trailing closure 单表达式自动 return | ✅ |
 | 10 (closure C) | POD 捕获 + 堆 env + RAII：自由变量扫描 → AST `captures[]` → 合成匿名 env struct → `cg_emit_alloc("closure.env")` → body 入口 alloca+load 还原；闭包 var 离开作用域自动 free env（emit_scope_cleanup / emit_cleanup_to 双路径）；POD-only 限制（int/i64/f64/bool/char/*T/object）；嵌套闭包暂不支持 | ✅ |
@@ -212,7 +213,7 @@ cd build && ctest --output-on-failure -C Release
 - 内建 `io` v3+：`read_line` / `read_bytes(n)` / `flush` / 异步 I/O / 目录列举
 - 内建 `io` 当前限制：`File` 不参与自动 drop（需手动 `io.close`）；`File` 当作普通 struct 可被多次 close（UB）；`io.read_file` / `io.read_all` 仍用 `ftell/fseek`（C `long`），Windows 上 ≤ 2GB；seek/tell/size 已升级到 `_fseeki64`/`_ftelli64` 走 i64
 - 方法语法（`f.read_all()` / `f.close()`）—— 当前 io 仅支持 free function 风格
-- 内建 stdlib 扩展：`fs` / `string` / `time` / `env` 模块（参考已上线的 `math` / `io` 范式：编译器内建 + 用户优先 shadow + libc 直 call）
+- 内建 stdlib 扩展：`fs` / `string` / `env` 模块（参考已上线的 `math` / `io` / `std.time` 范式）
 - `vec.get` / `map.get` 改返回 `Option(T)`（breaking change，Phase 9）
 - 闭包 codegen（AST 已定义，codegen 缺失）
 - 用户自定义泛型（`struct LinkedList<T>`；Option/Result 模板可改写为通用泛型流水线）
@@ -225,6 +226,22 @@ cd build && ctest --output-on-failure -C Release
 - f16 半精度浮点数原生支持
 
 ### 已完成（近期）
+
+- **`std.time` 标准库模块（纯 LS 实现 + C 后端 + AOT 静态库）** — 2026-05-17
+  - **架构**：纯 LS 层 `std/time.ls`（导入 `std.os as _os`）+ C 后端 `runtime/os_win32.c` / `runtime/os_posix.c`（`ls_os_time_*` / `ls_os_sleep_*`）；遵循"纯 LS stdlib + platform C 实现"的范式
+  - **DateTime struct**：`year / month / day / hour / minute / second / weekday / yday / utcoff / unix_s(i64)` 10 个字段
+  - **函数集（全部通过 `import std.time as T` 使用）**：
+    - 当前时间：`now_unix_ns() -> i64` / `now_unix_ms() -> i64` / `now_unix_s() -> f64` / `now_local() -> DateTime` / `now_utc() -> DateTime`
+    - 格式化：`format(dt, fmt) -> string`（strftime 风格）/ `iso8601(dt) -> string`（自动处理 UTC offset）
+    - 解析：`parse(text, fmt) -> Result(DateTime, string)`
+    - 算术：`duration_ns/us/ms/s(i64) -> i64`（返回纳秒）/ `add(DateTime, i64) -> DateTime` / `diff_s(dt1, dt2) -> i64`
+    - 睡眠：`sleep_ms(i64)` / `sleep_us(i64)`
+  - **`import X as Y` 别名语法**：parser 在点号路径后检测 `TOKEN_AS` → 解析别名；AST `import_decl.alias` 字段；checker `scope_define` 用别名（或原 path）绑定模块；对 `std/time.ls` 的内部 `import std.os as _os` 和用户的 `import std.time as T` 都生效
+  - **codegen 两阶段（修复跨模块依赖排序 bug）**：旧版单 pass 在 `std.time`（m=0）生成函数体时 `std.os`（m=1）尚未 forward-declare → `[codegen] undefined function 'raw_time_get_year' in module`；新版 Pass A 对所有模块做 forward-declare（struct / extern / fn 签名 / 全局变量），Pass B 再生成所有函数体
+  - **AOT 静态库**：CMakeLists 新增 `add_library(ls_os_backend STATIC ${LS_OS_SOURCE})`，ARCHIVE_OUTPUT_DIRECTORY 同 ls_memcheck/ls_profiler 模式放置在 ls.exe 旁；`main.c` AOT 链接命令无条件追加 `ls_os_backend.lib`（ls.exe 本身已含 LS_OS_SOURCE 供 JIT 的 AbsoluteSymbols 注册）
+  - **JIT AbsoluteSymbols 扩展**：从 10 个扩展到 63 个，新增全部 `ls_os_time_*` / `ls_os_sleep_*` / `ls_os_exec_*` / `ls_os_fs_*` / `ls_os_env_*` 等符号；移除 `jit.c` 内的 inline `ls_os_perf_now`，改用 `extern` 声明（定义在 os_win32.c）
+  - **测试**：`tests/samples/time_basic_test.ls`（24 个 PASS 用例：unix 时间戳、duration 构造、now_local 字段范围、now_utc utcoff==0、format、iso8601、add+diff_s、parse、sleep_ms）；ctest `test_std_time` JIT + AOT 双跑；依赖 `test_at_time_bench`
+  - 验证：ctest 32/32 通过
 
 - **闭包 Phase F.7（Memcheck 压力测试 + 两个真实 bug 修复）** — 2026-05-14
   - **压力测试**：`tests/samples/closure_f7_stress_test.ls`（1000 次迭代，每次 6 种捕获模式：S1 POD by-copy / S2 string by-move factory / S3 struct(has_drop)+Block field / S4 vec(Block) push+call+drop / S5 has_drop enum by-move capture / S6 inline [move] vec capture）；`tests/test_phase_f7_stress.cmake` JIT + JIT-memcheck + AOT + AOT-memcheck 四重；ctest `test_phase_f7_stress` 依赖 `test_phase_f5_closure`

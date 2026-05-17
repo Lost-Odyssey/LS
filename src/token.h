@@ -42,6 +42,10 @@ typedef enum {
     TOKEN_TYPE_ALIAS,       /* type (type alias keyword: `type Name = T`) */
     TOKEN_BLOCK,            /* Block (closure type keyword: `Block(args) -> ret`) */
 
+    /* Annotations */
+    TOKEN_AT_TIME,          /* @time (timing annotation) */
+    TOKEN_AT_BENCH,         /* @bench (benchmark annotation) */
+
     /* Type keywords */
     TOKEN_TYPE_INT,         /* int */
     TOKEN_TYPE_I8,          /* i8 */

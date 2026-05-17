@@ -143,7 +143,7 @@ static int cmd_check(const char *path) {
    ls_memcheck.lib (located next to ls.exe) so ls_mc_alloc/free/realloc/report
    are resolved at link time and the program prints a leak report at exit. */
 static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
-                       bool memcheck) {
+                       bool memcheck, bool profile) {
     char *source = read_file(path);
     if (source == NULL) return 1;
 
@@ -167,6 +167,7 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
     CodegenContext ctx;
     codegen_init(&ctx, path);
     ctx.memcheck_enabled = memcheck;
+    ctx.profile_enabled = profile;
 
     if (codegen_compile(&ctx, ast, reg) != 0) {
         codegen_destroy(&ctx);
@@ -231,6 +232,38 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
         }
     }
 
+    /* Resolve ls_profiler archive path when --profile is on. */
+    char prof_lib[1280] = "";
+    if (profile) {
+        char libdir[1024];
+        if (get_executable_dir(libdir, sizeof(libdir)) == 0) {
+#ifdef _WIN32
+            snprintf(prof_lib, sizeof(prof_lib), "\"%s\\ls_profiler.lib\"", libdir);
+#else
+            snprintf(prof_lib, sizeof(prof_lib), "-L\"%s\" -lls_profiler", libdir);
+#endif
+        } else {
+            fprintf(stderr,
+                    "warning: --profile enabled but could not locate ls.exe directory; "
+                    "linker may fail to resolve ls_prof_* symbols\n");
+        }
+    }
+
+    /* ls_os_backend is always linked — any program importing std.os or std.time
+       needs ls_os_* symbols.  The archive sits next to ls.exe just like
+       ls_memcheck.lib / ls_profiler.lib. */
+    char os_lib[1280] = "";
+    {
+        char libdir[1024];
+        if (get_executable_dir(libdir, sizeof(libdir)) == 0) {
+#ifdef _WIN32
+            snprintf(os_lib, sizeof(os_lib), "\"%s\\ls_os_backend.lib\"", libdir);
+#else
+            snprintf(os_lib, sizeof(os_lib), "-L\"%s\" -lls_os_backend", libdir);
+#endif
+        }
+    }
+
     /* Link to executable */
     char link_cmd[2560];
 #ifdef _WIN32
@@ -248,18 +281,18 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
         }
         if (clang) {
             snprintf(link_cmd, sizeof(link_cmd),
-                     "cmd.exe /c \"\"%s\" -o \"%s\" \"%s\" %s -llegacy_stdio_definitions\"",
-                     clang, exe_path, obj_path, mc_lib);
+                     "cmd.exe /c \"\"%s\" -o \"%s\" \"%s\" %s %s %s -llegacy_stdio_definitions\"",
+                     clang, exe_path, obj_path, mc_lib, prof_lib, os_lib);
         } else {
             /* Fallback: assume clang is in PATH */
             snprintf(link_cmd, sizeof(link_cmd),
-                     "clang -o \"%s\" \"%s\" %s -llegacy_stdio_definitions",
-                     exe_path, obj_path, mc_lib);
+                     "clang -o \"%s\" \"%s\" %s %s %s -llegacy_stdio_definitions",
+                     exe_path, obj_path, mc_lib, prof_lib, os_lib);
         }
     }
 #else
     snprintf(link_cmd, sizeof(link_cmd),
-             "cc \"%s\" -o \"%s\" %s -lm", obj_path, exe_path, mc_lib);
+             "cc \"%s\" -o \"%s\" %s %s %s -lm", obj_path, exe_path, mc_lib, prof_lib, os_lib);
 #endif
 
     printf("Linking: %s\n", link_cmd);
@@ -373,6 +406,7 @@ int main(int argc, char *argv[]) {
         const char *file = NULL;
         bool dump_ir = false;
         bool memcheck = false;
+        bool profile = false;
         for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
                 output = argv[++i];
@@ -380,6 +414,8 @@ int main(int argc, char *argv[]) {
                 dump_ir = true;
             } else if (strcmp(argv[i], "--memcheck") == 0) {
                 memcheck = true;
+            } else if (strcmp(argv[i], "--profile") == 0) {
+                profile = true;
             } else if (file == NULL) {
                 file = argv[i];
             }
@@ -388,21 +424,25 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "error: 'compile' requires a file path\n");
             return 1;
         }
-        return cmd_compile(file, output, dump_ir, memcheck);
+        return cmd_compile(file, output, dump_ir, memcheck, profile);
     }
 
     if (strcmp(cmd, "run") == 0) {
         bool memcheck = false;
+        bool profile = false;
         const char *file = NULL;
         for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--memcheck") == 0) memcheck = true;
+            else if (strcmp(argv[i], "--profile") == 0) profile = true;
             else if (file == NULL) file = argv[i];
         }
         if (file == NULL) {
             fprintf(stderr, "error: 'run' requires a file path\n");
             return 1;
         }
-        return memcheck ? jit_run_file_memcheck(file) : jit_run_file(file);
+        if (memcheck) return jit_run_file_memcheck(file);
+        if (profile) return jit_run_file_profile(file);
+        return jit_run_file(file);
     }
 
     if (strcmp(cmd, "repl") == 0) {

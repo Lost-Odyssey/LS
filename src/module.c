@@ -119,21 +119,33 @@ static char *resolve_stdlib_path(const char *import_path) {
         return NULL;
     }
 
-    /* Build: <root>/stdlib/<rel_path>.ls */
+    /* Build: <root>/stdlib/<rel_path>.ls (legacy layout) */
     size_t full_len = strlen(root) + 1 + 6 /*"stdlib"*/ + 1 + strlen(rel_path) + 3 + 1;
     char *full = (char *)malloc_safe(full_len);
     snprintf(full, full_len, "%s%sstdlib%s%s.ls",
              root, PATH_SEP_STR, PATH_SEP_STR, rel_path);
+
+    FILE *f = fopen(full, "rb");
+    if (f != NULL) {
+        fclose(f);
+        free(rel_path);
+        return full;
+    }
+    free(full);
+
+    /* Second try: <root>/<rel_path>.ls  (new std/ layout: std.time → std/time.ls) */
+    size_t full2_len = strlen(root) + 1 + strlen(rel_path) + 3 + 1;
+    char *full2 = (char *)malloc_safe(full2_len);
+    snprintf(full2, full2_len, "%s%s%s.ls", root, PATH_SEP_STR, rel_path);
     free(rel_path);
 
-    /* Probe existence */
-    FILE *f = fopen(full, "rb");
-    if (f == NULL) {
-        free(full);
-        return NULL;
+    f = fopen(full2, "rb");
+    if (f != NULL) {
+        fclose(f);
+        return full2;
     }
-    fclose(f);
-    return full;
+    free(full2);
+    return NULL;
 }
 
 /* ---- Public API ---- */

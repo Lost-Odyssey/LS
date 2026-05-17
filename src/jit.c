@@ -15,6 +15,11 @@
 #include <stdio.h>
 #include <string.h>
 
+/* ls_os_perf_now and all ls_os_* symbols are defined in runtime/os_win32.c
+   or runtime/os_posix.c, which are compiled into ls.exe via CMakeLists.txt.
+   Forward-declare here so jit_init can register them as AbsoluteSymbols. */
+extern long long ls_os_perf_now(void);
+
 /* ---- Helpers ---- */
 
 static char *read_file(const char *path) {
@@ -73,64 +78,179 @@ int jit_init(JitEngine *engine) {
         (void)es;
     }
 
-    /* Register memcheck runtime symbols explicitly. On Windows .exe symbols
-       aren't found by GetProcAddress unless the linker emitted an export
-       table; using AbsoluteSymbols sidesteps that and works on every platform. */
+    /* Register all ls.exe-internal symbols explicitly.  On Windows, .exe
+       symbols are not discoverable via GetProcAddress unless exported; using
+       AbsoluteSymbols sidesteps that limitation on every platform.
+       Covers: memcheck, profiler, perf, and all ls_os_* OS-backend symbols
+       needed by std.os / std.time / std.env / std.proc / std.io / std.fs. */
     {
+        /* memcheck */
         extern void *ls_mc_alloc(unsigned long long, const void *);
         extern void *ls_mc_realloc(void *, unsigned long long, const void *);
         extern void  ls_mc_free(void *, const void *);
         extern void  ls_mc_report(void);
-        /* D.1 — call-stack tracking: codegen injects ls_mc_enter/ls_mc_leave
-           at function entry/return. Must be reachable from JIT-compiled code. */
         extern void  ls_mc_enter(const char *, const char *, int);
         extern void  ls_mc_leave(void);
         extern void  ls_mc_ensure_report(void);
+        /* profiler */
+        extern void ls_prof_enter(const char *, const char *, int);
+        extern void ls_prof_leave(void);
+        extern void ls_prof_report(void);
+        /* os backend — process execution */
+        extern void        ls_os_exec_run(const char *);
+        extern void       *ls_os_exec_take_stdout(void);
+        extern long long   ls_os_exec_stdout_len(void);
+        extern void       *ls_os_exec_take_stderr(void);
+        extern long long   ls_os_exec_stderr_len(void);
+        extern int         ls_os_exec_get_code(void);
+        extern int         ls_os_exec_get_ok(void);
+        /* os backend — popen/pread/pclose */
+        extern void       *ls_os_popen(const char *);
+        extern long long   ls_os_pread(void *, void *, long long);
+        extern int         ls_os_pclose(void *);
+        extern int         ls_os_pid(void);
+        extern int         ls_os_wait_exit_code(int);
+        /* os backend — file positioning */
+        extern int         ls_os_fseek64(void *, long long, int);
+        extern long long   ls_os_ftell64(void *);
+        extern int         ls_os_unlink(const char *);
+        /* os backend — environment variables */
+        extern const char *ls_os_getenv(const char *);
+        extern int         ls_os_setenv(const char *, const char *);
+        extern int         ls_os_unsetenv(const char *);
+        extern void        ls_os_env_prepare(void);
+        extern int         ls_os_env_count(void);
+        extern const char *ls_os_env_entry(int);
+        /* os backend — directory listing */
+        extern void        ls_os_listdir_prepare(const char *);
+        extern int         ls_os_listdir_count(void);
+        extern const char *ls_os_listdir_entry(int);
+        /* os backend — filesystem / path operations */
+        extern const char *ls_os_last_error(void);
+        extern int         ls_os_path_exists(const char *);
+        extern int         ls_os_path_is_dir(const char *);
+        extern int         ls_os_path_is_file(const char *);
+        extern int         ls_os_mkdir(const char *);
+        extern int         ls_os_mkdir_all(const char *);
+        extern int         ls_os_rmdir(const char *);
+        extern int         ls_os_rename_path(const char *, const char *);
+        extern const char *ls_os_getcwd(void);
+        extern int         ls_os_chdir(const char *);
+        /* os backend — perf */
+        extern long long   ls_os_perf_rdtscp(void);
+        /* ls_os_perf_now already declared above (extern at file top) */
+        /* os backend — calendar / wall-clock time (std.time backend) */
+        extern long long   ls_os_time_now_unix_ns(void);
+        extern long long   ls_os_time_now_unix_ms(void);
+        extern void        ls_os_time_from_unix_local(long long);
+        extern void        ls_os_time_from_unix_utc(long long);
+        extern int         ls_os_time_get_year(void);
+        extern int         ls_os_time_get_month(void);
+        extern int         ls_os_time_get_day(void);
+        extern int         ls_os_time_get_hour(void);
+        extern int         ls_os_time_get_minute(void);
+        extern int         ls_os_time_get_second(void);
+        extern int         ls_os_time_get_weekday(void);
+        extern int         ls_os_time_get_yday(void);
+        extern int         ls_os_time_get_utcoff(void);
+        extern long long   ls_os_time_to_unix(int, int, int, int, int, int, int);
+        extern const char *ls_os_time_format(int, int, int, int, int, int, int, int, const char *);
+        extern int         ls_os_time_parse(const char *, const char *);
+        extern void        ls_os_sleep_ms(long long);
+        extern void        ls_os_sleep_us(long long);
 
         LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
         (void)sp;
 
-        LLVMOrcCSymbolMapPair pairs[7];
-        pairs[0].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_alloc");
-        pairs[0].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_alloc;
-        pairs[0].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
-        pairs[0].Sym.Flags.TargetFlags = 0;
+/* helper macro — one line per symbol */
+#define REG(i, sym) do { \
+    pairs[i].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, #sym); \
+    pairs[i].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&sym; \
+    pairs[i].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported; \
+    pairs[i].Sym.Flags.TargetFlags = 0; \
+} while(0)
 
-        pairs[1].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_free");
-        pairs[1].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_free;
-        pairs[1].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
-        pairs[1].Sym.Flags.TargetFlags = 0;
+        LLVMOrcCSymbolMapPair pairs[63];
+        /* 0-5: memcheck */
+        REG( 0, ls_mc_alloc);
+        REG( 1, ls_mc_free);
+        REG( 2, ls_mc_report);
+        REG( 3, ls_mc_realloc);
+        REG( 4, ls_mc_enter);
+        REG( 5, ls_mc_leave);
+        /* 6-8: profiler */
+        REG( 6, ls_prof_enter);
+        REG( 7, ls_prof_leave);
+        REG( 8, ls_prof_report);
+        /* 9: perf */
+        REG( 9, ls_os_perf_now);
+        REG(10, ls_os_perf_rdtscp);
+        /* 11-17: process execution */
+        REG(11, ls_os_exec_run);
+        REG(12, ls_os_exec_take_stdout);
+        REG(13, ls_os_exec_stdout_len);
+        REG(14, ls_os_exec_take_stderr);
+        REG(15, ls_os_exec_stderr_len);
+        REG(16, ls_os_exec_get_code);
+        REG(17, ls_os_exec_get_ok);
+        /* 18-22: popen/pid */
+        REG(18, ls_os_popen);
+        REG(19, ls_os_pread);
+        REG(20, ls_os_pclose);
+        REG(21, ls_os_pid);
+        REG(22, ls_os_wait_exit_code);
+        /* 23-25: file positioning */
+        REG(23, ls_os_fseek64);
+        REG(24, ls_os_ftell64);
+        REG(25, ls_os_unlink);
+        /* 26-31: environment */
+        REG(26, ls_os_getenv);
+        REG(27, ls_os_setenv);
+        REG(28, ls_os_unsetenv);
+        REG(29, ls_os_env_prepare);
+        REG(30, ls_os_env_count);
+        REG(31, ls_os_env_entry);
+        /* 32-34: directory listing */
+        REG(32, ls_os_listdir_prepare);
+        REG(33, ls_os_listdir_count);
+        REG(34, ls_os_listdir_entry);
+        /* 35-44: filesystem / path */
+        REG(35, ls_os_last_error);
+        REG(36, ls_os_path_exists);
+        REG(37, ls_os_path_is_dir);
+        REG(38, ls_os_path_is_file);
+        REG(39, ls_os_mkdir);
+        REG(40, ls_os_mkdir_all);
+        REG(41, ls_os_rmdir);
+        REG(42, ls_os_rename_path);
+        REG(43, ls_os_getcwd);
+        REG(44, ls_os_chdir);
+        /* 45-62: calendar time + sleep */
+        REG(45, ls_os_time_now_unix_ns);
+        REG(46, ls_os_time_now_unix_ms);
+        REG(47, ls_os_time_from_unix_local);
+        REG(48, ls_os_time_from_unix_utc);
+        REG(49, ls_os_time_get_year);
+        REG(50, ls_os_time_get_month);
+        REG(51, ls_os_time_get_day);
+        REG(52, ls_os_time_get_hour);
+        REG(53, ls_os_time_get_minute);
+        REG(54, ls_os_time_get_second);
+        REG(55, ls_os_time_get_weekday);
+        REG(56, ls_os_time_get_yday);
+        REG(57, ls_os_time_get_utcoff);
+        REG(58, ls_os_time_to_unix);
+        REG(59, ls_os_time_format);
+        REG(60, ls_os_time_parse);
+        REG(61, ls_os_sleep_ms);
+        REG(62, ls_os_sleep_us);
+#undef REG
 
-        pairs[2].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_report");
-        pairs[2].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_report;
-        pairs[2].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
-        pairs[2].Sym.Flags.TargetFlags = 0;
-
-        pairs[3].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_realloc");
-        pairs[3].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_realloc;
-        pairs[3].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
-        pairs[3].Sym.Flags.TargetFlags = 0;
-
-        pairs[4].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_enter");
-        pairs[4].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_enter;
-        pairs[4].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
-        pairs[4].Sym.Flags.TargetFlags = 0;
-
-        pairs[5].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_leave");
-        pairs[5].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_leave;
-        pairs[5].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
-        pairs[5].Sym.Flags.TargetFlags = 0;
-
-        pairs[6].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, "ls_mc_ensure_report");
-        pairs[6].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&ls_mc_ensure_report;
-        pairs[6].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported;
-        pairs[6].Sym.Flags.TargetFlags = 0;
-
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 7);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 63);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
-            /* Non-fatal; --memcheck won't work but other JIT runs will. */
+            /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */
         }
     }
 
@@ -395,6 +515,7 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
     cg.builder = LLVMCreateBuilderInContext(ctx);
     cg.extern_builtins = true; /* builtins already defined in __builtins module */
     cg.memcheck_enabled = engine->memcheck_enabled;
+    cg.profile_enabled = engine->profile_enabled;
 
     /* Set target from JIT */
     const char *dl = LLVMOrcLLJITGetDataLayoutStr(engine->jit);
@@ -424,12 +545,13 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
 
 /* ---- jit_run_file ---- */
 
-static int jit_run_file_impl(const char *path, bool memcheck);
+static int jit_run_file_impl(const char *path, bool memcheck, bool profile);
 
-int jit_run_file(const char *path) { return jit_run_file_impl(path, false); }
-int jit_run_file_memcheck(const char *path) { return jit_run_file_impl(path, true); }
+int jit_run_file(const char *path) { return jit_run_file_impl(path, false, false); }
+int jit_run_file_memcheck(const char *path) { return jit_run_file_impl(path, true, false); }
+int jit_run_file_profile(const char *path) { return jit_run_file_impl(path, false, true); }
 
-static int jit_run_file_impl(const char *path, bool memcheck) {
+static int jit_run_file_impl(const char *path, bool memcheck, bool profile) {
     char *source = read_file(path);
     if (source == NULL) return 1;
 
@@ -458,6 +580,7 @@ static int jit_run_file_impl(const char *path, bool memcheck) {
         return 1;
     }
     engine.memcheck_enabled = memcheck;
+    engine.profile_enabled = profile;
 
     /* Log incremental info */
     if (ast->kind == AST_PROGRAM) {
@@ -540,6 +663,10 @@ static int jit_run_file_impl(const char *path, bool memcheck) {
     if (memcheck) {
         extern void ls_mc_report(void);
         ls_mc_report();
+    }
+    if (profile) {
+        extern void ls_prof_report(void);
+        ls_prof_report();
     }
 
     jit_destroy(&engine);

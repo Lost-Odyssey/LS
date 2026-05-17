@@ -567,6 +567,118 @@ static LLVMTypeRef cg_mc_site_type(CodegenContext *ctx) {
 }
 
 /* Get-or-declare ls_mc_alloc and ls_mc_free externally. */
+/* Get-or-emit ls_os_perf_now().  In JIT mode the symbol is resolved via
+   AbsoluteSymbols; in AOT mode we emit a module-internal definition that
+   calls QueryPerformanceCounter (Windows) or clock_gettime (POSIX). */
+static LLVMValueRef cg_get_perf_now(CodegenContext *ctx) {
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "ls_os_perf_now");
+    if (fn) return fn;
+
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef f64_t = LLVMDoubleTypeInContext(ctx->context);
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+
+    LLVMTypeRef fn_ty = LLVMFunctionType(i64_t, NULL, 0, 0);
+    fn = LLVMAddFunction(ctx->module, "ls_os_perf_now", fn_ty);
+
+    /* In JIT user-module mode (extern_builtins == true), the symbol is resolved
+       via AbsoluteSymbols — leave as extern declaration.
+       In AOT mode (extern_builtins == false), emit inline body. */
+    if (ctx->extern_builtins) return fn;
+
+    /* Emit body: calls QPC (Windows) or clock_gettime (POSIX) */
+    LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(ctx->builder);
+    LLVMValueRef saved_fn_val = ctx->current_fn;
+
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx->context, fn, "entry");
+    LLVMPositionBuilderAtEnd(ctx->builder, entry);
+
+#ifdef _WIN32
+    /* Declare QueryPerformanceCounter(i64*) -> i32
+       and QueryPerformanceFrequency(i64*) -> i32 */
+    LLVMValueRef qpc_fn = LLVMGetNamedFunction(ctx->module, "QueryPerformanceCounter");
+    if (!qpc_fn) {
+        LLVMTypeRef qpc_params[1] = { ptr_t };
+        LLVMTypeRef qpc_ty = LLVMFunctionType(i32_t, qpc_params, 1, 0);
+        qpc_fn = LLVMAddFunction(ctx->module, "QueryPerformanceCounter", qpc_ty);
+    }
+    LLVMValueRef qpf_fn = LLVMGetNamedFunction(ctx->module, "QueryPerformanceFrequency");
+    if (!qpf_fn) {
+        LLVMTypeRef qpf_params[1] = { ptr_t };
+        LLVMTypeRef qpf_ty = LLVMFunctionType(i32_t, qpf_params, 1, 0);
+        qpf_fn = LLVMAddFunction(ctx->module, "QueryPerformanceFrequency", qpf_ty);
+    }
+
+    /* Global freq variable (lazy init via flag) */
+    LLVMValueRef freq_gv = LLVMGetNamedGlobal(ctx->module, "__perf_freq");
+    if (!freq_gv) {
+        freq_gv = LLVMAddGlobal(ctx->module, i64_t, "__perf_freq");
+        LLVMSetInitializer(freq_gv, LLVMConstInt(i64_t, 0, 0));
+        LLVMSetLinkage(freq_gv, LLVMInternalLinkage);
+    }
+
+    /* if (freq == 0) QueryPerformanceFrequency(&freq) */
+    LLVMValueRef freq_val = LLVMBuildLoad2(ctx->builder, i64_t, freq_gv, "freq");
+    LLVMValueRef is_zero = LLVMBuildICmp(ctx->builder, LLVMIntEQ, freq_val,
+                                          LLVMConstInt(i64_t, 0, 0), "freq.z");
+    LLVMBasicBlockRef init_bb = LLVMAppendBasicBlockInContext(ctx->context, fn, "freq.init");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(ctx->context, fn, "freq.cont");
+    LLVMBuildCondBr(ctx->builder, is_zero, init_bb, cont_bb);
+
+    LLVMPositionBuilderAtEnd(ctx->builder, init_bb);
+    LLVMValueRef qpf_args[1] = { freq_gv };
+    LLVMBuildCall2(ctx->builder, LLVMGlobalGetValueType(qpf_fn), qpf_fn, qpf_args, 1, "");
+    LLVMBuildBr(ctx->builder, cont_bb);
+
+    LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+    /* counter alloca + QPC call */
+    LLVMValueRef counter_alloca = LLVMBuildAlloca(ctx->builder, i64_t, "counter");
+    LLVMValueRef qpc_args[1] = { counter_alloca };
+    LLVMBuildCall2(ctx->builder, LLVMGlobalGetValueType(qpc_fn), qpc_fn, qpc_args, 1, "");
+    LLVMValueRef counter = LLVMBuildLoad2(ctx->builder, i64_t, counter_alloca, "cnt");
+    LLVMValueRef freq2 = LLVMBuildLoad2(ctx->builder, i64_t, freq_gv, "frq");
+
+    /* ns = (double)counter * 1e9 / (double)freq */
+    LLVMValueRef cnt_f = LLVMBuildSIToFP(ctx->builder, counter, f64_t, "cnt.f");
+    LLVMValueRef frq_f = LLVMBuildSIToFP(ctx->builder, freq2, f64_t, "frq.f");
+    LLVMValueRef mul = LLVMBuildFMul(ctx->builder, cnt_f,
+                                      LLVMConstReal(f64_t, 1.0e9), "mul");
+    LLVMValueRef ns_f = LLVMBuildFDiv(ctx->builder, mul, frq_f, "ns.f");
+    LLVMValueRef ns = LLVMBuildFPToSI(ctx->builder, ns_f, i64_t, "ns");
+    LLVMBuildRet(ctx->builder, ns);
+#else
+    /* POSIX: declare clock_gettime(i32 clk_id, ptr tp) -> i32 */
+    LLVMValueRef cgt_fn = LLVMGetNamedFunction(ctx->module, "clock_gettime");
+    if (!cgt_fn) {
+        LLVMTypeRef cgt_params[2] = { i32_t, ptr_t };
+        LLVMTypeRef cgt_ty = LLVMFunctionType(i32_t, cgt_params, 2, 0);
+        cgt_fn = LLVMAddFunction(ctx->module, "clock_gettime", cgt_ty);
+    }
+    /* struct timespec { i64 tv_sec; i64 tv_nsec; } */
+    LLVMTypeRef ts_fields[2] = { i64_t, i64_t };
+    LLVMTypeRef ts_ty = LLVMStructTypeInContext(ctx->context, ts_fields, 2, 0);
+    LLVMValueRef ts_alloca = LLVMBuildAlloca(ctx->builder, ts_ty, "ts");
+    /* CLOCK_MONOTONIC = 1 on Linux */
+    LLVMValueRef cgt_args[2] = { LLVMConstInt(i32_t, 1, 0), ts_alloca };
+    LLVMBuildCall2(ctx->builder, LLVMGlobalGetValueType(cgt_fn), cgt_fn, cgt_args, 2, "");
+    LLVMValueRef sec_ptr = LLVMBuildStructGEP2(ctx->builder, ts_ty, ts_alloca, 0, "sec.p");
+    LLVMValueRef nsec_ptr = LLVMBuildStructGEP2(ctx->builder, ts_ty, ts_alloca, 1, "nsec.p");
+    LLVMValueRef sec = LLVMBuildLoad2(ctx->builder, i64_t, sec_ptr, "sec");
+    LLVMValueRef nsec = LLVMBuildLoad2(ctx->builder, i64_t, nsec_ptr, "nsec");
+    LLVMValueRef sec_ns = LLVMBuildMul(ctx->builder, sec,
+                                        LLVMConstInt(i64_t, 1000000000ULL, 0), "sec.ns");
+    LLVMValueRef total = LLVMBuildAdd(ctx->builder, sec_ns, nsec, "total");
+    LLVMBuildRet(ctx->builder, total);
+#endif
+
+    /* Restore builder position */
+    if (saved_bb)
+        LLVMPositionBuilderAtEnd(ctx->builder, saved_bb);
+    ctx->current_fn = saved_fn_val;
+    return fn;
+}
+
 static LLVMValueRef cg_mc_alloc_fn(CodegenContext *ctx) {
     LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "ls_mc_alloc");
     if (fn) return fn;
@@ -655,6 +767,58 @@ static void cg_emit_mc_leave(CodegenContext *ctx)
     LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
                                       NULL, 0, 0);
     LLVMBuildCall2(ctx->builder, ft, cg_mc_leave_fn(ctx), NULL, 0, "");
+}
+
+/* --profile: emit ls_prof_enter/ls_prof_leave at function boundaries. */
+static LLVMValueRef cg_prof_enter_fn(CodegenContext *ctx) {
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "ls_prof_enter");
+    if (fn) return fn;
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef params[3] = { ptr, ptr, i32 };
+    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                      params, 3, 0);
+    return LLVMAddFunction(ctx->module, "ls_prof_enter", ft);
+}
+
+static LLVMValueRef cg_prof_leave_fn(CodegenContext *ctx) {
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "ls_prof_leave");
+    if (fn) return fn;
+    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                      NULL, 0, 0);
+    return LLVMAddFunction(ctx->module, "ls_prof_leave", ft);
+}
+
+static void cg_emit_prof_enter(CodegenContext *ctx, const char *fn_name,
+                               const char *file, int line)
+{
+    if (!ctx->profile_enabled) return;
+    if (!fn_name) fn_name = "?";
+    if (!file)    file = "?";
+    static int seq = 0;
+    char fbuf[64], gbuf[64];
+    snprintf(fbuf, sizeof(fbuf), "ls_prof_fn_%d", seq);
+    snprintf(gbuf, sizeof(gbuf), "ls_prof_file_%d", seq);
+    seq++;
+    LLVMValueRef fn_str = cg_module_cstr(ctx, fn_name, fbuf);
+    LLVMValueRef file_str = cg_module_cstr(ctx, file, gbuf);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMValueRef args[3] = {
+        fn_str, file_str, LLVMConstInt(i32, (unsigned long long)line, 1)
+    };
+    LLVMTypeRef params[3] = { ptr, ptr, i32 };
+    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                      params, 3, 0);
+    LLVMBuildCall2(ctx->builder, ft, cg_prof_enter_fn(ctx), args, 3, "");
+}
+
+static void cg_emit_prof_leave(CodegenContext *ctx)
+{
+    if (!ctx->profile_enabled) return;
+    LLVMTypeRef ft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                      NULL, 0, 0);
+    LLVMBuildCall2(ctx->builder, ft, cg_prof_leave_fn(ctx), NULL, 0, "");
 }
 
 /* Add a private constant i8 array global holding `s` + null terminator,
@@ -11228,6 +11392,124 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return NULL;
     }
 
+    case AST_AT_TIME:
+    {
+        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+        LLVMTypeRef f64_t = LLVMDoubleTypeInContext(ctx->context);
+
+        LLVMValueRef now_fn = cg_get_perf_now(ctx);
+        LLVMTypeRef now_fn_ty = LLVMGlobalGetValueType(now_fn);
+
+        /* t0 = perf.now() */
+        LLVMValueRef t0 = LLVMBuildCall2(ctx->builder, now_fn_ty, now_fn,
+                                          NULL, 0, "time.t0");
+
+        /* Evaluate the inner expression */
+        LLVMValueRef expr_val = codegen_expr(ctx, node->as.at_time.expr);
+
+        /* t1 = perf.now() */
+        LLVMValueRef t1 = LLVMBuildCall2(ctx->builder, now_fn_ty, now_fn,
+                                          NULL, 0, "time.t1");
+
+        /* elapsed_ns = t1 - t0 */
+        LLVMValueRef elapsed = LLVMBuildSub(ctx->builder, t1, t0, "time.elapsed");
+
+        /* Convert to f64 milliseconds for display */
+        LLVMValueRef elapsed_f = LLVMBuildSIToFP(ctx->builder, elapsed, f64_t, "time.ms.f");
+        LLVMValueRef divisor = LLVMConstReal(f64_t, 1000000.0);
+        LLVMValueRef ms_val = LLVMBuildFDiv(ctx->builder, elapsed_f, divisor, "time.ms");
+
+        /* printf("[@time] %.3f ms\n", ms_val) */
+        LLVMValueRef printf_fn = LLVMGetNamedFunction(ctx->module, "printf");
+        if (printf_fn) {
+            LLVMTypeRef printf_ty = LLVMGlobalGetValueType(printf_fn);
+            LLVMValueRef fmt = LLVMBuildGlobalStringPtr(ctx->builder,
+                                                        "[@time] %.3f ms\n", "time.fmt");
+            LLVMValueRef pargs[2] = { fmt, ms_val };
+            LLVMBuildCall2(ctx->builder, printf_ty, printf_fn, pargs, 2, "");
+        }
+
+        return expr_val;
+    }
+
+    case AST_AT_BENCH:
+    {
+        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef f64_t = LLVMDoubleTypeInContext(ctx->context);
+        int iterations = node->as.at_bench.iterations;
+
+        LLVMValueRef now_fn = cg_get_perf_now(ctx);
+        LLVMTypeRef now_fn_ty = LLVMGlobalGetValueType(now_fn);
+
+        /* total_ns alloca */
+        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(ctx->current_fn);
+        LLVMBuilderRef tmp_b = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef first_inst = LLVMGetFirstInstruction(entry_bb);
+        if (first_inst) LLVMPositionBuilderBefore(tmp_b, first_inst);
+        else            LLVMPositionBuilderAtEnd(tmp_b, entry_bb);
+        LLVMValueRef total_alloca = LLVMBuildAlloca(tmp_b, i64_t, "bench.total");
+        LLVMValueRef i_alloca = LLVMBuildAlloca(tmp_b, i32_t, "bench.i");
+        LLVMDisposeBuilder(tmp_b);
+
+        /* total = 0; i = 0 */
+        LLVMBuildStore(ctx->builder, LLVMConstInt(i64_t, 0, 0), total_alloca);
+        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), i_alloca);
+
+        /* Loop: for (i = 0; i < N; i++) */
+        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "bench.cond");
+        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "bench.body");
+        LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "bench.done");
+
+        LLVMBuildBr(ctx->builder, cond_bb);
+
+        /* cond: i < N */
+        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
+        LLVMValueRef i_val = LLVMBuildLoad2(ctx->builder, i32_t, i_alloca, "bench.i.v");
+        LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_val,
+                                          LLVMConstInt(i32_t, (unsigned long long)iterations, 0),
+                                          "bench.cmp");
+        LLVMBuildCondBr(ctx->builder, cmp, body_bb, done_bb);
+
+        /* body: t0 = now(); expr; t1 = now(); total += (t1-t0); i++ */
+        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+        LLVMValueRef t0 = LLVMBuildCall2(ctx->builder, now_fn_ty, now_fn,
+                                          NULL, 0, "bench.t0");
+        codegen_expr(ctx, node->as.at_bench.expr);
+        LLVMValueRef t1 = LLVMBuildCall2(ctx->builder, now_fn_ty, now_fn,
+                                          NULL, 0, "bench.t1");
+        LLVMValueRef diff = LLVMBuildSub(ctx->builder, t1, t0, "bench.diff");
+        LLVMValueRef old_total = LLVMBuildLoad2(ctx->builder, i64_t, total_alloca, "bench.old");
+        LLVMValueRef new_total = LLVMBuildAdd(ctx->builder, old_total, diff, "bench.new");
+        LLVMBuildStore(ctx->builder, new_total, total_alloca);
+        LLVMValueRef i_next = LLVMBuildAdd(ctx->builder, i_val,
+                                            LLVMConstInt(i32_t, 1, 0), "bench.i.next");
+        LLVMBuildStore(ctx->builder, i_next, i_alloca);
+        LLVMBuildBr(ctx->builder, cond_bb);
+
+        /* done: mean_ns = (f64)total / (f64)N */
+        LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+        LLVMValueRef final_total = LLVMBuildLoad2(ctx->builder, i64_t, total_alloca, "bench.ft");
+        LLVMValueRef total_f = LLVMBuildSIToFP(ctx->builder, final_total, f64_t, "bench.tf");
+        LLVMValueRef n_f = LLVMConstReal(f64_t, (double)iterations);
+        LLVMValueRef mean_ns = LLVMBuildFDiv(ctx->builder, total_f, n_f, "bench.mean");
+
+        /* printf("[@bench] %.1f ns (N=%d)\n", mean_ns, N) */
+        LLVMValueRef printf_fn = LLVMGetNamedFunction(ctx->module, "printf");
+        if (printf_fn) {
+            LLVMTypeRef printf_ty = LLVMGlobalGetValueType(printf_fn);
+            LLVMValueRef fmt = LLVMBuildGlobalStringPtr(ctx->builder,
+                "[@bench] mean %.1f ns (%d iterations)\n", "bench.fmt");
+            LLVMValueRef pargs[3] = { fmt, mean_ns, LLVMConstInt(i32_t, (unsigned long long)iterations, 0) };
+            LLVMBuildCall2(ctx->builder, printf_ty, printf_fn, pargs, 3, "");
+        }
+
+        return mean_ns;
+    }
+
     case AST_CAST:
     {
         LLVMValueRef val = codegen_expr(ctx, node->as.cast.expr);
@@ -12606,6 +12888,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
                 emit_cleanup_to(ctx, NULL, return_alloca);
                 cg_emit_mc_leave(ctx);   /* D.1: pop frame */
+                cg_emit_prof_leave(ctx);
                 LLVMBuildRet(ctx->builder, val);
             }
         }
@@ -12618,6 +12901,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
             {
                 cg_emit_mc_leave(ctx);   /* D.1: pop frame */
+                cg_emit_prof_leave(ctx);
                 LLVMBuildRetVoid(ctx->builder);
             }
         }
@@ -13916,6 +14200,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         const char *mn = LLVMGetModuleIdentifier(ctx->module, &mn_len);
         if (mn && mn_len > 0) fn_file = mn;
         cg_emit_mc_enter(ctx, name, fn_file, node->line);
+        cg_emit_prof_enter(ctx, name, fn_file, node->line);
     }
 
     LLVMValueRef saved_fn = ctx->current_fn;
@@ -14117,6 +14402,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
                 /* Emit cleanup BEFORE return */
                 emit_cleanup_to(ctx, NULL, NULL);
                 cg_emit_mc_leave(ctx);   /* D.1: pop frame */
+                cg_emit_prof_leave(ctx);
                 LLVMBuildRet(ctx->builder, val);
             }
         }
@@ -14163,6 +14449,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
         {
             cg_emit_mc_leave(ctx);   /* D.1: pop frame for implicit ret */
+            cg_emit_prof_leave(ctx);
             if (!is_non_void)
             {
                 LLVMBuildRetVoid(ctx->builder);
@@ -17629,16 +17916,22 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
     emit_str_lines_helper(ctx);
     emit_map_hash_s_helper(ctx);
 
-    /* Process imported modules: forward-declare and compile their declarations */
+    /* Process imported modules in two separate passes so that transitive
+       dependencies (e.g. std.time importing std.os) have all symbols
+       forward-declared before any function body is generated.
+
+       Pass A (all modules): forward-declare structs, externs, fn signatures,
+                             global variable slots.
+       Pass B (all modules): generate function / impl bodies. */
     if (registry)
     {
+        /* Pass A — forward-declare everything across all modules */
         for (int m = 0; m < registry->count; m++)
         {
             AstNode *mod_ast = registry->modules[m].ast;
             if (mod_ast == NULL || mod_ast->kind != AST_PROGRAM)
                 continue;
 
-            /* Forward-declare imported module's structs and functions */
             for (int i = 0; i < mod_ast->as.program.decl_count; i++)
             {
                 AstNode *decl = mod_ast->as.program.decls[i];
@@ -17674,22 +17967,12 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                                 decl->as.fn_decl.name, fn_type);
                             /* Phase E.4: imported user-module functions get
                                internal linkage so their symbols don't collide
-                               with libc/runtime names at AOT link time
-                               (e.g. stdlib/io.ls's `fn remove` would otherwise
-                               clash with libucrt.lib's `remove`). All inter-LS
-                               calls happen within the same LLVM module so
-                               internal linkage is sufficient. */
+                               with libc/runtime names at AOT link time. */
                             LLVMSetLinkage(fn_g, LLVMInternalLinkage);
                         }
                     }
                 }
-            }
-
-            /* Forward-declare imported module's global variables */
-            for (int i = 0; i < mod_ast->as.program.decl_count; i++)
-            {
-                AstNode *decl = mod_ast->as.program.decls[i];
-                if (decl->kind == AST_VAR_DECL && decl->resolved_type)
+                else if (decl->kind == AST_VAR_DECL && decl->resolved_type)
                 {
                     Type *var_type = decl->resolved_type;
                     LLVMTypeRef llvm_type = type_to_llvm(ctx, var_type);
@@ -17702,8 +17985,15 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                     }
                 }
             }
+        }
 
-            /* Generate function bodies for imported module */
+        /* Pass B — generate function bodies (all symbols now visible) */
+        for (int m = 0; m < registry->count; m++)
+        {
+            AstNode *mod_ast = registry->modules[m].ast;
+            if (mod_ast == NULL || mod_ast->kind != AST_PROGRAM)
+                continue;
+
             for (int i = 0; i < mod_ast->as.program.decl_count; i++)
             {
                 AstNode *decl = mod_ast->as.program.decls[i];

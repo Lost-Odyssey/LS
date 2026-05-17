@@ -607,6 +607,20 @@ static Token scanner_next_inner(Scanner *s) {
         if (match(s, '>')) return make_token(s, TOKEN_RSHIFT);
         if (match(s, '=')) return make_token(s, TOKEN_GEQ);
         return make_token(s, TOKEN_GT);
+
+    /* Annotations: @time, @bench */
+    case '@':
+        if (strncmp(s->current, "time", 4) == 0 &&
+            !isalnum((unsigned char)s->current[4]) && s->current[4] != '_') {
+            s->current += 4; s->column += 4;
+            return make_token(s, TOKEN_AT_TIME);
+        }
+        if (strncmp(s->current, "bench", 5) == 0 &&
+            !isalnum((unsigned char)s->current[5]) && s->current[5] != '_') {
+            s->current += 5; s->column += 5;
+            return make_token(s, TOKEN_AT_BENCH);
+        }
+        return error_token(s, "unknown annotation (expected @time or @bench)");
     }
 
     return error_token(s, "unexpected character");
@@ -659,6 +673,8 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TRY:           return "TRY";
     case TOKEN_TYPE_ALIAS:    return "TYPE_ALIAS";
     case TOKEN_BLOCK:         return "BLOCK";
+    case TOKEN_AT_TIME:       return "AT_TIME";
+    case TOKEN_AT_BENCH:      return "AT_BENCH";
     case TOKEN_TYPE_INT:      return "TYPE_INT";
     case TOKEN_TYPE_I8:       return "TYPE_I8";
     case TOKEN_TYPE_I16:      return "TYPE_I16";

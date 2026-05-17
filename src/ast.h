@@ -118,6 +118,9 @@ typedef enum
     AST_TYPE_ALIAS_DECL, /* type Name = Type — Phase A closure prerequisite */
     /* Heap allocation */
     AST_NEW_EXPR, /* new StructName { field: val, ... } */
+    /* Annotations */
+    AST_AT_TIME,  /* @time expr — returns expr value, prints elapsed time */
+    AST_AT_BENCH, /* @bench(N) expr — runs expr N times, returns mean ns as f64 */
     /* FFI */
     AST_LOAD_LIB,
     AST_FFI_CALL,
@@ -363,6 +366,7 @@ struct AstNode
         struct
         {
             char *path;
+            char *alias; /* optional: `import foo.bar as alias` → "alias"; NULL if absent */
         } import_decl;
         struct
         {
@@ -380,6 +384,15 @@ struct AstNode
             int field_init_count;
             bool on_stack; /* true = struct value literal (StructName{...}), false = new (heap) */
         } new_expr;
+        struct
+        {
+            AstNode *expr;
+        } at_time;
+        struct
+        {
+            AstNode *expr;
+            int iterations;
+        } at_bench;
         struct
         {
             char *var_name;

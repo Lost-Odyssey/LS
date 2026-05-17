@@ -59,6 +59,7 @@ typedef struct {
     bool had_error;
     bool extern_builtins;   /* JIT mode: declare builtins without bodies (defined elsewhere) */
     bool memcheck_enabled;  /* --memcheck: route all malloc/free through ls_mc_* tracker */
+    bool profile_enabled;   /* --profile: inject ls_prof_enter/leave for function profiling */
 
     /* The AST node currently being lowered. Set on entry to codegen_expr and
        restored on exit. Helpers (emit_string_clone_val, vec/map mallocs that

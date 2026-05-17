@@ -3132,6 +3132,12 @@ static void capture_walk(CaptureScan *s, AstNode *node) {
     case AST_TRY:
         capture_walk(s, node->as.try_expr.expr);
         return;
+    case AST_AT_TIME:
+        capture_walk(s, node->as.at_time.expr);
+        return;
+    case AST_AT_BENCH:
+        capture_walk(s, node->as.at_bench.expr);
+        return;
     case AST_NEW_EXPR:
         for (int i = 0; i < node->as.new_expr.field_init_count; i++)
             capture_walk(s, node->as.new_expr.field_inits[i].value);
@@ -4866,6 +4872,20 @@ static Type *check_expr(Checker *c, AstNode *node)
         break;
     }
 
+    case AST_AT_TIME:
+    {
+        Type *inner = check_expr(c, node->as.at_time.expr);
+        result = inner;
+        break;
+    }
+
+    case AST_AT_BENCH:
+    {
+        check_expr(c, node->as.at_bench.expr);
+        result = type_f64();
+        break;
+    }
+
     case AST_RANGE:
     {
         Type *start = check_expr(c, node->as.range.start);
@@ -6363,7 +6383,10 @@ static void forward_pass(Checker *c, AstNode *program)
                 Type *mod_type = builtin_module_make_type(c, import_path);
                 if (mod_type)
                 {
-                    scope_define(c->current_scope, import_path, mod_type);
+                    const char *bn = decl->as.import_decl.alias
+                                     ? decl->as.import_decl.alias
+                                     : import_path;
+                    scope_define(c->current_scope, bn, mod_type);
                 }
                 break;
             }
@@ -6431,7 +6454,12 @@ static void forward_pass(Checker *c, AstNode *program)
                 }
             }
 
-            scope_define(c->current_scope, import_path, mod_type);
+            /* If `import foo as bar` was used, bind under the alias; otherwise
+               bind under the full dotted path (e.g. "std.time"). */
+            const char *bind_name = decl->as.import_decl.alias
+                                    ? decl->as.import_decl.alias
+                                    : import_path;
+            scope_define(c->current_scope, bind_name, mod_type);
             break;
         }
         default:

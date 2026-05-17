@@ -31,6 +31,7 @@ typedef struct {
 
     bool initialized;
     bool memcheck_enabled;  /* propagate to CodegenContext for each module */
+    bool profile_enabled;   /* propagate to CodegenContext for each module */
 } JitEngine;
 
 /* Initialize the JIT engine */
@@ -51,6 +52,11 @@ int jit_run_file(const char *path);
 /* Same as jit_run_file but with memcheck tracking enabled. Routes every
    alloc/free through ls_mc_* and prints a leak/double-free report at exit. */
 int jit_run_file_memcheck(const char *path);
+
+/* Same as jit_run_file but with function-level profiling instrumentation.
+   Injects ls_prof_enter/leave at every function boundary and prints a
+   sorted timing report at exit. */
+int jit_run_file_profile(const char *path);
 
 /* Run the REPL (interactive incremental JIT) */
 int jit_repl(void);

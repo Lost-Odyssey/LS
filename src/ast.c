@@ -236,6 +236,7 @@ void ast_free(AstNode *node) {
         break;
     case AST_IMPORT_DECL:
         free(node->as.import_decl.path);
+        free(node->as.import_decl.alias);
         break;
     case AST_TYPE_ALIAS_DECL:
         free(node->as.type_alias_decl.name);
@@ -248,6 +249,12 @@ void ast_free(AstNode *node) {
             ast_free(node->as.new_expr.field_inits[i].value);
         }
         free(node->as.new_expr.field_inits);
+        break;
+    case AST_AT_TIME:
+        ast_free(node->as.at_time.expr);
+        break;
+    case AST_AT_BENCH:
+        ast_free(node->as.at_bench.expr);
         break;
     case AST_LOAD_LIB:
         free(node->as.load_lib.var_name);
@@ -341,6 +348,8 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_IMPORT_DECL:  return "IMPORT_DECL";
     case AST_TYPE_ALIAS_DECL: return "TYPE_ALIAS_DECL";
     case AST_NEW_EXPR:     return "NEW_EXPR";
+    case AST_AT_TIME:      return "AT_TIME";
+    case AST_AT_BENCH:     return "AT_BENCH";
     case AST_LOAD_LIB:     return "LOAD_LIB";
     case AST_FFI_CALL:     return "FFI_CALL";
     case AST_EXTERN_FN:          return "EXTERN_FN";
@@ -700,6 +709,14 @@ void ast_print(AstNode *node, int indent) {
             printf(".%s =\n", node->as.new_expr.field_inits[i].name);
             ast_print(node->as.new_expr.field_inits[i].value, indent + 2);
         }
+        break;
+    case AST_AT_TIME:
+        printf("AT_TIME\n");
+        ast_print(node->as.at_time.expr, indent + 1);
+        break;
+    case AST_AT_BENCH:
+        printf("AT_BENCH(iterations=%d)\n", node->as.at_bench.iterations);
+        ast_print(node->as.at_bench.expr, indent + 1);
         break;
     case AST_LOAD_LIB:
         printf("LOAD_LIB(%s = load(\"%s\"))\n",

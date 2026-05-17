@@ -546,6 +546,35 @@ static AstNode *prefix_try(Parser *p) {
     return n;
 }
 
+static AstNode *prefix_at_time(Parser *p) {
+    Token tok = p->previous; /* TOKEN_AT_TIME */
+    AstNode *operand = parse_expr_prec(p, PREC_UNARY);
+    AstNode *n = new_node(AST_AT_TIME, tok.line, tok.column);
+    n->as.at_time.expr = operand;
+    return n;
+}
+
+static AstNode *prefix_at_bench(Parser *p) {
+    Token tok = p->previous; /* TOKEN_AT_BENCH */
+    consume(p, TOKEN_LPAREN, "expected '(' after @bench");
+    if (!check(p, TOKEN_INT_LIT)) {
+        error_at_current(p, "expected integer iteration count in @bench(N)");
+        return new_node(AST_AT_BENCH, tok.line, tok.column);
+    }
+    advance(p);
+    int iterations = (int)strtoll(p->previous.start, NULL, 10);
+    if (iterations <= 0) {
+        error_at_previous(p, "@bench iteration count must be > 0");
+        iterations = 1;
+    }
+    consume(p, TOKEN_RPAREN, "expected ')' after iteration count");
+    AstNode *operand = parse_expr_prec(p, PREC_UNARY);
+    AstNode *n = new_node(AST_AT_BENCH, tok.line, tok.column);
+    n->as.at_bench.expr = operand;
+    n->as.at_bench.iterations = iterations;
+    return n;
+}
+
 /* Phase A.5: Ruby-style closure literal. Param list already past the leading
    '|' (or, for the no-arg ||, past the '||' itself). When `parse_params` is
    true, we still need to consume identifiers and the trailing '|'.
@@ -1224,6 +1253,8 @@ static void init_parse_rules(void) {
     rules[TOKEN_COLON]      = (ParseRule){ prefix_symbol,    NULL,              PREC_NONE };
     rules[TOKEN_NEW]        = (ParseRule){ prefix_new_expr,  NULL,              PREC_NONE };
     rules[TOKEN_TRY]        = (ParseRule){ prefix_try,       NULL,              PREC_NONE };
+    rules[TOKEN_AT_TIME]    = (ParseRule){ prefix_at_time,   NULL,              PREC_NONE };
+    rules[TOKEN_AT_BENCH]   = (ParseRule){ prefix_at_bench,  NULL,              PREC_NONE };
 }
 
 static const ParseRule *get_rule(TokenType type) {
@@ -2070,10 +2101,22 @@ static AstNode *parse_import_decl(Parser *p) {
         }
     }
     path_buf[path_len] = '\0';
+
+    /* Optional: `as alias_name` */
+    char *alias = NULL;
+    if (check(p, TOKEN_AS)) {
+        advance(p); /* consume 'as' */
+        if (check(p, TOKEN_IDENTIFIER)) {
+            advance(p);
+            Token at = p->previous;
+            alias = str_dup_n(at.start, at.length);
+        }
+    }
     skip_semicolons(p);
 
     AstNode *n = new_node(AST_IMPORT_DECL, line, col);
     n->as.import_decl.path = str_dup_n(path_buf, path_len);
+    n->as.import_decl.alias = alias;
     return n;
 }
 
