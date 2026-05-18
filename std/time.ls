@@ -149,3 +149,5 @@ fn diff_s(DateTime dt1, DateTime dt2) -> i64 {
 
 fn sleep_ms(i64 ms) { _os.raw_sleep_ms(ms) }
 fn sleep_us(i64 us) { _os.raw_sleep_us(us) }
+
+fn now() -> string { return iso8601(now_utc())}

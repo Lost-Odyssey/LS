@@ -2,26 +2,31 @@
 #include "checker.h"
 #include "module.h"
 #include "builtins_math.h"
+#include "builtins_perf.h"
 #include <stdio.h>
 #include <string.h>
 
 /* ---- Stdlib gate ----
    Internal builtins (named with `__` prefix by convention) are only callable
-   from files physically located under a `stdlib/` directory — typically
-   <LS_HOME>/stdlib/. Detected by looking for a "/stdlib/" or "\stdlib\"
-   segment in the source path. Imperfect (a user could name their own
-   directory "stdlib"), but good enough to keep these footguns out of normal
+   from files physically located under a `std/` or `stdlib/` directory — i.e.
+   <LS_HOME>/std/ or <LS_HOME>/stdlib/. Detected by looking for a "/std/" or
+   "/stdlib/" segment in the source path. Imperfect (a user could name their
+   own directory "std"), but good enough to keep these footguns out of normal
    user code while staying allocator-policy-free. */
 static bool path_is_under_stdlib(const char *path)
 {
     if (path == NULL) return false;
     for (const char *p = path; *p; p++) {
         if ((p[0] == '/' || p[0] == '\\') &&
-            p[1] == 's' && p[2] == 't' && p[3] == 'd' &&
-            p[4] == 'l' && p[5] == 'i' && p[6] == 'b' &&
-            (p[7] == '/' || p[7] == '\\'))
+            p[1] == 's' && p[2] == 't' && p[3] == 'd')
         {
-            return true;
+            /* /stdlib/ */
+            if (p[4] == 'l' && p[5] == 'i' && p[6] == 'b' &&
+                (p[7] == '/' || p[7] == '\\'))
+                return true;
+            /* /std/ (pure-LS stdlib modules like std/time.ls, std/proc.ls) */
+            if (p[4] == '/' || p[4] == '\\')
+                return true;
         }
     }
     return false;
@@ -3814,6 +3819,43 @@ static Type *check_expr(Checker *c, AstNode *node)
                     break;
                 }
             }
+            /* Built-in `perf` module: arity check + fixed return type (no polymorphism). */
+            if (obj_type && obj_type->kind == TYPE_MODULE &&
+                obj_type->as.module.is_builtin && obj_type->as.module.name &&
+                strcmp(obj_type->as.module.name, "perf") == 0)
+            {
+                obj_node->resolved_type = obj_type;
+                int arity = 0;
+                PerfEmitKind perf_kind = PERF_EMIT_NOW;
+                if (builtin_perf_lookup_fn(fn_name, &arity, &perf_kind))
+                {
+                    int argc = node->as.call.arg_count;
+                    if (argc != arity)
+                    {
+                        checker_error(c, node->line, node->column,
+                                      "perf.%s expects %d argument(s), got %d",
+                                      fn_name, arity, argc);
+                        result = NULL;
+                        node->as.call.callee->resolved_type = NULL;
+                        break;
+                    }
+                    for (int k = 0; k < argc; k++)
+                        check_expr(c, node->as.call.args[k]);
+                    Type *ret_t = (perf_kind == PERF_EMIT_ELAPSED_MS ||
+                                   perf_kind == PERF_EMIT_ELAPSED_S)
+                                  ? type_f64() : type_i64();
+                    Type *arg_t = type_i64();
+                    Type **params = NULL;
+                    if (arity > 0) {
+                        params = (Type **)malloc_safe((size_t)arity * sizeof(Type *));
+                        for (int k = 0; k < arity; k++) params[k] = arg_t;
+                    }
+                    node->as.call.callee->resolved_type =
+                        type_function(params, arity, ret_t, false);
+                    result = ret_t;
+                    break;
+                }
+            }
         }
 
         /* Detect struct method calls: obj.method(args) or StructName.method(args) */
@@ -6451,6 +6493,22 @@ static void forward_pass(Checker *c, AstNode *program)
                 {
                     type_module_add_export(mod_type,
                                            d->as.var_decl.name, d->resolved_type);
+                }
+                else if (d->kind == AST_EXTERN_FN && d->resolved_type)
+                {
+                    type_module_add_export(mod_type,
+                                           d->as.extern_fn.name, d->resolved_type);
+                }
+                else if (d->kind == AST_EXTERN_BLOCK)
+                {
+                    for (int eb = 0; eb < d->as.extern_block.decl_count; eb++)
+                    {
+                        AstNode *ebd = d->as.extern_block.decls[eb];
+                        if (ebd->kind == AST_EXTERN_FN && ebd->resolved_type)
+                            type_module_add_export(mod_type,
+                                                   ebd->as.extern_fn.name,
+                                                   ebd->resolved_type);
+                    }
                 }
             }
 

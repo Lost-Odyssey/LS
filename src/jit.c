@@ -20,6 +20,10 @@
    Forward-declare here so jit_init can register them as AbsoluteSymbols. */
 extern long long ls_os_perf_now(void);
 
+/* float_fixed helpers defined in runtime/builtins.c */
+extern void  __ls_float_fixed_exec(double, int);
+extern void *__ls_float_fixed_ptr(void);
+
 /* ---- Helpers ---- */
 
 static char *read_file(const char *path) {
@@ -137,6 +141,7 @@ int jit_init(JitEngine *engine) {
         extern const char *ls_os_getcwd(void);
         extern int         ls_os_chdir(const char *);
         /* os backend — perf */
+        extern long long   ls_os_perf_rdtsc(void);
         extern long long   ls_os_perf_rdtscp(void);
         /* ls_os_perf_now already declared above (extern at file top) */
         /* os backend — calendar / wall-clock time (std.time backend) */
@@ -158,6 +163,18 @@ int jit_init(JitEngine *engine) {
         extern int         ls_os_time_parse(const char *, const char *);
         extern void        ls_os_sleep_ms(long long);
         extern void        ls_os_sleep_us(long long);
+        /* builtins — process args + readline */
+        extern void        __ls_set_args(int, char **);
+        extern int         __ls_get_argc(void);
+        extern void       *__ls_get_argv(int);
+        extern void        __ls_proc_exit(int);
+        extern void        __ls_readline_exec(void);
+        extern int         __ls_readline_ok(void);
+        extern long long   __ls_readline_len(void);
+        extern void       *__ls_readline_take(void);
+        /* strconv float helpers */
+        extern void        __ls_float_fixed_exec(double, int);
+        extern void       *__ls_float_fixed_ptr(void);
 
         LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
@@ -171,7 +188,7 @@ int jit_init(JitEngine *engine) {
     pairs[i].Sym.Flags.TargetFlags = 0; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[63];
+        LLVMOrcCSymbolMapPair pairs[73];
         /* 0-5: memcheck */
         REG( 0, ls_mc_alloc);
         REG( 1, ls_mc_free);
@@ -183,71 +200,82 @@ int jit_init(JitEngine *engine) {
         REG( 6, ls_prof_enter);
         REG( 7, ls_prof_leave);
         REG( 8, ls_prof_report);
-        /* 9: perf */
+        /* 9-11: perf */
         REG( 9, ls_os_perf_now);
-        REG(10, ls_os_perf_rdtscp);
-        /* 11-17: process execution */
-        REG(11, ls_os_exec_run);
-        REG(12, ls_os_exec_take_stdout);
-        REG(13, ls_os_exec_stdout_len);
-        REG(14, ls_os_exec_take_stderr);
-        REG(15, ls_os_exec_stderr_len);
-        REG(16, ls_os_exec_get_code);
-        REG(17, ls_os_exec_get_ok);
-        /* 18-22: popen/pid */
-        REG(18, ls_os_popen);
-        REG(19, ls_os_pread);
-        REG(20, ls_os_pclose);
-        REG(21, ls_os_pid);
-        REG(22, ls_os_wait_exit_code);
-        /* 23-25: file positioning */
-        REG(23, ls_os_fseek64);
-        REG(24, ls_os_ftell64);
-        REG(25, ls_os_unlink);
-        /* 26-31: environment */
-        REG(26, ls_os_getenv);
-        REG(27, ls_os_setenv);
-        REG(28, ls_os_unsetenv);
-        REG(29, ls_os_env_prepare);
-        REG(30, ls_os_env_count);
-        REG(31, ls_os_env_entry);
-        /* 32-34: directory listing */
-        REG(32, ls_os_listdir_prepare);
-        REG(33, ls_os_listdir_count);
-        REG(34, ls_os_listdir_entry);
-        /* 35-44: filesystem / path */
-        REG(35, ls_os_last_error);
-        REG(36, ls_os_path_exists);
-        REG(37, ls_os_path_is_dir);
-        REG(38, ls_os_path_is_file);
-        REG(39, ls_os_mkdir);
-        REG(40, ls_os_mkdir_all);
-        REG(41, ls_os_rmdir);
-        REG(42, ls_os_rename_path);
-        REG(43, ls_os_getcwd);
-        REG(44, ls_os_chdir);
-        /* 45-62: calendar time + sleep */
-        REG(45, ls_os_time_now_unix_ns);
-        REG(46, ls_os_time_now_unix_ms);
-        REG(47, ls_os_time_from_unix_local);
-        REG(48, ls_os_time_from_unix_utc);
-        REG(49, ls_os_time_get_year);
-        REG(50, ls_os_time_get_month);
-        REG(51, ls_os_time_get_day);
-        REG(52, ls_os_time_get_hour);
-        REG(53, ls_os_time_get_minute);
-        REG(54, ls_os_time_get_second);
-        REG(55, ls_os_time_get_weekday);
-        REG(56, ls_os_time_get_yday);
-        REG(57, ls_os_time_get_utcoff);
-        REG(58, ls_os_time_to_unix);
-        REG(59, ls_os_time_format);
-        REG(60, ls_os_time_parse);
-        REG(61, ls_os_sleep_ms);
-        REG(62, ls_os_sleep_us);
+        REG(10, ls_os_perf_rdtsc);
+        REG(11, ls_os_perf_rdtscp);
+        /* 12-18: process execution */
+        REG(12, ls_os_exec_run);
+        REG(13, ls_os_exec_take_stdout);
+        REG(14, ls_os_exec_stdout_len);
+        REG(15, ls_os_exec_take_stderr);
+        REG(16, ls_os_exec_stderr_len);
+        REG(17, ls_os_exec_get_code);
+        REG(18, ls_os_exec_get_ok);
+        /* 19-23: popen/pid */
+        REG(19, ls_os_popen);
+        REG(20, ls_os_pread);
+        REG(21, ls_os_pclose);
+        REG(22, ls_os_pid);
+        REG(23, ls_os_wait_exit_code);
+        /* 24-26: file positioning */
+        REG(24, ls_os_fseek64);
+        REG(25, ls_os_ftell64);
+        REG(26, ls_os_unlink);
+        /* 27-32: environment */
+        REG(27, ls_os_getenv);
+        REG(28, ls_os_setenv);
+        REG(29, ls_os_unsetenv);
+        REG(30, ls_os_env_prepare);
+        REG(31, ls_os_env_count);
+        REG(32, ls_os_env_entry);
+        /* 33-35: directory listing */
+        REG(33, ls_os_listdir_prepare);
+        REG(34, ls_os_listdir_count);
+        REG(35, ls_os_listdir_entry);
+        /* 36-45: filesystem / path */
+        REG(36, ls_os_last_error);
+        REG(37, ls_os_path_exists);
+        REG(38, ls_os_path_is_dir);
+        REG(39, ls_os_path_is_file);
+        REG(40, ls_os_mkdir);
+        REG(41, ls_os_mkdir_all);
+        REG(42, ls_os_rmdir);
+        REG(43, ls_os_rename_path);
+        REG(44, ls_os_getcwd);
+        REG(45, ls_os_chdir);
+        /* 46-63: calendar time + sleep */
+        REG(46, ls_os_time_now_unix_ns);
+        REG(47, ls_os_time_now_unix_ms);
+        REG(48, ls_os_time_from_unix_local);
+        REG(49, ls_os_time_from_unix_utc);
+        REG(50, ls_os_time_get_year);
+        REG(51, ls_os_time_get_month);
+        REG(52, ls_os_time_get_day);
+        REG(53, ls_os_time_get_hour);
+        REG(54, ls_os_time_get_minute);
+        REG(55, ls_os_time_get_second);
+        REG(56, ls_os_time_get_weekday);
+        REG(57, ls_os_time_get_yday);
+        REG(58, ls_os_time_get_utcoff);
+        REG(59, ls_os_time_to_unix);
+        REG(60, ls_os_time_format);
+        REG(61, ls_os_time_parse);
+        REG(62, ls_os_sleep_ms);
+        REG(63, ls_os_sleep_us);
+        REG(64, __ls_get_argc);
+        REG(65, __ls_get_argv);
+        REG(66, __ls_proc_exit);
+        REG(67, __ls_readline_exec);
+        REG(68, __ls_readline_ok);
+        REG(69, __ls_readline_len);
+        REG(70, __ls_readline_take);
+        /* 71-72: strconv float helpers */
+        REG(71, __ls_float_fixed_exec);
+        REG(72, __ls_float_fixed_ptr);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 63);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 73);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */
@@ -534,6 +562,15 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
     }
 
     LLVMModuleRef module = cg.module;
+
+    /* Verify the LLVM module for correctness (debug aid) */
+    {
+        char *err_msg = NULL;
+        if (LLVMVerifyModule(module, LLVMReturnStatusAction, &err_msg)) {
+            fprintf(stderr, "[jit] LLVM module verification FAILED:\n%s\n", err_msg);
+        }
+        if (err_msg) LLVMDisposeMessage(err_msg);
+    }
 
     /* Clean up codegen (but DON'T dispose context or module — they belong to JIT) */
     LLVMDisposeBuilder(cg.builder);

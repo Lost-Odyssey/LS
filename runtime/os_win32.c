@@ -428,6 +428,14 @@ int ls_os_chdir(const char *path) {
 
 /* --- High-resolution monotonic clock --- */
 
+long long ls_os_perf_rdtsc(void) {
+#if defined(_M_X64) || defined(_M_IX86)
+    return (long long)__rdtsc();
+#else
+    return ls_os_perf_now();
+#endif
+}
+
 long long ls_os_perf_rdtscp(void) {
 #if defined(_M_X64) || defined(_M_IX86)
     unsigned int aux;

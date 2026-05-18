@@ -279,14 +279,18 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
             FILE *tf = fopen(clang_paths[ci], "rb");
             if (tf) { fclose(tf); clang = clang_paths[ci]; break; }
         }
+        /* ls_memcheck.lib and ls_os_backend.lib are built with /MD (dynamic
+           CRT), so the linker needs the dynamic CRT import libraries. */
         if (clang) {
             snprintf(link_cmd, sizeof(link_cmd),
-                     "cmd.exe /c \"\"%s\" -o \"%s\" \"%s\" %s %s %s -llegacy_stdio_definitions\"",
+                     "cmd.exe /c \"\"%s\" -o \"%s\" \"%s\" %s %s %s"
+                     " -llegacy_stdio_definitions -lmsvcrt -lucrt\"",
                      clang, exe_path, obj_path, mc_lib, prof_lib, os_lib);
         } else {
             /* Fallback: assume clang is in PATH */
             snprintf(link_cmd, sizeof(link_cmd),
-                     "clang -o \"%s\" \"%s\" %s %s %s -llegacy_stdio_definitions",
+                     "clang -o \"%s\" \"%s\" %s %s %s"
+                     " -llegacy_stdio_definitions -lmsvcrt -lucrt",
                      exe_path, obj_path, mc_lib, prof_lib, os_lib);
         }
     }
@@ -431,14 +435,21 @@ int main(int argc, char *argv[]) {
         bool memcheck = false;
         bool profile = false;
         const char *file = NULL;
+        int file_idx = -1;
         for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--memcheck") == 0) memcheck = true;
             else if (strcmp(argv[i], "--profile") == 0) profile = true;
-            else if (file == NULL) file = argv[i];
+            else if (file == NULL) { file = argv[i]; file_idx = i; }
         }
         if (file == NULL) {
             fprintf(stderr, "error: 'run' requires a file path\n");
             return 1;
+        }
+        {
+            int script_argc = (file_idx + 1 < argc) ? argc - file_idx - 1 : 0;
+            char **script_argv = (script_argc > 0) ? &argv[file_idx + 1] : NULL;
+            extern void __ls_set_args(int, char **);
+            __ls_set_args(script_argc, script_argv);
         }
         if (memcheck) return jit_run_file_memcheck(file);
         if (profile) return jit_run_file_profile(file);

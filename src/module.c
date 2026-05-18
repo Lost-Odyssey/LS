@@ -94,11 +94,14 @@ static int ls_executable_dir(char *out, size_t out_sz) {
     return 0;
 }
 
-/* Phase E.3.4: resolve <LS_HOME>/stdlib/<name>.ls. LS_HOME falls back to
-   the directory containing ls.exe. Returns NULL if no such file exists.
-   Caller owns the returned string. */
+/* Resolve an import path to an absolute .ls file path under LS_HOME.
+   Resolution order:
+     1. <LS_HOME>/<rel_path>.ls   — dotted std imports: std.time → std/time.ls
+     2. <LS_HOME>/std/<rel>.ls    — short names: io → std/io.ls, hello → std/hello.ls
+   LS_HOME defaults to the directory containing ls.exe.
+   Returns NULL if no file is found. Caller owns the returned string. */
 static char *resolve_stdlib_path(const char *import_path) {
-    /* Convert dots in import path to path separators (same as user path) */
+    /* Convert dots to path separators */
     size_t path_len = strlen(import_path);
     char *rel_path = (char *)malloc_safe(path_len + 1);
     for (size_t i = 0; i < path_len; i++) {
@@ -119,31 +122,22 @@ static char *resolve_stdlib_path(const char *import_path) {
         return NULL;
     }
 
-    /* Build: <root>/stdlib/<rel_path>.ls (legacy layout) */
-    size_t full_len = strlen(root) + 1 + 6 /*"stdlib"*/ + 1 + strlen(rel_path) + 3 + 1;
+    /* Try 1: <root>/<rel_path>.ls  (std.time → std/time.ls) */
+    size_t full_len = strlen(root) + 1 + strlen(rel_path) + 3 + 1;
     char *full = (char *)malloc_safe(full_len);
-    snprintf(full, full_len, "%s%sstdlib%s%s.ls",
-             root, PATH_SEP_STR, PATH_SEP_STR, rel_path);
-
+    snprintf(full, full_len, "%s%s%s.ls", root, PATH_SEP_STR, rel_path);
     FILE *f = fopen(full, "rb");
-    if (f != NULL) {
-        fclose(f);
-        free(rel_path);
-        return full;
-    }
+    if (f != NULL) { fclose(f); free(rel_path); return full; }
     free(full);
 
-    /* Second try: <root>/<rel_path>.ls  (new std/ layout: std.time → std/time.ls) */
-    size_t full2_len = strlen(root) + 1 + strlen(rel_path) + 3 + 1;
+    /* Try 2: <root>/std/<rel_path>.ls  (io → std/io.ls, hello → std/hello.ls) */
+    size_t full2_len = strlen(root) + 1 + 4 /*"std/"*/ + strlen(rel_path) + 3 + 1;
     char *full2 = (char *)malloc_safe(full2_len);
-    snprintf(full2, full2_len, "%s%s%s.ls", root, PATH_SEP_STR, rel_path);
+    snprintf(full2, full2_len, "%s%sstd%s%s.ls",
+             root, PATH_SEP_STR, PATH_SEP_STR, rel_path);
     free(rel_path);
-
     f = fopen(full2, "rb");
-    if (f != NULL) {
-        fclose(f);
-        return full2;
-    }
+    if (f != NULL) { fclose(f); return full2; }
     free(full2);
     return NULL;
 }
@@ -177,10 +171,8 @@ ModuleInfo *module_find(ModuleRegistry *reg, const char *name) {
 }
 
 bool module_user_file_exists(const char *import_path, const char *current_file) {
-    /* Phase E.3.4: a "user file" for the purpose of shadowing built-in
-       modules (math/io/...) now also includes a stdlib file. This way a
-       compiler-bundled stdlib/io.ls overrides the built-in io codegen,
-       making the migration to pure-LS stdlib transparent. */
+    /* A "user file" for the purpose of shadowing built-in modules (math/...)
+       includes any file reachable via resolve_stdlib_path (std/ directory). */
     char *path = module_resolve_path(import_path, current_file);
     if (path != NULL) {
         FILE *f = fopen(path, "rb");
@@ -224,8 +216,7 @@ ModuleInfo *module_load(ModuleRegistry *reg, const char *import_path,
     ModuleInfo *existing = module_find(reg, import_path);
     if (existing) return existing;
 
-    /* Phase E.3.4: three-level resolution — user file shadows stdlib, stdlib
-       shadows compiler builtins (the latter is handled in checker.c).
+    /* Three-level resolution: user file → std/ → compiler builtin (checker.c).
        Try the user-relative path first. */
     char *file_path = module_resolve_path(import_path, current_file);
     char *source = NULL;
@@ -233,7 +224,7 @@ ModuleInfo *module_load(ModuleRegistry *reg, const char *import_path,
         source = read_file(file_path);
     }
     if (source == NULL) {
-        /* Fall back to <LS_HOME>/stdlib/<name>.ls */
+        /* Fall back to <LS_HOME>/std/<name>.ls (or std.foo → std/foo.ls) */
         free(file_path);
         file_path = resolve_stdlib_path(import_path);
         if (file_path != NULL) {
@@ -241,7 +232,7 @@ ModuleInfo *module_load(ModuleRegistry *reg, const char *import_path,
         }
     }
     if (source == NULL) {
-        fprintf(stderr, "[module] cannot find module '%s' in user dir or stdlib\n",
+        fprintf(stderr, "[module] cannot find module '%s' (checked user dir and std/)\n",
                 import_path);
         free(file_path);
         return NULL;

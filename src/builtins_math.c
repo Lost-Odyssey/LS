@@ -6,6 +6,7 @@
  * the LLVM C library. Codegen-side emission lives in builtins_math_cg.c.
  */
 #include "builtins_math.h"
+#include "builtins_perf.h"
 #include <string.h>
 #include <math.h>
 
@@ -111,19 +112,20 @@ bool builtin_math_lookup_const(const char *name, double *out_value) {
 
 /* ---- Public API: existence + type construction ---- */
 
-/* Phase E.4: `io` migrated to pure-LS stdlib/io.ls. The compiler no longer
-   carries a built-in `io` module — `import io` resolves through the normal
-   stdlib path (LS_HOME/stdlib/io.ls). */
+/* Phase E.4: `io` migrated to pure-LS std/io.ls. The compiler no longer
+   carries a built-in `io` module — `import io` resolves to LS_HOME/std/io.ls. */
 
 bool builtin_module_exists(const char *name) {
     if (name == NULL) return false;
-    return strcmp(name, "math") == 0;
+    return strcmp(name, "math") == 0 ||
+           strcmp(name, "perf") == 0;
 }
 
 Type *builtin_module_make_type(Checker *c, const char *name) {
     (void)c;
     if (name == NULL) return NULL;
     if (strcmp(name, "math") == 0) return builtin_math_make_type();
+    if (strcmp(name, "perf") == 0) return builtin_perf_make_type();
     return NULL;
 }
 

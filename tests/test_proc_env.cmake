@@ -1,4 +1,4 @@
-# test_proc_env.cmake — Tests for stdlib/proc.ls and stdlib/env.ls
+# test_proc_env.cmake — Tests for std/proc.ls and std/env.ls
 # Verifies JIT run + AOT compile+run for both modules.
 # Required: LS_EXE, SAMPLE_DIR, WORK_DIR
 
@@ -9,8 +9,8 @@ if(NOT LS_EXE OR NOT SAMPLE_DIR OR NOT WORK_DIR)
 endif()
 
 # Point LS_HOME at the project root so `import env` / `import proc` resolve
-# to stdlib/env.ls and stdlib/proc.ls (ls.exe lives in build/Release/, which
-# has no stdlib/ sub-directory of its own).
+# to std/env.ls and std/proc.ls (ls.exe lives in build/Release/, which
+# has no std/ sub-directory of its own).
 if(DEFINED ENV{CMAKE_SOURCE_DIR_OVERRIDE})
     set(_ls_stdlib_root "$ENV{CMAKE_SOURCE_DIR_OVERRIDE}")
 else()

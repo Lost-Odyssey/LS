@@ -48,7 +48,11 @@ endif()
 
 # Compiler options
 if(MSVC)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    # Use dynamic CRT (/MD) so that ls.exe and LLJIT-compiled code share the
+    # same ucrtbase.dll instance.  With /MT the JIT resolves fopen from the
+    # dynamic CRT while ls_os_ftell64 calls the static CRT's _ftelli64 —
+    # mixing FILE* across CRT instances causes STATUS_STACK_BUFFER_OVERRUN.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_compile_options(/W4 /utf-8)
     # Don't treat warnings as errors for now (LLVM headers may trigger warnings)
     # add_compile_options(/WX)
@@ -85,8 +89,11 @@ set(LS_SOURCES
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_perf.c
+    src/builtins_perf_cg.c
     runtime/memcheck.c
     runtime/profiler.c
+    runtime/builtins.c
     ${LS_OS_SOURCE}
 )
 
@@ -133,7 +140,7 @@ add_dependencies(ls ls_profiler)
 # Contains os_win32.c or os_posix.c (defines ls_os_* symbols used by std.os /
 # std.time). ls.exe already links the same file via LS_SOURCES; this archive is
 # passed unconditionally by `ls compile` so any AOT binary can import std.time.
-add_library(ls_os_backend STATIC ${LS_OS_SOURCE})
+add_library(ls_os_backend STATIC ${LS_OS_SOURCE} runtime/builtins.c)
 target_include_directories(ls_os_backend PRIVATE src/ include/)
 set_target_properties(ls_os_backend PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY            "${CMAKE_BINARY_DIR}"
@@ -179,6 +186,7 @@ add_executable(test_types
     src/checker.c
     src/module.c
     src/builtins_math.c
+    src/builtins_perf.c
 )
 target_include_directories(test_types PRIVATE src/ include/)
 add_test(NAME test_types COMMAND test_types)
@@ -198,6 +206,8 @@ add_executable(test_codegen
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_perf.c
+    src/builtins_perf_cg.c
     runtime/memcheck.c
 )
 target_include_directories(test_codegen PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -227,8 +237,11 @@ add_executable(test_jit
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_perf.c
+    src/builtins_perf_cg.c
     runtime/memcheck.c
     runtime/profiler.c
+    runtime/builtins.c
     ${LS_OS_SOURCE}
 )
 target_include_directories(test_jit PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -258,8 +271,11 @@ add_executable(test_ffi
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_perf.c
+    src/builtins_perf_cg.c
     runtime/memcheck.c
     runtime/profiler.c
+    runtime/builtins.c
     ${LS_OS_SOURCE}
 )
 target_include_directories(test_ffi PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -289,8 +305,11 @@ add_executable(test_module
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_perf.c
+    src/builtins_perf_cg.c
     runtime/memcheck.c
     runtime/profiler.c
+    runtime/builtins.c
     ${LS_OS_SOURCE}
 )
 target_include_directories(test_module PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -321,8 +340,11 @@ add_executable(test_memory
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_perf.c
+    src/builtins_perf_cg.c
     runtime/memcheck.c
     runtime/profiler.c
+    runtime/builtins.c
     ${LS_OS_SOURCE}
 )
 target_include_directories(test_memory PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -663,3 +685,43 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_string_parse.cmake
 )
 set_tests_properties(test_string_parse PROPERTIES DEPENDS "test_vec_functional_v5")
+
+add_test(
+    NAME test_string_utils
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_string_utils.cmake
+)
+set_tests_properties(test_string_utils PROPERTIES DEPENDS "test_string_parse")
+
+add_test(
+    NAME test_strconv
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_strconv.cmake
+)
+set_tests_properties(test_strconv PROPERTIES DEPENDS "test_string_utils")
+
+add_test(
+    NAME test_perf
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_perf.cmake
+)
+set_tests_properties(test_perf PROPERTIES DEPENDS "test_strconv")
+
+add_test(
+    NAME test_std_perf
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_std_perf.cmake
+)
+set_tests_properties(test_std_perf PROPERTIES DEPENDS "test_perf")

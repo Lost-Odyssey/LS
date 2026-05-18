@@ -4,6 +4,7 @@
 #define LS_INCLUDE_CODEGEN 1
 #include "builtins_math.h"
 #define LS_INCLUDE_CODEGEN 1
+#include "builtins_perf.h"
 /* Phase E.4: builtins_io.h removed — io is now pure-LS stdlib/io.ls. */
 #include "common.h"
 
@@ -6300,6 +6301,8 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         /* clone_bb: return copy of string */
         LLVMPositionBuilderAtEnd(ctx->builder, clone_bb);
         LLVMValueRef clone_str = emit_string_clone_val(ctx, str_val);
+        /* emit_string_clone_val may create internal BBs; capture actual exit BB */
+        LLVMBasicBlockRef clone_exit_bb = LLVMGetInsertBlock(ctx->builder);
         LLVMBuildBr(ctx->builder, done_bb);
 
         /* alloc_bb: pad_n = width - len; alloc width+1 */
@@ -6340,12 +6343,12 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         LLVMValueRef alloc_str = ls_string_make(ctx, new_buf, width_val, new_cap);
         LLVMBuildBr(ctx->builder, done_bb);
 
-        /* done_bb: PHI */
+        /* done_bb: PHI — use clone_exit_bb (actual exit of clone path) */
         LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
         LLVMTypeRef str_t = ls_string_type(ctx);
         LLVMValueRef str_phi = LLVMBuildPhi(ctx->builder, str_t, "pad.str");
         LLVMValueRef phi_v[2]  = { clone_str, alloc_str };
-        LLVMBasicBlockRef phi_b[2] = { clone_bb, alloc_bb };
+        LLVMBasicBlockRef phi_b[2] = { clone_exit_bb, alloc_bb };
         LLVMAddIncoming(str_phi, phi_v, phi_b, 2);
         return cg_push_temp_string(ctx, str_phi);
     }
@@ -6427,14 +6430,9 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         LLVMValueRef arr_phi = LLVMBuildPhi(ctx->builder, ptr_t, "ch.arrphi");
         LLVMValueRef len_phi = LLVMBuildPhi(ctx->builder, i32_t, "ch.lenphi");
         LLVMValueRef null_ptr = LLVMConstNull(ptr_t);
-        LLVMValueRef arr_alloc_val = LLVMBuildLoad2(
-            /* We can't load in done_bb from alloc_bb easily without a pre-done block.
-               Use alloc_bb's arr value from the branch. Actually arr is a Value* from alloc_bb.
-               It dominates done_bb only if done_bb is only reached from alloc path.
-               But done_bb is also reached from empty_bb. Use phi. */
-            /* Temporarily store arr in ch_arr_ptr and load in done_bb. */
-            ctx->builder, LLVMPointerTypeInContext(ctx->context, 0), ch_arr_ptr, "ch.arrload");
-        LLVMValueRef phi_arr_vals[2] = { null_ptr, arr_alloc_val };
+        /* arr was stored in alloc_bb; alloc_bb dominates loop_bb so arr dominates
+           the loop_bb→done_bb edge — use it directly as the PHI incoming value. */
+        LLVMValueRef phi_arr_vals[2] = { null_ptr, arr };
         LLVMBasicBlockRef phi_arr_bbs[2] = { empty_bb, loop_bb };
         LLVMAddIncoming(arr_phi, phi_arr_vals, phi_arr_bbs, 2);
         LLVMValueRef phi_len_vals[2] = { zero32, s_len };
@@ -10220,6 +10218,14 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     strcmp(mod_t->as.module.name, "math") == 0)
                 {
                     return builtin_math_emit_call(ctx, fn_name,
+                                                  node->as.call.args,
+                                                  node->as.call.arg_count);
+                }
+                if (mod_t->as.module.is_builtin &&
+                    mod_t->as.module.name &&
+                    strcmp(mod_t->as.module.name, "perf") == 0)
+                {
+                    return builtin_perf_emit_call(ctx, fn_name,
                                                   node->as.call.args,
                                                   node->as.call.arg_count);
                 }
@@ -15733,13 +15739,17 @@ static void declare_builtins(CodegenContext *ctx)
 static void emit_str_replace_helper(CodegenContext *ctx)
 {
     /* In JIT extern_builtins mode, the helper is already defined in __builtins module;
-       only declare it (no body) so it resolves via symbol search. */
-    if (ctx->extern_builtins)
+       only declare it (no body) so it resolves via symbol search.
+       Exception: when memcheck is enabled, emit locally so malloc calls are tracked
+       by ls_mc_alloc instead of the untracked real malloc in the builtins module. */
+    if (ctx->extern_builtins && !ctx->memcheck_enabled)
         return;
 
     LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "__ls_str_replace");
     if (fn == NULL || LLVMCountBasicBlocks(fn) > 0)
         return;
+    if (ctx->extern_builtins && ctx->memcheck_enabled)
+        LLVMSetLinkage(fn, LLVMInternalLinkage);
 
     LLVMTypeRef i8_t = LLVMInt8TypeInContext(ctx->context);
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
@@ -15901,12 +15911,14 @@ static void emit_str_replace_helper(CodegenContext *ctx)
    Splits src by sep, returns array of heap-owned LsString elements via out params. */
 static void emit_str_split_helper(CodegenContext *ctx)
 {
-    if (ctx->extern_builtins)
+    if (ctx->extern_builtins && !ctx->memcheck_enabled)
         return;
 
     LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "__ls_str_split");
     if (fn == NULL || LLVMCountBasicBlocks(fn) > 0)
         return;
+    if (ctx->extern_builtins && ctx->memcheck_enabled)
+        LLVMSetLinkage(fn, LLVMInternalLinkage);
 
     LLVMTypeRef i8_t = LLVMInt8TypeInContext(ctx->context);
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
@@ -16093,12 +16105,14 @@ static void emit_str_split_helper(CodegenContext *ctx)
    Joins vec(string) elements with separator, returns malloc'd buffer. */
 static void emit_str_join_helper(CodegenContext *ctx)
 {
-    if (ctx->extern_builtins)
+    if (ctx->extern_builtins && !ctx->memcheck_enabled)
         return;
 
     LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "__ls_str_join");
     if (fn == NULL || LLVMCountBasicBlocks(fn) > 0)
         return;
+    if (ctx->extern_builtins && ctx->memcheck_enabled)
+        LLVMSetLinkage(fn, LLVMInternalLinkage);
 
     LLVMTypeRef i8_t = LLVMInt8TypeInContext(ctx->context);
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
@@ -16249,12 +16263,14 @@ static void emit_str_join_helper(CodegenContext *ctx)
    into an output vec.  Trailing newline does NOT produce an empty trailing element. */
 static void emit_str_lines_helper(CodegenContext *ctx)
 {
-    if (ctx->extern_builtins)
+    if (ctx->extern_builtins && !ctx->memcheck_enabled)
         return;
 
     LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "__ls_str_lines");
     if (fn == NULL || LLVMCountBasicBlocks(fn) > 0)
         return;
+    if (ctx->extern_builtins && ctx->memcheck_enabled)
+        LLVMSetLinkage(fn, LLVMInternalLinkage);
 
     LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);

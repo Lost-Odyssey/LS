@@ -1,7 +1,7 @@
 // Phase E.3.4 — stdlib path resolution
 // Imports `hello` which has no user-relative file but is provided by
-// <ls.exe-dir>/stdlib/hello.ls. Verifies the three-level lookup
-// (user dir → LS_HOME/stdlib → builtin) works.
+// <LS_HOME>/std/hello.ls. Verifies the two-level lookup
+// (user dir → LS_HOME/std/) works.
 
 import hello
 

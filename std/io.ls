@@ -101,7 +101,7 @@ fn write_file(string path, string content) -> Result(int, string) {
     if fp == nil {
         return Err(_err("write_file: open failed"))
     }
-    i64 len = c.strlen(content)
+    i64 len = content.length
     *u8 cstr = content.to_cstr() as *u8
     i64 wrote = c.fwrite(cstr, 1, len, fp)
     c.fclose(fp)
@@ -117,7 +117,7 @@ fn append_file(string path, string content) -> Result(int, string) {
     if fp == nil {
         return Err(_err("append_file: open failed"))
     }
-    i64 len = c.strlen(content)
+    i64 len = content.length
     *u8 cstr = content.to_cstr() as *u8
     i64 wrote = c.fwrite(cstr, 1, len, fp)
     c.fclose(fp)
@@ -178,7 +178,7 @@ fn write(File f, string content) -> Result(int, string) {
     if f.handle == nil {
         return Err(_err("write: file is closed"))
     }
-    i64 len = c.strlen(content)
+    i64 len = content.length
     *u8 cstr = content.to_cstr() as *u8
     i64 wrote = c.fwrite(cstr, 1, len, f.handle)
     if wrote != len {

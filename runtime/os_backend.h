@@ -120,6 +120,11 @@ const char *ls_os_env_entry(int i);
  */
 long long ls_os_perf_now(void);
 
+/* ls_os_perf_rdtsc() returns the RDTSC cycle counter (non-serialising).
+ * Windows: __rdtsc (intrin.h).  POSIX: __builtin_ia32_rdtsc().
+ * Falls back to ls_os_perf_now() on non-x86 platforms. */
+long long ls_os_perf_rdtsc(void);
+
 /* ls_os_perf_rdtscp() returns the serialising RDTSCP timestamp.
  * Windows: __rdtscp (intrin.h).  POSIX: __builtin_ia32_rdtscp / inline asm.
  * Falls back to RDTSC on non-x86 platforms. */

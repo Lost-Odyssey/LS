@@ -7,9 +7,9 @@
 #   WORK_DIR   — build directory (for AOT output)
 #   TEST_NAME  — test name (used for AOT binary filename)
 
-# Phase E.4: when running pure-LS stdlib tests, point LS_HOME at the source
-# `stdlib/` directory so `import io` finds stdlib/io.ls (the built ls.exe sits
-# in build/Release/ which has no stdlib/ subdir of its own).
+# Point LS_HOME at the project root so stdlib imports (e.g. `import io`)
+# resolve to std/io.ls under the source tree (ls.exe lives in build/Release/
+# which has no std/ sub-directory of its own).
 if(DEFINED ENV{CMAKE_SOURCE_DIR_OVERRIDE})
     set(_ls_stdlib_root "$ENV{CMAKE_SOURCE_DIR_OVERRIDE}")
 else()
