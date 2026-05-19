@@ -44,6 +44,82 @@ void type_node_free(TypeNode *type) {
     free(type);
 }
 
+/* ---- type_node_clone ---- */
+
+/* Portable strdup helper (ast.c-local) */
+static char *ast_strdup(const char *s) {
+    if (s == NULL) return NULL;
+    size_t len = strlen(s);
+    char *copy = (char *)malloc_safe(len + 1);
+    memcpy(copy, s, len + 1);
+    return copy;
+}
+
+/* Deep-clone a TypeNode tree.  Every heap pointer (char*, child TypeNode*)
+   is independently allocated so that type_node_free(clone) and
+   type_node_free(original) are both safe. */
+TypeNode *type_node_clone(const TypeNode *src) {
+    if (src == NULL) return NULL;
+
+    TypeNode *dst = (TypeNode *)malloc_safe(sizeof(TypeNode));
+    /* Shallow-copy all scalar fields: kind, line, column, is_mut, primitive */
+    *dst = *src;
+
+    switch (src->kind) {
+    case TYPE_NODE_PRIMITIVE:
+        /* No heap fields — shallow copy is sufficient */
+        break;
+
+    case TYPE_NODE_POINTER:
+    case TYPE_NODE_REFERENCE:
+        dst->as.pointee = type_node_clone(src->as.pointee);
+        break;
+
+    case TYPE_NODE_ARRAY:
+        dst->as.array.elem = type_node_clone(src->as.array.elem);
+        /* .size is int, already copied by shallow copy */
+        break;
+
+    case TYPE_NODE_VECTOR:
+        dst->as.vec.elem = type_node_clone(src->as.vec.elem);
+        break;
+
+    case TYPE_NODE_MAP:
+        dst->as.map.key = type_node_clone(src->as.map.key);
+        dst->as.map.val = type_node_clone(src->as.map.val);
+        break;
+
+    case TYPE_NODE_FN:
+    case TYPE_NODE_BLOCK: {
+        int n = src->as.fn.param_count;
+        if (n > 0) {
+            dst->as.fn.params = (TypeNode **)malloc_safe((size_t)n * sizeof(TypeNode *));
+            for (int i = 0; i < n; i++)
+                dst->as.fn.params[i] = type_node_clone(src->as.fn.params[i]);
+        } else {
+            dst->as.fn.params = NULL;
+        }
+        dst->as.fn.ret = type_node_clone(src->as.fn.ret);
+        break;
+    }
+
+    case TYPE_NODE_NAMED: {
+        dst->as.named.name = ast_strdup(src->as.named.name);
+        int n = src->as.named.arg_count;
+        if (n > 0) {
+            dst->as.named.args = (TypeNode **)malloc_safe((size_t)n * sizeof(TypeNode *));
+            for (int i = 0; i < n; i++)
+                dst->as.named.args[i] = type_node_clone(src->as.named.args[i]);
+        } else {
+            dst->as.named.args = NULL;
+        }
+        break;
+    }
+    }
+
+    return dst;
+}
+
 /* ---- ast_free ---- */
 
 /* Recursively free an AstNode and all its children */
@@ -101,6 +177,10 @@ void ast_free(AstNode *node) {
             ast_free(node->as.call.args[i]);
         }
         free(node->as.call.args);
+        /* G2: free type_args */
+        for (int i = 0; i < node->as.call.type_arg_count; i++)
+            type_node_free(node->as.call.type_args[i]);
+        free(node->as.call.type_args);
         break;
     case AST_INDEX:
         ast_free(node->as.index_expr.object);
@@ -192,6 +272,10 @@ void ast_free(AstNode *node) {
         break;
     case AST_FN_DECL:
         free(node->as.fn_decl.name);
+        /* G2: free type_params */
+        for (int i = 0; i < node->as.fn_decl.type_param_count; i++)
+            free(node->as.fn_decl.type_params[i]);
+        free(node->as.fn_decl.type_params);
         for (int i = 0; i < node->as.fn_decl.param_count; i++) {
             type_node_free(node->as.fn_decl.param_types[i]);
             free(node->as.fn_decl.param_names[i]);
@@ -203,6 +287,10 @@ void ast_free(AstNode *node) {
         break;
     case AST_STRUCT_DECL:
         free(node->as.struct_decl.name);
+        /* G1: free type_params */
+        for (int i = 0; i < node->as.struct_decl.type_param_count; i++)
+            free(node->as.struct_decl.type_params[i]);
+        free(node->as.struct_decl.type_params);
         for (int i = 0; i < node->as.struct_decl.field_count; i++) {
             type_node_free(node->as.struct_decl.field_types[i]);
             free(node->as.struct_decl.field_names[i]);
@@ -226,6 +314,10 @@ void ast_free(AstNode *node) {
         break;
     case AST_IMPL_DECL:
         free(node->as.impl_decl.name);
+        /* G1.5: free type_params */
+        for (int i = 0; i < node->as.impl_decl.type_param_count; i++)
+            free(node->as.impl_decl.type_params[i]);
+        free(node->as.impl_decl.type_params);
         for (int i = 0; i < node->as.impl_decl.method_count; i++) {
             ast_free(node->as.impl_decl.methods[i]);
         }
@@ -249,6 +341,10 @@ void ast_free(AstNode *node) {
             ast_free(node->as.new_expr.field_inits[i].value);
         }
         free(node->as.new_expr.field_inits);
+        /* G1: free type args */
+        for (int i = 0; i < node->as.new_expr.type_arg_count; i++)
+            type_node_free(node->as.new_expr.type_args[i]);
+        free(node->as.new_expr.type_args);
         break;
     case AST_AT_TIME:
         ast_free(node->as.at_time.expr);
@@ -425,6 +521,228 @@ void type_node_print(TypeNode *type) {
 
 static void print_indent(int indent) {
     for (int i = 0; i < indent; i++) printf("  ");
+}
+
+/* G1.5: Deep-clone an AST subtree.  resolved_type is NOT copied. */
+AstNode *ast_clone_deep(const AstNode *src) {
+    if (src == NULL) return NULL;
+
+    AstNode *n = (AstNode *)malloc_safe(sizeof(AstNode));
+    *n = *src;                  /* shallow copy first */
+    n->resolved_type = NULL;    /* must be re-checked */
+
+    switch (src->kind) {
+    case AST_INT_LIT:
+    case AST_FLOAT_LIT:
+    case AST_BOOL_LIT:
+    case AST_NIL_LIT:
+    case AST_BREAK:
+    case AST_CONTINUE:
+        break;
+    case AST_STRING_LIT:
+        n->as.string_lit.value = ast_strdup(src->as.string_lit.value);
+        break;
+    case AST_IDENT:
+        n->as.ident.name = ast_strdup(src->as.ident.name);
+        break;
+    case AST_UNARY:
+        n->as.unary.operand = ast_clone_deep(src->as.unary.operand);
+        break;
+    case AST_MUT_BORROW:
+        n->as.mut_borrow.operand = ast_clone_deep(src->as.mut_borrow.operand);
+        break;
+    case AST_BINARY:
+        n->as.binary.left  = ast_clone_deep(src->as.binary.left);
+        n->as.binary.right = ast_clone_deep(src->as.binary.right);
+        break;
+    case AST_CALL:
+        n->as.call.callee = ast_clone_deep(src->as.call.callee);
+        if (src->as.call.arg_count > 0) {
+            n->as.call.args = (AstNode **)malloc_safe((size_t)src->as.call.arg_count * sizeof(AstNode *));
+            for (int i = 0; i < src->as.call.arg_count; i++)
+                n->as.call.args[i] = ast_clone_deep(src->as.call.args[i]);
+        }
+        /* G2: clone type_args */
+        if (src->as.call.type_arg_count > 0) {
+            int tc = src->as.call.type_arg_count;
+            n->as.call.type_args = (TypeNode **)malloc_safe((size_t)tc * sizeof(TypeNode *));
+            for (int i = 0; i < tc; i++)
+                n->as.call.type_args[i] = type_node_clone(src->as.call.type_args[i]);
+            n->as.call.type_arg_count = tc;
+        }
+        break;
+    case AST_INDEX:
+        n->as.index_expr.object = ast_clone_deep(src->as.index_expr.object);
+        n->as.index_expr.index  = ast_clone_deep(src->as.index_expr.index);
+        break;
+    case AST_FIELD:
+        n->as.field_access.object = ast_clone_deep(src->as.field_access.object);
+        n->as.field_access.field  = ast_strdup(src->as.field_access.field);
+        break;
+    case AST_RETURN:
+        n->as.return_stmt.value = ast_clone_deep(src->as.return_stmt.value);
+        break;
+    case AST_EXPR_STMT:
+        n->as.expr_stmt.expr = ast_clone_deep(src->as.expr_stmt.expr);
+        break;
+    case AST_BLOCK: {
+        int sc = src->as.block.stmt_count;
+        n->as.block.stmts = sc > 0 ? (AstNode **)malloc_safe((size_t)sc * sizeof(AstNode *)) : NULL;
+        for (int i = 0; i < sc; i++)
+            n->as.block.stmts[i] = ast_clone_deep(src->as.block.stmts[i]);
+        break;
+    }
+    case AST_VAR_DECL:
+        n->as.var_decl.name = ast_strdup(src->as.var_decl.name);
+        n->as.var_decl.var_type = type_node_clone(src->as.var_decl.var_type);
+        n->as.var_decl.init = ast_clone_deep(src->as.var_decl.init);
+        break;
+    case AST_ASSIGN:
+        n->as.assign.target = ast_clone_deep(src->as.assign.target);
+        n->as.assign.value  = ast_clone_deep(src->as.assign.value);
+        break;
+    case AST_IF:
+        n->as.if_stmt.cond       = ast_clone_deep(src->as.if_stmt.cond);
+        n->as.if_stmt.then_block = ast_clone_deep(src->as.if_stmt.then_block);
+        n->as.if_stmt.else_block = ast_clone_deep(src->as.if_stmt.else_block);
+        break;
+    case AST_WHILE:
+        n->as.while_stmt.cond = ast_clone_deep(src->as.while_stmt.cond);
+        n->as.while_stmt.body = ast_clone_deep(src->as.while_stmt.body);
+        break;
+    case AST_FOR:
+        n->as.for_stmt.var  = ast_strdup(src->as.for_stmt.var);
+        n->as.for_stmt.iter = ast_clone_deep(src->as.for_stmt.iter);
+        n->as.for_stmt.body = ast_clone_deep(src->as.for_stmt.body);
+        break;
+    case AST_FOR_C:
+        n->as.for_c_stmt.init   = ast_clone_deep(src->as.for_c_stmt.init);
+        n->as.for_c_stmt.cond   = ast_clone_deep(src->as.for_c_stmt.cond);
+        n->as.for_c_stmt.update = ast_clone_deep(src->as.for_c_stmt.update);
+        n->as.for_c_stmt.body   = ast_clone_deep(src->as.for_c_stmt.body);
+        break;
+    case AST_CAST:
+        n->as.cast.expr        = ast_clone_deep(src->as.cast.expr);
+        n->as.cast.target_type = type_node_clone(src->as.cast.target_type);
+        break;
+    case AST_TRY:
+        n->as.try_expr.expr = ast_clone_deep(src->as.try_expr.expr);
+        break;
+    case AST_RANGE:
+        n->as.range.start = ast_clone_deep(src->as.range.start);
+        n->as.range.end   = ast_clone_deep(src->as.range.end);
+        break;
+    case AST_FORMAT_STRING: {
+        int pc = src->as.format_string.part_count;
+        int ec = src->as.format_string.expr_count;
+        n->as.format_string.parts = pc > 0 ? (char **)malloc_safe((size_t)pc * sizeof(char *)) : NULL;
+        for (int i = 0; i < pc; i++)
+            n->as.format_string.parts[i] = ast_strdup(src->as.format_string.parts[i]);
+        n->as.format_string.exprs = ec > 0 ? (AstNode **)malloc_safe((size_t)ec * sizeof(AstNode *)) : NULL;
+        for (int i = 0; i < ec; i++)
+            n->as.format_string.exprs[i] = ast_clone_deep(src->as.format_string.exprs[i]);
+        break;
+    }
+    case AST_ARRAY_LIT: {
+        int c = src->as.array_lit.count;
+        n->as.array_lit.elements = c > 0 ? (AstNode **)malloc_safe((size_t)c * sizeof(AstNode *)) : NULL;
+        for (int i = 0; i < c; i++)
+            n->as.array_lit.elements[i] = ast_clone_deep(src->as.array_lit.elements[i]);
+        break;
+    }
+    case AST_MAP_LIT: {
+        int c = src->as.map_lit.pair_count;
+        n->as.map_lit.keys = c > 0 ? (AstNode **)malloc_safe((size_t)c * sizeof(AstNode *)) : NULL;
+        n->as.map_lit.vals = c > 0 ? (AstNode **)malloc_safe((size_t)c * sizeof(AstNode *)) : NULL;
+        for (int i = 0; i < c; i++) {
+            n->as.map_lit.keys[i] = ast_clone_deep(src->as.map_lit.keys[i]);
+            n->as.map_lit.vals[i] = ast_clone_deep(src->as.map_lit.vals[i]);
+        }
+        break;
+    }
+    case AST_NEW_EXPR: {
+        n->as.new_expr.struct_name = ast_strdup(src->as.new_expr.struct_name);
+        int fc = src->as.new_expr.field_init_count;
+        if (fc > 0) {
+            size_t sz = (size_t)fc * sizeof(src->as.new_expr.field_inits[0]);
+            n->as.new_expr.field_inits = (void *)malloc_safe(sz);
+            for (int i = 0; i < fc; i++) {
+                n->as.new_expr.field_inits[i].name  = ast_strdup(src->as.new_expr.field_inits[i].name);
+                n->as.new_expr.field_inits[i].value = ast_clone_deep(src->as.new_expr.field_inits[i].value);
+            }
+        }
+        int tac = src->as.new_expr.type_arg_count;
+        if (tac > 0) {
+            n->as.new_expr.type_args = (TypeNode **)malloc_safe((size_t)tac * sizeof(TypeNode *));
+            for (int i = 0; i < tac; i++)
+                n->as.new_expr.type_args[i] = type_node_clone(src->as.new_expr.type_args[i]);
+        }
+        break;
+    }
+    case AST_MATCH: {
+        n->as.match.subject = ast_clone_deep(src->as.match.subject);
+        int ac = src->as.match.arm_count;
+        if (ac > 0) {
+            size_t sz = (size_t)ac * sizeof(src->as.match.arms[0]);
+            n->as.match.arms = (void *)malloc_safe(sz);
+            for (int i = 0; i < ac; i++) {
+                n->as.match.arms[i] = src->as.match.arms[i]; /* shallow copy flags */
+                n->as.match.arms[i].pattern = ast_clone_deep(src->as.match.arms[i].pattern);
+                n->as.match.arms[i].body    = ast_clone_deep(src->as.match.arms[i].body);
+            }
+        }
+        break;
+    }
+    case AST_FN_DECL: {
+        n->as.fn_decl.name = ast_strdup(src->as.fn_decl.name);
+        /* G2: clone type_params */
+        int tpc = src->as.fn_decl.type_param_count;
+        n->as.fn_decl.type_param_count = tpc;
+        if (tpc > 0) {
+            n->as.fn_decl.type_params = (char **)malloc_safe((size_t)tpc * sizeof(char *));
+            for (int i = 0; i < tpc; i++)
+                n->as.fn_decl.type_params[i] = ast_strdup(src->as.fn_decl.type_params[i]);
+        }
+        int pc = src->as.fn_decl.param_count;
+        if (pc > 0) {
+            n->as.fn_decl.param_types = (TypeNode **)malloc_safe((size_t)pc * sizeof(TypeNode *));
+            n->as.fn_decl.param_names = (char **)malloc_safe((size_t)pc * sizeof(char *));
+            for (int i = 0; i < pc; i++) {
+                n->as.fn_decl.param_types[i] = type_node_clone(src->as.fn_decl.param_types[i]);
+                n->as.fn_decl.param_names[i] = ast_strdup(src->as.fn_decl.param_names[i]);
+            }
+        }
+        n->as.fn_decl.return_type = type_node_clone(src->as.fn_decl.return_type);
+        n->as.fn_decl.body = ast_clone_deep(src->as.fn_decl.body);
+        /* impl_struct_name points into the impl_decl; don't strdup — it
+           will be overridden by the caller for generic instantiations. */
+        break;
+    }
+    case AST_CLOSURE: {
+        int pc = src->as.closure.param_count;
+        if (pc > 0) {
+            n->as.closure.param_types = (TypeNode **)malloc_safe((size_t)pc * sizeof(TypeNode *));
+            n->as.closure.param_names = (char **)malloc_safe((size_t)pc * sizeof(char *));
+            for (int i = 0; i < pc; i++) {
+                n->as.closure.param_types[i] = type_node_clone(src->as.closure.param_types[i]);
+                n->as.closure.param_names[i] = ast_strdup(src->as.closure.param_names[i]);
+            }
+        }
+        n->as.closure.return_type = type_node_clone(src->as.closure.return_type);
+        n->as.closure.body = ast_clone_deep(src->as.closure.body);
+        /* Captures are filled by checker, not cloned here */
+        n->as.closure.captures = NULL;
+        n->as.closure.capture_count = 0;
+        n->as.closure.move_names = NULL;
+        n->as.closure.move_count = 0;
+        break;
+    }
+    default:
+        /* For any unhandled node types, the shallow copy is kept.
+           This should not happen in method bodies. */
+        break;
+    }
+    return n;
 }
 
 /* Print a human-readable indented tree of the AST */

@@ -147,7 +147,7 @@ static void test_ffi_parse_extern(void) {
     ASSERT_TRUE(ast->as.program.decls[1]->kind == AST_EXTERN_FN);
 
     /* Type check should pass */
-    bool ok = checker_check(ast, "<test>", NULL);
+    bool ok = checker_check(ast, "<test>", NULL, NULL);
     ASSERT_TRUE(ok);
 
     ast_free(ast);
@@ -166,7 +166,7 @@ static void test_ffi_parse_dynamic_call(void) {
     AstNode *ast = parse(src, "<test>");
     ASSERT_NOT_NULL(ast);
 
-    bool ok = checker_check(ast, "<test>", NULL);
+    bool ok = checker_check(ast, "<test>", NULL, NULL);
     ASSERT_TRUE(ok);
 
     ast_free(ast);
@@ -187,7 +187,7 @@ static void test_ffi_codegen_extern(void) {
 
     AstNode *ast = parse(src, "<test>");
     ASSERT_NOT_NULL(ast);
-    ASSERT_TRUE(checker_check(ast, "<test>", NULL));
+    ASSERT_TRUE(checker_check(ast, "<test>", NULL, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "<test>");
@@ -218,7 +218,7 @@ static void test_ffi_codegen_dynamic_call(void) {
 
     AstNode *ast = parse(src, "<test>");
     ASSERT_NOT_NULL(ast);
-    ASSERT_TRUE(checker_check(ast, "<test>", NULL));
+    ASSERT_TRUE(checker_check(ast, "<test>", NULL, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "<test>");
@@ -248,7 +248,7 @@ static void test_ffi_varargs_extern(void) {
 
     AstNode *ast = parse(src, "<test>");
     ASSERT_NOT_NULL(ast);
-    ASSERT_TRUE(checker_check(ast, "<test>", NULL));
+    ASSERT_TRUE(checker_check(ast, "<test>", NULL, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "<test>");

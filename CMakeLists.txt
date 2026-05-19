@@ -725,3 +725,23 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_perf.cmake
 )
 set_tests_properties(test_std_perf PROPERTIES DEPENDS "test_perf")
+
+add_test(
+    NAME test_generics_g1
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_generics_g1.cmake
+)
+set_tests_properties(test_generics_g1 PROPERTIES DEPENDS "test_codegen")
+
+add_test(
+    NAME test_generics_g2
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_generics_g2.cmake
+)
+set_tests_properties(test_generics_g2 PROPERTIES DEPENDS "test_generics_g1")

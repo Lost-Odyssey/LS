@@ -256,7 +256,7 @@ static void test_scope_resolve_local(void) {
 static bool check_source(const char *source) {
     AstNode *ast = parse(source, "<test>");
     if (ast == NULL) return false;
-    bool ok = checker_check(ast, "<test>", NULL);
+    bool ok = checker_check(ast, "<test>", NULL, NULL);
     ast_free(ast);
     return ok;
 }

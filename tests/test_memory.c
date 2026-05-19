@@ -43,7 +43,7 @@ static int tests_passed = 0;
 static int jit_eval(const char *source) {
     AstNode *ast = parse(source, "<mem-test>");
     ASSERT(ast != NULL, "parse failed");
-    ASSERT(checker_check(ast, "<mem-test>", NULL), "type check failed");
+    ASSERT(checker_check(ast, "<mem-test>", NULL, NULL), "type check failed");
 
     JitEngine engine;
     ASSERT_EQ(jit_init(&engine), 0);

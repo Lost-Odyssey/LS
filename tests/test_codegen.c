@@ -28,7 +28,7 @@ static char *compile_to_ir(const char *source) {
     AstNode *ast = parse(source, "<test>");
     if (ast == NULL) return NULL;
 
-    if (!checker_check(ast, "<test>", NULL)) {
+    if (!checker_check(ast, "<test>", NULL, NULL)) {
         ast_free(ast);
         return NULL;
     }

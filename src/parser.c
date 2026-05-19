@@ -398,6 +398,8 @@ static AstNode *prefix_new_expr(Parser *p) {
     n->as.new_expr.struct_name = str_dup_n(name_tok.start, name_tok.length);
     n->as.new_expr.field_inits = NULL;
     n->as.new_expr.field_init_count = 0;
+    n->as.new_expr.type_args = NULL;
+    n->as.new_expr.type_arg_count = 0;
 
     if (check(p, TOKEN_LBRACE)) {
         advance(p); /* consume '{' */
@@ -455,6 +457,8 @@ static AstNode *prefix_ident(Parser *p) {
             n->as.new_expr.field_inits = NULL;
             n->as.new_expr.field_init_count = 0;
             n->as.new_expr.on_stack = true;
+            n->as.new_expr.type_args = NULL;
+            n->as.new_expr.type_arg_count = 0;
 
             advance(p); /* consume '{' */
             int cap = 0, count = 0;
@@ -477,6 +481,97 @@ static AstNode *prefix_ident(Parser *p) {
             n->as.new_expr.field_inits = (void *)inits;
             n->as.new_expr.field_init_count = count;
             return n;
+        }
+    }
+
+    /* G1: Detect GenericStruct(type_args) { field: val, ... } — generic struct literal.
+       Heuristic: IDENT '(' ... ')' '{' ('}' | IDENT ':')
+       Save/restore scanner state to peek past balanced parens. */
+    if (check(p, TOKEN_LPAREN)) {
+        Scanner saved_scanner = p->scanner;
+        Token saved_current   = p->current;
+        Token saved_previous  = p->previous;
+        advance(p); /* consume '(' */
+        int depth = 1;
+        bool ok = true;
+        while (depth > 0) {
+            if (p->current.type == TOKEN_EOF) { ok = false; break; }
+            if (p->current.type == TOKEN_LPAREN) depth++;
+            else if (p->current.type == TOKEN_RPAREN) {
+                depth--;
+                if (depth == 0) break;
+            }
+            advance(p);
+        }
+        bool is_generic_struct_lit = false;
+        if (ok && p->current.type == TOKEN_RPAREN) {
+            advance(p); /* consume ')' */
+            if (p->current.type == TOKEN_LBRACE) {
+                /* Peek inside '{' to check for struct literal pattern */
+                Scanner saved2 = p->scanner;
+                Token saved2_cur = p->current;
+                advance(p); /* consume '{' */
+                is_generic_struct_lit =
+                    check(p, TOKEN_RBRACE) ||
+                    (check(p, TOKEN_IDENTIFIER) &&
+                     scanner_peek(&p->scanner).type == TOKEN_COLON);
+                (void)saved2; (void)saved2_cur; /* will restore fully below */
+            }
+        }
+        /* Restore state */
+        p->scanner  = saved_scanner;
+        p->current  = saved_current;
+        p->previous = saved_previous;
+
+        if (is_generic_struct_lit) {
+            /* Parse: IDENT '(' type_arg, ... ')' '{' field: val, ... '}' */
+            AstNode *ne = new_node(AST_NEW_EXPR, tok.line, tok.column);
+            ne->as.new_expr.struct_name = str_dup_n(tok.start, tok.length);
+            ne->as.new_expr.field_inits = NULL;
+            ne->as.new_expr.field_init_count = 0;
+            ne->as.new_expr.on_stack = true;
+            ne->as.new_expr.type_args = NULL;
+            ne->as.new_expr.type_arg_count = 0;
+
+            /* Parse type arguments */
+            advance(p); /* consume '(' */
+            int ta_cap = 0;
+            if (!check(p, TOKEN_RPAREN)) {
+                do {
+                    TypeNode *ta = parse_type(p);
+                    if (ta == NULL) { synchronize(p); break; }
+                    if (ne->as.new_expr.type_arg_count >= ta_cap) {
+                        ta_cap = GROW_CAPACITY(ta_cap);
+                        ne->as.new_expr.type_args = GROW_ARRAY(TypeNode *,
+                            ne->as.new_expr.type_args, ta_cap);
+                    }
+                    ne->as.new_expr.type_args[ne->as.new_expr.type_arg_count++] = ta;
+                } while (match_tok(p, TOKEN_COMMA));
+            }
+            consume(p, TOKEN_RPAREN, "expected ')' after generic type arguments");
+
+            /* Parse struct literal body */
+            consume(p, TOKEN_LBRACE, "expected '{' after generic struct type");
+            int cap = 0, count = 0;
+            struct { char *name; AstNode *value; } *inits = NULL;
+            while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+                consume(p, TOKEN_IDENTIFIER, "expected field name in struct literal");
+                Token fname = p->previous;
+                consume(p, TOKEN_COLON, "expected ':' after field name in struct literal");
+                AstNode *val = parse_expr_prec(p, PREC_ASSIGNMENT);
+                if (count >= cap) {
+                    cap = GROW_CAPACITY(cap);
+                    inits = realloc_safe(inits, (size_t)cap * sizeof(inits[0]));
+                }
+                inits[count].name  = str_dup_n(fname.start, fname.length);
+                inits[count].value = val;
+                count++;
+                if (!match_tok(p, TOKEN_COMMA)) break;
+            }
+            consume(p, TOKEN_RBRACE, "expected '}' after struct literal fields");
+            ne->as.new_expr.field_inits = (void *)inits;
+            ne->as.new_expr.field_init_count = count;
+            return ne;
         }
     }
 
@@ -834,6 +929,83 @@ static AstNode *infix_assign(Parser *p, AstNode *left) {
 /* Function call: left(args...) */
 static AstNode *infix_call(Parser *p, AstNode *left) {
     Token call_tok = p->previous; /* the '(' */
+
+    /* G2: detect generic function call — ident(TypeArgs)(args).
+       If left is AST_IDENT and the first token after '(' is a type keyword
+       or uppercase identifier followed by ',' or ')', this is a type arg list. */
+    TypeNode **call_type_args = NULL;
+    int call_type_arg_count = 0;
+    if (left->kind == AST_IDENT) {
+        /* G2: detect generic function call — ident(TypeArgs)(realArgs).
+           Heuristic: first token is a type keyword, or uppercase ident, or *&.
+           We save parser state and try parsing types; if the list ends with ')'
+           followed by '(' it's a genuine generic call. Otherwise restore. */
+        bool might_be_type_arg = false;
+        Token cur_tok = p->current;
+        if (is_type_keyword(cur_tok.type)) {
+            might_be_type_arg = true;
+        } else if (cur_tok.type == TOKEN_IDENTIFIER
+                   && cur_tok.length > 0
+                   && cur_tok.start[0] >= 'A' && cur_tok.start[0] <= 'Z') {
+            might_be_type_arg = true;
+        } else if (cur_tok.type == TOKEN_STAR || cur_tok.type == TOKEN_AMP) {
+            might_be_type_arg = true;
+        }
+        if (might_be_type_arg) {
+            /* Lightweight lookahead: scan tokens to check if the pattern is
+               type_list ')' '(' — i.e., a valid generic function type arg list
+               followed by a real argument list. We scan balanced parens without
+               consuming tokens from the parser. Only if the pattern matches do
+               we actually parse the type args. */
+            Scanner scan_save = p->scanner;
+            Token   tok_save  = p->current;
+            bool    confirmed = false;
+            int     depth     = 1; /* we're inside the first '(' already */
+
+            /* Scan forward through the token stream, tracking paren depth.
+               When depth reaches 0 (matching ')'), the very next token must
+               be '(' for this to be a generic call. */
+            while (depth > 0) {
+                /* Use scanner_peek-style: manually advance a copy */
+                Token t = p->current;
+                if (t.type == TOKEN_EOF) break;
+                advance(p);
+                if (t.type == TOKEN_LPAREN) depth++;
+                else if (t.type == TOKEN_RPAREN) {
+                    depth--;
+                    if (depth == 0) {
+                        /* Check the token immediately after the closing ')' */
+                        if (p->current.type == TOKEN_LPAREN) {
+                            confirmed = true;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            /* Restore scanner state */
+            p->scanner = scan_save;
+            p->current = tok_save;
+
+            if (confirmed) {
+                /* Now actually parse the type argument list */
+                int ta_cap = 0;
+                do {
+                    TypeNode *ta = parse_type(p);
+                    if (ta == NULL) break;
+                    if (call_type_arg_count >= ta_cap) {
+                        ta_cap = ta_cap < 4 ? 4 : ta_cap * 2;
+                        call_type_args = realloc(call_type_args,
+                            (size_t)ta_cap * sizeof(TypeNode *));
+                    }
+                    call_type_args[call_type_arg_count++] = ta;
+                } while (match_tok(p, TOKEN_COMMA));
+                consume(p, TOKEN_RPAREN, "expected ')' after type arguments");
+                consume(p, TOKEN_LPAREN, "expected '(' after generic type arguments");
+            }
+        }
+    }
+
     AstNode **args = NULL;
     int arg_count = 0;
     int arg_cap = 0;
@@ -951,6 +1123,8 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
     n->as.call.callee = left;
     n->as.call.args = args;
     n->as.call.arg_count = arg_count;
+    n->as.call.type_args = call_type_args;
+    n->as.call.type_arg_count = call_type_arg_count;
     return n;
 }
 
@@ -1754,6 +1928,65 @@ static AstNode *parse_fn_decl(Parser *p) {
     advance(p);
     char *name = str_dup_n(p->previous.start, p->previous.length);
 
+    /* G2: optional type parameter list — fn name(T, U)(params...) -> R { ... }
+       Disambiguate: if '(' followed by uppercase identifier then ',' or ')' → type params. */
+    char **fn_type_params = NULL;
+    int    fn_type_param_count = 0;
+    if (check(p, TOKEN_LPAREN)) {
+        /* Peek at what follows '(' */
+        Scanner saved_sc = p->scanner;
+        Token   saved_cur = p->current;
+        Token   saved_prev = p->previous;
+        advance(p); /* consume '(' */
+        if (check(p, TOKEN_IDENTIFIER)
+            && p->current.length > 0
+            && p->current.start[0] >= 'A' && p->current.start[0] <= 'Z') {
+            /* Looks like type params. Peek further: after ident must be ',' or ')'. */
+            Token ident_tok = p->current;
+            Scanner saved_sc2 = p->scanner;
+            Token   saved_cur2 = p->current;
+            advance(p); /* consume ident */
+            if (check(p, TOKEN_COMMA) || check(p, TOKEN_RPAREN)) {
+                /* Confirmed: this is a type parameter list. Restore to after '(' and parse. */
+                p->scanner = saved_sc2;
+                p->current = saved_cur2;
+                p->previous = saved_prev; /* doesn't matter much, we re-advance below */
+                /* Actually let's just parse from ident_tok position */
+                /* Restore to right after '(' consumed, pointing at first ident */
+                p->scanner = saved_sc;
+                p->current = saved_cur;
+                p->previous = saved_prev;
+                advance(p); /* consume '(' */
+                int cap = 0;
+                do {
+                    if (!check(p, TOKEN_IDENTIFIER)) {
+                        error_at_current(p, "expected type parameter name");
+                        break;
+                    }
+                    advance(p);
+                    char *tp = str_dup_n(p->previous.start, p->previous.length);
+                    if (fn_type_param_count >= cap) {
+                        cap = cap < 4 ? 4 : cap * 2;
+                        fn_type_params = realloc(fn_type_params, (size_t)cap * sizeof(char *));
+                    }
+                    fn_type_params[fn_type_param_count++] = tp;
+                } while (match_tok(p, TOKEN_COMMA));
+                consume(p, TOKEN_RPAREN, "expected ')' after type parameters");
+                /* Now the next '(' is the regular parameter list — fall through */
+            } else {
+                /* Not type params — restore everything */
+                p->scanner = saved_sc;
+                p->current = saved_cur;
+                p->previous = saved_prev;
+            }
+        } else {
+            /* Not uppercase ident — restore */
+            p->scanner = saved_sc;
+            p->current = saved_cur;
+            p->previous = saved_prev;
+        }
+    }
+
     consume(p, TOKEN_LPAREN, "expected '(' after function name");
 
     /* Phase A1: detect explicit self-borrow at first param position.
@@ -1818,6 +2051,8 @@ static AstNode *parse_fn_decl(Parser *p) {
 
     AstNode *n = new_node(AST_FN_DECL, line, col);
     n->as.fn_decl.name = name;
+    n->as.fn_decl.type_params = fn_type_params;
+    n->as.fn_decl.type_param_count = fn_type_param_count;
     n->as.fn_decl.param_types = param_types;
     n->as.fn_decl.param_names = param_names;
     n->as.fn_decl.param_count = param_count;
@@ -1840,6 +2075,38 @@ static AstNode *parse_struct_decl(Parser *p) {
     }
     advance(p);
     char *name = str_dup_n(p->previous.start, p->previous.length);
+
+    /* G1: optional type parameter list — struct Name(T, U) { ... } */
+    char **type_params = NULL;
+    int   type_param_count = 0;
+    int   type_param_cap = 0;
+
+    if (check(p, TOKEN_LPAREN)) {
+        advance(p); /* consume '(' */
+        if (check(p, TOKEN_IDENTIFIER)
+            && p->current.length > 0
+            && p->current.start[0] >= 'A' && p->current.start[0] <= 'Z') {
+            /* It IS a type parameter list */
+            do {
+                if (!check(p, TOKEN_IDENTIFIER)
+                    || p->current.length == 0
+                    || p->current.start[0] < 'A' || p->current.start[0] > 'Z') {
+                    error_at_current(p, "type parameter names must start with an uppercase letter");
+                    break;
+                }
+                advance(p);
+                char *tpname = str_dup_n(p->previous.start, p->previous.length);
+                if (type_param_count >= type_param_cap) {
+                    type_param_cap = GROW_CAPACITY(type_param_cap);
+                    type_params = GROW_ARRAY(char *, type_params, type_param_cap);
+                }
+                type_params[type_param_count++] = tpname;
+            } while (match_tok(p, TOKEN_COMMA));
+            consume(p, TOKEN_RPAREN, "expected ')' after type parameters");
+        } else {
+            error_at_current(p, "expected uppercase type parameter name after '(' in struct declaration");
+        }
+    }
 
     consume(p, TOKEN_LBRACE, "expected '{' after struct name");
 
@@ -1880,6 +2147,8 @@ static AstNode *parse_struct_decl(Parser *p) {
 
     AstNode *n = new_node(AST_STRUCT_DECL, line, col);
     n->as.struct_decl.name = name;
+    n->as.struct_decl.type_params = type_params;
+    n->as.struct_decl.type_param_count = type_param_count;
     n->as.struct_decl.field_types = field_types;
     n->as.struct_decl.field_names = field_names;
     n->as.struct_decl.field_count = field_count;
@@ -1979,12 +2248,47 @@ static AstNode *parse_impl_decl(Parser *p) {
     int line = p->previous.line;
     int col  = p->previous.column;
 
+    /* G1.5: optional type param list — impl(T, U) StructName(T, U) { ... } */
+    char **type_params = NULL;
+    int type_param_count = 0;
+    int type_param_cap = 0;
+
+    if (check(p, TOKEN_LPAREN)) {
+        advance(p); /* consume '(' */
+        if (!check(p, TOKEN_RPAREN)) {
+            do {
+                if (!check(p, TOKEN_IDENTIFIER)) {
+                    error_at_current(p, "expected type parameter name in impl(...)");
+                    break;
+                }
+                advance(p);
+                char *tpname = str_dup_n(p->previous.start, p->previous.length);
+                if (type_param_count >= type_param_cap) {
+                    type_param_cap = GROW_CAPACITY(type_param_cap);
+                    type_params = GROW_ARRAY(char *, type_params, type_param_cap);
+                }
+                type_params[type_param_count++] = tpname;
+            } while (match_tok(p, TOKEN_COMMA));
+        }
+        consume(p, TOKEN_RPAREN, "expected ')' after impl type params");
+    }
+
     if (!check(p, TOKEN_IDENTIFIER)) {
         error_at_current(p, "expected struct name after 'impl'");
+        for (int i = 0; i < type_param_count; i++) free(type_params[i]);
+        free(type_params);
         return NULL;
     }
     advance(p);
     char *name = str_dup_n(p->previous.start, p->previous.length);
+
+    /* G1.5: skip target type params — impl(T) Stack(T) — the second (T) */
+    if (check(p, TOKEN_LPAREN)) {
+        advance(p); /* consume '(' */
+        while (!check(p, TOKEN_RPAREN) && !check(p, TOKEN_EOF))
+            advance(p);
+        consume(p, TOKEN_RPAREN, "expected ')' after impl target type params");
+    }
 
     consume(p, TOKEN_LBRACE, "expected '{' after impl name");
 
@@ -2019,6 +2323,8 @@ static AstNode *parse_impl_decl(Parser *p) {
 
     AstNode *n = new_node(AST_IMPL_DECL, line, col);
     n->as.impl_decl.name = name;
+    n->as.impl_decl.type_params = type_params;
+    n->as.impl_decl.type_param_count = type_param_count;
     n->as.impl_decl.methods = methods;
     n->as.impl_decl.method_count = method_count;
     return n;

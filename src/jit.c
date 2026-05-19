@@ -309,7 +309,7 @@ int jit_init(JitEngine *engine) {
         AstNode *bast = parse(builtin_src, "<builtins>");
         if (bast) {
             /* checker is optional for this trivial code but needed by codegen */
-            checker_check(bast, "<builtins>", NULL);
+            checker_check(bast, "<builtins>", NULL, NULL);
             codegen_compile(&cg, bast, NULL);
             ast_free(bast);
         }
@@ -532,7 +532,8 @@ void jit_update_registry(JitEngine *engine, const char *name, uint64_t hash) {
 /* Build an LLVM module from a type-checked AST, using the JIT's thread-safe context.
    Returns the module (ownership transferred to caller) or NULL on failure. */
 static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const char *name,
-                                      struct ModuleRegistry *registry) {
+                                      struct ModuleRegistry *registry,
+                                      CheckerGenericMethods *gm) {
     LLVMContextRef ctx = LLVMOrcThreadSafeContextGetContext(engine->ts_context);
 
     /* Create a codegen context that uses the JIT's LLVM context */
@@ -553,6 +554,23 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
 
     /* Initialize scope — codegen_compile expects a base scope to exist */
     /* We don't call codegen_init because we share the JIT's LLVM context */
+
+    /* G1.5: transfer pending generic methods to codegen.
+       The struct layouts are identical but C sees them as distinct anonymous types,
+       so we copy element-by-element to avoid a pointer-type mismatch warning. */
+    if (gm && gm->count > 0) {
+        cg.pending_gm_count = gm->count;
+        size_t sz = (size_t)gm->count * sizeof(cg.pending_generic_methods[0]);
+        cg.pending_generic_methods = malloc(sz);
+        for (int gi = 0; gi < gm->count; gi++) {
+            cg.pending_generic_methods[gi].cloned_fn    = gm->methods[gi].cloned_fn;
+            cg.pending_generic_methods[gi].mangled_name = gm->methods[gi].mangled_name;
+            cg.pending_generic_methods[gi].struct_type  = gm->methods[gi].struct_type;
+        }
+        free(gm->methods);
+        gm->methods = NULL;
+        gm->count = 0;
+    }
 
     /* Use codegen_compile to generate IR */
     if (codegen_compile(&cg, ast, registry) != 0) {
@@ -601,7 +619,8 @@ static int jit_run_file_impl(const char *path, bool memcheck, bool profile) {
 
     /* Type check (with module support) */
     ModuleRegistry *reg = module_registry_new();
-    if (!checker_check(ast, path, reg)) {
+    CheckerGenericMethods gm = {0};
+    if (!checker_check(ast, path, reg, &gm)) {
         module_registry_free(reg);
         ast_free(ast);
         free(source);
@@ -636,7 +655,7 @@ static int jit_run_file_impl(const char *path, bool memcheck, bool profile) {
     }
 
     /* Build module */
-    LLVMModuleRef module = build_jit_module(&engine, ast, path, reg);
+    LLVMModuleRef module = build_jit_module(&engine, ast, path, reg, &gm);
     if (module == NULL) {
         jit_destroy(&engine);
         module_registry_free(reg);
@@ -889,7 +908,7 @@ int jit_repl(void) {
         }
 
         /* Type check */
-        if (!checker_check(ast, "<repl>", NULL)) {
+        if (!checker_check(ast, "<repl>", NULL, NULL)) {
             ast_free(ast);
             fprintf(stderr, "  (type error)\n");
             continue;
@@ -920,7 +939,7 @@ int jit_repl(void) {
 
         char mod_name[64];
         snprintf(mod_name, sizeof(mod_name), "repl_%d", snippet_id);
-        LLVMModuleRef module = build_jit_module(&engine, ast, mod_name, NULL);
+        LLVMModuleRef module = build_jit_module(&engine, ast, mod_name, NULL, NULL);
 
         /* Strip bodies of old functions to avoid duplicate definitions */
         if (module) {

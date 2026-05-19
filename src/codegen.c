@@ -3357,7 +3357,9 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
             if (found)
                 return found;
         }
-        /* Fallback: build struct type */
+        /* Fallback: build struct type and register it (G1: generic instances
+           like "Pair(int,string)" arrive here because codegen_struct_decl
+           skips templates; create a named LLVM struct and cache it). */
         int n = t->as.strukt.field_count;
         LLVMTypeRef *fields = NULL;
         if (n > 0)
@@ -3368,7 +3370,17 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
                 fields[i] = type_to_llvm(ctx, t->as.strukt.fields[i].type);
             }
         }
-        LLVMTypeRef st = LLVMStructTypeInContext(ctx->context, fields, (unsigned)n, 0);
+        LLVMTypeRef st;
+        if (t->as.strukt.name)
+        {
+            st = LLVMStructCreateNamed(ctx->context, t->as.strukt.name);
+            LLVMStructSetBody(st, fields, (unsigned)n, 0);
+            register_struct_llvm(ctx, t->as.strukt.name, st, (Type *)t);
+        }
+        else
+        {
+            st = LLVMStructTypeInContext(ctx->context, fields, (unsigned)n, 0);
+        }
         free(fields);
         return st;
     }
@@ -10192,6 +10204,49 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             if (node->as.call.callee->kind == AST_IDENT)
             {
                 fn_name = node->as.call.callee->as.ident.name;
+
+                /* G2: generic function call — look up by mangled name */
+                if (node->as.call.type_arg_count > 0)
+                {
+                    static char g2_mangled[512];
+                    int pos = snprintf(g2_mangled, sizeof(g2_mangled), "%s(", fn_name);
+                    for (int ti = 0; ti < node->as.call.type_arg_count; ti++)
+                    {
+                        if (ti > 0) g2_mangled[pos++] = ',';
+                        TypeNode *tn = node->as.call.type_args[ti];
+                        const char *tname = "?";
+                        if (tn->kind == TYPE_NODE_PRIMITIVE)
+                        {
+                            switch (tn->as.primitive)
+                            {
+                            case TOKEN_TYPE_INT:    tname = "int";    break;
+                            case TOKEN_TYPE_I8:     tname = "i8";     break;
+                            case TOKEN_TYPE_I16:    tname = "i16";    break;
+                            case TOKEN_TYPE_I32:    tname = "i32";    break;
+                            case TOKEN_TYPE_I64:    tname = "i64";    break;
+                            case TOKEN_TYPE_U8:     tname = "u8";     break;
+                            case TOKEN_TYPE_U16:    tname = "u16";    break;
+                            case TOKEN_TYPE_U32:    tname = "u32";    break;
+                            case TOKEN_TYPE_U64:    tname = "u64";    break;
+                            case TOKEN_TYPE_F32:    tname = "f32";    break;
+                            case TOKEN_TYPE_F64:    tname = "f64";    break;
+                            case TOKEN_TYPE_BOOL:   tname = "bool";   break;
+                            case TOKEN_TYPE_STRING: tname = "string"; break;
+                            case TOKEN_TYPE_CHAR:   tname = "char";   break;
+                            default:                tname = "?";      break;
+                            }
+                        }
+                        else if (tn->kind == TYPE_NODE_NAMED)
+                        {
+                            tname = tn->as.named.name;
+                        }
+                        pos += snprintf(g2_mangled + pos, sizeof(g2_mangled) - (size_t)pos, "%s", tname);
+                    }
+                    g2_mangled[pos++] = ')';
+                    g2_mangled[pos] = '\0';
+                    fn_name = g2_mangled;
+                }
+
                 callee = LLVMGetNamedFunction(ctx->module, fn_name);
                 if (callee == NULL)
                 {
@@ -14165,6 +14220,9 @@ static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
 
 static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
 {
+    /* G2: skip generic function templates — instantiated on demand */
+    if (node->as.fn_decl.type_param_count > 0) return;
+
     const char *name = node->as.fn_decl.name;
     int user_n = node->as.fn_decl.param_count;
     bool is_instance_method = (node->as.fn_decl.impl_struct_name != NULL && !node->as.fn_decl.is_static);
@@ -14934,6 +14992,10 @@ static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
 
 static void codegen_struct_decl(CodegenContext *ctx, AstNode *node)
 {
+    /* G1: skip generic struct templates — they have no resolved_type;
+       concrete instantiations are emitted on demand via type_to_llvm. */
+    if (node->as.struct_decl.type_param_count > 0) return;
+
     const char *name = node->as.struct_decl.name;
     int n = node->as.struct_decl.field_count;
 
@@ -14960,6 +15022,9 @@ static void codegen_struct_decl(CodegenContext *ctx, AstNode *node)
 
 static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
 {
+    /* G1.5: skip generic impl templates — methods are emitted per-instantiation */
+    if (node->as.impl_decl.type_param_count > 0) return;
+
     const char *struct_name = node->as.impl_decl.name;
 
     for (int i = 0; i < node->as.impl_decl.method_count; i++)
@@ -18349,6 +18414,52 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         {
             codegen_impl_decl(ctx, decl);
         }
+    }
+
+    /* G1.5: Emit pending generic method instantiations (from checker).
+       Each entry has a cloned+type-checked fn_decl and a mangled function name.
+       We forward-declare all of them first, then emit bodies, then free the ASTs. */
+    if (ctx->pending_gm_count > 0)
+    {
+        /* Forward-declare all pending generic methods */
+        for (int i = 0; i < ctx->pending_gm_count; i++)
+        {
+            AstNode *cfn = ctx->pending_generic_methods[i].cloned_fn;
+            const char *mname = ctx->pending_generic_methods[i].mangled_name;
+            Type *fn_type_ml = cfn->resolved_type;
+            if (fn_type_ml == NULL || fn_type_ml->kind != TYPE_FUNCTION)
+                continue;
+            LLVMTypeRef fn_type = type_to_llvm(ctx, fn_type_ml);
+            if (!LLVMGetNamedFunction(ctx->module, mname))
+                LLVMAddFunction(ctx->module, mname, fn_type);
+        }
+
+        /* Emit bodies */
+        for (int i = 0; i < ctx->pending_gm_count; i++)
+        {
+            AstNode *cfn = ctx->pending_generic_methods[i].cloned_fn;
+            const char *mname = ctx->pending_generic_methods[i].mangled_name;
+            if (cfn == NULL || cfn->resolved_type == NULL)
+                continue;
+
+            /* codegen_fn_decl uses node->as.fn_decl.name as the LLVM function name.
+               Temporarily set it to the mangled name (e.g. "Pair(int,string).get_first"). */
+            const char *orig_name = cfn->as.fn_decl.name;
+            cfn->as.fn_decl.name = (char *)mname;
+            codegen_fn_decl(ctx, cfn);
+            cfn->as.fn_decl.name = (char *)orig_name;
+        }
+
+        /* Free cloned AST nodes and mangled names */
+        for (int i = 0; i < ctx->pending_gm_count; i++)
+        {
+            if (ctx->pending_generic_methods[i].cloned_fn)
+                ast_free(ctx->pending_generic_methods[i].cloned_fn);
+            free(ctx->pending_generic_methods[i].mangled_name);
+        }
+        free(ctx->pending_generic_methods);
+        ctx->pending_generic_methods = NULL;
+        ctx->pending_gm_count = 0;
     }
 
     /* Pass 2.5: Generate auto-drop functions for structs that have has_drop=true but

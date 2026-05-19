@@ -204,6 +204,8 @@ struct AstNode
             AstNode *callee;
             AstNode **args;
             int arg_count;
+            TypeNode **type_args;    /* G2: explicit type args, e.g. identity(int)(42) */
+            int type_arg_count;      /* G2: 0 for non-generic calls */
         } call;
         struct
         {
@@ -319,6 +321,8 @@ struct AstNode
         struct
         {
             char *name;
+            char **type_params;      /* G2: ["T"] for fn id(T)(...); NULL if non-generic */
+            int   type_param_count;  /* G2: 0 for non-generic functions */
             TypeNode **param_types;
             char **param_names;
             int param_count;
@@ -335,6 +339,8 @@ struct AstNode
         struct
         {
             char *name;
+            char **type_params;      /* G1: ["T", "U"] for struct Pair(T, U); NULL if non-generic */
+            int   type_param_count;  /* G1: 0 for non-generic structs */
             TypeNode **field_types;
             char **field_names;
             int field_count;
@@ -356,6 +362,8 @@ struct AstNode
         struct
         {
             char *name;
+            char **type_params;      /* G1.5: ["T","U"] for impl(T,U) Pair(T,U); NULL if non-generic */
+            int   type_param_count;  /* G1.5: 0 for non-generic */
             AstNode **methods;
             int method_count;
         } impl_decl;
@@ -383,6 +391,8 @@ struct AstNode
             } *field_inits;
             int field_init_count;
             bool on_stack; /* true = struct value literal (StructName{...}), false = new (heap) */
+            TypeNode **type_args;    /* G1: generic type args, e.g. Pair(int,string){...} */
+            int type_arg_count;      /* G1: 0 for non-generic struct literals */
         } new_expr;
         struct
         {
@@ -442,6 +452,17 @@ void ast_free(AstNode *node);
 
 /* Recursively free a TypeNode */
 void type_node_free(TypeNode *type);
+
+/* Deep-clone a TypeNode tree (all strings strdup'd, all children cloned).
+   The clone is fully independent — type_node_free(clone) + type_node_free(orig)
+   is safe with no double-free.  Returns NULL if src is NULL. */
+TypeNode *type_node_clone(const TypeNode *src);
+
+/* G1.5: Deep-clone an AST subtree.  Every pointer field (char*, TypeNode*,
+   AstNode*) is recursively duplicated so the clone is fully independent.
+   resolved_type is NOT copied (set to NULL) — the clone must be type-checked.
+   Returns NULL if src is NULL. */
+AstNode *ast_clone_deep(const AstNode *src);
 
 /* Print a human-readable indented tree of the AST */
 void ast_print(AstNode *node, int indent);

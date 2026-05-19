@@ -47,6 +47,31 @@ typedef struct Checker {
     int enum_template_count;
     int enum_template_cap;
 
+    /* G1: User-defined generic struct templates.
+       Registered when check_struct_decl sees type_param_count > 0.
+       Instantiated lazily in resolve_type_node. */
+    struct {
+        const char *base_name;      /* "Pair", "Stack" — points into AST (not owned) */
+        char      **type_params;    /* ["T", "U"] — points into AST (not owned) */
+        int         type_param_count;
+        AstNode    *decl_node;      /* AST_STRUCT_DECL (not owned) */
+        AstNode    *impl_node;      /* AST_IMPL_DECL (not owned), NULL initially; G1.5 */
+    } *struct_templates;
+    int struct_template_count;
+    int struct_template_cap;
+
+    /* G2: User-defined generic function templates.
+       Registered when check_fn_decl sees type_param_count > 0.
+       Instantiated lazily at call sites like identity(int)(42). */
+    struct {
+        const char *name;           /* "identity" — points into AST (not owned) */
+        char      **type_params;    /* ["T"] — points into AST (not owned) */
+        int         type_param_count;
+        AstNode    *decl_node;      /* AST_FN_DECL (not owned) */
+    } *fn_templates;
+    int fn_template_count;
+    int fn_template_cap;
+
     /* Type-context hint for variant ctor disambiguation.  Set by check_var_decl
        (and similar) before checking an initializer that targets a known type;
        used by find_variant to prefer matches in this enum. */
@@ -70,6 +95,16 @@ typedef struct Checker {
     int impl_count;
     int impl_cap;
 
+    /* G1.5: Pending generic method instantiations — cloned fn_decl AST nodes
+       that have been type-checked and are ready for codegen. */
+    struct {
+        AstNode *cloned_fn;     /* owned — ast_free after codegen */
+        char    *mangled_name;  /* e.g. "Pair(int,string).get_first", owned */
+        Type    *struct_type;   /* the instantiated struct Type, not owned */
+    } *pending_generic_methods;
+    int pending_gm_count;
+    int pending_gm_cap;
+
     /* Move semantics tracking */
     bool in_return_expr;       /* true if currently checking a return expression */
     bool silent_move_errors;   /* Phase B: suppress move errors during loop discovery pass */
@@ -82,11 +117,25 @@ typedef struct Checker {
     Type **closure_infer_return_slot;
 } Checker;
 
+/* G1.5: Output struct for pending generic method instantiations.
+   Ownership of cloned_fn and mangled_name transfers to the caller. */
+typedef struct {
+    struct {
+        AstNode *cloned_fn;
+        char    *mangled_name;
+        Type    *struct_type;
+    } *methods;
+    int count;
+} CheckerGenericMethods;
+
 /* Type-check an AST_PROGRAM node. Returns true if no errors.
    Fills in resolved_type on expression nodes.
-   registry may be NULL (no module support). */
+   registry may be NULL (no module support).
+   out_gm may be NULL; if non-NULL, pending generic method instantiations
+   are transferred here (caller must free after codegen). */
 bool checker_check(AstNode *program, const char *source_path,
-                   struct ModuleRegistry *registry);
+                   struct ModuleRegistry *registry,
+                   CheckerGenericMethods *out_gm);
 
 /* ---- Public API for cross-TU built-in stdlib modules (e.g. `io`).
    These let module-builders (builtins_io.c) reuse the checker's struct/enum
@@ -108,5 +157,13 @@ Type *checker_instantiate_result(Checker *c, Type *t, Type *e);
 
 /* Instantiate `Option(T)`. NULL on failure. */
 Type *checker_instantiate_option(Checker *c, Type *t);
+
+/* G1: Instantiate a user-defined generic struct type with concrete type args.
+   Returns the cached/freshly-built TYPE_STRUCT.  NULL if base_name is not a
+   registered struct template. */
+Type *checker_instantiate_struct(Checker *c,
+                                 const char *base_name,
+                                 Type **type_args, int type_arg_count,
+                                 int line, int col);
 
 #endif /* LS_CHECKER_H */

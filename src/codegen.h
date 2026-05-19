@@ -98,6 +98,15 @@ typedef struct {
     LLVMValueRef *temp_block_envs;
     int temp_block_env_count;
     int temp_block_env_cap;
+
+    /* G1.5: Pending generic method instantiations from checker.
+       Set by caller before codegen_compile; processed during Pass 2a. */
+    struct {
+        AstNode *cloned_fn;     /* owned cloned fn_decl */
+        char    *mangled_name;  /* "Pair(int,string).get_first" */
+        Type    *struct_type;   /* instantiated struct Type */
+    } *pending_generic_methods;
+    int pending_gm_count;
 } CodegenContext;
 
 /* Initialize the codegen context (creates LLVM module, target, etc.) */

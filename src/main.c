@@ -128,7 +128,7 @@ static int cmd_check(const char *path) {
         return 1;
     }
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, path, reg);
+    bool ok = checker_check(ast, path, reg, NULL);
     if (ok) {
         printf("Type check passed.\n");
     }
@@ -156,7 +156,8 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
 
     /* Type check (with module support) */
     ModuleRegistry *reg = module_registry_new();
-    if (!checker_check(ast, path, reg)) {
+    CheckerGenericMethods gm = {0};
+    if (!checker_check(ast, path, reg, &gm)) {
         module_registry_free(reg);
         ast_free(ast);
         free(source);
@@ -168,6 +169,19 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
     codegen_init(&ctx, path);
     ctx.memcheck_enabled = memcheck;
     ctx.profile_enabled = profile;
+
+    /* G1.5: transfer pending generic methods to codegen */
+    if (gm.count > 0) {
+        ctx.pending_gm_count = gm.count;
+        size_t sz = (size_t)gm.count * sizeof(ctx.pending_generic_methods[0]);
+        ctx.pending_generic_methods = malloc(sz);
+        for (int gi = 0; gi < gm.count; gi++) {
+            ctx.pending_generic_methods[gi].cloned_fn    = gm.methods[gi].cloned_fn;
+            ctx.pending_generic_methods[gi].mangled_name = gm.methods[gi].mangled_name;
+            ctx.pending_generic_methods[gi].struct_type  = gm.methods[gi].struct_type;
+        }
+        free(gm.methods);
+    }
 
     if (codegen_compile(&ctx, ast, reg) != 0) {
         codegen_destroy(&ctx);
@@ -328,13 +342,25 @@ static int cmd_emit_ir(const char *path) {
     if (ast == NULL) { free(source); return 1; }
 
     ModuleRegistry *reg = module_registry_new();
-    if (!checker_check(ast, path, reg)) {
+    CheckerGenericMethods gm2 = {0};
+    if (!checker_check(ast, path, reg, &gm2)) {
         module_registry_free(reg);
         ast_free(ast); free(source); return 1;
     }
 
     CodegenContext ctx;
     codegen_init(&ctx, path);
+    if (gm2.count > 0) {
+        ctx.pending_gm_count = gm2.count;
+        size_t sz = (size_t)gm2.count * sizeof(ctx.pending_generic_methods[0]);
+        ctx.pending_generic_methods = malloc(sz);
+        for (int gi = 0; gi < gm2.count; gi++) {
+            ctx.pending_generic_methods[gi].cloned_fn    = gm2.methods[gi].cloned_fn;
+            ctx.pending_generic_methods[gi].mangled_name = gm2.methods[gi].mangled_name;
+            ctx.pending_generic_methods[gi].struct_type  = gm2.methods[gi].struct_type;
+        }
+        free(gm2.methods);
+    }
 
     if (codegen_compile(&ctx, ast, reg) != 0) {
         codegen_destroy(&ctx); module_registry_free(reg);

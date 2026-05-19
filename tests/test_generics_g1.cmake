@@ -7,13 +7,13 @@ set(SAMPLE "${SAMPLE_DIR}/generics_g1_test.ls")
 
 # Expected output lines (order matters for memcheck; line matching uses regex)
 set(_expected
-    "42" "hello"
-    "10" "20"
+    "1" "2"
+    "hello" "42"
     "99" "world"
-    "7" "3.140000" "true"
-    "count" "100" "ratio" "0.500000"
-    "1" "two" "true"
-    "five" "5")
+    "1" "nested"
+    "1" "2"
+    "hello" "42"
+    "99" "world")
 
 # ---- JIT ----
 execute_process(

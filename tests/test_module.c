@@ -183,7 +183,7 @@ static void test_checker_import_math(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
     ASSERT_TRUE(ok);
 
     /* Verify module was loaded */
@@ -209,7 +209,7 @@ static void test_checker_import_nonexistent(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
     ASSERT_FALSE(ok); /* Should fail: module not found */
 
     module_registry_free(reg);
@@ -232,7 +232,7 @@ static void test_checker_module_no_export(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
     ASSERT_FALSE(ok); /* Should fail: no such export */
 
     module_registry_free(reg);
@@ -258,7 +258,7 @@ static void test_codegen_import_math(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg));
+    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "test_module");
@@ -297,7 +297,7 @@ static void test_codegen_import_call_return(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg));
+    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "test_module");
@@ -375,7 +375,7 @@ static void test_checker_import_module_var(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
     ASSERT_TRUE(ok);
 
     /* Verify module was loaded and has variable exports */
@@ -404,7 +404,7 @@ static void test_checker_import_module_var_nonexistent(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
     ASSERT_FALSE(ok); /* Should fail: no such export */
 
     module_registry_free(reg);
@@ -429,7 +429,7 @@ static void test_checker_import_module_var_type(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
     ASSERT_TRUE(ok);
 
     module_registry_free(reg);
@@ -453,7 +453,7 @@ static void test_codegen_import_module_var(void) {
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg));
+    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "test_module_var");
