@@ -41,6 +41,7 @@ typedef enum {
     TOKEN_TRY,              /* try (early return for Result/Option) */
     TOKEN_TYPE_ALIAS,       /* type (type alias keyword: `type Name = T`) */
     TOKEN_BLOCK,            /* Block (closure type keyword: `Block(args) -> ret`) */
+    TOKEN_TRAIT,            /* trait (trait declaration keyword) */
 
     /* Annotations */
     TOKEN_AT_TIME,          /* @time (timing annotation) */

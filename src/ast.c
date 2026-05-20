@@ -272,10 +272,18 @@ void ast_free(AstNode *node) {
         break;
     case AST_FN_DECL:
         free(node->as.fn_decl.name);
-        /* G2: free type_params */
+        /* G2: free type_params + bounds */
         for (int i = 0; i < node->as.fn_decl.type_param_count; i++)
             free(node->as.fn_decl.type_params[i]);
         free(node->as.fn_decl.type_params);
+        if (node->as.fn_decl.type_param_bounds) {
+            for (int i = 0; i < node->as.fn_decl.type_param_count; i++) {
+                for (int j = 0; j < node->as.fn_decl.type_param_bounds[i].count; j++)
+                    free(node->as.fn_decl.type_param_bounds[i].trait_names[j]);
+                free(node->as.fn_decl.type_param_bounds[i].trait_names);
+            }
+            free(node->as.fn_decl.type_param_bounds);
+        }
         for (int i = 0; i < node->as.fn_decl.param_count; i++) {
             type_node_free(node->as.fn_decl.param_types[i]);
             free(node->as.fn_decl.param_names[i]);
@@ -287,10 +295,18 @@ void ast_free(AstNode *node) {
         break;
     case AST_STRUCT_DECL:
         free(node->as.struct_decl.name);
-        /* G1: free type_params */
+        /* G1: free type_params + bounds */
         for (int i = 0; i < node->as.struct_decl.type_param_count; i++)
             free(node->as.struct_decl.type_params[i]);
         free(node->as.struct_decl.type_params);
+        if (node->as.struct_decl.type_param_bounds) {
+            for (int i = 0; i < node->as.struct_decl.type_param_count; i++) {
+                for (int j = 0; j < node->as.struct_decl.type_param_bounds[i].count; j++)
+                    free(node->as.struct_decl.type_param_bounds[i].trait_names[j]);
+                free(node->as.struct_decl.type_param_bounds[i].trait_names);
+            }
+            free(node->as.struct_decl.type_param_bounds);
+        }
         for (int i = 0; i < node->as.struct_decl.field_count; i++) {
             type_node_free(node->as.struct_decl.field_types[i]);
             free(node->as.struct_decl.field_names[i]);
@@ -333,6 +349,21 @@ void ast_free(AstNode *node) {
     case AST_TYPE_ALIAS_DECL:
         free(node->as.type_alias_decl.name);
         type_node_free(node->as.type_alias_decl.target);
+        break;
+    case AST_TRAIT_DECL:
+        free(node->as.trait_decl.name);
+        for (int i = 0; i < node->as.trait_decl.method_sig_count; i++) {
+            ast_free(node->as.trait_decl.method_sigs[i]);
+        }
+        free(node->as.trait_decl.method_sigs);
+        break;
+    case AST_IMPL_TRAIT_DECL:
+        free(node->as.impl_trait_decl.trait_name);
+        free(node->as.impl_trait_decl.struct_name);
+        for (int i = 0; i < node->as.impl_trait_decl.method_count; i++) {
+            ast_free(node->as.impl_trait_decl.methods[i]);
+        }
+        free(node->as.impl_trait_decl.methods);
         break;
     case AST_NEW_EXPR:
         free(node->as.new_expr.struct_name);
@@ -443,6 +474,8 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_MODULE_DECL:  return "MODULE_DECL";
     case AST_IMPORT_DECL:  return "IMPORT_DECL";
     case AST_TYPE_ALIAS_DECL: return "TYPE_ALIAS_DECL";
+    case AST_TRAIT_DECL:     return "TRAIT_DECL";
+    case AST_IMPL_TRAIT_DECL: return "IMPL_TRAIT_DECL";
     case AST_NEW_EXPR:     return "NEW_EXPR";
     case AST_AT_TIME:      return "AT_TIME";
     case AST_AT_BENCH:     return "AT_BENCH";
@@ -695,13 +728,33 @@ AstNode *ast_clone_deep(const AstNode *src) {
     }
     case AST_FN_DECL: {
         n->as.fn_decl.name = ast_strdup(src->as.fn_decl.name);
-        /* G2: clone type_params */
+        /* G2: clone type_params + bounds */
         int tpc = src->as.fn_decl.type_param_count;
         n->as.fn_decl.type_param_count = tpc;
         if (tpc > 0) {
             n->as.fn_decl.type_params = (char **)malloc_safe((size_t)tpc * sizeof(char *));
             for (int i = 0; i < tpc; i++)
                 n->as.fn_decl.type_params[i] = ast_strdup(src->as.fn_decl.type_params[i]);
+        }
+        /* Deep-clone type_param_bounds (or NULL if absent) */
+        if (src->as.fn_decl.type_param_bounds && tpc > 0) {
+            n->as.fn_decl.type_param_bounds = (TypeParamBound *)
+                malloc_safe((size_t)tpc * sizeof(TypeParamBound));
+            for (int i = 0; i < tpc; i++) {
+                int bc = src->as.fn_decl.type_param_bounds[i].count;
+                n->as.fn_decl.type_param_bounds[i].count = bc;
+                if (bc > 0) {
+                    n->as.fn_decl.type_param_bounds[i].trait_names =
+                        (char **)malloc_safe((size_t)bc * sizeof(char *));
+                    for (int j = 0; j < bc; j++)
+                        n->as.fn_decl.type_param_bounds[i].trait_names[j] =
+                            ast_strdup(src->as.fn_decl.type_param_bounds[i].trait_names[j]);
+                } else {
+                    n->as.fn_decl.type_param_bounds[i].trait_names = NULL;
+                }
+            }
+        } else {
+            n->as.fn_decl.type_param_bounds = NULL;
         }
         int pc = src->as.fn_decl.param_count;
         if (pc > 0) {
@@ -1018,6 +1071,22 @@ void ast_print(AstNode *node, int indent) {
         printf("TYPE_ALIAS_DECL(%s = ", node->as.type_alias_decl.name);
         type_node_print(node->as.type_alias_decl.target);
         printf(")\n");
+        break;
+    case AST_TRAIT_DECL:
+        printf("TRAIT_DECL(%s, %d sigs)\n",
+               node->as.trait_decl.name, node->as.trait_decl.method_sig_count);
+        for (int i = 0; i < node->as.trait_decl.method_sig_count; i++) {
+            ast_print(node->as.trait_decl.method_sigs[i], indent + 1);
+        }
+        break;
+    case AST_IMPL_TRAIT_DECL:
+        printf("IMPL_TRAIT_DECL(%s for %s, %d methods)\n",
+               node->as.impl_trait_decl.trait_name,
+               node->as.impl_trait_decl.struct_name,
+               node->as.impl_trait_decl.method_count);
+        for (int i = 0; i < node->as.impl_trait_decl.method_count; i++) {
+            ast_print(node->as.impl_trait_decl.methods[i], indent + 1);
+        }
         break;
     case AST_NEW_EXPR:
         printf("NEW_EXPR(%s, %d fields)\n",

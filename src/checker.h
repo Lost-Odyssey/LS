@@ -95,6 +95,28 @@ typedef struct Checker {
     int impl_count;
     int impl_cap;
 
+    /* Trait registry — trait declarations with method signatures.
+       Registered in forward_pass from AST_TRAIT_DECL nodes. */
+    struct {
+        const char *name;           /* trait name, owned (strdup'd) */
+        struct {
+            const char *name;       /* method name, owned */
+            Type *type;             /* TYPE_FUNCTION: full method signature */
+            int self_borrow_kind;   /* 0=none, 1=&self, 2=&!self */
+        } *methods;
+        int method_count;
+    } *trait_registry;
+    int trait_count;
+    int trait_cap;
+
+    /* Trait implementation registry — records which structs implement which traits. */
+    struct {
+        const char *trait_name;
+        const char *struct_name;
+    } *trait_impls;
+    int trait_impl_count;
+    int trait_impl_cap;
+
     /* G1.5: Pending generic method instantiations — cloned fn_decl AST nodes
        that have been type-checked and are ready for codegen. */
     struct {
@@ -104,6 +126,10 @@ typedef struct Checker {
     } *pending_generic_methods;
     int pending_gm_count;
     int pending_gm_cap;
+
+    /* Self type context: set during check_impl_decl / check_impl_trait_decl
+       so that resolve_type_node can resolve 'Self' to the implementing struct. */
+    Type *current_impl_struct_type;
 
     /* Move semantics tracking */
     bool in_return_expr;       /* true if currently checking a return expression */

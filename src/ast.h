@@ -9,6 +9,12 @@ typedef struct AstNode AstNode;
 typedef struct TypeNode TypeNode;
 typedef struct Type Type;
 
+/* Trait bounds for a single type parameter (e.g. T: Printable + Comparable). */
+typedef struct {
+    char **trait_names;  /* ["Printable", "Comparable"] — owned */
+    int    count;        /* 0 if no bounds */
+} TypeParamBound;
+
 /* ---- TypeNode ---- */
 
 typedef enum
@@ -116,6 +122,8 @@ typedef enum
     AST_MODULE_DECL,
     AST_IMPORT_DECL,
     AST_TYPE_ALIAS_DECL, /* type Name = Type — Phase A closure prerequisite */
+    AST_TRAIT_DECL,      /* trait Name { fn sig(); fn sig(); } */
+    AST_IMPL_TRAIT_DECL, /* impl Trait for Struct { fn ... } */
     /* Heap allocation */
     AST_NEW_EXPR, /* new StructName { field: val, ... } */
     /* Annotations */
@@ -323,6 +331,9 @@ struct AstNode
             char *name;
             char **type_params;      /* G2: ["T"] for fn id(T)(...); NULL if non-generic */
             int   type_param_count;  /* G2: 0 for non-generic functions */
+            /* Trait bounds per type param (parallel to type_params). NULL if no bounds.
+               e.g. fn f(T: Printable + Comparable, U)(T x, U y) */
+            TypeParamBound *type_param_bounds;  /* NULL if no bounds on any param */
             TypeNode **param_types;
             char **param_names;
             int param_count;
@@ -341,6 +352,8 @@ struct AstNode
             char *name;
             char **type_params;      /* G1: ["T", "U"] for struct Pair(T, U); NULL if non-generic */
             int   type_param_count;  /* G1: 0 for non-generic structs */
+            /* Trait bounds per type param (parallel to type_params). NULL if no bounds. */
+            TypeParamBound *type_param_bounds;
             TypeNode **field_types;
             char **field_names;
             int field_count;
@@ -381,6 +394,19 @@ struct AstNode
             char *name;
             TypeNode *target;
         } type_alias_decl;
+        struct
+        {
+            char *name;
+            AstNode **method_sigs;     /* fn signatures (no body) */
+            int method_sig_count;
+        } trait_decl;
+        struct
+        {
+            char *trait_name;
+            char *struct_name;
+            AstNode **methods;         /* fn implementations (with body) */
+            int method_count;
+        } impl_trait_decl;
         struct
         {
             char *struct_name;

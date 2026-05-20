@@ -745,3 +745,93 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_generics_g2.cmake
 )
 set_tests_properties(test_generics_g2 PROPERTIES DEPENDS "test_generics_g1")
+
+add_test(
+    NAME test_trait_parse
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_trait_parse.cmake
+)
+set_tests_properties(test_trait_parse PROPERTIES DEPENDS "test_generics_g2")
+
+add_test(
+    NAME test_impl_trait_parse
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_impl_trait_parse.cmake
+)
+set_tests_properties(test_impl_trait_parse PROPERTIES DEPENDS "test_trait_parse")
+
+add_test(
+    NAME test_trait_call
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_trait_call.cmake
+)
+set_tests_properties(test_trait_call PROPERTIES DEPENDS "test_impl_trait_parse")
+
+add_test(
+    NAME test_trait_bounds_parse
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_trait_bounds_parse.cmake
+)
+set_tests_properties(test_trait_bounds_parse PROPERTIES DEPENDS "test_trait_call")
+
+add_test(
+    NAME test_trait_constraint
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_trait_constraint.cmake
+)
+set_tests_properties(test_trait_constraint PROPERTIES DEPENDS "test_trait_bounds_parse")
+
+add_test(
+    NAME test_trait_basic
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_trait_basic.cmake
+)
+set_tests_properties(test_trait_basic PROPERTIES DEPENDS "test_trait_constraint")
+
+add_test(
+    NAME test_trait_self
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_trait_self.cmake
+)
+set_tests_properties(test_trait_self PROPERTIES DEPENDS "test_trait_basic")
+
+add_test(
+    NAME test_trait_builtin_impl
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_trait_builtin_impl.cmake
+)
+set_tests_properties(test_trait_builtin_impl PROPERTIES DEPENDS "test_trait_self")
+
+add_test(
+    NAME test_trait_struct_bound
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_trait_struct_bound.cmake
+)
+set_tests_properties(test_trait_struct_bound PROPERTIES DEPENDS "test_trait_builtin_impl")

@@ -109,6 +109,7 @@ static void synchronize(Parser *p) {
         case TOKEN_STRUCT:
         case TOKEN_ENUM:
         case TOKEN_IMPL:
+        case TOKEN_TRAIT:
         case TOKEN_IF:
         case TOKEN_WHILE:
         case TOKEN_FOR:
@@ -1916,6 +1917,88 @@ static bool parse_param_list(Parser *p,
     return true;
 }
 
+/* ---- parse_fn_signature ---- */
+/* Parse a function signature without body, used in trait declarations.
+   Expects 'fn' already consumed. Returns AST_FN_DECL with body=NULL. */
+static AstNode *parse_fn_signature(Parser *p) {
+    int line = p->previous.line;
+    int col  = p->previous.column;
+
+    if (!check(p, TOKEN_IDENTIFIER)) {
+        error_at_current(p, "expected method name after 'fn' in trait");
+        return NULL;
+    }
+    advance(p);
+    char *name = str_dup_n(p->previous.start, p->previous.length);
+
+    consume(p, TOKEN_LPAREN, "expected '(' after method name");
+
+    /* Parse &self / &!self (same logic as parse_fn_decl) */
+    int self_borrow_kind = 0;
+    if (check(p, TOKEN_AMP)) {
+        Token next = scanner_peek(&p->scanner);
+        bool is_self_borrow = false;
+        bool is_mut = false;
+        if (next.type == TOKEN_SELF) {
+            is_self_borrow = true;
+        } else if (next.type == TOKEN_BANG) {
+            Scanner saved = p->scanner;
+            Token saved_cur = p->current;
+            Token saved_prev = p->previous;
+            advance(p); /* consume & */
+            advance(p); /* consume ! */
+            if (check(p, TOKEN_SELF)) {
+                is_self_borrow = true;
+                is_mut = true;
+            }
+            p->scanner = saved;
+            p->current = saved_cur;
+            p->previous = saved_prev;
+        }
+        if (is_self_borrow) {
+            advance(p); /* consume & */
+            if (is_mut) advance(p); /* consume ! */
+            advance(p); /* consume self */
+            self_borrow_kind = is_mut ? 2 : 1;
+            if (!check(p, TOKEN_RPAREN)) {
+                consume(p, TOKEN_COMMA, "expected ',' or ')' after self parameter");
+            }
+        }
+    }
+
+    TypeNode **param_types = NULL;
+    char **param_names = NULL;
+    int param_count = 0;
+    if (!parse_param_list(p, &param_types, &param_names, &param_count, NULL)) {
+        free(name);
+        return NULL;
+    }
+    consume(p, TOKEN_RPAREN, "expected ')' after parameters");
+
+    TypeNode *return_type = NULL;
+    if (match_tok(p, TOKEN_ARROW)) {
+        bool save = p->in_return_type;
+        p->in_return_type = true;
+        return_type = parse_type(p);
+        p->in_return_type = save;
+    }
+
+    /* No body — signature only */
+    AstNode *n = new_node(AST_FN_DECL, line, col);
+    n->as.fn_decl.name = name;
+    n->as.fn_decl.type_params = NULL;
+    n->as.fn_decl.type_param_count = 0;
+    n->as.fn_decl.param_types = param_types;
+    n->as.fn_decl.param_names = param_names;
+    n->as.fn_decl.param_count = param_count;
+    n->as.fn_decl.return_type = return_type;
+    n->as.fn_decl.body = NULL;
+    n->as.fn_decl.is_static = false;
+    n->as.fn_decl.impl_struct_name = NULL;
+    n->as.fn_decl.self_borrow_kind = self_borrow_kind;
+    return n;
+}
+
 static AstNode *parse_fn_decl(Parser *p) {
     /* 'fn' already consumed */
     int line = p->previous.line;
@@ -1929,9 +2012,11 @@ static AstNode *parse_fn_decl(Parser *p) {
     char *name = str_dup_n(p->previous.start, p->previous.length);
 
     /* G2: optional type parameter list — fn name(T, U)(params...) -> R { ... }
-       Disambiguate: if '(' followed by uppercase identifier then ',' or ')' → type params. */
+       Disambiguate: if '(' followed by uppercase identifier then ',' or ')' or ':' → type params. */
     char **fn_type_params = NULL;
     int    fn_type_param_count = 0;
+    /* Trait bounds per type param (parallel array); NULL if no bounds anywhere. */
+    TypeParamBound *fn_type_param_bounds = NULL;
     if (check(p, TOKEN_LPAREN)) {
         /* Peek at what follows '(' */
         Scanner saved_sc = p->scanner;
@@ -1941,23 +2026,16 @@ static AstNode *parse_fn_decl(Parser *p) {
         if (check(p, TOKEN_IDENTIFIER)
             && p->current.length > 0
             && p->current.start[0] >= 'A' && p->current.start[0] <= 'Z') {
-            /* Looks like type params. Peek further: after ident must be ',' or ')'. */
-            Token ident_tok = p->current;
-            Scanner saved_sc2 = p->scanner;
-            Token   saved_cur2 = p->current;
+            /* Looks like type params. Peek further: after ident must be ',' or ')' or ':'. */
             advance(p); /* consume ident */
-            if (check(p, TOKEN_COMMA) || check(p, TOKEN_RPAREN)) {
-                /* Confirmed: this is a type parameter list. Restore to after '(' and parse. */
-                p->scanner = saved_sc2;
-                p->current = saved_cur2;
-                p->previous = saved_prev; /* doesn't matter much, we re-advance below */
-                /* Actually let's just parse from ident_tok position */
-                /* Restore to right after '(' consumed, pointing at first ident */
+            if (check(p, TOKEN_COMMA) || check(p, TOKEN_RPAREN) || check(p, TOKEN_COLON)) {
+                /* Confirmed: this is a type parameter list. Restore and parse. */
                 p->scanner = saved_sc;
                 p->current = saved_cur;
                 p->previous = saved_prev;
                 advance(p); /* consume '(' */
                 int cap = 0;
+                bool has_any_bounds = false;
                 do {
                     if (!check(p, TOKEN_IDENTIFIER)) {
                         error_at_current(p, "expected type parameter name");
@@ -1968,9 +2046,42 @@ static AstNode *parse_fn_decl(Parser *p) {
                     if (fn_type_param_count >= cap) {
                         cap = cap < 4 ? 4 : cap * 2;
                         fn_type_params = realloc(fn_type_params, (size_t)cap * sizeof(char *));
+                        fn_type_param_bounds = realloc(fn_type_param_bounds,
+                            (size_t)cap * sizeof(fn_type_param_bounds[0]));
                     }
-                    fn_type_params[fn_type_param_count++] = tp;
+                    fn_type_params[fn_type_param_count] = tp;
+                    fn_type_param_bounds[fn_type_param_count].trait_names = NULL;
+                    fn_type_param_bounds[fn_type_param_count].count = 0;
+
+                    /* Parse optional trait bounds: T: Trait1 + Trait2 */
+                    if (match_tok(p, TOKEN_COLON)) {
+                        has_any_bounds = true;
+                        int bcap = 0;
+                        do {
+                            if (!check(p, TOKEN_IDENTIFIER)) {
+                                error_at_current(p, "expected trait name after ':'");
+                                break;
+                            }
+                            advance(p);
+                            char *tname = str_dup_n(p->previous.start, p->previous.length);
+                            int bc = fn_type_param_bounds[fn_type_param_count].count;
+                            if (bc >= bcap) {
+                                bcap = bcap < 4 ? 4 : bcap * 2;
+                                fn_type_param_bounds[fn_type_param_count].trait_names =
+                                    realloc(fn_type_param_bounds[fn_type_param_count].trait_names,
+                                            (size_t)bcap * sizeof(char *));
+                            }
+                            fn_type_param_bounds[fn_type_param_count].trait_names[bc] = tname;
+                            fn_type_param_bounds[fn_type_param_count].count++;
+                        } while (match_tok(p, TOKEN_PLUS));
+                    }
+                    fn_type_param_count++;
                 } while (match_tok(p, TOKEN_COMMA));
+                /* If no bounds were used at all, free the array to keep it NULL */
+                if (!has_any_bounds) {
+                    free(fn_type_param_bounds);
+                    fn_type_param_bounds = NULL;
+                }
                 consume(p, TOKEN_RPAREN, "expected ')' after type parameters");
                 /* Now the next '(' is the regular parameter list — fall through */
             } else {
@@ -2053,6 +2164,7 @@ static AstNode *parse_fn_decl(Parser *p) {
     n->as.fn_decl.name = name;
     n->as.fn_decl.type_params = fn_type_params;
     n->as.fn_decl.type_param_count = fn_type_param_count;
+    n->as.fn_decl.type_param_bounds = fn_type_param_bounds;
     n->as.fn_decl.param_types = param_types;
     n->as.fn_decl.param_names = param_names;
     n->as.fn_decl.param_count = param_count;
@@ -2076,10 +2188,12 @@ static AstNode *parse_struct_decl(Parser *p) {
     advance(p);
     char *name = str_dup_n(p->previous.start, p->previous.length);
 
-    /* G1: optional type parameter list — struct Name(T, U) { ... } */
+    /* G1: optional type parameter list — struct Name(T, U) { ... }
+       Supports trait bounds: struct Name(T: Trait1 + Trait2, U) { ... } */
     char **type_params = NULL;
     int   type_param_count = 0;
     int   type_param_cap = 0;
+    TypeParamBound *struct_type_param_bounds = NULL;
 
     if (check(p, TOKEN_LPAREN)) {
         advance(p); /* consume '(' */
@@ -2087,6 +2201,7 @@ static AstNode *parse_struct_decl(Parser *p) {
             && p->current.length > 0
             && p->current.start[0] >= 'A' && p->current.start[0] <= 'Z') {
             /* It IS a type parameter list */
+            bool has_any_bounds = false;
             do {
                 if (!check(p, TOKEN_IDENTIFIER)
                     || p->current.length == 0
@@ -2099,9 +2214,41 @@ static AstNode *parse_struct_decl(Parser *p) {
                 if (type_param_count >= type_param_cap) {
                     type_param_cap = GROW_CAPACITY(type_param_cap);
                     type_params = GROW_ARRAY(char *, type_params, type_param_cap);
+                    struct_type_param_bounds = realloc(struct_type_param_bounds,
+                        (size_t)type_param_cap * sizeof(struct_type_param_bounds[0]));
                 }
-                type_params[type_param_count++] = tpname;
+                type_params[type_param_count] = tpname;
+                struct_type_param_bounds[type_param_count].trait_names = NULL;
+                struct_type_param_bounds[type_param_count].count = 0;
+
+                /* Parse optional trait bounds: T: Trait1 + Trait2 */
+                if (match_tok(p, TOKEN_COLON)) {
+                    has_any_bounds = true;
+                    int bcap = 0;
+                    do {
+                        if (!check(p, TOKEN_IDENTIFIER)) {
+                            error_at_current(p, "expected trait name after ':'");
+                            break;
+                        }
+                        advance(p);
+                        char *tname = str_dup_n(p->previous.start, p->previous.length);
+                        int bc = struct_type_param_bounds[type_param_count].count;
+                        if (bc >= bcap) {
+                            bcap = bcap < 4 ? 4 : bcap * 2;
+                            struct_type_param_bounds[type_param_count].trait_names =
+                                realloc(struct_type_param_bounds[type_param_count].trait_names,
+                                        (size_t)bcap * sizeof(char *));
+                        }
+                        struct_type_param_bounds[type_param_count].trait_names[bc] = tname;
+                        struct_type_param_bounds[type_param_count].count++;
+                    } while (match_tok(p, TOKEN_PLUS));
+                }
+                type_param_count++;
             } while (match_tok(p, TOKEN_COMMA));
+            if (!has_any_bounds) {
+                free(struct_type_param_bounds);
+                struct_type_param_bounds = NULL;
+            }
             consume(p, TOKEN_RPAREN, "expected ')' after type parameters");
         } else {
             error_at_current(p, "expected uppercase type parameter name after '(' in struct declaration");
@@ -2149,6 +2296,7 @@ static AstNode *parse_struct_decl(Parser *p) {
     n->as.struct_decl.name = name;
     n->as.struct_decl.type_params = type_params;
     n->as.struct_decl.type_param_count = type_param_count;
+    n->as.struct_decl.type_param_bounds = struct_type_param_bounds;
     n->as.struct_decl.field_types = field_types;
     n->as.struct_decl.field_names = field_names;
     n->as.struct_decl.field_count = field_count;
@@ -2243,10 +2391,121 @@ static AstNode *parse_enum_decl(Parser *p) {
     return n;
 }
 
+/* ---- parse_trait_decl ---- */
+/* Parse: trait Name { fn sig(); fn sig(); ... }
+   'trait' already consumed. */
+static AstNode *parse_trait_decl(Parser *p) {
+    int line = p->previous.line;
+    int col  = p->previous.column;
+
+    if (!check(p, TOKEN_IDENTIFIER)) {
+        error_at_current(p, "expected trait name after 'trait'");
+        return NULL;
+    }
+    advance(p);
+    char *name = str_dup_n(p->previous.start, p->previous.length);
+
+    consume(p, TOKEN_LBRACE, "expected '{' after trait name");
+
+    AstNode **sigs = NULL;
+    int sig_count = 0;
+    int sig_cap = 0;
+
+    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        if (!match_tok(p, TOKEN_FN)) {
+            error_at_current(p, "expected 'fn' in trait body");
+            synchronize(p);
+            continue;
+        }
+        AstNode *sig = parse_fn_signature(p);
+        if (sig == NULL) {
+            synchronize(p);
+            continue;
+        }
+        if (sig_count >= sig_cap) {
+            sig_cap = GROW_CAPACITY(sig_cap);
+            sigs = GROW_ARRAY(AstNode *, sigs, sig_cap);
+        }
+        sigs[sig_count++] = sig;
+        /* optional semicolon / newline separator */
+        match_tok(p, TOKEN_SEMICOLON);
+    }
+    consume(p, TOKEN_RBRACE, "expected '}' after trait body");
+
+    AstNode *n = new_node(AST_TRAIT_DECL, line, col);
+    n->as.trait_decl.name = name;
+    n->as.trait_decl.method_sigs = sigs;
+    n->as.trait_decl.method_sig_count = sig_count;
+    return n;
+}
+
 static AstNode *parse_impl_decl(Parser *p) {
     /* 'impl' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
+
+    /* Trait impl detection: impl TraitName for StructName { ... }
+       Disambiguate: if current is IDENTIFIER and next is TOKEN_FOR,
+       this is a trait impl (not generic impl(T) which starts with '('). */
+    if (check(p, TOKEN_IDENTIFIER)) {
+        Token peek = scanner_peek(&p->scanner);
+        if (peek.type == TOKEN_FOR) {
+            /* impl Trait for Struct { ... } */
+            advance(p); /* consume trait name */
+            char *trait_name = str_dup_n(p->previous.start, p->previous.length);
+            advance(p); /* consume 'for' */
+
+            /* Step 11: accept both struct identifiers and builtin type keywords */
+            if (!check(p, TOKEN_IDENTIFIER) &&
+                !check(p, TOKEN_TYPE_INT) && !check(p, TOKEN_TYPE_I64) &&
+                !check(p, TOKEN_TYPE_F64) && !check(p, TOKEN_TYPE_BOOL) &&
+                !check(p, TOKEN_TYPE_STRING) && !check(p, TOKEN_TYPE_CHAR)) {
+                error_at_current(p, "expected type name after 'for' in impl");
+                free(trait_name);
+                return NULL;
+            }
+            advance(p);
+            char *struct_name = str_dup_n(p->previous.start, p->previous.length);
+
+            consume(p, TOKEN_LBRACE, "expected '{' after struct name in trait impl");
+
+            AstNode **methods = NULL;
+            int method_count = 0;
+            int method_cap = 0;
+
+            while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+                bool is_static = false;
+                if (match_tok(p, TOKEN_STATIC)) {
+                    is_static = true;
+                }
+                if (!match_tok(p, TOKEN_FN)) {
+                    error_at_current(p, "expected 'fn' in trait impl block");
+                    synchronize(p);
+                    continue;
+                }
+                AstNode *method = parse_fn_decl(p);
+                if (method == NULL) {
+                    synchronize(p);
+                    continue;
+                }
+                method->as.fn_decl.is_static = is_static;
+                method->as.fn_decl.impl_struct_name = struct_name;
+                if (method_count >= method_cap) {
+                    method_cap = GROW_CAPACITY(method_cap);
+                    methods = GROW_ARRAY(AstNode *, methods, method_cap);
+                }
+                methods[method_count++] = method;
+            }
+            consume(p, TOKEN_RBRACE, "expected '}' after trait impl block");
+
+            AstNode *n = new_node(AST_IMPL_TRAIT_DECL, line, col);
+            n->as.impl_trait_decl.trait_name = trait_name;
+            n->as.impl_trait_decl.struct_name = struct_name;
+            n->as.impl_trait_decl.methods = methods;
+            n->as.impl_trait_decl.method_count = method_count;
+            return n;
+        }
+    }
 
     /* G1.5: optional type param list — impl(T, U) StructName(T, U) { ... } */
     char **type_params = NULL;
@@ -2903,6 +3162,8 @@ static AstNode *parse_statement(Parser *p) {
         return parse_enum_decl(p);
     } else if (match_tok(p, TOKEN_IMPL)) {
         return parse_impl_decl(p);
+    } else if (match_tok(p, TOKEN_TRAIT)) {
+        return parse_trait_decl(p);
     } else if (match_tok(p, TOKEN_MODULE)) {
         return parse_module_decl(p);
     } else if (match_tok(p, TOKEN_IMPORT)) {

@@ -10141,6 +10141,23 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         }
                     }
                 }
+                /* Step 11: builtin types (int, f64, ...) with trait methods.
+                   Only for known primitive types — not modules, enums, etc. */
+                else if (deref->kind == TYPE_INT  || deref->kind == TYPE_I64 ||
+                         deref->kind == TYPE_F64  || deref->kind == TYPE_BOOL ||
+                         deref->kind == TYPE_STRING || deref->kind == TYPE_CHAR)
+                {
+                    Type *callee_rt = node->as.call.callee->resolved_type;
+                    if (callee_rt && callee_rt->kind == TYPE_FUNCTION)
+                    {
+                        int nparams = callee_rt->as.function.param_count;
+                        if (nparams > 0 && callee_rt->as.function.params &&
+                            callee_rt->as.function.params[0]->kind == TYPE_POINTER)
+                        {
+                            cg_is_method_call = true;
+                        }
+                    }
+                }
             }
         }
 
@@ -10170,6 +10187,25 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 {
                     is_struct_method = true;
                     struct_name = deref->as.strukt.name;
+                }
+                /* Step 11: builtin type method — use type name as prefix */
+                else
+                {
+                    const char *bname = NULL;
+                    switch (deref->kind) {
+                    case TYPE_INT:   bname = "int";    break;
+                    case TYPE_I64:   bname = "i64";    break;
+                    case TYPE_F64:   bname = "f64";    break;
+                    case TYPE_BOOL:  bname = "bool";   break;
+                    case TYPE_STRING:bname = "string";  break;
+                    case TYPE_CHAR:  bname = "char";   break;
+                    default: break;
+                    }
+                    if (bname)
+                    {
+                        is_struct_method = true;
+                        struct_name = bname;
+                    }
                 }
             }
             /* Also detect static call via type name (obj_type may be NULL for bare struct name) */
@@ -15156,6 +15192,32 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
     }
 }
 
+/* Codegen for `impl Trait for Struct { ... }` — same pattern as codegen_impl_decl
+   but reads from impl_trait_decl AST fields. Trait methods are emitted as
+   StructName.method_name, exactly like regular impl methods. */
+static void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
+{
+    const char *struct_name = node->as.impl_trait_decl.struct_name;
+
+    for (int i = 0; i < node->as.impl_trait_decl.method_count; i++)
+    {
+        AstNode *method = node->as.impl_trait_decl.methods[i];
+        if (method->kind != AST_FN_DECL) continue;
+
+        const char *orig_name = method->as.fn_decl.name;
+
+        /* Qualify with struct name: "Point.to_string" */
+        static char qualified_name[256];
+        snprintf(qualified_name, sizeof(qualified_name), "%s.%s", struct_name, orig_name);
+        method->as.fn_decl.name = qualified_name;
+
+        codegen_fn_decl(ctx, method);
+
+        /* Restore original name */
+        method->as.fn_decl.name = (char *)orig_name;
+    }
+}
+
 /* Map an LS type to the C ABI type (extern fn / FFI).
    The only difference from type_to_llvm: TYPE_STRING → i8* (not LsString struct) */
 static LLVMTypeRef type_to_c_abi(CodegenContext *ctx, Type *t)
@@ -15597,7 +15659,11 @@ static void codegen_decl(CodegenContext *ctx, AstNode *node)
     case AST_MODULE_DECL:
     case AST_IMPORT_DECL:
     case AST_TYPE_ALIAS_DECL:
+    case AST_TRAIT_DECL:
         break; /* no codegen needed */
+    case AST_IMPL_TRAIT_DECL:
+        codegen_impl_trait_decl(ctx, node);
+        break;
     case AST_LOAD_LIB:
         codegen_load_lib(ctx, node);
         break;
@@ -18086,6 +18152,10 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 {
                     codegen_impl_decl(ctx, decl);
                 }
+                else if (decl->kind == AST_IMPL_TRAIT_DECL)
+                {
+                    codegen_impl_trait_decl(ctx, decl);
+                }
             }
         }
     }
@@ -18197,6 +18267,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 case AST_STRUCT_DECL:
                 case AST_ENUM_DECL:
                 case AST_IMPL_DECL:
+                case AST_TRAIT_DECL:
+                case AST_IMPL_TRAIT_DECL:
                 case AST_EXTERN_FN:
                 case AST_EXTERN_STRUCT_DECL:
                 case AST_EXTERN_BLOCK:
@@ -18268,6 +18340,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 case AST_STRUCT_DECL:
                 case AST_ENUM_DECL:
                 case AST_IMPL_DECL:
+                case AST_TRAIT_DECL:
+                case AST_IMPL_TRAIT_DECL:
                 case AST_EXTERN_FN:
                 case AST_EXTERN_STRUCT_DECL:
                 case AST_EXTERN_BLOCK:
@@ -18414,6 +18488,10 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         {
             codegen_impl_decl(ctx, decl);
         }
+        else if (decl->kind == AST_IMPL_TRAIT_DECL)
+        {
+            codegen_impl_trait_decl(ctx, decl);
+        }
     }
 
     /* G1.5: Emit pending generic method instantiations (from checker).
@@ -18539,6 +18617,7 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             codegen_fn_decl(ctx, decl);
             break;
         case AST_IMPL_DECL:
+        case AST_IMPL_TRAIT_DECL:
             /* Already handled in Pass 2a */
             break;
         case AST_EXTERN_FN:

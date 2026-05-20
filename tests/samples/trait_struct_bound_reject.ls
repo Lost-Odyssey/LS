@@ -1,0 +1,20 @@
+// trait_struct_bound_reject.ls — negative test: type doesn't satisfy struct bound
+
+trait Describable {
+    fn describe(&self) -> string
+}
+
+struct Wrapper(T: Describable) {
+    T item
+}
+
+struct Point {
+    int x
+    int y
+}
+
+// Point does NOT implement Describable — should be rejected
+fn main() {
+    Point p = Point { x: 1, y: 2 }
+    Wrapper(Point) w = Wrapper(Point) { item: p }
+}

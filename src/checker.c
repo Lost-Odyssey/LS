@@ -83,6 +83,35 @@ static void checker_move_error(Checker *c, int line, int col, const char *fmt, .
 
 /* ---- Struct type registry ---- */
 
+/* ---- Self placeholder for trait signatures ----
+   Used as current_impl_struct_type during check_trait_decl so that
+   resolve_type_node("Self") returns this sentinel instead of NULL.
+   check_impl_trait_decl then substitutes it with the real struct type. */
+static Type g_self_placeholder_type = {
+    .kind = TYPE_STRUCT,
+    .as = { .strukt = { .name = "Self", .fields = NULL, .field_count = 0, .has_drop = false } }
+};
+
+static bool is_self_placeholder(const Type *t) {
+    return t == &g_self_placeholder_type;
+}
+
+/* type_equals variant that treats g_self_placeholder_type as equal to `concrete`.
+   Handles TYPE_REFERENCE wrapping (e.g. &Self == &Vec2). */
+static bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const Type *concrete)
+{
+    if (trait_t == NULL || impl_t == NULL) return trait_t == impl_t;
+    if (is_self_placeholder(trait_t)) return type_equals(concrete, impl_t);
+    if (trait_t->kind == TYPE_REFERENCE && impl_t->kind == TYPE_REFERENCE) {
+        if (trait_t->is_mut != impl_t->is_mut) return false;
+        return type_equals_with_self(trait_t->as.pointer_to, impl_t->as.pointer_to, concrete);
+    }
+    if (trait_t->kind == TYPE_POINTER && impl_t->kind == TYPE_POINTER) {
+        return type_equals_with_self(trait_t->as.pointer_to, impl_t->as.pointer_to, concrete);
+    }
+    return type_equals(trait_t, impl_t);
+}
+
 static void register_struct_type(Checker *c, const char *name, Type *type)
 {
     if (c->struct_type_count >= c->struct_type_cap)
@@ -106,6 +135,36 @@ static Type *find_struct_type(Checker *c, const char *name)
         }
     }
     return NULL;
+}
+
+/* Step 11: Resolve a builtin type name ("int", "i64", "f64", "bool", "string", "char")
+   to its Type*.  Returns NULL for non-builtin names. */
+static Type *resolve_builtin_type_by_name(const char *name)
+{
+    if (strcmp(name, "int") == 0)    return type_int();
+    if (strcmp(name, "i64") == 0)    return type_i64();
+    if (strcmp(name, "f64") == 0)    return type_f64();
+    if (strcmp(name, "bool") == 0)   return type_bool();
+    if (strcmp(name, "string") == 0) return type_string();
+    if (strcmp(name, "char") == 0)   return type_char();
+    return NULL;
+}
+
+/* Step 11: Get the impl_registry key name for a type.
+   For structs returns the struct name; for builtins returns "int", "f64" etc. */
+static const char *type_impl_name(Type *t)
+{
+    if (t == NULL) return NULL;
+    if (t->kind == TYPE_STRUCT && t->as.strukt.name) return t->as.strukt.name;
+    switch (t->kind) {
+    case TYPE_INT:    return "int";
+    case TYPE_I64:    return "i64";
+    case TYPE_F64:    return "f64";
+    case TYPE_BOOL:   return "bool";
+    case TYPE_STRING: return "string";
+    case TYPE_CHAR:   return "char";
+    default:          return NULL;
+    }
 }
 
 /* ---- G1: Generic struct template registry ---- */
@@ -209,6 +268,7 @@ static Type *find_enum_type(Checker *c, const char *name)
 /* Forward decls for helpers used before their definitions. */
 static Type *check_expr(Checker *c, AstNode *node);
 static bool type_owns_heap_for_enum(const Type *t);
+static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name);
 
 /* Search all registered enums for a variant matching `vname`.
    Returns the number of matches (0 = none, 1 = unique, >1 = ambiguous).
@@ -682,6 +742,32 @@ Type *checker_instantiate_struct(Checker *c,
         return NULL;
     }
 
+    /* Step 13: Check trait bounds on type parameters */
+    {
+        AstNode *decl = c->struct_templates[tmpl_idx].decl_node;
+        TypeParamBound *bounds = decl->as.struct_decl.type_param_bounds;
+        if (bounds) {
+            bool bounds_ok = true;
+            for (int ti = 0; ti < expected_tpc && bounds_ok; ti++) {
+                for (int bi = 0; bi < bounds[ti].count; bi++) {
+                    if (!checker_type_satisfies_trait(c, type_args[ti],
+                                                      bounds[ti].trait_names[bi])) {
+                        checker_error(c, line, col,
+                            "type '%s' does not satisfy trait '%s' "
+                            "(required by type parameter '%s' of '%s')",
+                            type_name(type_args[ti]),
+                            bounds[ti].trait_names[bi],
+                            c->struct_templates[tmpl_idx].type_params[ti],
+                            base_name);
+                        bounds_ok = false;
+                        break;
+                    }
+                }
+            }
+            if (!bounds_ok) return NULL;
+        }
+    }
+
     /* Build mangled name: "Pair(int,string)" */
     char buf[512];
     int pos = snprintf(buf, sizeof(buf), "%s(", base_name);
@@ -986,11 +1072,12 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     }
     case TYPE_NODE_NAMED:
     {
-        /* Plain named type: try alias, then struct, then enum (for recursive
-           enum payloads like Tree where the variant payload references the
-           enum being defined, or Color used as a non-instantiated enum). */
+        /* Plain named type: try Self, then alias, then struct, then enum. */
         if (tn->as.named.arg_count == 0)
         {
+            /* Self resolves to the current impl struct type (trait/impl context) */
+            if (strcmp(tn->as.named.name, "Self") == 0 && c->current_impl_struct_type != NULL)
+                return c->current_impl_struct_type;
             Type *al = find_type_alias(c, tn->as.named.name);
             if (al) return al;
             Type *st = find_struct_type(c, tn->as.named.name);
@@ -4178,6 +4265,32 @@ static Type *check_expr(Checker *c, AstNode *node)
             }
             if (!type_args_ok) { free(type_args); result = NULL; break; }
 
+            /* Check trait bounds (if any) */
+            {
+                AstNode *tmpl = c->fn_templates[tmpl_idx].decl_node;
+                TypeParamBound *bounds = tmpl->as.fn_decl.type_param_bounds;
+                if (bounds) {
+                    bool bounds_ok = true;
+                    for (int ti = 0; ti < tp_count && bounds_ok; ti++) {
+                        for (int bi = 0; bi < bounds[ti].count; bi++) {
+                            if (!checker_type_satisfies_trait(c, type_args[ti],
+                                                              bounds[ti].trait_names[bi])) {
+                                checker_error(c, node->line, node->column,
+                                    "type '%s' does not satisfy trait '%s' "
+                                    "(required by type parameter '%s' of '%s')",
+                                    type_name(type_args[ti]),
+                                    bounds[ti].trait_names[bi],
+                                    c->fn_templates[tmpl_idx].type_params[ti],
+                                    fn_name);
+                                bounds_ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!bounds_ok) { free(type_args); result = NULL; break; }
+                }
+            }
+
             /* Build mangled name: "identity(int)" */
             char mangled[512];
             int pos = snprintf(mangled, sizeof(mangled), "%s(", fn_name);
@@ -4249,6 +4362,7 @@ static Type *check_expr(Checker *c, AstNode *node)
             AstNode *cloned = ast_clone_deep(tmpl_decl);
             cloned->resolved_type = fn_type;
             cloned->as.fn_decl.type_param_count = 0; /* concrete now */
+            cloned->as.fn_decl.type_param_bounds = NULL; /* don't double-free template bounds */
 
             push_scope(c);
             for (int pi = 0; pi < pc; pi++) {
@@ -4550,6 +4664,26 @@ static Type *check_expr(Checker *c, AstNode *node)
                             method_struct = deref->as.strukt.name;
                         }
                     }
+
+                    /* Step 11: check impl_registry for builtin types (int, f64, bool, ...) */
+                    if (!is_method_call && !is_static_call)
+                    {
+                        const char *impl_name = type_impl_name(obj_type);
+                        if (impl_name)
+                        {
+                            int si = method_is_static(c, impl_name, method_name);
+                            if (si == 0)
+                            {
+                                is_method_call = true;
+                                method_struct = impl_name;
+                            }
+                            else if (si == 1)
+                            {
+                                is_static_call = true;
+                                method_struct = impl_name;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4563,7 +4697,7 @@ static Type *check_expr(Checker *c, AstNode *node)
             if (callee_type == NULL)
             {
                 checker_error(c, node->line, node->column,
-                              "struct '%s' has no method '%s'", method_struct, method_name);
+                              "type '%s' has no method '%s'", method_struct, method_name);
                 result = NULL;
                 break;
             }
@@ -6631,6 +6765,10 @@ static void check_impl_decl(Checker *c, AstNode *node)
         return;
     }
 
+    /* Set Self context so resolve_type_node can resolve 'Self' */
+    Type *saved_impl_st = c->current_impl_struct_type;
+    c->current_impl_struct_type = st;
+
     int impl_idx = find_or_create_impl(c, name);
 
     for (int i = 0; i < node->as.impl_decl.method_count; i++)
@@ -6798,6 +6936,9 @@ static void check_impl_decl(Checker *c, AstNode *node)
             st->as.strukt.has_drop = true;
         }
     }
+
+    /* Restore Self context */
+    c->current_impl_struct_type = saved_impl_st;
 }
 
 static void check_extern_fn(Checker *c, AstNode *node)
@@ -6920,6 +7061,366 @@ static void check_load_lib(Checker *c, AstNode *node)
     node->resolved_type = type_lib();
 }
 
+/* ---- Trait registry helpers ---- */
+
+static int find_trait(Checker *c, const char *name)
+{
+    for (int i = 0; i < c->trait_count; i++)
+    {
+        if (strcmp(c->trait_registry[i].name, name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+/* Check whether a concrete type satisfies a trait constraint by looking up trait_impls. */
+static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name)
+{
+    if (type == NULL) return false;
+    const char *tname = type_name(type);
+    for (int i = 0; i < c->trait_impl_count; i++)
+    {
+        if (strcmp(c->trait_impls[i].trait_name, trait_name) == 0 &&
+            strcmp(c->trait_impls[i].struct_name, tname) == 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Check a trait declaration: resolve method signatures and register in trait_registry. */
+static void check_trait_decl(Checker *c, AstNode *node)
+{
+    const char *name = node->as.trait_decl.name;
+
+    /* Check for duplicate trait name */
+    if (find_trait(c, name) >= 0)
+    {
+        checker_error(c, node->line, node->column,
+                      "trait '%s' already defined", name);
+        return;
+    }
+
+    /* Grow registry if needed */
+    if (c->trait_count >= c->trait_cap)
+    {
+        c->trait_cap = GROW_CAPACITY(c->trait_cap);
+        c->trait_registry = realloc_safe(c->trait_registry,
+                                          (size_t)c->trait_cap * sizeof(c->trait_registry[0]));
+    }
+
+    int idx = c->trait_count++;
+    {
+        size_t len = strlen(name) + 1;
+        char *dup = (char *)malloc_safe(len);
+        memcpy(dup, name, len);
+        c->trait_registry[idx].name = dup;
+    }
+    c->trait_registry[idx].method_count = 0;
+    c->trait_registry[idx].methods = NULL;
+
+    int sig_count = node->as.trait_decl.method_sig_count;
+    if (sig_count == 0) return;
+
+    /* Set Self placeholder so resolve_type_node("Self") works in trait sigs */
+    Type *saved_impl_st = c->current_impl_struct_type;
+    c->current_impl_struct_type = &g_self_placeholder_type;
+
+    c->trait_registry[idx].methods = (void *)
+        malloc_safe((size_t)sig_count * sizeof(c->trait_registry[idx].methods[0]));
+
+    for (int i = 0; i < sig_count; i++)
+    {
+        AstNode *sig = node->as.trait_decl.method_sigs[i];
+        if (sig == NULL || sig->kind != AST_FN_DECL) continue;
+
+        /* Resolve parameter types */
+        int n = sig->as.fn_decl.param_count;
+        Type **params = NULL;
+        if (n > 0)
+        {
+            params = (Type **)malloc_safe((size_t)n * sizeof(Type *));
+            for (int j = 0; j < n; j++)
+            {
+                params[j] = resolve_type_node(c, sig->as.fn_decl.param_types[j],
+                                               sig->line, sig->column);
+            }
+        }
+        Type *ret = resolve_type_node(c, sig->as.fn_decl.return_type,
+                                       sig->line, sig->column);
+        Type *fn_type = type_function(params, n, ret, false);
+
+        int mi = c->trait_registry[idx].method_count++;
+        {
+            size_t nlen = strlen(sig->as.fn_decl.name) + 1;
+            char *ndup = (char *)malloc_safe(nlen);
+            memcpy(ndup, sig->as.fn_decl.name, nlen);
+            c->trait_registry[idx].methods[mi].name = ndup;
+        }
+        c->trait_registry[idx].methods[mi].type = fn_type;
+        c->trait_registry[idx].methods[mi].self_borrow_kind = sig->as.fn_decl.self_borrow_kind;
+    }
+
+    /* Restore Self context */
+    c->current_impl_struct_type = saved_impl_st;
+}
+
+/* Check an `impl Trait for Struct { ... }` block:
+   verify trait exists, struct exists, method signatures match the trait,
+   then register methods into impl_registry and record the trait-impl pair. */
+static void check_impl_trait_decl(Checker *c, AstNode *node)
+{
+    const char *trait_name  = node->as.impl_trait_decl.trait_name;
+    const char *struct_name = node->as.impl_trait_decl.struct_name;
+
+    /* 1. Find the trait */
+    int tidx = find_trait(c, trait_name);
+    if (tidx < 0)
+    {
+        checker_error(c, node->line, node->column,
+                      "unknown trait '%s'", trait_name);
+        return;
+    }
+
+    /* 2. Find the target type (struct or builtin) */
+    Type *st = find_struct_type(c, struct_name);
+    if (st == NULL)
+    {
+        /* Step 11: fallback to builtin type names (int, f64, string, ...) */
+        st = resolve_builtin_type_by_name(struct_name);
+    }
+    if (st == NULL)
+    {
+        checker_error(c, node->line, node->column,
+                      "impl trait for undefined type '%s'", struct_name);
+        return;
+    }
+
+    /* Step 10: Self context — so resolve_type_node("Self") → st */
+    Type *saved_impl_st = c->current_impl_struct_type;
+    c->current_impl_struct_type = st;
+
+    int user_method_count = node->as.impl_trait_decl.method_count;
+    int trait_method_count = c->trait_registry[tidx].method_count;
+
+    /* 3. Check for duplicate impl */
+    for (int i = 0; i < c->trait_impl_count; i++)
+    {
+        if (strcmp(c->trait_impls[i].trait_name, trait_name) == 0 &&
+            strcmp(c->trait_impls[i].struct_name, struct_name) == 0)
+        {
+            checker_error(c, node->line, node->column,
+                          "trait '%s' already implemented for struct '%s'",
+                          trait_name, struct_name);
+            return;
+        }
+    }
+
+    /* 4. Build a matched[] array to track which trait methods are covered */
+    bool *matched = (bool *)malloc_safe((size_t)trait_method_count * sizeof(bool));
+    memset(matched, 0, (size_t)trait_method_count * sizeof(bool));
+
+    int impl_idx = find_or_create_impl(c, struct_name);
+
+    /* 5. For each user method, resolve types and match against trait signature */
+    for (int i = 0; i < user_method_count; i++)
+    {
+        AstNode *method = node->as.impl_trait_decl.methods[i];
+        if (method == NULL || method->kind != AST_FN_DECL) continue;
+
+        const char *mname = method->as.fn_decl.name;
+        bool is_static = method->as.fn_decl.is_static;
+        int user_sbk = method->as.fn_decl.self_borrow_kind;
+
+        /* Static methods are not allowed in trait impls */
+        if (is_static)
+        {
+            checker_error(c, method->line, method->column,
+                          "static method '%s' not allowed in trait impl", mname);
+            continue;
+        }
+
+        /* Find matching trait method by name */
+        int trait_mi = -1;
+        for (int j = 0; j < trait_method_count; j++)
+        {
+            if (strcmp(c->trait_registry[tidx].methods[j].name, mname) == 0)
+            {
+                trait_mi = j;
+                break;
+            }
+        }
+        if (trait_mi < 0)
+        {
+            checker_error(c, method->line, method->column,
+                          "method '%s' is not declared in trait '%s'",
+                          mname, trait_name);
+            continue;
+        }
+        if (matched[trait_mi])
+        {
+            checker_error(c, method->line, method->column,
+                          "duplicate implementation of method '%s'", mname);
+            continue;
+        }
+        matched[trait_mi] = true;
+
+        /* Check self_borrow_kind matches */
+        int trait_sbk = c->trait_registry[tidx].methods[trait_mi].self_borrow_kind;
+        if (user_sbk != trait_sbk)
+        {
+            const char *expected_str = trait_sbk == 1 ? "&self" : (trait_sbk == 2 ? "&!self" : "no self");
+            const char *got_str = user_sbk == 1 ? "&self" : (user_sbk == 2 ? "&!self" : "no self");
+            checker_error(c, method->line, method->column,
+                          "method '%s' self parameter mismatch: trait '%s' requires %s, got %s",
+                          mname, trait_name, expected_str, got_str);
+        }
+
+        /* Resolve user parameter types */
+        int user_n = method->as.fn_decl.param_count;
+        Type **user_params = NULL;
+        if (user_n > 0)
+        {
+            user_params = (Type **)malloc_safe((size_t)user_n * sizeof(Type *));
+            for (int j = 0; j < user_n; j++)
+            {
+                user_params[j] = resolve_type_node(c, method->as.fn_decl.param_types[j],
+                                                     method->line, method->column);
+            }
+        }
+        Type *ret = resolve_type_node(c, method->as.fn_decl.return_type,
+                                        method->line, method->column);
+
+        /* Compare parameter count and types against trait signature.
+           The trait signature does NOT include the implicit *Self param —
+           it stores only user-visible params (same as what parser gives). */
+        Type *trait_fn = c->trait_registry[tidx].methods[trait_mi].type;
+        int trait_n = trait_fn->as.function.param_count;
+        if (user_n != trait_n)
+        {
+            checker_error(c, method->line, method->column,
+                          "method '%s' parameter count mismatch: trait '%s' requires %d, got %d",
+                          mname, trait_name, trait_n, user_n);
+        }
+        else
+        {
+            for (int j = 0; j < user_n; j++)
+            {
+                if (user_params[j] && trait_fn->as.function.params[j] &&
+                    !type_equals_with_self(trait_fn->as.function.params[j], user_params[j], st))
+                {
+                    checker_error(c, method->line, method->column,
+                                  "method '%s' parameter %d type mismatch in trait '%s'",
+                                  mname, j + 1, trait_name);
+                }
+            }
+        }
+
+        /* Compare return type (Self placeholder → st) */
+        Type *trait_ret = trait_fn->as.function.return_type;
+        if (ret && trait_ret && !type_equals_with_self(trait_ret, ret, st))
+        {
+            checker_error(c, method->line, method->column,
+                          "method '%s' return type mismatch in trait '%s'",
+                          mname, trait_name);
+        }
+
+        /* Build the internal function type with *Self prepended (instance method) */
+        int total_n = user_n + 1;
+        Type **all_params = (Type **)malloc_safe((size_t)total_n * sizeof(Type *));
+        all_params[0] = type_pointer(st); /* implicit *Self */
+        for (int j = 0; j < user_n; j++)
+            all_params[j + 1] = user_params[j];
+        free(user_params);
+
+        Type *method_type = type_function(all_params, total_n, ret, false);
+
+        /* Register in impl_registry (same as check_impl_decl) */
+        register_method(c, impl_idx, mname, method_type, false, user_sbk);
+        scope_define(c->current_scope, mname, method_type);
+
+        /* Check body (same pattern as check_impl_decl) */
+        push_scope(c);
+        {
+            int sbk = method->as.fn_decl.self_borrow_kind;
+            if (sbk == 0)
+            {
+                scope_define(c->current_scope, "self", type_pointer(st));
+            }
+            else
+            {
+                Symbol *self_sym = scope_define(c->current_scope, "self", st);
+                if (self_sym)
+                {
+                    if (sbk == 1) self_sym->is_borrow = true;
+                    else if (sbk == 2) self_sym->is_mut_borrow = true;
+                }
+            }
+        }
+        for (int j = 0; j < user_n; j++)
+        {
+            Type *pt = all_params[j + 1];
+            if (pt)
+            {
+                bool is_borrow = false;
+                bool is_mut_borrow = false;
+                if (pt->kind == TYPE_REFERENCE)
+                {
+                    if (pt->is_mut) is_mut_borrow = true;
+                    else            is_borrow     = true;
+                    pt = pt->as.pointer_to;
+                }
+                Symbol *param_sym = scope_define(c->current_scope,
+                                                   method->as.fn_decl.param_names[j], pt);
+                if (param_sym)
+                {
+                    param_sym->is_borrow = is_borrow;
+                    param_sym->is_mut_borrow = is_mut_borrow;
+                    if (pt->kind == TYPE_STRING)
+                        param_sym->is_static_string = false;
+                    if (pt->kind == TYPE_BLOCK)
+                        param_sym->is_borrow = true;
+                }
+            }
+        }
+        Type *saved_ret = c->current_fn_return;
+        c->current_fn_return = ret;
+        check_stmt(c, method->as.fn_decl.body);
+        c->current_fn_return = saved_ret;
+        pop_scope(c);
+
+        method->resolved_type = method_type;
+    }
+
+    /* 6. Check for missing methods */
+    for (int j = 0; j < trait_method_count; j++)
+    {
+        if (!matched[j])
+        {
+            checker_error(c, node->line, node->column,
+                          "struct '%s' does not implement trait '%s': missing method '%s'",
+                          struct_name, trait_name,
+                          c->trait_registry[tidx].methods[j].name);
+        }
+    }
+    free(matched);
+
+    /* 7. Register trait impl */
+    if (c->trait_impl_count >= c->trait_impl_cap)
+    {
+        c->trait_impl_cap = GROW_CAPACITY(c->trait_impl_cap);
+        c->trait_impls = realloc_safe(c->trait_impls,
+                                        (size_t)c->trait_impl_cap * sizeof(c->trait_impls[0]));
+    }
+    int ti = c->trait_impl_count++;
+    c->trait_impls[ti].trait_name = trait_name;   /* points into AST (not owned) */
+    c->trait_impls[ti].struct_name = struct_name; /* points into AST (not owned) */
+
+    /* Restore Self context */
+    c->current_impl_struct_type = saved_impl_st;
+}
+
 static void check_decl(Checker *c, AstNode *node)
 {
     if (node == NULL)
@@ -6959,6 +7460,12 @@ static void check_decl(Checker *c, AstNode *node)
         break;
     case AST_TYPE_ALIAS_DECL:
         /* Handled in forward_pass */
+        break;
+    case AST_TRAIT_DECL:
+        /* Handled in forward_pass */
+        break;
+    case AST_IMPL_TRAIT_DECL:
+        check_impl_trait_decl(c, node);
         break;
     case AST_FFI_CALL:
         /* FFI dynamic call: check lib expr, skip type checking of args */
@@ -7012,6 +7519,9 @@ static void forward_pass(Checker *c, AstNode *program)
             decl->resolved_type = target;
             break;
         }
+        case AST_TRAIT_DECL:
+            check_trait_decl(c, decl);
+            break;
         case AST_FN_DECL:
         {
             /* G2: skip generic function templates — register as template only */
@@ -7246,6 +7756,9 @@ static void check_pass(Checker *c, AstNode *program)
         case AST_IMPL_DECL:
             check_impl_decl(c, decl);
             break;
+        case AST_IMPL_TRAIT_DECL:
+            check_impl_trait_decl(c, decl);
+            break;
         case AST_EXTERN_FN:
         case AST_EXTERN_STRUCT_DECL:
         case AST_EXTERN_BLOCK:
@@ -7367,6 +7880,17 @@ bool checker_check(AstNode *program, const char *source_path,
         free(c.impl_registry[i].methods);
     }
     free(c.impl_registry);
+    /* Trait registry cleanup */
+    for (int i = 0; i < c.trait_count; i++)
+    {
+        free((void *)c.trait_registry[i].name);
+        for (int j = 0; j < c.trait_registry[i].method_count; j++)
+            free((void *)c.trait_registry[i].methods[j].name);
+        free(c.trait_registry[i].methods);
+    }
+    free(c.trait_registry);
+    /* Trait impls — pointers into AST, no deep-free needed */
+    free(c.trait_impls);
 
     return !c.had_error;
 }

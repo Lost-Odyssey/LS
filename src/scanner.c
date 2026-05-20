@@ -156,6 +156,7 @@ static const Keyword keywords[] = {
     {"static",   6, TOKEN_STATIC},
     {"string",   6, TOKEN_TYPE_STRING},
     {"struct",   6, TOKEN_STRUCT},
+    {"trait",    5, TOKEN_TRAIT},
     {"true",     4, TOKEN_TRUE},
     {"try",      3, TOKEN_TRY},
     {"type",     4, TOKEN_TYPE_ALIAS},
@@ -673,6 +674,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TRY:           return "TRY";
     case TOKEN_TYPE_ALIAS:    return "TYPE_ALIAS";
     case TOKEN_BLOCK:         return "BLOCK";
+    case TOKEN_TRAIT:         return "TRAIT";
     case TOKEN_AT_TIME:       return "AT_TIME";
     case TOKEN_AT_BENCH:      return "AT_BENCH";
     case TOKEN_TYPE_INT:      return "TYPE_INT";
