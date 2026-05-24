@@ -275,4 +275,40 @@ if(NOT "${ft_mc_err}" MATCHES "OK clean")
 endif()
 message(STATUS "json_file memcheck: OK clean")
 
+# ---- Test E: e2e JSON file read + iterate ----
+set(E2E "${SAMPLE_DIR}/json_e2e_test.ls")
+set(E2E_DATA "${SAMPLE_DIR}/json_e2e_data.json")
+
+# Note: uses --memcheck because Phase H double-free in vec/map of has_drop enum
+# causes heap corruption without memcheck wrappers.
+execute_process(
+    COMMAND "${LS_EXE}" run --memcheck "${E2E}"
+    OUTPUT_VARIABLE e2e_out  ERROR_VARIABLE e2e_err  RESULT_VARIABLE e2e_rc
+)
+if(NOT e2e_rc EQUAL 0)
+    message(FATAL_ERROR "json_e2e JIT FAILED (rc=${e2e_rc})\nstderr:\n${e2e_err}")
+endif()
+if(NOT "${e2e_out}" MATCHES "Top-level keys: 8")
+    message(FATAL_ERROR "json_e2e: expected 8 top-level keys\nstdout:\n${e2e_out}")
+endif()
+if(NOT "${e2e_out}" MATCHES "name = LS Language")
+    message(FATAL_ERROR "json_e2e: expected 'name = LS Language'\nstdout:\n${e2e_out}")
+endif()
+if(NOT "${e2e_out}" MATCHES "version = 1.0")
+    message(FATAL_ERROR "json_e2e: expected 'version = 1.0'\nstdout:\n${e2e_out}")
+endif()
+if(NOT "${e2e_out}" MATCHES "active = true")
+    message(FATAL_ERROR "json_e2e: expected 'active = true'\nstdout:\n${e2e_out}")
+endif()
+if(NOT "${e2e_out}" MATCHES "count = 42")
+    message(FATAL_ERROR "json_e2e: expected 'count = 42'\nstdout:\n${e2e_out}")
+endif()
+if(NOT "${e2e_out}" MATCHES "nothing = null")
+    message(FATAL_ERROR "json_e2e: expected 'nothing = null'\nstdout:\n${e2e_out}")
+endif()
+if(NOT "${e2e_out}" MATCHES "round-trip:")
+    message(FATAL_ERROR "json_e2e: expected round-trip output\nstdout:\n${e2e_out}")
+endif()
+message(STATUS "json_e2e JIT: OK")
+
 message(STATUS "test_std_json: ALL PASSED")
