@@ -1,0 +1,82 @@
+Q1：需要 mutation 的函数 — 必须有引用/借用语义
+结论：用 *T 指针就够了，这已经在语言里支持。
+
+fn append(*string s, string suffix) {
+    *s = *s + suffix      // 修改通过指针传回调用方
+}
+
+string name = "Alice"
+append(&name, " Smith")
+print(name)               // Alice Smith
+
+LS 不需要专门的 &T borrow 语法，C 风格的 *T 已经覆盖了"想改调用方变量"的场景。这是显式的，用户能看懂。
+
+
+Q2：return string 是否有额外 malloc？
+结论：当前实现已经是零拷贝 return，不会多分配。
+
+分析链路：
+
+fn make_name() -> string {
+    string s = "alice".upper()   // s.cap > 0，heap owned
+    return s                     // ← 发生什么？
+}
+
+string name = make_name()        // ← 调用方如何接收？
+
+return s：scope cleanup 跳过 s（不 free），把 LsString struct 值返回给调用方
+string name = make_name()：init 是 AST_CALL，call 产生了 temp，走 cg_mark_last_temp_moved，ownership 转移
+全程零 malloc ✓
+问题只发生在 string t = s（IDENT → IDENT），此时才需要 clone。Return 路径已经是 move 语义。
+
+
+Q3：struct 的 return — 同 Q2
+return local_struct 也是 move（ownership 转移），不需要额外 clone。当前实现正确。
+
+
+Q4：array(T, N) 只能在栈上吗？
+是的，目前完全栈上。
+
+要堆上的固定大小数组，有两条路：
+
+用户手动：*array(int, N) p = malloc(sizeof(array(int,N))) → 繁琐
+用 vec(T) 固定长度：语义上不是"固定大小"，但实际用途覆盖
+LS 里"大量元素的固定大小数组"这个需求比较少见，暂不引入 heap_array，通过 vec 覆盖。
+
+
+Q5：array(T, N) 作为函数参数，有必要深拷贝吗？
+这里有一个已知 bug：
+
+struct Person { string name; }
+array(Person, 3) arr = [...]
+
+fn process(array(Person, 3) a) {
+    a[0].name = "modified"    // 应该不影响 caller 的 arr
+}
+
+当前实现：array(Person, 3) 传参时，LLVM 做 struct 值拷贝（整个数组的字节复制）。但 Person.name 是 LsString，字节复制只复制了 data* 指针。
+
+结果：
+
+callee 修改 a[0].name → 先 free 旧的 data → 释放了 caller 的 data！ ← 双重释放 bug
+callee 的 scope exit 再 free 一遍 → 又一次 free ← 同一块内存 free 两次
+可选方案：
+
+方案	优缺点
+A. 传参时深拷贝整个数组（含元素）	安全，但大数组很贵
+B. 传 *array(T,N)，禁止 array(T,N) 直接传参	显式，零拷贝，强制用户意识到大小
+C. 值拷贝，但不生成 scope cleanup（borrowed）	复杂，需要类型标记
+建议：B 方案 — array(T, N) 不能直接传值参数，必须传 *array(T, N)。对于只读访问，编译器可以自动取地址（checker 层处理）。
+
+
+Q6：array 的 return 语义
+fn make_array() -> array(int, 3) {
+    array(int, 3) a = [1, 2, 3]
+    return a
+}
+
+LLVM 的返回方式取决于大小：
+
+小数组（元素是 trivial type）：LLVM 直接 return struct by value，调用方拷贝 → 无问题
+含 has_drop 元素的数组（如 array(Person, N)）：返回时字节拷贝，string 指针共享 → 双重释放 bug
+建议： 含 has_drop 元素的 array return 时，需要 clone 每个元素（类似 emit_struct_clone_val）。不含 drop 元素的 array return 直接 LLVM 值返回即可。

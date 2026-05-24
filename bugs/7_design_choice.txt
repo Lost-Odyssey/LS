@@ -1,0 +1,8 @@
+===== Design choice
+当一个cap>0的string插入vec时, 应该如何处理
+- 永远深拷贝, 创建一个新的复本插入到vec
+- 将原来的string置为cap=-1, take 其string内存
+
+string s = "hello".upper()
+vec(string) v
+v.push(s)

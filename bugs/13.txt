@@ -1,0 +1,17 @@
+## 代码
+fn main() -> int {
+    string str
+    print(str)
+    for i in 0..4 {
+        str += "a"
+    }
+    
+    print(str.at(100))
+    
+    return 0
+}
+
+## bug 描述
+string.at 目前没有范围检查
+对于 len == 0 的 string, 直接 报错 warning 并且返回 ""
+对于 len > 0 的 string, 检查 index 是否 满足 0 <= index < len, 否则返回 ""

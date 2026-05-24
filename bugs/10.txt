@@ -1,0 +1,14 @@
+除了函数参数使用 关键字命名之外, 局部变量 使用 关键字 命名 似乎还没有处理
+比如 下面程序 line-5 的 string in
+
+fn string_op(string in_) {
+    string if = in_ + "_test"
+    print(if)
+}
+
+fn main() -> int {
+    string s = "static"
+    string_op(s.upper())
+    print(s)
+    return 0
+}

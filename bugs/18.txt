@@ -1,0 +1,41 @@
+## 需要实现类似 switch 或者 match的语法
+
+
+## json.ls 示例代码
+            // 34=\"  92=\\  47=/  98=b  102=f  110=n  114=r  116=t  117=u
+            if next == 34 { result.append("\"") }
+            else {
+                if next == 92 { result.append("\\") }
+                else {
+                    if next == 47 { result.append("/") }
+                    else {
+                        if next == 110 { result.append("\n") }
+                        else {
+                            if next == 114 { result.append("\r") }
+                            else {
+                                if next == 116 { result.append("\t") }
+                                else {
+                                    if next == 98 || next == 102 {
+                                        // \b (backspace) and \f (form feed) — rare in practice;
+                                        // v1: silently skip (emit nothing)
+                                    } else {
+                                        if next == 117 {
+                                            // \uXXXX — skip 4 hex digits for now, store raw
+                                            if p.pos + 4 <= p.len {
+                                                string hex = p.input.substr(p.pos, 4)
+                                                result.append("\\u")
+                                                result.append(hex)
+                                                p.pos = p.pos + 4
+                                            } else {
+                                                return Err(f"json: incomplete \\u escape at position {p.pos}")
+                                            }
+                                        } else {
+                                            return Err(f"json: unknown escape at position {p.pos}")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }

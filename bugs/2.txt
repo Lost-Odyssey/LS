@@ -1,0 +1,13 @@
+当vec(string) 通过 push -> pop 调用之后, len应该是0
+但是 vec_str[0] 仍然可以访问, vec需要做边界检查,如果出现越界访问
+不需要终止程序, 报 warning message, 然后当前statement 变成 nop 继续 下一条语句的执行
+
+fn main() -> int {
+    vec(string) vec_str
+    vec_str.push("123")
+    print("main")
+    
+    vec_str.pop()
+    print(vec_str[0]) // 仍然可以访问
+    print(vec_str[1]) // 也可以访问
+}

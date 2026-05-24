@@ -1,0 +1,15 @@
+struct 中带string字段, 程序运行报错:
+[codegen] module verification failed:
+Terminator found in the middle of a basic block!
+label %sf.skip0
+
+struct Person {
+    int age;
+    int id;
+    string name;
+}
+
+fn main() -> int {
+    Person p1 = Person{age:10, id:1, name:"Kimy"}
+    print(p1)
+}

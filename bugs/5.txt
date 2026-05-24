@@ -1,0 +1,15 @@
+当string作为参数传入函数时, 将发生拷贝
+但是在main函数做清理时, 可以看到 string 's'被清理了两次, 即double-free
+
+fn test(string s) {
+    print(s)
+}
+
+fn main() -> int {
+
+    string s = "abc".upper()
+    
+    test(s)
+    
+    return 0
+}

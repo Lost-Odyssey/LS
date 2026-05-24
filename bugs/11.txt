@@ -1,0 +1,20 @@
+## 实例代码
+
+fn main() -> int {
+    vec(string) vs
+    string str = ""
+    for i in 0..4 {
+        str += "a"
+        vs.push(str)
+    }
+    
+    print(str)
+    
+    return 0
+}
+
+## bug 描述
+str 在循环内部 会被转移到 vs (通过vs.push)
+根据LS move 语义, str在循环体内部是 MAYBE_MOVED 状态, 应该编译器报错
+目前 如果 line-7 是 str = str + "a" 可以正确处理
+但是 str += "a" 似乎还不能正确处理

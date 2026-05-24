@@ -1,0 +1,49 @@
+=====1 让string 的 to_int 方法 支持 二进制形式 类似 "0b1000121".to_int()
+fn main() -> int {
+    print("===== main started")
+    
+    int pass = 0
+    int fail = 0
+
+    // === to_int: basic decimal ===
+    Result(int, string) r1 = "0b11".to_int()
+    match r1 {
+        Ok(v) => {
+            if v == 42 { pass = pass + 1 } else { fail = fail + 1; print("FAIL: to_int 42") }
+            print(f"== converted to {v}")
+        }
+        Err(e) => { fail = fail + 1; print("FAIL: to_int 42 got Err") }
+    }
+
+    return 1
+}
+
+=====2 to_int 没有 overflow的处理
+
+=====3 缺少 to_u32/to_u64 方法
+
+=====4 正整数 int widen 到 u64的问题
+u64 v = 3
+cannot initialize 'v' (type 'u64') with value of type 'int'
+
+- 对于字面常量, 如果其满足赋值类型的范围, 则可以自动转换类型
+- 比如 u64 v = 3 满足条件, 没有必要再 u64 v = 3 as u64
+- 形如 u64 v = -3 才应当报错
+
+=====5 怎么理解 empty vec all 的逻辑?
+    vec(int) empty = []
+    bool el = empty.all(|x| x > 0)
+    print(f"el = {el}") // el = true
+
+=====6 怎么在 std.time 里面 新增 纯 LS函数?
+[type error] .\test.ls:6:12: module 'std.time' has no export 'now'
+
+- std 的 搜索路径到底是什么?
+- 似乎 os.ls 是在 ls.exe 的 所在路径开始搜索?
+- 但是其他的比如time.ls 又是 从 当前路径开始搜索?
+
+比如  C:\YANG\10003_language\LS> .\build_cgd\Release\ls.exe run .\test.ls
+
+需要在 build_cgd\Release 路径上 放 std 目录, 以及 std 目录下 放 os.ls
+然后 其他 std 文件 放在 LS\std即可
+

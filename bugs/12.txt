@@ -1,0 +1,16 @@
+## 代码
+fn main() -> int {
+    string str
+    print(str)
+    for i in 0..4 {
+        str += "a"
+    }
+    
+    print(str.at(0))
+    
+    return 0
+}
+
+## bug描述
+没有显式初始化的 string 应该默认 处理为 empty str 并分配默认 空间 (cap = 16)
+但是 目前 似乎是 随机值? (line-4 打印出来 显示 'main')
