@@ -2688,6 +2688,7 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
                 bool elem_needs_drop = (elem_type &&
                                         (elem_type->kind == TYPE_STRING ||
                                          (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
+                                         (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop) ||
                                          elem_type->kind == TYPE_BLOCK));
 
                 if (elem_needs_drop)
@@ -6760,7 +6761,8 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         /* If element needs drop, loop over 0..len and drop each */
         bool elem_needs_drop = (elem_type &&
                                 (elem_type->kind == TYPE_STRING ||
-                                 (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)));
+                                 (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
+                                 (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop)));
 
         if (elem_needs_drop)
         {
@@ -7179,7 +7181,8 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
 
         bool tr_needs_drop = elem_type &&
                              (elem_type->kind == TYPE_STRING ||
-                              (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop));
+                              (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
+                              (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop));
         if (tr_needs_drop)
         {
             /* Allocate loop index in function entry block */
@@ -7550,7 +7553,9 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         bool elem_needs_drop = (elem_type &&
                                 (elem_type->kind == TYPE_STRING ||
                                  (elem_type->kind == TYPE_STRUCT &&
-                                  elem_type->as.strukt.has_drop)));
+                                  elem_type->as.strukt.has_drop) ||
+                                 (elem_type->kind == TYPE_ENUM &&
+                                  elem_type->as.enom.has_drop)));
         if (!elem_needs_drop)
         {
             /* Trivial: single memcpy(self_data + self_len, src_data, src_len * elem_size) */
@@ -7611,6 +7616,8 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             LLVMValueRef cloned;
             if (elem_type->kind == TYPE_STRING)
                 cloned = emit_string_clone_val(ctx, se);
+            else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
+                cloned = emit_enum_clone_val(ctx, se, elem_type);
             else
                 cloned = emit_struct_clone_val(ctx, se, elem_llvm, elem_type);
 
@@ -8008,7 +8015,9 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             bool elem_needs_drop = (elem_type &&
                                     (elem_type->kind == TYPE_STRING ||
                                      (elem_type->kind == TYPE_STRUCT &&
-                                      elem_type->as.strukt.has_drop)));
+                                      elem_type->as.strukt.has_drop) ||
+                                     (elem_type->kind == TYPE_ENUM &&
+                                      elem_type->as.enom.has_drop)));
 
             if (elem_needs_drop)
             {
@@ -8117,7 +8126,9 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         bool elem_needs_drop = (elem_type &&
                                 (elem_type->kind == TYPE_STRING ||
                                  (elem_type->kind == TYPE_STRUCT &&
-                                  elem_type->as.strukt.has_drop)));
+                                  elem_type->as.strukt.has_drop) ||
+                                 (elem_type->kind == TYPE_ENUM &&
+                                  elem_type->as.enom.has_drop)));
 
         if (!elem_needs_drop)
         {
@@ -8160,6 +8171,8 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             LLVMValueRef cloned;
             if (elem_type->kind == TYPE_STRING)
                 cloned = emit_string_clone_val(ctx, se);
+            else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
+                cloned = emit_enum_clone_val(ctx, se, elem_type);
             else
                 cloned = emit_struct_clone_val(ctx, se, elem_llvm, elem_type);
 
@@ -8500,7 +8513,9 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         bool elem_needs_drop = (elem_type &&
                                 (elem_type->kind == TYPE_STRING ||
                                  (elem_type->kind == TYPE_STRUCT &&
-                                  elem_type->as.strukt.has_drop)));
+                                  elem_type->as.strukt.has_drop) ||
+                                 (elem_type->kind == TYPE_ENUM &&
+                                  elem_type->as.enom.has_drop)));
 
         if (!elem_needs_drop)
         {
@@ -8546,6 +8561,8 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             LLVMValueRef cloned;
             if (elem_type->kind == TYPE_STRING)
                 cloned = emit_string_clone_val(ctx, se);
+            else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
+                cloned = emit_enum_clone_val(ctx, se, elem_type);
             else
                 cloned = emit_struct_clone_val(ctx, se, elem_llvm, elem_type);
 
@@ -14177,7 +14194,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 Type *elem_type = ct->as.vec.elem;
                 bool elem_needs_drop = elem_type &&
                     (elem_type->kind == TYPE_STRING ||
-                     (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop));
+                     (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
+                     (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop));
                 if (elem_needs_drop) {
                     LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
                     LLVMBasicBlockRef el_cond = LLVMAppendBasicBlockInContext(
