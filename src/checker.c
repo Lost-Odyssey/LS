@@ -4174,6 +4174,11 @@ static Type *check_expr(Checker *c, AstNode *node)
                 /* Allow: *T == nil, object == nil, *T == object, etc. */
                 result = type_bool();
             }
+            else if (type_numeric_common(left, right) != NULL)
+            {
+                /* Allow mixed numeric/char comparisons: 'A' == 65, char vs int, etc. */
+                result = type_bool();
+            }
             else
             {
                 checker_error(c, node->line, node->column,
@@ -5419,22 +5424,44 @@ static Type *check_expr(Checker *c, AstNode *node)
             break;
         }
 
-        /* Non-enum subjects: existing literal/ident/wildcard pattern handling */
+        /* Non-enum subjects: literal/ident/wildcard/OR-pattern handling.
+           Walk the (possibly nested) AST_MATCH_OR_PATTERN tree to type-check
+           every leaf pattern against the subject type. */
         Type *arm_type = NULL;
         for (int i = 0; i < node->as.match.arm_count; i++)
         {
             MatchArm *arm = &node->as.match.arms[i];
 
-            /* Check pattern type matches subject */
-            if (arm->pattern->kind != AST_IDENT ||
-                strcmp(arm->pattern->as.ident.name, "_") != 0)
+            /* Iterative tree walk (avoids deep recursion; max ~32 alternatives). */
+            AstNode *stack[64];
+            int sp = 0;
+            stack[sp++] = arm->pattern;
+            while (sp > 0)
             {
-                Type *pat_type = check_expr(c, arm->pattern);
-                if (pat_type && !type_equals(pat_type, subject))
+                AstNode *cur = stack[--sp];
+                if (cur->kind == AST_MATCH_OR_PATTERN)
                 {
-                    checker_error(c, arm->pattern->line, arm->pattern->column,
-                                  "match pattern type '%s' doesn't match subject type '%s'",
-                                  type_name(pat_type), type_name(subject));
+                    /* Push both branches for later processing */
+                    if (sp + 2 <= 64) {
+                        stack[sp++] = cur->as.or_pattern.right;
+                        stack[sp++] = cur->as.or_pattern.left;
+                    }
+                }
+                else if (cur->kind == AST_IDENT &&
+                         strcmp(cur->as.ident.name, "_") == 0)
+                {
+                    /* Wildcard — no type check needed */
+                }
+                else
+                {
+                    Type *pat_type = check_expr(c, cur);
+                    if (pat_type && !type_equals(pat_type, subject) &&
+                        type_numeric_common(pat_type, subject) == NULL)
+                    {
+                        checker_error(c, cur->line, cur->column,
+                                      "match pattern type '%s' doesn't match subject type '%s'",
+                                      type_name(pat_type), type_name(subject));
+                    }
                 }
             }
 
@@ -6600,6 +6627,11 @@ static void check_enum_decl(Checker *c, AstNode *node)
     Type *et = type_enum(name, n);
     bool has_drop = false;
 
+    /* Pre-register the enum type so that resolve_type_node can find it
+       when resolving indirect self-references like vec(EnumName) or
+       map(string, EnumName).  has_drop is updated after the loop. */
+    register_enum_type(c, name, et);
+
     for (int i = 0; i < n; i++)
     {
         /* Duplicate variant name check */
@@ -6652,7 +6684,8 @@ static void check_enum_decl(Checker *c, AstNode *node)
     }
 
     et->as.enom.has_drop = has_drop;
-    register_enum_type(c, name, et);
+    /* register_enum_type was already called before the loop (pre-registration
+       for indirect self-reference support); has_drop is now final. */
     node->resolved_type = et;
 }
 

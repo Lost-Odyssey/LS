@@ -41,6 +41,7 @@ typedef struct {
     CgScope *current_scope;
     LLVMValueRef current_fn;        /* Function currently being compiled */
     Type *current_fn_return_type;   /* LS return type — used for return-value widening */
+    bool is_main_void;              /* true when compiling fn main() — AOT needs ret i32 0 */
     LLVMBasicBlockRef break_bb;     /* break target (while/for) */
     LLVMBasicBlockRef continue_bb;  /* continue target (while/for) */
     CgScope *loop_scope;            /* scope at loop entry (for break/continue cleanup) */

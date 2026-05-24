@@ -101,6 +101,16 @@ add_executable(ls ${LS_SOURCES})
 target_include_directories(ls PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(ls ${LLVM_LIBS})
 
+# Keep the std/ directory in the output folder up-to-date with the source tree.
+# CMake's file(COPY) only runs at configure time; POST_BUILD runs every build.
+# We copy the whole std/ tree so ls.exe can find std/*.ls when LS_HOME is not set.
+add_custom_command(TARGET ls POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/std"
+        "$<TARGET_FILE_DIR:ls>/std"
+    COMMENT "Copying std/ -> output/std/"
+)
+
 # ls_memcheck — standalone static library for AOT-compiled user programs.
 # ls.exe still links runtime/memcheck.c directly (above) so JIT can resolve
 # ls_mc_* symbols from within the host process. This separate archive is
@@ -835,3 +845,47 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_trait_struct_bound.cmake
 )
 set_tests_properties(test_trait_struct_bound PROPERTIES DEPENDS "test_trait_builtin_impl")
+
+# ---- L-006 fix: enum with vec/map payload ----
+add_test(
+    NAME test_enum_vec_map_payload
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_vec_map_payload.cmake
+)
+set_tests_properties(test_enum_vec_map_payload PROPERTIES DEPENDS "test_memory")
+
+# ---- std.json module ----
+add_test(
+    NAME test_std_json
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_std_json.cmake
+)
+set_tests_properties(test_std_json PROPERTIES DEPENDS "test_enum_vec_map_payload")
+
+# ---- match OR-pattern (bugs/18 fix) ----
+add_test(
+    NAME test_match_or_pattern
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_match_or_pattern.cmake
+)
+set_tests_properties(test_match_or_pattern PROPERTIES DEPENDS "test_std_json")
+
+# ---- char literal support ----
+add_test(
+    NAME test_char_lit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_char_lit.cmake
+)
+set_tests_properties(test_char_lit PROPERTIES DEPENDS "test_match_or_pattern")

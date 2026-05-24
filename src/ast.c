@@ -215,6 +215,10 @@ void ast_free(AstNode *node) {
         }
         free(node->as.match.arms);
         break;
+    case AST_MATCH_OR_PATTERN:
+        ast_free(node->as.or_pattern.left);
+        ast_free(node->as.or_pattern.right);
+        break;
     case AST_CAST:
         ast_free(node->as.cast.expr);
         type_node_free(node->as.cast.target_type);

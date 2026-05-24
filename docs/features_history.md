@@ -1,6 +1,127 @@
 # LS 已完成特性实现记录
 
-本文档记录各特性的实现细节，供日后参考。
+本文档记录各特性的实现细节，供日后参考。最新条目在最前。
+
+---
+
+## match OR-pattern + 整数 switch（bugs/18 修复）— 2026-05-24
+
+- **问题**：`match c { 98 | 102 => {} }` 中 `98 | 102` 被解析为按位 OR（= 110），而非"98 或 102"模式
+- **AST**：新增 `AST_MATCH_OR_PATTERN { left, right }` 节点（可嵌套表示 3+ 个备选）
+- **Parser**：`prefix_match` 在 `PREC_BITXOR`（高于 `PREC_BITOR`）层级解析每个模式；while 循环收集 `|` 分隔的备选项，组装成右结合 `AST_MATCH_OR_PATTERN` 树
+- **Checker**：非枚举 match 模式类型检查改用迭代式栈遍历展开 OR-pattern 树，每个叶节点独立做类型兼容检查
+- **Codegen**：两条路径：
+  - **(A) 整数 switch**：subject 为整数类型且所有非通配符模式均为整数字面量时，emit 单条 `LLVMBuildSwitch`；`match_collect_int_vals` 展开 OR-pattern 树收集所有 case 值，同一 arm 的多个值全部 `LLVMAddCase` 到同一 body block
+  - **(B) CondBr + OR 链**：string/float/含变量模式走原 CondBr 逻辑；OR-pattern 各叶节点各自生成比较，用 `LLVMBuildOr` 串联后再 `CondBr`
+- **json.ls 重构**：`_parse_string_raw` 的 8 层深嵌套 if-else 替换为 `match next { 34 => ... 98 | 102 => {} ... }`
+- **测试**：`match_or_pattern_test.ls`（17 PASS）；`test_match_or_pattern.cmake` JIT + AOT + memcheck；ctest 54/54
+
+---
+
+## `std.json` 标准库模块（纯 LS 实现）— 2026-05-23
+
+- **架构**：纯 LS 层 `std/json.ls`（无 C 后端），`import std.json as json` 使用
+- **JsonValue enum（6 变体）**：`Null / Bool(bool) / Number(f64) / Str(string) / Array(vec(JsonValue)) / Object(vec(string), map(string,JsonValue))`
+- **API**：构造（`null_val/bool_val/number/str_val/array_new/object_new`）+ 类型判断 + 访问器（`as_bool/number/string/int` 均返回 `Result`）+ `parse(string)->Result(JsonValue,string)` + `stringify`/`stringify_pretty`
+- **导航 API**：`array_len/object_len/object_has/object_keys`；`array_get/object_get` 延迟（Phase H）
+- **编译器 bug 修复（BF-020~026）**：map/vec/enum clone/drop 完善；AST_CALL TYPE_STRING 返回值注册 temp（BF-025）；match enum arm 退出前调 emit_scope_cleanup（BF-026）
+- **memcheck**：✅ 0 leaks / 0 dfree
+- **测试**：json_basic（14 PASS）/ json_infra（5 PASS）/ json_internal + json_file（13 PASS）；ctest 53/53
+
+---
+
+## L-006：enum 含 vec/map payload 的 drop + AOT main 退出码 — 2026-05-20
+
+- **根因 1**：`emit_enum_ctor` 未将源 vec/map cap 置 0（move），scope cleanup 双 free。修复：ctor 为 vec/map payload 添加 move 标记（cap=0）
+- **根因 2**：`emit_enum_clone_val` 缺 TYPE_VECTOR/TYPE_MAP，浅拷贝 → double-free。修复：clone 分支加 vec/map 处理
+- **根因 3**：`fn main()` 编译为 `void @main()`，CRT 读取 EAX 垃圾值作退出码。修复：检测 main → 改为 `i32 @main()`，`ret i32 0`
+- **测试**：`enum_vec_payload_test.ls`；ctest 52/52
+
+---
+
+## `std.time` 标准库模块 — 2026-05-17
+
+- 纯 LS 层 `std/time.ls` + C 后端 `runtime/os_win32.c`（`ls_os_time_*` / `ls_os_sleep_*`）
+- **DateTime struct**：10 字段（year/month/day/hour/minute/second/weekday/yday/utcoff/unix_s）
+- **函数集**：`now_local/now_utc/now_unix_ns/ms/s`；`format/iso8601/parse`；`add/diff_s/duration_ns/us/ms/s`；`sleep_ms/sleep_us`
+- **`import X as Y` 别名语法**：parser 解析 `TOKEN_AS`；AST `import_decl.alias` 字段
+- **codegen 两阶段**：Pass A forward-declare 所有模块，Pass B 生成函数体（解决跨模块依赖排序）
+- **AOT 静态库**：`ls_os_backend.lib`；JIT AbsoluteSymbols 扩展到 63 个
+- **测试**：`time_basic_test.ls`（24 PASS）；ctest 32/32
+
+---
+
+## 闭包 Phase F.7 — Memcheck 压力测试 + 2 个 bug 修复 — 2026-05-14
+
+- **压力测试**：1000 次迭代，S1~S6 六种捕获模式；JIT + AOT memcheck 四重验证
+- **Bug 1**：`emit_enum_clone_val` — has_drop enum 函数参数未深拷贝（double-free）。新增完整 clone 函数，AST_CALL 加 `TYPE_ENUM && has_drop` 分支
+- **Bug 2**：enum match arm string binder 独立所有权 — `Some(s) => return s` 共享 data 指针 → double-free。修复：binder 调 `emit_string_clone_val` 获得独立所有权
+- ctest 30/30；memcheck 0 leaks / 0 dfree
+
+---
+
+## 闭包 Phase F.1 ~ F.6 — 2026-05-14
+
+- **F.1**：`[move v]` 语法，vec/map 显式 by-move 捕获
+- **F.2**：Block 赋值 + 移动语义（`type_is_movable` 加 TYPE_BLOCK，赋值后 source env_ptr 置 NULL）
+- **F.3**：Block 作为 struct 字段（has_drop 扩展，emit_auto_drop_fn 加 TYPE_BLOCK）
+- **F.4**：`vec(Block)` / `map(K,Block)` — push/set 转移 env 所有权；直接下标调用 `vec[i](args)`
+- **F.5**：enum capture — 非 has_drop by-copy；has_drop by-move（env_drop 调 `enum.__drop`）；match codegen 终结符 bug 修复
+- **F.6**：CG_DEBUG 全面铺开（4 个 helper，`-DLS_CG_DEBUG=ON`）
+- ctest 29/29（F.6 后）；memcheck 全程 0 leaks
+
+---
+
+## 闭包 Phase C ~ E — 2026-05-09/10
+
+- **C**：POD 捕获 + 堆 env + RAII（自由变量扫描 → env struct → `cg_emit_alloc("closure.env")` → body 还原）
+- **C.5**：string by-move 捕获（env field 0 = drop_fn slot；outer cap=-1 marker；Block 形参 is_borrowed）
+- **C.7**：vec/map/struct(has_drop) 捕获（双 ABI：borrow 语义 vs ownership transfer）
+- **E.1**：by-ref capture 重构（env 存外层 alloca 指针而非值拷贝，post-capture push 可见）
+- **E.2**：closure 参数 vec/map/Block 标 is_borrowed=true
+- **E.4**：`array(POD,N)` by-value 捕获（snapshot 语义）
+- ctest 23/23（E.1 后）
+
+---
+
+## 闭包 Phase A + B — 2026-05-06
+
+- **A**：type 别名 + `Block(...)->R` 类型语法 + `|x| body` 字面量 + trailing closure 糖 + 强制别名规则
+- **B**：无捕获闭包 codegen — lambda lifting（`__closure_N(env, ...)`）+ LsBlock 16B 胖指针 + 间接 call；类型推导从 callee `Block(...)` 形参反推
+- ctest 19/19（B 后）
+
+---
+
+## Memcheck Phase A ~ D — 2026-05-03
+
+- **A**：`ls run --memcheck`，open-addressing hash table 跟踪 malloc/free；atexit 报告
+- **A.5**：细粒度 site 标签（`cg_emit_alloc(kind, line, col)`），7 类 string/io alloc 路径有名字
+- **B**：vec/map/struct/enum 全跟踪 + 5 类真实 bug 修复（enum.box / try 泄漏 / struct double-free / calloc 未追踪 / sum_tree double-free）
+- **C**：AOT 集成（`ls_memcheck.lib` 静态库，clang 链接命令注入）
+- **D.1/2/3**：调用栈追踪（8 帧 backtrace）+ verbose（`LS_MEMCHECK_VERBOSE=1`）+ strict（`LS_MEMCHECK_STRICT=1` → `_Exit(2)`）
+- ctest 9/9（D 后）
+
+---
+
+## 内建 `io` 模块 v1 + v2 — 2026-04~05
+
+- **v1**（7 函数）：`read_file / write_file / exists / open / close / read_all / write`；`OpenMode` enum；`File{object, bool}` struct
+- **v2**（6 函数）：`seek / tell / size / rewind / append_file / remove`；`SeekFrom` enum；64-bit positioning（`_fseeki64`）；binary-mode gate
+
+---
+
+## `math` 模块 + 数值隐式扩展 — 2026-04
+
+- **math**：`import math`，23 个函数（sqrt/pow/sin/cos/...）+ 常量（PI/E/TAU/INF/NAN）；LLVM intrinsic 零开销
+- **math 多态**：`abs/min/max` 按参数类型自动选 LLVM intrinsic（int/i64/f64）
+- **数值隐式扩展（Zig 风）**：`iN→iM`（M≥N）/ `int→i64/f64` / `f32→f64`；`cg_widen()` + `type_widens_to()`
+
+---
+
+## Phase 8 + 8.5：enum + Option/Result + try — 2026-04
+
+- **Phase 8**：tagged union enum（payload variants / 自递归 / has_drop）；`Option(T)` / `Result(T,E)` 按需单态化；match 穷尽性检查
+- **Phase 8.5**：`try` 早返操作符（Zig 风，`try Result(T,E)` 要求当前函数返回同 E 类型）
 
 ---
 

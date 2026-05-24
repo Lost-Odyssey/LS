@@ -266,8 +266,11 @@ static void test_match_codegen(void) {
         "}\n"
     );
     ASSERT_NOT_NULL(ir);
-    ASSERT_TRUE(ir_contains(ir, "match.cmp"));
-    ASSERT_TRUE(ir_contains(ir, "match.then"));
+    /* Integer match now uses LLVM switch instruction (not CondBr + ICmp).
+       The switch emits a 'switch' instruction, 'match.case' body blocks,
+       and a 'match.default' block for the wildcard arm. */
+    ASSERT_TRUE(ir_contains(ir, "switch"));
+    ASSERT_TRUE(ir_contains(ir, "match.case"));
     ASSERT_TRUE(ir_contains(ir, "match.end"));
     LLVMDisposeMessage(ir);
     printf(" ok\n");

@@ -60,6 +60,7 @@ struct Type {
             int variant_count;
             bool has_drop;           /* true if any variant payload owns heap */
             void *drop_fn;           /* LLVMValueRef: auto __drop function (codegen use) */
+            void *clone_fn;          /* LLVMValueRef: auto __clone function (codegen use) */
         } enom;
         struct {                                        /* TYPE_MODULE */
             const char *name;

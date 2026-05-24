@@ -834,7 +834,22 @@ static AstNode *prefix_match(Parser *p) {
     int arm_cap = 0;
 
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
-        AstNode *pattern = parse_expr_prec(p, PREC_NONE);
+        /* Parse the first pattern at PREC_BITXOR (one level above PREC_BITOR) so
+           that a bare `|` token is NOT consumed as a bitwise-OR expression.
+           Then collect additional `|`-separated alternatives to build an
+           AST_MATCH_OR_PATTERN tree: `98 | 102 | 110 => body`
+           If the user needs bitwise-OR in a pattern value, they can parenthesise:
+           `(FLAG_A | FLAG_B) => body`. */
+        AstNode *pattern = parse_expr_prec(p, PREC_BITXOR);
+        while (check(p, TOKEN_PIPE)) {
+            Token pipe_tok = p->current;
+            advance(p); /* consume '|' */
+            AstNode *rhs = parse_expr_prec(p, PREC_BITXOR);
+            AstNode *or_node = new_node(AST_MATCH_OR_PATTERN, pipe_tok.line, pipe_tok.column);
+            or_node->as.or_pattern.left  = pattern;
+            or_node->as.or_pattern.right = rhs;
+            pattern = or_node;
+        }
         consume(p, TOKEN_FAT_ARROW, "expected '=>' after match pattern");
         AstNode *body;
         if (check(p, TOKEN_LBRACE)) {

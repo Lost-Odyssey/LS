@@ -507,6 +507,7 @@ bool type_is_unsigned(const Type *t) {
     if (t == NULL) return false;
     switch (t->kind) {
     case TYPE_U8: case TYPE_U16: case TYPE_U32: case TYPE_U64:
+    case TYPE_CHAR:   /* char is treated as unsigned 8-bit (u8) */
         return true;
     default:
         return false;

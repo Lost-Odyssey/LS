@@ -99,6 +99,7 @@ typedef enum
     AST_FIELD,
     AST_CLOSURE,
     AST_MATCH,
+    AST_MATCH_OR_PATTERN, /* A | B | C inside a match arm — OR-pattern */
     AST_TRY,          /* try expr — Zig-style early return for Result/Option */
     AST_CAST,
     AST_RANGE,
@@ -259,6 +260,11 @@ struct AstNode
             MatchArm *arms;
             int arm_count;
         } match;
+        struct
+        {
+            AstNode *left;   /* first alternative  */
+            AstNode *right;  /* second alternative (may itself be AST_MATCH_OR_PATTERN) */
+        } or_pattern;
         struct
         {
             AstNode *expr;
