@@ -1,0 +1,54 @@
+// enum_nested_vec_test.ls
+// Phase E-3 TDD: nested has-drop enum (enum containing vec of enum)
+// Verifies deep drop/clone chains work correctly end-to-end
+// Expected: 0 leaks, 0 double-frees with --memcheck
+
+enum JVal {
+    JNull
+    JStr(string s)
+    JArr(vec(JVal) items)
+}
+
+fn make_arr() -> JVal {
+    vec(JVal) items = [JStr("a".copy()), JStr("b".copy())]
+    return JArr(items)
+}
+
+fn main() {
+    // A: nested construction + scope drop
+    vec(JVal) inner = [JStr("x".copy()), JStr("y".copy())]
+    JVal arr = JArr(inner)
+    vec(JVal) outer = []
+    outer.push(arr)
+    print("PASS 1: outer len =", outer.length)
+    // outer → JArr → vec → JStr → string: full chain drop
+
+    // B: copy nested structure (deep clone of enum containing vec)
+    vec(JVal) outer2 = outer.copy()
+    print("PASS 2: copy len =", outer2.length)
+    // outer and outer2 fully independent
+
+    // C: index read (deep clone via AST_INDEX)
+    JVal elem = outer[0]
+    print("PASS 3: index read done")
+    // elem is a deep clone; outer still owns its copy
+
+    // D: var_decl clone of nested enum (Bug #13 fix)
+    JVal src = make_arr()
+    JVal dst = src
+    print("PASS 4: var_decl clone done")
+    // src and dst independent — both JArr payloads own separate vecs
+
+    // E: reassignment of nested enum
+    JVal e = JStr("old".copy())
+    e = make_arr()
+    print("PASS 5: reassign done")
+    // "old" string dropped before reassign
+
+    // F: vec of nested enum copy
+    vec(JVal) nested_vec = [make_arr(), make_arr()]
+    vec(JVal) nested_copy = nested_vec.copy()
+    print("PASS 6: nested vec copy len =", nested_copy.length)
+
+    print("all done")
+}

@@ -12355,6 +12355,13 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         {
             LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
         }
+        /* Zero-initialize has-drop enum variables (disc=0, payload=zeroed).
+           Without this, an uninitialized enum has garbage discriminant + payload,
+           causing emit_auto_enum_drop_fn to access a wild pointer on scope exit. */
+        if (var_type->kind == TYPE_ENUM && var_type->as.enom.has_drop)
+        {
+            LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+        }
         /* Initialize uninitialized string variables to a static empty string
            ({data="", len=0, cap=0}). Without this, the alloca holds garbage,
            causing print() to dereference an invalid pointer and `s += ...`
@@ -12582,6 +12589,16 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                            fields and can be freed without double-free. */
                         LLVMTypeRef llvm_st = type_to_llvm(ctx, var_type);
                         init = emit_struct_clone_val(ctx, init, llvm_st, var_type);
+                    }
+                    else if (var_type->kind == TYPE_ENUM &&
+                             var_type->as.enom.has_drop &&
+                             ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
+                    {
+                        /* Source is another named has-drop enum variable — deep-clone so
+                           both this variable and the source have independently owned heap
+                           payloads and can be freed without double-free.
+                           e.g. JsonValue b = a  →  b gets its own deep copy of a. */
+                        init = emit_enum_clone_val(ctx, init, var_type);
                     }
                     else if (var_type->kind == TYPE_BLOCK)
                     {
