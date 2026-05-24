@@ -510,9 +510,25 @@ static int find_or_create_impl(Checker *c, const char *struct_name)
     return idx;
 }
 
-static void register_method(Checker *c, int impl_idx, const char *name,
-                            Type *type, bool is_static, int self_borrow_kind)
+/* Returns true on success. Returns false if a method with the same name
+   already exists for this struct (LS does not support method overloading).
+   Error already reported in that case. */
+static bool register_method(Checker *c, int impl_idx, const char *name,
+                            Type *type, bool is_static, int self_borrow_kind,
+                            int line, int col)
 {
+    /* Reject duplicate method names -- LS does not support method overloading.
+       Two traits implementing the same method name on the same struct is always
+       an error, even with identical signatures. (See docs/known_limitations.md L-002.) */
+    for (int j = 0; j < c->impl_registry[impl_idx].method_count; j++) {
+        if (strcmp(c->impl_registry[impl_idx].methods[j].name, name) == 0) {
+            checker_error(c, line, col,
+                "conflicting method '%s': already defined for struct '%s'",
+                name, c->impl_registry[impl_idx].struct_name);
+            return false;
+        }
+    }
+
     int mc = c->impl_registry[impl_idx].method_count;
     int cap = c->impl_registry[impl_idx].method_cap;
     if (mc >= cap)
@@ -528,6 +544,7 @@ static void register_method(Checker *c, int impl_idx, const char *name,
     c->impl_registry[impl_idx].methods[mc].is_static = is_static;
     c->impl_registry[impl_idx].methods[mc].self_borrow_kind = self_borrow_kind;
     c->impl_registry[impl_idx].method_count++;
+    return true;
 }
 
 /* Phase A1: returns the registered method's self_borrow_kind, or 0 if not found
@@ -875,7 +892,8 @@ static void instantiate_impl_method_types(
 
         Type *mtype = type_function(params, total, ret, false);
 
-        register_method(c, impl_idx, mname, mtype, is_static, sbk);
+        register_method(c, impl_idx, mname, mtype, is_static, sbk,
+                        method->line, method->column);
 
         /* Clone the method AST and type-check the body with substitutions */
         AstNode *cloned = ast_clone_deep(method);
@@ -6586,7 +6604,8 @@ static void check_struct_decl(Checker *c, AstNode *node)
         Type **drop_params = (Type **)malloc_safe(sizeof(Type *));
         drop_params[0] = type_pointer(st); /* *Struct self */
         Type *drop_type = type_function(drop_params, 1, drop_ret, false);
-        register_method(c, impl_idx, "__drop", drop_type, false, 0);
+        register_method(c, impl_idx, "__drop", drop_type, false, 0,
+                        node->line, node->column);
         /* Also define in global scope for free function call */
         scope_define(c->current_scope, "__drop", drop_type);
     }
@@ -6866,8 +6885,10 @@ static void check_impl_decl(Checker *c, AstNode *node)
 
         Type *method_type = type_function(all_params, total_n, ret, false);
 
-        register_method(c, impl_idx, method->as.fn_decl.name, method_type, is_static,
-                        method->as.fn_decl.self_borrow_kind);
+        if (!register_method(c, impl_idx, method->as.fn_decl.name, method_type, is_static,
+                        method->as.fn_decl.self_borrow_kind,
+                        method->line, method->column))
+            continue;
 
         /* Also define in global scope so it can be called as a free function */
         scope_define(c->current_scope, method->as.fn_decl.name, method_type);
@@ -7370,7 +7391,11 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
         Type *method_type = type_function(all_params, total_n, ret, false);
 
         /* Register in impl_registry (same as check_impl_decl) */
-        register_method(c, impl_idx, mname, method_type, false, user_sbk);
+        if (!register_method(c, impl_idx, mname, method_type, false, user_sbk,
+                           method->line, method->column))
+            continue;
+
+        /* Register in impl_registry (same as check_impl_decl) */
         scope_define(c->current_scope, mname, method_type);
 
         /* Check body (same pattern as check_impl_decl) */

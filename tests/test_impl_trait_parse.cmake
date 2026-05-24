@@ -102,3 +102,19 @@ if(NOT "${ext_err}" MATCHES "not declared in trait")
         "trait_extra_method: expected 'not declared in trait' error\nstderr:\n${ext_err}")
 endif()
 message(STATUS "test_impl_trait_parse extra method reject: OK")
+
+# ---- Negative: conflicting method names across traits ----
+execute_process(
+    COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/trait_conflict_reject.ls"
+    OUTPUT_VARIABLE cfl_out
+    ERROR_VARIABLE  cfl_err
+    RESULT_VARIABLE cfl_rc
+)
+if(cfl_rc EQUAL 0)
+    message(FATAL_ERROR "trait_conflict_reject should have failed but succeeded")
+endif()
+if(NOT "${cfl_err}" MATCHES "conflicting method")
+    message(FATAL_ERROR
+        "trait_conflict_reject: expected 'conflicting method' error\nstderr:\n${cfl_err}")
+endif()
+message(STATUS "test_impl_trait_parse conflict method reject: OK")

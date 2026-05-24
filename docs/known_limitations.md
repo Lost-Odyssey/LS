@@ -23,4 +23,26 @@
 
 ---
 
+## L-002 · 不允许同名 trait 方法（无方法重载/无歧义消解）
+
+**现状**  
+两个 trait 定义了同名方法（即使签名完全相同），struct 同时实现两者时编译报错：  
+`conflicting method 'greet': already defined for struct 'Person'`
+
+**原因**  
+LS 没有方法重载（overloading），也没有 trait 限定调用语法（如 Rust 的 `Greet::greet(&p)`）。  
+如果允许同名共存，`obj.method()` 无法确定调用哪个 trait 的实现——返回类型可能不同，语义完全取决于注册顺序，是静默 bug。
+
+当前策略：**严格拒绝**。`register_method()` 在发现 impl_registry 中已有同名方法时立即报错，不比较签名。
+
+**限制**  
+- 两个 trait 恰好定义了完全相同签名的方法时，仍会被拒绝（但这是极罕见的 corner case，且可通过在 trait 中使用不同名字规避）
+- 未来如果引入 trait 限定调用语法，可以放宽此限制
+
+**改进路径**  
+1. **中期**：增加 `Trait::method(obj, args)` 调用语法，parser + checker + codegen 三端支持
+2. **之后**：将 `register_method` 的限制放宽为"允许同名但必须在调用点显式消歧（`obj.method()` 歧义时报错，`Trait::method(&obj)` 允许）"
+
+---
+
 <!-- 后续新增限制条目请沿用 L-NNN · 标题 格式 -->
