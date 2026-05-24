@@ -12748,6 +12748,48 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     }
                     ctx->temp_string_count = temp_mark;
                 }
+                else if (sym->type && sym->type->kind == TYPE_ENUM &&
+                         sym->type->as.enom.has_drop)
+                {
+                    /* has_drop enum assignment:
+                       1. Drop old value (runtime-conditional via moved_flag)
+                       2. Clone if source is an IDENT (shared variable/borrow)
+                       3. Store (cloned or fresh) value
+                       4. Clear moved_flag so scope cleanup works */
+                    if (sym->moved_flag)
+                    {
+                        LLVMValueRef i1_t = LLVMInt1TypeInContext(ctx->context);
+                        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
+                            LLVMGetInsertBlock(ctx->builder));
+                        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
+                            ctx->context, cur_fn, "assign.edrop");
+                        LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(
+                            ctx->context, cur_fn, "assign.econt");
+                        LLVMValueRef is_moved = LLVMBuildLoad2(ctx->builder,
+                            i1_t, sym->moved_flag, "e.moved");
+                        LLVMBuildCondBr(ctx->builder, is_moved, cont_bb, do_bb);
+                        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
+                        emit_enum_drop(ctx, sym->value, sym->type);
+                        LLVMBuildBr(ctx->builder, cont_bb);
+                        LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+                    }
+                    else
+                    {
+                        emit_enum_drop(ctx, sym->value, sym->type);
+                    }
+                    if (ast_unwrap_move(node->as.assign.value)->kind == AST_IDENT)
+                    {
+                        val = emit_enum_clone_val(ctx, val, sym->type);
+                    }
+                    LLVMBuildStore(ctx->builder, val, sym->value);
+                    if (sym->moved_flag)
+                    {
+                        LLVMBuildStore(ctx->builder,
+                            LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 0, 0),
+                            sym->moved_flag);
+                    }
+                    ctx->temp_string_count = temp_mark;
+                }
                 else if (sym->type && sym->type->kind == TYPE_BLOCK)
                 {
                     /* F.2: Block assignment — move semantics.
@@ -13088,12 +13130,14 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             node->as.return_stmt.value->resolved_type)
         {
             Type *ret_type = node->as.return_stmt.value->resolved_type;
-            /* For string/struct/vec/Block IDENT returns: ownership transfers to caller —
-               skip scope cleanup for this variable so we don't free its data/env. */
+            /* For string/struct/vec/Block/has_drop-enum IDENT returns:
+               ownership transfers to caller — skip scope cleanup for this
+               variable so we don't free its data/env. */
             if (ret_type->kind == TYPE_STRING ||
                 ret_type->kind == TYPE_STRUCT ||
                 ret_type->kind == TYPE_VECTOR ||
-                ret_type->kind == TYPE_BLOCK)
+                ret_type->kind == TYPE_BLOCK ||
+                (ret_type->kind == TYPE_ENUM && ret_type->as.enom.has_drop))
             {
                 const char *name = node->as.return_stmt.value->as.ident.name;
                 CgSymbol *sym = cg_scope_resolve(ctx->current_scope, name);

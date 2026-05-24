@@ -518,10 +518,31 @@ static bool register_method(Checker *c, int impl_idx, const char *name,
                             int line, int col)
 {
     /* Reject duplicate method names -- LS does not support method overloading.
-       Two traits implementing the same method name on the same struct is always
-       an error, even with identical signatures. (See docs/known_limitations.md L-002.) */
+       Exception: user-defined __drop overrides the compiler-generated one.
+       (The auto-generated __drop from struct declaration conflicts when the user
+       writes `impl Widget { fn __drop() { ... } }` — allow the replacement.) */
     for (int j = 0; j < c->impl_registry[impl_idx].method_count; j++) {
         if (strcmp(c->impl_registry[impl_idx].methods[j].name, name) == 0) {
+            if (strcmp(name, "__drop") == 0) {
+                /* Replace the auto-generated __drop entry with user-defined one.
+                   Free the old compiler-generated function type and its param
+                   array + pointer type to avoid a compile-time leak. */
+                Type *old = c->impl_registry[impl_idx].methods[j].type;
+                if (old && old->kind == TYPE_FUNCTION) {
+                    free(old->as.function.params);
+                    /* The pointer param (old->as.function.params[0]) was created
+                       by type_pointer(st); it outlives use here so free it. */
+                    if (old->as.function.params &&
+                        old->as.function.params[0] &&
+                        old->as.function.params[0]->kind == TYPE_POINTER)
+                        free(old->as.function.params[0]);
+                    free(old);
+                }
+                c->impl_registry[impl_idx].methods[j].type = type;
+                c->impl_registry[impl_idx].methods[j].is_static = is_static;
+                c->impl_registry[impl_idx].methods[j].self_borrow_kind = self_borrow_kind;
+                return true;
+            }
             checker_error(c, line, col,
                 "conflicting method '%s': already defined for struct '%s'",
                 name, c->impl_registry[impl_idx].struct_name);

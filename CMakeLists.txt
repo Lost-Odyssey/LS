@@ -866,7 +866,10 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_json.cmake
 )
-set_tests_properties(test_std_json PROPERTIES DEPENDS "test_enum_vec_map_payload")
+set_tests_properties(test_std_json PROPERTIES
+    DEPENDS "test_enum_vec_map_payload"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
 
 # ---- match OR-pattern (bugs/18 fix) ----
 add_test(

@@ -279,8 +279,7 @@ message(STATUS "json_file memcheck: OK clean")
 set(E2E "${SAMPLE_DIR}/json_e2e_test.ls")
 set(E2E_DATA "${SAMPLE_DIR}/json_e2e_data.json")
 
-# Note: uses --memcheck because Phase H double-free in vec/map of has_drop enum
-# causes heap corruption without memcheck wrappers.
+# Note: uses --memcheck to verify 0 double-free / 0 leak (Phase H fix, bugs/20).
 execute_process(
     COMMAND "${LS_EXE}" run --memcheck "${E2E}"
     OUTPUT_VARIABLE e2e_out  ERROR_VARIABLE e2e_err  RESULT_VARIABLE e2e_rc
