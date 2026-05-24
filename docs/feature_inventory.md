@@ -1,6 +1,6 @@
 # LS 功能清单与路线图
 
-> **最后更新**：2026-05-20  
+> **最后更新**：2026-05-25  
 > 本文档记录 LS 语言已实现功能的完整清单，以及尚未实现功能的工作量/风险/价值评估。
 
 ---
@@ -156,6 +156,7 @@
 | 功能 | 工期 | 风险 | 价值 | 说明 | 参考 |
 |------|------|------|------|------|------|
 | **操作符重载** | 5–7 天 | 低 | ★★★★☆ | checker 二元运算查 impl 方法 `+`/`-`/`==`/`<` 等；已有 trait 系统可配合 `trait Add` 模式 | `docs/plan_future_ideas.md` §7 |
+| **跨模块函数名 LLVM name mangling** | 2–3 天 | 低 | ★★★★★ | 同名函数（如 `io.read_file` vs `json.read_file`）产生 `@read_file` 冲突；需模块前缀 mangling | 本文 L-009 |
 | **Block env 深拷贝 (Phase G)** | 5–7 天 | 低 | ★★★☆☆ | `Block g = vec[i]` 当前被 checker 拒绝；需合成 `__env_clone_N`，POD+string capture 可克隆 | `docs/block_clone_plan.md` |
 | **struct 深拷贝 (Phase H)** | 5–7 天 | 低 | ★★★☆☆ | `MyStruct s = vec_of_struct[i]` has_drop 时 double-free；与 Phase G 共用 clone 基础设施 | `docs/plan_memory_lifetime.md` |
 
@@ -200,6 +201,7 @@
 | ~~L-006~~ | ~~enum 含 vec/map payload 的 drop~~ | ✅ 已修复（2026-05-20）：ctor source move + clone vec/map + AOT main i32 | — | — |
 | L-007 | Block env 不可克隆 | `Block g = vec[i]` 被 checker 拒绝 | Phase G (`docs/block_clone_plan.md`) | `docs/plan_memory_lifetime.md` |
 | L-008 | struct 不可从容器深拷贝 | has_drop struct 从 vec 取出会 double-free | Phase H | `docs/plan_memory_lifetime.md` |
+| L-009 | LLVM 函数名不做模块 mangling | 跨模块同名函数（`json.load_file` vs `io.load_file`）在 LLVM IR 中冲突，stdlib 内无法安全 import io | mangling 实现（模块前缀 + 双下划线） | `docs/feature_inventory.md` ★★★★★ |
 
 ---
 

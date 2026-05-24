@@ -543,9 +543,11 @@ static bool register_method(Checker *c, int impl_idx, const char *name,
                 c->impl_registry[impl_idx].methods[j].self_borrow_kind = self_borrow_kind;
                 return true;
             }
+            const char *tname = c->impl_registry[impl_idx].struct_name;
+            bool is_enum = (find_enum_type(c, tname) != NULL);
             checker_error(c, line, col,
-                "conflicting method '%s': already defined for struct '%s'",
-                name, c->impl_registry[impl_idx].struct_name);
+                "conflicting method '%s': already defined for %s '%s'",
+                name, is_enum ? "enum" : "struct", tname);
             return false;
         }
     }
@@ -1114,9 +1116,14 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
         /* Plain named type: try Self, then alias, then struct, then enum. */
         if (tn->as.named.arg_count == 0)
         {
-            /* Self resolves to the current impl struct type (trait/impl context) */
-            if (strcmp(tn->as.named.name, "Self") == 0 && c->current_impl_struct_type != NULL)
-                return c->current_impl_struct_type;
+            /* Self resolves to the current impl struct or enum type (trait/impl context) */
+            if (strcmp(tn->as.named.name, "Self") == 0)
+            {
+                if (c->current_impl_struct_type != NULL)
+                    return c->current_impl_struct_type;
+                if (c->current_impl_enum_type != NULL)
+                    return c->current_impl_enum_type;
+            }
             Type *al = find_type_alias(c, tn->as.named.name);
             if (al) return al;
             Type *st = find_struct_type(c, tn->as.named.name);
@@ -3163,9 +3170,21 @@ static Type *check_map_method(Checker *c, AstNode *call_node, Type *map_type)
         return type_vector(V);
     }
 
+    /* m.copy() -> map(K,V) — deep-clone entire map */
+    if (strcmp(method, "copy") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "map.copy() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return map_type;
+    }
+
     checker_error(c, call_node->line, call_node->column,
                   "map has no method '%s' (available: set, get, contains_key, remove, "
-                  "clear, is_empty, keys, values)",
+                  "clear, is_empty, keys, values, copy)",
                   method);
     return NULL;
 }
@@ -4603,10 +4622,32 @@ static Type *check_expr(Checker *c, AstNode *node)
                             break;
                         }
                     }
+                    }
                 }
-            }
+                /* Check if obj is an enum type name (static call: JsonValue.parse()) */
+                if (obj_node->kind == AST_IDENT && !is_static_call)
+                {
+                    Type *et = find_enum_type(c, obj_node->as.ident.name);
+                    if (et && et->kind == TYPE_ENUM)
+                    {
+                        int si = method_is_static(c, obj_node->as.ident.name, method_name);
+                        if (si >= 0)
+                        {
+                            method_struct = obj_node->as.ident.name;
+                            is_static_call = true;
+                            if (si == 0)
+                            {
+                                checker_error(c, node->line, node->column,
+                                              "cannot call instance method '%s' on type '%s'; use an instance",
+                                              method_name, method_struct);
+                                result = NULL;
+                                break;
+                            }
+                        }
+                    }
+                }
 
-            /* If not a struct-type static call, resolve the object expression */
+                /* If not a struct-type static call, resolve the object expression */
             if (!is_static_call)
             {
                 Type *obj_type = check_expr(c, obj_node);
@@ -4706,6 +4747,57 @@ static Type *check_expr(Checker *c, AstNode *node)
                             /* Static method called via instance — allowed, ignore obj */
                             is_static_call = true;
                             method_struct = deref->as.strukt.name;
+                        }
+                    }
+
+                    /* Check if obj is an instance of an enum */
+                    if (deref->kind == TYPE_ENUM && deref->as.enom.name)
+                    {
+                        int si = method_is_static(c, deref->as.enom.name, method_name);
+                        if (si == 0)
+                        {
+                            if (obj_node->kind == AST_IDENT)
+                            {
+                                Symbol *bsym = scope_resolve(c->current_scope,
+                                                             obj_node->as.ident.name);
+                                if (bsym && (bsym->is_borrow || bsym->is_mut_borrow))
+                                {
+                                    int msbk = method_self_borrow_kind(c,
+                                        deref->as.enom.name, method_name);
+                                    if (msbk == 0)
+                                    {
+                                        checker_move_error(c, node->line, node->column,
+                                            "cannot call method '%s.%s()' on '%s': "
+                                            "method has no self-borrow annotation; "
+                                            "declare it as 'fn %s(&self ...)' or "
+                                            "'fn %s(&!self ...)' to allow calling on borrows",
+                                            deref->as.enom.name, method_name,
+                                            obj_node->as.ident.name,
+                                            method_name, method_name);
+                                        result = NULL;
+                                        break;
+                                    }
+                                    if (msbk == 2 && bsym->is_borrow)
+                                    {
+                                        checker_move_error(c, node->line, node->column,
+                                            "cannot call '%s.%s(&!self)' on '%s': "
+                                            "method requires writable self, but "
+                                            "'%s' is a read-only borrow",
+                                            deref->as.enom.name, method_name,
+                                            obj_node->as.ident.name,
+                                            obj_node->as.ident.name);
+                                        result = NULL;
+                                        break;
+                                    }
+                                }
+                            }
+                            is_method_call = true;
+                            method_struct = deref->as.enom.name;
+                        }
+                        else if (si == 1)
+                        {
+                            is_static_call = true;
+                            method_struct = deref->as.enom.name;
                         }
                     }
 
@@ -5131,43 +5223,58 @@ static Type *check_expr(Checker *c, AstNode *node)
             break;
         }
 
-        /* Auto-dereference: *Struct → Struct for field/method access (like C++ -> ) */
+        /* Auto-dereference: *Struct → Struct or *Enum → Enum for field/method access */
         if (obj->kind == TYPE_POINTER && obj->as.pointer_to &&
-            obj->as.pointer_to->kind == TYPE_STRUCT)
+            (obj->as.pointer_to->kind == TYPE_STRUCT ||
+             obj->as.pointer_to->kind == TYPE_ENUM))
         {
             obj = obj->as.pointer_to;
         }
 
-        if (obj->kind != TYPE_STRUCT)
+        if (obj->kind == TYPE_STRUCT)
         {
-            checker_error(c, node->line, node->column,
-                          "field access on non-struct type '%s'", type_name(obj));
-            result = NULL;
-            break;
-        }
-
-        /* Search struct fields */
-        for (int i = 0; i < obj->as.strukt.field_count; i++)
-        {
-            if (strcmp(obj->as.strukt.fields[i].name, field_name) == 0)
+            /* Search struct fields */
+            for (int i = 0; i < obj->as.strukt.field_count; i++)
             {
-                result = obj->as.strukt.fields[i].type;
-                break;
+                if (strcmp(obj->as.strukt.fields[i].name, field_name) == 0)
+                {
+                    result = obj->as.strukt.fields[i].type;
+                    break;
+                }
+            }
+            /* Search methods if not found as field */
+            if (result == NULL && obj->as.strukt.name)
+            {
+                result = find_method(c, obj->as.strukt.name, field_name);
+            }
+            if (result == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "struct '%s' has no field or method '%s'",
+                              obj->as.strukt.name ? obj->as.strukt.name : "<anon>",
+                              field_name);
             }
         }
-
-        /* Search methods if not found as field */
-        if (result == NULL && obj->as.strukt.name)
+        else if (obj->kind == TYPE_ENUM)
         {
-            result = find_method(c, obj->as.strukt.name, field_name);
+            /* Enum has no fields — only methods */
+            if (obj->as.enom.name)
+            {
+                result = find_method(c, obj->as.enom.name, field_name);
+            }
+            if (result == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "enum '%s' has no method '%s'",
+                              obj->as.enom.name ? obj->as.enom.name : "<anon>",
+                              field_name);
+            }
         }
-
-        if (result == NULL)
+        else
         {
             checker_error(c, node->line, node->column,
-                          "struct '%s' has no field or method '%s'",
-                          obj->as.strukt.name ? obj->as.strukt.name : "<anon>",
-                          field_name);
+                          "field access on non-struct/enum type '%s'", type_name(obj));
+            result = NULL;
         }
         break;
     }
@@ -6831,16 +6938,27 @@ static void check_impl_decl(Checker *c, AstNode *node)
     }
 
     Type *st = find_struct_type(c, name);
+    Type *et = NULL;
+    bool is_enum_impl = false;
     if (st == NULL)
     {
-        checker_error(c, node->line, node->column,
-                      "impl for undefined struct '%s'", name);
-        return;
+        et = find_enum_type(c, name);
+        if (et == NULL)
+        {
+            checker_error(c, node->line, node->column,
+                          "impl for undefined type '%s'", name);
+            return;
+        }
+        is_enum_impl = true;
     }
 
-    /* Set Self context so resolve_type_node can resolve 'Self' */
+    /* Set Self context so resolve_type_node can resolve 'Self'
+       (struct and enum are mutually exclusive). */
     Type *saved_impl_st = c->current_impl_struct_type;
-    c->current_impl_struct_type = st;
+    Type *saved_impl_et = c->current_impl_enum_type;
+    c->current_impl_struct_type = is_enum_impl ? NULL : st;
+    c->current_impl_enum_type   = is_enum_impl ? et : NULL;
+    Type *self_type = st ? st : et;
 
     int impl_idx = find_or_create_impl(c, name);
 
@@ -6891,7 +7009,7 @@ static void check_impl_decl(Checker *c, AstNode *node)
         {
             total_n = user_n + 1;
             all_params = (Type **)malloc_safe((size_t)total_n * sizeof(Type *));
-            all_params[0] = type_pointer(st); /* implicit *Self */
+            all_params[0] = type_pointer(self_type); /* implicit *Self */
             for (int j = 0; j < user_n; j++)
             {
                 all_params[j + 1] = user_params[j];
@@ -6922,13 +7040,13 @@ static void check_impl_decl(Checker *c, AstNode *node)
             /* Phase B: drop struct &self / &!self now allowed. */
             if (sbk == 0)
             {
-                /* Legacy: self is *Struct pointer (mut-style). */
-                scope_define(c->current_scope, "self", type_pointer(st));
+                /* Legacy: self is *Self pointer (mut-style). */
+                scope_define(c->current_scope, "self", type_pointer(self_type));
             }
             else
             {
-                /* &self / &!self: self is Struct with borrow flags. */
-                Symbol *self_sym = scope_define(c->current_scope, "self", st);
+                /* &self / &!self: self is Self with borrow flags. */
+                Symbol *self_sym = scope_define(c->current_scope, "self", self_type);
                 if (self_sym)
                 {
                     if (sbk == 1) self_sym->is_borrow = true;
@@ -6991,29 +7109,39 @@ static void check_impl_decl(Checker *c, AstNode *node)
         if (!is_static &&
             strcmp(method->as.fn_decl.name, "__drop") == 0)
         {
-            /* __drop must be an instance method with no user parameters and void return */
-            if (user_n != 0)
+            if (is_enum_impl)
             {
                 checker_error(c, method->line, method->column,
-                              "__drop() must have no parameters (self is implicit)");
+                              "enum '%s' cannot have a user-defined __drop method",
+                              name);
             }
-            if (ret->kind != TYPE_VOID)
+            else
             {
-                checker_error(c, method->line, method->column,
-                              "__drop() must return void");
+                /* __drop must be an instance method with no user parameters and void return */
+                if (user_n != 0)
+                {
+                    checker_error(c, method->line, method->column,
+                                  "__drop() must have no parameters (self is implicit)");
+                }
+                if (ret->kind != TYPE_VOID)
+                {
+                    checker_error(c, method->line, method->column,
+                                  "__drop() must return void");
+                }
+                /* Note: For user-defined __drop with nested struct fields, we don't require
+                   explicit self.field.__drop() calls because:
+                   1. If nested struct has compiler-generated __drop, it's not in impl_registry
+                   2. Compiler will auto-handle nested struct cleanup after user's __drop runs
+                */
+                /* Mark struct as having a destructor */
+                st->as.strukt.has_drop = true;
             }
-            /* Note: For user-defined __drop with nested struct fields, we don't require
-               explicit self.field.__drop() calls because:
-               1. If nested struct has compiler-generated __drop, it's not in impl_registry
-               2. Compiler will auto-handle nested struct cleanup after user's __drop runs
-            */
-            /* Mark struct as having a destructor */
-            st->as.strukt.has_drop = true;
         }
     }
 
     /* Restore Self context */
     c->current_impl_struct_type = saved_impl_st;
+    c->current_impl_enum_type   = saved_impl_et;
 }
 
 static void check_extern_fn(Checker *c, AstNode *node)
@@ -7749,6 +7877,35 @@ static void forward_pass(Checker *c, AstNode *program)
                             type_module_add_export(mod_type,
                                                    ebd->as.extern_fn.name,
                                                    ebd->resolved_type);
+                    }
+                }
+                else if (d->kind == AST_IMPL_DECL &&
+                         d->as.impl_decl.type_param_count == 0)
+                {
+                    /* Register impl methods from the imported module into the
+                       importer's impl_registry so that instance/static method
+                       calls on imported types (e.g. JsonValue.null_val()) work.
+                       method->resolved_type was set by check_impl_decl (L7106)
+                       and is kept alive because types are intentionally leaked. */
+                    const char *impl_name = d->as.impl_decl.name;
+                    int impl_idx = find_or_create_impl(c, impl_name);
+                    for (int mi = 0; mi < d->as.impl_decl.method_count; mi++)
+                    {
+                        AstNode *method = d->as.impl_decl.methods[mi];
+                        if (method == NULL || method->kind != AST_FN_DECL)
+                            continue;
+                        if (method->resolved_type == NULL)
+                            continue;
+                        bool m_static = method->as.fn_decl.is_static;
+                        int  m_sbk    = method->as.fn_decl.self_borrow_kind;
+                        const char *mname = method->as.fn_decl.name;
+                        register_method(c, impl_idx, mname,
+                                        method->resolved_type,
+                                        m_static, m_sbk,
+                                        method->line, method->column);
+                        /* Also expose as a free function so direct calls work */
+                        scope_define(c->current_scope, mname,
+                                     method->resolved_type);
                     }
                 }
             }

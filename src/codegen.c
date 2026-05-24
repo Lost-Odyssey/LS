@@ -9457,6 +9457,13 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef mv = LLVMBuildLoad2(ctx->builder, map_t, map_alloca, "mv");
         return LLVMBuildExtractValue(ctx->builder, mv, 1, "len");
     }
+    /* ---- copy() -> map(K,V) — deep-clone entire map into a new independent map ---- */
+    if (strcmp(method, "copy") == 0)
+    {
+        LLVMTypeRef map_t = ls_map_type(ctx);
+        LLVMValueRef mv = LLVMBuildLoad2(ctx->builder, map_t, map_alloca, "mcpy.v");
+        return emit_map_clone_val(ctx, mv, key_type, val_type);
+    }
     (void)val_lt;
     (void)key_lt;
 
@@ -10161,7 +10168,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             {
                 Type *deref = obj_type;
                 if (deref->kind == TYPE_POINTER && deref->as.pointer_to &&
-                    deref->as.pointer_to->kind == TYPE_STRUCT)
+                    (deref->as.pointer_to->kind == TYPE_STRUCT ||
+                     deref->as.pointer_to->kind == TYPE_ENUM))
                 {
                     deref = deref->as.pointer_to;
                 }
@@ -10177,6 +10185,21 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             callee_rt->as.function.params[0]->kind == TYPE_POINTER &&
                             callee_rt->as.function.params[0]->as.pointer_to &&
                             callee_rt->as.function.params[0]->as.pointer_to->kind == TYPE_STRUCT)
+                        {
+                            cg_is_method_call = true;
+                        }
+                    }
+                }
+                else if (deref->kind == TYPE_ENUM)
+                {
+                    Type *callee_rt = node->as.call.callee->resolved_type;
+                    if (callee_rt && callee_rt->kind == TYPE_FUNCTION)
+                    {
+                        int nparams = callee_rt->as.function.param_count;
+                        if (nparams > 0 && callee_rt->as.function.params &&
+                            callee_rt->as.function.params[0]->kind == TYPE_POINTER &&
+                            callee_rt->as.function.params[0]->as.pointer_to &&
+                            callee_rt->as.function.params[0]->as.pointer_to->kind == TYPE_ENUM)
                         {
                             cg_is_method_call = true;
                         }
@@ -10220,7 +10243,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             {
                 Type *deref = obj_type;
                 if (deref->kind == TYPE_POINTER && deref->as.pointer_to &&
-                    deref->as.pointer_to->kind == TYPE_STRUCT)
+                    (deref->as.pointer_to->kind == TYPE_STRUCT ||
+                     deref->as.pointer_to->kind == TYPE_ENUM))
                 {
                     deref = deref->as.pointer_to;
                 }
@@ -10228,6 +10252,11 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 {
                     is_struct_method = true;
                     struct_name = deref->as.strukt.name;
+                }
+                else if (deref->kind == TYPE_ENUM)
+                {
+                    is_struct_method = true;
+                    struct_name = deref->as.enom.name;
                 }
                 /* Step 11: builtin type method — use type name as prefix */
                 else
@@ -11223,13 +11252,36 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 }
 
                 LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                /* BF-026: emit cleanup for string binders (is_borrowed=false,
-                   independently cloned in F.7) before leaving the arm scope.
-                   F.7 correctly set is_borrowed=false so that scope cleanup
-                   would free the clone, but pop_scope() never emits cleanup
-                   code — resulting in a leak every time an arm exits normally.
-                   emit_scope_cleanup() is a no-op when the block already has a
-                   terminator (e.g., `return e`), so this is safe for all arms. */
+                /* BF-026 / BF-029: emit cleanup for string binders (is_borrowed=false,
+                   independently cloned in match-arm binder setup) before leaving the
+                   arm scope.  A cloned binder must be freed on arm exit to avoid leaks.
+                   EXCEPTION: if the arm body is exactly the binder IDENT being used as
+                   the expression result (i.e. body_val == load from binder alloca), the
+                   binder is being "moved out" — freeing it here would give the caller a
+                   dangling pointer.  Detect this case and zero the binder's cap so that
+                   emit_scope_cleanup skips the free (the caller now owns the clone). */
+                if (body_val &&
+                    arm->body && arm->body->kind == AST_IDENT &&
+                    arm->body->resolved_type &&
+                    arm->body->resolved_type->kind == TYPE_STRING)
+                {
+                    /* Check if the ident refers to an owned (cloned) string binder */
+                    CgSymbol *body_sym = cg_scope_resolve(ctx->current_scope,
+                                                          arm->body->as.ident.name);
+                    if (body_sym && !body_sym->is_borrowed && body_sym->value)
+                    {
+                        /* Mark binder as moved: zero cap in its alloca so cleanup
+                           skips the free.  body_val (the loaded LsString SSA value)
+                           still carries the original cap and is returned to caller. */
+                        LLVMTypeRef str_t = ls_string_type(ctx);
+                        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+                        LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, str_t,
+                                                          body_sym->value, "bmove.cur");
+                        LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
+                                                  LLVMConstInt(i32_t, 0, 0), 2, "bmove.zc");
+                        LLVMBuildStore(ctx->builder, zeroed, body_sym->value);
+                    }
+                }
                 emit_scope_cleanup(ctx);
                 pop_scope(ctx);
                 if (result_alloca && body_val)
@@ -14952,7 +15004,11 @@ static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
 {
     if (enum_type == NULL || enum_type->kind != TYPE_ENUM) return;
     if (!enum_type->as.enom.has_drop) return;
-    if (enum_type->as.enom.drop_fn != NULL) return;
+    /* NOTE: do NOT early-return on `drop_fn != NULL` here.
+       In cross-module scenarios the shared Type* may hold a stale
+       LLVMValueRef from a *different* LLVM module.  Fall through to
+       the LLVMGetNamedFunction check which correctly validates the
+       current module. */
 
     const char *enum_name = enum_type->as.enom.name;
     char drop_fn_name[256];
@@ -15226,7 +15282,11 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
 {
     if (enum_type == NULL || enum_type->kind != TYPE_ENUM) return;
     if (!enum_type->as.enom.has_drop) return;
-    if (enum_type->as.enom.clone_fn != NULL) return;
+    /* NOTE: do NOT early-return on `clone_fn != NULL` here.
+       In cross-module scenarios the shared Type* may hold a stale
+       LLVMValueRef from a *different* LLVM module.  Fall through to
+       the LLVMGetNamedFunction check which correctly validates the
+       current module. */
 
     /* Check if any variant actually needs cloning. */
     int needs_count = 0;
@@ -15672,6 +15732,7 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
     if (node->as.impl_decl.type_param_count > 0) return;
 
     const char *struct_name = node->as.impl_decl.name;
+    bool is_enum_impl = (find_enum_llvm(ctx, struct_name) != NULL);
 
     for (int i = 0; i < node->as.impl_decl.method_count; i++)
     {
@@ -15686,7 +15747,7 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
             snprintf(qualified_name, sizeof(qualified_name), "%s.%s", struct_name, orig_name);
             method->as.fn_decl.name = qualified_name;
 
-            if (strcmp(orig_name, "__drop") == 0)
+            if (strcmp(orig_name, "__drop") == 0 && !is_enum_impl)
             {
                 /* Wrapper pattern for user __drop:
                    1. Generate user body as "StructName.__drop$" (internal; '$' is not a

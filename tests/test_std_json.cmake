@@ -310,4 +310,72 @@ if(NOT "${e2e_out}" MATCHES "round-trip:")
 endif()
 message(STATUS "json_e2e JIT: OK")
 
+# ---- Test H: json_file_io_test (json.read_file / json.write_file convenience wrappers) ----
+set(FILE_IO "${SAMPLE_DIR}/json_file_io_test.ls")
+get_filename_component(_src_root "${SAMPLE_DIR}" DIRECTORY)
+get_filename_component(_src_root "${_src_root}" DIRECTORY)
+
+set(_file_io_expected
+    "PASS 1" "PASS 2a" "PASS 2b" "PASS 2c" "PASS 3a"
+    "PASS 4a" "PASS 4b" "PASS 5a" "PASS 5b" "PASS 5c" "PASS 6"
+)
+
+# H.1 JIT
+execute_process(
+    COMMAND "${LS_EXE}" run "${FILE_IO}"
+    WORKING_DIRECTORY "${_src_root}"
+    OUTPUT_VARIABLE fio_jit_out  ERROR_VARIABLE fio_jit_err  RESULT_VARIABLE fio_jit_rc
+)
+if(NOT fio_jit_rc EQUAL 0)
+    message(FATAL_ERROR "json_file_io JIT FAILED (rc=${fio_jit_rc})\nstderr:\n${fio_jit_err}")
+endif()
+foreach(_line ${_file_io_expected})
+    if(NOT "${fio_jit_out}" MATCHES "${_line}")
+        message(FATAL_ERROR "json_file_io JIT FAILED: missing '${_line}'\nstdout:\n${fio_jit_out}")
+    endif()
+endforeach()
+message(STATUS "json_file_io JIT: OK")
+
+# H.2 AOT
+set(fio_aot_bin "${WORK_DIR}/json_file_io_aot")
+if(WIN32)
+    set(fio_aot_bin "${fio_aot_bin}.exe")
+endif()
+execute_process(
+    COMMAND "${LS_EXE}" compile "${FILE_IO}" -o "${fio_aot_bin}"
+    RESULT_VARIABLE fio_aot_rc  ERROR_VARIABLE fio_aot_err
+)
+if(NOT fio_aot_rc EQUAL 0)
+    message(FATAL_ERROR "json_file_io AOT compile FAILED:\n${fio_aot_err}")
+endif()
+execute_process(
+    COMMAND "${fio_aot_bin}"
+    WORKING_DIRECTORY "${_src_root}"
+    OUTPUT_VARIABLE fio_aot_out  RESULT_VARIABLE fio_aot_run_rc
+)
+if(NOT fio_aot_run_rc EQUAL 0)
+    message(FATAL_ERROR "json_file_io AOT run FAILED (rc=${fio_aot_run_rc})")
+endif()
+foreach(_line ${_file_io_expected})
+    if(NOT "${fio_aot_out}" MATCHES "${_line}")
+        message(FATAL_ERROR "json_file_io AOT FAILED: missing '${_line}'\nstdout:\n${fio_aot_out}")
+    endif()
+endforeach()
+message(STATUS "json_file_io AOT: OK")
+file(REMOVE "${fio_aot_bin}")
+
+# H.3 memcheck
+execute_process(
+    COMMAND "${LS_EXE}" run --memcheck "${FILE_IO}"
+    WORKING_DIRECTORY "${_src_root}"
+    OUTPUT_VARIABLE fio_mc_out  ERROR_VARIABLE fio_mc_err  RESULT_VARIABLE fio_mc_rc
+)
+if(NOT fio_mc_rc EQUAL 0)
+    message(FATAL_ERROR "json_file_io memcheck run FAILED (rc=${fio_mc_rc})\nstderr:\n${fio_mc_err}")
+endif()
+if(NOT "${fio_mc_err}" MATCHES "OK clean")
+    message(FATAL_ERROR "json_file_io --memcheck FAILED\nstderr:\n${fio_mc_err}")
+endif()
+message(STATUS "json_file_io memcheck: OK clean")
+
 message(STATUS "test_std_json: ALL PASSED")

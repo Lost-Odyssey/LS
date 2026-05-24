@@ -36,6 +36,12 @@
 | BF-022 | 2026-05-23 | CRASH | vec/arr clone 对 has_drop enum 元素 memcpy → double-free | codegen (std.json) | — |
 | BF-023 | 2026-05-23 | CRASH | 自递归 enum clone 内联 IR 无限递归 → 编译器栈溢出 | codegen (std.json) | — |
 | BF-024 | 2026-05-23 | WRONG | vec.push borrowed match binder 浅拷贝 → 值变 null | codegen (std.json) | — |
+| BF-025 | 2026-05-24 | DOUBLE-FREE | 用户函数返回 string 双重 temp 注册 → double-free | codegen | — |
+| BF-026 | 2026-05-24 | LEAK | match arm string binder scope cleanup 缺失 → 泄漏 | codegen | — |
+| BF-027 | 2026-05-25 | CRASH | 跨模块 enum drop_fn/clone_fn 持有旧 LLVM module 的 stale 指针 | codegen (模块系统) | — |
+| BF-028 | 2026-05-25 | WRONG | import 模块的 impl 方法未注册到导入方 impl_registry | checker (模块系统) | — |
+| BF-029 | 2026-05-25 | DOUBLE-FREE | match-arm string binder 作为 arm 返回值时 scope cleanup 误释放 | codegen | — |
+| BF-030 | 2026-05-25 | DOUBLE-FREE | `_escape_string` 循环内 `s.substr(i,1)` 临时 string 在 match+while 嵌套中非确定性双释放 | std/json.ls (LS 代码) | — |
 
 ---
 
@@ -278,6 +284,88 @@ if (source_borrowed) {
 - match binder 的 `is_borrowed=true` 意味着"不拥有堆内存"，任何需要获取所有权的操作（push / set / 赋值）必须先 clone
 - string binder 之前独立做了 clone（BF-005），但其他 has_drop 类型的 binder 未同步处理
 - vec.push / map.set 的 codegen 对 string / struct / block 各有独立的 ownership transfer 逻辑，新增 has_drop 类型时必须逐一审查
+
+---
+
+## BF-025：用户函数返回 string 双重 temp 注册 → double-free（2026-05-24）
+
+**症状**：`print(my_fn())` 其中 `my_fn` 是用户定义函数，返回 TYPE_STRING → 偶发 double-free
+
+**根因**：`codegen.c:expr_produces_dynamic_string()` 对 `AST_IDENT` callee 的用户函数调用未做特判。`print` 的 `__argtmp` 路径通过 `expr_produces_dynamic_string` 判定为 true → 注册临时 string；而 `AST_CALL` 通用路径（BF-008 修复后）也对用户函数返回值调用 `cg_push_temp_string`。两路径同时注册同一 string → 两次 free。
+
+**修复**（`codegen.c:2235-2243`）：在 `expr_produces_dynamic_string` 的 AST_CALL 分支中，对 `AST_IDENT` callee（用户函数调用）返回 `false`，避免 `__argtmp` 重复注册。用户函数返回值已由 `AST_CALL` 通用路径的 `cg_push_temp_string` 管理。
+
+**教训**：临时 string 的生命期跟踪有两个机制（`temp_string_slots` 和 `__argtmp` scope），任何新增的"函数调用返回 string"路径必须确保只走其中之一。
+
+---
+
+## BF-026：match arm string binder scope cleanup 缺失 → 泄漏（2026-05-24）
+
+**症状**：match arm 内使用了 owned string binder（如 `Some(s) => { print(s); 42 }`），arm 退出后 binder 的堆内存泄漏
+
+**根因**：enum match arm 对 `TYPE_STRING` binder 调 `emit_string_clone_val` 独立克隆（BF-005），克隆后的 binder 拥有堆内存（`is_borrowed=false`）。但 arm 结束处仅 `pop_scope()`，未 emit scope cleanup 代码 → binder 克隆占用的堆内存从未释放。
+
+**修复**（`codegen.c:11255-11257`）：arm body 编译完后，emit_scope_cleanup/pop_scope 之前，对 `is_borrowed=false` 的 string binder 执行正常的 scope cleanup（free cap>0 的字符串）。
+
+**教训**：binder 的 `is_borrowed` 标记直接影响所有权语义——`true` 时 scope cleanup 跳过（不拥有），`false` 时必须正常释放。为 binder 加独立克隆的同时必须确认 cleanup 路径。
+
+---
+
+## BF-027：跨模块 enum drop_fn/clone_fn 持有旧 LLVM module 的 stale 指针（2026-05-25）
+
+**症状**：`import std.json as json` 后使用 has_drop enum 类型 → 偶发 CRASH / 验证器报错 "invalid function pointer"
+
+**根因**：`emit_auto_enum_drop_fn` 和 `emit_auto_enum_clone_fn` 入口处有 `if (drop_fn != NULL) return;` 的提前返回守卫。在跨模块场景下，同一个 `Type *` 结构体可能被多个 LLVM module 共享——前一个 module 编译时已生成 `__drop`/`__clone` 函数并将指针写入 `enum_type->as.enom.drop_fn`。第二个 module 的 codegen 看到 `drop_fn != NULL` 就直接返回，使用了一个**属于不同 LLVM module** 的函数指针 → 验证器拒绝或运行时行为错误。
+
+**修复**（`codegen.c:15007-15011, 15285-15289`）：移除基于 `drop_fn`/`clone_fn` 字段的 early-return，改为无条件通过 `LLVMGetNamedFunction(ctx->module, fn_name)` 检查当前 module 是否已存在同名函数。如果存在则绑定到 Type 字段并返回；否则在当前 module 中创建新函数。
+
+**教训**：跨 module 编译时，Type 是"逻辑类型"而非"每个 module 独有"的。存储 LLVM 函数指针的字段容易在不同 module 间串值。应优先使用 `LLVMGetNamedFunction` 按 module 上下文查询。
+
+---
+
+## BF-028：import 模块的 impl 方法未注册到导入方 impl_registry（2026-05-25）
+
+**症状**：`import std.json as json` 后调用 `JsonValue.null_val()` 或 `x.is_null()` → checker 报 "enum has no method"
+
+**根因**：`forward_pass` 处理 `AST_IMPORT_DECL` 时，遍历被导入模块的顶层声明，但只处理了函数声明和 extern 块的导出注册。`AST_IMPL_DECL`（如 `impl JsonValue { ... }`）被忽略——其方法未通过 `register_method()` 注册到导入方的 `impl_registry`，也未通过 `scope_define()` 暴露为可调用函数。
+
+**修复**（`checker.c:7882-7909`）：在 `forward_pass` 的 import 处理中新增 `AST_IMPL_DECL` 分支——遍历 impl 的所有方法，逐一调用 `register_method(c, impl_name, name, type, is_static, sbk, line, col)` 注册到 impl_registry，同时 `scope_define` 暴露为自由函数以便直接调用。
+
+**教训**：模块系统接入新特性时，import 路径的 `forward_pass` 必须与单文件路径（`check_impl_decl`）保持同步。所有跨模块可访问的声明类型都需在 import 处理中添加对应分支。
+
+---
+
+## BF-029：match-arm string binder 作为 arm 返回值时 scope cleanup 误释放（2026-05-25）
+
+**症状**：`match val { Foo(s) => s }`（arm 体直接返回 binder）→ 返回值持有悬垂指针 / random data
+
+**根因**：BF-026 为 string binder 增加了 scope cleanup（arm 退出时释放克隆的堆内存）。但当 arm 体是 `s`（直接返回 binder）时，body_val 是 binder alloca 中 load 的 LsString 值，其 data 指针与 binder 的堆内存指向同一位置。scope cleanup 释放了 binder 的 cap>0 字符串 → 返回值成为悬垂指针。
+
+**修复**（`codegen.c:11263-11284`）：在 `emit_scope_cleanup` 前检测一个特殊模式——body 是 AST_IDENT 且该 ident 是被拥有的 string binder（`is_borrowed=false`）。如果是，将 binder alloca 中 LsString 的 cap 字段清零（标记为"已移出"），使后续 scope cleanup 跳过 free，同时 body_val 作为 SSA 值保留了原始 cap 被返回给 caller。
+
+**教训**："泄漏"和"双释放"之间只有一线之隔。BF-026 修复泄漏时引入了双释放的新路径。需要在所有权转移点（return / move）始终检查被释放的值是否已被 caller 消费。这个模式与 scope cleanup 对 return 变量的 skip-list 机制本质相同——binder 在函数内表现为变量，需要与普通变量一样的"返回值免清理"保护。
+
+---
+
+## BF-030：`_escape_string` 循环内 `s.substr(i,1)` 临时 string 非确定性双释放（2026-05-25）
+
+**症状**：`json.stringify(obj)` 调用时，约 1/30 概率出现 double-free。`obj_str` 输出为 `{"name":"{\"n","age":30}`（"name" 的值被垃圾覆盖）。memcheck 报告分配点在 `string.substr`，首次释放点为 `0:0 (unknown)`。
+
+**根因**：⚠️ **实际 root cause 未确认**——当前修复仅绕过了问题路径，未触及底层根源。
+
+关键线索：
+- `"first freed at 0:0 (unknown)"`：首次释放通过**非 memcheck 插桩路径**发生
+- JIT 环境下，LLVM 生成的 helper 函数（map helpers、`JsonValue.__drop/clone`）中的 `cg_emit_free` 在 JIT 链接时可能解析到 **CRT 的 `free`** 而非 memcheck 的 `free`——因为 LLJIT 通过 `orc::CXXRuntimeOverrides` 解析符号，可能绕过 memcheck 的 hook
+- 若 map/vec 内部的 realloc/free 走了 CRT 路径，memcheck 无法跟踪这些释放。后续 `cg_flush_temps` 通过 memcheck 的 `free` 释放同一指针时，就产生"双释放"——但实际只释放了一次，memcheck 误报
+- `s.substr(i, 1)` 在循环内频繁分配/释放，增加了踩中该路径的概率。换成 `result.append(ch)` 零分配后症状消失，但底层 JIT 符号解析问题仍在
+
+**修复**（`std/json.ls:571`）：将 `result.append(s.substr(i, 1))` 改为 `result.append(ch)`——`ch` 是已通过 `s.at(i)` 读取的字符（`int` 类型），`string.append(int)` 直接追加单字节，**零分配**，完全消除了临时 string 的创建。属于 workaround，非根本修复。
+
+**教训**：
+- `s.substr(i, 1)` 看起来很安全，但在热循环中每次调用都产生新分配。优先使用 `s.at(i)` + `append(int)` 替代。
+- `"0:0 (unknown)"` 的首次释放点标志着一类特殊问题：**memcheck 盲区**。可能在 JIT 符号解析 / CRT 拦截 / LLVM 内联展开路径中。
+- 纯 LS 标准库中的性能/内存问题与编译器 bug 同样影响可靠性——stdlib 代码也应遵循同级别审查。
+- **TODO**：调查 JIT 中 `free` 符号解析路径，确认 `cg_emit_free` 是否始终走 memcheck 插桩版本。如确认为 JIT 链接问题，需在 LLJIT 设置中显式注册 memcheck 的 `free`/`malloc` 符号。
 
 ---
 

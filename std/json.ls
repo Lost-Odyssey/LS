@@ -1,6 +1,8 @@
 // std/json.ls — JSON parser and serializer for LS.
 // Pure LS implementation; recursive-descent parser + recursive serializer.
 
+import io
+
 // ---- Core type ----
 
 enum JsonValue {
@@ -10,6 +12,106 @@ enum JsonValue {
     Str(string val)
     Array(vec(JsonValue) items)
     Object(vec(string) keys, map(string, JsonValue) entries)
+}
+
+// ---- JsonValue impl: methods ----
+
+impl JsonValue {
+    // -- Static constructors --
+    static fn null_val() -> JsonValue { return Null }
+    static fn bool_val(bool b) -> JsonValue { return Bool(b) }
+    static fn num_val(f64 n) -> JsonValue { return Number(n) }
+    static fn int_val(int n) -> JsonValue { return Number(n as f64) }
+    static fn str_val(string s) -> JsonValue { return Str(s) }
+    static fn array_new() -> JsonValue {
+        vec(JsonValue) v = []
+        return Array(v)
+    }
+    static fn object_new() -> JsonValue {
+        vec(string) ks = []
+        map(string, JsonValue) m = {}
+        return Object(ks, m)
+    }
+
+    // -- &self predicates --
+    fn is_null(&self) -> bool {
+        match self { Null => true, _ => false, }
+    }
+    fn is_bool(&self) -> bool {
+        match self { Bool(_) => true, _ => false, }
+    }
+    fn is_number(&self) -> bool {
+        match self { Number(_) => true, _ => false, }
+    }
+    fn is_str(&self) -> bool {
+        match self { Str(_) => true, _ => false, }
+    }
+    fn is_array(&self) -> bool {
+        match self { Array(_) => true, _ => false, }
+    }
+    fn is_object(&self) -> bool {
+        match self { Object(k, _) => true, _ => false, }
+    }
+
+    // -- &self accessors (primitives only; string/enum via match) --
+    fn get_number(&self) -> f64 {
+        match self { Number(v) => v, _ => 0.0, }
+    }
+    fn get_bool(&self) -> bool {
+        match self { Bool(v) => v, _ => false, }
+    }
+
+    // -- &self navigation --
+    fn array_len(&self) -> int {
+        match self {
+            Array(items) => { return items.length }
+            _ => { return 0 - 1 }
+        }
+    }
+    fn object_len(&self) -> int {
+        match self {
+            Object(ks, _) => { return ks.length }
+            _ => { return 0 - 1 }
+        }
+    }
+    fn object_has(&self, string key) -> bool {
+        match self {
+            Object(_, entries) => { return entries.contains_key(key) }
+            _ => { return false }
+        }
+    }
+
+    // -- &!self mutation (COPY+REPLACE pattern) --
+
+    // Append an element to an Array variant in place.
+    fn push(&!self, JsonValue item) {
+        match self {
+            Array(items) => {
+                vec(JsonValue) nv = items.copy()
+                nv.push(item)
+                self = Array(nv)
+            }
+            _ => {}
+        }
+    }
+
+    // Insert or update a key in an Object variant in place.
+    // 'key' must be an owned string (call key.copy() if passing a literal).
+    fn set(&!self, string key, JsonValue val) {
+        match self {
+            Object(keys, entries) => {
+                vec(string) nks = keys.copy()
+                map(string, JsonValue) nem = entries.copy()
+                string k = key.copy()   // cap=0 param -> owned copy
+                if (!nem.contains_key(k)) {
+                    nks.push(k.copy())  // k still valid after push (push takes .copy() result)
+                }
+                nem.set(k, val)         // map clones key+val internally
+                self = Object(nks, nem)
+            }
+            _ => {}
+        }
+    }
 }
 
 // ---- Convenience constructors ----
@@ -468,7 +570,7 @@ fn _escape_string(string s) -> string {
             '\n' => { result.append("\\n") }
             '\r' => { result.append("\\r") }
             '\t' => { result.append("\\t") }
-            _    => { result.append(s.substr(i, 1)) }
+            _    => { result.append(ch) }
         }
         i = i + 1
     }
@@ -637,4 +739,22 @@ fn object_keys(JsonValue v) -> vec(string) {
             return empty
         }
     }
+}
+
+// ---- File I/O convenience wrappers ----
+// Note: names avoid conflict with io.ls (LLVM has no module-level name mangling).
+
+fn load_file(string path) -> Result(JsonValue, string) {
+    string content = try io.read_file(path)
+    return parse(content)
+}
+
+fn save_file(string path, JsonValue val) -> Result(int, string) {
+    string content = stringify_pretty(val, 2)
+    return io.write_file(path, content)
+}
+
+fn save_compact(string path, JsonValue val) -> Result(int, string) {
+    string content = stringify(val)
+    return io.write_file(path, content)
 }

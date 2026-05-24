@@ -892,3 +892,44 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_char_lit.cmake
 )
 set_tests_properties(test_char_lit PROPERTIES DEPENDS "test_match_or_pattern")
+
+# ---- enum impl methods ----
+add_test(
+    NAME test_enum_method_basic
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_method_basic.cmake
+)
+set_tests_properties(test_enum_method_basic PROPERTIES DEPENDS "test_char_lit")
+
+add_test(
+    NAME test_enum_method_mut
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_method_mut.cmake
+)
+set_tests_properties(test_enum_method_mut PROPERTIES DEPENDS "test_enum_method_basic")
+
+add_test(
+    NAME test_enum_method_static
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_method_static.cmake
+)
+set_tests_properties(test_enum_method_static PROPERTIES DEPENDS "test_enum_method_mut")
+
+add_test(
+    NAME test_enum_method_has_drop
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_method_has_drop.cmake
+)
+set_tests_properties(test_enum_method_has_drop PROPERTIES DEPENDS "test_enum_method_static")
