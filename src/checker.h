@@ -128,8 +128,10 @@ typedef struct Checker {
     int pending_gm_cap;
 
     /* Self type context: set during check_impl_decl / check_impl_trait_decl
-       so that resolve_type_node can resolve 'Self' to the implementing struct. */
+       so that resolve_type_node can resolve 'Self' to the implementing struct
+       or enum. Only one is set at a time (mutually exclusive). */
     Type *current_impl_struct_type;
+    Type *current_impl_enum_type;
 
     /* Move semantics tracking */
     bool in_return_expr;       /* true if currently checking a return expression */
