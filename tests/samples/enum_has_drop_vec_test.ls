@@ -1,6 +1,6 @@
 // enum_has_drop_vec_test.ls
-// Phase E-1 TDD: vec(has_drop_enum) scope drop / clear / truncate /
-//               extend / resize / copy / slice / push / pop / remove
+// Phase E-1/E-2 TDD: vec(has_drop_enum) scope drop / clear / truncate /
+//   extend / resize / copy / slice / push / pop / remove / first / last / get
 // Verifies: 0 leaks, 0 double-frees with --memcheck
 
 enum Data {
@@ -59,6 +59,23 @@ fn main() {
     vec(Data) v9 = [Text("i1".copy()), Text("i2".copy()), Text("i3".copy())]
     v9.resize(1)
     print("I: resize len =", v9.length)
+
+    // ---- J: first (deep-clone, source vec unaffected) ----
+    vec(Data) v10 = [Text("j1".copy()), Text("j2".copy()), Text("j3".copy())]
+    Data j_first = v10.first()
+    print("J: first done, vec len =", v10.length)
+    // j_first and v10[0] are independent copies
+
+    // ---- K: last (deep-clone, source vec unaffected) ----
+    vec(Data) v11 = [Text("k1".copy()), Text("k2".copy()), Text("k3".copy())]
+    Data k_last = v11.last()
+    print("K: last done, vec len =", v11.length)
+
+    // ---- L: get(i) (deep-clone, source vec unaffected) ----
+    vec(Data) v12 = [Text("l1".copy()), Text("l2".copy()), Text("l3".copy())]
+    Data l_mid = v12.get(1)
+    print("L: get done, vec len =", v12.length)
+    // l_mid owns its copy; v12[1] still alive
 
     print("all done")
 }

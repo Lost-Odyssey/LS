@@ -6929,6 +6929,8 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vfst.elem");
         if (elem_type->kind == TYPE_STRING)
             elem = emit_string_clone_val(ctx, elem);
+        else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
+            elem = emit_enum_clone_val(ctx, elem, elem_type);
         else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
             elem = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
 #if CG_DEBUG
@@ -7018,6 +7020,8 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vlst.elem");
         if (elem_type->kind == TYPE_STRING)
             elem = emit_string_clone_val(ctx, elem);
+        else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
+            elem = emit_enum_clone_val(ctx, elem, elem_type);
         else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
             elem = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
 #if CG_DEBUG
@@ -7114,6 +7118,8 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vget.elem");
         if (elem_type->kind == TYPE_STRING)
             elem = emit_string_clone_val(ctx, elem);
+        else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
+            elem = emit_enum_clone_val(ctx, elem, elem_type);
         else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
             elem = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
         LLVMBuildStore(ctx->builder, elem, result_alloca);
