@@ -1,8 +1,10 @@
 # LS JSON 模块详细设计
 
-> **日期**：2026-05-20  
+> **日期**：2026-05-20（最后更新：2026-05-24）
 > **模块位置**：`std/json.ls`（纯 LS 实现）  
 > **前置依赖**：~~Step 0（修复 L-006）~~ ✅ 已完成 2026-05-20
+>
+> **当前进度**：Step 0~3 ✅ 完成；Step 4（可写 API）❌ 未实现；Step 5 ✅ 测试通过（含 e2e memcheck，bugs/20 已修复 2026-05-24）
 
 ---
 
@@ -87,10 +89,10 @@ fn main() {
 
 ## 1. JsonValue 数据类型
 
-### 1.1 核心 enum
+### 1.1 核心 enum ✅ 已实现（结构有调整）
 
 ```ls
-// std/json.ls
+// std/json.ls（实际实现）
 
 enum JsonValue {
     Null
@@ -98,34 +100,32 @@ enum JsonValue {
     Number(f64 val)
     Str(string val)
     Array(vec(JsonValue) items)
-    Object(map(string, JsonValue) entries)
+    Object(vec(string) keys, map(string, JsonValue) entries)  // ← 与计划不同：多了 keys vec
 }
 ```
 
 **设计决策**：
 - 数字统一用 `f64`（JSON 规范不区分整数/浮点，`f64` 能精确表示 ≤ 2^53 的整数）
 - `Str` 而非 `String` 避免与内建 `string` 类型名冲突
-- `Object` 用 `map(string, JsonValue)` 而非 `vec(Pair)`，查找 O(1)
+- `Object` 用 `map(string, JsonValue)` 查找 O(1)；**额外加 `vec(string) keys` 保留插入顺序**（stringify 按原始 key 顺序输出）
 
-### 1.2 便捷构造函数
+### 1.2 便捷构造函数 ✅ 已实现（函数名略有调整）
 
 ```ls
-fn null_val() -> JsonValue { return Null }
-fn bool_val(bool b) -> JsonValue { return Bool(b) }
-fn number(f64 n) -> JsonValue { return Number(n) }
-fn number_int(int n) -> JsonValue { return Number(n as f64) }
-fn str(string s) -> JsonValue { return Str(s) }
-fn array() -> JsonValue { return Array([]) }
-fn object() -> JsonValue {
-    map(string, JsonValue) m = {}
-    return Object(m)
-}
+// 实际函数名（与计划略有出入）
+fn null_val()             -> JsonValue   // 计划同名 ✅
+fn bool_val(bool b)       -> JsonValue   // 计划同名 ✅
+fn number(f64 n)          -> JsonValue   // 计划同名 ✅
+fn number_int(int n)      -> JsonValue   // 计划同名 ✅
+fn str_val(string s)      -> JsonValue   // 计划名为 str()，改为 str_val() 避免关键字冲突
+fn array_new()            -> JsonValue   // 计划名为 array()
+fn object_new()           -> JsonValue   // 计划名为 object()，内部用 keys+entries 两字段
 ```
 
 ### 1.3 访问 / 修改 API
 
 ```ls
-// ---- 类型判断 ----
+// ---- 类型判断 ✅ 全部已实现 ----
 fn is_null(JsonValue v) -> bool
 fn is_bool(JsonValue v) -> bool
 fn is_number(JsonValue v) -> bool
@@ -133,30 +133,32 @@ fn is_string(JsonValue v) -> bool
 fn is_array(JsonValue v) -> bool
 fn is_object(JsonValue v) -> bool
 
-// ---- 取值（match 解构的便捷包装）----
+// ---- 取值 ✅ 全部已实现 ----
 fn as_bool(JsonValue v) -> Result(bool, string)
 fn as_number(JsonValue v) -> Result(f64, string)
 fn as_string(JsonValue v) -> Result(string, string)
 fn as_int(JsonValue v) -> Result(int, string)       // f64 → int 截断，溢出报错
 
-// ---- Array 操作 ----
-fn array_push(&!JsonValue arr, JsonValue item)       // arr 必须是 Array
-fn array_get(&JsonValue arr, int index) -> Result(JsonValue, string)
-fn array_len(&JsonValue arr) -> int
+// ---- Array 只读 ✅ / 可写 ❌ ----
+fn array_len(JsonValue v) -> int                    // ✅ 已实现（按值传参，非借用）
+fn array_push(&!JsonValue arr, JsonValue item)      // ❌ 未实现
+fn array_get(&JsonValue arr, int index) -> Result(JsonValue, string)  // ❌ 未实现
 
-// ---- Object 操作 ----
-fn object_set(&!JsonValue obj, string key, JsonValue val)
-fn object_get(&JsonValue obj, string key) -> Result(JsonValue, string)
-fn object_has(&JsonValue obj, string key) -> bool
-fn object_keys(&JsonValue obj) -> vec(string)
+// ---- Object 只读 ✅ / 可写 ❌ ----
+fn object_len(JsonValue v) -> int                   // ✅ 已实现（额外加的）
+fn object_has(JsonValue v, string key) -> bool      // ✅ 已实现（按值传参）
+fn object_keys(JsonValue v) -> vec(string)          // ✅ 已实现（按值传参，返回深拷贝）
+fn object_set(&!JsonValue obj, string key, JsonValue val)             // ❌ 未实现
+fn object_get(&JsonValue obj, string key) -> Result(JsonValue, string) // ❌ 未实现
 ```
 
-> **注意**：`&!JsonValue` 可写借用 —— 需要验证 LS 的 `&!enum` 借用当前是否支持。
-> 如果不支持，降级方案是用独立函数 `fn array_push(vec(JsonValue) items, JsonValue item)` 直接操作内部 vec。
+> **注意**：`&!JsonValue` 可写借用 —— `&!enum` 当前**未验证是否支持**。
+> 只读函数暂以**按值传参**实现（会深拷贝），等可写 API 实现时统一改为借用 ABI。
+> 降级方案：直接返回/操作内部 vec/map，不依赖 `&!enum` 借用。
 
 ---
 
-## 2. JSON 解析器（parse）
+## 2. JSON 解析器（parse）✅ 已完成
 
 ### 2.1 API
 
@@ -209,7 +211,7 @@ v1 不做错误恢复——遇到第一个语法错误立即返回 `Err`。
 
 ---
 
-## 3. JSON 输出（stringify）
+## 3. JSON 输出（stringify）✅ 已完成
 
 ### 3.1 API
 
@@ -326,24 +328,32 @@ fn main() {
 ## 6. 实施计划
 
 ```
-Step 0   ✅ 修复 L-006（已完成 2026-05-20）                0 天
-Step 1   JsonValue enum + 构造函数 + is_*/as_* 访问器     1 天
-Step 2   parse()：递归下降解析器                           2-3 天
-Step 3   stringify() / stringify_pretty()                 1-2 天
-Step 4   array_push/object_set 等修改 API                 1 天
-Step 5   测试（JIT + AOT + memcheck）                     1 天
-                                                        ─────────
-总计                                                     6-8 天（Step 0 已完成）
+Step 0   ✅ 修复 L-006（已完成 2026-05-20）
+Step 1   ✅ JsonValue enum + 构造函数 + is_*/as_* 访问器（已完成 2026-05-20）
+           ⚠️  函数名略有调整（str_val/array_new/object_new）
+           ⚠️  Object 多了 vec(string) keys 字段以保留插入顺序
+Step 2   ✅ parse()：递归下降解析器（已完成 2026-05-20）
+Step 3   ✅ stringify() / stringify_pretty()（已完成 2026-05-20）
+Step 4   ❌ array_push/array_get/object_set/object_get 可写 API（未实现）
+           前置问题：&!enum 借用是否支持 待验证；可考虑按值传参降级方案
+Step 5   ✅ 测试通过（已完成 2026-05-24）
+           ctest test_std_json A~E 全绿
+           e2e memcheck：0 double-free / 0 leak（bugs/20 修复后，commit 6c25fa8）
 ```
 
-### 测试计划
+### 测试计划（已完成项）
 
 ```
-test_json_basic：
-  - 解析基本类型（null/bool/number/string）
-  - 解析 array / object / 嵌套结构
-  - 解析错误（语法错误返回 Err）
-  - stringify 往返（parse → stringify → parse 一致性）
-  - pretty print 格式验证
-  - 边界情况：空 object/array、转义字符、大数字
+test_std_json（ctest）：
+  A. 基本类型解析（null/bool/number/string）          ✅
+  B. array / object / 嵌套结构解析                   ✅
+  C. stringify 往返（round-trip）                    ✅
+  D. 文件读取 + parse（json_file_test.ls）            ✅
+  E. e2e 端到端（json_e2e_test.ls）+ --memcheck      ✅（bugs/20 修复后）
 ```
+
+### 待办
+
+- [ ] Step 4：实现 `array_push` / `array_get` / `object_set` / `object_get`
+- [ ] 验证 `&!JsonValue` 可写借用是否可行，或采用降级按值方案
+- [ ] 只读 API（`array_len` / `object_has` / `object_keys`）改为借用 ABI（`&JsonValue`）
