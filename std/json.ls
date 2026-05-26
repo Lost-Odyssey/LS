@@ -242,9 +242,10 @@ fn _new_parser(string input) -> JParser {
 fn _skip_ws(&!JParser p) {
     while p.pos < p.len {
         int ch = p.input.at(p.pos)
-        match ch {
-            ' ' | '\t' | '\n' | '\r' => { p.pos = p.pos + 1 }
-            _ => { return }
+        if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+            p.pos = p.pos + 1
+        } else {
+            return
         }
     }
 }
@@ -276,32 +277,45 @@ fn _expect(&!JParser p, int expected) -> Result(int, string) {
 // Note: mutual recursion between _parse_value, _parse_array, _parse_object
 // works because LS codegen does forward-declare pass before body compilation.
 
+// Advance p.pos past all plain chars (not '"' or '\'), return count skipped.
+// Lets _parse_string_raw append a whole segment in one substr call.
+fn _scan_plain(&!JParser p) -> int {
+    int start = p.pos
+    while p.pos < p.len {
+        int c = p.input.at(p.pos)
+        if c == '"' || c == '\\' { return p.pos - start }
+        p.pos = p.pos + 1
+    }
+    return p.pos - start
+}
+
 fn _parse_string_raw(&!JParser p) -> Result(string, string) {
-    // Opening '"' already consumed or about to be consumed
     int ch = _advance(&!p)
     if ch != '"' { return Err(f"json: expected '\"' at position {p.pos}") }
 
     string result = ""
     while p.pos < p.len {
-        ch = _advance(&!p)
-        if ch == '"' {
-            // Closing quote
-            return Ok(result)
+        // Bulk-copy plain chars in one substr call — no per-char overhead
+        int seg_start = p.pos
+        int seg_len   = _scan_plain(&!p)
+        if seg_len > 0 {
+            result.append(p.input.substr(seg_start, seg_len))
         }
+        // p.pos is now at '"', '\\', or p.len
+        ch = _advance(&!p)
+        if ch == '"' { return Ok(result) }
         if ch == '\\' {
-            // Backslash escape
             int next = _advance(&!p)
             match next {
-                '"'       => { result.append("\"") }
-                '/'       => { result.append("/") }
-                '\\'      => { result.append("\\") }
-                'n'       => { result.append("\n") }
-                'r'       => { result.append("\r") }
-                't'       => { result.append("\t") }
-                'b' => { result.append(8) }   // \b backspace (U+0008)
-                'f' => { result.append(12) }  // \f form feed (U+000C)
-                'u' => {
-                    // \uXXXX — store raw for now
+                '"'  => { result.append('"') }
+                '/'  => { result.append('/') }
+                '\\' => { result.append('\\') }
+                'n'  => { result.append('\n') }
+                'r'  => { result.append('\r') }
+                't'  => { result.append('\t') }
+                'b'  => { result.append(8) }   // backspace U+0008
+                'f'  => { result.append(12) }  // form feed U+000C
+                'u'  => {
                     if p.pos + 4 <= p.len {
                         string hex = p.input.substr(p.pos, 4)
                         result.append("\\u")
@@ -313,9 +327,8 @@ fn _parse_string_raw(&!JParser p) -> Result(string, string) {
                 }
                 _ => { return Err(f"json: unknown escape at position {p.pos}") }
             }
-        } else {
-            result.append(ch)  // ch already holds the consumed char
         }
+        // ch == -1 (end of input): while condition fails next iteration
     }
     return Err("json: unterminated string")
 }
@@ -328,26 +341,26 @@ fn _parse_number(&!JParser p) -> Result(JsonValue, string) {
     int start = p.pos
     // Optional leading minus
     if _peek(&!p) == '-' { p.pos = p.pos + 1 }
-    // Integer part
+    // Integer part (inline at() — p.pos < p.len already checked by while)
     if !_is_digit(_peek(&!p)) {
         return Err(f"json: expected digit at position {p.pos}")
     }
-    while p.pos < p.len && _is_digit(_peek(&!p)) {
+    while p.pos < p.len && _is_digit(p.input.at(p.pos)) {
         p.pos = p.pos + 1
     }
     // Optional fraction
-    if p.pos < p.len && _peek(&!p) == '.' {
+    if p.pos < p.len && p.input.at(p.pos) == '.' {
         p.pos = p.pos + 1
         if !_is_digit(_peek(&!p)) {
             return Err(f"json: expected digit after '.' at position {p.pos}")
         }
-        while p.pos < p.len && _is_digit(_peek(&!p)) {
+        while p.pos < p.len && _is_digit(p.input.at(p.pos)) {
             p.pos = p.pos + 1
         }
     }
     // Optional exponent
     if p.pos < p.len {
-        int ec = _peek(&!p)
+        int ec = p.input.at(p.pos)
         if ec == 'e' || ec == 'E' {
             p.pos = p.pos + 1
             int sc = _peek(&!p)
@@ -355,7 +368,7 @@ fn _parse_number(&!JParser p) -> Result(JsonValue, string) {
             if !_is_digit(_peek(&!p)) {
                 return Err(f"json: expected digit in exponent at position {p.pos}")
             }
-            while p.pos < p.len && _is_digit(_peek(&!p)) {
+            while p.pos < p.len && _is_digit(p.input.at(p.pos)) {
                 p.pos = p.pos + 1
             }
         }
@@ -626,7 +639,10 @@ fn _stringify_impl(JsonValue val, int depth, int indent) -> string {
             return _format_number(n)
         }
         Str(s) => {
-            return "\"" + _escape_string(s) + "\""
+            string r = "\""
+            r.append(_escape_string(s))
+            r.append('"')
+            return r
         }
         Array(items) => {
             if items.length == 0 { return "[]" }
