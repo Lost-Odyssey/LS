@@ -298,9 +298,8 @@ fn _parse_string_raw(&!JParser p) -> Result(string, string) {
                 'n'       => { result.append("\n") }
                 'r'       => { result.append("\r") }
                 't'       => { result.append("\t") }
-                'b' | 'f' => {
-                    // \b (backspace) and \f (form feed) — silently skip
-                }
+                'b' => { result.append(8) }   // \b backspace (U+0008)
+                'f' => { result.append(12) }  // \f form feed (U+000C)
                 'u' => {
                     // \uXXXX — store raw for now
                     if p.pos + 4 <= p.len {
@@ -315,8 +314,7 @@ fn _parse_string_raw(&!JParser p) -> Result(string, string) {
                 _ => { return Err(f"json: unknown escape at position {p.pos}") }
             }
         } else {
-            // Regular character — build single-char string via substr
-            result.append(p.input.substr(p.pos - 1, 1))
+            result.append(ch)  // ch already holds the consumed char
         }
     }
     return Err("json: unterminated string")
@@ -481,16 +479,21 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
     return Ok(Object(ks, entries))
 }
 
-fn _match4(&!JParser p, string expected) -> bool {
+fn _match4(&!JParser p, int c0, int c1, int c2, int c3) -> bool {
     if p.pos + 4 > p.len { return false }
-    string sub = p.input.substr(p.pos, 4)
-    return sub.compare(expected) == 0
+    return p.input.at(p.pos)   == c0 &&
+           p.input.at(p.pos+1) == c1 &&
+           p.input.at(p.pos+2) == c2 &&
+           p.input.at(p.pos+3) == c3
 }
 
-fn _match5(&!JParser p, string expected) -> bool {
+fn _match5(&!JParser p, int c0, int c1, int c2, int c3, int c4) -> bool {
     if p.pos + 5 > p.len { return false }
-    string sub = p.input.substr(p.pos, 5)
-    return sub.compare(expected) == 0
+    return p.input.at(p.pos)   == c0 &&
+           p.input.at(p.pos+1) == c1 &&
+           p.input.at(p.pos+2) == c2 &&
+           p.input.at(p.pos+3) == c3 &&
+           p.input.at(p.pos+4) == c4
 }
 
 fn _parse_value(&!JParser p) -> Result(JsonValue, string) {
@@ -512,21 +515,21 @@ fn _parse_value(&!JParser p) -> Result(JsonValue, string) {
             return _parse_number(&!p)
         }
         't' => {
-            if _match4(&!p, "true") {
+            if _match4(&!p, 't', 'r', 'u', 'e') {
                 p.pos = p.pos + 4
                 return Ok(Bool(true))
             }
             return Err(f"json: unexpected token at position {p.pos}")
         }
         'f' => {
-            if _match5(&!p, "false") {
+            if _match5(&!p, 'f', 'a', 'l', 's', 'e') {
                 p.pos = p.pos + 5
                 return Ok(Bool(false))
             }
             return Err(f"json: unexpected token at position {p.pos}")
         }
         'n' => {
-            if _match4(&!p, "null") {
+            if _match4(&!p, 'n', 'u', 'l', 'l') {
                 p.pos = p.pos + 4
                 return Ok(Null)
             }
@@ -559,26 +562,40 @@ fn parse(string input) -> Result(JsonValue, string) {
 // ---- Serializer (stringify) ----
 
 fn _escape_string(string s) -> string {
-    string result = ""
-    int i = 0
     int n = s.length
+    int i = 0
+    // Fast-path: scan for first char that needs escaping.
+    // Most JSON keys/values are plain ASCII — avoid per-char match entirely.
     while i < n {
         int ch = s.at(i)
-        match ch {
-            '"'  => { result.append("\\\"") }
-            '\\' => { result.append("\\\\") }
-            '\n' => { result.append("\\n") }
-            '\r' => { result.append("\\r") }
-            '\t' => { result.append("\\t") }
-            _    => { result.append(ch) }
+        if ch == '"' || ch == '\\' || ch == '\n' || ch == '\r' || ch == '\t' || ch == 8 || ch == 12 {
+            // Slow path: copy clean prefix, then escape from i onward.
+            string result = s.substr(0, i)
+            while i < n {
+                ch = s.at(i)
+                match ch {
+                    '"'  => { result.append("\\\"") }
+                    '\\' => { result.append("\\\\") }
+                    '\n' => { result.append("\\n") }
+                    '\r' => { result.append("\\r") }
+                    '\t' => { result.append("\\t") }
+                    8    => { result.append("\\b") }
+                    12   => { result.append("\\f") }
+                    _    => { result.append(ch) }
+                }
+                i = i + 1
+            }
+            return result
         }
         i = i + 1
     }
-    return result
+    // No escaping needed — return a direct copy.
+    return s.copy()
 }
 
 fn _indent_str(int depth, int indent) -> string {
     int total = depth * indent
+    if total <= 0 { return "" }
     string s = ""
     int i = 0
     while i < total {
@@ -650,10 +667,11 @@ fn _stringify_impl(JsonValue val, int depth, int indent) -> string {
                 int i = 0
                 while i < ks.length {
                     if i > 0 { result.append(",") }
+                    string key = ks[i]   // cache: avoid two separate vec clones
                     result.append("\"")
-                    result.append(_escape_string(ks[i]))
+                    result.append(_escape_string(key))
                     result.append("\":")
-                    result.append(_stringify_impl(entries.get(ks[i]), depth, 0))
+                    result.append(_stringify_impl(entries.get(key), depth, 0))
                     i = i + 1
                 }
                 result.append("}")
@@ -666,11 +684,12 @@ fn _stringify_impl(JsonValue val, int depth, int indent) -> string {
                 int i = 0
                 while i < ks.length {
                     if i > 0 { result.append(",\n") }
+                    string key = ks[i]   // cache: avoid two separate vec clones
                     result.append(child_pad)
                     result.append("\"")
-                    result.append(_escape_string(ks[i]))
+                    result.append(_escape_string(key))
                     result.append("\": ")
-                    result.append(_stringify_impl(entries.get(ks[i]), depth + 1, indent))
+                    result.append(_stringify_impl(entries.get(key), depth + 1, indent))
                     i = i + 1
                 }
                 result.append("\n")
