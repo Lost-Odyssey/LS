@@ -1748,7 +1748,23 @@ static LLVMValueRef emit_enum_clone_val(CodegenContext *ctx,
 
     /* clone_fn signature: enum_t __clone(ptr self_ptr) */
     LLVMTypeRef enum_llvm = type_to_llvm(ctx, enum_type);
-    LLVMValueRef tmp = LLVMBuildAlloca(ctx->builder, enum_llvm, "ec.tmp");
+
+    /* Allocate in entry block so the alloca dominates all uses.
+       emit_enum_clone_val can be called inside loops (e.g. vec clone
+       loop in __clone), and LLJIT may miscompile allocas placed in
+       non-dominating blocks for large struct types like JsonValue
+       (33 bytes passed by sret). */
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    LLVMBuilderRef eb = LLVMCreateBuilderInContext(ctx->context);
+    LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
+    LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
+    if (fi)
+        LLVMPositionBuilderBefore(eb, fi);
+    else
+        LLVMPositionBuilderAtEnd(eb, entry_bb);
+    LLVMValueRef tmp = LLVMBuildAlloca(eb, enum_llvm, "ec.tmp");
+    LLVMDisposeBuilder(eb);
+
     LLVMBuildStore(ctx->builder, enum_val, tmp);
     LLVMTypeRef clone_ft = LLVMGlobalGetValueType(clone_fn);
     LLVMValueRef result = LLVMBuildCall2(ctx->builder, clone_ft, clone_fn, &tmp, 1, "ec.r");
@@ -1947,7 +1963,19 @@ static LLVMValueRef emit_map_clone_val(CodegenContext *ctx, LLVMValueRef map_val
     LLVMValueRef clone_fn = LLVMGetNamedFunction(ctx->module, nm);
     if (!clone_fn) return map_val;
     LLVMTypeRef map_t = ls_map_type(ctx);
-    LLVMValueRef tmp = LLVMBuildAlloca(ctx->builder, map_t, "mc.tmp");
+
+    /* Allocate in entry block — same rationale as emit_enum_clone_val */
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    LLVMBuilderRef eb = LLVMCreateBuilderInContext(ctx->context);
+    LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
+    LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
+    if (fi)
+        LLVMPositionBuilderBefore(eb, fi);
+    else
+        LLVMPositionBuilderAtEnd(eb, entry_bb);
+    LLVMValueRef tmp = LLVMBuildAlloca(eb, map_t, "mc.tmp");
+    LLVMDisposeBuilder(eb);
+
     LLVMBuildStore(ctx->builder, map_val, tmp);
     LLVMTypeRef clone_ft = LLVMGlobalGetValueType(clone_fn);
     return LLVMBuildCall2(ctx->builder, clone_ft, clone_fn, &tmp, 1, "map.clone");
@@ -1974,6 +2002,10 @@ static LLVMValueRef cg_push_temp_string(CodegenContext *ctx, LLVMValueRef str_va
     else
         LLVMPositionBuilderAtEnd(tmp, entry);
     LLVMValueRef slot = LLVMBuildAlloca(tmp, str_type, "tmp.str");
+    /* Zero-initialize the slot so that if cleanup runs on a code path
+       where this temp was never populated (e.g. a different match arm),
+       cap=0 causes the free to be safely skipped. */
+    LLVMBuildStore(tmp, LLVMConstNull(str_type), slot);
     LLVMDisposeBuilder(tmp);
 
     /* Store current value into the slot */
@@ -15353,6 +15385,13 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
 
     /* payload_ptr = &tmp->field[1] */
     LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 1, "ec.payp");
+#if CG_DEBUG
+    {
+        LLVMValueRef di = LLVMBuildZExt(ctx->builder, disc,
+            LLVMInt32TypeInContext(ctx->context), "ec.di");
+        cg_emit_debug_printf(ctx, "[cg] ec.clone  disc=%d\n", &di, 1);
+    }
+#endif
 
     LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, clone_fn, "ec.end");
     LLVMValueRef sw = LLVMBuildSwitch(ctx->builder, disc, end_bb, (unsigned)needs_count);
@@ -15422,6 +15461,18 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
                 LLVMTypeRef  vec_t  = ls_vec_type(ctx);
                 LLVMValueRef old_v  = LLVMBuildLoad2(ctx->builder, vec_t, field_ptr, "ec.oldv");
                 LLVMValueRef new_v  = emit_vec_clone_val(ctx, old_v, pt->as.vec.elem);
+#if CG_DEBUG
+                {
+                    LLVMValueRef old_data = LLVMBuildExtractValue(ctx->builder, old_v, 0, "dbg.ovd");
+                    LLVMValueRef new_data = LLVMBuildExtractValue(ctx->builder, new_v, 0, "dbg.nvd");
+                    LLVMValueRef old_len  = LLVMBuildExtractValue(ctx->builder, old_v, 1, "dbg.ovl");
+                    LLVMValueRef new_len  = LLVMBuildExtractValue(ctx->builder, new_v, 1, "dbg.nvl");
+                    LLVMValueRef dbg_a[4] = {old_data, new_data, old_len, new_len};
+                    cg_emit_debug_printf(ctx,
+                        "[cg] ec.vec.clone  old_data=%p new_data=%p old_len=%d new_len=%d\n",
+                        dbg_a, 4);
+                }
+#endif
                 LLVMBuildStore(ctx->builder, new_v, field_ptr);
             }
             else if (pt->kind == TYPE_MAP)
@@ -15429,7 +15480,19 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
                 LLVMTypeRef  map_t  = ls_map_type(ctx);
                 LLVMValueRef old_m  = LLVMBuildLoad2(ctx->builder, map_t, field_ptr, "ec.oldm");
                 LLVMValueRef new_m  = emit_map_clone_val(ctx, old_m,
-                                                          pt->as.map.key, pt->as.map.val);
+                                                           pt->as.map.key, pt->as.map.val);
+#if CG_DEBUG
+                {
+                    LLVMValueRef old_bk = LLVMBuildExtractValue(ctx->builder, old_m, 0, "dbg.omb");
+                    LLVMValueRef new_bk = LLVMBuildExtractValue(ctx->builder, new_m, 0, "dbg.nmb");
+                    LLVMValueRef old_ln = LLVMBuildExtractValue(ctx->builder, old_m, 1, "dbg.oml");
+                    LLVMValueRef new_ln = LLVMBuildExtractValue(ctx->builder, new_m, 1, "dbg.nml");
+                    LLVMValueRef dbg_a[4] = {old_bk, new_bk, old_ln, new_ln};
+                    cg_emit_debug_printf(ctx,
+                        "[cg] ec.map.clone  old_buckets=%p new_buckets=%p old_len=%d new_len=%d\n",
+                        dbg_a, 4);
+                }
+#endif
                 LLVMBuildStore(ctx->builder, new_m, field_ptr);
             }
             else if (pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop)
@@ -15459,6 +15522,15 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
     }
 
     LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+#if CG_DEBUG
+    {
+        LLVMValueRef rdisc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 0, "ec.rdp");
+        LLVMValueRef rdisc = LLVMBuildLoad2(ctx->builder, i8, rdisc_ptr, "ec.rd");
+        LLVMValueRef rdi = LLVMBuildZExt(ctx->builder, rdisc,
+            LLVMInt32TypeInContext(ctx->context), "ec.rdi");
+        cg_emit_debug_printf(ctx, "[cg] ec.clone  result disc=%d\n", &rdi, 1);
+    }
+#endif
     LLVMValueRef result = LLVMBuildLoad2(ctx->builder, enum_llvm, tmp, "ec.r");
     LLVMBuildRet(ctx->builder, result);
 

@@ -1,0 +1,79 @@
+## Bug #21 — json.stringify(Object+Str) flaky use-after-free 腐败
+
+### 状态：OPEN（未修复）
+
+### 现象
+json.stringify 对包含 Str 值的 Object 变体产生随机腐败输出。
+约 ~15% 的运行会失败，输出中 "Bob" 被替换为其他字符串片段。
+
+典型腐败模式：
+  FAIL: {"name":"nam"}       ← "name" key 的前3字节
+  FAIL: {"name":"{\"n"}      ← 正在构建的输出前3字节
+  FAIL: {"name":"B           ← 截断
+
+### 最小复现
+```ls
+import std.json as json
+fn main() {
+    JsonValue obj = JsonValue.object_new()
+    obj.set("name".copy(), JsonValue.str_val("Bob".copy()))
+    string s = json.stringify(obj)
+    if s == "{\"name\":\"Bob\"}" { print("PASS") }
+    else { print(f"FAIL: {s}") }
+}
+```
+
+### 调查结论
+
+1. **Number 值不触发** — json_obj_num.ls (int_val(42)) 30/30 PASS
+2. **Str 值触发** — json_obj_one.ls ~25/30 PASS, ~5/30 FAIL
+3. **纯 Str 不触发** — json_str_only.ls (无 Object 包裹) 30/30 PASS
+4. **本地 enum 不触发** — enum_map_inline.ls (相同数据结构, 手写 show 函数) 30/30 PASS
+5. **memcheck 报告 0 errors** — 不检测 use-after-free 读取
+
+### 根因分析（推测）
+
+腐败模式 = 已释放内存被新分配覆盖：
+- "Bob" 的 3 字节缓冲区被释放
+- malloc 将同一地址分配给新字符串（key "name"、输出 buffer 等）
+- 某处仍持有旧指针，读到了新数据
+
+**可疑路径**：_stringify_impl 的 Object 紧凑模式 while 循环中，
+Str 值经过以下调用链：
+  entries.get(ks[i])  → emit_enum_clone_val (深拷贝 JsonValue)
+  → _stringify_impl(clone, depth, 0) 递归调用
+  → match val { Str(s) => return "\"" + _escape_string(s) + "\"" }
+
+涉及的临时字符串分配/释放：
+  - ks[i] clone (temp_string → flush 释放)
+  - map.get 返回的 JsonValue clone (含 string payload)
+  - match binder s 的 clone
+  - _escape_string 的返回值 (temp)
+  - 两次 string concat 的中间结果 (temps)
+  - val 参数的 enum_drop (释放内部 string)
+
+**静态分析未发现明确 double-free 或 UAF**：
+  - string 参数在函数内 cap=0 (borrowed), 不会被 callee 释放
+  - match string binder 是独立 clone (is_borrowed=false)
+  - enum 参数非自递归 → is_borrowed=false → 函数退出时正确 drop
+  - temp_string 系统在语句边界正确 flush
+  - map.get 内部 deep-copy key+value，原始值由 temp 系统管理
+
+### 为什么本地 enum 不触发？
+
+关键差异：
+  - json 模块: _escape_string(s) 需要额外的函数调用 + temp 管理
+  - 本地版本: 直接 "\"" + s + "\"" 无额外函数调用
+  - json 模块的 JsonValue 有 6 个变体（更大的 enum struct, ~33 bytes）
+  - 本地 Val 只有 4 个变体（更小）
+  - 更大的 enum 可能触发不同的 ABI 路径 (sret vs register return)
+
+### 下一步建议
+
+1. **LLVM IR 对比**: 导出 json 模块 _stringify_impl 和本地 show_val 的 IR，
+   比较 temp 管理和 drop 顺序
+2. **AddressSanitizer**: 用 Clang 构建 ls.exe 启用 ASan 检测精确 UAF 位置
+3. **printf 追踪**: 在 _escape_string 返回点和 Str binder 创建点添加
+   指针+内容打印，追踪 "Bob" 缓冲区的完整生命周期
+4. **sret ABI 检查**: JsonValue 33 bytes 在 LLJIT 中可能触发 sret 返回，
+   检查 emit_enum_clone_val 的 entry-block alloca 修复是否足够
