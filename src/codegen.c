@@ -4082,9 +4082,23 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
     char fmt_buf[1024];
     int fmt_len = 0;
 
-    /* Collect codegen'd args and their bool-converted values */
+    /* Pre-scan to compute the actual number of printf slots needed.
+       An f-string argument expands to expr_count individual slots, not 1.
+       Allocating only argc*2 is wrong when a single f-string has more than
+       2 interpolated expressions — BF-035 (buffer overflow on Linux). */
+    int max_printf_args = 0;
+    for (int i = 0; i < argc; i++)
+    {
+        AstNode *arg = node->as.call.args[i];
+        if (arg->kind == AST_FORMAT_STRING)
+            max_printf_args += arg->as.format_string.expr_count;
+        else
+            max_printf_args += 2; /* +1 margin for bool select */
+    }
+    if (max_printf_args < 1) max_printf_args = 1;
+
     LLVMValueRef *printf_args = (LLVMValueRef *)malloc_safe(
-        (size_t)(argc * 2) * sizeof(LLVMValueRef)); /* worst case: bool needs extra */
+        (size_t)max_printf_args * sizeof(LLVMValueRef));
     int printf_argc = 0;
 
     for (int i = 0; i < argc; i++)
