@@ -1272,6 +1272,7 @@ static void pop_scope(Checker *c)
 static Type *check_expr(Checker *c, AstNode *node);
 static void check_stmt(Checker *c, AstNode *node);
 static void check_decl(Checker *c, AstNode *node);
+static int find_fn_template(Checker *c, const char *name);
 
 /* ---- Helper functions ---- */
 

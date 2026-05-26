@@ -524,6 +524,11 @@ static void map_type_id(Type *key_type, Type *val_type, char *buf, int sz)
             snprintf(buf, sz, "%s_%s", k, val_type->as.strukt.name);
             return;
         }
+        else if (val_type->kind == TYPE_ENUM && val_type->as.enom.name)
+        {
+            snprintf(buf, sz, "%s_%s", k, val_type->as.enom.name);
+            return;
+        }
     }
     snprintf(buf, sz, "%s_%s", k, v);
 }

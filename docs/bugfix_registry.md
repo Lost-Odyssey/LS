@@ -42,7 +42,9 @@
 | BF-028 | 2026-05-25 | WRONG | import 模块的 impl 方法未注册到导入方 impl_registry | checker (模块系统) | — |
 | BF-029 | 2026-05-25 | DOUBLE-FREE | match-arm string binder 作为 arm 返回值时 scope cleanup 误释放 | codegen | — |
 | BF-030 | 2026-05-25 | DOUBLE-FREE | `_escape_string` 循环内 `s.substr(i,1)` 临时 string 在 match+while 嵌套中非确定性双释放 | std/json.ls (LS 代码) | — |
+| BF-031 | 2026-05-26 | BUILD | `find_fn_template` static 前向声明缺失 → GCC/Clang 编译错误 | checker.c | — |
 | BF-032 | 2026-05-26 | WRONG | `emit_string_clone_val` 对 borrowed 参数（cap=0）跳过克隆 → 悬垂指针 | codegen (emit_enum_ctor) | `bugfix_BF032_string_clone_borrowed_param.md` |
+| BF-033 | 2026-05-26 | WRONG | `map_type_id` 对 enum 值类型使用默认后缀 `"i"` → 潜在 LLVM 类型名冲突 | codegen (map helpers) | — |
 
 ---
 
@@ -367,6 +369,36 @@ if (source_borrowed) {
 - `"0:0 (unknown)"` 的首次释放点标志着一类特殊问题：**memcheck 盲区**。可能在 JIT 符号解析 / CRT 拦截 / LLVM 内联展开路径中。
 - 纯 LS 标准库中的性能/内存问题与编译器 bug 同样影响可靠性——stdlib 代码也应遵循同级别审查。
 - **TODO**：调查 JIT 中 `free` 符号解析路径，确认 `cg_emit_free` 是否始终走 memcheck 插桩版本。如确认为 JIT 链接问题，需在 LLJIT 设置中显式注册 memcheck 的 `free`/`malloc` 符号。
+
+---
+
+## BF-031：`find_fn_template` static 前向声明缺失（2026-05-26）
+
+**症状**：MSVC 上无感知（编译通过），但在 GCC/Clang（`-Wall -Wextra -pedantic`）上会因 `-Wimplicit-function-declaration` 产生编译错误。C99+ 标准中隐式函数声明已被移除。
+
+**根因**：`checker.c` 中 `find_fn_template` 定义在 line 6551（`static int find_fn_template(Checker*, const char*)`），但在 line 4306 的 `AST_CALL` 泛型函数分支中被调用，中间相隔 ~2200 行，且无前向声明。MSVC 对 C 标准合规性宽松，不报错；GCC/Clang 严格遵循 C99+ 标准。
+
+**修复**：在 `checker.c` 的 forward declarations 区域（line 1270 附近）添加 `static int find_fn_template(Checker *c, const char *name);`。
+
+**教训**：
+- MSVC 的 C17 模式并不真正检查所有 C17 违规。跨平台可移植性需要在 GCC/Clang 上也定期编译验证。
+- static 函数在大文件中应保持"先声明后使用"的纪律，尤其当文件超过 5000 行时。
+
+---
+
+## BF-033：`map_type_id` 对 enum 值类型使用默认后缀 → LLVM 类型名冲突（2026-05-26）
+
+**症状**：latent bug——当前测试未触发。若用户在同一文件中同时使用 `map(string, int)` 和 `map(string, SomeEnum)`，两者生成相同的 LLVM struct 名 `LsMapNode_s_i`，第二个 map 会复用第一个的 layout → 字段布局错误 → 数据腐败或 crash。
+
+**根因**：`map_type_id()` 为 `(K, V)` 类型对生成唯一后缀，有 `TYPE_STRING → "s"`、`TYPE_BOOL → "b"`、`TYPE_F32/F64 → "f"`、`TYPE_STRUCT → struct.name` 的分支，但**缺少 `TYPE_ENUM` 分支**。所有 enum 值类型（`JsonValue`、`Option(T)`、用户自定义 enum 等）都落入默认 `"i"`，与 `int` 相同。
+
+**修复**：在 `map_type_id` 中新增 `TYPE_ENUM` 分支，使用 `val_type->as.enom.name` 作为后缀（如 `s_JsonValue`、`s_Option_int_` 等），与 `TYPE_STRUCT` 同一模式。
+
+**当前不触发的原因**：`std.json` 中 `map(string, JsonValue)` 在独立模块编译，与 `map(string, int)` 不在同一 LLVM module。但完全可能在用户代码中触发。
+
+**教训**：
+- `map_type_id` 的分支列表必须与 `Type.kind` 枚举同步审查。每次新增类型 kind 时，应检查所有依赖 kind 的 switch/if 链。
+- 对称审查法（BF-004 教训）的扩展：为 struct 加了 name 后缀 → 必须同时为 enum 加。
 
 ---
 
