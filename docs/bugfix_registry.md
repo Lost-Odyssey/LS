@@ -42,6 +42,7 @@
 | BF-028 | 2026-05-25 | WRONG | import 模块的 impl 方法未注册到导入方 impl_registry | checker (模块系统) | — |
 | BF-029 | 2026-05-25 | DOUBLE-FREE | match-arm string binder 作为 arm 返回值时 scope cleanup 误释放 | codegen | — |
 | BF-030 | 2026-05-25 | DOUBLE-FREE | `_escape_string` 循环内 `s.substr(i,1)` 临时 string 在 match+while 嵌套中非确定性双释放 | std/json.ls (LS 代码) | — |
+| BF-032 | 2026-05-26 | WRONG | `emit_string_clone_val` 对 borrowed 参数（cap=0）跳过克隆 → 悬垂指针 | codegen (emit_enum_ctor) | `bugfix_BF032_string_clone_borrowed_param.md` |
 
 ---
 
@@ -369,6 +370,34 @@ if (source_borrowed) {
 
 ---
 
+## BF-032：`emit_string_clone_val` 对 borrowed 参数（cap=0）跳过克隆 → 悬垂指针（2026-05-26）
+
+**详见** [`bugfix_BF032_string_clone_borrowed_param.md`](bugfix_BF032_string_clone_borrowed_param.md)
+
+**症状**：`json.stringify(obj)` 对包含 Str 值的 Object 产生腐败输出（~15% 概率）。典型表现："Bob" 被替换为 "nam"（"name" key 的前 3 字节）或 "{\"n"（输出 buffer 的前 3 字节）——已释放内存被新分配覆盖的经典模式。
+
+**根因**：`codegen_fn_decl` 对所有 `TYPE_STRING` 参数将 cap 置 0（借用语义），使得 `emit_string_clone_val` 的克隆条件 `cap > 0` 将其误判为静态 .rodata 字面量而跳过克隆。当 borrowed 参数被存入 has_drop enum payload 时（如 `fn str_val(string s) -> JsonValue { return Str(s) }`），enum 内部持有的是 caller 堆 buffer 的裸指针。caller 退出后释放该 buffer → 悬垂指针。
+
+**为什么本地 enum 不触发**：本地 `Str("Bob".copy())` 中 `.copy()` 是 AST_CALL（rvalue transfer），走直接 store 路径，不经过 `emit_string_clone_val`。只有跨函数调用时参数经过 cap=0 借用标记才暴露。
+
+**修复**（`src/codegen.c` — `emit_enum_ctor` string payload 处理）：在非 rvalue 的 else 分支中区分 AST_IDENT 和非 IDENT 源：
+- **AST_IDENT**（可能是 borrowed 参数）→ 无条件 malloc+memcpy 深克隆，enum 拥有独立 buffer
+- **非 IDENT**（字面量、字段访问等）→ 沿用 `emit_string_clone_val`，cap=0 跳过对 .rodata 仍然正确
+
+**排除的方案**：
+- 方案 A（修改 `emit_string_clone_val` 条件为 `cap>0 || len>0`）→ 静态字面量也被克隆 → 新增 leak
+- 方案 B（emit_enum_ctor 中对所有 non-rvalue 无条件克隆）→ 同方案 A 的 leak 问题
+
+**验证**：json_obj_one 50/50 PASS（修复前 ~42/50），json_infra memcheck 0 errors，ctest 59/59。
+
+**教训**：
+- `cap == 0` 是重载语义（.rodata 静态 vs borrowed 参数），`emit_string_clone_val` 无法区分。在需要获取所有权的场景（enum ctor、struct ctor），不能依赖 cap 判断。
+- memcheck 不检测 use-after-free 读取，只有 AddressSanitizer 能可靠捕获。
+- "flaky ~15%" 的腐败 = 100% 确定的悬垂指针 + 非确定的 malloc 地址复用。遇到偶发腐败应首先怀疑 UAF。
+- 应审查所有调用 `emit_string_clone_val` 后将结果存入 heap-owning 容器的路径。
+
+---
+
 ## 附录：排查方法论
 
 以下排查模式在 LS 编译器开发中反复验证有效：
@@ -424,3 +453,16 @@ if (source_borrowed) {
   → 检查 source 是否为 borrowed（match binder / &T 参数）
   → 如果 borrowed source 被 move 语义操作消费 → 必须 clone
 ```
+
+### G. 重载语义穿透检查法（BF-032 使用）
+
+```
+发现 "偶发数据腐败"（~N% 概率失败，输出含其他字符串片段）
+  → 判定为 use-after-free（已释放内存被新 malloc 覆盖）
+  → 追踪 string 在函数边界的 cap 变化（特别是 cap=0 借用标记）
+  → 检查所有消费 string 获取所有权的站点（enum ctor / struct ctor / vec.push / map.set）
+  → 如果站点依赖 cap>0 判断是否克隆 → 对 borrowed 参数会误判跳过
+  → 需要根据 AST 源（IDENT vs literal）区分处理
+```
+
+适用场景：任何在 codegen 中使用 `emit_string_clone_val` 的 cap 条件来决定是否克隆的路径

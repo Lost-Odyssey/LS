@@ -15651,8 +15651,53 @@ static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                 }
                 else
                 {
-                    LLVMValueRef cloned = emit_string_clone_val(ctx, v);
-                    LLVMBuildStore(ctx->builder, cloned, field_ptr);
+                    /* BF-032: emit_string_clone_val skips cap=0 strings
+                       (static literals AND borrowed function parameters).
+                       For genuine .rodata literals this is correct — they
+                       outlive the enum.  But function parameters have
+                       cap=0 too (borrowed via param-setup zeroing), and
+                       their data lives on the CALLER's heap, freed when
+                       the caller cleans up → dangling pointer.
+                       Fix: for AST_IDENT sources, force an unconditional
+                       deep clone (parameters are always IDENTs).  For
+                       non-IDENT sources (string literals, field access),
+                       keep using emit_string_clone_val — cap=0 strings
+                       are genuinely static and safe to share. */
+                    AstNode *sarg = ast_unwrap_move(args[i]);
+                    if (sarg && sarg->kind == AST_IDENT)
+                    {
+                        /* Unconditional clone — handles borrowed params */
+                        LLVMTypeRef str_type = ls_string_type(ctx);
+                        LLVMTypeRef i32_t2 = LLVMInt32TypeInContext(ctx->context);
+                        LLVMTypeRef i64_t2 = LLVMInt64TypeInContext(ctx->context);
+                        LLVMValueRef s_data = LLVMBuildExtractValue(ctx->builder, v, 0, "ec.sd");
+                        LLVMValueRef s_len  = LLVMBuildExtractValue(ctx->builder, v, 1, "ec.sl");
+                        LLVMValueRef one32  = LLVMConstInt(i32_t2, 1, 0);
+                        LLVMValueRef need   = LLVMBuildAdd(ctx->builder, s_len, one32, "ec.need");
+                        LLVMValueRef min_c  = LLVMConstInt(i32_t2, LS_MIN_STR_CAP, 0);
+                        LLVMValueRef use_m  = LLVMBuildICmp(ctx->builder, LLVMIntULT,
+                                                             need, min_c, "ec.um");
+                        LLVMValueRef nc     = LLVMBuildSelect(ctx->builder, use_m,
+                                                              min_c, need, "ec.nc");
+                        LLVMValueRef bytes  = LLVMBuildZExt(ctx->builder, nc, i64_t2, "ec.by");
+                        LLVMValueRef nd     = cg_emit_alloc(ctx, bytes, "string.clone",
+                                                             CG_LINE(ctx), CG_COL(ctx));
+                        LLVMValueRef cplen  = LLVMBuildZExt(ctx->builder, need, i64_t2, "ec.cl");
+                        LLVMValueRef mcfn   = LLVMGetNamedFunction(ctx->module, "memcpy");
+                        LLVMTypeRef  mcft   = LLVMGlobalGetValueType(mcfn);
+                        LLVMValueRef mca[3] = {nd, s_data, cplen};
+                        LLVMBuildCall2(ctx->builder, mcft, mcfn, mca, 3, "");
+                        LLVMValueRef ns = LLVMGetUndef(str_type);
+                        ns = LLVMBuildInsertValue(ctx->builder, ns, nd, 0, "ec.s0");
+                        ns = LLVMBuildInsertValue(ctx->builder, ns, s_len, 1, "ec.s1");
+                        ns = LLVMBuildInsertValue(ctx->builder, ns, nc, 2, "ec.s2");
+                        LLVMBuildStore(ctx->builder, ns, field_ptr);
+                    }
+                    else
+                    {
+                        LLVMValueRef cloned = emit_string_clone_val(ctx, v);
+                        LLVMBuildStore(ctx->builder, cloned, field_ptr);
+                    }
                 }
             }
             else if (pt && (pt->kind == TYPE_VECTOR || pt->kind == TYPE_MAP))

@@ -1,6 +1,6 @@
 ## Bug #21 — json.stringify(Object+Str) flaky use-after-free 腐败
 
-### 状态：OPEN（未修复）
+### 状态：FIXED（BF-032，2026-05-26）
 
 ### 现象
 json.stringify 对包含 Str 值的 Object 变体产生随机腐败输出。
