@@ -45,6 +45,8 @@
 | BF-031 | 2026-05-26 | BUILD | `find_fn_template` static 前向声明缺失 → GCC/Clang 编译错误 | checker.c | — |
 | BF-032 | 2026-05-26 | WRONG | `emit_string_clone_val` 对 borrowed 参数（cap=0）跳过克隆 → 悬垂指针 | codegen (emit_enum_ctor) | `bugfix_BF032_string_clone_borrowed_param.md` |
 | BF-033 | 2026-05-26 | WRONG | `map_type_id` 对 enum 值类型使用默认后缀 `"i"` → 潜在 LLVM 类型名冲突 | codegen (map helpers) | — |
+| BF-034 | 2026-05-26 | CRASH | `codegen_print_call` `printf_args` 按 `argc*2` 分配，f-string 展开后 expr 槽溢出 → Linux heap crash | codegen (print) | — |
+| BF-036 | 2026-05-26 | WRONG | `proc.args()` 丢弃第一个用户参数：`main.c` 传入的 `g_argv` 不含 script 名，但 `args()` 从 `i=1` 开始 | main.c / std/proc.ls | — |
 
 ---
 
@@ -399,6 +401,68 @@ if (source_borrowed) {
 **教训**：
 - `map_type_id` 的分支列表必须与 `Type.kind` 枚举同步审查。每次新增类型 kind 时，应检查所有依赖 kind 的 switch/if 链。
 - 对称审查法（BF-004 教训）的扩展：为 struct 加了 name 后缀 → 必须同时为 enum 加。
+
+---
+
+## BF-034：`codegen_print_call` `printf_args` 堆缓冲区溢出 → Linux crash（2026-05-26）
+
+**症状**：`print(f">>>{a}{x}{b}{x}{c}{d}")` 这类含多个 f-string 插值的 print 调用在 Linux 上产生 SIGABRT（`free(): invalid next size (fast)`）；Windows 上静默腐败，不 crash。最小复现：6 个变量插值的单条 f-string。
+
+**根因**：`codegen_print_call` 中 `printf_args` 按 `argc * 2` 分配（`argc` 是 `print()` 的参数个数），但每个 f-string 实参实际展开为 `expr_count` 个 LLVMValueRef 槽（格式字符串本身不占槽，每个 `{expr}` 片段占一个槽）。当 f-string 有 6 个插值时，实际需要 6 个槽，但 `1 * 2 = 2` 个槽被分配 → 堆越界写入。
+
+**Linux vs Windows 差异**：glibc ptmalloc2 的 chunk header 紧邻用户数据后面，越界写入立即破坏相邻 chunk 的 size 字段，下次 `free()` 时验证失败 → SIGABRT。Windows CRT heap 有 alignment padding 和 slack 区域，使得小幅越界不立即破坏关键元数据 → 静默腐败，难以察觉。
+
+**修复**（`src/codegen.c` — `codegen_print_call`）：用精确预扫描替代 `argc * 2`：
+```c
+int max_printf_args = 0;
+for (int i = 0; i < argc; i++) {
+    AstNode *arg = node->as.call.args[i];
+    if (arg->kind == AST_FORMAT_STRING)
+        max_printf_args += arg->as.format_string.expr_count;
+    else
+        max_printf_args += 2;  // format spec + value
+}
+if (max_printf_args < 1) max_printf_args = 1;
+```
+
+**教训**：
+- 在使用固定公式估算数组大小时，必须验证公式对所有输入类型的上界是否成立。
+- f-string 的"展开后参数数量"与"print 的参数个数"是不同的量，不能混用。
+- Linux 堆实现更严格，能更早暴露 Windows 上的隐患。跨平台测试是必要的。
+
+---
+
+## BF-036：`proc.args()` 丢弃第一个用户参数（2026-05-26）
+
+**症状**：`ls run script.ls arg1 arg2`，`proc.args()` 只返回 `["arg2"]`，`arg1` 被丢弃。`proc.program()` 返回 `"arg1"` 而非 `"script.ls"`。
+
+**根因**：`src/main.c` 中调用 `__ls_set_args` 时，将 script 文件名排除在外：
+
+```c
+// 错误（修复前）：
+int script_argc = (file_idx + 1 < argc) ? argc - file_idx - 1 : 0;
+char **script_argv = (script_argc > 0) ? &argv[file_idx + 1] : NULL;
+```
+
+以 `ls run script.ls arg1 arg2`（`file_idx=2, argc=5`）为例：
+- `script_argc = 5-2-1 = 2`，`g_argv = ["arg1", "arg2"]`
+- `g_argv[0]` = "arg1" → `proc.program()` 错误返回 "arg1"
+- `proc.args()` 从 `i=1` 开始 → 只返回 `["arg2"]`，**arg1 被丢弃**
+
+**修复**（`src/main.c`）：将 script 文件名作为 `g_argv[0]`，使 layout 与 POSIX `argv` 约定一致：
+
+```c
+// 正确（修复后）：
+int script_argc = argc - file_idx;
+char **script_argv = &argv[file_idx];
+```
+
+修复后：`g_argv = ["script.ls", "arg1", "arg2"]`，`proc.program()` 返回 "script.ls"，`proc.args()` 从 `i=1` 返回 `["arg1", "arg2"]`。
+
+**教训**：
+- `proc.args()` 的 `i=1` 跳过约定依赖于 `g_argv[0]` 是程序名——调用方必须遵守这个约定。
+- `__ls_set_args` 与 POSIX `main(argc, argv)` 共享相同的 layout 约定，违反时应立即发现。
+- 新增 CLI 参数传递逻辑时，应同步编写端到端测试验证 `proc.args()` 和 `proc.program()`。
 
 ---
 

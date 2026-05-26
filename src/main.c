@@ -472,8 +472,11 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         {
-            int script_argc = (file_idx + 1 < argc) ? argc - file_idx - 1 : 0;
-            char **script_argv = (script_argc > 0) ? &argv[file_idx + 1] : NULL;
+            /* argv[file_idx] is the script name; pass it as g_argv[0] so that
+               proc.program() returns the script name and proc.args() returns
+               the remaining arguments (i=1 .. n-1), matching POSIX convention. */
+            int script_argc = argc - file_idx;
+            char **script_argv = &argv[file_idx];
             extern void __ls_set_args(int, char **);
             __ls_set_args(script_argc, script_argv);
         }
