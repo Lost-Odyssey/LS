@@ -13336,13 +13336,16 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             node->as.return_stmt.value->resolved_type)
         {
             Type *ret_type = node->as.return_stmt.value->resolved_type;
-            /* For string/struct/vec/Block/has_drop-enum IDENT returns:
+            /* For string/struct/vec/map/Block/has_drop-enum IDENT returns:
                ownership transfers to caller — skip scope cleanup for this
-               variable so we don't free its data/env. */
+               variable so we don't free its data/env.
+               M-4 BF-038: TYPE_MAP added — map IDENT 返回缺失 skip 导致 callee
+               scope_drop + caller scope_drop 双重释放 buckets。 */
             if (ret_type->kind == TYPE_STRING ||
                 ret_type->kind == TYPE_STRUCT ||
                 ret_type->kind == TYPE_VECTOR ||
-                ret_type->kind == TYPE_BLOCK ||
+                ret_type->kind == TYPE_MAP    ||
+                ret_type->kind == TYPE_BLOCK  ||
                 (ret_type->kind == TYPE_ENUM && ret_type->as.enom.has_drop))
             {
                 const char *name = node->as.return_stmt.value->as.ident.name;

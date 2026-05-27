@@ -444,6 +444,20 @@ add_test(
 )
 set_tests_properties(test_mem_m3_jit PROPERTIES DEPENDS "test_mem_m2_jit")
 
+# M-4: 所有权转移审计矩阵 — 覆盖 AST_VAR_DECL/ASSIGN/RETURN × 各类型，
+# vec/map 字面量，函数参数 by-value，match binder，嵌套容器等
+# 包含 BF-038 修复（fn 返回 map IDENT double-free）回归
+add_test(
+    NAME test_mem_m4_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_matrix.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=test_mem_m4_jit
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_mem_m4_jit PROPERTIES DEPENDS "test_mem_m3_jit")
+
 # Phase E.1 end-to-end test: extern struct + extern { } block + extern fn without 'from'
 add_test(
     NAME test_extern_struct
