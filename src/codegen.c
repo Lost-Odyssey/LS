@@ -286,6 +286,20 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
 static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node);
 
+/* M-3: 统一所有权转移 API */
+typedef enum {
+    CG_XFER_INTO_CONTAINER,  /* vec.push / vec[i]= / enum ctor / struct ctor */
+    CG_XFER_ASSIGN_VAR,      /* string a = b（clone 语义，source 保持有效） */
+    CG_XFER_RETURN,          /* return val */
+} CgTransferKind;
+static void cg_store_owned(CodegenContext *ctx,
+                           LLVMValueRef dst_ptr,
+                           LLVMValueRef val,
+                           Type *type,
+                           AstNode *source,
+                           int temp_mark,
+                           CgTransferKind kind);
+
 /* Phase C.5/C.7: capture types that need release work in env_drop.
    Currently:
      TYPE_STRING — env_drop frees data when cap > 0 (cap is 0 when the
@@ -1331,6 +1345,17 @@ static void emit_string_free_with_cont(CodegenContext *ctx, LLVMValueRef str_all
 #endif
     cg_emit_free(ctx, data, free_kind ? free_kind : "unknown",
                  free_line, free_col);
+    /* M-2: Zero out cap after free so any re-triggered cleanup sees cap=0
+       (static/skip) and does NOT double-free.  This happens when a temp string
+       alloca is freed once per loop iteration but the short-circuit exit path
+       re-runs sf.cleanup on the same alloca (double-free regression introduced
+       when struct-field strings became truly cloned, cap>0). */
+    {
+        LLVMValueRef str_zeroed = LLVMBuildInsertValue(
+            ctx->builder, str_val,
+            LLVMConstInt(i32_type, 0, 0), 2, "sf.zerocp");
+        LLVMBuildStore(ctx->builder, str_zeroed, str_alloca);
+    }
     LLVMBuildBr(ctx->builder, cont_bb);
 
     LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
@@ -1462,10 +1487,12 @@ static void emit_string_append_inline(CodegenContext *ctx,
     /* new_len = s_len + suffix_len (i32) */
     LLVMValueRef new_len = LLVMBuildAdd(ctx->builder, s_len, suffix_len, "sa.nlen");
 
-    /* need_grow = (s_cap == 0) || (new_len + 1 > s_cap) */
+    /* need_grow = (s_cap <= 0) || (new_len + 1 > s_cap)
+       M-2: cap <= 0 covers both LS_CAP_STATIC(0) and LS_CAP_BORROWED(-2); both
+       require a fresh malloc (we cannot realloc a literal or a borrowed buffer). */
     LLVMValueRef zero32 = LLVMConstInt(i32_type, 0, 0);
     LLVMValueRef one32 = LLVMConstInt(i32_type, 1, 0);
-    LLVMValueRef is_static = LLVMBuildICmp(ctx->builder, LLVMIntEQ, s_cap, zero32, "sa.isst");
+    LLVMValueRef is_static = LLVMBuildICmp(ctx->builder, LLVMIntSLE, s_cap, zero32, "sa.isst");
     LLVMValueRef need_plus1 = LLVMBuildAdd(ctx->builder, new_len, one32, "sa.np1");
     LLVMValueRef no_space = LLVMBuildICmp(ctx->builder, LLVMIntSGT, need_plus1, s_cap, "sa.nospc");
     LLVMValueRef need_grow = LLVMBuildOr(ctx->builder, is_static, no_space, "sa.grow");
@@ -1588,9 +1615,10 @@ static void emit_string_append_inline(CodegenContext *ctx,
 }
 
 /* Clone a single LsString VALUE (not alloca).
-   If cap > 0 (owned): malloc + memcpy → returns new LsString with independent data.
-   If cap == 0 (static literal): returned as-is (safe — we never free static data).
-   If cap == -1 (moved marker): returned as-is (shouldn't happen in a healthy vec).
+   If cap > 0  (LS_CAP_STATIC > 0, owned):  malloc + memcpy → new independent LsString.
+   If cap == 0 (LS_CAP_STATIC, static literal): returned as-is (.rodata never freed).
+   If cap == -1 (LS_CAP_MOVED):  returned as-is (shouldn't happen in healthy code).
+   If cap == -2 (LS_CAP_BORROWED): malloc + memcpy → caller owns original, we own copy.
    After this call the builder is at a valid continuation block. */
 static LLVMValueRef emit_string_clone_val(CodegenContext *ctx, LLVMValueRef str_val)
 {
@@ -1603,8 +1631,13 @@ static LLVMValueRef emit_string_clone_val(CodegenContext *ctx, LLVMValueRef str_
     LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, str_val, 1, "sc.len");
     LLVMValueRef cap = LLVMBuildExtractValue(ctx->builder, str_val, 2, "sc.cap");
 
-    LLVMValueRef zero32 = LLVMConstInt(i32_type, 0, 0);
-    LLVMValueRef is_owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap, zero32, "sc.owned");
+    /* M-2: clone if cap > 0 (owned) OR cap == -2 (borrowed).
+       Static (cap=0) and moved (cap=-1) are passed through unchanged. */
+    LLVMValueRef zero32   = LLVMConstInt(i32_type, 0, 0);
+    LLVMValueRef neg2_32  = LLVMConstInt(i32_type, (unsigned long long)LS_CAP_BORROWED, 0);
+    LLVMValueRef is_pos   = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap, zero32,  "sc.owned");
+    LLVMValueRef is_borrow= LLVMBuildICmp(ctx->builder, LLVMIntEQ,  cap, neg2_32, "sc.borr");
+    LLVMValueRef is_owned = LLVMBuildOr(ctx->builder, is_pos, is_borrow, "sc.need_clone");
 
     /* Allocate a result slot in the function entry block */
     LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
@@ -2024,6 +2057,15 @@ static LLVMValueRef cg_push_temp_string(CodegenContext *ctx, LLVMValueRef str_va
                                             ctx->temp_string_slots, ctx->temp_string_cap);
     }
     ctx->temp_string_slots[ctx->temp_string_count++] = slot;
+#if CG_DEBUG
+    {
+        char dbg_fmt[64];
+        snprintf(dbg_fmt, sizeof(dbg_fmt),
+                 "[cg] tmp.push    slot=%d\n",
+                 ctx->temp_string_count - 1);
+        cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
+    }
+#endif
     return str_val;
 }
 
@@ -2125,6 +2167,240 @@ static void cg_null_block_env(CodegenContext *ctx, LLVMValueRef blk_alloca)
     LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_t), env_field);
 }
 
+/* M-3: 统一所有权转移 API
+   将 val 存入 dst_ptr，根据类型和来源节点自动选择 move/clone/store 语义。
+   temp_mark: codegen_expr(source) 调用之前的 ctx->temp_string_count 快照。
+   kind:      CG_XFER_INTO_CONTAINER — 存入容器（move 语义，source 被消耗）
+              CG_XFER_ASSIGN_VAR     — 变量赋值（clone 语义，string source 保持有效）
+              CG_XFER_RETURN         — return（同 INTO_CONTAINER，move 语义）
+*/
+static void cg_store_owned(CodegenContext *ctx,
+                           LLVMValueRef dst_ptr,
+                           LLVMValueRef val,
+                           Type *type,
+                           AstNode *source,
+                           int temp_mark,
+                           CgTransferKind kind)
+{
+    if (!val || !dst_ptr || !type) {
+        if (dst_ptr && val)
+            LLVMBuildStore(ctx->builder, val, dst_ptr);
+        return;
+    }
+
+    AstNode *src = source ? ast_unwrap_move(source) : NULL;
+
+    /* 解析 source 是否是命名变量 IDENT */
+    CgSymbol *src_sym = NULL;
+    if (src && src->kind == AST_IDENT)
+        src_sym = cg_scope_resolve(ctx->current_scope, src->as.ident.name);
+
+    /* 是否是右值：产生新的堆缓冲区，调用者需负责释放或移交所有权。
+       AST_CALL        — 函数/方法调用均为 AST_CALL（方法调用时 callee 为 AST_FIELD）
+       AST_TRY         — try 表达式传播返回值
+       AST_FORMAT_STRING — f"..." 格式化字符串
+       注意：AST_IDENT 不在此列（命名变量，有自己的 alloca） */
+    bool is_rvalue = src && (src->kind == AST_CALL         ||
+                             src->kind == AST_TRY           ||
+                             src->kind == AST_FORMAT_STRING);
+
+    /* ------------------------------------------------------------------ */
+    /* STRING                                                               */
+    /* ------------------------------------------------------------------ */
+    if (type->kind == TYPE_STRING)
+    {
+        if (is_rvalue)
+        {
+            /* 右值：已有堆缓冲，直接存入。弹出 temp slot 防止 double-free。 */
+            LLVMBuildStore(ctx->builder, val, dst_ptr);
+            cg_mark_last_temp_moved(ctx, temp_mark, "xfer: rvalue string into dst");
+        }
+        else if (src_sym && !src_sym->is_borrowed)
+        {
+            if (kind == CG_XFER_ASSIGN_VAR)
+            {
+                /* a = b：clone 语义，b 保留所有权 */
+                LLVMValueRef cloned = emit_string_clone_val(ctx, val);
+                LLVMBuildStore(ctx->builder, cloned, dst_ptr);
+            }
+            else
+            {
+                /* INTO_CONTAINER / RETURN：move 语义，source 标记为已移动 */
+                LLVMBuildStore(ctx->builder, val, dst_ptr);
+                mark_string_moved(ctx, src_sym->value, "xfer: string moved into container");
+            }
+        }
+        else
+        {
+            /* borrowed (cap=-2) / static (cap=0) / 其他：
+               emit_string_clone_val 在运行时按 cap 值决定是否克隆 */
+            LLVMValueRef cloned = emit_string_clone_val(ctx, val);
+            LLVMBuildStore(ctx->builder, cloned, dst_ptr);
+        }
+#if CG_DEBUG
+        {
+            const char *src_kind = is_rvalue ? "rvalue" :
+                                   (src_sym && src_sym->is_borrowed) ? "borrowed" :
+                                   src_sym ? "ident" : "other";
+            const char *xfer_kind = (kind == CG_XFER_ASSIGN_VAR) ? "assign" :
+                                    (kind == CG_XFER_RETURN)      ? "return" : "container";
+            char fmt[128];
+            snprintf(fmt, sizeof(fmt),
+                     "[cg] xfer.string src=%-8s kind=%-9s\n", src_kind, xfer_kind);
+            cg_emit_debug_printf(ctx, fmt, NULL, 0);
+        }
+#endif
+        return;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* STRUCT (has_drop)                                                   */
+    /* ------------------------------------------------------------------ */
+    if (type->kind == TYPE_STRUCT && type->as.strukt.has_drop)
+    {
+        bool source_borrowed = src_sym && src_sym->is_borrowed;
+        if (source_borrowed)
+        {
+            /* borrowed match binder：深克隆，enum subject 仍持有原始堆内存 */
+            LLVMTypeRef st_llvm = type_to_llvm(ctx, type);
+            val = emit_struct_clone_val(ctx, val, st_llvm, type);
+        }
+        LLVMBuildStore(ctx->builder, val, dst_ptr);
+        if (!source_borrowed)
+        {
+            if (src_sym && src_sym->moved_flag)
+            {
+                /* 命名 owned 变量：设置 moved_flag，scope cleanup 跳过 drop */
+                LLVMBuildStore(ctx->builder,
+                    LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+                    src_sym->moved_flag);
+            }
+            else
+            {
+                /* 表达式结果：将求值期间产生的所有 string temp 标记为 moved */
+                for (int t = temp_mark; t < ctx->temp_string_count; t++)
+                    mark_string_moved(ctx, ctx->temp_string_slots[t],
+                                      "xfer: struct temp owned by container");
+            }
+        }
+#if CG_DEBUG
+        {
+            const char *sk = source_borrowed ? "borrowed" : src_sym ? "ident" : "expr";
+            char fmt[64];
+            snprintf(fmt, sizeof(fmt), "[cg] xfer.struct src=%-8s\n", sk);
+            cg_emit_debug_printf(ctx, fmt, NULL, 0);
+        }
+#endif
+        return;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* ENUM (has_drop)                                                     */
+    /* ------------------------------------------------------------------ */
+    if (type->kind == TYPE_ENUM && type->as.enom.has_drop)
+    {
+        bool source_borrowed = src_sym && src_sym->is_borrowed;
+
+        if (is_rvalue)
+        {
+            /* 右值：直接取得所有权 */
+            LLVMBuildStore(ctx->builder, val, dst_ptr);
+        }
+        else if (source_borrowed)
+        {
+            /* borrowed match binder：必须深克隆 */
+            LLVMValueRef cloned = emit_enum_clone_val(ctx, val, type);
+            LLVMBuildStore(ctx->builder, cloned, dst_ptr);
+        }
+        else if (src_sym && src_sym->moved_flag)
+        {
+            /* 命名 owned 变量：move，设置 moved_flag */
+            LLVMBuildStore(ctx->builder, val, dst_ptr);
+            LLVMBuildStore(ctx->builder,
+                LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+                src_sym->moved_flag);
+        }
+        else
+        {
+            /* 其他（字面量等）：直接存入 */
+            LLVMBuildStore(ctx->builder, val, dst_ptr);
+        }
+#if CG_DEBUG
+        cg_emit_debug_printf(ctx, "[cg] xfer.enum\n", NULL, 0);
+#endif
+        return;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* VEC                                                                  */
+    /* ------------------------------------------------------------------ */
+    if (type->kind == TYPE_VECTOR)
+    {
+        bool source_borrowed = src_sym && src_sym->is_borrowed;
+        if (source_borrowed)
+        {
+            /* borrowed：深克隆整个 vec */
+            val = emit_vec_clone_val(ctx, val, type->as.vec.elem);
+        }
+        LLVMBuildStore(ctx->builder, val, dst_ptr);
+        if (!source_borrowed && src_sym && src_sym->value)
+        {
+            /* owned IDENT：将 source vec 的 cap 清零，防止 scope cleanup double-free */
+            LLVMTypeRef vec_t = ls_vec_type(ctx);
+            LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, vec_t,
+                                              src_sym->value, "xfv.cur");
+            LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
+                LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
+                2, "xfv.zc");
+            LLVMBuildStore(ctx->builder, zeroed, src_sym->value);
+        }
+        return;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* MAP                                                                  */
+    /* ------------------------------------------------------------------ */
+    if (type->kind == TYPE_MAP)
+    {
+        bool source_borrowed = src_sym && src_sym->is_borrowed;
+        if (source_borrowed)
+        {
+            /* borrowed：深克隆整个 map */
+            val = emit_map_clone_val(ctx, val, type->as.map.key, type->as.map.val);
+        }
+        LLVMBuildStore(ctx->builder, val, dst_ptr);
+        if (!source_borrowed && src_sym && src_sym->value)
+        {
+            LLVMTypeRef map_t = ls_map_type(ctx);
+            LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, map_t,
+                                              src_sym->value, "xfm.cur");
+            LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
+                LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
+                2, "xfm.zc");
+            LLVMBuildStore(ctx->builder, zeroed, src_sym->value);
+        }
+        return;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* BLOCK (闭包)                                                        */
+    /* ------------------------------------------------------------------ */
+    if (type->kind == TYPE_BLOCK)
+    {
+        LLVMBuildStore(ctx->builder, val, dst_ptr);
+        if (src_sym && !src_sym->is_borrowed)
+            cg_null_block_env(ctx, src_sym->value);
+        else if (!src_sym && ctx->temp_block_env_count > 0)
+            ctx->temp_block_env_count--;
+        return;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* POD (int / f64 / bool / char / object / pointer 等)                */
+    /* ------------------------------------------------------------------ */
+    LLVMBuildStore(ctx->builder, val, dst_ptr);
+}
+
 /* Free temp string slots in [mark, count) and reset count to mark.
    skip_last: if true, skip the last slot (it was moved to a named variable).
    All non-skipped slots are conditionally freed (cap > 0 check). */
@@ -2141,6 +2417,16 @@ static void cg_flush_temps(CodegenContext *ctx, int mark, bool skip_last)
     int end = ctx->temp_string_count;
     if (skip_last && end > mark)
         end--;
+#if CG_DEBUG
+    if (end > mark)
+    {
+        char dbg_fmt[64];
+        snprintf(dbg_fmt, sizeof(dbg_fmt),
+                 "[cg] tmp.flush   mark=%d end=%d skip_last=%d\n",
+                 mark, end, (int)skip_last);
+        cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
+    }
+#endif
     for (int i = mark; i < end; i++)
     {
         emit_string_free(ctx, ctx->temp_string_slots[i]);
@@ -2205,83 +2491,6 @@ static bool is_vec_string_index(AstNode *node)
         return false;
     Type *elem = obj_t->as.vec.elem;
     return elem && elem->kind == TYPE_STRING;
-}
-
-/* Check if an expression produces a dynamic (owned) string that needs cleanup.
-   This identifies temporary strings that aren't assigned to variables. */
-static bool expr_produces_dynamic_string(AstNode *node)
-{
-    if (node == NULL)
-        return false;
-
-    /* String method calls that allocate new strings */
-    if (node->kind == AST_CALL &&
-        node->as.call.callee->kind == AST_FIELD)
-    {
-        AstNode *obj = node->as.call.callee->as.field_access.object;
-        if (obj && obj->resolved_type && obj->resolved_type->kind == TYPE_STRING)
-        {
-            const char *method = node->as.call.callee->as.field_access.field;
-            /* Methods that allocate new strings: upper, lower, substr, trim, replace, copy */
-            if (strcmp(method, "upper") == 0 ||
-                strcmp(method, "lower") == 0 ||
-                strcmp(method, "substr") == 0 ||
-                strcmp(method, "trim") == 0 ||
-                strcmp(method, "replace") == 0 ||
-                strcmp(method, "copy") == 0)
-            {
-                return true;
-            }
-        }
-    }
-
-    /* String concatenation s1 + s2 */
-    if (node->kind == AST_BINARY)
-    {
-        Type *lt = node->as.binary.left->resolved_type;
-        Type *rt = node->as.binary.right->resolved_type;
-        if (lt && rt &&
-            lt->kind == TYPE_STRING &&
-            rt->kind == TYPE_STRING)
-        {
-            return true;
-        }
-    }
-
-    /* Format string f"..." */
-    if (node->kind == AST_FORMAT_STRING)
-    {
-        return true;
-    }
-
-    /* Nested call that may produce dynamic string */
-    if (node->kind == AST_CALL)
-    {
-        Type *rt = node->resolved_type;
-        if (rt && rt->kind == TYPE_STRING)
-        {
-            /* Phase C.7: closure-block calls are tracked by temp_string_slots
-               at the codegen_block_call site, so print's own __argtmp scope
-               registration would double-free. Skip this branch when the
-               callee is Block-typed. */
-            Type *ct = node->as.call.callee
-                       ? node->as.call.callee->resolved_type : NULL;
-            if (ct && ct->kind == TYPE_BLOCK) {
-                return false;
-            }
-            /* BF-025: user-defined function calls (AST_IDENT callee) returning
-               TYPE_STRING are now tracked by cg_push_temp_string in the
-               generic AST_CALL codegen path, so print's __argtmp scope
-               registration would double-free.  Return false here to prevent
-               the redundant __argtmp registration. */
-            if (node->as.call.callee->kind == AST_IDENT)
-            {
-                return false;
-            }
-        }
-    }
-
-    return false;
 }
 
 /* Forward declaration for struct drop */
@@ -3510,6 +3719,20 @@ static LLVMValueRef codegen_lvalue_ptr(CodegenContext *ctx, AstNode *node)
 
 /* ---- Printf format specifier for a given type ---- */
 
+/* Append src to dst[0..len), escaping '%' as '%%'.  cap is the buffer size.
+   Returns the new length (may be clamped to cap-1 if buffer is full). */
+static int append_text_escaped(char *dst, int len, int cap, const char *src)
+{
+    for (; *src; src++) {
+        if (*src == '%') {
+            if (len + 2 < cap) { dst[len++] = '%'; dst[len++] = '%'; }
+        } else {
+            if (len + 1 < cap) dst[len++] = *src;
+        }
+    }
+    return len;
+}
+
 static const char *printf_fmt_for_type(Type *t)
 {
     if (t == NULL)
@@ -4111,14 +4334,9 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
             /* Expand format string parts into the printf format */
             for (int j = 0; j < arg->as.format_string.expr_count; j++)
             {
-                /* Text part before expression */
+                /* Text part before expression — escape '%' for printf */
                 const char *txt = arg->as.format_string.parts[j];
-                int tlen = (int)strlen(txt);
-                if (fmt_len + tlen < 1020)
-                {
-                    memcpy(fmt_buf + fmt_len, txt, (size_t)tlen);
-                    fmt_len += tlen;
-                }
+                fmt_len = append_text_escaped(fmt_buf, fmt_len, 1024, txt);
 
                 /* Expression — borrow vec(string)[i] instead of cloning */
                 AstNode *expr = arg->as.format_string.exprs[j];
@@ -4152,16 +4370,11 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
                 }
                 printf_args[printf_argc++] = val;
             }
-            /* Trailing text part */
+            /* Trailing text part — escape '%' for printf */
             if (arg->as.format_string.part_count > arg->as.format_string.expr_count)
             {
                 const char *txt = arg->as.format_string.parts[arg->as.format_string.expr_count];
-                int tlen = (int)strlen(txt);
-                if (fmt_len + tlen < 1020)
-                {
-                    memcpy(fmt_buf + fmt_len, txt, (size_t)tlen);
-                    fmt_len += tlen;
-                }
+                fmt_len = append_text_escaped(fmt_buf, fmt_len, 1024, txt);
             }
             continue;
         }
@@ -4245,17 +4458,9 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
             return NULL;
         }
 
-        /* For string arguments, create a temp alloca and register for cleanup.
-           This handles cases like print("hello".upper()) where the temporary
-           string result would otherwise leak. */
-        if (t && t->kind == TYPE_STRING && expr_produces_dynamic_string(arg))
-        {
-            LLVMValueRef str_alloca = LLVMBuildAlloca(ctx->builder,
-                                                      ls_string_type(ctx), "str.argtmp");
-            LLVMBuildStore(ctx->builder, val, str_alloca);
-            Type *str_type = type_string();
-            cg_scope_define(ctx->current_scope, "__argtmp", str_alloca, str_type, NULL);
-        }
+        /* Dynamic string temps (upper/lower/concat/f-string/…) are already
+           registered via cg_push_temp_string and freed by cg_flush_temps at
+           statement end — no separate __argtmp scope registration needed. */
 
         if (i > 0)
         {
@@ -4326,14 +4531,9 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
 
     for (int i = 0; i < expr_count; i++)
     {
-        /* Text part */
+        /* Text part — escape '%' so it is not treated as printf format specifier */
         const char *txt = node->as.format_string.parts[i];
-        int tlen = (int)strlen(txt);
-        if (fmt_len + tlen < 1020)
-        {
-            memcpy(fmt_buf + fmt_len, txt, (size_t)tlen);
-            fmt_len += tlen;
-        }
+        fmt_len = append_text_escaped(fmt_buf, fmt_len, 1024, txt);
 
         /* Expression */
         AstNode *expr = node->as.format_string.exprs[i];
@@ -4378,16 +4578,11 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
         vals[val_count++] = val;
     }
 
-    /* Trailing text */
+    /* Trailing text — escape '%' for printf/sprintf */
     if (part_count > expr_count)
     {
         const char *txt = node->as.format_string.parts[expr_count];
-        int tlen = (int)strlen(txt);
-        if (fmt_len + tlen < 1020)
-        {
-            memcpy(fmt_buf + fmt_len, txt, (size_t)tlen);
-            fmt_len += tlen;
-        }
+        fmt_len = append_text_escaped(fmt_buf, fmt_len, 1024, txt);
     }
     fmt_buf[fmt_len] = '\0';
 
@@ -4898,15 +5093,17 @@ static LLVMValueRef codegen_vec_string_borrow(CodegenContext *ctx, AstNode *node
     LLVMBuildStore(ctx->builder, ls_string_from_literal(ctx, "", "vb.empty"), result_alloca);
     LLVMBuildCondBr(ctx->builder, in_bounds, ok_bb, oob_bb);
 
-    /* ok_bb: GEP + load + zero out cap (borrow — no clone, no ownership transfer) */
+    /* ok_bb: GEP + load + mark cap = LS_CAP_BORROWED (borrow — no clone, no ownership transfer) */
     LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
     LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &index, 1, "vb.ep");
     LLVMValueRef elem_raw = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vb.elem");
     /* InsertValue produces a NEW SSA value — the vec's memory is untouched.
-       cap=0 marks this copy as "static literal" so emit_string_free skips it. */
-    LLVMValueRef zero_cap = LLVMConstInt(i32_t, 0, 0);
+       M-2: cap=LS_CAP_BORROWED(-2) instead of 0: emit_string_free still skips the free
+       (cap<=0), but emit_string_clone_val now properly clones borrowed strings when they
+       are stored into enum/struct fields (previously cap=0 was skipped, causing dangling). */
+    LLVMValueRef cap_borrow = LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0);
     LLVMValueRef borrowed = LLVMBuildInsertValue(ctx->builder, elem_raw,
-                                                 zero_cap, 2, "vb.borrow");
+                                                 cap_borrow, 2, "vb.borrow");
 
 #if CG_DEBUG
     {
@@ -6476,6 +6673,14 @@ static LLVMBasicBlockRef emit_vec_elem_drop_at(CodegenContext *ctx,
     if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
     {
         LLVMValueRef drop_fn_val = (LLVMValueRef)elem_type->as.strukt.drop_fn;
+        if (drop_fn_val == NULL)
+        {
+            /* M-4 BF-037: struct 只作为 vec 元素出现时，drop_fn 可能尚未生成
+               （没有独立的 struct 变量触发 emit_auto_drop_fn）。
+               按需生成，与 has_drop enum 的处理方式对称。 */
+            emit_auto_drop_fn(ctx, elem_type);
+            drop_fn_val = (LLVMValueRef)elem_type->as.strukt.drop_fn;
+        }
         if (drop_fn_val)
         {
 #if CG_DEBUG
@@ -6663,111 +6868,18 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         /* Grow if needed */
         emit_vec_grow_inline(ctx, vec_alloca, elem_llvm);
 
-        /* If the source is a borrowed match binder for a has_drop type,
-           we must deep-clone the value before storing into the vec, because
-           the binder doesn't own the heap memory (the enum subject does).
-           Without cloning, the vec and the enum subject share heap pointers,
-           and the subject's scope drop frees them → vec holds dangling ptrs. */
-        {
-            AstNode *arg0_check = ast_unwrap_move(call_node->as.call.args[0]);
-            bool source_borrowed = false;
-            if (arg0_check && arg0_check->kind == AST_IDENT) {
-                CgSymbol *src = cg_scope_resolve(ctx->current_scope, arg0_check->as.ident.name);
-                if (src && src->is_borrowed) source_borrowed = true;
-            }
-            if (source_borrowed) {
-                if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-                    val = emit_enum_clone_val(ctx, val, elem_type);
-                else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) {
-                    LLVMTypeRef st_llvm = type_to_llvm(ctx, elem_type);
-                    val = emit_struct_clone_val(ctx, val, st_llvm, elem_type);
-                }
-                else if (elem_type->kind == TYPE_VECTOR)
-                    val = emit_vec_clone_val(ctx, val, elem_type->as.vec.elem);
-                else if (elem_type->kind == TYPE_MAP)
-                    val = emit_map_clone_val(ctx, val, elem_type->as.map.key, elem_type->as.map.val);
-            }
-        }
-
-        /* data[len] = val; len++ */
+        /* data[len] = val; 所有权转移由 cg_store_owned 统一处理 */
         LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vp.v");
         LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vp.data");
         LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vp.len");
         LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len_val, i64_t, "vp.len64");
         LLVMValueRef elem_ptr = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr,
                                               &len64, 1, "vp.slot");
-        LLVMBuildStore(ctx->builder, val, elem_ptr);
 
-        /* Transfer ownership: mark the pushed value as moved so the caller's scope cleanup
-           doesn't double-free the data now owned by the vec. */
-        if (elem_type->kind == TYPE_STRING)
-        {
-            /* For string temporaries (e.g. "x".upper()), mark the temp slot as moved */
-            cg_mark_last_temp_moved(ctx, temp_mark_push, "vec.push: temp owned by vec");
-            /* For named string variables (e.g. v.push(s) or v.push(__move(s))),
-               mark the source alloca as moved (cap = -1) so scope cleanup won't
-               free the same data the vec owns. Unwrap __move() wrappers here. */
-            AstNode *arg0 = ast_unwrap_move(call_node->as.call.args[0]);
-            if (arg0->kind == AST_IDENT)
-            {
-                CgSymbol *argsym = cg_scope_resolve(ctx->current_scope, arg0->as.ident.name);
-                if (argsym && argsym->type && argsym->type->kind == TYPE_STRING)
-                {
-                    mark_string_moved(ctx, argsym->value, "vec.push: var owned by vec");
-                }
-            }
-        }
-        if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-        {
-            /* Mark ALL string temps created during struct argument evaluation as moved.
-               These are now owned by the vec element — cg_flush_temps must not free them.
-               This handles struct literals like Person{name:"x".upper()} as well as
-               any other expression that produces a struct with owned string fields. */
-            for (int t = temp_mark_push; t < ctx->temp_string_count; t++)
-            {
-                mark_string_moved(ctx, ctx->temp_string_slots[t], "vec.push: struct temp owned by vec");
-            }
-
-            /* For struct-with-drop identifiers, set their moved_flag so scope cleanup skips them */
-            AstNode *arg0 = ast_unwrap_move(call_node->as.call.args[0]);
-            if (arg0->kind == AST_IDENT)
-            {
-                CgSymbol *argsym = cg_scope_resolve(ctx->current_scope, arg0->as.ident.name);
-                if (argsym && argsym->moved_flag)
-                {
-                    LLVMTypeRef i1_t = LLVMInt1TypeInContext(ctx->context);
-                    LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 1, 0), argsym->moved_flag);
-                }
-            }
-        }
-        /* F.4: Block element — vec takes ownership of the env.
-           Null the source's env_ptr so its scope cleanup doesn't double-free. */
-        if (elem_type->kind == TYPE_BLOCK)
-        {
-            AstNode *barg = ast_unwrap_move(call_node->as.call.args[0]);
-            if (barg->kind == AST_IDENT)
-            {
-                CgSymbol *bsym = cg_scope_resolve(ctx->current_scope, barg->as.ident.name);
-                if (bsym && !bsym->is_borrowed)
-                    cg_null_block_env(ctx, bsym->value);
-            }
-            else if (ctx->temp_block_env_count > 0)
-                ctx->temp_block_env_count--;
-        }
-        /* has_drop enum element: set moved_flag so scope cleanup skips drop */
-        if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-        {
-            AstNode *arg0 = ast_unwrap_move(call_node->as.call.args[0]);
-            if (arg0->kind == AST_IDENT)
-            {
-                CgSymbol *argsym = cg_scope_resolve(ctx->current_scope, arg0->as.ident.name);
-                if (argsym && argsym->moved_flag)
-                {
-                    LLVMTypeRef i1_t2 = LLVMInt1TypeInContext(ctx->context);
-                    LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t2, 1, 0), argsym->moved_flag);
-                }
-            }
-        }
+        /* M-3: 统一所有权转移（含 borrowed 深克隆、move 标记、temp 弹出） */
+        cg_store_owned(ctx, elem_ptr, val, elem_type,
+                       call_node->as.call.args[0], temp_mark_push,
+                       CG_XFER_INTO_CONTAINER);
 
         /* len++ */
         LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
@@ -7785,42 +7897,17 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         }
         LLVMBuildBr(ctx->builder, store_bb);
 
-        /* store_bb: store x at data[i] */
+        /* store_bb: store x at data[i]，所有权转移由 cg_store_owned 统一处理 */
         LLVMPositionBuilderAtEnd(ctx->builder, store_bb);
         {
             LLVMValueRef sv3 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vins.sv3");
             LLVMValueRef dat3 = LLVMBuildExtractValue(ctx->builder, sv3, 0, "vins.dat3");
             LLVMValueRef sti = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vins.sti");
             LLVMValueRef slot = LLVMBuildGEP2(ctx->builder, elem_llvm, dat3, &sti, 1, "vins.slot");
-            LLVMBuildStore(ctx->builder, x_val, slot);
-        }
-
-        /* Transfer ownership — same pattern as push() */
-        if (elem_type->kind == TYPE_STRING)
-        {
-            cg_mark_last_temp_moved(ctx, temp_mark_ins, "vec.insert: temp owned by vec");
-            AstNode *arg1 = ast_unwrap_move(call_node->as.call.args[1]);
-            if (arg1->kind == AST_IDENT)
-            {
-                CgSymbol *argsym = cg_scope_resolve(ctx->current_scope, arg1->as.ident.name);
-                if (argsym && argsym->type && argsym->type->kind == TYPE_STRING)
-                    mark_string_moved(ctx, argsym->value, "vec.insert: var owned by vec");
-            }
-        }
-        if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-        {
-            for (int t = temp_mark_ins; t < ctx->temp_string_count; t++)
-                mark_string_moved(ctx, ctx->temp_string_slots[t], "vec.insert: struct temp owned by vec");
-            AstNode *arg1 = ast_unwrap_move(call_node->as.call.args[1]);
-            if (arg1->kind == AST_IDENT)
-            {
-                CgSymbol *argsym = cg_scope_resolve(ctx->current_scope, arg1->as.ident.name);
-                if (argsym && argsym->moved_flag)
-                {
-                    LLVMTypeRef i1_t = LLVMInt1TypeInContext(ctx->context);
-                    LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 1, 0), argsym->moved_flag);
-                }
-            }
+            /* M-3: 统一所有权转移（arg[1] 是被插入的值） */
+            cg_store_owned(ctx, slot, x_val, elem_type,
+                           call_node->as.call.args[1], temp_mark_ins,
+                           CG_XFER_INTO_CONTAINER);
         }
 
         /* len++ */
@@ -8436,12 +8523,13 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
                 LLVMValueRef av    = LLVMBuildLoad2(ctx->builder, elem_llvm, pa, "sb.av");
                 LLVMValueRef bv    = LLVMBuildLoad2(ctx->builder, elem_llvm, pb, "sb.bv");
 
-                /* For string elements: borrow (cap=0) so Block won't free them */
+                /* For string elements: borrow (cap=LS_CAP_BORROWED) so Block won't free them */
                 LLVMValueRef a_arg = av, b_arg = bv;
                 if (elem_type->kind == TYPE_STRING)
                 {
-                    a_arg = LLVMBuildInsertValue(ctx->builder, av, zero32, 2, "sb.ab");
-                    b_arg = LLVMBuildInsertValue(ctx->builder, bv, zero32, 2, "sb.bb");
+                    LLVMValueRef cap_b = LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0);
+                    a_arg = LLVMBuildInsertValue(ctx->builder, av, cap_b, 2, "sb.ab");
+                    b_arg = LLVMBuildInsertValue(ctx->builder, bv, cap_b, 2, "sb.bb");
                 }
 
                 LLVMValueRef cmp_args[3] = {env_ptr, a_arg, b_arg};
@@ -8801,10 +8889,10 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef ep   = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vf.ep");
         LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vf.elem");
 
-        /* For string elements, pass as borrowed (cap=0) */
+        /* For string elements, pass as borrowed (cap=LS_CAP_BORROWED) */
         if (elem_type->kind == TYPE_STRING) {
             LLVMValueRef borrow = LLVMBuildInsertValue(ctx->builder, elem_val,
-                LLVMConstInt(i32_t, 0, 0), 2, "vf.borrow");
+                LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0), 2, "vf.borrow");
             elem_val = borrow;
         }
 
@@ -9228,11 +9316,11 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef ep      = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vrd.ep");
         LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vrd.elem");
 
-        /* Pass elem as borrowed to Block (cap=0 for string, value for POD) */
+        /* Pass elem as borrowed to Block (cap=LS_CAP_BORROWED for string, value for POD) */
         LLVMValueRef elem_arg = elem_val;
         if (elem_type->kind == TYPE_STRING)
             elem_arg = LLVMBuildInsertValue(ctx->builder, elem_val,
-                                             LLVMConstInt(i32_t, 0, 0), 2, "vrd.eborrow");
+                LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0), 2, "vrd.eborrow");
 
         /* Pass acc by full value to Block — block owns and frees it via scope cleanup.
            For string: cap > 0 means block will free the old buffer automatically.
@@ -9342,11 +9430,11 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef ep      = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vmp.ep");
         LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vmp.elem");
 
-        /* Pass T as borrowed to Block (cap=0 for string) */
+        /* Pass T as borrowed to Block (cap=LS_CAP_BORROWED for string) */
         LLVMValueRef elem_arg = elem_val;
         if (elem_type->kind == TYPE_STRING)
             elem_arg = LLVMBuildInsertValue(ctx->builder, elem_val,
-                                             LLVMConstInt(i32_t, 0, 0), 2, "vmp.borrow");
+                LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0), 2, "vmp.borrow");
 
         LLVMValueRef blk_args[2] = { env_ptr, elem_arg };
         LLVMValueRef u_val = LLVMBuildCall2(ctx->builder, blk_fn_type, fn_ptr,
@@ -10744,12 +10832,14 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         }
                         else
                         {
-                            /* LS ABI: zero out cap so callee won't free the data
-                               (borrow semantics — caller retains ownership) */
-                            LLVMValueRef zero32 = LLVMConstInt(
-                                LLVMInt32TypeInContext(ctx->context), 0, 0);
+                            /* LS ABI: set cap = LS_CAP_BORROWED (-2) so the callee
+                               won't free the data (caller retains ownership), but WILL
+                               clone it when storing into enum/struct fields (M-2). */
+                            LLVMValueRef cap_borrowed = LLVMConstInt(
+                                LLVMInt32TypeInContext(ctx->context),
+                                (unsigned long long)LS_CAP_BORROWED, 0);
                             args[i] = LLVMBuildInsertValue(
-                                ctx->builder, args[i], zero32, 2, "arg.borrow");
+                                ctx->builder, args[i], cap_borrowed, 2, "arg.borrow");
                         }
                     }
                     else if (LLVMIsFunctionVarArg(fn_type))
@@ -12301,7 +12391,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         /* Zero-initialize */
         LLVMBuildStore(ctx->builder, LLVMConstNull(st_llvm), storage);
 
-        /* Apply field initializers */
+        /* Apply field initializers — M-3: 统一所有权转移 */
         int ninits = node->as.new_expr.field_init_count;
         for (int i = 0; i < ninits; i++)
         {
@@ -12317,36 +12407,22 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             }
             if (field_idx < 0)
                 continue;
+
+            /* 记录本字段求值前的 temp mark，供 cg_store_owned 的 rvalue pop 使用 */
+            int field_temp_mark = ctx->temp_string_count;
             LLVMValueRef val = codegen_expr(ctx, node->as.new_expr.field_inits[i].value);
             if (val == NULL)
                 return NULL;
-            /* Clone owned strings so the struct field holds an independent copy.
-               Otherwise the temp string's data pointer is shared: the temp flush
-               frees it → struct field double-frees on scope exit. */
+
             Type *field_type = struct_type->as.strukt.fields[field_idx].type;
-            if (field_type && field_type->kind == TYPE_STRING)
-                val = emit_string_clone_val(ctx, val);
-            /* F.3: Block field — the struct takes ownership of the env.
-               If from a rvalue closure literal, pop temp_block_envs so the
-               statement-boundary flush doesn't free it again.
-               If from a named variable, null that variable's env_ptr (move). */
-            if (field_type && field_type->kind == TYPE_BLOCK)
-            {
-                AstNode *fval_node = node->as.new_expr.field_inits[i].value;
-                if (fval_node->kind == AST_IDENT)
-                {
-                    CgSymbol *src_sym = cg_scope_resolve(ctx->current_scope,
-                                                         fval_node->as.ident.name);
-                    if (src_sym && !src_sym->is_borrowed)
-                        cg_null_block_env(ctx, src_sym->value);
-                }
-                else if (ctx->temp_block_env_count > 0)
-                    ctx->temp_block_env_count--;
-            }
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
                                                          storage, (unsigned)field_idx,
                                                          "field_ptr");
-            LLVMBuildStore(ctx->builder, val, field_ptr);
+            /* cg_store_owned 处理：string clone/move、Block env 转移、
+               struct/enum/vec/map move 标记，以及 POD 直接 store */
+            cg_store_owned(ctx, field_ptr, val, field_type,
+                           node->as.new_expr.field_inits[i].value,
+                           field_temp_mark, CG_XFER_INTO_CONTAINER);
         }
 
         if (on_stack)
@@ -13101,27 +13177,14 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                                  &index, 1, "vis.ep");
 
                 Type *elem_type = obj_type->as.vec.elem;
-                bool elem_is_string = (elem_type && elem_type->kind == TYPE_STRING);
-                if (elem_is_string)
-                {
-                    emit_string_free(ctx, gep);
-                    LLVMBuildStore(ctx->builder, val, gep);
-                    cg_mark_last_temp_moved(ctx, temp_mark, "assign: temp owned by vec element");
-                    cg_flush_temps(ctx, temp_mark, true);
-                }
-                else if (elem_type && elem_type->kind == TYPE_STRUCT &&
-                         elem_type->as.strukt.has_drop)
-                {
-                    /* drop old struct element before overwriting */
-                    emit_vec_elem_drop_at(ctx, gep, elem_type, 0, "idx.assign");
-                    LLVMBuildStore(ctx->builder, val, gep);
-                    ctx->temp_string_count = temp_mark;
-                }
-                else
-                {
-                    LLVMBuildStore(ctx->builder, val, gep);
-                    ctx->temp_string_count = temp_mark;
-                }
+                /* M-3: 先 drop 旧元素，再统一所有权转移。
+                   emit_vec_elem_drop_at 处理 string/struct/enum/Block 的 drop；
+                   cg_store_owned 处理 move/clone/mark 语义。 */
+                emit_vec_elem_drop_at(ctx, gep, elem_type, 0, "idx.assign");
+                cg_store_owned(ctx, gep, val, elem_type,
+                               node->as.assign.value, temp_mark,
+                               CG_XFER_INTO_CONTAINER);
+                cg_flush_temps(ctx, temp_mark, true);
             }
             else if (obj_type && obj_type->kind == TYPE_MAP)
             {
@@ -14802,17 +14865,29 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             moved_flag = LLVMBuildAlloca(ctx->builder, i1_type, "param.moved");
             LLVMBuildStore(ctx->builder, LLVMConstInt(i1_type, 0, 0), moved_flag);
         }
-        /* String parameters: zero out cap so emit_string_free treats them as
-           borrowed (cap=0 → skip). The caller owns the original data buffer.
-           Reassignment inside the body replaces cap with the new owned value,
-           which will be freed at scope cleanup — no double-free, no leak. */
+        /* String parameters: mark cap = LS_CAP_BORROWED (-2) so:
+             - emit_string_free skips the free (cap <= 0 → not owned).
+             - emit_string_clone_val DOES clone (cap == -2 → needs deep copy).
+             - emit_string_append_inline uses fresh malloc (cap <= 0 → static/borrowed).
+           M-2: was cap=0 (LS_CAP_STATIC), which conflated static literals with borrowed
+           params; clone was skipped for both, causing use-after-free when the borrowed
+           string was stored into an enum/struct field (BF-032). */
         if (param_type && param_type->kind == TYPE_STRING)
         {
             LLVMTypeRef str_type = ls_string_type(ctx);
             LLVMValueRef str_val = LLVMBuildLoad2(ctx->builder, str_type, alloca, "param.str");
-            LLVMValueRef zero32 = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0);
-            str_val = LLVMBuildInsertValue(ctx->builder, str_val, zero32, 2, "param.borrow");
+            LLVMValueRef cap_borrowed = LLVMConstInt(
+                LLVMInt32TypeInContext(ctx->context), (unsigned long long)LS_CAP_BORROWED, 0);
+            str_val = LLVMBuildInsertValue(ctx->builder, str_val, cap_borrowed, 2, "param.borrow");
             LLVMBuildStore(ctx->builder, str_val, alloca);
+#if CG_DEBUG
+            {
+                LLVMValueRef dbg_ptr = LLVMBuildExtractValue(ctx->builder, str_val, 0, "pb.dbg.p");
+                LLVMValueRef dbg_len = LLVMBuildExtractValue(ctx->builder, str_val, 1, "pb.dbg.l");
+                LLVMValueRef dbg_args[2] = {dbg_len, dbg_ptr};
+                cg_emit_debug_printf(ctx, "[cg] param.borrow  cap=-2 len=%d ptr=%p\n", dbg_args, 2);
+            }
+#endif
         }
         CgSymbol *psym = cg_scope_define(ctx->current_scope, node->as.fn_decl.param_names[i], alloca, param_type, moved_flag);
         /* vec / map parameters are borrowed: the caller owns the data
@@ -14830,29 +14905,16 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
            moves) is a future refinement. */
         if (psym && param_type && param_type->kind == TYPE_BLOCK)
             psym->is_borrowed = true;
-        /* Self-recursive enum parameters (e.g. Tree in `fn sum_tree(Tree t)`)
-           share heap-boxed sub-nodes with the caller's value. Marking the
-           param as borrowed prevents the callee's scope cleanup from
-           recursively freeing boxes the caller still owns — fixes Bug 5
-           (sum_tree double-free) for Phase B. Move tracking is a future
-           refinement. */
-        if (psym && param_type && param_type->kind == TYPE_ENUM &&
-            param_type->as.enom.has_drop)
-        {
-            for (int v = 0; v < param_type->as.enom.variant_count; v++)
-            {
-                int pc = param_type->as.enom.variants[v].payload_count;
-                for (int j = 0; j < pc; j++)
-                {
-                    if (param_type->as.enom.variants[v].payload_types[j] == param_type)
-                    {
-                        psym->is_borrowed = true;
-                        break;
-                    }
-                }
-                if (psym->is_borrowed) break;
-            }
-        }
+        /* NOTE (Bug-6 / M-1 overhaul): self-recursive enum parameters were
+           previously marked is_borrowed=true to prevent the callee's scope
+           cleanup from freeing boxes that the caller still owned (Bug 5).
+           That logic was correct when the enum was passed by raw alias, but
+           the call-site now always emits a full deep-clone (Tree.__clone)
+           for has_drop enum arguments not wrapped in __move.  The callee
+           therefore owns its own independent copy of the enum and MUST drop
+           it on scope exit — leaving is_borrowed=true causes the clone to
+           leak (34 boxes for build_tree(3) + sum_tree).  The is_borrowed
+           hack is removed; callee-side drop is now always performed. */
     }
     (void)total_n;
 
@@ -15645,176 +15707,16 @@ static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                 LLVMBuildStore(ctx->builder, box_val, box);
                 LLVMBuildStore(ctx->builder, box, field_ptr);
             }
-            else if (pt && pt->kind == TYPE_STRING)
+            else if (pt)
             {
-                /* Clone string into the enum so it owns its own heap copy.
-                   Static literals (cap==0) clone to themselves cheaply; owned
-                   sources get a fresh malloc'd buffer.  Without this the enum
-                   would alias the source and trigger double-free at scope exit.
-                   Exception: rvalue from a call / try expression already gave
-                   up ownership — cloning would leak the callee's heap (e.g.
-                   `Err(_err("..."))` where _err returns a fresh concat). */
-                AstNode *arg_node = ast_unwrap_move(args[i]);
-                bool is_rvalue_transfer =
-                    arg_node &&
-                    (arg_node->kind == AST_CALL ||
-                     arg_node->kind == AST_TRY);
-                if (is_rvalue_transfer)
-                {
-                    LLVMBuildStore(ctx->builder, v, field_ptr);
-                    /* The rvalue string is now owned by the enum payload.
-                       Pop it from temp_strings so cg_flush_temps at the end
-                       of emit_enum_ctor doesn't free it (double-free). */
-                    if (ctx->temp_string_count > enum_temp_mark)
-                        ctx->temp_string_count--;
-                }
-                else
-                {
-                    /* BF-032: emit_string_clone_val skips cap=0 strings
-                       (static literals AND borrowed function parameters).
-                       For genuine .rodata literals this is correct — they
-                       outlive the enum.  But function parameters have
-                       cap=0 too (borrowed via param-setup zeroing), and
-                       their data lives on the CALLER's heap, freed when
-                       the caller cleans up → dangling pointer.
-                       Fix: for AST_IDENT sources, force an unconditional
-                       deep clone (parameters are always IDENTs).  For
-                       non-IDENT sources (string literals, field access),
-                       keep using emit_string_clone_val — cap=0 strings
-                       are genuinely static and safe to share. */
-                    AstNode *sarg = ast_unwrap_move(args[i]);
-                    if (sarg && sarg->kind == AST_IDENT)
-                    {
-                        /* Unconditional clone — handles borrowed params */
-                        LLVMTypeRef str_type = ls_string_type(ctx);
-                        LLVMTypeRef i32_t2 = LLVMInt32TypeInContext(ctx->context);
-                        LLVMTypeRef i64_t2 = LLVMInt64TypeInContext(ctx->context);
-                        LLVMValueRef s_data = LLVMBuildExtractValue(ctx->builder, v, 0, "ec.sd");
-                        LLVMValueRef s_len  = LLVMBuildExtractValue(ctx->builder, v, 1, "ec.sl");
-                        LLVMValueRef one32  = LLVMConstInt(i32_t2, 1, 0);
-                        LLVMValueRef need   = LLVMBuildAdd(ctx->builder, s_len, one32, "ec.need");
-                        LLVMValueRef min_c  = LLVMConstInt(i32_t2, LS_MIN_STR_CAP, 0);
-                        LLVMValueRef use_m  = LLVMBuildICmp(ctx->builder, LLVMIntULT,
-                                                             need, min_c, "ec.um");
-                        LLVMValueRef nc     = LLVMBuildSelect(ctx->builder, use_m,
-                                                              min_c, need, "ec.nc");
-                        LLVMValueRef bytes  = LLVMBuildZExt(ctx->builder, nc, i64_t2, "ec.by");
-                        LLVMValueRef nd     = cg_emit_alloc(ctx, bytes, "string.clone",
-                                                             CG_LINE(ctx), CG_COL(ctx));
-                        LLVMValueRef cplen  = LLVMBuildZExt(ctx->builder, need, i64_t2, "ec.cl");
-                        LLVMValueRef mcfn   = LLVMGetNamedFunction(ctx->module, "memcpy");
-                        LLVMTypeRef  mcft   = LLVMGlobalGetValueType(mcfn);
-                        LLVMValueRef mca[3] = {nd, s_data, cplen};
-                        LLVMBuildCall2(ctx->builder, mcft, mcfn, mca, 3, "");
-                        LLVMValueRef ns = LLVMGetUndef(str_type);
-                        ns = LLVMBuildInsertValue(ctx->builder, ns, nd, 0, "ec.s0");
-                        ns = LLVMBuildInsertValue(ctx->builder, ns, s_len, 1, "ec.s1");
-                        ns = LLVMBuildInsertValue(ctx->builder, ns, nc, 2, "ec.s2");
-                        LLVMBuildStore(ctx->builder, ns, field_ptr);
-                    }
-                    else
-                    {
-                        LLVMValueRef cloned = emit_string_clone_val(ctx, v);
-                        LLVMBuildStore(ctx->builder, cloned, field_ptr);
-                    }
-                }
-            }
-            else if (pt && (pt->kind == TYPE_VECTOR || pt->kind == TYPE_MAP))
-            {
-                /* vec/map payload: store the value into the enum, then
-                   zero the source variable's cap field so scope cleanup
-                   won't double-free the data buffer.  The enum now owns
-                   the heap memory exclusively.
-                   If the argument is an rvalue (call/try), no source to
-                   clear — ownership transfers naturally. */
-                LLVMBuildStore(ctx->builder, v, field_ptr);
-
-                AstNode *arg_node = ast_unwrap_move(args[i]);
-                if (arg_node && arg_node->kind == AST_IDENT)
-                {
-                    CgSymbol *src_sym = cg_scope_resolve(ctx->current_scope,
-                                                          arg_node->as.ident.name);
-                    if (src_sym && src_sym->value)
-                    {
-                        /* Load current struct, set cap=0, store back */
-                        LLVMTypeRef cont_t = (pt->kind == TYPE_VECTOR)
-                                                 ? ls_vec_type(ctx)
-                                                 : ls_map_type(ctx);
-                        LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, cont_t,
-                                                           src_sym->value, "ecm.cur");
-                        LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
-                            LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
-                            2, "ecm.zc");
-                        LLVMBuildStore(ctx->builder, zeroed, src_sym->value);
-                    }
-                }
-            }
-            else if (pt && pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop)
-            {
-                /* has_drop struct payload: store the value, then set the
-                   source variable's moved_flag so scope cleanup skips it. */
-                LLVMBuildStore(ctx->builder, v, field_ptr);
-
-                AstNode *arg_node = ast_unwrap_move(args[i]);
-                if (arg_node && arg_node->kind == AST_IDENT)
-                {
-                    CgSymbol *src_sym = cg_scope_resolve(ctx->current_scope,
-                                                          arg_node->as.ident.name);
-                    if (src_sym && src_sym->moved_flag)
-                    {
-                        LLVMBuildStore(ctx->builder,
-                            LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
-                            src_sym->moved_flag);
-                    }
-                }
-            }
-            else if (pt && pt->kind == TYPE_ENUM && pt->as.enom.has_drop)
-            {
-                /* has_drop enum payload: three cases.
-                   1) rvalue (CALL/TRY): ownership transfers naturally — bitwise store.
-                   2) borrowed IDENT (match binder): must clone because the match
-                      subject still owns the heap data and will drop it.
-                   3) owned IDENT: MOVE — bitwise store + set moved_flag.
-                      Do NOT clone; cloning an owned value and then setting moved_flag
-                      orphans the original heap allocations (leak). */
-                AstNode *arg_node = ast_unwrap_move(args[i]);
-                bool is_rvalue_transfer =
-                    arg_node &&
-                    (arg_node->kind == AST_CALL ||
-                     arg_node->kind == AST_TRY);
-
-                bool source_borrowed = false;
-                CgSymbol *src_sym = NULL;
-                if (arg_node && arg_node->kind == AST_IDENT)
-                {
-                    src_sym = cg_scope_resolve(ctx->current_scope,
-                                               arg_node->as.ident.name);
-                    if (src_sym && src_sym->is_borrowed)
-                        source_borrowed = true;
-                }
-
-                if (is_rvalue_transfer)
-                {
-                    /* Case 1: rvalue — take ownership directly. */
-                    LLVMBuildStore(ctx->builder, v, field_ptr);
-                }
-                else if (source_borrowed)
-                {
-                    /* Case 2: borrowed source (e.g. match binder) — must clone. */
-                    LLVMValueRef cloned = emit_enum_clone_val(ctx, v, pt);
-                    LLVMBuildStore(ctx->builder, cloned, field_ptr);
-                }
-                else
-                {
-                    /* Case 3: owned IDENT — move (bitwise copy, mark source moved). */
-                    LLVMBuildStore(ctx->builder, v, field_ptr);
-                    if (src_sym && src_sym->moved_flag)
-                    {
-                        LLVMBuildStore(ctx->builder,
-                            LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
-                            src_sym->moved_flag);
-                    }
-                }
+                /* M-3: 统一所有权转移（string/vec/map/struct/enum/POD）。
+                   cg_store_owned 根据类型和 source 节点自动选择
+                   move/clone/store 语义，内部处理 borrowed 深克隆。
+                   enum_temp_mark 记录了本次 codegen_expr(args[i]) 前的
+                   temp count，用于 rvalue string 的 pop-temp 操作。 */
+                cg_store_owned(ctx, field_ptr, v, pt,
+                               args[i], enum_temp_mark,
+                               CG_XFER_INTO_CONTAINER);
             }
             else
             {

@@ -382,6 +382,68 @@ add_test(
 # Order this after test_memory so the JIT memcheck path is already validated.
 set_tests_properties(test_memcheck_aot PROPERTIES DEPENDS "test_memory")
 
+# M-1 回归：消除双轨临时值跟踪后，print 各类动态 string 参数不 leak 不 double-free
+# JIT path（ls run --memcheck）
+add_test(
+    NAME test_mem_m1_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m1_temp_unify.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=mem_m1
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_mem_m1_jit PROPERTIES DEPENDS "test_memory")
+
+# M-1 回归：AOT path（ls compile --memcheck && exec）
+add_test(
+    NAME test_mem_m1_aot
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m1_temp_unify.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
+)
+set_tests_properties(test_mem_m1_aot PROPERTIES DEPENDS "test_mem_m1_jit")
+
+# Bug-6 回归：memcheck_edge.ls（Phase B 极端场景）— JIT memcheck OK clean
+# 修复：移除 self-recursive enum 参数的 is_borrowed=true hack，callee 正确 drop 深拷贝
+add_test(
+    NAME test_memcheck_edge_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_edge.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=test_memcheck_edge_jit
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_memcheck_edge_jit PROPERTIES DEPENDS "test_mem_m1_aot")
+
+# M-2 回归：cap=-2 borrowed semantics — JIT memcheck OK clean
+# 验证 borrowed string 参数存入 enum/struct/f-string 时正确 clone，不 leak 不 dfree
+add_test(
+    NAME test_mem_m2_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m2_cap_borrowed.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=test_mem_m2_jit
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_mem_m2_jit PROPERTIES DEPENDS "test_memcheck_edge_jit")
+
+# M-3: 统一所有权转移 API memcheck 验证
+add_test(
+    NAME test_mem_m3_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m3_xfer_unified.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=test_mem_m3_jit
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_mem_m3_jit PROPERTIES DEPENDS "test_mem_m2_jit")
+
 # Phase E.1 end-to-end test: extern struct + extern { } block + extern fn without 'from'
 add_test(
     NAME test_extern_struct

@@ -483,7 +483,10 @@ Token scanner_next(Scanner *s) {
        Handles `#if`/`#else`/`#end` directives in either branch and
        silently discards lexed tokens whose conditional frame is inactive. */
     for (;;) {
-        skip_whitespace(s);
+        /* Skip whitespace only when NOT in f-string text mode; inside
+           f-string literal segments (depth==0) spaces are content. */
+        if (!(s->in_fstring && s->fstring_brace_depth == 0))
+            skip_whitespace(s);
         /* Process directives at the start of a line/inline. The `#` must
            appear with only whitespace between it and the start of file or
            a newline; we accept it anywhere whitespace-skipped, simpler. */
