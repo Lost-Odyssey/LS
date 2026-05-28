@@ -458,6 +458,87 @@ add_test(
 )
 set_tests_properties(test_mem_m4_jit PROPERTIES DEPENDS "test_mem_m3_jit")
 
+# M-4.5 回归：vec[i].field 中 has_drop struct 临时深拷贝在语句结束被 drop
+# （取字段后丢弃的临时 struct，其它 string 字段此前泄漏）。JIT path。
+add_test(
+    NAME test_mem_m4_5_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_5_drop_temp.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=test_mem_m4_5_jit
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_mem_m4_5_jit PROPERTIES DEPENDS "test_mem_m4_jit")
+
+# M-4.5 回归：AOT path（ls compile --memcheck && exec）
+add_test(
+    NAME test_mem_m4_5_aot
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_5_drop_temp.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
+)
+set_tests_properties(test_mem_m4_5_aot PROPERTIES DEPENDS "test_mem_m4_5_jit")
+
+# M-5 正向：checker move 分析与 codegen 所有权语义一致性（move 语义 move 后不用、
+# clone 语义 ctor 后源仍 live）。含 BF-039（map[key]/m.get value clone 临时泄漏）回归。JIT path。
+add_test(
+    NAME test_mem_m5_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m5_move_ok.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=test_mem_m5_jit
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_mem_m5_jit PROPERTIES DEPENDS "test_mem_m4_5_jit")
+
+# M-5 正向：AOT path
+add_test(
+    NAME test_mem_m5_aot
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m5_move_ok.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
+)
+set_tests_properties(test_mem_m5_aot PROPERTIES DEPENDS "test_mem_m5_jit")
+
+# M-5 负向：move-after-use（vec.push / v[i]= / 分支 MAYBE_MOVED）必须编译期拒绝
+add_test(
+    NAME test_mem_m5_neg
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -P ${CMAKE_SOURCE_DIR}/tests/test_mem_m5_neg.cmake
+)
+set_tests_properties(test_mem_m5_neg PROPERTIES DEPENDS "test_mem_m5_jit")
+
+# M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
+add_test(
+    NAME test_mem_overhaul_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_overhaul.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=test_mem_overhaul_jit
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_mem_overhaul_jit PROPERTIES DEPENDS "test_mem_m5_jit")
+
+# M-6 汇总回归套件：AOT path
+add_test(
+    NAME test_mem_overhaul_aot
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_overhaul.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
+)
+set_tests_properties(test_mem_overhaul_aot PROPERTIES DEPENDS "test_mem_overhaul_jit")
+
 # Phase E.1 end-to-end test: extern struct + extern { } block + extern fn without 'from'
 add_test(
     NAME test_extern_struct

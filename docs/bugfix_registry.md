@@ -47,6 +47,7 @@
 | BF-033 | 2026-05-26 | WRONG | `map_type_id` 对 enum 值类型使用默认后缀 `"i"` → 潜在 LLVM 类型名冲突 | codegen (map helpers) | — |
 | BF-034 | 2026-05-26 | CRASH | `codegen_print_call` `printf_args` 按 `argc*2` 分配，f-string 展开后 expr 槽溢出 → Linux heap crash | codegen (print) | — |
 | BF-036 | 2026-05-26 | WRONG | `proc.args()` 丢弃第一个用户参数：`main.c` 传入的 `g_argv` 不含 script 名，但 `args()` 从 `i=1` 开始 | main.c / std/proc.ls | — |
+| BF-039 | 2026-05-28 | LEAK | `map[key]` / `m.get(key)` 读取返回 value 深拷贝，string value 临时使用（如 `print(m[k])`）未注册 temp → 泄漏（与 vec[i] 同源，map 版漏注册）；附带修正 checker 对 `map.set` key/value 的误标 move（clone 语义却标 moved → 误报 + 源 scope drop 被 skip） | codegen (map index/get) / checker (map.set) | — |
 
 ---
 

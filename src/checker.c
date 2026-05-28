@@ -3062,12 +3062,15 @@ static Type *check_map_method(Checker *c, AstNode *call_node, Type *map_type)
             checker_error(c, call_node->as.call.args[1]->line,
                           call_node->as.call.args[1]->column,
                           "map.set() value expects '%s', got '%s'", type_name(V), type_name(v));
-        /* Move tracking: dynamic string key and value are moved into the map.
-           Static strings (is_static_string==true) are shared freely — not moved. */
-        checker_reject_borrow_move(c, call_node->as.call.args[0], "move into map");
-        checker_reject_borrow_move(c, call_node->as.call.args[1], "move into map");
-        checker_try_mark_moved(c, call_node->as.call.args[0]); /* key */
-        checker_try_mark_moved(c, call_node->as.call.args[1]); /* value */
+        /* BF-039: map.set CLONES key and value into the map (the map owns
+           independent copies — see emit_map_helpers_for). The source variables
+           therefore stay LIVE. Marking them moved here would (a) cause codegen
+           to skip their scope drop → leak the source's own heap copy, and
+           (b) falsely reject later use of the source. So do NOT mark moved —
+           unlike vec.push, which is a true move. Borrows still cannot be stored
+           (the map would clone a pointer into a buffer it does not own). */
+        checker_reject_borrow_move(c, call_node->as.call.args[0], "store into map");
+        checker_reject_borrow_move(c, call_node->as.call.args[1], "store into map");
         return type_void();
     }
 

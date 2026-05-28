@@ -142,9 +142,10 @@ fn main() -> int {
     vec(Item) vit = []
     vit.push(Item{name: "n1".upper(), qty: 1})
     vit.push(Item{name: "n2".upper(), qty: 2})
-    // 直接 vit[0].name 会触发已知的 "vec(has_drop T) index clone leak"
-    // （已派生独立任务跟踪 temp_struct_slots 机制）—— 这里用变量绑定规避
-    Item it0 = vit[0]
+    // M-4.5 已修复 "vec(has_drop T) index field-access clone leak"：
+    // vec[i].field 的临时 struct 深拷贝在语句结束被 drop。
+    print(vit[0].name)              // 直接字段访问（M-4.5 修复点）
+    Item it0 = vit[0]               // 变量绑定（所有权转移，基线已正确）
     print(it0.name)
 
     // vec(vec(string)) — 暂不测：同样涉及嵌套 vec 借用 bug

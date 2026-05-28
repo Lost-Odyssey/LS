@@ -86,6 +86,24 @@ typedef struct {
     int temp_string_count;
     int temp_string_cap;
 
+    /* M-4.5: Temporary has_drop struct slot tracking.
+       `vec[i].field` / `vec[i].method()` spill the indexed element — a *deep
+       clone* the container still owns a copy of — into a temp alloca. Field
+       access reads one field; the rest of that temporary struct's owned
+       resources (other string fields, nested drops) would otherwise leak.
+       The spill slot is registered here so cg_flush_temps drops it at the
+       statement boundary. Ownership-transfer forms (`Item it = vit[0]`) take a
+       different path: there codegen_expr returns the clone directly and the
+       named variable's scope drop is the sole releaser, so no temp_drop is
+       registered. temp_drop_marks[i] stores the temp_string_count at push time
+       so cg_flush_temps releases exactly the slots produced since `mark`,
+       staying aligned with the existing string-temp mark semantics. */
+    LLVMValueRef *temp_drop_slots;
+    Type        **temp_drop_types;
+    int          *temp_drop_marks;
+    int           temp_drop_count;
+    int           temp_drop_cap;
+
     /* Phase B closures: monotonic counter for synthesised top-level functions
        (`__closure_<N>`) lifted from `|x| body` literals. Per-module, so AOT
        and JIT both see stable names without cross-call collisions. */

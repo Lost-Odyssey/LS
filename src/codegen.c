@@ -2080,6 +2080,81 @@ static void cg_mark_last_temp_moved(CodegenContext *ctx, int mark, const char *r
     }
 }
 
+/* M-4.5: register a statement-level temporary has_drop struct/enum value.
+   `slot` is the alloca holding the deep-cloned value (e.g. result of vec[i]);
+   `type` is its LS type (TYPE_STRUCT has_drop or TYPE_ENUM has_drop).
+   assoc mark = current temp_string_count, so cg_flush_temps releases exactly
+   the slots produced since a given mark (aligned with string-temp semantics). */
+static void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type)
+{
+    if (slot == NULL || type == NULL || ctx->current_fn == NULL)
+        return;
+    bool is_drop_struct = (type->kind == TYPE_STRUCT && type->as.strukt.has_drop);
+    bool is_drop_enum   = (type->kind == TYPE_ENUM   && type->as.enom.has_drop);
+    if (!is_drop_struct && !is_drop_enum)
+        return; /* nothing to drop — POD struct/enum or non-drop type */
+
+    if (ctx->temp_drop_count >= ctx->temp_drop_cap)
+    {
+        ctx->temp_drop_cap   = GROW_CAPACITY(ctx->temp_drop_cap);
+        ctx->temp_drop_slots = GROW_ARRAY(LLVMValueRef, ctx->temp_drop_slots, ctx->temp_drop_cap);
+        ctx->temp_drop_types = GROW_ARRAY(Type *,       ctx->temp_drop_types, ctx->temp_drop_cap);
+        ctx->temp_drop_marks = GROW_ARRAY(int,          ctx->temp_drop_marks, ctx->temp_drop_cap);
+    }
+    ctx->temp_drop_slots[ctx->temp_drop_count] = slot;
+    ctx->temp_drop_types[ctx->temp_drop_count] = type;
+    ctx->temp_drop_marks[ctx->temp_drop_count] = ctx->temp_string_count;
+    ctx->temp_drop_count++;
+#if CG_DEBUG
+    {
+        char dbg_fmt[96];
+        const char *tn = (type->kind == TYPE_STRUCT) ? type->as.strukt.name
+                                                      : type->as.enom.name;
+        snprintf(dbg_fmt, sizeof(dbg_fmt),
+                 "[cg] tdrop.push  type=%s n=%d\n", tn ? tn : "?",
+                 ctx->temp_drop_count);
+        cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
+    }
+#endif
+}
+
+/* M-4.5: drop and release all temp_drop slots whose assoc mark >= `mark`.
+   Compacts surviving (mark < flush-mark) entries to the front. */
+static void cg_flush_temp_drops(CodegenContext *ctx, int mark)
+{
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
+    if (cur && LLVMGetBasicBlockTerminator(cur) != NULL)
+    {
+        /* terminated block: just discard the high-water slots */
+        int keep0 = 0;
+        for (int i = 0; i < ctx->temp_drop_count; i++)
+            if (ctx->temp_drop_marks[i] < mark)
+                keep0++;
+        ctx->temp_drop_count = keep0;
+        return;
+    }
+    int keep = 0;
+    for (int i = 0; i < ctx->temp_drop_count; i++)
+    {
+        if (ctx->temp_drop_marks[i] < mark)
+        {
+            /* survives this flush — compact toward the front */
+            ctx->temp_drop_slots[keep] = ctx->temp_drop_slots[i];
+            ctx->temp_drop_types[keep] = ctx->temp_drop_types[i];
+            ctx->temp_drop_marks[keep] = ctx->temp_drop_marks[i];
+            keep++;
+            continue;
+        }
+        Type *t = ctx->temp_drop_types[i];
+        LLVMValueRef slot = ctx->temp_drop_slots[i];
+        if (t->kind == TYPE_STRUCT)
+            emit_struct_drop(ctx, slot, t);
+        else if (t->kind == TYPE_ENUM)
+            emit_enum_drop(ctx, slot, t);
+    }
+    ctx->temp_drop_count = keep;
+}
+
 /* Phase C.5: register a closure literal's env_ptr as a temporary owned by
    the current statement. Drained by cg_flush_temps. The drop_fn at env[0]
    (NULL for POD-only envs) handles per-capture cleanup; we then free the
@@ -2412,6 +2487,7 @@ static void cg_flush_temps(CodegenContext *ctx, int mark, bool skip_last)
         /* Block already terminated (e.g. after a break/continue): skip flush */
         ctx->temp_string_count = mark;
         ctx->temp_block_env_count = 0;
+        cg_flush_temp_drops(ctx, mark); /* M-4.5: discard high-water drop slots */
         return;
     }
     int end = ctx->temp_string_count;
@@ -2440,6 +2516,10 @@ static void cg_flush_temps(CodegenContext *ctx, int mark, bool skip_last)
         cg_emit_block_env_drop(ctx, ctx->temp_block_envs[i]);
     }
     ctx->temp_block_env_count = 0;
+
+    /* M-4.5: drop statement-level temporary has_drop struct/enum values
+       (e.g. vec[i] / map.get clones not transferred to a named variable). */
+    cg_flush_temp_drops(ctx, mark);
 }
 
 /* ---- String Move Semantics ---- */
@@ -9541,7 +9621,14 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
         if (!kv)
             return NULL;
         LLVMValueRef args[] = {map_alloca, kv};
-        return LLVMBuildCall2(ctx->builder, ft, fn, args, 2, "mg");
+        LLVMValueRef mg = LLVMBuildCall2(ctx->builder, ft, fn, args, 2, "mg");
+        /* BF-039: m.get(key) returns a deep clone of the value (map keeps its
+           own copy). Register a string clone as a statement-level temp so a
+           transient use is freed at the statement boundary (mirrors map[key]
+           and vec[i]). Without this the clone leaks. */
+        if (val_type && val_type->kind == TYPE_STRING && ctx->current_fn != NULL)
+            mg = cg_push_temp_string(ctx, mg);
+        return mg;
     }
     /* ---- contains_key(key) ---- */
     if (strcmp(method, "contains_key") == 0)
@@ -11176,6 +11263,19 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 LLVMTypeRef st_llvm = type_to_llvm(ctx, struct_type);
                 struct_ptr = LLVMBuildAlloca(ctx->builder, st_llvm, "tmp.struct");
                 LLVMBuildStore(ctx->builder, sub_val, struct_ptr);
+
+                /* M-4.5: when the object is vec[i]/arr[i] of a has_drop struct,
+                   sub_val is an owned deep clone (the container keeps its own copy).
+                   Field access reads one field; the rest of this temporary struct's
+                   owned resources (other string fields, nested drops) would leak.
+                   Register the spill slot so the statement-end flush drops it. The
+                   accessed field is independently cloned below, so dropping the
+                   temporary here does not invalidate the returned value. */
+                if (struct_type->as.strukt.has_drop &&
+                    ast_unwrap_move(obj_node)->kind == AST_INDEX)
+                {
+                    cg_push_temp_drop(ctx, struct_ptr, struct_type);
+                }
             }
         }
 
@@ -12239,7 +12339,17 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             if (!kv)
                 return NULL;
             LLVMValueRef args[] = {map_alloca, kv};
-            return LLVMBuildCall2(ctx->builder, ft, fn, args, 2, "mg");
+            LLVMValueRef mg = LLVMBuildCall2(ctx->builder, ft, fn, args, 2, "mg");
+            /* BF-039: map[key] read returns a deep clone of the value (the map
+               retains its own copy). For a string value this clone is a fresh
+               owned heap string; register it as a statement-level temp — exactly
+               like vec[i] above — so a transient use (e.g. print(m[k])) frees it
+               at the statement boundary, and a var_decl/assign transfers ownership
+               via cg_mark_last_temp_moved. Without this the clone leaks. */
+            Type *mval_type = obj_type->as.map.val;
+            if (mval_type && mval_type->kind == TYPE_STRING && ctx->current_fn != NULL)
+                mg = cg_push_temp_string(ctx, mg);
+            return mg;
         }
 
         /* arr[index] — GEP into fixed array + load element */
@@ -17457,6 +17567,16 @@ void codegen_destroy(CodegenContext *ctx)
     ctx->temp_string_slots = NULL;
     ctx->temp_string_count = 0;
     ctx->temp_string_cap = 0;
+
+    /* M-4.5: release temp has_drop slot arrays */
+    free(ctx->temp_drop_slots);
+    free(ctx->temp_drop_types);
+    free(ctx->temp_drop_marks);
+    ctx->temp_drop_slots = NULL;
+    ctx->temp_drop_types = NULL;
+    ctx->temp_drop_marks = NULL;
+    ctx->temp_drop_count = 0;
+    ctx->temp_drop_cap = 0;
 
     /* Free memcheck site cache (keys were malloc'd) */
     for (int i = 0; i < ctx->mc_site_count; i++)
