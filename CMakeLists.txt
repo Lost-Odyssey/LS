@@ -1028,6 +1028,20 @@ set_tests_properties(test_std_json PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- L-009 cross-module function name mangling ----
+add_test(
+    NAME test_l009_mangle
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_l009_mangle.cmake
+)
+set_tests_properties(test_l009_mangle PROPERTIES
+    DEPENDS "test_std_json"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- match OR-pattern (bugs/18 fix) ----
 add_test(
     NAME test_match_or_pattern

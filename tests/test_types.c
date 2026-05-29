@@ -2396,15 +2396,18 @@ static void test_move_double_push_error(void) {
     printf(" ok\n");
 }
 
-/* --- Dynamic string: map.set key moves the source --- */
-static void test_move_map_set_key_moves(void) {
-    printf("  test_move_map_set_key_moves...");
-    ASSERT_FALSE(check_source(
+/* --- Dynamic string: map.set CLONES the key, source stays live (BF-039) ---
+   map.set deep-copies its key/value (codegen __ls_map_XX_set), so the source
+   variable is NOT moved and remains usable. Pre-BF-039 the checker wrongly
+   marked it moved (false positive); the move-mark was removed in BF-039. */
+static void test_move_map_set_key_clones_no_move(void) {
+    printf("  test_move_map_set_key_clones_no_move...");
+    ASSERT_TRUE(check_source(
         "fn main() -> int {\n"
         "    map(string, int) m\n"
         "    string k = \"key\".upper()\n"  /* dynamic */
-        "    m.set(k, 1)\n"                 /* moves k */
-        "    print(k)\n"                    /* ERROR */
+        "    m.set(k, 1)\n"                 /* clones k (no move) */
+        "    print(k)\n"                    /* k still LIVE — must not error */
         "    return 0\n"
         "}\n"
     ));
@@ -2426,15 +2429,15 @@ static void test_move_map_set_static_key_no_move(void) {
     printf(" ok\n");
 }
 
-/* --- Dynamic string: map.set value moves the source --- */
-static void test_move_map_set_value_moves(void) {
-    printf("  test_move_map_set_value_moves...");
-    ASSERT_FALSE(check_source(
+/* --- Dynamic string: map.set CLONES the value, source stays live (BF-039) --- */
+static void test_move_map_set_value_clones_no_move(void) {
+    printf("  test_move_map_set_value_clones_no_move...");
+    ASSERT_TRUE(check_source(
         "fn main() -> int {\n"
         "    map(string, string) m\n"
         "    string v = \"val\".upper()\n"  /* dynamic */
-        "    m.set(\"key\", v)\n"           /* moves v */
-        "    print(v)\n"                    /* ERROR */
+        "    m.set(\"key\", v)\n"           /* clones v (no move) */
+        "    print(v)\n"                    /* v still LIVE — must not error */
         "    return 0\n"
         "}\n"
     ));
@@ -2925,9 +2928,9 @@ int main(void) {
     test_move_static_string_push_no_move();
     test_move_dynamic_string_push_marks_moved();
     test_move_double_push_error();
-    test_move_map_set_key_moves();
+    test_move_map_set_key_clones_no_move();
     test_move_map_set_static_key_no_move();
-    test_move_map_set_value_moves();
+    test_move_map_set_value_clones_no_move();
     test_move_direct_assignment_moves();
     test_move_static_assignment_no_move();
     test_move_reassign_to_moved_error();

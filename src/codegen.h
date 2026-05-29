@@ -126,6 +126,13 @@ typedef struct {
         Type    *struct_type;   /* instantiated struct Type */
     } *pending_generic_methods;
     int pending_gm_count;
+
+    /* L-009: name mangling. When emitting functions that belong to an imported
+       `module X`, this holds that module's path (e.g. "io", "std.json"); NULL
+       while emitting root/main-file functions. Definition + call sites consult
+       it via cg_module_fn_symbol so that same-named functions in different
+       modules get distinct LLVM symbols (root functions stay unmangled). */
+    const char *current_emit_module;
 } CodegenContext;
 
 /* Initialize the codegen context (creates LLVM module, target, etc.) */

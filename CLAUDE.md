@@ -117,8 +117,10 @@ cd build && ctest --output-on-failure -C Release
 | 10 | 闭包 Phase A~F（完整捕获 + drop + 移动语义） | ✅ |
 | 11 | std.json（纯 LS，递归下降 parser + stringify） | ✅ |
 | — | match OR-pattern + 整数 switch（bugs/18） | ✅ |
+| — | L-009 跨模块函数名 mangling（`<modpath>__<fn>`） | ✅ |
+| — | BF-040 array 元素字段读取 double-drop 修复 | ✅ |
 
-**当前测试**：ctest 54/54
+**当前测试**：ctest 73/73（修复 BF-040 array `__drop` 双触发 + 同步 BF-039 的 map.set clone 语义测试期望）
 
 > 各阶段实现细节见 [docs/features_history.md](docs/features_history.md)
 
@@ -175,7 +177,8 @@ cd build && ctest --output-on-failure -C Release
 - 用户自定义泛型（`struct LinkedList(T)`）
 - 借用作为返回类型 / 变量声明 / struct 字段（需生命期系统）
 - **Phase G**：Block env 深拷贝（`Block g = ns[i]` 当前被 checker 拒绝）→ [docs/block_clone_plan.md](docs/block_clone_plan.md)
-- **Phase H**：struct/enum 深拷贝（`MyStruct b = vec_of_struct[i]` 含 has_drop 时 double-free）
+- ~~**Phase H**：struct 深拷贝~~ ✅ 已完成（验证 2026-05-29）：`MyStruct b = vec_of_struct[i]` 对 has_drop struct 自动深拷贝，memcheck clean（含嵌套 struct + 函数返回 vec）
+- ~~**L-009**：跨模块函数名 LLVM mangling~~ ✅ 已完成（2026-05-29）：模块自由函数符号前缀化 `<modpath>__<fn>`，消除同名崩溃/静默错值；根/主文件函数不变。**L-009.1**（struct 方法 + 泛型跨模块同名）待做 → [docs/plan_l009_mangling.md](docs/plan_l009_mangling.md)
 - 正则表达式 builtin；f16 半精度浮点
 
 > 已完成特性的详细实现记录见 [docs/features_history.md](docs/features_history.md)

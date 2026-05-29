@@ -156,9 +156,9 @@
 | 功能 | 工期 | 风险 | 价值 | 说明 | 参考 |
 |------|------|------|------|------|------|
 | **操作符重载** | 5–7 天 | 低 | ★★★★☆ | checker 二元运算查 impl 方法 `+`/`-`/`==`/`<` 等；已有 trait 系统可配合 `trait Add` 模式 | `docs/plan_future_ideas.md` §7 |
-| **跨模块函数名 LLVM name mangling** | 2–3 天 | 低 | ★★★★★ | 同名函数（如 `io.read_file` vs `json.read_file`）产生 `@read_file` 冲突；需模块前缀 mangling | 本文 L-009 |
-| **Block env 深拷贝 (Phase G)** | 5–7 天 | 低 | ★★★☆☆ | `Block g = vec[i]` 当前被 checker 拒绝；需合成 `__env_clone_N`，POD+string capture 可克隆 | `docs/block_clone_plan.md` |
-| **struct 深拷贝 (Phase H)** | 5–7 天 | 低 | ★★★☆☆ | `MyStruct s = vec_of_struct[i]` has_drop 时 double-free；与 Phase G 共用 clone 基础设施 | `docs/plan_memory_lifetime.md` |
+| ~~跨模块函数名 LLVM name mangling~~ | — | — | ✅ 完成 | 模块自由函数前缀化 `<modpath>__<fn>`，消除崩溃/静默错值（验证于 2026-05-29）；struct 方法+泛型跨模块同名留作 L-009.1 | `docs/plan_l009_mangling.md` |
+| **Block env 深拷贝 (Phase G)** | 5–7 天 | 低 | ★★★☆☆ | `Block g = vec[i]` 当前被 checker 拒绝（checker.c F.4A 系列守卫）；需合成 `__env_clone_N`，POD+string capture 可克隆 | `docs/block_clone_plan.md` |
+| ~~struct 深拷贝 (Phase H)~~ | — | — | ✅ 完成 | `MyStruct s = vec_of_struct[i]` 已自动深拷贝（验证于 2026-05-29，memcheck clean）；见 L-008 | `docs/plan_memory_lifetime.md` |
 
 #### ★★★★ 高收益 · 中工期
 
@@ -200,8 +200,8 @@
 | L-005 | 嵌套闭包不支持 | 闭包 body 内不能写 `\|y\| ...` | 需 capture 透传机制 | `docs/closures_plan.md` |
 | ~~L-006~~ | ~~enum 含 vec/map payload 的 drop~~ | ✅ 已修复（2026-05-20）：ctor source move + clone vec/map + AOT main i32 | — | — |
 | L-007 | Block env 不可克隆 | `Block g = vec[i]` 被 checker 拒绝 | Phase G (`docs/block_clone_plan.md`) | `docs/plan_memory_lifetime.md` |
-| L-008 | struct 不可从容器深拷贝 | has_drop struct 从 vec 取出会 double-free | Phase H | `docs/plan_memory_lifetime.md` |
-| L-009 | LLVM 函数名不做模块 mangling | 跨模块同名函数（`json.load_file` vs `io.load_file`）在 LLVM IR 中冲突，stdlib 内无法安全 import io | mangling 实现（模块前缀 + 双下划线） | `docs/feature_inventory.md` ★★★★★ |
+| ~~L-008~~ | ~~struct 不可从容器深拷贝~~ | ✅ 已修复（验证于 2026-05-29）：`MyStruct s = vec[i]` 对 has_drop struct 自动深拷贝（含嵌套 struct + 函数返回 vec），memcheck clean | — | — |
+| ~~L-009~~ | ~~LLVM 函数名不做模块 mangling~~ | ✅ 已修复（2026-05-29）：模块内自由函数 LLVM 符号前缀化为 `<modpath>__<fn>`（根/主文件函数保持不变）。两类后果均消除——① 本地 `read_file` + `import io` 不再崩溃；② 两模块同名 `helper` 各自正确返回。三重验证 AOT+JIT+memcheck（`test_l009_mangle`）+ json/stdlib 无回归 | — | `docs/plan_l009_mangling.md` |
 
 ---
 

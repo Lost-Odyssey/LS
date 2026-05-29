@@ -48,6 +48,26 @@
 | BF-034 | 2026-05-26 | CRASH | `codegen_print_call` `printf_args` 按 `argc*2` 分配，f-string 展开后 expr 槽溢出 → Linux heap crash | codegen (print) | — |
 | BF-036 | 2026-05-26 | WRONG | `proc.args()` 丢弃第一个用户参数：`main.c` 传入的 `g_argv` 不含 script 名，但 `args()` 从 `i=1` 开始 | main.c / std/proc.ls | — |
 | BF-039 | 2026-05-28 | LEAK | `map[key]` / `m.get(key)` 读取返回 value 深拷贝，string value 临时使用（如 `print(m[k])`）未注册 temp → 泄漏（与 vec[i] 同源，map 版漏注册）；附带修正 checker 对 `map.set` key/value 的误标 move（clone 语义却标 moved → 误报 + 源 scope drop 被 skip） | codegen (map index/get) / checker (map.set) | — |
+| BF-040 | 2026-05-29 | WRONG | has_drop struct 的 array 元素字段读取（`arr[i].field`）走 M-4.5 clone+temp_drop 路径，对整个元素深拷贝再 drop → 用户 `__drop` 被多调用一次（drop_count 随读取次数翻倍）。memcheck 因 string moved-追踪侥幸 clean，但副作用型 `__drop`（关文件/解锁/refcount）被破坏 | codegen (field access on AST_INDEX) | 本文 BF-040 |
+
+---
+
+## BF-040：array 元素字段读取 double-drop（2026-05-29）
+
+**症状**：`test_memory.c:260`（`array(Person,3)` + `__drop` 计数）回归——`drop_count` 期望 3，实得 6。最小复现：读 `arr[i].field` N 次，每次令用户 `__drop` 多触发一次。
+
+**根因**：`codegen_expr` 的 `AST_FIELD` 分支中，当 `obj_node` 是 `arr[i]`（`AST_INDEX`，非 `AST_IDENT`）时，`struct_ptr` 保持 NULL，落入 M-4.5 的「spill clone + `cg_push_temp_drop`」路径：先把整个元素深拷贝进临时槽，语句末 flush 时 drop 该临时——而临时是个真实的 has_drop struct，drop 会调用用户 `__drop`。原数组元素在 scope 退出时还会被 drop 一次，故 `__drop` 双触发。
+
+**为何 memcheck 漏报**：string 字段的 moved 三态追踪（cap=-1）使克隆体与原件不会对**同一堆指针**双 free（克隆体自带 malloc 副本），堆层面平衡；但用户自定义 `__drop` 的副作用是计数器/句柄级，逃过了 memcheck。
+
+**修复**：array 元素是**就地**存于 array alloca 中，存在稳定 lvalue 地址。改为：当 `obj_node` 为 `TYPE_ARRAY` 的 index 时，用 `codegen_lvalue_ptr` 直接 GEP 出元素地址读字段，**不 clone、不注册 temp_drop**。`vec[i]` 因堆 data 可能 realloc 无稳定地址，`codegen_lvalue_ptr` 对其返回 NULL，保留原 clone 路径不变。
+
+**关联**：BF-040 是 BF-039（M-4.5/M-5 内存整改）引入的回归。整改将容器读取统一为「读即深拷贝」以堵泄漏，但对 array（可就地寻址）这是多余且会双触发 `__drop` 的。**同批发现**：BF-039 把 `map.set` 改为 clone 语义并移除 checker 的 move 标记，但漏更新 `test_types.c` 的两个旧用例（`test_move_map_set_key/value_moves` 仍断言旧 move 语义）→ 已随本次同步为 clone 语义（`*_clones_no_move`）。
+
+**教训**：
+- 「读即深拷贝」对**可就地寻址**的容器（array）是反模式——既浪费（深拷贝整个结构只为读一个 scalar 字段），又会让 has_drop 的用户 `__drop` 为幽灵临时体触发。
+- memcheck clean ≠ 语义正确：用户 `__drop` 的副作用（非堆操作）不在 memcheck 视野内，需用 drop 计数类测试兜底。
+- 大型内存语义整改后，**必须重跑全量 ctest 并核对历史用例期望**——BF-039 改了 map.set 语义却带着 2 个失败的 test_types 用例提交，回归被掩埋了一周。
 
 ---
 

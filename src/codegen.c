@@ -25,6 +25,28 @@
 /* Global counter for unique basic block names */
 static int g_block_counter = 0;
 
+/* L-009: authoritative function-name mangler. The single source of truth used
+   by BOTH definition sites and call sites — they must produce identical strings.
+   Scheme: "<modpath>__<fn>" with '.' in the module path replaced by '_'
+   (e.g. module "std.json", fn "parse" -> "std_json__parse").
+   When module_path is NULL or empty, the name is copied verbatim (root/main
+   file functions stay unmangled, preserving `main` and existing behaviour). */
+static void cg_module_fn_symbol(char *out, size_t cap,
+                                const char *module_path, const char *fn)
+{
+    if (module_path == NULL || module_path[0] == '\0')
+    {
+        snprintf(out, cap, "%s", fn);
+        return;
+    }
+    size_t pos = 0;
+    for (const char *p = module_path; *p && pos + 1 < cap; p++)
+        out[pos++] = (*p == '.') ? '_' : *p;
+    /* separator "__" then fn */
+    if (pos + 2 < cap) { out[pos++] = '_'; out[pos++] = '_'; }
+    snprintf(out + pos, cap - pos, "%s", fn);
+}
+
 /* Forward declarations for Phase E.2 ABI lowering helpers (definitions live
    near extern_fn_type lower in this file but are referenced from AST_CALL). */
 static int extern_struct_size(CodegenContext *ctx, Type *t);
@@ -10579,7 +10601,20 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     fn_name = g2_mangled;
                 }
 
-                callee = LLVMGetNamedFunction(ctx->module, fn_name);
+                /* L-009: a bare call inside an imported module resolves to that
+                   module's own function first (module-prefixed symbol); fall
+                   back to the unmangled name (builtins, runtime, root funcs).
+                   Skip for generic calls, which carry their own mangled name. */
+                if (node->as.call.type_arg_count == 0 &&
+                    ctx->current_emit_module != NULL)
+                {
+                    char msym[512];
+                    cg_module_fn_symbol(msym, sizeof(msym),
+                                        ctx->current_emit_module, fn_name);
+                    callee = LLVMGetNamedFunction(ctx->module, msym);
+                }
+                if (callee == NULL)
+                    callee = LLVMGetNamedFunction(ctx->module, fn_name);
                 if (callee == NULL)
                 {
                     cg_error(ctx, node->line, node->column,
@@ -10620,7 +10655,18 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    `import io` now goes through the normal user-module path
                    (is_builtin == false). No special dispatch here. */
 
-                callee = LLVMGetNamedFunction(ctx->module, fn_name);
+                /* L-009: the callee lives in module `mod_t->name`; look it up by
+                   its module-prefixed symbol. Fall back to the bare name for
+                   robustness (e.g. legacy/edge cases). */
+                if (mod_t->as.module.name)
+                {
+                    char msym[512];
+                    cg_module_fn_symbol(msym, sizeof(msym),
+                                        mod_t->as.module.name, fn_name);
+                    callee = LLVMGetNamedFunction(ctx->module, msym);
+                }
+                if (callee == NULL)
+                    callee = LLVMGetNamedFunction(ctx->module, fn_name);
                 if (callee == NULL)
                 {
                     cg_error(ctx, node->line, node->column,
@@ -11242,6 +11288,24 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     /* obj is a struct value: alloca IS the struct pointer */
                     struct_ptr = sym->value;
                 }
+            }
+        }
+        /* BF-040: array element field read (arr[i].field). The element lives
+           in-place inside the array alloca, so take its lvalue address via GEP
+           and read the field directly — instead of cloning the whole has_drop
+           struct (the M-4.5 clone+temp_drop path below). Cloning would invoke
+           the user __drop on a transient clone, double-firing side effects
+           (drop_count doubled per read). Only arrays expose a stable element
+           lvalue here; vec[i] returns NULL from codegen_lvalue_ptr and keeps
+           the clone path (its heap data may realloc, so no stable address). */
+        if (struct_ptr == NULL && !is_ptr_deref)
+        {
+            AstNode *uobj = ast_unwrap_move(obj_node);
+            if (uobj->kind == AST_INDEX &&
+                uobj->as.index_expr.object->resolved_type &&
+                uobj->as.index_expr.object->resolved_type->kind == TYPE_ARRAY)
+            {
+                struct_ptr = codegen_lvalue_ptr(ctx, uobj);
             }
         }
         if (struct_ptr == NULL)
@@ -14838,11 +14902,26 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         fn_type = LLVMFunctionType(i32_t, NULL, 0, 0);
     }
 
+    /* L-009: free functions in an imported module use a module-prefixed LLVM
+       symbol so same-named functions across modules don't collide. Impl/struct
+       methods are excluded — they already carry a "Struct.method" qualified name
+       and their call sites resolve via that (module-qualified struct methods are
+       a separate follow-up, L-009.1). */
+    char sym_buf[512];
+    const char *sym_name = name;
+    if (ctx->current_emit_module != NULL &&
+        node->as.fn_decl.impl_struct_name == NULL)
+    {
+        cg_module_fn_symbol(sym_buf, sizeof(sym_buf),
+                            ctx->current_emit_module, name);
+        sym_name = sym_buf;
+    }
+
     /* Check for existing function (forward decl) */
-    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, name);
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, sym_name);
     if (fn == NULL)
     {
-        fn = LLVMAddFunction(ctx->module, name, fn_type);
+        fn = LLVMAddFunction(ctx->module, sym_name, fn_type);
     }
 
     /* If function has no body (extern), skip */
@@ -18959,6 +19038,9 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             if (mod_ast == NULL || mod_ast->kind != AST_PROGRAM)
                 continue;
 
+            /* L-009: functions in this module get module-prefixed symbols. */
+            ctx->current_emit_module = registry->modules[m].name;
+
             for (int i = 0; i < mod_ast->as.program.decl_count; i++)
             {
                 AstNode *decl = mod_ast->as.program.decls[i];
@@ -18985,13 +19067,18 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 else if (decl->kind == AST_FN_DECL)
                 {
                     Type *fn_type_ml = decl->resolved_type;
-                    if (fn_type_ml && fn_type_ml->kind == TYPE_FUNCTION)
+                    if (fn_type_ml && fn_type_ml->kind == TYPE_FUNCTION &&
+                        decl->as.fn_decl.type_param_count == 0)
                     {
                         LLVMTypeRef fn_type = type_to_llvm(ctx, fn_type_ml);
-                        if (!LLVMGetNamedFunction(ctx->module, decl->as.fn_decl.name))
+                        /* L-009: module-prefixed symbol name. */
+                        char sym[512];
+                        cg_module_fn_symbol(sym, sizeof(sym),
+                            ctx->current_emit_module, decl->as.fn_decl.name);
+                        if (!LLVMGetNamedFunction(ctx->module, sym))
                         {
                             LLVMValueRef fn_g = LLVMAddFunction(ctx->module,
-                                decl->as.fn_decl.name, fn_type);
+                                sym, fn_type);
                             /* Phase E.4: imported user-module functions get
                                internal linkage so their symbols don't collide
                                with libc/runtime names at AOT link time. */
@@ -19014,12 +19101,18 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             }
         }
 
+        /* Pass A done — clear module context before root-file declarations. */
+        ctx->current_emit_module = NULL;
+
         /* Pass B — generate function bodies (all symbols now visible) */
         for (int m = 0; m < registry->count; m++)
         {
             AstNode *mod_ast = registry->modules[m].ast;
             if (mod_ast == NULL || mod_ast->kind != AST_PROGRAM)
                 continue;
+
+            /* L-009: functions in this module get module-prefixed symbols. */
+            ctx->current_emit_module = registry->modules[m].name;
 
             for (int i = 0; i < mod_ast->as.program.decl_count; i++)
             {
@@ -19038,6 +19131,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 }
             }
         }
+        /* Root/main-file functions follow — unmangled. */
+        ctx->current_emit_module = NULL;
     }
 
     /* Phase E.2: ensure all extern struct LLVM types are emitted with their
