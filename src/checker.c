@@ -530,6 +530,20 @@ static void register_builtin_enums(Checker *c)
 
 /* ---- Impl/method registry ---- */
 
+/* B-4.1: the impl_registry key for a struct/enum Type. Module-defined types use
+   their module-prefixed `llvm_name` (B-2) so two modules' same-named `impl Widget`
+   register under distinct keys (mod_a__Widget vs mod_b__Widget) and don't collide.
+   Root/non-module types have llvm_name == NULL → key is the bare name (unchanged). */
+static const char *impl_key_of_type(const Type *t)
+{
+    if (t == NULL) return NULL;
+    if (t->kind == TYPE_STRUCT)
+        return t->as.strukt.llvm_name ? t->as.strukt.llvm_name : t->as.strukt.name;
+    if (t->kind == TYPE_ENUM)
+        return t->as.enom.llvm_name ? t->as.enom.llvm_name : t->as.enom.name;
+    return NULL;
+}
+
 static int find_or_create_impl(Checker *c, const char *struct_name)
 {
     for (int i = 0; i < c->impl_count; i++)
@@ -4700,10 +4714,11 @@ static Type *check_expr(Checker *c, AstNode *node)
                 Type *st = find_struct_type(c, obj_node->as.ident.name);
                 if (st && st->kind == TYPE_STRUCT)
                 {
-                    int si = method_is_static(c, obj_node->as.ident.name, method_name);
+                    const char *st_key = impl_key_of_type(st);  /* B-4.1 */
+                    int si = method_is_static(c, st_key, method_name);
                     if (si >= 0)
                     {
-                        method_struct = obj_node->as.ident.name;
+                        method_struct = st_key;
                         is_static_call = true;
                         if (si == 0)
                         {
@@ -4723,10 +4738,11 @@ static Type *check_expr(Checker *c, AstNode *node)
                     Type *et = find_enum_type(c, obj_node->as.ident.name);
                     if (et && et->kind == TYPE_ENUM)
                     {
-                        int si = method_is_static(c, obj_node->as.ident.name, method_name);
+                        const char *et_key = impl_key_of_type(et);  /* B-4.1 */
+                        int si = method_is_static(c, et_key, method_name);
                         if (si >= 0)
                         {
-                            method_struct = obj_node->as.ident.name;
+                            method_struct = et_key;
                             is_static_call = true;
                             if (si == 0)
                             {
@@ -4783,7 +4799,8 @@ static Type *check_expr(Checker *c, AstNode *node)
                     }
                     if (deref->kind == TYPE_STRUCT && deref->as.strukt.name)
                     {
-                        int si = method_is_static(c, deref->as.strukt.name, method_name);
+                        const char *ds_key = impl_key_of_type(deref);  /* B-4.1 */
+                        int si = method_is_static(c, ds_key, method_name);
                         if (si == 0)
                         {
                             /* Phase A1: gate method calls on struct borrows by the
@@ -4798,7 +4815,7 @@ static Type *check_expr(Checker *c, AstNode *node)
                                 if (bsym && (bsym->is_borrow || bsym->is_mut_borrow))
                                 {
                                     int msbk = method_self_borrow_kind(c,
-                                        deref->as.strukt.name, method_name);
+                                        ds_key, method_name);  /* B-4.1 */
                                     if (msbk == 0)
                                     {
                                         /* Legacy method: cannot be called on any borrow.
@@ -4833,20 +4850,21 @@ static Type *check_expr(Checker *c, AstNode *node)
                             }
                             /* Instance method — auto self */
                             is_method_call = true;
-                            method_struct = deref->as.strukt.name;
+                            method_struct = ds_key;  /* B-4.1 */
                         }
                         else if (si == 1)
                         {
                             /* Static method called via instance — allowed, ignore obj */
                             is_static_call = true;
-                            method_struct = deref->as.strukt.name;
+                            method_struct = ds_key;  /* B-4.1 */
                         }
                     }
 
                     /* Check if obj is an instance of an enum */
                     if (deref->kind == TYPE_ENUM && deref->as.enom.name)
                     {
-                        int si = method_is_static(c, deref->as.enom.name, method_name);
+                        const char *de_key = impl_key_of_type(deref);  /* B-4.1 */
+                        int si = method_is_static(c, de_key, method_name);
                         if (si == 0)
                         {
                             if (obj_node->kind == AST_IDENT)
@@ -4856,7 +4874,7 @@ static Type *check_expr(Checker *c, AstNode *node)
                                 if (bsym && (bsym->is_borrow || bsym->is_mut_borrow))
                                 {
                                     int msbk = method_self_borrow_kind(c,
-                                        deref->as.enom.name, method_name);
+                                        de_key, method_name);  /* B-4.1 */
                                     if (msbk == 0)
                                     {
                                         checker_move_error(c, node->line, node->column,
@@ -4885,12 +4903,12 @@ static Type *check_expr(Checker *c, AstNode *node)
                                 }
                             }
                             is_method_call = true;
-                            method_struct = deref->as.enom.name;
+                            method_struct = de_key;  /* B-4.1 */
                         }
                         else if (si == 1)
                         {
                             is_static_call = true;
-                            method_struct = deref->as.enom.name;
+                            method_struct = de_key;  /* B-4.1 */
                         }
                     }
 
@@ -5338,7 +5356,7 @@ static Type *check_expr(Checker *c, AstNode *node)
             /* Search methods if not found as field */
             if (result == NULL && obj->as.strukt.name)
             {
-                result = find_method(c, obj->as.strukt.name, field_name);
+                result = find_method(c, impl_key_of_type(obj), field_name);  /* B-4.1 */
             }
             if (result == NULL)
             {
@@ -5353,7 +5371,7 @@ static Type *check_expr(Checker *c, AstNode *node)
             /* Enum has no fields — only methods */
             if (obj->as.enom.name)
             {
-                result = find_method(c, obj->as.enom.name, field_name);
+                result = find_method(c, impl_key_of_type(obj), field_name);  /* B-4.1 */
             }
             if (result == NULL)
             {
@@ -6821,7 +6839,7 @@ static void check_struct_decl(Checker *c, AstNode *node)
     {
         st->as.strukt.has_drop = true;
         /* Register compiler-generated __drop method in impl_registry so it's callable */
-        int impl_idx = find_or_create_impl(c, name);
+        int impl_idx = find_or_create_impl(c, impl_key_of_type(st));  /* B-4.1 */
         Type *drop_ret = type_void();
         /* Allocate params on heap (not stack) to avoid dangling pointer */
         Type **drop_params = (Type **)malloc_safe(sizeof(Type *));
@@ -7057,7 +7075,9 @@ static void check_impl_decl(Checker *c, AstNode *node)
     c->current_impl_enum_type   = is_enum_impl ? et : NULL;
     Type *self_type = st ? st : et;
 
-    int impl_idx = find_or_create_impl(c, name);
+    /* B-4.1: key the impl_registry by the type's unique name (llvm_name for module
+       types) so same-named impls across modules don't collide. */
+    int impl_idx = find_or_create_impl(c, impl_key_of_type(self_type));
 
     for (int i = 0; i < node->as.impl_decl.method_count; i++)
     {
@@ -7521,7 +7541,11 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
     bool *matched = (bool *)malloc_safe((size_t)trait_method_count * sizeof(bool));
     memset(matched, 0, (size_t)trait_method_count * sizeof(bool));
 
-    int impl_idx = find_or_create_impl(c, struct_name);
+    /* B-4.1: key by the type's unique name (module-prefixed) when available;
+       builtins (impl trait for int) keep their bare name. */
+    const char *impl_trait_key = impl_key_of_type(st);
+    if (impl_trait_key == NULL) impl_trait_key = struct_name;
+    int impl_idx = find_or_create_impl(c, impl_trait_key);
 
     /* 5. For each user method, resolve types and match against trait signature */
     for (int i = 0; i < user_method_count; i++)
@@ -8048,7 +8072,19 @@ static void forward_pass(Checker *c, AstNode *program)
                        method->resolved_type was set by check_impl_decl (L7106)
                        and is kept alive because types are intentionally leaked. */
                     const char *impl_name = d->as.impl_decl.name;
-                    int impl_idx = find_or_create_impl(c, impl_name);
+                    /* B-4.1: key by THIS module's struct/enum unique name (its
+                       llvm_name) so two imported modules' same-named `impl Widget`
+                       register under distinct keys. Use the module export table to
+                       get THIS module's type (find_struct_type would return the
+                       ambiguous first-registered one). */
+                    const char *impl_key = impl_name;
+                    Type *impl_st = type_module_find_export(mod_type, impl_name);
+                    if (impl_st)
+                    {
+                        const char *k = impl_key_of_type(impl_st);
+                        if (k) impl_key = k;
+                    }
+                    int impl_idx = find_or_create_impl(c, impl_key);
                     for (int mi = 0; mi < d->as.impl_decl.method_count; mi++)
                     {
                         AstNode *method = d->as.impl_decl.methods[mi];
