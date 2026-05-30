@@ -50,6 +50,7 @@
 | BF-039 | 2026-05-28 | LEAK | `map[key]` / `m.get(key)` 读取返回 value 深拷贝，string value 临时使用（如 `print(m[k])`）未注册 temp → 泄漏（与 vec[i] 同源，map 版漏注册）；附带修正 checker 对 `map.set` key/value 的误标 move（clone 语义却标 moved → 误报 + 源 scope drop 被 skip） | codegen (map index/get) / checker (map.set) | — |
 | BF-040 | 2026-05-29 | WRONG | has_drop struct 的 array 元素字段读取（`arr[i].field`）走 M-4.5 clone+temp_drop 路径，对整个元素深拷贝再 drop → 用户 `__drop` 被多调用一次（drop_count 随读取次数翻倍）。memcheck 因 string moved-追踪侥幸 clean，但副作用型 `__drop`（关文件/解锁/refcount）被破坏 | codegen (field access on AST_INDEX) | 本文 BF-040 |
 | BF-041 | 2026-05-30 | DOUBLE-FREE | 函数 `return <全局 string>` 走局部 string 的"转移所有权+跳过清理"路径，但全局保留同一 data 指针、退出时由 `__ls_global_cleanup` 再 free 一次 → double-free（典型模块 string getter）。由模块命名空间提交启用全局清理后暴露（此前清理被注释掉，靠调用方唯一 free 侥幸正确）。修复：return 全局 move-type IDENT 时 clone（`LLVMIsAGlobalVariable` 判定，`emit_string_clone_val`）。注：测试 `modvar_hasdrop` 用静态 `"hello"`(cap=0) 漏掉，已加 `modvar_owned_return`(`.upper()`) 锁定 | codegen (AST_RETURN) | 本文 BF-041 |
+| BF-042 | 2026-05-30 | WRONG | 全局 vec 字面量初始化 `vec(int) g = [1,2,3]` 读回为空（`sum=0`）。`emit_global_var_init` 只特判 `TYPE_ARRAY`+`AST_ARRAY_LIT`，`TYPE_VECTOR` 落到泛型 else（store `codegen_expr(array_lit)`——数组聚合而非堆 vec），全局 vec 结构 {data,len,cap} 留零。预存缺陷（根全局亦坏，与模块无关），借 codegraph `context` 一次调用定位。修复：emit_global_var_init 新增 POD-元素 vec 分支，在 global 指针上 push 建 vec（镜像局部 vec 字面量路径）；`EMIT_GLOBAL_CLEANUP` 加 vec 分支 cap>0 free(data)。限 POD 元素（int/f*/bool/char/ptr，无需逐元素 drop）；非 POD 元素 vec 全局暂不支持（cap 留 0、cleanup skip，安全不引入泄漏）| codegen (emit_global_var_init / 全局 cleanup) | 本文 BF-042 |
 
 ---
 

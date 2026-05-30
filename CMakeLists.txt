@@ -1146,3 +1146,17 @@ set_tests_properties(test_modtype_conflict PROPERTIES
     DEPENDS "test_modvar"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- BF-042: global POD vec literal initializer ----
+add_test(
+    NAME test_global_vec_lit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_global_vec_lit.cmake
+)
+set_tests_properties(test_global_vec_lit PROPERTIES
+    DEPENDS "test_modtype_conflict"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
