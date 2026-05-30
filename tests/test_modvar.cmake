@@ -88,4 +88,14 @@ run_jit(modvar_access MODVAR_ACCESS)
 run_aot(modvar_access MODVAR_ACCESS)
 run_memcheck(modvar_access MODVAR_ACCESS)
 
+# ---- P1-3 regression: OWNED global string returned by a getter ----
+# The hasdrop sample above uses a static literal (cap=0, never freed) which does
+# NOT exercise the double-free. This one uses an OWNED global string (.upper())
+# returned by name + bound by the caller; the return path must clone (else the
+# caller's free + __ls_global_cleanup double-free the shared data). memcheck is
+# the critical assertion here.
+run_jit(modvar_owned_return MODVAR_OWNED_RETURN)
+run_aot(modvar_owned_return MODVAR_OWNED_RETURN)
+run_memcheck(modvar_owned_return MODVAR_OWNED_RETURN)
+
 message(STATUS "test_modvar: ALL PASSED")

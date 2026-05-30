@@ -13551,6 +13551,11 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
            unique LLVM object, so inner-scope "x" and outer-scope "x" have
            distinct alloca values and are never confused. */
         LLVMValueRef return_alloca = NULL;
+        /* P1-3 fix: true when the returned IDENT is a GLOBAL move-type variable.
+           Globals retain ownership (freed at exit by __ls_global_cleanup), so we
+           must NOT transfer-and-skip like locals — instead clone the value so the
+           caller's copy and the global's exit cleanup don't double-free. */
+        bool ret_global_movetype = false;
 
         if (node->as.return_stmt.value &&
             node->as.return_stmt.value->kind == AST_IDENT &&
@@ -13572,7 +13577,12 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 const char *name = node->as.return_stmt.value->as.ident.name;
                 CgSymbol *sym = cg_scope_resolve(ctx->current_scope, name);
                 if (sym)
-                    return_alloca = sym->value;
+                {
+                    if (LLVMIsAGlobalVariable(sym->value))
+                        ret_global_movetype = true; /* clone, don't transfer */
+                    else
+                        return_alloca = sym->value; /* local: transfer + skip */
+                }
             }
         }
 
@@ -13603,6 +13613,17 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 }
                 cg_flush_temps(ctx, ret_temp_mark, false);
                 AstNode *ret_expr = node->as.return_stmt.value;
+
+                /* P1-3 fix: returning a GLOBAL string by name shares the global's
+                   data pointer. The global is freed at exit by __ls_global_cleanup,
+                   so transferring it to the caller (who also frees) double-frees.
+                   Clone here so caller owns an independent copy. (Local strings
+                   take the move-transfer path above and must NOT clone.) */
+                if (ret_global_movetype && ret_type &&
+                    ret_type->kind == TYPE_STRING && val)
+                {
+                    val = emit_string_clone_val(ctx, val);
+                }
 
                 /* Implicit numeric widening to the function's declared return
                    type (e.g. `fn f() -> f64 { return 5 }`). The checker has
