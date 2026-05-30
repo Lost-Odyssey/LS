@@ -158,13 +158,29 @@ cd build && ctest --output-on-failure -C Release      # 期望维持 54/54（或
 
 ---
 
-## 6. 已知遗留 / 后续阶段（本次不做，须在文档登记）
+## 6. L-009.1 后续阶段（部分已完成）
 
-L-009 本期只覆盖**自由函数**。以下同样存在跨模块同名风险，建议作为 L-009.1 跟进：
+L-009 本期只覆盖**自由函数**。后续 L-009.1 跟进项的实测结论与进展：
 
-1. **struct 方法**：`Struct.method` 未含模块前缀；两模块各定义 `struct Foo` + `fn bar` 会冲突。修法：把 `cg_module_fn_symbol` 思路并入 `codegen.c:15898/16033` 的 `qualified_name`（→ `mod__Foo.bar`）。
-2. **泛型实例**（`codegen.c:19394` 等）：同名泛型函数/方法跨模块冲突，同理需并入模块前缀。
-3. **类型名 / enum 变体**：跨模块同名类型当前依赖结构注册，建议一并审计（不在本说明书范围）。
+### 6.A 模块泛型（✅ 已完成 2026-05-30）
+
+**实测发现**：原以为只是"加前缀"，实际有两层 bug：
+- **A1**：模块内泛型**连单模块都不工作** —— `checker.c` 递归检查模块时传 `out_gm=NULL`，模块触发的泛型实例化（`pending_generic_methods`）被丢弃 → 调用点报 `undefined function 'identity(int)'`。**修复**：import handler 用局部 `sub_gm` 收集并合并进当前 checker 的 pending 队列，逐层上浮到根→codegen；codegen 调用点对未声明的泛型实例**按需前置声明**（绕开 Pass B 早于 gm 声明的顺序问题）；body 发射加 dedup 守卫。
+- **A2**：同名不同体泛型跨模块 → 都 mangle 成 `tag(int)` → **静默错值**（`a=1 b=1` 应 `a=1 b=2`）。**修复**：实例化符号按定义模块前缀化 `<mod>__tag(int)`。checker 经 `registry->current_check_module`→`Checker.module_name` 拿到模块名前缀化 `owned_mangled`；codegen 调用点用 `current_emit_module` 前缀化 `g2_mangled`；根模块（NULL）不前缀。
+- 测试：`test_l0091_modgen`（AOT+JIT+memcheck）。
+
+### 6.B struct 类型名模块命名空间（⬜ 待做 = L-009.1 剩余）
+
+**实测发现**：struct 方法符号冲突（原 §6 #1）在**同 struct 名跨模块**时才发生，但 checker 在 impl_registry（按裸 struct 名索引，`find_or_create_impl`）阶段就先报 `conflicting method` —— 方法符号冲突被**提前屏蔽**，单独做 `mod__Foo.bar` 方法 mangling 够不到。真正会咬人的是 **struct 类型名本身不做模块命名空间**：
+- 同名 + 相同布局 + 无方法 → 侥幸正常（靠布局相同）
+- 同名 + 有方法 → checker 报 `conflicting method`
+- **同名 + 不同布局 → codegen 崩溃**（`Invalid indices for GEP`，checker 放行、LLVM verify 失败）
+
+修法（大改动）：checker 的类型注册 / impl_registry + codegen 的 struct/enum LLVM 类型注册 + 方法/drop/clone 符号全部按模块命名空间化。
+
+### 6.C 类型名 / enum 变体
+
+跨模块同名 enum 同理，随 6.B 一并审计。
 
 ---
 

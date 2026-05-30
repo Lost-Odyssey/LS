@@ -178,7 +178,10 @@ cd build && ctest --output-on-failure -C Release
 - 借用作为返回类型 / 变量声明 / struct 字段（需生命期系统）
 - **Phase G**：Block env 深拷贝（`Block g = ns[i]` 当前被 checker 拒绝）→ [docs/block_clone_plan.md](docs/block_clone_plan.md)
 - ~~**Phase H**：struct 深拷贝~~ ✅ 已完成（验证 2026-05-29）：`MyStruct b = vec_of_struct[i]` 对 has_drop struct 自动深拷贝，memcheck clean（含嵌套 struct + 函数返回 vec）
-- ~~**L-009**：跨模块函数名 LLVM mangling~~ ✅ 已完成（2026-05-29）：模块自由函数符号前缀化 `<modpath>__<fn>`，消除同名崩溃/静默错值；根/主文件函数不变。**L-009.1**（struct 方法 + 泛型跨模块同名）待做 → [docs/plan_l009_mangling.md](docs/plan_l009_mangling.md)
+- ~~**L-009**：跨模块函数名 LLVM mangling~~ ✅ 已完成（2026-05-29）：模块自由函数符号前缀化 `<modpath>__<fn>`，消除同名崩溃/静默错值；根/主文件函数不变。
+- **L-009.1**：跨模块同名 mangling 收尾 → [docs/plan_l009_mangling.md](docs/plan_l009_mangling.md) §6
+  - ~~6.A 模块泛型~~ ✅ 已完成（2026-05-30）：修 A1（模块泛型实例化丢弃→连单模块都不可用）+ A2（同名不同体泛型跨模块静默错值），符号 `<mod>__fn(args)`
+  - **6.B struct 类型名模块命名空间**待做：同名 struct 跨模块（含不同布局 → codegen GEP 崩溃）；需 checker 类型/impl 注册 + codegen struct/enum/method 符号全部命名空间化
 - 正则表达式 builtin；f16 半精度浮点
 
 > 已完成特性的详细实现记录见 [docs/features_history.md](docs/features_history.md)

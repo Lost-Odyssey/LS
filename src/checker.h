@@ -143,6 +143,12 @@ typedef struct Checker {
     /* map() closure return-type inference: when non-NULL, AST_RETURN writes the
        inferred return type here instead of erroring about NULL current_fn_return. */
     Type **closure_infer_return_slot;
+
+    /* L-009.1 / A2: name of the module this checker is type-checking, e.g.
+       "mod_a" or "std.json"; NULL for the root/main program. Used to module-
+       prefix generic instantiation symbol names so same-named generic functions
+       in different modules don't collide (silent-wrong) at codegen. */
+    const char *module_name;
 } Checker;
 
 /* G1.5: Output struct for pending generic method instantiations.

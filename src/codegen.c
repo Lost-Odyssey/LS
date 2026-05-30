@@ -10598,7 +10598,22 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     }
                     g2_mangled[pos++] = ')';
                     g2_mangled[pos] = '\0';
-                    fn_name = g2_mangled;
+                    /* A2: when this generic call is emitted inside an imported
+                       module, prefix the instantiation symbol with the module
+                       (matching the checker's owned_mangled) so two modules'
+                       same-named generics resolve to distinct functions. Root
+                       module (current_emit_module==NULL) stays unprefixed. */
+                    if (ctx->current_emit_module != NULL)
+                    {
+                        static char g2_mod[640];
+                        cg_module_fn_symbol(g2_mod, sizeof(g2_mod),
+                                            ctx->current_emit_module, g2_mangled);
+                        fn_name = g2_mod;
+                    }
+                    else
+                    {
+                        fn_name = g2_mangled;
+                    }
                 }
 
                 /* L-009: a bare call inside an imported module resolves to that
@@ -10615,6 +10630,28 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 }
                 if (callee == NULL)
                     callee = LLVMGetNamedFunction(ctx->module, fn_name);
+                /* A1 (module generics): a generic instantiation (e.g.
+                   identity(int)) may be referenced from a module function body
+                   emitted in Pass B, before the pending-gm forward-declaration
+                   block runs. Resolve it on demand: find the matching pending
+                   entry by mangled name and forward-declare its signature now.
+                   The body is still emitted later (with a dedup guard). */
+                if (callee == NULL && node->as.call.type_arg_count > 0)
+                {
+                    for (int gi = 0; gi < ctx->pending_gm_count; gi++)
+                    {
+                        if (strcmp(ctx->pending_generic_methods[gi].mangled_name,
+                                   fn_name) != 0)
+                            continue;
+                        AstNode *cfn = ctx->pending_generic_methods[gi].cloned_fn;
+                        if (cfn == NULL || cfn->resolved_type == NULL ||
+                            cfn->resolved_type->kind != TYPE_FUNCTION)
+                            break;
+                        LLVMTypeRef gft = type_to_llvm(ctx, cfn->resolved_type);
+                        callee = LLVMAddFunction(ctx->module, fn_name, gft);
+                        break;
+                    }
+                }
                 if (callee == NULL)
                 {
                     cg_error(ctx, node->line, node->column,
@@ -19501,6 +19538,15 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             AstNode *cfn = ctx->pending_generic_methods[i].cloned_fn;
             const char *mname = ctx->pending_generic_methods[i].mangled_name;
             if (cfn == NULL || cfn->resolved_type == NULL)
+                continue;
+
+            /* A1 (module generics): the same instantiation (e.g. identity(int))
+               can be queued by more than one module/checker. Their bodies are
+               structurally identical, so emit only the first; skip any whose
+               LLVM function already has a body (basic blocks), else we'd append
+               a second entry block to it and produce invalid IR. */
+            LLVMValueRef existing = LLVMGetNamedFunction(ctx->module, mname);
+            if (existing && LLVMCountBasicBlocks(existing) > 0)
                 continue;
 
             /* codegen_fn_decl uses node->as.fn_decl.name as the LLVM function name.

@@ -1042,6 +1042,20 @@ set_tests_properties(test_l009_mangle PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- L-009.1 module generics (A1 instantiation + A2 cross-module mangling) ----
+add_test(
+    NAME test_l0091_modgen
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_l0091_modgen.cmake
+)
+set_tests_properties(test_l0091_modgen PROPERTIES
+    DEPENDS "test_l009_mangle"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- match OR-pattern (bugs/18 fix) ----
 add_test(
     NAME test_match_or_pattern

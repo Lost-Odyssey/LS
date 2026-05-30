@@ -25,6 +25,12 @@ typedef struct ModuleRegistry {
     const char **import_stack;
     int stack_depth;
     int stack_cap;
+
+    /* L-009.1 / A2: name of the module currently being type-checked recursively
+       (set by the checker's import handler around each recursive checker_check).
+       NULL while checking the root/main program. checker_check copies this into
+       Checker.module_name so generic instantiations can be module-prefixed. */
+    const char *current_check_module;
 } ModuleRegistry;
 
 /* Create a new module registry */

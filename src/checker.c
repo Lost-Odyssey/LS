@@ -4447,9 +4447,24 @@ static Type *check_expr(Checker *c, AstNode *node)
             /* Restore type aliases */
             c->type_alias_count = saved_alias_count;
 
-            /* Push to pending generic methods queue (reusing the same mechanism) */
-            char *owned_mangled = (char *)malloc_safe(strlen(mangled) + 1);
-            memcpy(owned_mangled, mangled, strlen(mangled) + 1);
+            /* Push to pending generic methods queue (reusing the same mechanism).
+               A2: when this instantiation belongs to an imported module, prefix
+               the symbol with "<modpath>__" (matching codegen's cg_module_fn_symbol
+               and current_emit_module) so two modules' same-named generics get
+               distinct LLVM symbols. The checker-internal cache key `mangled`
+               stays unprefixed (each module has its own checker/scope). */
+            char prefixed[640];
+            if (c->module_name && c->module_name[0]) {
+                int pp = 0;
+                for (const char *mp = c->module_name; *mp && pp < 600; mp++)
+                    prefixed[pp++] = (*mp == '.') ? '_' : *mp;
+                prefixed[pp++] = '_'; prefixed[pp++] = '_';
+                snprintf(prefixed + pp, sizeof(prefixed) - (size_t)pp, "%s", mangled);
+            } else {
+                snprintf(prefixed, sizeof(prefixed), "%s", mangled);
+            }
+            char *owned_mangled = (char *)malloc_safe(strlen(prefixed) + 1);
+            memcpy(owned_mangled, prefixed, strlen(prefixed) + 1);
 
             if (c->pending_gm_count >= c->pending_gm_cap) {
                 c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
@@ -7819,14 +7834,50 @@ static void forward_pass(Checker *c, AstNode *program)
             if (!mod->checked)
             {
                 module_push_import(c->registry, import_path);
-                bool ok = checker_check(mod->ast, mod->file_path, c->registry, NULL);
+                /* A1 (module generics): collect the module's generic
+                   instantiations (identity(int), Pair(int,string).get, ...) and
+                   merge them into THIS checker's pending queue so they bubble up
+                   to the root and reach codegen. Previously passed NULL here, so
+                   module-defined generics were silently discarded → call sites
+                   failed with "undefined function 'identity(int)'".
+                   A2: stash the module name so the recursive checker prefixes its
+                   generic instantiation symbols with it (cross-module collision). */
+                const char *saved_ccm = c->registry->current_check_module;
+                c->registry->current_check_module = import_path;
+                CheckerGenericMethods sub_gm = {0};
+                bool ok = checker_check(mod->ast, mod->file_path,
+                                        c->registry, &sub_gm);
+                c->registry->current_check_module = saved_ccm;
                 module_pop_import(c->registry);
                 if (!ok)
                 {
+                    if (sub_gm.methods)
+                    {
+                        for (int gi = 0; gi < sub_gm.count; gi++)
+                        {
+                            if (sub_gm.methods[gi].cloned_fn)
+                                ast_free(sub_gm.methods[gi].cloned_fn);
+                            free(sub_gm.methods[gi].mangled_name);
+                        }
+                        free(sub_gm.methods);
+                    }
                     checker_error(c, decl->line, decl->column,
                                   "errors in imported module '%s'", import_path);
                     break;
                 }
+                for (int gi = 0; gi < sub_gm.count; gi++)
+                {
+                    if (c->pending_gm_count >= c->pending_gm_cap) {
+                        c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
+                        c->pending_generic_methods = realloc_safe(c->pending_generic_methods,
+                            (size_t)c->pending_gm_cap * sizeof(c->pending_generic_methods[0]));
+                    }
+                    int gm_idx = c->pending_gm_count++;
+                    c->pending_generic_methods[gm_idx].cloned_fn    = sub_gm.methods[gi].cloned_fn;
+                    c->pending_generic_methods[gm_idx].mangled_name = sub_gm.methods[gi].mangled_name;
+                    c->pending_generic_methods[gm_idx].struct_type  = sub_gm.methods[gi].struct_type;
+                }
+                free(sub_gm.methods);
                 mod->checked = true;
             }
 
@@ -8067,6 +8118,9 @@ bool checker_check(AstNode *program, const char *source_path,
     memset(&c, 0, sizeof(Checker));
     c.source_path = source_path;
     c.registry = registry;
+    /* A2: NULL for the root program; set to the module name when this is a
+       recursive module check (the import handler stashes it on the registry). */
+    c.module_name = registry ? registry->current_check_module : NULL;
     c.current_scope = scope_new(NULL);
 
     register_builtins(&c);
