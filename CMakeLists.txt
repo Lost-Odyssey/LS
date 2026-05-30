@@ -1216,3 +1216,17 @@ set_tests_properties(test_modtype_methods PROPERTIES
     DEPENDS "test_modtype_qualified"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- B-5: cross-module same-named enum + same variant names (type-context resolve) ----
+add_test(
+    NAME test_modtype_enum_variants
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_modtype_enum_variants.cmake
+)
+set_tests_properties(test_modtype_enum_variants PROPERTIES
+    DEPENDS "test_modtype_methods"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
