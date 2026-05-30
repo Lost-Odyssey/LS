@@ -1,6 +1,6 @@
 # 模块命名空间收尾：全局变量 + struct/enum 类型
 
-> 状态：Part 1 全部完成 ✅ + B-1 完成 ✅ ｜ 关联：L-009 / L-009.1（`docs/plan_l009_mangling.md`）
+> 状态：Part 1 全部完成 ✅ + B-1 完成 ✅ ｜ B-full（B-2~B-6）已定方向：**类型位置限定 `mod.Type`/`alias.Type`**（见 §2.1bis），待实现 ｜ 关联：L-009 / L-009.1（`docs/plan_l009_mangling.md`）
 > 验证基线：2026-05-30（本文所有「实测」均基于 `build/Release/ls.exe`）
 > 范围：把"模块命名空间"从**函数**（已完成）推广到**全局变量**与 **struct/enum 类型/方法**。
 
@@ -106,35 +106,106 @@ fn get() -> int { return counter }   // 实测：[codegen] undefined variable 'c
 - **验证**：S2/S6 现在给出清晰错误而非崩溃；S3/S7 行为不变；正常程序不受影响。
 - **新测**：`tests/test_modtype_conflict.cmake`：S2/S6 期望编译错误（非 0 退出 + 含 "multiple modules"）；并跑一遍现有 json/stdlib 确认无回归。
 
-#### Step B-2（B-full 起点）：struct/enum Type 名烘焙模块前缀
-- 在**模块的递归 checker**里（`Checker.module_name != NULL`），struct/enum 类型注册/创建时把 `Type.as.strukt.name`（及 enum 名）设为 `<mod>__Name`。
-  - 影响面：`type_name()`（错误信息会显示前缀——可加一个"展示名"字段或在打印时去前缀，单独小步处理）。
-  - 同一 Type 对象被模块自身 AST 共享 → 模块函数签名、codegen 自然用前缀名。
-- importer 注册（`checker.c:7902/7913`）：把前缀类型同时以**裸名**与**前缀名**登记（裸名用于无歧义时的无限定引用；见 B-4 歧义处理）。
-- **验证**：单模块 struct 仍正常；模块 struct 的 LLVM 类型变为 `%mod_a__Config`。
-- **新测**：dump IR 断言模块 struct 类型名带前缀；功能行为不变。
+### 2.1bis B-full 设计：类型位置限定（复用现有 `import as` + `mod.member` 文法）
 
-#### Step B-3：codegen 方法 / drop / clone 名跟随前缀
-- `codegen_impl_decl`（`codegen.c:16001`）：`impl_decl.name` 在 `current_emit_module != NULL` 时前缀化，使方法 qualified name 变 `mod_a__Config.method`。
-- 确认调用点（`codegen.c:10518` 静态方法 / 实例方法路径）用的是 struct **Type 名**（B-2 已前缀）→ 自动匹配。
-- drop/clone 合成函数名（跟随 struct 名）随之前缀化——审查 `emit_*_drop` / `emit_*_clone` 命名点。
-- **验证**：同名 struct + 方法跨模块（S3 场景）现在能编译且各自正确。
-- **新测**：两模块各 `struct Widget` + `describe()` 不同返回值 → 各自正确（S3 转为通过）。
+**消歧方案已定**（2026-05-30，实测驱动）：用**类型位置限定** `mod_a.Config` / `A.Config`，
+对称扩展现有的 `mod.fn()` 调用限定。理由：
+- 实测 `import mod_a as A` + `A.make()`（值/调用位置的模块成员访问）**已支持**；缺的只是
+  让同样的 `A.Config` 在**类型位置**也能用。不是发明新机制，是对称补齐。
+- 不需要符号级 import（`from mod import X` 这种 LS 目前完全没有，代价大）。
 
-#### Step B-4：导入方裸名类型引用的歧义处理（语言设计点）
-- 规则：裸名 `Config` 在**仅一个来源**定义时正常解析；**2+ 来源**时报歧义错误，提示用限定写法。
-- 限定类型语法 `mod_a.Config`：检查 parser/`resolve_type_node` 是否支持 `<module>.<Type>` 作为类型；若不支持需小幅扩展（parser 类型位置允许 `ident.ident`；checker `resolve_type_node` 走 module 导出表查类型）。
-- **验证**：S6 用 `mod_a.Box` / `mod_b.Box` 限定后各自正确；不限定 → 歧义错误。
-- **新测**：限定类型引用样例（两模块同名 struct 都用，均正确）；不限定 → 期望错误。
+**统一前缀方案**：内部仍复用 `cg_module_fn_symbol` 的 `<mod>__Name`（`.`→`_`）作为
+struct/enum 的**内部唯一名**（Type.name / LLVM 类型名 / 方法名）；`mod_a.Config` 只是
+**用户书写的限定引用**，在 checker 里解析到那个前缀化的 Type。
 
-#### Step B-5：enum 变体跨模块
-- 同名 enum 跨模块（变体名也可能撞）：变体构造/`match` 解析按前缀 enum 名走；审查 `find_enum_llvm` / 变体 ctor / match 穷尽性。
-- **验证**：两模块各 `enum Status { Ok, Err }` 不同语义 → 各自正确。
-- **新测**：同名 enum 跨模块 + match，JIT+AOT+memcheck。
+**关键代码坐标**（已核实，行号可能漂移，实现前用 Grep 复核）：
+| 角色 | 位置 |
+|------|------|
+| 非泛型 struct Type 构建 + 注册 | `checker.c:6702/6760`、`7223/7260`、`8227`（`type_struct(name,n)` + `register_struct_type(c,name,st)`） |
+| struct/enum 注册表查找 | `find_struct_type`（`checker.c:128`）/ `find_enum_type` |
+| 类型解析（命名类型） | `resolve_type_node` `TYPE_NODE_NAMED` 分支（`checker.c:1114`，无 arg 时 alias→struct→enum 按名查） |
+| TypeNode 命名结构 | `ast.h:62` `named { char *name; TypeNode **args; int arg_count; }`（**需加 `char *module` 限定符**） |
+| parser 命名类型 | `parser.c:1711`（IDENT [+ `(args)`]） |
+| parser 变量声明启发式 | `starts_var_decl`（`parser.c:1745`） |
+| import 文法（已支持 `as`） | `parse_import_decl`（`parser.c:2652`，`import a.b.c [as X]`） |
+| 模块导出表 | `type_module_add_export`（`types.c:179`），`Type.as.module.exports[]{name,type}`（**需加 find_export**） |
+| codegen 方法 qualified name | `codegen_impl_decl`（`codegen.c:16001`，用 `impl_decl.name`） |
+| checker 模块上下文 | `Checker.module_name` / `registry->current_check_module`（L-009.1 已引入） |
 
-#### Step B-6：has_drop 同名 struct/enum 跨模块 memcheck
-- 综合压测：两模块同名 has_drop struct（string 字段）+ vec/map 容器，跨模块传值/返回；memcheck 0 leak/0 dfree。
-- **新测**：综合 memcheck 用例。
+### 2.2 Step 拆分（type-position-qualification 方向）
+
+> 每步独立、ctest 全绿（当前基线 **78/78**）+ JIT/AOT/memcheck 三重 + json/stdlib 无回归。
+
+#### Step B-1（B-safe）：同名类型跨模块冲突 → 清晰编译错误 ✅ 已完成（2026-05-30）
+（见上方，已实现于 checker import 注册处，`test_modtype_conflict`。）
+
+#### Step B-2：struct/enum Type 名烘焙模块前缀 ﹝可交 Sonnet﹞
+- 在**模块的递归 checker**里（`c->module_name != NULL`），struct/enum 类型**构建时**把名字设为
+  `<mod>__Name`（用与 `cg_module_fn_symbol` 一致的 scheme：`.`→`_` + `__`）。落点：上表三处
+  `type_struct(name,…)`/enum 等价处之前，先算前缀名。
+- 同一 Type 对象被模块自身 AST 共享 → 模块函数签名 / codegen / 方法调用点（用 Type.name）**自动跟随**前缀。
+- importer 注册（`checker.c:7902/7913`）：**暂仍按裸名注册 + 保留 B-1 冲突检测**（B-2 不改变
+  "同时 import 两个同名 → 报错"的现状；放开留给 B-4）。单模块场景：裸名 `Config` → 前缀 Type，照常工作。
+- **影响面**：`type_name()`（`checker.c:158` 返回 `strukt.name`）→ 错误信息会显示 `mod_a__Config`。
+  **本步加一个"展示名"**：`type_name` 对含 `__` 的模块类型，打印时去前缀显示 `Config`（或 `mod_a.Config`），
+  内部名不变。
+- **验证**：单模块 + 跨模块（只 import 一个）struct/enum 全部照常；dump IR 断言模块 struct LLVM 类型名带前缀。
+- **新测**：`test_modtype_ns` 第一组——单模块 struct/enum 经前缀化后行为不变（JIT+AOT+memcheck）。
+- **风险**：中（动类型身份，但 78 ctest + memcheck 兜底）。**务必每改一处全量回归。**
+
+#### Step B-3：codegen 方法 / drop / clone 名跟随前缀 ﹝可交 Sonnet﹞
+- `codegen_impl_decl`（`codegen.c:16001`）：`impl_decl.name` 在 `current_emit_module != NULL` 时
+  前缀化，使方法 qualified name 变 `mod_a__Config.method`。
+- 实例/静态方法调用点（`codegen.c:10518` 区域）用的是 struct **Type.name**（B-2 已前缀）→ 自动匹配；
+  确认 drop/clone 合成函数名（跟随 struct 名）也随之前缀化（审 `emit_*_drop`/`emit_*_clone` 命名点）。
+- **验证**：单模块 struct + 方法 + has_drop 全部正常（前缀只是改了内部符号）。
+- **新测**：`test_modtype_ns` 第二组——单模块 struct + 方法 + `__drop`，memcheck clean。
+- 注：B-2+B-3 完成后，**同名 struct 在各自模块内部已是不同 LLVM 类型**，只是 importer 仍按 B-1 拦同时导入。
+
+#### Step B-4：类型位置限定语法 `mod.Type` / `alias.Type` ﹝我做 / 至少 starts_var_decl 我审﹞
+本步是放开同名共存的关键，也是唯一有 parser 歧义的一步。
+1. **AST**：`ast.h:62` `named` 加 `char *module`（NULL=非限定）。
+2. **parser**（`parse_type` `parser.c:1711`）：解析首个 IDENT 后，若下一个是 `.` 且其后是 IDENT，
+   则把首个当 `module`、其后当 `name`（`A.Config`）。
+3. **starts_var_decl**（`parser.c:1745`，**唯一真歧义**）：`A.Config x = …`（变量声明）vs `A.foo`
+   （表达式语句）。需 lookahead：`IDENT . IDENT IDENT`（点路径后再跟一个 IDENT）→ 判定为变量声明。
+   用 scanner 保存/恢复多 token 前瞻（参考现有 `starts_var_decl` 里 `*ident ident` 的双 peek 实现）。
+4. **resolve_type_node**（`checker.c:1114`）：`module != NULL` 时——查 `module`（别名或模块名）对应的
+   `TYPE_MODULE`，在其 `exports[]`（新增 `type_module_find_export`）里找 `name` 的类型；找到即返回
+   那个前缀化 Type。
+5. **importer 歧义放开**（`checker.c:7895/7905`）：裸名 `Config` 来自 2+ 模块时，**不再硬报错**，而是
+   注册为"歧义"标记；裸名引用歧义类型 → 报错提示"用 `mod_a.Config` 限定"；限定引用 → 直接走 #4 精确解析。
+   （单一来源的裸名仍照常工作，零破坏。）
+- **验证**：S6（两模块同名 `Config` 不同布局都用）→ 用 `mod_a.Config`/`mod_b.Config` 限定后各自正确；
+  裸名 `Config` → 歧义错误；只 import 一个 → 裸名仍可用。
+- **新测**：`test_modtype_ns` 第三组——两模块同名 struct 都用（限定）+ 裸名歧义报错。
+- **风险**：高（parser 歧义）。`starts_var_decl` 改动须有针对性用例：`A.Config x`、`A.foo()`（表达式）、
+  `A.foo` 字段读、`A.B.C x`（多段）等都不能误判。
+
+#### Step B-5：enum 跨模块 + 变体限定 ﹝我做﹞
+- 同名 enum 跨模块（变体名也可能撞，如两个 `enum Status { Ok, Err }`）：B-2 已让 enum 内部名前缀化；
+  本步确保**变体构造 / `match`** 在限定与裸名下都正确解析（`find_enum_llvm` / 变体 ctor / 穷尽性）。
+- 变体的限定写法（如需）：`mod_a.Status.Ok` 或在已知类型上下文里裸 `Ok`——按实测最小可用为准。
+- **验证**：两模块各 `enum Status` 不同语义 → 各自正确（限定）。
+- **新测**：`test_modtype_ns` 第四组——同名 enum 跨模块 + match，JIT+AOT+memcheck。
+
+#### Step B-6：has_drop 同名 struct/enum 跨模块综合 memcheck ﹝可交 Sonnet（纯测试）﹞
+- 综合压测：两模块同名 has_drop struct（string 字段）+ enum + vec/map 容器，跨模块传值/返回（限定类型）；
+  memcheck 0 leak/0 dfree。
+- **新测**：`test_modtype_ns` 收尾组（综合 memcheck）。
+
+### 2.3 Sonnet / 我 的分工建议
+
+| Step | 谁 | 理由 |
+|------|----|------|
+| B-2 类型名烘焙 + type_name 展示名 | **Sonnet** | 机械、边界清晰、78 ctest+memcheck 强兜底；但动类型身份，须每步全量回归 |
+| B-3 codegen 方法/drop/clone 跟随 | **Sonnet** | 跟随 B-2，机械 |
+| B-4 限定类型语法（含 starts_var_decl 歧义） | **我**（或我审 starts_var_decl） | parser 歧义是真陷阱，错了会误判正常代码 |
+| B-5 enum 跨模块 + 变体 | **我** | 变体解析 / match 穷尽性有微妙处 |
+| B-6 综合 memcheck 测试 | **Sonnet** | 纯测试编写 |
+
+> 建议顺序：B-2 → B-3（Sonnet，打基础）→ 回到我做 B-4 → B-5 → Sonnet 补 B-6。B-2/B-3 完成即可
+> 中途验证（同名 struct 各自模块内已是不同类型），再由 B-4 放开 importer 歧义。
 
 ---
 
