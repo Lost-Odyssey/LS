@@ -1174,3 +1174,17 @@ set_tests_properties(test_bf044_shortcircuit PROPERTIES
     DEPENDS "test_global_vec_lit"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- B-2 + B-3: module struct/enum type namespace (llvm_name prefixing + impl methods) ----
+add_test(
+    NAME test_modtype_ns
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_modtype_ns.cmake
+)
+set_tests_properties(test_modtype_ns PROPERTIES
+    DEPENDS "test_bf044_shortcircuit"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

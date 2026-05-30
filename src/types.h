@@ -43,6 +43,7 @@ struct Type {
         } function;
         struct {                                        /* TYPE_STRUCT */
             const char *name;
+            const char *llvm_name;   /* B-2: LLVM type name; prefixed for module types, NULL→use name */
             struct { const char *name; Type *type; } *fields;
             int field_count;
             bool has_drop;           /* true if struct has a __drop destructor */
@@ -52,6 +53,7 @@ struct Type {
         } strukt;
         struct {                                        /* TYPE_ENUM */
             const char *name;        /* mangled when instantiated, e.g. "Option(int)" */
+            const char *llvm_name;   /* B-2: LLVM type name; prefixed for module types, NULL→use name */
             struct {
                 const char *name;
                 Type **payload_types;  /* NULL when payload_count == 0 */

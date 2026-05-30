@@ -121,7 +121,7 @@ cd build && ctest --output-on-failure -C Release
 | — | BF-040 array 元素字段读取 double-drop 修复 | ✅ |
 | — | 模块全局变量命名空间（P1-1~P1-4）+ B-1 同名类型冲突检测 | ✅ |
 
-**当前测试**：ctest 76/76（模块全局变量 P1-1~P1-4 + B-1 struct/enum 跨模块冲突检测）
+**当前测试**：ctest 79/79（模块全局变量 P1-1~P1-4 + B-1 + B-2 struct/enum LLVM 名前缀化 + B-3 impl 方法名前缀化）
 
 > 各阶段实现细节见 [docs/features_history.md](docs/features_history.md)
 
@@ -184,7 +184,9 @@ cd build && ctest --output-on-failure -C Release
   - ~~6.A 模块泛型~~ ✅ 已完成（2026-05-30）：修 A1（模块泛型实例化丢弃→连单模块都不可用）+ A2（同名不同体泛型跨模块静默错值），符号 `<mod>__fn(args)`
 - ~~**模块命名空间收尾 Part 1**（全局变量）~~ ✅ 已完成（2026-05-30）：模块全局变量符号前缀化（`<mod>__var`）+ scope 注册 + has_drop 全局 cleanup；`mod.VAR` 跨模块访问；ctest 76/76。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step P1-1~P1-4
 - ~~**模块命名空间收尾 B-1**（B-safe struct/enum 冲突检测）~~ ✅ 已完成（2026-05-30）：同名 struct/enum 来自多个模块 → 清晰 checker 错误 "multiple imported modules"，消除 GEP 崩溃/静默损坏。ctest 76/76。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-1
-- **模块命名空间收尾 Part 2 B-2~B-6**（B-full 真命名空间）待做：同名 struct/enum 跨模块各自独立可用，需 checker/codegen 全面命名空间化 + 限定类型语法。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-2~B-6
+- ~~**模块命名空间收尾 B-2**（struct/enum LLVM 类型名前缀化）~~ ✅ 已完成（2026-05-30）：`Type.strukt/enom.llvm_name` 字段存前缀名，codegen 所有 LLVM 命名点用前缀名，checker 注册表仍用裸名（零破坏）。ctest 79/79。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-2
+- ~~**模块命名空间收尾 B-3**（impl 方法/drop/clone 名跟随前缀）~~ ✅ 已完成（2026-05-30）：`codegen_impl_decl`/`codegen_impl_trait_decl` 在 `current_emit_module != NULL` 时前缀化 struct 名，静态方法调用按 `llvm_name` 解析。ctest 79/79。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-3
+- **模块命名空间收尾 B-4~B-6**（B-full 真命名空间）待做：类型位置限定语法 `mod.Type`（B-4）+ enum 跨模块变体（B-5）+ 综合 memcheck（B-6）。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-4~B-6
 - 正则表达式 builtin；f16 半精度浮点
 
 > 已完成特性的详细实现记录见 [docs/features_history.md](docs/features_history.md)

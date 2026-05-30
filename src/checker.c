@@ -112,6 +112,25 @@ static bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const
     return type_equals(trait_t, impl_t);
 }
 
+/* B-2: Compute the LLVM-level type name for a struct/enum defined in a module.
+   Returns a malloc'd "<mod>__Name" string when c->module_name is non-NULL, else NULL.
+   The caller is responsible for nothing — the returned pointer is stored in
+   Type.strukt.llvm_name / Type.enom.llvm_name and intentionally leaked with the Type. */
+static char *checker_module_type_llvmname(Checker *c, const char *bare_name)
+{
+    if (c->module_name == NULL || c->module_name[0] == '\0')
+        return NULL;
+    char buf[640];
+    int pp = 0;
+    for (const char *mp = c->module_name; *mp && pp < 600; mp++)
+        buf[pp++] = (*mp == '.') ? '_' : *mp;
+    buf[pp++] = '_'; buf[pp++] = '_';
+    snprintf(buf + pp, sizeof(buf) - (size_t)pp, "%s", bare_name);
+    char *result = (char *)malloc_safe(strlen(buf) + 1);
+    memcpy(result, buf, strlen(buf) + 1);
+    return result;
+}
+
 static void register_struct_type(Checker *c, const char *name, Type *type)
 {
     if (c->struct_type_count >= c->struct_type_cap)
@@ -6700,6 +6719,8 @@ static void check_struct_decl(Checker *c, AstNode *node)
     }
 
     Type *st = type_struct(name, n);
+    /* B-2: set LLVM-level type name for module-defined structs */
+    st->as.strukt.llvm_name = checker_module_type_llvmname(c, name);
     for (int i = 0; i < n; i++)
     {
         Type *ft = resolve_type_node(c, node->as.struct_decl.field_types[i],
@@ -6791,6 +6812,8 @@ static void check_enum_decl(Checker *c, AstNode *node)
     }
 
     Type *et = type_enum(name, n);
+    /* B-2: set LLVM-level type name for module-defined enums */
+    et->as.enom.llvm_name = checker_module_type_llvmname(c, name);
     bool has_drop = false;
 
     /* Pre-register the enum type so that resolve_type_node can find it
