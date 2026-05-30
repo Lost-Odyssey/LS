@@ -17747,6 +17747,87 @@ void codegen_destroy(CodegenContext *ctx)
    position.  The global variable must already exist in the LLVM module (created in
    Pass 1).  Only stores an initializer — does NOT create a new alloca or add the
    symbol to the scope (that was done in Pass 1). */
+/* BF-043: emit program-exit cleanup for a GLOBAL vec: drop each owned element
+   (string / has_drop struct/enum / Block) then free(data), guarded by cap > 0.
+   Mirrors the per-scope vec cleanup (TYPE_VECTOR branch in emit_scope_cleanup)
+   but operates on a global pointer `gv`. Leaves the builder at a non-terminated
+   continuation block so the caller (next cleanup or retVoid) terminates.
+   idx_suffix makes basic-block names unique across multiple globals. */
+static void emit_global_vec_cleanup(CodegenContext *ctx, LLVMValueRef gv,
+                                    Type *elem_type, int idx_suffix)
+{
+    LLVMTypeRef vec_t = ls_vec_type(ctx);
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+
+    LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, gv, "gvc.v");
+    LLVMValueRef cap_v  = LLVMBuildExtractValue(ctx->builder, vec_val, 2, "gvc.cap");
+    LLVMValueRef len_v  = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "gvc.len");
+    LLVMValueRef data_v = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "gvc.data");
+    LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
+    LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap_v, zero32, "gvc.hasbuf");
+
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    char fname[40], dname[40];
+    snprintf(fname, sizeof(fname), "gvc.free%d", idx_suffix);
+    snprintf(dname, sizeof(dname), "gvc.done%d", idx_suffix);
+    LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, fname);
+    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, dname);
+    LLVMBuildCondBr(ctx->builder, has_buf, free_bb, done_bb);
+
+    LLVMPositionBuilderAtEnd(ctx->builder, free_bb);
+
+    bool elem_needs_drop = (elem_type &&
+        (elem_type->kind == TYPE_STRING ||
+         (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
+         (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop) ||
+         elem_type->kind == TYPE_BLOCK));
+
+    if (elem_needs_drop)
+    {
+        LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
+        LLVMBasicBlockRef el_cond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "gvc.el.cond");
+        LLVMBasicBlockRef el_body = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "gvc.el.body");
+        LLVMBasicBlockRef el_end  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "gvc.el.end");
+
+        /* loop counter alloca in the function entry block */
+        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+        LLVMBasicBlockRef fn_entry = LLVMGetEntryBasicBlock(cur_fn);
+        LLVMValueRef fi = LLVMGetFirstInstruction(fn_entry);
+        if (fi) LLVMPositionBuilderBefore(tb, fi);
+        else    LLVMPositionBuilderAtEnd(tb, fn_entry);
+        LLVMValueRef ei_alloca = LLVMBuildAlloca(tb, i32_t, "gvc.ei");
+        LLVMDisposeBuilder(tb);
+
+        LLVMBuildStore(ctx->builder, zero32, ei_alloca);
+        LLVMBuildBr(ctx->builder, el_cond);
+
+        LLVMPositionBuilderAtEnd(ctx->builder, el_cond);
+        LLVMValueRef cur_ei = LLVMBuildLoad2(ctx->builder, i32_t, ei_alloca, "gvc.cei");
+        LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur_ei, len_v, "gvc.lt");
+        LLVMBuildCondBr(ctx->builder, cmp, el_body, el_end);
+
+        LLVMPositionBuilderAtEnd(ctx->builder, el_body);
+        LLVMValueRef ei64 = LLVMBuildSExt(ctx->builder, cur_ei, i64_t, "gvc.ei64");
+        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_v, &ei64, 1, "gvc.ep");
+        emit_vec_elem_drop_at(ctx, ep, elem_type, idx_suffix, "global_vec[i]");
+
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+        {
+            LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
+            LLVMValueRef ni = LLVMBuildAdd(ctx->builder, cur_ei, one32, "gvc.ni");
+            LLVMBuildStore(ctx->builder, ni, ei_alloca);
+            LLVMBuildBr(ctx->builder, el_cond);
+        }
+
+        LLVMPositionBuilderAtEnd(ctx->builder, el_end);
+    }
+
+    cg_emit_free(ctx, data_v, "vec.scope_drop", CG_LINE(ctx), CG_COL(ctx));
+    LLVMBuildBr(ctx->builder, done_bb);
+    LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+}
+
 static void emit_global_var_init(CodegenContext *ctx, AstNode *decl)
 {
     if (decl == NULL || decl->kind != AST_VAR_DECL || decl->as.var_decl.init == NULL)
@@ -17797,20 +17878,16 @@ static void emit_global_var_init(CodegenContext *ctx, AstNode *decl)
     }
     else if (var_type->kind == TYPE_VECTOR &&
              decl->as.var_decl.init->kind == AST_ARRAY_LIT &&
-             var_type->as.vec.elem &&
-             (type_is_numeric(var_type->as.vec.elem) ||
-              var_type->as.vec.elem->kind == TYPE_BOOL ||
-              var_type->as.vec.elem->kind == TYPE_CHAR ||
-              var_type->as.vec.elem->kind == TYPE_POINTER))
+             var_type->as.vec.elem)
     {
-        /* Global POD vec literal: vec(int) g = [1,2,3].
+        /* Global vec literal: vec(int) g = [1,2,3] / vec(string) g = [...].
            The generic else-branch below stores codegen_expr(array_lit) — but an
            array literal lowers to an ARRAY aggregate, not a heap vec, so the
            global vec struct {data,len,cap} ends up zeroed (runtime reads empty).
            Build the vec in place by pushing each element into the global pointer,
-           mirroring the local var_decl vec-literal path (codegen.c ~12837).
-           Restricted to POD element types: those need no per-element drop, so the
-           __ls_global_cleanup vec branch only has to free(data). */
+           mirroring the local var_decl vec-literal path (codegen.c ~12837),
+           including string-element ownership handling. has_drop elements are
+           dropped at program exit by emit_global_vec_cleanup. */
         AstNode *lit = decl->as.var_decl.init;
         int count = lit->as.array_lit.count;
         Type *vec_elem = var_type->as.vec.elem;
@@ -17820,11 +17897,31 @@ static void emit_global_var_init(CodegenContext *ctx, AstNode *decl)
         LLVMTypeRef i64_t_llvm = LLVMInt64TypeInContext(ctx->context);
 
         /* Global was ConstNull-initialised in Pass A → {null,0,0}. */
+        int temp_mark = ctx->temp_string_count;
         for (int i = 0; i < count; i++)
         {
+            int push_temp_mark = ctx->temp_string_count;
             LLVMValueRef val = codegen_expr(ctx, lit->as.array_lit.elements[i]);
             if (val == NULL)
                 continue;
+
+            /* String elements: ensure an owned copy is stored.
+               - Fresh temp (e.g. "x".upper()) → transfer ownership (mark moved).
+               - Plain IDENT → clone so the source var can still be freed.
+               - Static literal (cap=0) → store directly (safe). */
+            if (vec_elem->kind == TYPE_STRING)
+            {
+                if (ctx->temp_string_count > push_temp_mark)
+                    cg_mark_last_temp_moved(ctx, push_temp_mark,
+                        "global vec literal: temp owned by vec");
+                else
+                {
+                    AstNode *src = ast_unwrap_move(lit->as.array_lit.elements[i]);
+                    if (src->kind == AST_IDENT)
+                        val = emit_string_clone_val(ctx, val);
+                }
+            }
+
             emit_vec_grow_inline(ctx, global, vec_elem_llvm);
             LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t_llvm, global, "gvl.v");
             LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "gvl.data");
@@ -17838,6 +17935,9 @@ static void emit_global_var_init(CodegenContext *ctx, AstNode *decl)
             vec_val = LLVMBuildInsertValue(ctx->builder, vec_val, new_len, 1, "gvl.v2");
             LLVMBuildStore(ctx->builder, vec_val, global);
         }
+        /* Discard temp tracking for the elements (owned temps were marked moved
+           and now belong to the vec; statics need no free). */
+        ctx->temp_string_count = temp_mark;
     }
     else if (var_type->kind == TYPE_STRING &&
              decl->as.var_decl.init->kind == AST_STRING_LIT)
@@ -19560,6 +19660,9 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             ctx->current_fn = cleanup_fn;
             int saved_tc2 = ctx->temp_string_count;
             ctx->temp_string_count = 0;
+            /* BF-043: unique suffix per vec-global cleanup so basic-block names
+               (and emit_vec_elem_drop_at's internal blocks) don't collide. */
+            int gcleanup_idx = 0;
 
 /* Helper macro: emit cleanup for one global var decl.
    P1-3: gname is the LLVM global name (prefixed for module globals, bare for root). */
@@ -19592,22 +19695,10 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         }                                                                                                \
         else if ((decl)->resolved_type->kind == TYPE_VECTOR)                                             \
         {                                                                                                \
-            /* POD vec global (only kind emit_global_var_init populates): free data  \
-               buffer if cap > 0. POD elements need no per-element drop. */          \
-            LLVMTypeRef vec_t = ls_vec_type(ctx);                                                        \
-            LLVMValueRef vv = LLVMBuildLoad2(ctx->builder, vec_t, gv, "gcv.v");                          \
-            LLVMValueRef vcap = LLVMBuildExtractValue(ctx->builder, vv, 2, "gcv.cap");                   \
-            LLVMValueRef vzero = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0);               \
-            LLVMValueRef vowned = LLVMBuildICmp(ctx->builder, LLVMIntSGT, vcap, vzero, "gcv.owned");     \
-            LLVMBasicBlockRef vcur = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));          \
-            LLVMBasicBlockRef vfree = LLVMAppendBasicBlockInContext(ctx->context, vcur, "gcv.free");     \
-            LLVMBasicBlockRef vskip = LLVMAppendBasicBlockInContext(ctx->context, vcur, "gcv.skip");     \
-            LLVMBuildCondBr(ctx->builder, vowned, vfree, vskip);                                         \
-            LLVMPositionBuilderAtEnd(ctx->builder, vfree);                                               \
-            LLVMValueRef vdata = LLVMBuildExtractValue(ctx->builder, vv, 0, "gcv.data");                 \
-            cg_emit_free(ctx, vdata, "vec.scope_drop", CG_LINE(ctx), CG_COL(ctx));                       \
-            LLVMBuildBr(ctx->builder, vskip);                                                            \
-            LLVMPositionBuilderAtEnd(ctx->builder, vskip);                                               \
+            /* BF-043: vec global — drop owned elements (string/has_drop) then     \
+               free(data) if cap > 0. POD-element vecs skip the element loop. */    \
+            emit_global_vec_cleanup(ctx, gv,                                                             \
+                (decl)->resolved_type->as.vec.elem, gcleanup_idx++);                                     \
         }                                                                                                \
     } while (0)
 

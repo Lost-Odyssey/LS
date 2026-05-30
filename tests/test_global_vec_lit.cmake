@@ -1,10 +1,11 @@
-# test_global_vec_lit.cmake — BF-042: global POD vec literal initializer
-# (JIT + AOT + memcheck). Locks the fix for `vec(int) g = [1,2,3]` at global
-# scope reading back empty/0.
+# test_global_vec_lit.cmake — BF-042/BF-043: global vec literal initializer
+# (JIT + AOT + memcheck). Locks the fix for `vec(int) g = [1,2,3]` (POD) and
+# owned-element vecs `vec(string)` / `vec(has_drop struct)` reading back empty/0,
+# plus per-element drop at exit (memcheck 0 leak / 0 dfree).
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/global_vec_lit/main.ls")
-set(_expected "sum=6" "sum2=10" "GLOBAL_VEC_LIT PASS")
+set(_expected "sum=6" "sum2=10" "words=FOOBAR" "tags=XY" "GLOBAL_VEC_LIT PASS")
 
 # ---- JIT ----
 execute_process(
