@@ -1160,3 +1160,17 @@ set_tests_properties(test_global_vec_lit PROPERTIES
     DEPENDS "test_modtype_conflict"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- BF-044: has_drop vec[i].field on RHS of short-circuit && / || ----
+add_test(
+    NAME test_bf044_shortcircuit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_bf044_shortcircuit.cmake
+)
+set_tests_properties(test_bf044_shortcircuit PROPERTIES
+    DEPENDS "test_global_vec_lit"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

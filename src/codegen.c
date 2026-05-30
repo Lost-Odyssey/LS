@@ -12685,7 +12685,17 @@ static LLVMValueRef codegen_short_circuit(CodegenContext *ctx, AstNode *node)
     }
 
     LLVMPositionBuilderAtEnd(ctx->builder, rhs_bb);
+    /* BF-044: temps produced while evaluating the RHS (e.g. a spilled has_drop
+       struct clone from `vec[i].field`) live in the conditionally-executed RHS
+       block. They MUST be flushed here, inside the RHS block, before branching to
+       merge — otherwise their drop is emitted at the enclosing statement boundary
+       (a block not dominated by rhs_bb), giving "Instruction does not dominate all
+       uses". The RHS result is a bool (i1), so it owns nothing; flushing all RHS
+       temps is safe. LHS temps were created in the entry block (which dominates
+       everything) and correctly flush at the outer statement boundary. */
+    int rhs_temp_mark = ctx->temp_string_count;
     LLVMValueRef right = codegen_expr(ctx, node->as.binary.right);
+    cg_flush_temps(ctx, rhs_temp_mark, false);
     LLVMBasicBlockRef rhs_end = LLVMGetInsertBlock(ctx->builder);
     LLVMBuildBr(ctx->builder, merge_bb);
 
