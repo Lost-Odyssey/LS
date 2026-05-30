@@ -1230,3 +1230,17 @@ set_tests_properties(test_modtype_enum_variants PROPERTIES
     DEPENDS "test_modtype_methods"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- B-6: has_drop same-named struct/enum across modules — comprehensive memcheck ----
+add_test(
+    NAME test_modtype_memcheck
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_modtype_memcheck.cmake
+)
+set_tests_properties(test_modtype_memcheck PROPERTIES
+    DEPENDS "test_modtype_enum_variants"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
