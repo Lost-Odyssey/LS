@@ -45,3 +45,6 @@ test_output.exe.obj
 
 # Python venvs
 .venv/
+
+# claude worktrees
+.claude/worktrees
