@@ -11152,12 +11152,22 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 return NULL;
             }
 
-            /* Try function first */
-            LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, name);
+            /* Try function first: module-prefixed (L-009), then bare. */
+            char fn_sym[512];
+            cg_module_fn_symbol(fn_sym, sizeof(fn_sym),
+                                obj_type->as.module.name, name);
+            LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, fn_sym);
+            if (!fn)
+                fn = LLVMGetNamedFunction(ctx->module, name);
             if (fn)
                 return fn;
-            /* Try global variable (module-exported variable) */
-            LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, name);
+            /* Try global variable: P1-1 module globals use prefixed name. */
+            char gv_sym[512];
+            cg_module_fn_symbol(gv_sym, sizeof(gv_sym),
+                                obj_type->as.module.name, name);
+            LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, gv_sym);
+            if (!gv)
+                gv = LLVMGetNamedGlobal(ctx->module, name);
             if (gv)
             {
                 Type *rt = node->resolved_type;
@@ -17723,7 +17733,16 @@ static void emit_global_var_init(CodegenContext *ctx, AstNode *decl)
     Type *var_type = decl->resolved_type;
     if (var_type == NULL)
         return;
-    LLVMValueRef global = LLVMGetNamedGlobal(ctx->module, decl->as.var_decl.name);
+    /* P1-1: module globals have prefixed LLVM names; root globals use bare names. */
+    const char *gname = decl->as.var_decl.name;
+    char mod_sym[512];
+    if (ctx->current_emit_module && ctx->current_emit_module[0])
+    {
+        cg_module_fn_symbol(mod_sym, sizeof(mod_sym),
+                            ctx->current_emit_module, gname);
+        gname = mod_sym;
+    }
+    LLVMValueRef global = LLVMGetNamedGlobal(ctx->module, gname);
     if (global == NULL)
         return;
 
@@ -19125,13 +19144,18 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 }
                 else if (decl->kind == AST_VAR_DECL && decl->resolved_type)
                 {
+                    /* P1-1: module global — prefix LLVM symbol name to avoid
+                       cross-module collisions (same scheme as function mangling). */
                     Type *var_type = decl->resolved_type;
                     LLVMTypeRef llvm_type = type_to_llvm(ctx, var_type);
-                    if (!LLVMGetNamedGlobal(ctx->module, decl->as.var_decl.name))
+                    char mod_sym[512];
+                    cg_module_fn_symbol(mod_sym, sizeof(mod_sym),
+                                        ctx->current_emit_module,
+                                        decl->as.var_decl.name);
+                    if (!LLVMGetNamedGlobal(ctx->module, mod_sym))
                     {
-                        LLVMValueRef gv = LLVMAddGlobal(ctx->module, llvm_type,
-                                                        decl->as.var_decl.name);
-                        LLVMSetLinkage(gv, LLVMExternalLinkage);
+                        LLVMValueRef gv = LLVMAddGlobal(ctx->module, llvm_type, mod_sym);
+                        LLVMSetLinkage(gv, LLVMInternalLinkage);
                         LLVMSetInitializer(gv, LLVMConstNull(llvm_type));
                     }
                 }
@@ -19151,6 +19175,28 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             /* L-009: functions in this module get module-prefixed symbols. */
             ctx->current_emit_module = registry->modules[m].name;
 
+            /* P1-1: push a temporary scope layer so module functions can
+               resolve this module's global variables by their bare names.
+               Each global is stored under its bare name but points to the
+               prefixed LLVM global created in Pass A. */
+            push_scope(ctx);
+            for (int i = 0; i < mod_ast->as.program.decl_count; i++)
+            {
+                AstNode *d = mod_ast->as.program.decls[i];
+                if (d->kind == AST_VAR_DECL && d->resolved_type)
+                {
+                    char msym[512];
+                    cg_module_fn_symbol(msym, sizeof(msym),
+                                        ctx->current_emit_module,
+                                        d->as.var_decl.name);
+                    LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, msym);
+                    if (gv)
+                        cg_scope_define(ctx->current_scope,
+                                        d->as.var_decl.name, gv,
+                                        d->resolved_type, NULL);
+                }
+            }
+
             for (int i = 0; i < mod_ast->as.program.decl_count; i++)
             {
                 AstNode *decl = mod_ast->as.program.decls[i];
@@ -19167,6 +19213,9 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                     codegen_impl_trait_decl(ctx, decl);
                 }
             }
+
+            /* Pop the module-globals scope; the next module must not see them. */
+            pop_scope(ctx);
         }
         /* Root/main-file functions follow — unmangled. */
         ctx->current_emit_module = NULL;
@@ -19324,7 +19373,9 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                Pass 1 and remain accessible through the scope chain. */
             push_scope(ctx);
 
-            /* 1. Initialise imported module globals first (preserve import order) */
+            /* 1. Initialise imported module globals first (preserve import order).
+                  P1-1: set current_emit_module so emit_global_var_init resolves
+                  the prefixed LLVM global name for each module. */
             if (registry)
             {
                 for (int m = 0; m < registry->count; m++)
@@ -19332,12 +19383,14 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                     AstNode *mod_ast = registry->modules[m].ast;
                     if (mod_ast == NULL || mod_ast->kind != AST_PROGRAM)
                         continue;
+                    ctx->current_emit_module = registry->modules[m].name;
                     for (int i = 0; i < mod_ast->as.program.decl_count; i++)
                     {
                         AstNode *d = mod_ast->as.program.decls[i];
                         if (d->kind == AST_VAR_DECL && d->as.var_decl.init)
                             emit_global_var_init(ctx, d);
                     }
+                    ctx->current_emit_module = NULL;
                 }
             }
 
@@ -19443,13 +19496,14 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             int saved_tc2 = ctx->temp_string_count;
             ctx->temp_string_count = 0;
 
-/* Helper macro: emit cleanup for one global var decl */
-#define EMIT_GLOBAL_CLEANUP(decl)                                                                        \
+/* Helper macro: emit cleanup for one global var decl.
+   P1-3: gname is the LLVM global name (prefixed for module globals, bare for root). */
+#define EMIT_GLOBAL_CLEANUP(decl, gname)                                                                 \
     do                                                                                                   \
     {                                                                                                    \
         if ((decl)->kind != AST_VAR_DECL || !(decl)->resolved_type)                                      \
             break;                                                                                       \
-        LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, (decl)->as.var_decl.name);                     \
+        LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, (gname));                                      \
         if (!gv)                                                                                         \
             break;                                                                                       \
         if ((decl)->resolved_type->kind == TYPE_STRING)                                                  \
@@ -19460,20 +19514,20 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             LLVMValueRef cap = LLVMBuildExtractValue(ctx->builder, str_val, 2, "gcs.cap");               \
             LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0);                \
             LLVMValueRef is_owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap, zero, "gcs.owned");     \
-            LLVMBasicBlockRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));        \
-            LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "gcs.free"); \
-            LLVMBasicBlockRef skip_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "gcs.skip"); \
+            LLVMBasicBlockRef cur_fn2 = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));       \
+            LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn2, "gcs.free");\
+            LLVMBasicBlockRef skip_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn2, "gcs.skip");\
             LLVMBuildCondBr(ctx->builder, is_owned, free_bb, skip_bb);                                   \
             LLVMPositionBuilderAtEnd(ctx->builder, free_bb);                                             \
             LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, str_val, 0, "gcs.data");             \
             cg_emit_free(ctx, data, "string.scope_drop", CG_LINE(ctx), CG_COL(ctx));                      \
             LLVMBuildBr(ctx->builder, skip_bb);                                                          \
             LLVMPositionBuilderAtEnd(ctx->builder, skip_bb);                                             \
-            LLVMBuildBr(ctx->builder, skip_bb);                                                          \
+            /* builder now at skip_bb; caller (retVoid or next cleanup) terminates */\
         }                                                                                                \
     } while (0)
 
-            /* Free imported module globals first (reverse of init order) */
+            /* P1-3: Free imported module globals (prefixed names). */
             if (registry)
             {
                 for (int m = 0; m < registry->count; m++)
@@ -19481,15 +19535,26 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                     AstNode *mod_ast = registry->modules[m].ast;
                     if (mod_ast == NULL || mod_ast->kind != AST_PROGRAM)
                         continue;
-                    // for (int i = 0; i < mod_ast->as.program.decl_count; i++) {
-                    //     EMIT_GLOBAL_CLEANUP(mod_ast->as.program.decls[i]);
-                    // }
+                    const char *mname = registry->modules[m].name;
+                    for (int i = 0; i < mod_ast->as.program.decl_count; i++)
+                    {
+                        AstNode *d = mod_ast->as.program.decls[i];
+                        if (d->kind != AST_VAR_DECL || !d->resolved_type)
+                            continue;
+                        char msym2[512];
+                        cg_module_fn_symbol(msym2, sizeof(msym2),
+                                            mname, d->as.var_decl.name);
+                        EMIT_GLOBAL_CLEANUP(d, msym2);
+                    }
                 }
             }
-            /* Free main module globals */
-            // for (int i = 0; i < ast->as.program.decl_count; i++) {
-            //     EMIT_GLOBAL_CLEANUP(ast->as.program.decls[i]);
-            // }
+            /* Free main module globals (bare names). */
+            for (int i = 0; i < ast->as.program.decl_count; i++)
+            {
+                AstNode *d = ast->as.program.decls[i];
+                if (d->kind == AST_VAR_DECL && d->resolved_type)
+                    EMIT_GLOBAL_CLEANUP(d, d->as.var_decl.name);
+            }
 
 #undef EMIT_GLOBAL_CLEANUP
 #undef DECL_NEEDS_GLOBAL_CLEANUP

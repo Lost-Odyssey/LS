@@ -119,8 +119,9 @@ cd build && ctest --output-on-failure -C Release
 | — | match OR-pattern + 整数 switch（bugs/18） | ✅ |
 | — | L-009 跨模块函数名 mangling（`<modpath>__<fn>`） | ✅ |
 | — | BF-040 array 元素字段读取 double-drop 修复 | ✅ |
+| — | 模块全局变量命名空间（P1-1~P1-4）+ B-1 同名类型冲突检测 | ✅ |
 
-**当前测试**：ctest 73/73（修复 BF-040 array `__drop` 双触发 + 同步 BF-039 的 map.set clone 语义测试期望）
+**当前测试**：ctest 76/76（模块全局变量 P1-1~P1-4 + B-1 struct/enum 跨模块冲突检测）
 
 > 各阶段实现细节见 [docs/features_history.md](docs/features_history.md)
 
@@ -181,10 +182,9 @@ cd build && ctest --output-on-failure -C Release
 - ~~**L-009**：跨模块函数名 LLVM mangling~~ ✅ 已完成（2026-05-29）：模块自由函数符号前缀化 `<modpath>__<fn>`，消除同名崩溃/静默错值；根/主文件函数不变。
 - **L-009.1**：跨模块同名 mangling 收尾 → [docs/plan_l009_mangling.md](docs/plan_l009_mangling.md) §6
   - ~~6.A 模块泛型~~ ✅ 已完成（2026-05-30）：修 A1（模块泛型实例化丢弃→连单模块都不可用）+ A2（同名不同体泛型跨模块静默错值），符号 `<mod>__fn(args)`
-- **模块命名空间收尾**（全局变量 + struct/enum 类型）→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md)（详细分步实现文档）
-  - **Part 1 模块全局变量**待做：模块全局变量**连单模块都不工作**（codegen 不注册进 scope）+ 无命名空间（裸名 `@counter` 跨模块冲突）。Step P1-1~P1-4
-  - **Part 2 struct/enum 类型**待做：B-safe（同名类型跨模块 → 清晰报错，消除 GEP 崩溃/静默损坏）+ B-full（同名类型跨模块共存，需 checker/codegen 全面命名空间化 + 限定类型语法）。Step B-1~B-6
-  - 最小安全交付 = Part 1 全部 + B-1
+- ~~**模块命名空间收尾 Part 1**（全局变量）~~ ✅ 已完成（2026-05-30）：模块全局变量符号前缀化（`<mod>__var`）+ scope 注册 + has_drop 全局 cleanup；`mod.VAR` 跨模块访问；ctest 76/76。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step P1-1~P1-4
+- ~~**模块命名空间收尾 B-1**（B-safe struct/enum 冲突检测）~~ ✅ 已完成（2026-05-30）：同名 struct/enum 来自多个模块 → 清晰 checker 错误 "multiple imported modules"，消除 GEP 崩溃/静默损坏。ctest 76/76。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-1
+- **模块命名空间收尾 Part 2 B-2~B-6**（B-full 真命名空间）待做：同名 struct/enum 跨模块各自独立可用，需 checker/codegen 全面命名空间化 + 限定类型语法。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-2~B-6
 - 正则表达式 builtin；f16 半精度浮点
 
 > 已完成特性的详细实现记录见 [docs/features_history.md](docs/features_history.md)

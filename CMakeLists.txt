@@ -1118,3 +1118,31 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_enum_method_has_drop.cmake
 )
 set_tests_properties(test_enum_method_has_drop PROPERTIES DEPENDS "test_enum_method_static")
+
+# ---- Part 1: module global variables (P1-1 ~ P1-4) ----
+add_test(
+    NAME test_modvar
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_modvar.cmake
+)
+set_tests_properties(test_modvar PROPERTIES
+    DEPENDS "test_enum_method_has_drop"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- B-1: same type name from multiple modules → clear compile error ----
+add_test(
+    NAME test_modtype_conflict
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_modtype_conflict.cmake
+)
+set_tests_properties(test_modtype_conflict PROPERTIES
+    DEPENDS "test_modvar"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

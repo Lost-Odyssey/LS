@@ -1,6 +1,6 @@
 # 模块命名空间收尾：全局变量 + struct/enum 类型
 
-> 状态：待实现 ｜ 关联：L-009 / L-009.1（`docs/plan_l009_mangling.md`）
+> 状态：Part 1 全部完成 ✅ + B-1 完成 ✅ ｜ 关联：L-009 / L-009.1（`docs/plan_l009_mangling.md`）
 > 验证基线：2026-05-30（本文所有「实测」均基于 `build/Release/ls.exe`）
 > 范围：把"模块命名空间"从**函数**（已完成）推广到**全局变量**与 **struct/enum 类型/方法**。
 
@@ -49,7 +49,7 @@ fn get() -> int { return counter }   // 实测：[codegen] undefined variable 'c
 
 ### 1.2 Step 拆分（每步独立、ctest 全绿）
 
-#### Step P1-1：模块全局符号前缀化 + scope 注册（核心修复）
+#### Step P1-1：模块全局符号前缀化 + scope 注册（核心修复）✅ 已完成（2026-05-30）
 - 改 `codegen.c:19126` Pass A：用 `cg_module_fn_symbol(sym, current_emit_module, var_name)` 作为 `LLVMAddGlobal` 名（`current_emit_module` 此时已在 Pass A 循环里设好）。
 - 新增：在 Pass B 每个模块迭代里，先把该模块的所有 `AST_VAR_DECL` 以裸名 `cg_scope_define` 到 `ctx->current_scope`（value=前缀化全局，type=resolved_type）。push/pop 一层 scope 包裹该模块的 Pass B 发射；或在根 scope 注册后于模块切换时清理。
   - ⚠️ 实现注意：Pass B 当前对所有模块共用一个循环；需要在「设 `current_emit_module = modules[m].name`」后、发射该模块函数体前注册其全局，发射后注销（避免 mod_b 的 body 看到 mod_a 的 `counter`）。
@@ -57,17 +57,17 @@ fn get() -> int { return counter }   // 实测：[codegen] undefined variable 'c
 - **验证**：单模块全局变量读/写；`mod_a.get()==100`。
 - **新测**：`tests/samples/modvar_basic/`（单模块 + 根 import），JIT+AOT+memcheck。
 
-#### Step P1-2：跨模块同名全局变量
+#### Step P1-2：跨模块同名全局变量 ✅ 已完成（2026-05-30）
 - 依赖 P1-1 的前缀化即天然解决（`mod_a__counter` vs `mod_b__counter`）。
 - **验证**：两模块各 `counter`（100/200）→ `a=100 b=200`。
 - **新测**：扩展 `tests/test_modvar.cmake` 增加双模块同名用例。
 
-#### Step P1-3：has_drop 全局变量（string/struct/vec/map）跨模块
+#### Step P1-3：has_drop 全局变量（string/struct/vec/map）跨模块 ✅ 已完成（2026-05-30）
 - 审查模块全局的 drop/free 路径（`codegen.c:19476` 区域）用前缀名；确保退出清理对每模块各自的全局只 drop 一次。
 - **验证**：模块里 `string g = "x".upper()` 全局；memcheck clean。
 - **新测**：has_drop 全局变量样例（string + struct），memcheck 0 leak/0 dfree。
 
-#### Step P1-4：模块全局变量的可变性 + 跨函数共享
+#### Step P1-4：模块全局变量的可变性 + 跨函数共享 ✅ 已完成（2026-05-30）
 - 验证模块内多个函数读写同一全局（`inc()` / `get()`）状态一致；模块全局对导入方**不可**直接裸名访问（只能通过模块函数），符合现有封装语义——确认 checker 行为并加测试锁定。
 - **新测**：模块全局自增计数器，多次调用累加正确。
 
@@ -98,7 +98,7 @@ fn get() -> int { return counter }   // 实测：[codegen] undefined variable 'c
 
 ### 2.2 Step 拆分
 
-#### Step B-1（B-safe）：同名类型跨模块冲突 → 清晰编译错误
+#### Step B-1（B-safe）：同名类型跨模块冲突 → 清晰编译错误 ✅ 已完成（2026-05-30）
 - 在 checker 收集导入符号处（`checker.c:7895` 注册导入 struct / `7905` 注册导入 enum）：注册前检查 importer 的 struct/enum 注册表里是否已有同名条目，且**布局不同**（字段数/字段名/字段类型/或简单地：只要来自不同模块的同名定义）。
   - 若冲突 → `checker_error`：`type 'Config' is defined in multiple modules (mod_a, mod_b); rename one or use a single source`。
   - 相同布局（S1/S4/S5）可选择放行（保持现状）或一并提示（推荐：不同模块同名一律报错，最安全、最简单；S1 那种"侥幸"也不值得依赖）。

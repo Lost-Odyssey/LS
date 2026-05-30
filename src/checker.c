@@ -7896,22 +7896,54 @@ static void forward_pass(Checker *c, AstNode *program)
                 {
                     type_module_add_export(mod_type,
                                            d->as.struct_decl.name, d->resolved_type);
-                    /* Phase E.4: register the imported struct type into the
-                       importer's struct registry so user code can name it
-                       directly (e.g. `File f` after `import io`). */
-                    checker_register_struct(c, d->as.struct_decl.name,
-                                            d->resolved_type);
+                    /* B-1 (B-safe): detect same struct name from a different module.
+                       If a different Type* is already registered under this name,
+                       the importer imported two modules that both define it →
+                       clear compile error rather than silent GEP crash / wrong layout.
+                       Same pointer = same module imported transitively → OK. */
+                    {
+                        const char *sname = d->as.struct_decl.name;
+                        Type *existing = find_struct_type(c, sname);
+                        if (existing && existing != d->resolved_type)
+                        {
+                            checker_error(c, decl->line, decl->column,
+                                "type '%s' is defined in multiple imported modules"
+                                " (including '%s'); rename one or use a single source",
+                                sname, import_path);
+                        }
+                        else
+                        {
+                            /* Phase E.4: register the imported struct type into the
+                               importer's struct registry so user code can name it
+                               directly (e.g. `File f` after `import io`). */
+                            checker_register_struct(c, sname, d->resolved_type);
+                        }
+                    }
                 }
                 else if (d->kind == AST_ENUM_DECL && d->resolved_type)
                 {
                     type_module_add_export(mod_type,
                                            d->as.enum_decl.name, d->resolved_type);
-                    /* Phase E.4: register the imported enum into the importer's
-                       enum registry so bare variant names (e.g. `ReadBinary`,
-                       `Start`) resolve at call sites without qualification —
-                       matching the behaviour the built-in io module had. */
-                    checker_register_enum(c, d->as.enum_decl.name,
-                                          d->resolved_type);
+                    /* B-1 (B-safe): same check for enum types. */
+                    {
+                        const char *ename = d->as.enum_decl.name;
+                        Type *existing_e = find_enum_type(c, ename);
+                        if (existing_e && existing_e != d->resolved_type)
+                        {
+                            checker_error(c, decl->line, decl->column,
+                                "type '%s' is defined in multiple imported modules"
+                                " (including '%s'); rename one or use a single source",
+                                ename, import_path);
+                        }
+                        else
+                        {
+                            /* Phase E.4: register the imported enum into the importer's
+                               enum registry so bare variant names resolve without
+                               qualification — matching the behaviour the built-in io
+                               module had. */
+                            checker_register_enum(c, ename, d->resolved_type);
+                        }
+                    }
                 }
                 else if (d->kind == AST_VAR_DECL && d->resolved_type)
                 {
