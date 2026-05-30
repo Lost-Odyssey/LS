@@ -1244,3 +1244,17 @@ set_tests_properties(test_modtype_memcheck PROPERTIES
     DEPENDS "test_modtype_enum_variants"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- BF-045: owned string param into returned struct field / return must clone ----
+add_test(
+    NAME test_bf045_string_param
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_bf045_string_param.cmake
+)
+set_tests_properties(test_bf045_string_param PROPERTIES
+    DEPENDS "test_modtype_memcheck"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

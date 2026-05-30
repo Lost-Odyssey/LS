@@ -13599,10 +13599,12 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
            unique LLVM object, so inner-scope "x" and outer-scope "x" have
            distinct alloca values and are never confused. */
         LLVMValueRef return_alloca = NULL;
-        /* P1-3 fix: true when the returned IDENT is a GLOBAL move-type variable.
-           Globals retain ownership (freed at exit by __ls_global_cleanup), so we
-           must NOT transfer-and-skip like locals — instead clone the value so the
-           caller's copy and the global's exit cleanup don't double-free. */
+        /* Clone-instead-of-transfer flag for an IDENT string return:
+           - P1-3/BF-041: a GLOBAL move-type var (global retains ownership, freed
+             at exit by __ls_global_cleanup → transferring would double-free).
+           - BF-045: a BORROWED string param (cap=-2 alias of the caller's buffer;
+             transferring would dangle once the caller frees its temp after the call).
+           Both cases must deep-copy so the caller receives an independent owned string. */
         bool ret_global_movetype = false;
 
         if (node->as.return_stmt.value &&
@@ -13626,7 +13628,11 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 CgSymbol *sym = cg_scope_resolve(ctx->current_scope, name);
                 if (sym)
                 {
-                    if (LLVMIsAGlobalVariable(sym->value))
+                    bool is_global = LLVMIsAGlobalVariable(sym->value);
+                    /* BF-045: a borrowed string param must clone on return. */
+                    bool borrowed_string = (ret_type->kind == TYPE_STRING &&
+                                            sym->is_borrowed);
+                    if (is_global || borrowed_string)
                         ret_global_movetype = true; /* clone, don't transfer */
                     else
                         return_alloca = sym->value; /* local: transfer + skip */
@@ -15205,6 +15211,14 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
            map; vec was already correct.) */
         if (psym && param_type &&
             (param_type->kind == TYPE_VECTOR || param_type->kind == TYPE_MAP))
+            psym->is_borrowed = true;
+        /* BF-045: string params are borrows (prologue above marks cap=-2). Mark the
+           symbol borrowed too, so cg_store_owned routes a `S { a: s }` field store
+           (and `return s`) through emit_string_clone_val (which deep-copies cap=-2)
+           instead of the move branch (which stored the borrow as-is). Without this
+           the struct field aliased the caller's buffer; when the caller freed its
+           temp after the call, the escaped field dangled (AOT garbage, JIT lucky UAF). */
+        if (psym && param_type && param_type->kind == TYPE_STRING)
             psym->is_borrowed = true;
         /* Phase C.5: Block-typed parameters are call-borrowed — the caller
            owns the closure's env block, so the callee's scope cleanup must
