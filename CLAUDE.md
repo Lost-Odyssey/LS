@@ -92,9 +92,15 @@ ls.exe run input.ls                     # JIT 执行
 ls.exe run --memcheck input.ls          # JIT + 内存检查
 ls.exe repl                             # REPL
 
-# 测试
-cd build && ctest --output-on-failure -C Release
+# 测试（推荐：--repeat until-pass:2 自动重试 flaky 测试）
+cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 ```
+
+> ⚠️ **测试 flake 说明**：AOT 测试会 `compile` 出 `.exe` 后立刻运行/删除；Windows
+> Defender 实时扫描会瞬时锁住刚落盘的 `.exe`，导致**间歇性**编译/运行/删除失败
+> （现象：全量跑随机某个 AOT 测试 fail，单独重跑即过）。**与代码逻辑无关、ctest
+> 默认串行（非并行导致）**。对策：全量跑统一加 `--repeat until-pass:2`，flake 自愈
+> 而真回归（连续失败）仍会暴露。治本可把 `build/` 加入 Defender 排除项。
 
 > 完整 CMakeLists.txt 配置见 [docs/build.md](docs/build.md)
 
