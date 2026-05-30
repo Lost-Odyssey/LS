@@ -1188,3 +1188,17 @@ set_tests_properties(test_modtype_ns PROPERTIES
     DEPENDS "test_bf044_shortcircuit"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- B-4: module-qualified types (mod.Type / alias.Type) disambiguate ----
+add_test(
+    NAME test_modtype_qualified
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_modtype_qualified.cmake
+)
+set_tests_properties(test_modtype_qualified PROPERTIES
+    DEPENDS "test_modtype_ns"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

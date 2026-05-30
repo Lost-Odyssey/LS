@@ -131,6 +131,28 @@ static char *checker_module_type_llvmname(Checker *c, const char *bare_name)
     return result;
 }
 
+/* B-4: mark a bare type name as ambiguous (exported by 2+ imported modules). */
+static void checker_mark_ambiguous_type(Checker *c, const char *name)
+{
+    for (int i = 0; i < c->ambiguous_type_count; i++)
+        if (strcmp(c->ambiguous_types[i], name) == 0) return; /* already marked */
+    if (c->ambiguous_type_count >= c->ambiguous_type_cap)
+    {
+        c->ambiguous_type_cap = c->ambiguous_type_cap < 8 ? 8 : c->ambiguous_type_cap * 2;
+        c->ambiguous_types = realloc_safe(c->ambiguous_types,
+            (size_t)c->ambiguous_type_cap * sizeof(c->ambiguous_types[0]));
+    }
+    c->ambiguous_types[c->ambiguous_type_count++] = name;
+}
+
+/* B-4: true if a bare type name is ambiguous across imported modules. */
+static bool checker_type_is_ambiguous(Checker *c, const char *name)
+{
+    for (int i = 0; i < c->ambiguous_type_count; i++)
+        if (strcmp(c->ambiguous_types[i], name) == 0) return true;
+    return false;
+}
+
 static void register_struct_type(Checker *c, const char *name, Type *type)
 {
     if (c->struct_type_count >= c->struct_type_cap)
@@ -1132,6 +1154,30 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     }
     case TYPE_NODE_NAMED:
     {
+        /* B-4: module-qualified type `mod.Type` / `alias.Type` / `std.json.Value`.
+           Resolve the qualifier (module path or import alias) to its TYPE_MODULE
+           via the scope, then look up the type in that module's export table.
+           This is precise and ignores bare-name ambiguity. */
+        if (tn->as.named.module != NULL && tn->as.named.arg_count == 0)
+        {
+            Symbol *modsym = scope_resolve(c->current_scope, tn->as.named.module);
+            if (modsym == NULL || modsym->type == NULL ||
+                modsym->type->kind != TYPE_MODULE)
+            {
+                checker_error(c, line, col,
+                    "unknown module '%s' in qualified type '%s.%s'",
+                    tn->as.named.module, tn->as.named.module, tn->as.named.name);
+                return NULL;
+            }
+            Type *ex = type_module_find_export(modsym->type, tn->as.named.name);
+            if (ex && (ex->kind == TYPE_STRUCT || ex->kind == TYPE_ENUM))
+                return ex;
+            checker_error(c, line, col,
+                "module '%s' has no type '%s'",
+                tn->as.named.module, tn->as.named.name);
+            return NULL;
+        }
+
         /* Plain named type: try Self, then alias, then struct, then enum. */
         if (tn->as.named.arg_count == 0)
         {
@@ -1145,6 +1191,15 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
             }
             Type *al = find_type_alias(c, tn->as.named.name);
             if (al) return al;
+            /* B-4: bare reference to a name exported by 2+ modules → ambiguous. */
+            if (checker_type_is_ambiguous(c, tn->as.named.name))
+            {
+                checker_error(c, line, col,
+                    "type '%s' is defined in multiple imported modules; "
+                    "qualify it as `mod.%s` (e.g. with `import mod as M` then `M.%s`)",
+                    tn->as.named.name, tn->as.named.name, tn->as.named.name);
+                return NULL;
+            }
             Type *st = find_struct_type(c, tn->as.named.name);
             if (st) return st;
             Type *et = find_enum_type(c, tn->as.named.name);
@@ -7919,22 +7974,19 @@ static void forward_pass(Checker *c, AstNode *program)
                 {
                     type_module_add_export(mod_type,
                                            d->as.struct_decl.name, d->resolved_type);
-                    /* B-1 (B-safe): detect same struct name from a different module.
-                       If a different Type* is already registered under this name,
-                       the importer imported two modules that both define it →
-                       clear compile error rather than silent GEP crash / wrong layout.
-                       Same pointer = same module imported transitively → OK. */
+                    /* B-4: same struct name from a different module. Previously
+                       B-1 errored here. Now: mark the bare name AMBIGUOUS (bare
+                       use → error; qualified `mod.Struct` resolves precisely via
+                       the module export table). Same pointer = same module imported
+                       transitively → OK, leave the single bare registration. */
                     {
                         const char *sname = d->as.struct_decl.name;
                         Type *existing = find_struct_type(c, sname);
                         if (existing && existing != d->resolved_type)
                         {
-                            checker_error(c, decl->line, decl->column,
-                                "type '%s' is defined in multiple imported modules"
-                                " (including '%s'); rename one or use a single source",
-                                sname, import_path);
+                            checker_mark_ambiguous_type(c, sname);
                         }
-                        else
+                        else if (!existing)
                         {
                             /* Phase E.4: register the imported struct type into the
                                importer's struct registry so user code can name it
@@ -7947,18 +7999,16 @@ static void forward_pass(Checker *c, AstNode *program)
                 {
                     type_module_add_export(mod_type,
                                            d->as.enum_decl.name, d->resolved_type);
-                    /* B-1 (B-safe): same check for enum types. */
+                    /* B-4: same enum name from a different module → mark ambiguous
+                       (bare use errors; `mod.Enum` resolves via export table). */
                     {
                         const char *ename = d->as.enum_decl.name;
                         Type *existing_e = find_enum_type(c, ename);
                         if (existing_e && existing_e != d->resolved_type)
                         {
-                            checker_error(c, decl->line, decl->column,
-                                "type '%s' is defined in multiple imported modules"
-                                " (including '%s'); rename one or use a single source",
-                                ename, import_path);
+                            checker_mark_ambiguous_type(c, ename);
                         }
-                        else
+                        else if (!existing_e)
                         {
                             /* Phase E.4: register the imported enum into the importer's
                                enum registry so bare variant names resolve without

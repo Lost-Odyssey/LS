@@ -186,6 +186,17 @@ void type_module_add_export(Type *mod, const char *name, Type *type) {
     mod->as.module.export_count = n + 1;
 }
 
+/* B-4: look up an exported symbol's type by name. Returns NULL if absent. */
+Type *type_module_find_export(Type *mod, const char *name) {
+    if (mod == NULL || mod->kind != TYPE_MODULE || name == NULL) return NULL;
+    for (int i = 0; i < mod->as.module.export_count; i++) {
+        if (mod->as.module.exports[i].name &&
+            strcmp(mod->as.module.exports[i].name, name) == 0)
+            return mod->as.module.exports[i].type;
+    }
+    return NULL;
+}
+
 /* ---- Deep clone ---- */
 
 Type *type_clone(const Type *t) {

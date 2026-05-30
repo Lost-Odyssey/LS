@@ -1707,14 +1707,44 @@ static TypeNode *parse_type(Parser *p) {
         return tn;
     }
 
-    /* Named type (user struct or generic instantiation like Option(int)) */
+    /* Named type (user struct or generic instantiation like Option(int)),
+       optionally module-qualified: `mod.Type`, `A.Type`, `std.json.Value`.
+       B-4: an IDENT followed by `.IDENT` (one or more) is a qualified type — the
+       trailing segment is the type name, the leading dotted path is the module
+       qualifier (module path or import alias). */
     if (check(p, TOKEN_IDENTIFIER)) {
         advance(p);
         Token name_tok = p->previous;
         TypeNode *tn = new_type_node(TYPE_NODE_NAMED, line, col);
         tn->as.named.name = str_dup_n(name_tok.start, name_tok.length);
+        tn->as.named.module = NULL;
         tn->as.named.args = NULL;
         tn->as.named.arg_count = 0;
+
+        /* B-4: consume `.IDENT` chain → module-qualified type. Accumulate all but
+           the last segment into `module` (dot-separated), keep the last as `name`. */
+        while (check(p, TOKEN_DOT)) {
+            advance(p); /* consume '.' */
+            if (!check(p, TOKEN_IDENTIFIER)) {
+                error_at_current(p, "expected identifier after '.' in qualified type");
+                type_node_free(tn);
+                return NULL;
+            }
+            advance(p);
+            Token seg = p->previous;
+            /* current `name` becomes part of the module path */
+            size_t mlen = tn->as.named.module ? strlen(tn->as.named.module) : 0;
+            size_t nlen = strlen(tn->as.named.name);
+            char *newmod = (char *)malloc_safe(mlen + (mlen ? 1 : 0) + nlen + 1);
+            newmod[0] = '\0';
+            if (mlen) { memcpy(newmod, tn->as.named.module, mlen); newmod[mlen] = '.'; mlen++; }
+            memcpy(newmod + mlen, tn->as.named.name, nlen);
+            newmod[mlen + nlen] = '\0';
+            free(tn->as.named.module);
+            free(tn->as.named.name);
+            tn->as.named.module = newmod;
+            tn->as.named.name = str_dup_n(seg.start, seg.length);
+        }
 
         /* Optional generic-style args: Name(T1, T2, ...) */
         if (match_tok(p, TOKEN_LPAREN)) {
@@ -1780,6 +1810,34 @@ static bool starts_var_decl(Parser *p) {
     if (cur == TOKEN_IDENTIFIER) {
         Token next = scanner_peek(&p->scanner);
         if (next.type == TOKEN_IDENTIFIER) return true;
+
+        /* B-4: module-qualified type var decl — `mod.Type x`, `std.json.Value v`.
+           Scan a `.IDENT` chain; if it ends with an IDENTIFIER (the var name) on
+           the SAME LINE, it's a var decl. `A.foo()` / `A.foo` / `A.b = x` (next
+           token after the dotted path is '(' / '=' / nothing) stay expressions. */
+        if (next.type == TOKEN_DOT) {
+            Scanner saved = p->scanner;
+            Token saved_cur = p->current;
+            Token saved_prev = p->previous;
+            advance(p);  /* consume leading IDENT; current = '.' */
+            bool result = false;
+            while (p->current.type == TOKEN_DOT) {
+                advance(p);  /* consume '.' */
+                if (p->current.type != TOKEN_IDENTIFIER) { result = false; break; }
+                advance(p);  /* consume IDENT segment; current = next token */
+                if (p->current.type == TOKEN_IDENTIFIER &&
+                    p->current.line == saved_cur.line) {
+                    /* `... .Seg varname` → qualified type + var name */
+                    result = true;
+                    break;
+                }
+                /* otherwise keep scanning the dotted chain (e.g. std.json.Value) */
+            }
+            p->scanner = saved;
+            p->current = saved_cur;
+            p->previous = saved_prev;
+            return result;
+        }
 
         if (next.type == TOKEN_LPAREN) {
             Scanner saved = p->scanner;

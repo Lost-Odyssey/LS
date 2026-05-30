@@ -1,9 +1,11 @@
-# test_modtype_conflict.cmake — B-1 (B-safe): same struct/enum name from multiple
-# modules → clear compile error instead of GEP crash / silent memory corruption.
+# test_modtype_conflict.cmake — B-4: bare reference to a type defined by 2+
+# imported modules is ambiguous → clear compile error advising qualification
+# (`mod.Type`). Importing both is now allowed (B-4 relaxed B-1); the error fires
+# only on the unqualified USE. Diagnostic still contains "multiple imported modules".
 #
-# S2: struct Config with different field counts (mod_a: 1 field, mod_b: 3 fields)
-# S6: struct Box with different layouts (mod_a: 2 fields, mod_b: 1 field)
-# Both scenarios must: exit non-zero AND stderr contain "multiple modules"
+# S2: bare `Config` (mod_a: 1 field, mod_b: 3 fields) → ambiguous-use error
+# S6: bare `Box`    (mod_a: 2 fields, mod_b: 1 field) → ambiguous-use error
+# Both scenarios must: exit non-zero AND stderr contain "multiple imported modules"
 cmake_minimum_required(VERSION 3.20)
 
 macro(expect_conflict sample label)

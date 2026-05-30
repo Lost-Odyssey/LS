@@ -35,6 +35,7 @@ void type_node_free(TypeNode *type) {
         break;
     case TYPE_NODE_NAMED:
         free(type->as.named.name);
+        free(type->as.named.module);  /* B-4: module qualifier (may be NULL) */
         for (int i = 0; i < type->as.named.arg_count; i++) {
             type_node_free(type->as.named.args[i]);
         }
@@ -105,6 +106,8 @@ TypeNode *type_node_clone(const TypeNode *src) {
 
     case TYPE_NODE_NAMED: {
         dst->as.named.name = ast_strdup(src->as.named.name);
+        dst->as.named.module = src->as.named.module    /* B-4: clone qualifier (may be NULL) */
+            ? ast_strdup(src->as.named.module) : NULL;
         int n = src->as.named.arg_count;
         if (n > 0) {
             dst->as.named.args = (TypeNode **)malloc_safe((size_t)n * sizeof(TypeNode *));

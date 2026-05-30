@@ -62,6 +62,9 @@ struct TypeNode
         struct
         {
             char *name;
+            char *module;        /* B-4: module qualifier for `mod.Type` / `std.json.Value`;
+                                    NULL for unqualified types. Holds the module path
+                                    (dots preserved, e.g. "std.json") or import alias. */
             TypeNode **args;     /* NULL when arg_count == 0 (plain named type) */
             int arg_count;       /* generic-like instantiation: e.g. Option(int) */
         } named; /* TYPE_NODE_NAMED */

@@ -149,6 +149,14 @@ typedef struct Checker {
        prefix generic instantiation symbol names so same-named generic functions
        in different modules don't collide (silent-wrong) at codegen. */
     const char *module_name;
+
+    /* B-4: struct/enum type names that are exported by 2+ imported modules.
+       Bare (unqualified) reference to such a name is an error — the user must
+       qualify it as `mod.Type` / `alias.Type`. Qualified references resolve
+       precisely via the module's export table and ignore this set. */
+    const char **ambiguous_types;
+    int ambiguous_type_count;
+    int ambiguous_type_cap;
 } Checker;
 
 /* G1.5: Output struct for pending generic method instantiations.

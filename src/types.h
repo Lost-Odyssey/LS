@@ -116,6 +116,8 @@ Type *type_module_new(const char *name);
 
 /* Add an exported symbol to a module type */
 void type_module_add_export(Type *mod, const char *name, Type *type);
+/* B-4: look up an exported symbol's type by name in a TYPE_MODULE. NULL if absent. */
+Type *type_module_find_export(Type *mod, const char *name);
 
 /* Deep-copy a type */
 Type *type_clone(const Type *t);
