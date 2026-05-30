@@ -3398,8 +3398,18 @@ static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
     snprintf(drop_fn_name, sizeof(drop_fn_name), "%s.__drop", struct_name);
 
     /* Check if already defined */
-    if (LLVMGetNamedFunction(ctx->module, drop_fn_name) != NULL)
-        return;
+    {
+        LLVMValueRef existing = LLVMGetNamedFunction(ctx->module, drop_fn_name);
+        if (existing != NULL)
+        {
+            /* BF-046: link THIS Type object to the existing drop fn. Otherwise a
+               second Type instance for the same struct (e.g. a map's val_type)
+               keeps drop_fn == NULL and callers that read it (MAP_EMIT_FREE_VAL)
+               silently skip the value drop → leak. */
+            struct_type->as.strukt.drop_fn = existing;
+            return;
+        }
+    }
 
     /* Create function type: void __drop(*Struct) */
     LLVMTypeRef ptr_struct = LLVMPointerTypeInContext(ctx->context, 0);
@@ -9636,6 +9646,32 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
             return NULL;
         LLVMValueRef args[] = {map_alloca, kv, vv};
         LLVMBuildCall2(ctx->builder, ft, fn, args, 3, "");
+        /* BF-046: map.set DEEP-COPIES the value into the node (clone semantics).
+           If the value arg is a TEMPORARY has_drop struct/enum rvalue (an inline
+           `N { ... }` / a call result — not a named var the scope will drop, not a
+           borrow), its owned fields (e.g. a string) are never released → leak.
+           Spill it and register a statement-end drop so the original temp is freed
+           (the map holds an independent clone, so no double-free). Named-IDENT
+           values keep their scope drop and must NOT be dropped here. */
+        if (val_type &&
+            ((val_type->kind == TYPE_STRUCT && val_type->as.strukt.has_drop) ||
+             (val_type->kind == TYPE_ENUM   && val_type->as.enom.has_drop)))
+        {
+            AstNode *varg = ast_unwrap_move(call_node->as.call.args[1]);
+            if (varg && varg->kind != AST_IDENT)
+            {
+                LLVMTypeRef vlt = type_to_llvm(ctx, val_type);
+                LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+                LLVMBasicBlockRef fe = LLVMGetEntryBasicBlock(ctx->current_fn);
+                LLVMValueRef fi = LLVMGetFirstInstruction(fe);
+                if (fi) LLVMPositionBuilderBefore(tb, fi);
+                else    LLVMPositionBuilderAtEnd(tb, fe);
+                LLVMValueRef vtmp = LLVMBuildAlloca(tb, vlt, "mapset.vtmp");
+                LLVMDisposeBuilder(tb);
+                LLVMBuildStore(ctx->builder, vv, vtmp);
+                cg_push_temp_drop(ctx, vtmp, val_type);
+            }
+        }
         /* F.4: Block value — map node takes ownership; null source env_ptr */
         if (val_type && val_type->kind == TYPE_BLOCK)
         {
@@ -18162,6 +18198,8 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
         emit_map_hash_s_helper(ctx);
     if (val_is_enum_drop)
         emit_auto_enum_drop_fn(ctx, val_type);
+    if (val_is_struct_drop)
+        emit_auto_drop_fn(ctx, val_type);  /* ensure value drop fn exists (defensive) */
 
     LLVMTypeRef map_t = ls_map_type(ctx);
     LLVMTypeRef node_t = ls_map_node_type(ctx, key_type, val_type);

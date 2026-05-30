@@ -1258,3 +1258,17 @@ set_tests_properties(test_bf045_string_param PROPERTIES
     DEPENDS "test_modtype_memcheck"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- BF-046: map.set temp has_drop struct/enum value drop ----
+add_test(
+    NAME test_bf046_map_struct_val
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_bf046_map_struct_val.cmake
+)
+set_tests_properties(test_bf046_map_struct_val PROPERTIES
+    DEPENDS "test_bf045_string_param"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
