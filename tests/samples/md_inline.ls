@@ -1,0 +1,21 @@
+// Phase C: inline parsing + extract helpers + round-trip.
+import std.md as md
+import io
+
+fn main() {
+    string src = "# Title with `code`\n\nText with **bold**, _italic_, ***both***, `c`, a [link](http://x.com) and ![img](pic.png).\n\n- item with [l2](http://y.com)\n\n> quoted [l3](http://z.com)\n"
+
+    md.MdDoc doc = md.parse(src)
+
+    // round-trip render (structured inlines must reproduce the markup)
+    print("---RENDER---")
+    print(md.render(doc))
+
+    print("---HEADINGS---")
+    vec(string) hs = md.extract_headings(doc)
+    int i = 0
+    while i < hs.length { print(hs.get(i)); i = i + 1 }
+
+    print("---PLAIN---")
+    print(md.to_plain_text(doc))
+}

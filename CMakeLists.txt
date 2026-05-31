@@ -419,6 +419,17 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
 
+# std.md Phase C (inline parsing + extract helpers).
+add_test(
+    NAME test_std_md_inline_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_inline.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=std_md_inline
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+
 # Container value-semantics matrix (vec/map first-class — Phase 0 safety net).
 # Baseline-clean cases, locked under JIT memcheck. Broken target cases (D/F) are
 # tracked in tests/samples/cmatrix/MATRIX.md and registered as they turn green.
