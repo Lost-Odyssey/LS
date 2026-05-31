@@ -296,8 +296,14 @@ static LLVMValueRef emit_vec_clone_val(CodegenContext *ctx, LLVMValueRef vec_val
 /* Clone a map VALUE (borrowed closure capture): traverse chains, re-insert via set */
 static LLVMValueRef emit_map_clone_val(CodegenContext *ctx, LLVMValueRef map_val,
                                        Type *key_type, Type *val_type);
+/* Unified value/element deep-clone dispatcher (string/vec/has_drop struct/enum). */
+static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
+                                     LLVMTypeRef llvm_type, Type *type);
 static void emit_scope_cleanup(CodegenContext *ctx);
 static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloca);
+/* Drop a whole vec stored at `vec_ptr` (a *LsVec): free owned elements + buffer.
+   Mutually recursive with emit_vec_elem_drop_at to handle nested vec(vec(...)). */
+static void emit_vec_drop_at(CodegenContext *ctx, LLVMValueRef vec_ptr, Type *elem_type);
 static void emit_struct_drop(CodegenContext *ctx, LLVMValueRef drop_ptr, Type *struct_type);
 static void emit_struct_drop_cond(CodegenContext *ctx, LLVMValueRef drop_ptr,
                                   Type *struct_type, LLVMValueRef moved_flag);
@@ -1945,7 +1951,8 @@ static LLVMValueRef emit_vec_clone_val(CodegenContext *ctx, LLVMValueRef vec_val
 
     bool elem_needs_clone = (elem_type->kind == TYPE_STRING) ||
                             (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-                            (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop);
+                            (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop) ||
+                            (elem_type->kind == TYPE_VECTOR);
 
     if (!elem_needs_clone)
     {
@@ -1998,6 +2005,8 @@ static LLVMValueRef emit_vec_clone_val(CodegenContext *ctx, LLVMValueRef vec_val
             cloned = emit_string_clone_val(ctx, src_elem);
         else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
             cloned = emit_enum_clone_val(ctx, src_elem, elem_type);
+        else if (elem_type->kind == TYPE_VECTOR)
+            cloned = emit_vec_clone_val(ctx, src_elem, elem_type->as.vec.elem);
         else
             cloned = emit_struct_clone_val(ctx, src_elem, elem_llvm, elem_type);
         LLVMBuildStore(ctx->builder, cloned, dst_gep);
@@ -2018,6 +2027,29 @@ static LLVMValueRef emit_vec_clone_val(CodegenContext *ctx, LLVMValueRef vec_val
     result = LLVMBuildInsertValue(ctx->builder, result, orig_len, 1, "vc.r1");
     result = LLVMBuildInsertValue(ctx->builder, result, new_cap32, 2, "vc.r2");
     return result;
+}
+
+/* Unified element/value deep-clone dispatcher. Returns an independently-owned
+   copy for heap-owning types (string / vec / has_drop struct / has_drop enum);
+   returns the value unchanged for POD (and map/array, which keep their current
+   shallow behavior). Centralizes the clone logic that was inlined at many vec
+   element-read sites, where a vec element previously fell through to a shallow
+   copy → double-free on nested vec(vec(...)). */
+static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
+                                     LLVMTypeRef llvm_type, Type *type)
+{
+    if (type == NULL) return val;
+    switch (type->kind)
+    {
+    case TYPE_STRING: return emit_string_clone_val(ctx, val);
+    case TYPE_VECTOR: return emit_vec_clone_val(ctx, val, type->as.vec.elem);
+    case TYPE_ENUM:
+        return type->as.enom.has_drop ? emit_enum_clone_val(ctx, val, type) : val;
+    case TYPE_STRUCT:
+        return type->as.strukt.has_drop
+                   ? emit_struct_clone_val(ctx, val, llvm_type, type) : val;
+    default: return val;
+    }
 }
 
 /* Phase E.1: deep-clone a map VALUE from a borrowed closure capture.
@@ -2125,7 +2157,8 @@ static void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type
         return;
     bool is_drop_struct = (type->kind == TYPE_STRUCT && type->as.strukt.has_drop);
     bool is_drop_enum   = (type->kind == TYPE_ENUM   && type->as.enom.has_drop);
-    if (!is_drop_struct && !is_drop_enum)
+    bool is_drop_vec    = (type->kind == TYPE_VECTOR);
+    if (!is_drop_struct && !is_drop_enum && !is_drop_vec)
         return; /* nothing to drop — POD struct/enum or non-drop type */
 
     if (ctx->temp_drop_count >= ctx->temp_drop_cap)
@@ -2185,6 +2218,8 @@ static void cg_flush_temp_drops(CodegenContext *ctx, int mark)
             emit_struct_drop(ctx, slot, t);
         else if (t->kind == TYPE_ENUM)
             emit_enum_drop(ctx, slot, t);
+        else if (t->kind == TYPE_VECTOR)
+            emit_vec_drop_at(ctx, slot, t->as.vec.elem);
     }
     ctx->temp_drop_count = keep;
 }
@@ -3049,7 +3084,8 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
                                         (elem_type->kind == TYPE_STRING ||
                                          (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
                                          (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop) ||
-                                         elem_type->kind == TYPE_BLOCK));
+                                         elem_type->kind == TYPE_BLOCK ||
+                                         elem_type->kind == TYPE_VECTOR));
 
                 if (elem_needs_drop)
                 {
@@ -3467,6 +3503,25 @@ static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
                                 : "block.field",
                             env_p);
             cg_emit_block_env_drop(ctx, env_p);
+            continue;
+        }
+
+        /* Drop vec fields (free owned elements + buffer). Reuses the same
+           recursive vec-drop primitive as scope cleanup. */
+        if (field_type->kind == TYPE_VECTOR)
+        {
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, llvm_struct,
+                                                         self_ptr, (unsigned)i, "drop.vecfield");
+            emit_vec_drop_at(ctx, field_ptr, field_type->as.vec.elem);
+            continue;
+        }
+
+        /* Drop has_drop enum fields (call the enum's __drop). */
+        if (field_type->kind == TYPE_ENUM && field_type->as.enom.has_drop)
+        {
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, llvm_struct,
+                                                         self_ptr, (unsigned)i, "drop.enomfield");
+            emit_enum_drop(ctx, field_ptr, field_type);
             continue;
         }
 
@@ -6859,7 +6914,91 @@ static LLVMBasicBlockRef emit_vec_elem_drop_at(CodegenContext *ctx,
 #endif
         cg_emit_block_drop_at(ctx, elem_ptr);
     }
+    /* Nested vec element — recursively drop the inner vec (elements + buffer). */
+    if (elem_type->kind == TYPE_VECTOR)
+    {
+        emit_vec_drop_at(ctx, elem_ptr, elem_type->as.vec.elem);
+    }
     return LLVMGetInsertBlock(ctx->builder);
+}
+
+/* Drop a whole vec stored at `vec_ptr` (a *LsVec): if cap>0, drop each owned
+   element then free(data). Leaves the builder at a continuation block (no
+   terminator). Mirrors the inlined scope-cleanup vec drop; reused for struct
+   vec fields and nested vec(vec(...)) elements. */
+static void emit_vec_drop_at(CodegenContext *ctx, LLVMValueRef vec_ptr, Type *elem_type)
+{
+    static int vd_uid = 0;
+    int uid = vd_uid++;
+
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    LLVMTypeRef vec_t = ls_vec_type(ctx);
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+
+    LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_ptr, "vd.v");
+    LLVMValueRef cap_v   = LLVMBuildExtractValue(ctx->builder, vec_val, 2, "vd.cap");
+    LLVMValueRef len_v   = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vd.len");
+    LLVMValueRef data_v  = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vd.data");
+
+    LLVMValueRef zero32  = LLVMConstInt(i32_t, 0, 0);
+    LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap_v, zero32, "vd.hasbuf");
+
+    char free_name[32], done_name[32];
+    snprintf(free_name, sizeof(free_name), "vd.free%d", uid);
+    snprintf(done_name, sizeof(done_name), "vd.done%d", uid);
+    LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, free_name);
+    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, done_name);
+    LLVMBuildCondBr(ctx->builder, has_buf, free_bb, done_bb);
+
+    LLVMPositionBuilderAtEnd(ctx->builder, free_bb);
+
+    bool elem_needs_drop = (elem_type &&
+        (elem_type->kind == TYPE_STRING ||
+         (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
+         (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop) ||
+         elem_type->kind == TYPE_BLOCK ||
+         elem_type->kind == TYPE_VECTOR));
+
+    if (elem_needs_drop)
+    {
+        LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
+        LLVMBasicBlockRef el_cond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vd.el.cond");
+        LLVMBasicBlockRef el_body = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vd.el.body");
+        LLVMBasicBlockRef el_end  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vd.el.end");
+
+        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+        LLVMBasicBlockRef fn_entry = LLVMGetEntryBasicBlock(cur_fn);
+        LLVMValueRef fi = LLVMGetFirstInstruction(fn_entry);
+        if (fi) LLVMPositionBuilderBefore(tb, fi); else LLVMPositionBuilderAtEnd(tb, fn_entry);
+        LLVMValueRef i_alloca = LLVMBuildAlloca(tb, i32_t, "vd.i");
+        LLVMDisposeBuilder(tb);
+
+        LLVMBuildStore(ctx->builder, zero32, i_alloca);
+        LLVMBuildBr(ctx->builder, el_cond);
+
+        LLVMPositionBuilderAtEnd(ctx->builder, el_cond);
+        LLVMValueRef cur_i = LLVMBuildLoad2(ctx->builder, i32_t, i_alloca, "vd.ci");
+        LLVMValueRef cmp   = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur_i, len_v, "vd.lt");
+        LLVMBuildCondBr(ctx->builder, cmp, el_body, el_end);
+
+        LLVMPositionBuilderAtEnd(ctx->builder, el_body);
+        LLVMValueRef i64v = LLVMBuildSExt(ctx->builder, cur_i, i64_t, "vd.i64");
+        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_v, &i64v, 1, "vd.ep");
+        emit_vec_elem_drop_at(ctx, ep, elem_type, 0, "vec.elem");
+        LLVMBasicBlockRef after = LLVMGetInsertBlock(ctx->builder);
+        if (LLVMGetBasicBlockTerminator(after) == NULL)
+        {
+            LLVMValueRef ni = LLVMBuildAdd(ctx->builder, cur_i, LLVMConstInt(i32_t, 1, 0), "vd.ni");
+            LLVMBuildStore(ctx->builder, ni, i_alloca);
+            LLVMBuildBr(ctx->builder, el_cond);
+        }
+        LLVMPositionBuilderAtEnd(ctx->builder, el_end);
+    }
+
+    cg_emit_free(ctx, data_v, "vec.scope_drop", CG_LINE(ctx), CG_COL(ctx));
+    LLVMBuildBr(ctx->builder, done_bb);
+    LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
 }
 
 /* Inline grow logic: if (len >= cap) double the buffer via realloc.
@@ -7221,12 +7360,7 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef zero64 = LLVMConstInt(i64_t, 0, 0);
         LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &zero64, 1, "vfst.ep");
         LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vfst.elem");
-        if (elem_type->kind == TYPE_STRING)
-            elem = emit_string_clone_val(ctx, elem);
-        else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-            elem = emit_enum_clone_val(ctx, elem, elem_type);
-        else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-            elem = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
+        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
 #if CG_DEBUG
         {
             const char *tn = (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.name)
@@ -7312,12 +7446,7 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef last64 = LLVMBuildSExt(ctx->builder, last_i, i64_t, "vlst.l64");
         LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &last64, 1, "vlst.ep");
         LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vlst.elem");
-        if (elem_type->kind == TYPE_STRING)
-            elem = emit_string_clone_val(ctx, elem);
-        else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-            elem = emit_enum_clone_val(ctx, elem, elem_type);
-        else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-            elem = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
+        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
 #if CG_DEBUG
         {
             const char *tn = (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.name)
@@ -7410,12 +7539,7 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef i64 = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vget.i64");
         LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &i64, 1, "vget.ep");
         LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vget.elem");
-        if (elem_type->kind == TYPE_STRING)
-            elem = emit_string_clone_val(ctx, elem);
-        else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-            elem = emit_enum_clone_val(ctx, elem, elem_type);
-        else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-            elem = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
+        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
         LLVMBuildStore(ctx->builder, elem, result_alloca);
         LLVMBuildBr(ctx->builder, merge_bb);
 
@@ -7913,13 +8037,7 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             LLVMValueRef sep = LLVMBuildGEP2(ctx->builder, elem_llvm, src_data, &k64, 1, "vex.sep");
             LLVMValueRef se = LLVMBuildLoad2(ctx->builder, elem_llvm, sep, "vex.se");
 
-            LLVMValueRef cloned;
-            if (elem_type->kind == TYPE_STRING)
-                cloned = emit_string_clone_val(ctx, se);
-            else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-                cloned = emit_enum_clone_val(ctx, se, elem_type);
-            else
-                cloned = emit_struct_clone_val(ctx, se, elem_llvm, elem_type);
+            LLVMValueRef cloned = emit_clone_value(ctx, se, elem_llvm, elem_type);
 
             LLVMValueRef di = LLVMBuildAdd(ctx->builder, sl5, kv2, "vex.di");
             LLVMValueRef di64 = LLVMBuildSExt(ctx->builder, di, i64_t, "vex.di64");
@@ -8443,13 +8561,7 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             LLVMValueRef sep = LLVMBuildGEP2(ctx->builder, elem_llvm, sdat, &ck64, 1, "vcpy.sep");
             LLVMValueRef se = LLVMBuildLoad2(ctx->builder, elem_llvm, sep, "vcpy.se");
 
-            LLVMValueRef cloned;
-            if (elem_type->kind == TYPE_STRING)
-                cloned = emit_string_clone_val(ctx, se);
-            else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-                cloned = emit_enum_clone_val(ctx, se, elem_type);
-            else
-                cloned = emit_struct_clone_val(ctx, se, elem_llvm, elem_type);
+            LLVMValueRef cloned = emit_clone_value(ctx, se, elem_llvm, elem_type);
 
             LLVMValueRef dep = LLVMBuildGEP2(ctx->builder, elem_llvm, new_data, &ck64, 1, "vcpy.dep");
             LLVMBuildStore(ctx->builder, cloned, dep);
@@ -8834,13 +8946,7 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             LLVMValueRef sep = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &si64, 1, "vsl.sep");
             LLVMValueRef se = LLVMBuildLoad2(ctx->builder, elem_llvm, sep, "vsl.se");
 
-            LLVMValueRef cloned;
-            if (elem_type->kind == TYPE_STRING)
-                cloned = emit_string_clone_val(ctx, se);
-            else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-                cloned = emit_enum_clone_val(ctx, se, elem_type);
-            else
-                cloned = emit_struct_clone_val(ctx, se, elem_llvm, elem_type);
+            LLVMValueRef cloned = emit_clone_value(ctx, se, elem_llvm, elem_type);
 
             LLVMValueRef skv64 = LLVMBuildSExt(ctx->builder, skv, i64_t, "vsl.skv64");
             LLVMValueRef dep = LLVMBuildGEP2(ctx->builder, elem_llvm, new_data, &skv64, 1, "vsl.dep");
@@ -9232,18 +9338,7 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
         /* push_bb: clone elem into result vec */
         LLVMPositionBuilderAtEnd(ctx->builder, push_bb);
         {
-            bool elem_needs_clone = (elem_type->kind == TYPE_STRING ||
-                (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-                (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop));
-            LLVMValueRef to_store = elem_val;
-            if (elem_needs_clone) {
-                if (elem_type->kind == TYPE_STRING)
-                    to_store = emit_string_clone_val(ctx, elem_val);
-                else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-                    to_store = emit_enum_clone_val(ctx, elem_val, elem_type);
-                else
-                    to_store = emit_struct_clone_val(ctx, elem_val, elem_llvm, elem_type);
-            }
+            LLVMValueRef to_store = emit_clone_value(ctx, elem_val, elem_llvm, elem_type);
             /* Store into result data at result.len position */
             LLVMValueRef rsv   = LLVMBuildLoad2(ctx->builder, vec_t, res_alloca, "vfl.rsv");
             LLVMValueRef rdat  = LLVMBuildExtractValue(ctx->builder, rsv, 0, "vfl.rdat");
@@ -9351,15 +9446,7 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 1, 0), disc_ptr);
 
             /* Clone element for ownership transfer */
-            bool elem_needs_clone = (elem_type->kind == TYPE_STRING ||
-                (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop));
-            LLVMValueRef to_store = elem_val;
-            if (elem_needs_clone) {
-                if (elem_type->kind == TYPE_STRING)
-                    to_store = emit_string_clone_val(ctx, elem_val);
-                else
-                    to_store = emit_struct_clone_val(ctx, elem_val, elem_llvm, elem_type);
-            }
+            LLVMValueRef to_store = emit_clone_value(ctx, elem_val, elem_llvm, elem_type);
 
             /* Store into payload via variant struct GEP */
             LLVMTypeRef variant_struct = build_variant_payload_struct(ctx, option_type, 1);
@@ -11011,6 +11098,31 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         }
                     }
                 }
+                /* Vec argument ownership: a vec param is value-ABI but the callee
+                   marks it is_borrowed and never frees it (caller keeps ownership).
+                   A named-var arg is freed by the caller's scope cleanup; an owned
+                   rvalue temp (vec.get() / index / call result / literal) has no
+                   owner, so register it for statement-end drop or it leaks. The
+                   passed value and this temp share the same buffer; only this temp
+                   is registered, so the buffer is freed exactly once. */
+                else if (arg_val && arg_type && arg_type->kind == TYPE_VECTOR)
+                {
+                    AstNode *raw = node->as.call.args[i];
+                    AstNode *unwrapped = ast_unwrap_move(raw);
+                    if (unwrapped && unwrapped->kind != AST_IDENT)
+                    {
+                        LLVMTypeRef vlt = ls_vec_type(ctx);
+                        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+                        LLVMBasicBlockRef fe = LLVMGetEntryBasicBlock(ctx->current_fn);
+                        LLVMValueRef fi = LLVMGetFirstInstruction(fe);
+                        if (fi) LLVMPositionBuilderBefore(tb, fi);
+                        else    LLVMPositionBuilderAtEnd(tb, fe);
+                        LLVMValueRef vtmp = LLVMBuildAlloca(tb, vlt, "vecarg.tmp");
+                        LLVMDisposeBuilder(tb);
+                        LLVMBuildStore(ctx->builder, arg_val, vtmp);
+                        cg_push_temp_drop(ctx, vtmp, arg_type);
+                    }
+                }
                 args[i + arg_offset] = arg_val;
             }
 
@@ -12462,12 +12574,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             /* vec[i] is a READ — the vec retains ownership.  We give the caller a deep
                clone so both the caller's variable and the vec element can be freed
                independently without double-free. */
-            if (elem_type->kind == TYPE_STRING)
-                elem = emit_string_clone_val(ctx, elem);
-            else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-                elem = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
-            else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-                elem = emit_enum_clone_val(ctx, elem, elem_type);
+            elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
             /* builder may have moved to a new block inside the clone helpers */
             LLVMBuildStore(ctx->builder, elem, result_alloca);
             LLVMBuildBr(ctx->builder, merge_bb);
@@ -12592,10 +12699,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "arr.elem");
         /* array[i] is a READ — the array retains ownership.  Clone owned data
            to give the caller an independent copy (mirrors vec[i] semantics). */
-        if (elem_type && elem_type->kind == TYPE_STRING)
-            elem = emit_string_clone_val(ctx, elem);
-        else if (elem_type && elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-            elem = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
+        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
         return elem;
     }
 

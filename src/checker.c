@@ -6835,7 +6835,9 @@ static void check_struct_decl(Checker *c, AstNode *node)
         }
     }
 
-    /* Auto-set has_drop if struct contains string/Block/has_drop-struct fields */
+    /* Auto-set has_drop if a field owns heap: string / vec / has_drop-struct /
+       has_drop-enum / Block. (map fields are not yet auto-dropped by codegen —
+       intentionally excluded here to avoid marking has_drop without teardown.) */
     bool needs_drop = false;
     for (int i = 0; i < n && !needs_drop; i++)
     {
@@ -6844,7 +6846,15 @@ static void check_struct_decl(Checker *c, AstNode *node)
         {
             needs_drop = true;
         }
+        else if (ft->kind == TYPE_VECTOR)
+        {
+            needs_drop = true;
+        }
         else if (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop)
+        {
+            needs_drop = true;
+        }
+        else if (ft->kind == TYPE_ENUM && ft->as.enom.has_drop)
         {
             needs_drop = true;
         }
