@@ -311,6 +311,247 @@ fn render(&MdDoc d) -> string {
     return out
 }
 
+// ====================================================================
+// Parser (read) — Phase B: block-level. Hand-written line scanner.
+// Lenient: anything unrecognized becomes a Paragraph. Inline content is
+// kept as a single raw Text (round-trips verbatim); splitting into
+// Bold/Italic/Link/etc. is Phase C.
+// ====================================================================
+
+// Heading level: count leading '#' (1..6) immediately followed by a space.
+// Returns the level, or 0 if `line` is not an ATX heading.
+fn _heading_level(string line) -> int {
+    int n = line.length
+    int i = 0
+    while i < n && line.at(i) == '#' { i = i + 1 }
+    if i >= 1 && i <= 6 && i < n && line.at(i) == ' ' { return i }
+    return 0
+}
+
+// Trimmed line is a horizontal rule: >=3 of all '-', '*', or '_'.
+fn _is_hr(string t) -> bool {
+    int n = t.length
+    if n < 3 { return false }
+    int ch = t.at(0)
+    if ch != '-' && ch != '*' && ch != '_' { return false }
+    int i = 0
+    while i < n {
+        if t.at(i) != ch { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Ordered-list marker: digits followed by ". ". Returns prefix length or 0.
+fn _ordered_prefix_len(string line) -> int {
+    int n = line.length
+    int i = 0
+    while i < n && line.at(i) >= '0' && line.at(i) <= '9' { i = i + 1 }
+    if i == 0 { return 0 }
+    if i < n && line.at(i) == '.' && i + 1 < n && line.at(i + 1) == ' ' {
+        return i + 2
+    }
+    return 0
+}
+
+// GFM table separator row: only |, -, :, space and at least one '-' and one '|'.
+fn _is_table_sep(string line) -> bool {
+    string t = line.trim()
+    int n = t.length
+    if n == 0 { return false }
+    bool has_dash = false
+    bool has_pipe = false
+    int i = 0
+    while i < n {
+        int c = t.at(i)
+        if c == '-' { has_dash = true }
+        else if c == '|' { has_pipe = true }
+        else if c == ':' || c == ' ' { }
+        else { return false }
+        i = i + 1
+    }
+    return has_dash && has_pipe
+}
+
+// Split a "| a | b |" row into trimmed cells, dropping the empty leading/trailing
+// fields produced by the surrounding pipes.
+fn _split_table_row(string line) -> vec(string) {
+    vec(string) raw = line.split("|")
+    vec(string) cells = []
+    int rn = raw.length
+    int i = 0
+    while i < rn {
+        string cell = raw.get(i).trim()
+        bool skip = false
+        if i == 0 && cell.length == 0 { skip = true }
+        if i == rn - 1 && cell.length == 0 { skip = true }
+        if !skip { cells.push(cell) }
+        i = i + 1
+    }
+    return cells
+}
+
+fn parse(string input) -> MdDoc {
+    vec(MdBlock) blocks = []
+    vec(string) lines = input.lines()
+    int nl = lines.length
+    int i = 0
+
+    while i < nl {
+        string line = lines.get(i)
+        string t = line.trim()
+
+        // blank line — skip
+        if t.length == 0 {
+            i = i + 1
+            continue
+        }
+
+        // ATX heading
+        int hl = _heading_level(line)
+        if hl > 0 {
+            string content = line.substr(hl + 1, line.length - hl - 1)
+            blocks.push(Heading(hl, _inline_text(content.trim())))
+            i = i + 1
+            continue
+        }
+
+        // fenced code block
+        if t.starts_with("```") {
+            string lang = t.substr(3, t.length - 3).trim()
+            string code = ""
+            bool firstc = true
+            i = i + 1
+            while i < nl {
+                string cl = lines.get(i)
+                if cl.trim().starts_with("```") { i = i + 1; break }
+                if !firstc { code.append("\n") }
+                code.append(cl)
+                firstc = false
+                i = i + 1
+            }
+            blocks.push(CodeBlock(lang, code))
+            continue
+        }
+
+        // horizontal rule
+        if _is_hr(t) {
+            blocks.push(HorizontalRule)
+            i = i + 1
+            continue
+        }
+
+        // unordered list
+        if line.starts_with("- ") || line.starts_with("* ") {
+            vec(string) items = []
+            while i < nl {
+                string li = lines.get(i)
+                if li.starts_with("- ") || li.starts_with("* ") {
+                    items.push(li.substr(2, li.length - 2).trim())
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            blocks.push(UnorderedList(items))
+            continue
+        }
+
+        // ordered list
+        if _ordered_prefix_len(line) > 0 {
+            vec(string) items = []
+            while i < nl {
+                string li = lines.get(i)
+                int p = _ordered_prefix_len(li)
+                if p > 0 {
+                    items.push(li.substr(p, li.length - p).trim())
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            blocks.push(OrderedList(items))
+            continue
+        }
+
+        // blockquote — collect "> " lines, recurse on the inner text
+        if line.starts_with("> ") || t == ">" {
+            string inner = ""
+            bool firstq = true
+            while i < nl {
+                string li = lines.get(i)
+                string lt = li.trim()
+                if li.starts_with("> ") {
+                    if !firstq { inner.append("\n") }
+                    inner.append(li.substr(2, li.length - 2))
+                    firstq = false
+                    i = i + 1
+                } else if lt == ">" {
+                    if !firstq { inner.append("\n") }
+                    firstq = false
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            blocks.push(Blockquote(parse(inner)))
+            continue
+        }
+
+        // GFM table — current line is a "|..." header and next is a separator
+        if t.starts_with("|") && i + 1 < nl && _is_table_sep(lines.get(i + 1)) {
+            vec(string) headers = _split_table_row(line)
+            int ncols = headers.length
+            i = i + 2
+            vec(string) cells = []
+            while i < nl {
+                string rl = lines.get(i)
+                if !rl.trim().starts_with("|") { break }
+                vec(string) rc = _split_table_row(rl)
+                int k = 0
+                while k < ncols {
+                    if k < rc.length {
+                        cells.push(rc.get(k))
+                    } else {
+                        cells.push("")
+                    }
+                    k = k + 1
+                }
+                i = i + 1
+            }
+            blocks.push(Table(headers, cells))
+            continue
+        }
+
+        // paragraph — collect consecutive lines until blank / new block start
+        string para = ""
+        bool firstp = true
+        while i < nl {
+            string pl = lines.get(i)
+            string pt = pl.trim()
+            if pt.length == 0 { break }
+            if _heading_level(pl) > 0 { break }
+            if pt.starts_with("```") { break }
+            if _is_hr(pt) { break }
+            if pl.starts_with("- ") || pl.starts_with("* ") { break }
+            if _ordered_prefix_len(pl) > 0 { break }
+            if pl.starts_with("> ") { break }
+            if pt.starts_with("|") { break }
+            if !firstp { para.append(" ") }
+            para.append(pt)
+            firstp = false
+            i = i + 1
+        }
+        if para.length > 0 {
+            blocks.push(Paragraph(_inline_text(para)))
+        } else {
+            i = i + 1
+        }
+    }
+
+    return blocks
+}
+
 // ---- String fragment helpers (do not touch MdDoc) ----
 
 fn fmt_heading(int level, string text) -> string {

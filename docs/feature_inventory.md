@@ -109,7 +109,7 @@
 | `std.c` | `std/c.ls` | C 底层绑定 (libc 函数直接调用) | — |
 | `std.os` | `std/os.ls` + C 后端 | 平台抽象层 (`os_win32.c` / `os_posix.c`) | `docs/stdlib_os_plan.md` |
 | `std.json` | `std/json.ls`（795 行纯 LS） | 递归下降 parser + stringify；`JsonValue` enum（null/bool/number/string/array/object）；解析/序列化/取值访问器；含 A/B/C/D 微优化（chunk scan / inline at） | `docs/plan_json.md` |
-| `std.md` | `std/md.ls`（纯 LS，Phase A：写） | Markdown 生成：`MdDoc`/`MdInline`/`MdBlock` enum 树 + builder（h1-h6/paragraph/code_block/ul/ol/blockquote/table/hr）+ `render` + `fmt_*` 片段助手；GFM 表格列对齐。parse（读）为 Phase B/C 待做 | `docs/plan_std_md.md` |
+| `std.md` | `std/md.ls`（纯 LS，Phase A 写 + Phase B 读） | Markdown 生成：`MdDoc`/`MdInline`/`MdBlock` enum 树 + builder（h1-h6/paragraph/code_block/ul/ol/blockquote/table/hr）+ `render` + `fmt_*`；**Phase B**：`parse(string)->MdDoc` 块级解析（标题/段落/围栏代码/有序无序列表/引用块递归/GFM 表格/水平线，宽松不失败，手写行扫描），round-trip 一致。行内拆分（Bold/Link 等）+ extract 为 Phase C | `docs/plan_std_md.md` |
 
 ### 8. 字符串方法
 
@@ -148,7 +148,7 @@
 
 | 项目 | 数量 | 说明 |
 |------|------|------|
-| ctest 注册测试 | **91 个** | 全部通过（2026-05-31；flaky AOT 用 `--repeat until-pass:2` 自愈，见 CLAUDE.md §3） |
+| ctest 注册测试 | **92 个** | 全部通过（2026-05-31；flaky AOT 用 `--repeat until-pass:2` 自愈，见 CLAUDE.md §3） |
 | 单元测试 | `test_scanner` / `test_parser` / `test_types` / `test_codegen` / `test_jit` / `test_ffi` / `test_module` / `test_memory` / `test_operator_overload` / `test_repl` | C 单元测试 |
 | 端到端测试 | 大量 cmake 驱动（含 json / 模块命名空间 / 操作符重载 / REPL import 持久化 / BF-040~046 回归） | 每个测试覆盖 JIT + AOT 双路径，部分含 memcheck 验证 |
 

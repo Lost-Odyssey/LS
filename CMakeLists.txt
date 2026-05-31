@@ -407,6 +407,18 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
 
+# std.md Phase B (parser): parse a Markdown doc into MdDoc + round-trip render,
+# under JIT memcheck.
+add_test(
+    NAME test_std_md_parse_jit
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_parse.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=std_md_parse
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+
 # AOT memcheck end-to-end test: compile a sample with `ls compile --memcheck`,
 # run the produced binary, assert the runtime report shows "OK clean".
 # Driven by a cmake -P script for cross-platform process invocation.

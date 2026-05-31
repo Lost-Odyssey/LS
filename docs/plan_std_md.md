@@ -1,7 +1,9 @@
 # std.md — Markdown 模块设计
 
-> **状态**：Phase A（写）已实现并 memcheck clean（JIT+AOT），ctest `test_std_md_jit`
+> **状态**：Phase A（写）+ Phase B（读，块级 parse）已实现并 memcheck clean（JIT+AOT），ctest `test_std_md_jit` / `test_std_md_parse_jit`
 > **日期**：2026-05-31
+>
+> **Phase B 说明**：`parse(string)->MdDoc` 手写行扫描，覆盖块级 P0+P1（标题/段落/围栏代码/有序无序列表/引用块递归/GFM 表格/水平线），宽松不失败。行内内容暂存为单个原始 `Text`（round-trip 逐字一致）。**Phase C**：行内拆分（Bold/Italic/Code/Link/Image）+ `extract_headings`/`extract_links`/`to_plain_text`。
 >
 > **Phase A 实现说明（与下方草案的偏差）**：受编译器 vec 值语义限制（见 feature_inventory L-011c），
 > 当前实现做了两处规避，**输出与设计一致、内存干净**：
