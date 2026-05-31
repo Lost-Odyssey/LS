@@ -1,7 +1,7 @@
 # vec/map 一等值语义 — 架构方案与实施计划（解决 D / E / F）
 
 > **日期**：2026-05-31
-> **状态**：设计方案，待审核后实施
+> **状态**：✅ **已实施**（分支 `feat/vec-first-class`，ctest 104/104）。Phase 0 测试矩阵 → Phase 1 统一 `emit_drop_value`（修 F）→ Phase 2 Place 引擎（修 D）→ Phase 3 收编 E（已由 Phase B 点修覆盖，统一规则可后续清理）→ Phase 4 std.md 升级 `struct MdDoc` + 嵌套 vec 端到端验收 memcheck clean。C（跨模块 alias 命名）按 Q3 取消。
 > **背景**：std.md 想用 `struct MdDoc { vec(MdBlock) }` + 嵌套 `vec(vec(...))` 富结构时，连锁暴露出
 > 编译器对「堆拥有型聚合体（vec/map）」的值语义实现不完整。本文从架构层面给出一次性根治方案，
 > 并按正确性 / 性能 / 健壮性 / 可维护性四个维度论证。

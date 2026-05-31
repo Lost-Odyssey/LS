@@ -5,6 +5,8 @@
 >
 > **Phase B 说明**：`parse(string)->MdDoc` 手写行扫描，覆盖块级 P0+P1（标题/段落/围栏代码/有序无序列表/引用块递归/GFM 表格/水平线），宽松不失败。行内内容暂存为单个原始 `Text`（round-trip 逐字一致）。**Phase C**：行内拆分（Bold/Italic/Code/Link/Image）+ `extract_headings`/`extract_links`/`to_plain_text`。
 >
+> **API 升级（2026-05-31）**：vec first-class 修复（`docs/vec_first_class_plan.md`，L-011a/b/c）落地后，本模块已从规避版升级为**审定 API**：`struct MdDoc { vec(MdBlock) blocks }`（用户写 `md.MdDoc`），lists = `vec(vec(MdInline))`，table = `vec(vec(string)) rows`。builder 经 `&!MdDoc` 字段 push、嵌套 vec clone/drop 全部 memcheck clean（JIT+AOT）。§2 早期标注的扁平/别名偏差**已不再适用**。
+>
 > **Phase A 实现说明（与下方草案的偏差）**：受编译器 vec 值语义限制（见 feature_inventory L-011c），
 > 当前实现做了两处规避，**输出与设计一致、内存干净**：
 > 1. `MdDoc` 用 `type MdDoc = vec(MdBlock)` 别名而非 struct（`&!struct` 字段 vec 变更不写回；跨模块别名不可命名 → 外部写 `vec(md.MdBlock)`）。

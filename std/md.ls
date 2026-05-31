@@ -1,5 +1,8 @@
-// std/md.ls — Markdown reader/writer for LS (Phase A: data model + builder + render).
-// Pure LS; recursive render mirroring std/json.ls's enum-tree pattern.
+// std/md.ls — Markdown reader/writer for LS.
+// Pure LS; recursive render + hand-written block parser, mirroring std/json.ls.
+//
+// Uses the rich data model now that the compiler supports container values as
+// first class: MdDoc is a struct with a vec field; lists/table hold nested vecs.
 
 import io
 
@@ -19,30 +22,26 @@ enum MdBlock {
     Heading(int level, vec(MdInline) content)          // # .. ######
     Paragraph(vec(MdInline) content)
     CodeBlock(string lang, string code)                // ```lang ... ```
-    UnorderedList(vec(string) items)                   // - item (raw inline text)
-    OrderedList(vec(string) items)                     // 1. item (raw inline text)
+    UnorderedList(vec(vec(MdInline)) items)            // - item
+    OrderedList(vec(vec(MdInline)) items)              // 1. item
     Blockquote(vec(MdBlock) children)                  // > quote (recursive)
-    Table(vec(string) headers, vec(string) cells)      // GFM; cells row-major flat, ncols=headers.length
+    Table(vec(string) headers, vec(vec(string)) rows)  // GFM table
     HorizontalRule
 }
 
-// MdDoc is an alias for vec(MdBlock), not a wrapping struct: mutating a struct's
-// vec field through an &! borrow does not currently write back to the caller,
-// whereas &!vec push does. The alias keeps O(1) builder push + clean teardown.
-// (Cross-module type aliases aren't yet nameable, so external code spells the
-// document type as `vec(md.MdBlock)`.)
-type MdDoc = vec(MdBlock)
+struct MdDoc {
+    vec(MdBlock) blocks
+}
 
 // ---- Document constructor ----
 
 fn document() -> MdDoc {
     vec(MdBlock) v = []
-    return v
+    return MdDoc { blocks: v }
 }
 
 // ---- Internal helpers ----
 
-// Wrap a raw string as a single-element inline sequence (Phase A: no inline parse).
 fn _inline_text(string s) -> vec(MdInline) {
     vec(MdInline) v = []
     v.push(Text(s.copy()))
@@ -75,48 +74,56 @@ fn heading(&!MdDoc d, int level, string text) {
     int lv = level
     if lv < 1 { lv = 1 }
     if lv > 6 { lv = 6 }
-    d.push(Heading(lv, _inline_text(text)))
+    d.blocks.push(Heading(lv, _inline_text(text)))
 }
 
-fn h1(&!MdDoc d, string text) { d.push(Heading(1, _inline_text(text))) }
-fn h2(&!MdDoc d, string text) { d.push(Heading(2, _inline_text(text))) }
-fn h3(&!MdDoc d, string text) { d.push(Heading(3, _inline_text(text))) }
-fn h4(&!MdDoc d, string text) { d.push(Heading(4, _inline_text(text))) }
-fn h5(&!MdDoc d, string text) { d.push(Heading(5, _inline_text(text))) }
-fn h6(&!MdDoc d, string text) { d.push(Heading(6, _inline_text(text))) }
+fn h1(&!MdDoc d, string text) { d.blocks.push(Heading(1, _inline_text(text))) }
+fn h2(&!MdDoc d, string text) { d.blocks.push(Heading(2, _inline_text(text))) }
+fn h3(&!MdDoc d, string text) { d.blocks.push(Heading(3, _inline_text(text))) }
+fn h4(&!MdDoc d, string text) { d.blocks.push(Heading(4, _inline_text(text))) }
+fn h5(&!MdDoc d, string text) { d.blocks.push(Heading(5, _inline_text(text))) }
+fn h6(&!MdDoc d, string text) { d.blocks.push(Heading(6, _inline_text(text))) }
 
 fn paragraph(&!MdDoc d, string text) {
-    d.push(Paragraph(_inline_text(text)))
+    d.blocks.push(Paragraph(_inline_text(text)))
 }
 
 fn code_block(&!MdDoc d, string lang, string code) {
-    d.push(CodeBlock(lang.copy(), code.copy()))
+    d.blocks.push(CodeBlock(lang.copy(), code.copy()))
 }
 
-// List items are stored as raw inline-markdown strings (rendered verbatim).
-// A vec(vec(MdInline)) shape needs enum/struct payload clone+drop of nested vecs,
-// which the compiler doesn't fully support yet; vec(string) is clean & identical.
 fn ul(&!MdDoc d, vec(string) items) {
-    d.push(UnorderedList(items))
+    vec(vec(MdInline)) its = []
+    int i = 0
+    while i < items.length {
+        its.push(_inline_text(items.get(i)))
+        i = i + 1
+    }
+    d.blocks.push(UnorderedList(its))
 }
 
 fn ol(&!MdDoc d, vec(string) items) {
-    d.push(OrderedList(items))
+    vec(vec(MdInline)) its = []
+    int i = 0
+    while i < items.length {
+        its.push(_inline_text(items.get(i)))
+        i = i + 1
+    }
+    d.blocks.push(OrderedList(its))
 }
 
 fn blockquote(&!MdDoc d, string text) {
     vec(MdBlock) children = []
     children.push(Paragraph(_inline_text(text)))
-    d.push(Blockquote(children))
+    d.blocks.push(Blockquote(children))
 }
 
-// Cells are row-major flat: cells.length must be a multiple of headers.length.
-fn table(&!MdDoc d, vec(string) headers, vec(string) cells) {
-    d.push(Table(headers, cells))
+fn table(&!MdDoc d, vec(string) headers, vec(vec(string)) rows) {
+    d.blocks.push(Table(headers, rows))
 }
 
 fn hr(&!MdDoc d) {
-    d.push(HorizontalRule)
+    d.blocks.push(HorizontalRule)
 }
 
 // ---- Inline render ----
@@ -151,22 +158,22 @@ fn _render_inlines(vec(MdInline) inls) -> string {
 
 // ---- Table render (GFM, column-aligned) ----
 
-// `cells` is row-major flat with `cols = headers.length` columns.
-fn _render_table(vec(string) headers, vec(string) cells) -> string {
+fn _render_table(vec(string) headers, vec(vec(string)) rows) -> string {
     int cols = headers.length
     if cols <= 0 { return "" }
-    int nrows = cells.length / cols
 
-    // compute column widths (>= 3 so the "---" separator is valid)
     vec(int) widths = []
     int c = 0
     while c < cols {
         int w = headers.get(c).length
         if w < 3 { w = 3 }
         int r = 0
-        while r < nrows {
-            int cw = cells.get(r * cols + c).length
-            if cw > w { w = cw }
+        while r < rows.length {
+            vec(string) row = rows.get(r)
+            if c < row.length {
+                int cw = row.get(c).length
+                if cw > w { w = cw }
+            }
             r = r + 1
         }
         widths.push(w)
@@ -174,7 +181,6 @@ fn _render_table(vec(string) headers, vec(string) cells) -> string {
     }
 
     string out = ""
-    // header row
     out.append("|")
     c = 0
     while c < cols {
@@ -184,7 +190,6 @@ fn _render_table(vec(string) headers, vec(string) cells) -> string {
         c = c + 1
     }
     out.append("\n")
-    // separator
     out.append("|")
     c = 0
     while c < cols {
@@ -194,14 +199,16 @@ fn _render_table(vec(string) headers, vec(string) cells) -> string {
         c = c + 1
     }
     out.append("\n")
-    // data rows
     int r = 0
-    while r < nrows {
+    while r < rows.length {
+        vec(string) row = rows.get(r)
         out.append("|")
         c = 0
         while c < cols {
+            string cell = ""
+            if c < row.length { cell = row.get(c) }
             out.append(" ")
-            out.append(_pad_right(cells.get(r * cols + c), widths.get(c)))
+            out.append(_pad_right(cell, widths.get(c)))
             out.append(" |")
             c = c + 1
         }
@@ -240,7 +247,7 @@ fn _render_block(MdBlock b) -> string {
             int i = 0
             while i < items.length {
                 r.append("- ")
-                r.append(items.get(i))
+                r.append(_render_inlines(items.get(i)))
                 r.append("\n")
                 i = i + 1
             }
@@ -252,7 +259,7 @@ fn _render_block(MdBlock b) -> string {
             int i = 0
             while i < items.length {
                 r.append(f"{i + 1}. ")
-                r.append(items.get(i))
+                r.append(_render_inlines(items.get(i)))
                 r.append("\n")
                 i = i + 1
             }
@@ -260,7 +267,6 @@ fn _render_block(MdBlock b) -> string {
             return r
         }
         Blockquote(children) => {
-            // render children, then prefix every line with "> "
             string inner = ""
             int i = 0
             while i < children.length {
@@ -304,22 +310,19 @@ fn _render_block(MdBlock b) -> string {
 fn render(&MdDoc d) -> string {
     string out = ""
     int i = 0
-    while i < d.length {
-        out.append(_render_block(d.get(i)))
+    while i < d.blocks.length {
+        out.append(_render_block(d.blocks.get(i)))
         i = i + 1
     }
     return out
 }
 
 // ====================================================================
-// Parser (read) — Phase B: block-level. Hand-written line scanner.
-// Lenient: anything unrecognized becomes a Paragraph. Inline content is
-// kept as a single raw Text (round-trips verbatim); splitting into
-// Bold/Italic/Link/etc. is Phase C.
+// Parser (read) — block-level, hand-written line scanner. Lenient.
+// Inline content is kept as a single raw Text (round-trips verbatim);
+// splitting into Bold/Italic/Link is Phase C.
 // ====================================================================
 
-// Heading level: count leading '#' (1..6) immediately followed by a space.
-// Returns the level, or 0 if `line` is not an ATX heading.
 fn _heading_level(string line) -> int {
     int n = line.length
     int i = 0
@@ -328,7 +331,6 @@ fn _heading_level(string line) -> int {
     return 0
 }
 
-// Trimmed line is a horizontal rule: >=3 of all '-', '*', or '_'.
 fn _is_hr(string t) -> bool {
     int n = t.length
     if n < 3 { return false }
@@ -342,7 +344,6 @@ fn _is_hr(string t) -> bool {
     return true
 }
 
-// Ordered-list marker: digits followed by ". ". Returns prefix length or 0.
 fn _ordered_prefix_len(string line) -> int {
     int n = line.length
     int i = 0
@@ -354,7 +355,6 @@ fn _ordered_prefix_len(string line) -> int {
     return 0
 }
 
-// GFM table separator row: only |, -, :, space and at least one '-' and one '|'.
 fn _is_table_sep(string line) -> bool {
     string t = line.trim()
     int n = t.length
@@ -373,8 +373,6 @@ fn _is_table_sep(string line) -> bool {
     return has_dash && has_pipe
 }
 
-// Split a "| a | b |" row into trimmed cells, dropping the empty leading/trailing
-// fields produced by the surrounding pipes.
 fn _split_table_row(string line) -> vec(string) {
     vec(string) raw = line.split("|")
     vec(string) cells = []
@@ -391,7 +389,8 @@ fn _split_table_row(string line) -> vec(string) {
     return cells
 }
 
-fn parse(string input) -> MdDoc {
+// Parse `input` into a list of blocks (internal; `parse` wraps it in MdDoc).
+fn _parse_blocks(string input) -> vec(MdBlock) {
     vec(MdBlock) blocks = []
     vec(string) lines = input.lines()
     int nl = lines.length
@@ -401,13 +400,11 @@ fn parse(string input) -> MdDoc {
         string line = lines.get(i)
         string t = line.trim()
 
-        // blank line — skip
         if t.length == 0 {
             i = i + 1
             continue
         }
 
-        // ATX heading
         int hl = _heading_level(line)
         if hl > 0 {
             string content = line.substr(hl + 1, line.length - hl - 1)
@@ -416,7 +413,6 @@ fn parse(string input) -> MdDoc {
             continue
         }
 
-        // fenced code block
         if t.starts_with("```") {
             string lang = t.substr(3, t.length - 3).trim()
             string code = ""
@@ -434,20 +430,18 @@ fn parse(string input) -> MdDoc {
             continue
         }
 
-        // horizontal rule
         if _is_hr(t) {
             blocks.push(HorizontalRule)
             i = i + 1
             continue
         }
 
-        // unordered list
         if line.starts_with("- ") || line.starts_with("* ") {
-            vec(string) items = []
+            vec(vec(MdInline)) items = []
             while i < nl {
                 string li = lines.get(i)
                 if li.starts_with("- ") || li.starts_with("* ") {
-                    items.push(li.substr(2, li.length - 2).trim())
+                    items.push(_inline_text(li.substr(2, li.length - 2).trim()))
                     i = i + 1
                 } else {
                     break
@@ -457,14 +451,13 @@ fn parse(string input) -> MdDoc {
             continue
         }
 
-        // ordered list
         if _ordered_prefix_len(line) > 0 {
-            vec(string) items = []
+            vec(vec(MdInline)) items = []
             while i < nl {
                 string li = lines.get(i)
                 int p = _ordered_prefix_len(li)
                 if p > 0 {
-                    items.push(li.substr(p, li.length - p).trim())
+                    items.push(_inline_text(li.substr(p, li.length - p).trim()))
                     i = i + 1
                 } else {
                     break
@@ -474,7 +467,6 @@ fn parse(string input) -> MdDoc {
             continue
         }
 
-        // blockquote — collect "> " lines, recurse on the inner text
         if line.starts_with("> ") || t == ">" {
             string inner = ""
             bool firstq = true
@@ -494,36 +486,33 @@ fn parse(string input) -> MdDoc {
                     break
                 }
             }
-            blocks.push(Blockquote(parse(inner)))
+            blocks.push(Blockquote(_parse_blocks(inner)))
             continue
         }
 
-        // GFM table — current line is a "|..." header and next is a separator
         if t.starts_with("|") && i + 1 < nl && _is_table_sep(lines.get(i + 1)) {
             vec(string) headers = _split_table_row(line)
             int ncols = headers.length
             i = i + 2
-            vec(string) cells = []
+            vec(vec(string)) rows = []
             while i < nl {
                 string rl = lines.get(i)
                 if !rl.trim().starts_with("|") { break }
                 vec(string) rc = _split_table_row(rl)
+                vec(string) row = []
                 int k = 0
                 while k < ncols {
-                    if k < rc.length {
-                        cells.push(rc.get(k))
-                    } else {
-                        cells.push("")
-                    }
+                    if k < rc.length { row.push(rc.get(k)) }
+                    else { row.push("") }
                     k = k + 1
                 }
+                rows.push(row)
                 i = i + 1
             }
-            blocks.push(Table(headers, cells))
+            blocks.push(Table(headers, rows))
             continue
         }
 
-        // paragraph — collect consecutive lines until blank / new block start
         string para = ""
         bool firstp = true
         while i < nl {
@@ -550,6 +539,10 @@ fn parse(string input) -> MdDoc {
     }
 
     return blocks
+}
+
+fn parse(string input) -> MdDoc {
+    return MdDoc { blocks: _parse_blocks(input) }
 }
 
 // ---- String fragment helpers (do not touch MdDoc) ----

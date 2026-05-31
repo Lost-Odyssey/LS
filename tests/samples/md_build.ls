@@ -3,7 +3,7 @@ import std.md as md
 import io
 
 fn main() {
-    vec(md.MdBlock) doc = md.document()
+    md.MdDoc doc = md.document()
 
     md.h1(&!doc, "Report")
     md.h2(&!doc, "Intro")
@@ -19,8 +19,12 @@ fn main() {
     md.blockquote(&!doc, "A quoted line.")
 
     vec(string) headers = ["Name", "Score"]
-    vec(string) cells = ["Alice", "9.5", "Bob", "8.1"]
-    md.table(&!doc, headers, cells)
+    vec(vec(string)) rows = []
+    vec(string) row0 = ["Alice", "9.5"]
+    rows.push(row0)
+    vec(string) row1 = ["Bob", "8.1"]
+    rows.push(row1)
+    md.table(&!doc, headers, rows)
 
     md.hr(&!doc)
 

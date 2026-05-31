@@ -5,12 +5,12 @@ import io
 fn main() {
     string src = "# Title\n\nA paragraph of text.\n\n## Section\n\n- one\n- two\n- three\n\n1. first\n2. second\n\n> a quote\n\n```ls\nfn main() {}\n```\n\n| Name | Score |\n| --- | --- |\n| Alice | 9.5 |\n| Bob | 8.1 |\n\n---\n"
 
-    vec(md.MdBlock) doc = md.parse(src)
-    print(f"blocks: {doc.length}")
+    md.MdDoc doc = md.parse(src)
+    print(f"blocks: {doc.blocks.length}")
 
     int i = 0
-    while i < doc.length {
-        md.MdBlock b = doc.get(i)
+    while i < doc.blocks.length {
+        md.MdBlock b = doc.blocks.get(i)
         match b {
             Heading(lvl, c)        => { print(f"Heading {lvl}") }
             Paragraph(c)           => { print("Paragraph") }
