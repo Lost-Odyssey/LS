@@ -1,6 +1,6 @@
 # LS 功能清单与路线图
 
-> **最后更新**：2026-05-25  
+> **最后更新**：2026-05-31  
 > 本文档记录 LS 语言已实现功能的完整清单，以及尚未实现功能的工作量/风险/价值评估。
 
 ---
@@ -31,6 +31,7 @@
 | `print()` 内建 intrinsic | 任意可打印类型 | — |
 | `object` 类型擦除指针 | `void*` 语义 | — |
 | 全局变量 | 顶层声明，跨函数/跨模块读写 | — |
+| 操作符重载 | Ruby 风符号方法名 `fn +`/`==`/`<` + 内建 trait `Add/Sub/Mul/Div/Rem/Eq/Ord`（软保留）；checker 把 `a OP b` 降级为合成方法调用；泛型 `T: Add` 体内可用 | `docs/plan_operator_overload.md` |
 
 ### 2. 类型系统高级特性
 
@@ -86,8 +87,10 @@
 | 功能 | 说明 | 参考文档 |
 |------|------|----------|
 | module / import | `import math` / `import std.time as T`；支持 `as` 别名 | `docs/phases.md` Phase 7 |
-| 跨模块全局变量 | 导出/导入全局状态 | — |
+| 跨模块全局变量 | 导出/导入全局状态；符号前缀化 `<mod>__var` + has_drop 全局 cleanup；`mod.VAR` 跨模块访问 | `docs/plan_module_namespace.md` |
 | codegen 两阶段 | Pass A forward-declare → Pass B 生成 body，解决跨模块依赖排序 | — |
+| 跨模块函数 mangling (L-009) | 模块自由函数 LLVM 符号前缀化 `<modpath>__<fn>`，消除同名崩溃/静默错值；含模块泛型实例化 `<mod>__fn(args)` (L-009.1/6.A) | `docs/plan_l009_mangling.md` |
+| 模块命名空间 (B-full) | struct/enum LLVM 类型名 + impl 方法/drop/clone 前缀化（B-2/B-3）；同名类型多模块导入冲突检测（B-1）；类型位置限定语法 `mod.Type` / `alias.Type`（B-4）；带方法同名 struct/enum 跨模块共存（B-4.1）；跨模块同名 enum 变体（B-5）；综合 has_drop memcheck（B-6） | `docs/plan_module_namespace.md` |
 
 ### 7. 标准库模块
 
@@ -105,6 +108,7 @@
 | `std.strconv` | `std/strconv.ls` | 字符串数值格式化 | `docs/plan_string_parse_format.md` |
 | `std.c` | `std/c.ls` | C 底层绑定 (libc 函数直接调用) | — |
 | `std.os` | `std/os.ls` + C 后端 | 平台抽象层 (`os_win32.c` / `os_posix.c`) | `docs/stdlib_os_plan.md` |
+| `std.json` | `std/json.ls`（795 行纯 LS） | 递归下降 parser + stringify；`JsonValue` enum（null/bool/number/string/array/object）；解析/序列化/取值访问器；含 A/B/C/D 微优化（chunk scan / inline at） | `docs/plan_json.md` |
 
 ### 8. 字符串方法
 
@@ -136,14 +140,16 @@
 | 调用栈追踪 | `ls_mc_enter/leave` 注入，leak 报告含完整调用链 | `docs/memcheck_plan.md` |
 | verbose / strict 模式 | `LS_MEMCHECK_VERBOSE=1` 实时 trace / `LS_MEMCHECK_STRICT=1` 有 violation 则 exit(2) | `docs/memcheck_plan.md` |
 | CG_DEBUG | `#if CG_DEBUG` 编译期运行时内存跟踪 printf，`-DLS_CG_DEBUG=ON` | `docs/phases.md` Phase F.6 |
+| REPL 行编辑器 | 自研零依赖（Win32 `_getch` / POSIX termios）：插入/退格/← →/Home/End/Delete/↑↓ 历史；非 TTY 自动 fgets 降级 | `src/repl_edit.c` / `src/repl_term.c` |
+| REPL 多行 + import 持久化 | scanner 判定输入完整性（括号/字符串/续行运算符）；`import` 跨语句持续生效（真实 ModuleRegistry + 重放 + 跨 snippet 去重）；语法高亮已实现但暂关 | `src/jit.c` `jit_repl` |
 
 ### 11. 测试基础设施
 
 | 项目 | 数量 | 说明 |
 |------|------|------|
-| ctest 注册测试 | **51 个** | 全部通过（2026-05-20） |
-| 单元测试 | `test_scanner` / `test_parser` / `test_types` / `test_codegen` / `test_jit` / `test_ffi` / `test_module` / `test_memory` | C 单元测试 |
-| 端到端测试 | 43 个 cmake 驱动 | 每个测试覆盖 JIT + AOT 双路径，部分含 memcheck 验证 |
+| ctest 注册测试 | **90 个** | 全部通过（2026-05-31；flaky AOT 用 `--repeat until-pass:2` 自愈，见 CLAUDE.md §3） |
+| 单元测试 | `test_scanner` / `test_parser` / `test_types` / `test_codegen` / `test_jit` / `test_ffi` / `test_module` / `test_memory` / `test_operator_overload` / `test_repl` | C 单元测试 |
+| 端到端测试 | 大量 cmake 驱动（含 json / 模块命名空间 / 操作符重载 / REPL import 持久化 / BF-040~046 回归） | 每个测试覆盖 JIT + AOT 双路径，部分含 memcheck 验证 |
 
 ---
 
@@ -155,7 +161,7 @@
 
 | 功能 | 工期 | 风险 | 价值 | 说明 | 参考 |
 |------|------|------|------|------|------|
-| **操作符重载** | 5–7 天 | 低 | ★★★★☆ | checker 二元运算查 impl 方法 `+`/`-`/`==`/`<` 等；已有 trait 系统可配合 `trait Add` 模式 | `docs/plan_future_ideas.md` §7 |
+| ~~**操作符重载**~~ | — | — | ✅ 完成 | 2026-05-31：Ruby 风符号方法名 `fn +`/`==`/`<` + 内建 trait `Add/Sub/Mul/Div/Rem/Eq/Ord`（软保留）；checker 把 `a OP b` 降级为合成方法调用复用方法分派；比较"推导默认+逐个可覆写"；泛型 `T: Add` 体内可用；JIT+AOT+memcheck，ctest 88/88 | `docs/plan_operator_overload.md` |
 | ~~跨模块函数名 LLVM name mangling~~ | — | — | ✅ 完成 | 模块自由函数前缀化 `<modpath>__<fn>`，消除崩溃/静默错值（验证于 2026-05-29）；struct 方法+泛型跨模块同名留作 L-009.1 | `docs/plan_l009_mangling.md` |
 | **Block env 深拷贝 (Phase G)** | 5–7 天 | 低 | ★★★☆☆ | `Block g = vec[i]` 当前被 checker 拒绝（checker.c F.4A 系列守卫）；需合成 `__env_clone_N`，POD+string capture 可克隆 | `docs/block_clone_plan.md` |
 | ~~struct 深拷贝 (Phase H)~~ | — | — | ✅ 完成 | `MyStruct s = vec_of_struct[i]` 已自动深拷贝（验证于 2026-05-29，memcheck clean）；见 L-008 | `docs/plan_memory_lifetime.md` |
@@ -165,8 +171,8 @@
 | 功能 | 工期 | 风险 | 价值 | 说明 | 参考 |
 |------|------|------|------|------|------|
 | **DWARF 调试信息 (D.1)** | 10–14 天 | 中 | ★★★★☆ | LLVM DIBuilder API emit file/line/column，AOT only，`ls compile -g` | `docs/plan_future_ideas.md` §6 |
-| **JSON 模块** | 7–10 天 | 中 | ★★★☆☆ | 递归解析器 + 动态值表示（enum-based AST）；纯 LS 实现 | `docs/plan_stdlib.md` Phase S.5 |
-| **REPL 改进** | 5–8 天 | 低 | ★★★☆☆ | 多行输入、tab 补全、持久历史（linenoise/editline） | `docs/plan_future_ideas.md` §8 |
+| ~~**JSON 模块**~~ | — | — | ✅ 完成 | 2026-05：`std/json.ls` 纯 LS 递归下降 parser + stringify，`JsonValue` enum，含微优化；解除阻塞项为 L-006 enum vec payload drop 修复 | `docs/plan_json.md` |
+| ~~**REPL 改进**~~ | — | — | ✅ 大部完成 | 2026-05-31：自研零依赖行编辑器（Win32 `_getch`/POSIX termios，非 TTY 自动 fgets 降级）+ 通用多行续行（scanner 判定括号/字符串/续行运算符）+ **import 持久化修复**（传真实 ModuleRegistry + 重放 import + 跨 snippet 函数去重/外部链接化）+ 进程内历史。语法高亮已实现但**暂时关闭**（输入态体验未达标）；tab 补全/持久历史落盘未做 | `docs/plan_future_ideas.md` §8 |
 | **comptime 编译期执行** | 14–21 天 | 中 | ★★★☆☆ | AST 解释器求值 → 结果嵌入 LLVM IR 全局常量 | `docs/plan_future_ideas.md` §5 |
 
 #### ★★★ 中等收益 · 高工期
@@ -202,6 +208,7 @@
 | L-007 | Block env 不可克隆 | `Block g = vec[i]` 被 checker 拒绝 | Phase G (`docs/block_clone_plan.md`) | `docs/plan_memory_lifetime.md` |
 | ~~L-008~~ | ~~struct 不可从容器深拷贝~~ | ✅ 已修复（验证于 2026-05-29）：`MyStruct s = vec[i]` 对 has_drop struct 自动深拷贝（含嵌套 struct + 函数返回 vec），memcheck clean | — | — |
 | ~~L-009~~ | ~~LLVM 函数名不做模块 mangling~~ | ✅ 已修复（2026-05-29）：模块内自由函数 LLVM 符号前缀化为 `<modpath>__<fn>`（根/主文件函数保持不变）。两类后果均消除——① 本地 `read_file` + `import io` 不再崩溃；② 两模块同名 `helper` 各自正确返回。三重验证 AOT+JIT+memcheck（`test_l009_mangle`）+ json/stdlib 无回归 | — | `docs/plan_l009_mangling.md` |
+| L-010 | REPL 跨多条语句传递 has_drop enum/struct 值会崩溃 | 在 `ls repl` 中 `import std.json` 后，跨**不同输入行**对同一类 has_drop 值（如 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件**完全不受影响**；REPL 内 import 内建模块（math/io）、返回非 has_drop 值的 .ls 模块函数（strconv/path 等）、构造+立即析构 has_drop 值（不跨行）均正常 | 根因：REPL 每条 snippet 是独立 JIT 模块，imported 模块的 has_drop 自动 drop/clone 辅助函数被「strip 成声明跨模块解析」，与 RAII 析构语义在增量 JIT 下交互出错。修法方向：imported 模块在 REPL 只发射一次（declare-only on subsequent snippets），需 codegen 支持「跳过已发射模块 body」模式 | `src/jit.c` `jit_repl` |
 
 ---
 
@@ -213,13 +220,11 @@
 
 ```
 Step 0  ✅ 修复 L-006：enum 含 vec/map payload 的 drop   已完成 2026-05-20
-   │    三个根因：(1) ctor 未 move 源 vec/map (2) clone 缺 vec/map
-   │    (3) AOT void main 返回垃圾退出码 → 改为 i32 main ret 0
    │
-Step 1  JSON 解析 + 输出（std.json）                    5-7 天
-   │    核心数据类型 JsonValue enum 依赖 Step 0 ✅
+Step 1  ✅ JSON 解析 + 输出（std.json）                 已完成 2026-05
+   │    JsonValue enum 递归下降 parser + stringify
    │
-Step 2  Markdown 解析 + 输出（std.md）                  5-7 天
+Step 2  Markdown 解析 + 输出（std.md）                  5-7 天 ← 下一步候选
    │    MdNode 树结构依赖 enum + vec 自递归
    │
 Step 3  HTML 解析 + 输出（std.html）                    5-7 天
@@ -245,20 +250,41 @@ Step 4  Markdown ↔ HTML 互转                            2-3 天
 ## 五、推荐实施顺序
 
 ```
-近期（1-2 周）
-  ├── ✅ L-006 修复：enum 含 vec/map payload（已完成 2026-05-20）
-  └── JSON 解析 + 输出（5-7 天）—— 最通用的数据格式，阻塞项已解除
+已完成（截至 2026-05-31）
+  ├── ✅ L-006：enum 含 vec/map payload drop
+  ├── ✅ JSON 解析 + 输出（std.json）
+  ├── ✅ 操作符重载（Add/Sub/.../Ord）
+  ├── ✅ L-009 + L-009.1：跨模块函数/泛型 mangling
+  ├── ✅ 模块命名空间 B-1~B-6（真命名空间 + mod.Type 限定语法）
+  └── ✅ struct 深拷贝（L-008）+ BF-040~046 内存修复
+
+近期（1-2 周）—— 推荐二选一
+  ├── 【数据格式延续】Markdown 解析 + 输出（std.md，5-7 天）
+  │     直接复用 json 验证过的 enum 自递归 + vec 树结构能力，风险低、产出可感知
+  └── 【收尾闭包】Block env 深拷贝 Phase G（5-7 天）
+        解除 L-007（`Block g = vec[i]` 被 checker 拒绝），补齐闭包系统最后短板
 
 中期（3-6 周）
-  ├── Markdown 解析 + 输出（5-7 天）
-  ├── HTML 解析 + 输出（5-7 天）
-  ├── Markdown ↔ HTML 互转（2-3 天）
-  └── 操作符重载（5-7 天）—— 配合已完成的 trait
+  ├── HTML 解析 + 输出（std.html，5-7 天）+ Markdown ↔ HTML 互转（2-3 天）
+  ├── DWARF 调试信息 D.1（10-14 天）—— 开发体验质变，AOT `ls compile -g`
+  └── REPL 改进（多行/补全/历史，5-8 天）
 
 远期
   ├── CSV 解析（3-4 天）
-  ├── DWARF 调试信息 D.1（10-14 天）
+  ├── 生命期系统（21-30 天）—— 解决 L-002 by-ref 闭包逃逸，前置依赖最多
   ├── 并发/线程模型（21-30 天）
-  ├── 包管理器（14-21 天）
+  ├── 包管理器 `ls pkg`（14-21 天）
   └── WebAssembly / HPC / GPU
 ```
+
+### 下一步建议（优先级）
+
+1. **Markdown 模块（std.md）** — 最推荐。数据格式三件套的自然延续，json 已经证明
+   `enum + vec 自递归 + 字符串方法` 这条技术路径成熟，无新编译器前置依赖，5-7 天可交付，
+   用户可直接感知（文档处理）。
+2. **Block env 深拷贝 Phase G** — 若优先补语言完整性而非库生态。这是闭包系统目前唯一
+   明显缺口（L-007），影响"把闭包存进容器再取出"这类常见模式。工期同样 5-7 天。
+3. **DWARF 调试信息 D.1** — 若想提升开发体验上限。投入更大（10-14 天）但属一次性基础设施，
+   后续 VS Code DAP 调试器（D.2）依赖它。
+
+> 倾向 **Markdown（路线明确、低风险、库生态连续）**；若更看重语言内核完整度则选 **Phase G**。

@@ -4,6 +4,7 @@
 #include "checker.h"
 #include "codegen.h"
 #include "module.h"
+#include "repl_edit.h"
 
 #include <llvm-c/Core.h>
 #include <llvm-c/LLJIT.h>
@@ -736,51 +737,6 @@ static int jit_run_file_impl(const char *path, bool memcheck, bool profile) {
 
 /* Read a complete multi-line block (matching braces) from stdin.
    Returns the full text in decl_buf, updating decl_len. */
-static void read_multiline_block(char *decl_buf, size_t buf_size, size_t *decl_len) {
-    int brace_count = 0;
-    for (size_t i = 0; i < *decl_len; i++) {
-        if (decl_buf[i] == '{') brace_count++;
-        else if (decl_buf[i] == '}') brace_count--;
-    }
-
-    char line[4096];
-    while (brace_count > 0) {
-        printf("  ...> ");
-        fflush(stdout);
-        if (fgets(line, sizeof(line), stdin) == NULL) break;
-        size_t ll = strlen(line);
-        while (ll > 0 && (line[ll - 1] == '\n' || line[ll - 1] == '\r'))
-            line[--ll] = '\0';
-        if (*decl_len + ll + 2 < buf_size) {
-            decl_buf[(*decl_len)++] = '\n';
-            memcpy(decl_buf + *decl_len, line, ll + 1);
-            *decl_len += ll;
-        }
-        for (size_t i = 0; i < ll; i++) {
-            if (line[i] == '{') brace_count++;
-            else if (line[i] == '}') brace_count--;
-        }
-    }
-}
-
-/* Check if a line starts with a type keyword (for variable declaration detection) */
-static bool starts_with_type(const char *line) {
-    static const char *type_keywords[] = {
-        "int ", "i8 ", "i16 ", "i32 ", "i64 ",
-        "u8 ", "u16 ", "u32 ", "u64 ",
-        "f32 ", "f64 ", "bool ", "string ", "void ", "object ",
-        "*int ", "*i8 ", "*i16 ", "*i32 ", "*i64 ",
-        "*u8 ", "*u16 ", "*u32 ", "*u64 ",
-        "*f32 ", "*f64 ", "*bool ", "*string ", "*object ",
-        NULL
-    };
-    for (int i = 0; type_keywords[i]; i++) {
-        if (strncmp(line, type_keywords[i], strlen(type_keywords[i])) == 0)
-            return true;
-    }
-    return false;
-}
-
 /* Append a string to a dynamically-growing buffer */
 static void accum_append(char **buf, size_t *len, const char *text) {
     size_t tlen = strlen(text);
@@ -792,194 +748,159 @@ static void accum_append(char **buf, size_t *len, const char *text) {
     (*buf)[*len] = '\0';
 }
 
-typedef enum {
-    REPL_DECL,      /* fn, struct, impl — top-level, compiled as own module */
-    REPL_VAR,       /* int x = ..., string s = ... — accumulated in wrapper body */
-    REPL_EXPR,      /* expression/statement — wrapped in __repl_N() */
-} ReplLineKind;
+/* Has a function with name `fname` already been emitted (as a definition) into
+   the JIT in a previous snippet? */
+static bool emitted_contains(char **emitted, int count, const char *fname) {
+    for (int i = 0; i < count; i++)
+        if (strcmp(emitted[i], fname) == 0) return true;
+    return false;
+}
 
 int jit_repl(void) {
-    printf("LS REPL (type 'exit' or Ctrl+C to quit)\n");
-
     JitEngine engine;
     if (jit_init(&engine) != 0) {
         fprintf(stderr, "error: failed to initialize JIT\n");
         return 1;
     }
 
-    char line[4096];
+    ReplEditor *editor = repl_editor_new();
+    bool color = repl_color_enabled();
+    const char *CER  = color ? "\x1b[31m" : "";   /* red   — errors  */
+    const char *CDIM = color ? "\x1b[90m" : "";   /* gray  — notices */
+    const char *CRST = color ? "\x1b[0m"  : "";
+
+    printf("LS REPL (type 'exit' or Ctrl-D to quit)\n");
+
     int snippet_id = 0;
 
-    /* Top-level declarations (fn, struct) — compiled as separate JIT modules */
-    char *accum_decls = (char *)malloc_safe(1);
-    accum_decls[0] = '\0';
+    /* import statements — replayed at the top of every snippet so the module
+       registry re-resolves them; decls — top-level; vars — replayed inside the
+       __repl_N wrapper body. */
+    char *accum_imports = (char *)malloc_safe(1); accum_imports[0] = '\0';
+    size_t accum_imports_len = 0;
+    char *accum_decls   = (char *)malloc_safe(1); accum_decls[0] = '\0';
     size_t accum_decls_len = 0;
-
-    /* Variable declarations — re-included in every __repl_N function body */
-    char *accum_vars = (char *)malloc_safe(1);
-    accum_vars[0] = '\0';
+    char *accum_vars    = (char *)malloc_safe(1); accum_vars[0] = '\0';
     size_t accum_vars_len = 0;
 
-    while (1) {
-        printf("ls> ");
-        fflush(stdout);
+    /* Names of function definitions already live in the JIT. Re-emitted copies
+       in later snippets (replayed decls, re-imported module functions) are
+       stripped back to declarations so they resolve to the existing symbol
+       instead of triggering a duplicate-definition error. */
+    char **emitted = NULL;
+    int emitted_count = 0, emitted_cap = 0;
 
-        if (fgets(line, sizeof(line), stdin) == NULL) {
-            printf("\n");
-            break;
-        }
+    for (;;) {
+        char *input = repl_editor_read(editor, "ls> ", "...> ", repl_input_is_complete);
+        if (input == NULL) break;   /* EOF / Ctrl-D */
 
-        /* Trim trailing newline */
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-            line[--len] = '\0';
+        /* Trim trailing whitespace for emptiness / exit checks */
+        size_t ilen = strlen(input);
+        while (ilen > 0 && (input[ilen-1]=='\n' || input[ilen-1]=='\r' ||
+                            input[ilen-1]==' '  || input[ilen-1]=='\t'))
+            ilen--;
+        if (ilen == 0) { free(input); continue; }
+        if ((ilen == 4 && strncmp(input, "exit", 4) == 0) ||
+            (ilen == 4 && strncmp(input, "quit", 4) == 0)) { free(input); break; }
 
-        if (len == 0) continue;
-        if (strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) break;
+        ReplLineKind kind = repl_classify(input);
 
-        /* Classify the input line */
-        ReplLineKind kind;
-        if (strncmp(line, "fn ", 3) == 0 ||
-            strncmp(line, "struct ", 7) == 0 ||
-            strncmp(line, "impl ", 5) == 0 ||
-            strncmp(line, "extern ", 7) == 0) {
-            kind = REPL_DECL;
-        } else if (starts_with_type(line)) {
-            kind = REPL_VAR;
+        /* Build full source: imports → decls → (wrapper for var/expr). */
+        size_t cap = accum_imports_len + accum_decls_len + accum_vars_len +
+                     strlen(input) + 256;
+        char *source_buf = (char *)malloc_safe(cap);
+        if (kind == REPL_IMPORT) {
+            snprintf(source_buf, cap, "%s\n%s\n%s\n",
+                     accum_imports, input, accum_decls);
+        } else if (kind == REPL_DECL) {
+            snprintf(source_buf, cap, "%s\n%s\n%s\n",
+                     accum_imports, accum_decls, input);
         } else {
-            kind = REPL_EXPR;
+            snprintf(source_buf, cap,
+                     "%s\n%s\n"
+                     "fn __repl_%d() -> int {\n%s\n  %s\n  return 0\n}\n",
+                     accum_imports, accum_decls, snippet_id,
+                     (accum_vars_len > 0 ? accum_vars : ""), input);
         }
 
-        /* Step 1: Read complete input (handle multi-line blocks for decls) */
-        char new_input[4096];
-        snprintf(new_input, sizeof(new_input), "%s", line);
-        size_t input_len = strlen(new_input);
-        if (kind == REPL_DECL) {
-            read_multiline_block(new_input, sizeof(new_input), &input_len);
-        }
-
-        /* Step 2: Build the source to parse + typecheck + codegen.
-           - All accumulated decls (fn/struct) go at top level
-           - A wrapper __repl_N function contains: accum_vars + new line
-           - For REPL_DECL: the new decl itself is top-level, and we add a
-             dummy wrapper just to validate but won't execute it
-           - For REPL_VAR / REPL_EXPR: the wrapper contains all vars + new code */
-        char new_code[4096];
-        char source_buf[32768];
-
-        if (kind == REPL_DECL) {
-            /* new_code is the declaration itself */
-            snprintf(new_code, sizeof(new_code), "%s", new_input);
-            snprintf(source_buf, sizeof(source_buf),
-                     "%s\n%s\n", accum_decls, new_code);
-        } else if (kind == REPL_VAR) {
-            /* Wrap all vars + new var in __repl_N, then return 0 */
-            snprintf(new_code, sizeof(new_code), "%s", new_input);
-            snprintf(source_buf, sizeof(source_buf),
-                     "%s\n"
-                     "fn __repl_%d() -> int {\n"
-                     "%s\n"
-                     "  %s\n"
-                     "  return 0\n"
-                     "}\n",
-                     accum_decls, snippet_id,
-                     (accum_vars_len > 0 ? accum_vars : ""),
-                     new_code);
-        } else {
-            /* REPL_EXPR: wrap all vars + expression in __repl_N */
-            snprintf(new_code, sizeof(new_code), "%s", new_input);
-            snprintf(source_buf, sizeof(source_buf),
-                     "%s\n"
-                     "fn __repl_%d() -> int {\n"
-                     "%s\n"
-                     "  %s\n"
-                     "  return 0\n"
-                     "}\n",
-                     accum_decls, snippet_id,
-                     (accum_vars_len > 0 ? accum_vars : ""),
-                     new_code);
-        }
-
-        /* Parse */
         AstNode *ast = parse(source_buf, "<repl>");
+        free(source_buf);
         if (ast == NULL) {
-            fprintf(stderr, "  (parse error)\n");
-            continue;
+            fprintf(stderr, "%s  (parse error)%s\n", CER, CRST);
+            free(input); continue;
         }
 
-        /* Type check */
-        if (!checker_check(ast, "<repl>", NULL, NULL)) {
+        /* Type check with a fresh module registry (resolves replayed imports). */
+        ModuleRegistry *reg = module_registry_new();
+        CheckerGenericMethods gm = {0};
+        if (!checker_check(ast, "<repl>", reg, &gm)) {
+            module_registry_free(reg);
             ast_free(ast);
-            fprintf(stderr, "  (type error)\n");
-            continue;
-        }
-
-        /* Step 3: Codegen full AST, then strip old function bodies */
-
-        /* Count old declarations to know which functions are new */
-        int old_decl_count = 0;
-        if (accum_decls_len > 0) {
-            AstNode *old_ast = parse(accum_decls, "<repl>");
-            if (old_ast && old_ast->kind == AST_PROGRAM) {
-                old_decl_count = old_ast->as.program.decl_count;
-            }
-            if (old_ast) ast_free(old_ast);
-        }
-
-        /* Gather new function names */
-        int total_decls = ast->as.program.decl_count;
-        const char *new_fn_names[64];
-        int new_fn_count = 0;
-        for (int i = old_decl_count; i < total_decls && new_fn_count < 64; i++) {
-            AstNode *d = ast->as.program.decls[i];
-            if (d->kind == AST_FN_DECL) {
-                new_fn_names[new_fn_count++] = d->as.fn_decl.name;
-            }
+            fprintf(stderr, "%s  (type error)%s\n", CER, CRST);
+            free(input); continue;
         }
 
         char mod_name[64];
         snprintf(mod_name, sizeof(mod_name), "repl_%d", snippet_id);
-        LLVMModuleRef module = build_jit_module(&engine, ast, mod_name, NULL, NULL);
+        LLVMModuleRef module = build_jit_module(&engine, ast, mod_name, reg, &gm);
+        module_registry_free(reg);
+        if (module == NULL) {
+            ast_free(ast);
+            fprintf(stderr, "%s  (codegen error)%s\n", CER, CRST);
+            free(input); continue;
+        }
 
-        /* Strip bodies of old functions to avoid duplicate definitions */
-        if (module) {
-            LLVMValueRef fn = LLVMGetFirstFunction(module);
-            while (fn) {
-                const char *fname = LLVMGetValueName(fn);
-                bool is_new = false;
-                for (int i = 0; i < new_fn_count; i++) {
-                    if (strcmp(new_fn_names[i], fname) == 0) {
-                        is_new = true;
-                        break;
-                    }
-                }
-                if (!is_new && !LLVMIsDeclaration(fn)) {
-                    while (LLVMGetFirstBasicBlock(fn)) {
-                        LLVMDeleteBasicBlock(LLVMGetFirstBasicBlock(fn));
-                    }
-                }
-                fn = LLVMGetNextFunction(fn);
+        /* Strip bodies of functions already defined in a prior snippet. */
+        for (LLVMValueRef fn = LLVMGetFirstFunction(module); fn;
+             fn = LLVMGetNextFunction(fn)) {
+            if (LLVMIsDeclaration(fn)) continue;
+            if (emitted_contains(emitted, emitted_count, LLVMGetValueName(fn))) {
+                while (LLVMGetFirstBasicBlock(fn))
+                    LLVMDeleteBasicBlock(LLVMGetFirstBasicBlock(fn));
             }
         }
 
-        if (module == NULL) {
-            ast_free(ast);
-            fprintf(stderr, "  (codegen error)\n");
-            continue;
+        /* Imported .ls-module functions are emitted with internal linkage (an
+           AOT anti-collision measure), which hides them from other snippet
+           modules in the JIT. The REPL is JIT-only and each snippet is its own
+           module, so promote every function to external linkage: a definition
+           in one snippet must satisfy the stripped declaration in the next. */
+        for (LLVMValueRef fn = LLVMGetFirstFunction(module); fn;
+             fn = LLVMGetNextFunction(fn)) {
+            LLVMSetLinkage(fn, LLVMExternalLinkage);
         }
 
-        /* Add to JIT */
         if (jit_add_module(&engine, module) != 0) {
             ast_free(ast);
-            fprintf(stderr, "  (jit error)\n");
-            continue;
+            fprintf(stderr, "%s  (jit error)%s\n", CER, CRST);
+            free(input); continue;
         }
 
-        /* Step 4: Execute or acknowledge */
-        if (kind == REPL_DECL) {
-            printf("  (defined)\n");
+        /* Record the function definitions this snippet contributed. */
+        for (LLVMValueRef fn = LLVMGetFirstFunction(module); fn;
+             fn = LLVMGetNextFunction(fn)) {
+            if (LLVMIsDeclaration(fn)) continue;
+            const char *fname = LLVMGetValueName(fn);
+            if (emitted_contains(emitted, emitted_count, fname)) continue;
+            if (emitted_count == emitted_cap) {
+                emitted_cap = emitted_cap ? emitted_cap * 2 : 32;
+                emitted = (char **)realloc_safe(emitted,
+                                                (size_t)emitted_cap * sizeof(char *));
+            }
+            size_t n = strlen(fname) + 1;
+            char *dup = (char *)malloc_safe(n);
+            memcpy(dup, fname, n);
+            emitted[emitted_count++] = dup;
+        }
+
+        /* Execute / acknowledge, then accumulate. */
+        if (kind == REPL_IMPORT) {
+            printf("%s  (imported)%s\n", CDIM, CRST);
+            accum_append(&accum_imports, &accum_imports_len, input);
+        } else if (kind == REPL_DECL) {
+            printf("%s  (defined)%s\n", CDIM, CRST);
+            accum_append(&accum_decls, &accum_decls_len, input);
         } else {
-            /* Execute __repl_N for var decls and expressions */
             char fn_name[64];
             snprintf(fn_name, sizeof(fn_name), "__repl_%d", snippet_id);
             uint64_t addr = jit_lookup(&engine, fn_name);
@@ -987,31 +908,29 @@ int jit_repl(void) {
                 typedef int (*ReplFn)(void);
                 ReplFn fn = (ReplFn)(uintptr_t)addr;
                 int result = fn();
-                if (result != 0) {
-                    printf("=> %d\n", result);
-                }
+                if (result != 0) printf("=> %d\n", result);
             }
             if (kind == REPL_VAR) {
-                printf("  (ok)\n");
+                printf("%s  (ok)%s\n", CDIM, CRST);
+                size_t vlen = strlen(input) + 4;
+                char *var_line = (char *)malloc_safe(vlen);
+                snprintf(var_line, vlen, "  %s", input);
+                accum_append(&accum_vars, &accum_vars_len, var_line);
+                free(var_line);
             }
-        }
-
-        /* Step 5: Accumulate on success */
-        if (kind == REPL_DECL) {
-            accum_append(&accum_decls, &accum_decls_len, new_code);
-        } else if (kind == REPL_VAR) {
-            /* Accumulate as "  type name = expr" for inclusion in future wrapper bodies */
-            char var_line[4096];
-            snprintf(var_line, sizeof(var_line), "  %s", new_code);
-            accum_append(&accum_vars, &accum_vars_len, var_line);
         }
 
         ast_free(ast);
+        free(input);
         snippet_id++;
     }
 
+    for (int i = 0; i < emitted_count; i++) free(emitted[i]);
+    free(emitted);
+    free(accum_imports);
     free(accum_decls);
     free(accum_vars);
+    repl_editor_free(editor);
     jit_destroy(&engine);
     return 0;
 }

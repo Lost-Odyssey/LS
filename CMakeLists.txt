@@ -85,6 +85,8 @@ set(LS_SOURCES
     src/codegen.c
     src/debug.c
     src/jit.c
+    src/repl_edit.c
+    src/repl_term.c
     src/ffi.c
     src/module.c
     src/builtins_math.c
@@ -243,6 +245,8 @@ add_executable(test_jit
     src/codegen.c
     src/debug.c
     src/jit.c
+    src/repl_edit.c
+    src/repl_term.c
     src/ffi.c
     src/module.c
     src/builtins_math.c
@@ -277,6 +281,8 @@ add_executable(test_ffi
     src/codegen.c
     src/debug.c
     src/jit.c
+    src/repl_edit.c
+    src/repl_term.c
     src/ffi.c
     src/module.c
     src/builtins_math.c
@@ -311,6 +317,8 @@ add_executable(test_module
     src/codegen.c
     src/debug.c
     src/jit.c
+    src/repl_edit.c
+    src/repl_term.c
     src/ffi.c
     src/module.c
     src/builtins_math.c
@@ -346,6 +354,8 @@ add_executable(test_memory
     src/codegen.c
     src/debug.c
     src/jit.c
+    src/repl_edit.c
+    src/repl_term.c
     src/ffi.c
     src/module.c
     src/builtins_math.c
@@ -367,6 +377,23 @@ else()
     target_link_libraries(test_memory ${LS_UNIX_EXTRA_LIBS})
 endif()
 add_test(NAME test_memory COMMAND test_memory)
+
+# REPL helper unit tests (classification / completeness / highlighting).
+# Pure logic over the scanner — no LLVM needed.
+add_executable(test_repl tests/test_repl.c src/scanner.c src/repl_edit.c src/repl_term.c)
+target_include_directories(test_repl PRIVATE src/)
+add_test(NAME test_repl COMMAND test_repl)
+
+# REPL import-persistence E2E: pipe `import math` + a math call into `ls repl`
+# (non-TTY → fgets fallback) and assert the result is computed.
+add_test(
+    NAME test_repl_import
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSCRIPT=${CMAKE_SOURCE_DIR}/tests/samples/repl_import.in
+        -DEXPECT=4
+        -P ${CMAKE_SOURCE_DIR}/tests/test_repl_pipe.cmake
+)
 
 # AOT memcheck end-to-end test: compile a sample with `ls compile --memcheck`,
 # run the produced binary, assert the runtime report shows "OK clean".
@@ -1002,6 +1029,41 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_trait_struct_bound.cmake
 )
 set_tests_properties(test_trait_struct_bound PROPERTIES DEPENDS "test_trait_builtin_impl")
+
+# ---- Operator overloading (Add/Sub/Mul/Div/Rem/Eq/Ord) ----
+add_test(
+    NAME test_operator_overload
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_operator_overload.cmake
+)
+set_tests_properties(test_operator_overload PROPERTIES DEPENDS "test_trait_struct_bound")
+
+# Operator method on has_drop struct (string field) — JIT memcheck must be clean.
+add_test(
+    NAME test_operator_overload_memcheck
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/operator_overload_memcheck.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=operator_overload_memcheck
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+set_tests_properties(test_operator_overload_memcheck PROPERTIES DEPENDS "test_operator_overload")
+
+# Parser BF: `Type name = a * b` decl-initializer must parse as multiplication,
+# not a spurious `*b` pointer declaration (affects POD + operator-overload `c = a * b`).
+add_test(
+    NAME test_decl_init_mul
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_decl_init_mul.cmake
+)
+set_tests_properties(test_decl_init_mul PROPERTIES DEPENDS "test_operator_overload")
 
 # ---- L-006 fix: enum with vec/map payload ----
 add_test(

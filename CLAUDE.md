@@ -126,8 +126,12 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 | — | L-009 跨模块函数名 mangling（`<modpath>__<fn>`） | ✅ |
 | — | BF-040 array 元素字段读取 double-drop 修复 | ✅ |
 | — | 模块全局变量命名空间（P1-1~P1-4）+ B-1 同名类型冲突检测 | ✅ |
+| — | 操作符重载（Add/Sub/Mul/Div/Rem/Eq/Ord，Ruby 风 `fn +`，checker 降级） | ✅ |
+| — | REPL 改进：自研行编辑器 + 通用多行 + import 持久化修复（语法高亮暂关；L-010 限制见下） | ✅ |
 
-**当前测试**：ctest 79/79（模块全局变量 P1-1~P1-4 + B-1 + B-2 struct/enum LLVM 名前缀化 + B-3 impl 方法名前缀化）
+**当前测试**：ctest 90/90（新增 REPL `test_repl` + `test_repl_import`；操作符重载 test_operator_overload + memcheck）
+
+> ⚠️ **REPL 已知限制 L-010**：`ls repl` 中跨多条输入行对同一类 has_drop enum/struct 值（如 `import std.json` 的 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件不受影响。根因：每条 REPL snippet 是独立 JIT 模块，imported 模块 drop/clone 辅助被跨模块 strip 与 RAII 析构交互出错。修法方向：imported 模块在 REPL 只发射一次。详见 [docs/feature_inventory.md](docs/feature_inventory.md) 三、L-010。
 
 > 各阶段实现细节见 [docs/features_history.md](docs/features_history.md)
 
