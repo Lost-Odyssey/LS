@@ -419,6 +419,23 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
 
+# Container value-semantics matrix (vec/map first-class — Phase 0 safety net).
+# Baseline-clean cases, locked under JIT memcheck. Broken target cases (D/F) are
+# tracked in tests/samples/cmatrix/MATRIX.md and registered as they turn green.
+foreach(cm
+        b01_vec_scope b02_vec_nested_get b03_vec_rvalue_arg
+        b04_struct_vec_drop b05_enum_vec b06_map_scope t04_map_vec_value)
+    add_test(
+        NAME test_cmatrix_${cm}
+        COMMAND ${CMAKE_COMMAND}
+            -DLS_EXE=$<TARGET_FILE:ls>
+            -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/cmatrix/${cm}.ls
+            -DWORK_DIR=${CMAKE_BINARY_DIR}
+            -DTEST_NAME=cmatrix_${cm}
+            -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+    )
+endforeach()
+
 # AOT memcheck end-to-end test: compile a sample with `ls compile --memcheck`,
 # run the produced binary, assert the runtime report shows "OK clean".
 # Driven by a cmake -P script for cross-platform process invocation.
