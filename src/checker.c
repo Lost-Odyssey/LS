@@ -310,6 +310,11 @@ static Type *find_enum_type(Checker *c, const char *name)
 static Type *check_expr(Checker *c, AstNode *node);
 static bool type_owns_heap_for_enum(const Type *t);
 static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name);
+/* Operator overloading: try to lower `a OP b` to a user operator-method call.
+   Returns true if `a` is a struct/enum overload site (handled — possibly with an
+   error). Returns false to let the builtin numeric/string path proceed. */
+static bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *right,
+                                  Type **out_result);
 
 /* Search all registered enums for a variant matching `vname`.
    Returns the number of matches (0 = none, 1 = unique, >1 = ambiguous).
@@ -4206,6 +4211,19 @@ static Type *check_expr(Checker *c, AstNode *node)
             break;
         }
 
+        /* Operator overloading: if the left operand is a struct/enum, try to
+           lower `a OP b` to a user-defined operator-method call. Must run BEFORE
+           the builtin op switch so that struct `==` does not fall into the
+           builtin type_equals path (which would emit invalid IR). */
+        {
+            Type *ov_result = NULL;
+            if (try_operator_overload(c, node, left, right, &ov_result))
+            {
+                result = ov_result;
+                break;
+            }
+        }
+
         switch (node->as.binary.op)
         {
         /* Arithmetic: +, -, *, /, % */
@@ -7393,6 +7411,235 @@ static int find_trait(Checker *c, const char *name)
     return -1;
 }
 
+/* ---- Operator overloading: built-in operator traits ---- */
+
+/* The 7 soft-reserved built-in operator traits. */
+static bool is_builtin_operator_trait(const char *name)
+{
+    return strcmp(name, "Add") == 0 || strcmp(name, "Sub") == 0 ||
+           strcmp(name, "Mul") == 0 || strcmp(name, "Div") == 0 ||
+           strcmp(name, "Rem") == 0 || strcmp(name, "Eq")  == 0 ||
+           strcmp(name, "Ord") == 0;
+}
+
+/* Given an internal operator method name ($op_*), return the built-in trait that
+   declares it, or NULL if mname is not an operator method. */
+static const char *operator_trait_for_method(const char *mname)
+{
+    if (mname == NULL || mname[0] != '$') return NULL;
+    if (strcmp(mname, "$op_add") == 0) return "Add";
+    if (strcmp(mname, "$op_sub") == 0) return "Sub";
+    if (strcmp(mname, "$op_mul") == 0) return "Mul";
+    if (strcmp(mname, "$op_div") == 0) return "Div";
+    if (strcmp(mname, "$op_rem") == 0) return "Rem";
+    if (strcmp(mname, "$op_eq") == 0 || strcmp(mname, "$op_ne") == 0) return "Eq";
+    if (strcmp(mname, "$op_lt") == 0 || strcmp(mname, "$op_gt") == 0 ||
+        strcmp(mname, "$op_le") == 0 || strcmp(mname, "$op_ge") == 0) return "Ord";
+    return NULL;
+}
+
+/* Map an internal operator method name back to its source symbol (for diagnostics). */
+static const char *operator_symbol_for_method(const char *mname)
+{
+    if (strcmp(mname, "$op_add") == 0) return "+";
+    if (strcmp(mname, "$op_sub") == 0) return "-";
+    if (strcmp(mname, "$op_mul") == 0) return "*";
+    if (strcmp(mname, "$op_div") == 0) return "/";
+    if (strcmp(mname, "$op_rem") == 0) return "%";
+    if (strcmp(mname, "$op_eq") == 0)  return "==";
+    if (strcmp(mname, "$op_ne") == 0)  return "!=";
+    if (strcmp(mname, "$op_lt") == 0)  return "<";
+    if (strcmp(mname, "$op_gt") == 0)  return ">";
+    if (strcmp(mname, "$op_le") == 0)  return "<=";
+    if (strcmp(mname, "$op_ge") == 0)  return ">=";
+    return mname;
+}
+
+/* Comparison operators that may be omitted from an Eq/Ord impl (derived from ==/<). */
+static bool is_optional_operator_method(const char *mname)
+{
+    return strcmp(mname, "$op_ne") == 0 || strcmp(mname, "$op_gt") == 0 ||
+           strcmp(mname, "$op_le") == 0 || strcmp(mname, "$op_ge") == 0;
+}
+
+/* Register one built-in operator trait. Every method is `fn OP(&self, &Self rhs)`;
+   ret_is_bool selects comparison (-> bool) vs arithmetic (-> Self). */
+static void add_builtin_op_trait(Checker *c, const char *name,
+                                 const char *const *methods, int method_count,
+                                 bool ret_is_bool)
+{
+    if (c->trait_count >= c->trait_cap)
+    {
+        c->trait_cap = GROW_CAPACITY(c->trait_cap);
+        c->trait_registry = realloc_safe(c->trait_registry,
+                                         (size_t)c->trait_cap * sizeof(c->trait_registry[0]));
+    }
+    int idx = c->trait_count++;
+    {
+        size_t len = strlen(name) + 1;
+        char *dup = (char *)malloc_safe(len);
+        memcpy(dup, name, len);
+        c->trait_registry[idx].name = dup;
+    }
+    c->trait_registry[idx].method_count = method_count;
+    c->trait_registry[idx].methods = (void *)
+        malloc_safe((size_t)method_count * sizeof(c->trait_registry[idx].methods[0]));
+    for (int i = 0; i < method_count; i++)
+    {
+        size_t nlen = strlen(methods[i]) + 1;
+        char *ndup = (char *)malloc_safe(nlen);
+        memcpy(ndup, methods[i], nlen);
+        Type **params = (Type **)malloc_safe(sizeof(Type *));
+        params[0] = type_reference(&g_self_placeholder_type);            /* &Self rhs */
+        Type *ret = ret_is_bool ? type_bool() : &g_self_placeholder_type; /* bool | Self */
+        c->trait_registry[idx].methods[i].name = ndup;
+        c->trait_registry[idx].methods[i].type = type_function(params, 1, ret, false);
+        c->trait_registry[idx].methods[i].self_borrow_kind = 1; /* &self */
+    }
+}
+
+/* Pre-register the 7 built-in operator traits into the trait registry, before any
+   user declarations. A user `trait Add {}` then collides via the duplicate check. */
+static void register_builtin_operator_traits(Checker *c)
+{
+    static const char *const m_add[] = {"$op_add"};
+    static const char *const m_sub[] = {"$op_sub"};
+    static const char *const m_mul[] = {"$op_mul"};
+    static const char *const m_div[] = {"$op_div"};
+    static const char *const m_rem[] = {"$op_rem"};
+    static const char *const m_eq[]  = {"$op_eq", "$op_ne"};
+    static const char *const m_ord[] = {"$op_lt", "$op_gt", "$op_le", "$op_ge"};
+    add_builtin_op_trait(c, "Add", m_add, 1, false);
+    add_builtin_op_trait(c, "Sub", m_sub, 1, false);
+    add_builtin_op_trait(c, "Mul", m_mul, 1, false);
+    add_builtin_op_trait(c, "Div", m_div, 1, false);
+    add_builtin_op_trait(c, "Rem", m_rem, 1, false);
+    add_builtin_op_trait(c, "Eq",  m_eq,  2, true);
+    add_builtin_op_trait(c, "Ord", m_ord, 4, true);
+}
+
+/* Build `obj.method(arg)` as a fresh AST_CALL. obj/arg are deep-cloned so the
+   synthesized tree owns its subtrees (freed by ordinary ast_free recursion). */
+static AstNode *op_make_call(AstNode *obj_src, const char *method,
+                             AstNode *arg_src, int line, int col)
+{
+    AstNode *fld = ast_new(AST_FIELD, line, col);
+    fld->as.field_access.object = ast_clone_deep(obj_src);
+    size_t mlen = strlen(method) + 1;
+    char *mdup = (char *)malloc_safe(mlen);
+    memcpy(mdup, method, mlen);
+    fld->as.field_access.field = mdup;
+
+    AstNode *call = ast_new(AST_CALL, line, col);
+    call->as.call.callee = fld;
+    call->as.call.args = (AstNode **)malloc_safe(sizeof(AstNode *));
+    call->as.call.args[0] = ast_clone_deep(arg_src);
+    call->as.call.arg_count = 1;
+    call->as.call.type_args = NULL;
+    call->as.call.type_arg_count = 0;
+    return call;
+}
+
+/* Build `!(inner)`. Takes ownership of inner. */
+static AstNode *op_make_not(AstNode *inner, int line, int col)
+{
+    AstNode *u = ast_new(AST_UNARY, line, col);
+    u->as.unary.op = TOKEN_BANG;
+    u->as.unary.operand = inner;
+    return u;
+}
+
+static bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *right,
+                                  Type **out_result)
+{
+    (void)right;
+    *out_result = NULL;
+
+    /* Only struct/enum VALUE operands overload. Pointer operands (e.g. `*Point p`,
+       `p == nil`) keep builtin pointer-identity comparison — do NOT deref. Borrow
+       params (`&self`, `&Vec2 rhs`) are already presented as value types by the
+       checker, so no deref is needed for them either. */
+    Type *lt = left;
+    if (lt == NULL || (lt->kind != TYPE_STRUCT && lt->kind != TYPE_ENUM))
+        return false;  /* not an overload site — let the builtin path handle it */
+
+    /* Map operator → (trait, primary method, derivation kind).
+       derive: 0 none, 1 !=(neg-eq), 2 >(swap-lt), 3 <=(neg-swap-lt), 4 >=(neg-lt). */
+    const char *trait = NULL, *prim = NULL;
+    int derive = 0;
+    switch (node->as.binary.op)
+    {
+    case TOKEN_PLUS:    trait = "Add"; prim = "$op_add"; break;
+    case TOKEN_MINUS:   trait = "Sub"; prim = "$op_sub"; break;
+    case TOKEN_STAR:    trait = "Mul"; prim = "$op_mul"; break;
+    case TOKEN_SLASH:   trait = "Div"; prim = "$op_div"; break;
+    case TOKEN_PERCENT: trait = "Rem"; prim = "$op_rem"; break;
+    case TOKEN_EQ:      trait = "Eq";  prim = "$op_eq";  break;
+    case TOKEN_NEQ:     trait = "Eq";  prim = "$op_ne";  derive = 1; break;
+    case TOKEN_LT:      trait = "Ord"; prim = "$op_lt";  break;
+    case TOKEN_GT:      trait = "Ord"; prim = "$op_gt";  derive = 2; break;
+    case TOKEN_LEQ:     trait = "Ord"; prim = "$op_le";  derive = 3; break;
+    case TOKEN_GEQ:     trait = "Ord"; prim = "$op_ge";  derive = 4; break;
+    default:
+        /* Bitwise/shift/logical on struct/enum are not overloadable; let the
+           builtin path emit its "requires integer/numeric" error. */
+        return false;
+    }
+
+    if (!checker_type_satisfies_trait(c, lt, trait))
+    {
+        checker_error(c, node->line, node->column,
+                      "type '%s' does not implement trait '%s' (required for operator '%s')",
+                      type_name(lt), trait, operator_symbol_for_method(prim));
+        return true;  /* recognized overload site, reported */
+    }
+
+    const char *key = impl_key_of_type(lt);
+    if (key == NULL) key = type_name(lt);
+
+    AstNode *lhs = node->as.binary.left;
+    AstNode *rhs = node->as.binary.right;
+    int line = node->line, col = node->column;
+
+    /* Prefer an explicit method when present (covers required ops and any
+       explicit override of a derivable comparison). */
+    bool have_prim = (find_method(c, key, prim) != NULL);
+    AstNode *lowered = NULL;
+    if (derive == 0 || have_prim)
+    {
+        lowered = op_make_call(lhs, prim, rhs, line, col);
+    }
+    else
+    {
+        switch (derive)
+        {
+        case 1: /* a != b  ->  !(a $op_eq b) */
+            lowered = op_make_not(op_make_call(lhs, "$op_eq", rhs, line, col), line, col);
+            break;
+        case 2: /* a > b   ->  b $op_lt a */
+            lowered = op_make_call(rhs, "$op_lt", lhs, line, col);
+            break;
+        case 3: /* a <= b  ->  !(b $op_lt a) */
+            lowered = op_make_not(op_make_call(rhs, "$op_lt", lhs, line, col), line, col);
+            break;
+        case 4: /* a >= b  ->  !(a $op_lt b) */
+            lowered = op_make_not(op_make_call(lhs, "$op_lt", rhs, line, col), line, col);
+            break;
+        }
+    }
+
+    /* Type-check the synthesized expression (resolves dispatch, borrows, sret). */
+    Type *t = check_expr(c, lowered);
+    if (t == NULL)
+    {
+        ast_free(lowered);  /* inner check already reported a precise error */
+        return true;
+    }
+    node->as.binary.lowered = lowered;
+    *out_result = t;
+    return true;
+}
+
 /* Check whether a concrete type satisfies a trait constraint by looking up trait_impls. */
 static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name)
 {
@@ -7417,8 +7664,12 @@ static void check_trait_decl(Checker *c, AstNode *node)
     /* Check for duplicate trait name */
     if (find_trait(c, name) >= 0)
     {
-        checker_error(c, node->line, node->column,
-                      "trait '%s' already defined", name);
+        if (is_builtin_operator_trait(name))
+            checker_error(c, node->line, node->column,
+                          "'%s' is a built-in operator trait and cannot be redefined", name);
+        else
+            checker_error(c, node->line, node->column,
+                          "trait '%s' already defined", name);
         return;
     }
 
@@ -7556,6 +7807,21 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
         const char *mname = method->as.fn_decl.name;
         bool is_static = method->as.fn_decl.is_static;
         int user_sbk = method->as.fn_decl.self_borrow_kind;
+
+        /* Operator overloading: a $op_* method (parsed from `fn +`, `fn ==`, ...)
+           is only valid when this trait is the matching built-in operator trait.
+           Catches `impl Add for T { fn == }` and `impl UserTrait for T { fn + }`. */
+        if (mname[0] == '$')
+        {
+            const char *want = operator_trait_for_method(mname);
+            if (want == NULL || strcmp(want, trait_name) != 0)
+            {
+                checker_error(c, method->line, method->column,
+                              "operator method '%s' is only valid when implementing built-in trait '%s'",
+                              operator_symbol_for_method(mname), want ? want : "<operator>");
+                continue;
+            }
+        }
 
         /* Static methods are not allowed in trait impls */
         if (is_static)
@@ -7726,10 +7992,16 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
     {
         if (!matched[j])
         {
+            const char *tmname = c->trait_registry[tidx].methods[j].name;
+            /* Eq/Ord derivable comparison operators (!=, >, <=, >=) are optional —
+               they are synthesized from == / < when not explicitly provided. */
+            if (is_builtin_operator_trait(trait_name) && is_optional_operator_method(tmname))
+                continue;
+            const char *disp = is_builtin_operator_trait(trait_name)
+                                   ? operator_symbol_for_method(tmname) : tmname;
             checker_error(c, node->line, node->column,
                           "struct '%s' does not implement trait '%s': missing method '%s'",
-                          struct_name, trait_name,
-                          c->trait_registry[tidx].methods[j].name);
+                          struct_name, trait_name, disp);
         }
     }
     free(matched);
@@ -8265,6 +8537,7 @@ bool checker_check(AstNode *program, const char *source_path,
     c.current_scope = scope_new(NULL);
 
     register_builtins(&c);
+    register_builtin_operator_traits(&c);
     forward_pass(&c, program);
     check_pass(&c, program);
 

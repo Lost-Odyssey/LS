@@ -10077,6 +10077,12 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
     case AST_BINARY:
     {
+        /* Operator overloading: the checker lowered `a OP b` to a synthesized
+           method-call (or derived) expression. Emit that instead; it reuses the
+           full instance-method-call codegen (self borrow, sret, drop, etc.). */
+        if (node->as.binary.lowered)
+            return codegen_expr(ctx, node->as.binary.lowered);
+
         /* Short-circuit for logical && and || */
         if (node->as.binary.op == TOKEN_AND || node->as.binary.op == TOKEN_OR)
         {

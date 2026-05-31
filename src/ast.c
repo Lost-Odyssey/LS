@@ -126,6 +126,17 @@ TypeNode *type_node_clone(const TypeNode *src) {
 /* ---- ast_free ---- */
 
 /* Recursively free an AstNode and all its children */
+/* Allocate a zero-initialized AstNode of the given kind. Public so the checker
+   can synthesize nodes (e.g. operator-overload lowering). */
+AstNode *ast_new(AstNodeType kind, int line, int col) {
+    AstNode *n = (AstNode *)malloc_safe(sizeof(AstNode));
+    memset(n, 0, sizeof(AstNode));
+    n->kind = kind;
+    n->line = line;
+    n->column = col;
+    return n;
+}
+
 void ast_free(AstNode *node) {
     if (node == NULL) return;
     switch (node->kind) {
@@ -173,6 +184,9 @@ void ast_free(AstNode *node) {
     case AST_BINARY:
         ast_free(node->as.binary.left);
         ast_free(node->as.binary.right);
+        /* Operator overloading: `lowered` owns deep-cloned copies of left/right,
+           so ordinary recursive free is safe (no shared subtrees). */
+        ast_free(node->as.binary.lowered);
         break;
     case AST_CALL:
         ast_free(node->as.call.callee);
@@ -594,6 +608,10 @@ AstNode *ast_clone_deep(const AstNode *src) {
     case AST_BINARY:
         n->as.binary.left  = ast_clone_deep(src->as.binary.left);
         n->as.binary.right = ast_clone_deep(src->as.binary.right);
+        /* `lowered` is shallow-copied by `*n = *src`; clear it so the clone does
+           not share/double-free the original's synthesized subtree. The checker
+           re-synthesizes it when re-checking the clone. */
+        n->as.binary.lowered = NULL;
         break;
     case AST_CALL:
         n->as.call.callee = ast_clone_deep(src->as.call.callee);

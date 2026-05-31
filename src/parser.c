@@ -1457,6 +1457,11 @@ static const ParseRule *get_rule(TokenType type) {
 
 static AstNode *parse_expr_prec(Parser *p, Precedence min_prec) {
     init_parse_rules();
+    /* Capture and clear the statement-boundary flag: only this top-level call
+       may split a trailing `*Ident Ident` into a pointer declaration. Nested
+       sub-expressions (initializers, args, parens) must read it as multiplication. */
+    bool allow_decl_break = p->stmt_boundary;
+    p->stmt_boundary = false;
     advance(p);
     PrefixFn prefix_fn = get_rule(p->previous.type)->prefix;
     if (prefix_fn == NULL) {
@@ -1477,8 +1482,10 @@ static AstNode *parse_expr_prec(Parser *p, Precedence min_prec) {
         if (p->current.type == TOKEN_STAR) {
             Token after_star = scanner_peek(&p->scanner);
             if (is_type_keyword(after_star.type)) break;
-            /* Also handle *StructName varName — pointer-to-struct declaration */
-            if (after_star.type == TOKEN_IDENTIFIER) {
+            /* Also handle *StructName varName — pointer-to-struct declaration.
+               Only at a statement boundary: inside an initializer / args / parens
+               `ident * ident` is always multiplication (e.g. `int e = a * b`). */
+            if (allow_decl_break && after_star.type == TOKEN_IDENTIFIER) {
                 /* Peek two tokens ahead: if *Ident Ident, it's a var decl */
                 Scanner saved_scan = p->scanner;
                 scanner_next(&saved_scan); /* consume the Identifier (struct name) */
@@ -2072,17 +2079,50 @@ static AstNode *parse_fn_signature(Parser *p) {
     return n;
 }
 
-static AstNode *parse_fn_decl(Parser *p) {
+/* Operator overloading: map an operator token to its internal method name
+   ($op_*). Returns a malloc'd string, or NULL if the token is not an
+   overloadable operator. The '$' sigil cannot appear in a user identifier
+   (scanner only accepts isalnum/_), so these names never collide with
+   user-written methods. */
+static char *operator_method_name(TokenType t) {
+    const char *s = NULL;
+    switch (t) {
+    case TOKEN_PLUS:    s = "$op_add"; break;
+    case TOKEN_MINUS:   s = "$op_sub"; break;
+    case TOKEN_STAR:    s = "$op_mul"; break;
+    case TOKEN_SLASH:   s = "$op_div"; break;
+    case TOKEN_PERCENT: s = "$op_rem"; break;
+    case TOKEN_EQ:      s = "$op_eq";  break;
+    case TOKEN_NEQ:     s = "$op_ne";  break;
+    case TOKEN_LT:      s = "$op_lt";  break;
+    case TOKEN_GT:      s = "$op_gt";  break;
+    case TOKEN_LEQ:     s = "$op_le";  break;
+    case TOKEN_GEQ:     s = "$op_ge";  break;
+    default: return NULL;
+    }
+    return str_dup_n(s, (int)strlen(s));
+}
+
+/* allow_operator_name: when true (only inside `impl Trait for Type` blocks),
+   an operator token is accepted as the method name and canonicalized to its
+   $op_* internal name. Elsewhere only TOKEN_IDENTIFIER is a valid name, so
+   top-level `fn +` and symbol names in plain `impl`/`trait` bodies are rejected. */
+static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     /* 'fn' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
 
-    if (!check(p, TOKEN_IDENTIFIER)) {
+    char *name = NULL;
+    if (check(p, TOKEN_IDENTIFIER)) {
+        advance(p);
+        name = str_dup_n(p->previous.start, p->previous.length);
+    } else if (allow_operator_name &&
+               (name = operator_method_name(p->current.type)) != NULL) {
+        advance(p);  /* consume the operator token used as the method name */
+    } else {
         error_at_current(p, "expected function name after 'fn'");
         return NULL;
     }
-    advance(p);
-    char *name = str_dup_n(p->previous.start, p->previous.length);
 
     /* G2: optional type parameter list — fn name(T, U)(params...) -> R { ... }
        Disambiguate: if '(' followed by uppercase identifier then ',' or ')' or ':' → type params. */
@@ -2556,7 +2596,8 @@ static AstNode *parse_impl_decl(Parser *p) {
                     synchronize(p);
                     continue;
                 }
-                AstNode *method = parse_fn_decl(p);
+                /* trait-impl methods may use operator symbol names (fn +, fn ==, ...) */
+                AstNode *method = parse_fn_decl(p, /*allow_operator_name=*/true);
                 if (method == NULL) {
                     synchronize(p);
                     continue;
@@ -2638,7 +2679,8 @@ static AstNode *parse_impl_decl(Parser *p) {
             synchronize(p);
             continue;
         }
-        AstNode *method = parse_fn_decl(p);
+        /* plain impl methods: operator symbol names not allowed here */
+        AstNode *method = parse_fn_decl(p, /*allow_operator_name=*/false);
         if (method == NULL) {
             synchronize(p);
             continue;
@@ -3226,7 +3268,7 @@ static AstNode *parse_statement(Parser *p) {
 
         if (is_named) {
             advance(p); /* consume 'fn' again */
-            return parse_fn_decl(p);
+            return parse_fn_decl(p, /*allow_operator_name=*/false);
         }
         /* else fall through to expression statement (closure) */
     } else if (match_tok(p, TOKEN_STRUCT)) {
@@ -3273,6 +3315,9 @@ static AstNode *parse_statement(Parser *p) {
 
     /* Expression statement (including closures and any other expressions) */
     {
+        /* Statement boundary: a following statement may legitimately start with
+           a pointer declaration, so permit the `*Ident Ident` decl split here. */
+        p->stmt_boundary = true;
         AstNode *expr = parse_expr_prec(p, PREC_NONE);
         if (expr == NULL) return NULL;
         skip_semicolons(p);

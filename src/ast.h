@@ -210,6 +210,14 @@ struct AstNode
             TokenType op;
             AstNode *left;
             AstNode *right;
+            /* Operator overloading: when the checker detects that `left OP right`
+               resolves to a user-defined operator method (struct/enum impl of a
+               built-in operator trait), it synthesizes the equivalent method-call
+               (or derived) expression here and stores it. left/right are
+               deep-cloned into `lowered`, so `lowered` owns its subtrees and is
+               freed by ordinary ast_free recursion (no aliasing). codegen emits
+               `lowered` instead of the builtin binary op when non-NULL. */
+            AstNode *lowered;
         } binary;
         struct
         {
@@ -481,6 +489,11 @@ struct AstNode
 };
 
 /* ---- Public API ---- */
+
+/* Allocate a zero-initialized AstNode of the given kind (line/col for diags).
+   Used by the parser and by the checker when synthesizing nodes (e.g. the
+   operator-overload lowering of `a OP b` into a method call). */
+AstNode *ast_new(AstNodeType kind, int line, int col);
 
 /* Recursively free an AST node and all its children */
 void ast_free(AstNode *node);
