@@ -304,6 +304,10 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
 /* Drop a whole vec stored at `vec_ptr` (a *LsVec): free owned elements + buffer.
    Mutually recursive with emit_vec_elem_drop_at to handle nested vec(vec(...)). */
 static void emit_vec_drop_at(CodegenContext *ctx, LLVMValueRef vec_ptr, Type *elem_type);
+/* Unified value-drop authority: free heap owned by the value stored at `place_ptr`
+   (a pointer to storage of `type`). Recurses through containers; POD/non-drop is a
+   no-op. The drop-side counterpart of emit_clone_value. */
+static void emit_drop_value(CodegenContext *ctx, LLVMValueRef place_ptr, Type *type);
 static void emit_struct_drop(CodegenContext *ctx, LLVMValueRef drop_ptr, Type *struct_type);
 static void emit_struct_drop_cond(CodegenContext *ctx, LLVMValueRef drop_ptr,
                                   Type *struct_type, LLVMValueRef moved_flag);
@@ -15579,6 +15583,48 @@ static bool cg_type_owns_heap_for_enum(const Type *t)
     }
 }
 
+/* Unified value-drop authority — single recursive dispatch used by struct/enum
+   payload drop, scope cleanup, and temp drop. Frees heap owned by the value at
+   `place_ptr` (a pointer to storage of `type`). POD / non-has_drop → no-op.
+   vec/map recurse via the element-aware primitives, so nested containers
+   (vec(vec(...)), map(K,vec), etc.) drop correctly with no per-site logic. */
+static void emit_drop_value(CodegenContext *ctx, LLVMValueRef place_ptr, Type *type)
+{
+    if (place_ptr == NULL || type == NULL) return;
+    switch (type->kind)
+    {
+    case TYPE_STRING:
+        emit_string_free(ctx, place_ptr);
+        return;
+    case TYPE_VECTOR:
+        emit_vec_drop_at(ctx, place_ptr, type->as.vec.elem);
+        return;
+    case TYPE_STRUCT:
+        if (type->as.strukt.has_drop) emit_struct_drop(ctx, place_ptr, type);
+        return;
+    case TYPE_ENUM:
+        if (type->as.enom.has_drop) emit_enum_drop(ctx, place_ptr, type);
+        return;
+    case TYPE_MAP:
+    {
+        emit_map_helpers_for(ctx, type->as.map.key, type->as.map.val);
+        char msuf[64];
+        map_type_id(type->as.map.key, type->as.map.val, msuf, sizeof(msuf));
+        char mnm[96];
+        snprintf(mnm, sizeof(mnm), "__ls_map_%s_drop", msuf);
+        LLVMValueRef mfn = LLVMGetNamedFunction(ctx->module, mnm);
+        if (mfn)
+        {
+            LLVMTypeRef mft = LLVMGlobalGetValueType(mfn);
+            LLVMBuildCall2(ctx->builder, mft, mfn, &place_ptr, 1, "");
+        }
+        return;
+    }
+    default:
+        return; /* POD / non-owning */
+    }
+}
+
 /* Generate `EnumName.__drop(EnumName *self)` for has_drop enums:
    switch on disc → for each variant case → free each owned payload field.
    Self-recursive payload is heap-boxed; we drop the pointee then free the box. */
@@ -15685,75 +15731,9 @@ static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
             }
             else if (pt && pt->kind == TYPE_VECTOR)
             {
-                /* F.5: vec(T) payload — drop elements then free data buffer. */
-                LLVMTypeRef vec_t  = ls_vec_type(ctx);
-                LLVMTypeRef i32_t2 = LLVMInt32TypeInContext(ctx->context);
-                LLVMValueRef vecv  = LLVMBuildLoad2(ctx->builder, vec_t,
-                                                    field_ptr, "ep.vec");
-                LLVMValueRef capv  = LLVMBuildExtractValue(ctx->builder, vecv, 2,
-                                                           "ep.veccap");
-                LLVMValueRef lenv  = LLVMBuildExtractValue(ctx->builder, vecv, 1,
-                                                           "ep.veclen");
-                LLVMValueRef datav = LLVMBuildExtractValue(ctx->builder, vecv, 0,
-                                                           "ep.vecdata");
-                LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT,
-                                                     capv,
-                                                     LLVMConstInt(i32_t2, 0, 0),
-                                                     "ep.hasbuf");
-                LLVMBasicBlockRef vdo_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, drop_fn, "ep.vfree");
-                LLVMBasicBlockRef vdn_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, drop_fn, "ep.vcont");
-                LLVMBuildCondBr(ctx->builder, has_buf, vdo_bb, vdn_bb);
-                LLVMPositionBuilderAtEnd(ctx->builder, vdo_bb);
-                Type *elem_t = pt->as.vec.elem;
-                bool elem_drop = elem_t &&
-                    (elem_t->kind == TYPE_STRING ||
-                     (elem_t->kind == TYPE_STRUCT && elem_t->as.strukt.has_drop) ||
-                     (elem_t->kind == TYPE_ENUM   && elem_t->as.enom.has_drop));
-                if (elem_drop) {
-                    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_t);
-                    LLVMTypeRef i64_t2 = LLVMInt64TypeInContext(ctx->context);
-                    LLVMBuilderRef tb2 = LLVMCreateBuilderInContext(ctx->context);
-                    LLVMBasicBlockRef fn_ent = LLVMGetEntryBasicBlock(drop_fn);
-                    LLVMValueRef fi2 = LLVMGetFirstInstruction(fn_ent);
-                    if (fi2) LLVMPositionBuilderBefore(tb2, fi2);
-                    else     LLVMPositionBuilderAtEnd(tb2, fn_ent);
-                    LLVMValueRef ei = LLVMBuildAlloca(tb2, i32_t2, "ep.ei");
-                    LLVMDisposeBuilder(tb2);
-                    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t2, 0, 0), ei);
-                    LLVMBasicBlockRef elc = LLVMAppendBasicBlockInContext(
-                        ctx->context, drop_fn, "ep.elcond");
-                    LLVMBasicBlockRef elb = LLVMAppendBasicBlockInContext(
-                        ctx->context, drop_fn, "ep.elbody");
-                    LLVMBasicBlockRef ele = LLVMAppendBasicBlockInContext(
-                        ctx->context, drop_fn, "ep.elend");
-                    LLVMBuildBr(ctx->builder, elc);
-                    LLVMPositionBuilderAtEnd(ctx->builder, elc);
-                    LLVMValueRef ci = LLVMBuildLoad2(ctx->builder, i32_t2, ei, "ep.ci");
-                    LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT,
-                                                     ci, lenv, "ep.lt");
-                    LLVMBuildCondBr(ctx->builder, cmp, elb, ele);
-                    LLVMPositionBuilderAtEnd(ctx->builder, elb);
-                    LLVMValueRef ei64 = LLVMBuildSExt(ctx->builder, ci, i64_t2,
-                                                      "ep.ei64");
-                    LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, datav,
-                                                    &ei64, 1, "ep.ep");
-                    emit_vec_elem_drop_at(ctx, ep, elem_t, v * 100 + i,
-                                         "ep.vec[i]");
-                    LLVMBasicBlockRef aft = LLVMGetInsertBlock(ctx->builder);
-                    if (LLVMGetBasicBlockTerminator(aft) == NULL) {
-                        LLVMValueRef nxt = LLVMBuildAdd(ctx->builder, ci,
-                            LLVMConstInt(i32_t2, 1, 0), "ep.nxt");
-                        LLVMBuildStore(ctx->builder, nxt, ei);
-                        LLVMBuildBr(ctx->builder, elc);
-                    }
-                    LLVMPositionBuilderAtEnd(ctx->builder, ele);
-                }
-                cg_emit_free(ctx, datav, "enum.vec.payload",
-                             CG_LINE(ctx), CG_COL(ctx));
-                LLVMBuildBr(ctx->builder, vdn_bb);
-                LLVMPositionBuilderAtEnd(ctx->builder, vdn_bb);
+                /* Unified recursive vec drop — handles nested vec(vec(...)),
+                   which the previous inline element loop missed (F). */
+                emit_drop_value(ctx, field_ptr, pt);
             }
             else if (pt && pt->kind == TYPE_MAP)
             {

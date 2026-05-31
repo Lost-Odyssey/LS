@@ -424,7 +424,8 @@ add_test(
 # tracked in tests/samples/cmatrix/MATRIX.md and registered as they turn green.
 foreach(cm
         b01_vec_scope b02_vec_nested_get b03_vec_rvalue_arg
-        b04_struct_vec_drop b05_enum_vec b06_map_scope t04_map_vec_value)
+        b04_struct_vec_drop b05_enum_vec b06_map_scope t04_map_vec_value
+        t03_enum_nested_vec)
     add_test(
         NAME test_cmatrix_${cm}
         COMMAND ${CMAKE_COMMAND}
