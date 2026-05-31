@@ -5,7 +5,7 @@
 >
 > **Phase B 说明**：`parse(string)->MdDoc` 手写行扫描，覆盖块级 P0+P1（标题/段落/围栏代码/有序无序列表/引用块递归/GFM 表格/水平线），宽松不失败。行内内容暂存为单个原始 `Text`（round-trip 逐字一致）。
 >
-> **Phase C（已实现 2026-05-31）**：行内解析 `_parse_inlines`（手写扫描 `**bold**`/`_i_`/`***bi***`/`` `c` ``/`[t](u)`/`![a](u)`）接入 Heading/Paragraph/列表项，round-trip 一致；`extract_headings` / `to_plain_text` 已实现且 memcheck clean。**`extract_links` 暂缓**——其 vec(string)-返回辅助在 match 臂内嵌套 while 声明局部 vec 触发 match 析构遗漏（feature_inventory L-012），待统一 match 析构后补。
+> **Phase C（已实现 2026-05-31）**：行内解析 `_parse_inlines`（手写扫描 `**bold**`/`_i_`/`***bi***`/`` `c` ``/`[t](u)`/`![a](u)`）接入 Heading/Paragraph/列表项，round-trip 一致；`extract_headings` / `extract_links` / `to_plain_text` 均已实现且 memcheck clean（JIT+AOT）。期间修复了 L-012 ①/②（match 拥有的 rvalue 临时 enum 主体现会析构）；边界 ③（match 臂内直接 `return f(binding)`）以「先绑定局部再返回」规避（见 feature_inventory L-012 ③）。
 >
 > **API 升级（2026-05-31）**：vec first-class 修复（`docs/vec_first_class_plan.md`，L-011a/b/c）落地后，本模块已从规避版升级为**审定 API**：`struct MdDoc { vec(MdBlock) blocks }`（用户写 `md.MdDoc`），lists = `vec(vec(MdInline))`，table = `vec(vec(string)) rows`。builder 经 `&!MdDoc` 字段 push、嵌套 vec clone/drop 全部 memcheck clean（JIT+AOT）。§2 早期标注的扁平/别名偏差**已不再适用**。
 >

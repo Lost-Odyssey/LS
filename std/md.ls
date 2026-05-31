@@ -716,9 +716,75 @@ fn _inlines_plain(vec(MdInline) inls) -> string {
     return out
 }
 
-// NOTE: extract_links is deferred — collecting URLs needs vec(string)-returning
-// helpers with locals declared inside match-arm + loop nesting, which currently
-// hit a scope-drop gap (the nested local isn't freed). Tracked for a follow-up.
+// Return the URL of a Link/Image inline, or "". Per-variant `_` (not a bare
+// catch-all) so each ignored payload is dropped.
+fn _inline_link_of(MdInline x) -> string {
+    match x {
+        Link(_, u)    => { return u.copy() }
+        Image(_, u)   => { return u.copy() }
+        Text(_)       => { return "" }
+        Bold(_)       => { return "" }
+        Italic(_)     => { return "" }
+        BoldItalic(_) => { return "" }
+        Code(_)       => { return "" }
+    }
+}
+
+fn _inline_links(vec(MdInline) inls) -> vec(string) {
+    vec(string) out = []
+    int i = 0
+    while i < inls.length {
+        string u = _inline_link_of(inls.get(i))
+        if u.length > 0 { out.push(u) }
+        i = i + 1
+    }
+    return out
+}
+
+fn _block_links(MdBlock b) -> vec(string) {
+    match b {
+        // Bind before return: returning a heap-value call result directly from a
+        // match arm currently skips the subject param's drop (L-012 edge ③).
+        Heading(_, c)    => { vec(string) r = _inline_links(c); return r }
+        Paragraph(c)     => { vec(string) r = _inline_links(c); return r }
+        UnorderedList(items) => {
+            vec(string) out = []
+            int i = 0
+            while i < items.length {
+                vec(string) ls = _inline_links(items.get(i))
+                int j = 0
+                while j < ls.length { out.push(ls.get(j)); j = j + 1 }
+                i = i + 1
+            }
+            return out
+        }
+        OrderedList(items) => {
+            vec(string) out = []
+            int i = 0
+            while i < items.length {
+                vec(string) ls = _inline_links(items.get(i))
+                int j = 0
+                while j < ls.length { out.push(ls.get(j)); j = j + 1 }
+                i = i + 1
+            }
+            return out
+        }
+        Blockquote(ch) => {
+            vec(string) out = []
+            int i = 0
+            while i < ch.length {
+                vec(string) ls = _block_links(ch.get(i))
+                int j = 0
+                while j < ls.length { out.push(ls.get(j)); j = j + 1 }
+                i = i + 1
+            }
+            return out
+        }
+        CodeBlock(_, _) => { vec(string) e = []; return e }
+        Table(_, _)     => { vec(string) e = []; return e }
+        HorizontalRule  => { vec(string) e = []; return e }
+    }
+}
 
 fn _block_plain(MdBlock b) -> string {
     match b {
@@ -796,6 +862,19 @@ fn extract_headings(&MdDoc d) -> vec(string) {
     while i < d.blocks.length {
         string h = _heading_text(d.blocks.get(i))
         if h.length > 0 { out.push(h) }
+        i = i + 1
+    }
+    return out
+}
+
+// Collect every link/image URL (recurses into blockquotes).
+fn extract_links(&MdDoc d) -> vec(string) {
+    vec(string) out = []
+    int i = 0
+    while i < d.blocks.length {
+        vec(string) ls = _block_links(d.blocks.get(i))
+        int j = 0
+        while j < ls.length { out.push(ls.get(j)); j = j + 1 }
         i = i + 1
     }
     return out
