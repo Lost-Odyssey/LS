@@ -132,8 +132,9 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 | — | std.md Markdown 模块 Phase A（写：builder + render + fmt，纯 LS，扁平 list/table 规避 L-011c） | ✅ |
 | — | std.md Phase B（读：`parse(string)->MdDoc` 块级解析，宽松，round-trip 一致；行内拆分留 Phase C） | ✅ |
 | — | vec first-class（分支 `feat/vec-first-class`）：D Place 引擎 + F 统一 `emit_drop_value` + E rvalue 临时 drop；std.md 升级 struct MdDoc + 嵌套 vec 验收（L-011a/b/c）。容器值语义矩阵 `tests/samples/cmatrix/` | ✅ |
+| — | std.md Phase C（行内解析：`**bold**`/`_i_`/`` `c` ``/`[t](u)`/`![a](u)` → MdInline，round-trip；`extract_headings`/`to_plain_text`；`extract_links` 暂缓——见 L-012） | ✅ |
 
-**当前测试**：ctest 104/104（新增 12 个 `test_cmatrix_*` 容器值语义；std.md 写/读；REPL；操作符重载）
+**当前测试**：ctest 105/105（新增 std.md 行内 `test_std_md_inline_jit`；12 个 `test_cmatrix_*`；写/读；REPL；操作符重载）
 
 > ⚠️ **REPL 已知限制 L-010**：`ls repl` 中跨多条输入行对同一类 has_drop enum/struct 值（如 `import std.json` 的 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件不受影响。根因：每条 REPL snippet 是独立 JIT 模块，imported 模块 drop/clone 辅助被跨模块 strip 与 RAII 析构交互出错。修法方向：imported 模块在 REPL 只发射一次。详见 [docs/feature_inventory.md](docs/feature_inventory.md) 三、L-010。
 

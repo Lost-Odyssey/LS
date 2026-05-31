@@ -389,6 +389,151 @@ fn _split_table_row(string line) -> vec(string) {
     return cells
 }
 
+// ---- Inline parsing (Phase C) ----
+
+// Index of `ch` in `s` at/after `from`, or -1.
+fn _find_char(string s, int start, int ch) -> int {
+    int n = s.length
+    int i = start
+    while i < n {
+        if s.at(i) == ch { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Index of the first of two consecutive `ch` at/after `from`, or -1.
+fn _find_double(string s, int start, int ch) -> int {
+    int n = s.length
+    int i = start
+    while i + 1 < n {
+        if s.at(i) == ch && s.at(i + 1) == ch { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Index of the first of three consecutive `ch` at/after `from`, or -1.
+fn _find_triple(string s, int start, int ch) -> int {
+    int n = s.length
+    int i = start
+    while i + 2 < n {
+        if s.at(i) == ch && s.at(i + 1) == ch && s.at(i + 2) == ch { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// Hand-written inline scanner: split `text` into MdInline runs. Unclosed markers
+// are treated as literal text. Marker priority: image, link, code, ***, **, *, _.
+fn _parse_inlines(string text) -> vec(MdInline) {
+    vec(MdInline) out = []
+    int n = text.length
+    int i = 0
+    string buf = ""
+
+    while i < n {
+        int c = text.at(i)
+
+        // image ![alt](url)
+        if c == '!' && i + 1 < n && text.at(i + 1) == '[' {
+            int rb = _find_char(text, i + 2, ']')
+            if rb >= 0 && rb + 1 < n && text.at(rb + 1) == '(' {
+                int rp = _find_char(text, rb + 2, ')')
+                if rp >= 0 {
+                    if buf.length > 0 { out.push(Text(buf.copy())); buf = "" }
+                    out.push(Image(text.substr(i + 2, rb - (i + 2)),
+                                   text.substr(rb + 2, rp - (rb + 2))))
+                    i = rp + 1
+                    continue
+                }
+            }
+            buf.append(c); i = i + 1; continue
+        }
+
+        // link [text](url)
+        if c == '[' {
+            int rb = _find_char(text, i + 1, ']')
+            if rb >= 0 && rb + 1 < n && text.at(rb + 1) == '(' {
+                int rp = _find_char(text, rb + 2, ')')
+                if rp >= 0 {
+                    if buf.length > 0 { out.push(Text(buf.copy())); buf = "" }
+                    out.push(Link(text.substr(i + 1, rb - (i + 1)),
+                                  text.substr(rb + 2, rp - (rb + 2))))
+                    i = rp + 1
+                    continue
+                }
+            }
+            buf.append(c); i = i + 1; continue
+        }
+
+        // inline code `code`
+        if c == '`' {
+            int cl = _find_char(text, i + 1, '`')
+            if cl >= 0 {
+                if buf.length > 0 { out.push(Text(buf.copy())); buf = "" }
+                out.push(Code(text.substr(i + 1, cl - (i + 1))))
+                i = cl + 1
+                continue
+            }
+            buf.append(c); i = i + 1; continue
+        }
+
+        // ***bold italic***
+        if c == '*' && i + 2 < n && text.at(i + 1) == '*' && text.at(i + 2) == '*' {
+            int cl = _find_triple(text, i + 3, '*')
+            if cl >= 0 {
+                if buf.length > 0 { out.push(Text(buf.copy())); buf = "" }
+                out.push(BoldItalic(text.substr(i + 3, cl - (i + 3))))
+                i = cl + 3
+                continue
+            }
+            buf.append(c); i = i + 1; continue
+        }
+
+        // **bold**
+        if c == '*' && i + 1 < n && text.at(i + 1) == '*' {
+            int cl = _find_double(text, i + 2, '*')
+            if cl >= 0 {
+                if buf.length > 0 { out.push(Text(buf.copy())); buf = "" }
+                out.push(Bold(text.substr(i + 2, cl - (i + 2))))
+                i = cl + 2
+                continue
+            }
+            buf.append(c); i = i + 1; continue
+        }
+
+        // *italic*
+        if c == '*' {
+            int cl = _find_char(text, i + 1, '*')
+            if cl >= 0 {
+                if buf.length > 0 { out.push(Text(buf.copy())); buf = "" }
+                out.push(Italic(text.substr(i + 1, cl - (i + 1))))
+                i = cl + 1
+                continue
+            }
+            buf.append(c); i = i + 1; continue
+        }
+
+        // _italic_
+        if c == '_' {
+            int cl = _find_char(text, i + 1, '_')
+            if cl >= 0 {
+                if buf.length > 0 { out.push(Text(buf.copy())); buf = "" }
+                out.push(Italic(text.substr(i + 1, cl - (i + 1))))
+                i = cl + 1
+                continue
+            }
+            buf.append(c); i = i + 1; continue
+        }
+
+        buf.append(c)
+        i = i + 1
+    }
+    if buf.length > 0 { out.push(Text(buf)) }
+    return out
+}
+
 // Parse `input` into a list of blocks (internal; `parse` wraps it in MdDoc).
 fn _parse_blocks(string input) -> vec(MdBlock) {
     vec(MdBlock) blocks = []
@@ -408,7 +553,7 @@ fn _parse_blocks(string input) -> vec(MdBlock) {
         int hl = _heading_level(line)
         if hl > 0 {
             string content = line.substr(hl + 1, line.length - hl - 1)
-            blocks.push(Heading(hl, _inline_text(content.trim())))
+            blocks.push(Heading(hl, _parse_inlines(content.trim())))
             i = i + 1
             continue
         }
@@ -441,7 +586,7 @@ fn _parse_blocks(string input) -> vec(MdBlock) {
             while i < nl {
                 string li = lines.get(i)
                 if li.starts_with("- ") || li.starts_with("* ") {
-                    items.push(_inline_text(li.substr(2, li.length - 2).trim()))
+                    items.push(_parse_inlines(li.substr(2, li.length - 2).trim()))
                     i = i + 1
                 } else {
                     break
@@ -457,7 +602,7 @@ fn _parse_blocks(string input) -> vec(MdBlock) {
                 string li = lines.get(i)
                 int p = _ordered_prefix_len(li)
                 if p > 0 {
-                    items.push(_inline_text(li.substr(p, li.length - p).trim()))
+                    items.push(_parse_inlines(li.substr(p, li.length - p).trim()))
                     i = i + 1
                 } else {
                     break
@@ -532,7 +677,7 @@ fn _parse_blocks(string input) -> vec(MdBlock) {
             i = i + 1
         }
         if para.length > 0 {
-            blocks.push(Paragraph(_inline_text(para)))
+            blocks.push(Paragraph(_parse_inlines(para)))
         } else {
             i = i + 1
         }
@@ -543,6 +688,129 @@ fn _parse_blocks(string input) -> vec(MdBlock) {
 
 fn parse(string input) -> MdDoc {
     return MdDoc { blocks: _parse_blocks(input) }
+}
+
+// ====================================================================
+// Extraction helpers (Phase C): plain text + headings + links.
+// ====================================================================
+
+fn _inline_plain(MdInline x) -> string {
+    match x {
+        Text(c)       => { return c.copy() }
+        Bold(c)       => { return c.copy() }
+        Italic(c)     => { return c.copy() }
+        BoldItalic(c) => { return c.copy() }
+        Code(c)       => { return c.copy() }
+        Link(t, u)    => { return t.copy() }
+        Image(a, u)   => { return a.copy() }
+    }
+}
+
+fn _inlines_plain(vec(MdInline) inls) -> string {
+    string out = ""
+    int i = 0
+    while i < inls.length {
+        out.append(_inline_plain(inls.get(i)))
+        i = i + 1
+    }
+    return out
+}
+
+// NOTE: extract_links is deferred — collecting URLs needs vec(string)-returning
+// helpers with locals declared inside match-arm + loop nesting, which currently
+// hit a scope-drop gap (the nested local isn't freed). Tracked for a follow-up.
+
+fn _block_plain(MdBlock b) -> string {
+    match b {
+        Heading(_, c)         => { return _inlines_plain(c) }
+        Paragraph(c)          => { return _inlines_plain(c) }
+        CodeBlock(_, code)    => { return code.copy() }
+        UnorderedList(items)  => {
+            string s = ""
+            int i = 0
+            while i < items.length {
+                s.append(_inlines_plain(items.get(i)))
+                s.append("\n")
+                i = i + 1
+            }
+            return s
+        }
+        OrderedList(items) => {
+            string s = ""
+            int i = 0
+            while i < items.length {
+                s.append(_inlines_plain(items.get(i)))
+                s.append("\n")
+                i = i + 1
+            }
+            return s
+        }
+        Blockquote(ch) => {
+            string s = ""
+            int i = 0
+            while i < ch.length {
+                s.append(_block_plain(ch.get(i)))
+                s.append("\n")
+                i = i + 1
+            }
+            return s
+        }
+        Table(_, rows) => {
+            string s = ""
+            int r = 0
+            while r < rows.length {
+                vec(string) row = rows.get(r)
+                int c = 0
+                while c < row.length {
+                    s.append(row.get(c))
+                    s.append(" ")
+                    c = c + 1
+                }
+                s.append("\n")
+                r = r + 1
+            }
+            return s
+        }
+        HorizontalRule => { return "" }
+    }
+}
+
+// Heading's plain text, or "" if `b` is not a heading (owned-param + return).
+fn _heading_text(MdBlock b) -> string {
+    match b {
+        Heading(_, c)    => { return _inlines_plain(c) }
+        Paragraph(_)     => { return "" }
+        CodeBlock(_, _)  => { return "" }
+        UnorderedList(_) => { return "" }
+        OrderedList(_)   => { return "" }
+        Blockquote(_)    => { return "" }
+        Table(_, _)      => { return "" }
+        HorizontalRule   => { return "" }
+    }
+}
+
+// Collect each heading's plain text, in document order. (Empty headings skipped.)
+fn extract_headings(&MdDoc d) -> vec(string) {
+    vec(string) out = []
+    int i = 0
+    while i < d.blocks.length {
+        string h = _heading_text(d.blocks.get(i))
+        if h.length > 0 { out.push(h) }
+        i = i + 1
+    }
+    return out
+}
+
+// Whole document as plain text (markup stripped).
+fn to_plain_text(&MdDoc d) -> string {
+    string out = ""
+    int i = 0
+    while i < d.blocks.length {
+        out.append(_block_plain(d.blocks.get(i)))
+        out.append("\n")
+        i = i + 1
+    }
+    return out
 }
 
 // ---- String fragment helpers (do not touch MdDoc) ----
