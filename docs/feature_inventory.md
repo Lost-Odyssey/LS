@@ -109,7 +109,7 @@
 | `std.c` | `std/c.ls` | C 底层绑定 (libc 函数直接调用) | — |
 | `std.os` | `std/os.ls` + C 后端 | 平台抽象层 (`os_win32.c` / `os_posix.c`) | `docs/stdlib_os_plan.md` |
 | `std.json` | `std/json.ls`（795 行纯 LS） | 递归下降 parser + stringify；`JsonValue` enum（null/bool/number/string/array/object）；解析/序列化/取值访问器；含 A/B/C/D 微优化（chunk scan / inline at） | `docs/plan_json.md` |
-| `std.md` | `std/md.ls`（纯 LS，Phase A 写 + Phase B 读） | Markdown 生成：`MdDoc`/`MdInline`/`MdBlock` enum 树 + builder（h1-h6/paragraph/code_block/ul/ol/blockquote/table/hr）+ `render` + `fmt_*`；**Phase B**：`parse(string)->MdDoc` 块级解析（标题/段落/围栏代码/有序无序列表/引用块递归/GFM 表格/水平线，宽松不失败，手写行扫描），round-trip 一致。行内拆分（Bold/Link 等）+ extract 为 Phase C | `docs/plan_std_md.md` |
+| `std.md` | `std/md.ls`（纯 LS，写 + 读） | Markdown 生成 + 解析。`struct MdDoc { vec(MdBlock) }` + `MdInline`/`MdBlock` enum 树（含嵌套 `vec(vec(MdInline))` lists、`vec(vec(string))` table）；builder（h1-h6/paragraph/code_block/ul/ol/blockquote/table/hr）+ `render` + `fmt_*`；`parse(string)->MdDoc` 块级解析（宽松、手写行扫描）、round-trip 一致。行内拆分 + extract 留待后续。依赖 vec first-class 修复（L-011a/b/c） | `docs/plan_std_md.md` |
 
 ### 8. 字符串方法
 
@@ -148,7 +148,7 @@
 
 | 项目 | 数量 | 说明 |
 |------|------|------|
-| ctest 注册测试 | **92 个** | 全部通过（2026-05-31；flaky AOT 用 `--repeat until-pass:2` 自愈，见 CLAUDE.md §3） |
+| ctest 注册测试 | **104 个** | 全部通过（2026-05-31；含 std.md 写/读 + 12 个容器值语义矩阵 `test_cmatrix_*`；flaky AOT 用 `--repeat until-pass:2` 自愈） |
 | 单元测试 | `test_scanner` / `test_parser` / `test_types` / `test_codegen` / `test_jit` / `test_ffi` / `test_module` / `test_memory` / `test_operator_overload` / `test_repl` | C 单元测试 |
 | 端到端测试 | 大量 cmake 驱动（含 json / 模块命名空间 / 操作符重载 / REPL import 持久化 / BF-040~046 回归） | 每个测试覆盖 JIT + AOT 双路径，部分含 memcheck 验证 |
 
@@ -212,7 +212,7 @@
 | L-010 | REPL 跨多条语句传递 has_drop enum/struct 值会崩溃 | 在 `ls repl` 中 `import std.json` 后，跨**不同输入行**对同一类 has_drop 值（如 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件**完全不受影响**；REPL 内 import 内建模块（math/io）、返回非 has_drop 值的 .ls 模块函数（strconv/path 等）、构造+立即析构 has_drop 值（不跨行）均正常 | 根因：REPL 每条 snippet 是独立 JIT 模块，imported 模块的 has_drop 自动 drop/clone 辅助函数被「strip 成声明跨模块解析」，与 RAII 析构语义在增量 JIT 下交互出错。修法方向：imported 模块在 REPL 只发射一次（declare-only on subsequent snippets），需 codegen 支持「跳过已发射模块 body」模式 | `src/jit.c` `jit_repl` |
 | ~~L-011a~~ | ~~struct 含 vec/enum 字段不自动 drop~~ | ✅ 已修复（2026-05-31）：struct `has_drop` 判定纳入 vec/has_drop-enum 字段，auto drop fn 释放 vec 字段（递归 `emit_vec_drop_at`）。memcheck clean，ctest 91/91 | — | `src/codegen.c` / `src/checker.c` |
 | ~~L-011b~~ | ~~嵌套 `vec(vec(...))` drop/clone 损坏~~ | ✅ 已修复（2026-05-31）：嵌套 vec 递归 drop + 统一 clone dispatcher（`emit_clone_value`）贯穿 get/first/last/`[i]`/copy/slice/extend/filter/find；vec rvalue 临时实参登记 drop。memcheck clean | — | `src/codegen.c` |
-| L-011c | vec 尚未完全 first-class（剩余 D/C/F） | 阻塞「命名 struct MdDoc + 嵌套 vec lists/table」的干净 API：**D** `&!struct` 字段 vec 方法变更不写回调用方；**F** enum/struct payload 内**嵌套** vec 的 clone+drop 仍泄漏；**C** 跨模块 `type` 别名不可命名（`md.MdDoc` 用不了）。当前 std.md 用 `type MdDoc=vec(MdBlock)` + 扁平 list/table 规避（输出一致、memcheck clean） | 作为独立「vec first-class」专项：D 写回 + F enum/struct 嵌套 payload clone/drop + C 别名导出。每修一层会暴露下一层，需配套测试矩阵 | `docs/plan_std_md.md` |
+| ~~L-011c~~ | ~~vec 尚未完全 first-class（D/F/E）~~ | ✅ 已修复（2026-05-31，分支 `feat/vec-first-class`，ctest 104/104）：**D** Place 引擎——`codegen_lvalue_ptr` 支持 vec/map 索引 + `&!struct` 引用接收者，可变方法在真实地址原地操作并写回，字段赋值 drop 旧+move/clone 新；**F** 统一 `emit_drop_value` 权威，enum payload 嵌套 vec 经它递归释放；**E** vec rvalue 临时实参登记 drop。验收：std.md 升级为 `struct MdDoc { vec(MdBlock) }` + 嵌套 `vec(vec(MdInline))` lists + `vec(vec(string))` table，memcheck clean（JIT+AOT）。**C**（跨模块 type 别名命名）按计划取消——struct MdDoc 本就可跨模块命名。容器值语义测试矩阵见 `tests/samples/cmatrix/` | — | `docs/vec_first_class_plan.md` |
 
 ---
 
