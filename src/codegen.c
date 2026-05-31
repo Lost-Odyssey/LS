@@ -11707,6 +11707,19 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         Type *subj_type = node->as.match.subject->resolved_type;
         bool is_fp = subj_type && type_is_float(subj_type);
 
+        /* L-012: an OWNED rvalue-temp scrutinee (a call/index/field/ctor result,
+           not a named var or borrow) has no other owner, so the match itself must
+           drop it. For such subjects we (a) clone every has_drop binder so it is
+           independent of the subject, and (b) register the subject for drop. A
+           named-var / &self subject keeps the existing borrow behavior (its owner
+           drops it; binders alias read-only). */
+        bool subj_owned_temp =
+            subj_type && subj_type->kind == TYPE_ENUM &&
+            subj_type->as.enom.has_drop &&
+            node->as.match.subject->kind != AST_IDENT &&
+            node->as.match.subject->kind != AST_UNARY &&
+            node->as.match.subject->kind != AST_MUT_BORROW;
+
         /* ---- Enum subject: switch on discriminant + binder extraction ---- */
         if (subj_type && subj_type->kind == TYPE_ENUM)
         {
@@ -11723,6 +11736,11 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMValueRef subj_alloca = LLVMBuildAlloca(tmp_b, enum_llvm, "match.subj");
             LLVMDisposeBuilder(tmp_b);
             LLVMBuildStore(ctx->builder, subject, subj_alloca);
+
+            /* L-012: own the temp scrutinee — drop it at statement end / on return
+               (binders below are cloned, so this never double-frees). */
+            if (subj_owned_temp)
+                cg_push_temp_drop(ctx, subj_alloca, subj_type);
 
             LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, subj_alloca, 0, "disc.p");
             LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "disc");
@@ -11834,7 +11852,13 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                            (unless the binder is being returned, in which case the
                            return_alloca skip list suppresses the scope drop). */
                         bool binder_owns = false;
-                        if (pt && pt->kind == TYPE_STRING) {
+                        if (subj_owned_temp && pt && cg_type_owns_heap_for_enum(pt)) {
+                            /* Owned-temp subject: clone every has_drop binder so it
+                               is independent of the subject (which we drop). */
+                            val = emit_clone_value(ctx, val, field_llvm, pt);
+                            binder_owns = true;
+                        } else if (pt && pt->kind == TYPE_STRING) {
+                            /* Borrow subject: clone strings only (existing behavior). */
                             val = emit_string_clone_val(ctx, val);
                             binder_owns = true;
                         }

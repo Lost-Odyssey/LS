@@ -16,6 +16,11 @@ fn main() {
     int i = 0
     while i < hs.length { print(hs.get(i)); i = i + 1 }
 
+    print("---LINKS---")
+    vec(string) ls = md.extract_links(doc)
+    i = 0
+    while i < ls.length { print(ls.get(i)); i = i + 1 }
+
     print("---PLAIN---")
     print(md.to_plain_text(doc))
 }
