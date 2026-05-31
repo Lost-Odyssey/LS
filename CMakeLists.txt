@@ -425,7 +425,8 @@ add_test(
 foreach(cm
         b01_vec_scope b02_vec_nested_get b03_vec_rvalue_arg
         b04_struct_vec_drop b05_enum_vec b06_map_scope t04_map_vec_value
-        t03_enum_nested_vec)
+        t03_enum_nested_vec
+        t01_struct_field_push t02_struct_field_index t05_struct_map t06_field_assign)
     add_test(
         NAME test_cmatrix_${cm}
         COMMAND ${CMAKE_COMMAND}
