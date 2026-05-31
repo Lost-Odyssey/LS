@@ -109,6 +109,7 @@
 | `std.c` | `std/c.ls` | C 底层绑定 (libc 函数直接调用) | — |
 | `std.os` | `std/os.ls` + C 后端 | 平台抽象层 (`os_win32.c` / `os_posix.c`) | `docs/stdlib_os_plan.md` |
 | `std.json` | `std/json.ls`（795 行纯 LS） | 递归下降 parser + stringify；`JsonValue` enum（null/bool/number/string/array/object）；解析/序列化/取值访问器；含 A/B/C/D 微优化（chunk scan / inline at） | `docs/plan_json.md` |
+| `std.md` | `std/md.ls`（纯 LS，Phase A：写） | Markdown 生成：`MdDoc`/`MdInline`/`MdBlock` enum 树 + builder（h1-h6/paragraph/code_block/ul/ol/blockquote/table/hr）+ `render` + `fmt_*` 片段助手；GFM 表格列对齐。parse（读）为 Phase B/C 待做 | `docs/plan_std_md.md` |
 
 ### 8. 字符串方法
 
@@ -147,7 +148,7 @@
 
 | 项目 | 数量 | 说明 |
 |------|------|------|
-| ctest 注册测试 | **90 个** | 全部通过（2026-05-31；flaky AOT 用 `--repeat until-pass:2` 自愈，见 CLAUDE.md §3） |
+| ctest 注册测试 | **91 个** | 全部通过（2026-05-31；flaky AOT 用 `--repeat until-pass:2` 自愈，见 CLAUDE.md §3） |
 | 单元测试 | `test_scanner` / `test_parser` / `test_types` / `test_codegen` / `test_jit` / `test_ffi` / `test_module` / `test_memory` / `test_operator_overload` / `test_repl` | C 单元测试 |
 | 端到端测试 | 大量 cmake 驱动（含 json / 模块命名空间 / 操作符重载 / REPL import 持久化 / BF-040~046 回归） | 每个测试覆盖 JIT + AOT 双路径，部分含 memcheck 验证 |
 
@@ -209,6 +210,9 @@
 | ~~L-008~~ | ~~struct 不可从容器深拷贝~~ | ✅ 已修复（验证于 2026-05-29）：`MyStruct s = vec[i]` 对 has_drop struct 自动深拷贝（含嵌套 struct + 函数返回 vec），memcheck clean | — | — |
 | ~~L-009~~ | ~~LLVM 函数名不做模块 mangling~~ | ✅ 已修复（2026-05-29）：模块内自由函数 LLVM 符号前缀化为 `<modpath>__<fn>`（根/主文件函数保持不变）。两类后果均消除——① 本地 `read_file` + `import io` 不再崩溃；② 两模块同名 `helper` 各自正确返回。三重验证 AOT+JIT+memcheck（`test_l009_mangle`）+ json/stdlib 无回归 | — | `docs/plan_l009_mangling.md` |
 | L-010 | REPL 跨多条语句传递 has_drop enum/struct 值会崩溃 | 在 `ls repl` 中 `import std.json` 后，跨**不同输入行**对同一类 has_drop 值（如 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件**完全不受影响**；REPL 内 import 内建模块（math/io）、返回非 has_drop 值的 .ls 模块函数（strconv/path 等）、构造+立即析构 has_drop 值（不跨行）均正常 | 根因：REPL 每条 snippet 是独立 JIT 模块，imported 模块的 has_drop 自动 drop/clone 辅助函数被「strip 成声明跨模块解析」，与 RAII 析构语义在增量 JIT 下交互出错。修法方向：imported 模块在 REPL 只发射一次（declare-only on subsequent snippets），需 codegen 支持「跳过已发射模块 body」模式 | `src/jit.c` `jit_repl` |
+| ~~L-011a~~ | ~~struct 含 vec/enum 字段不自动 drop~~ | ✅ 已修复（2026-05-31）：struct `has_drop` 判定纳入 vec/has_drop-enum 字段，auto drop fn 释放 vec 字段（递归 `emit_vec_drop_at`）。memcheck clean，ctest 91/91 | — | `src/codegen.c` / `src/checker.c` |
+| ~~L-011b~~ | ~~嵌套 `vec(vec(...))` drop/clone 损坏~~ | ✅ 已修复（2026-05-31）：嵌套 vec 递归 drop + 统一 clone dispatcher（`emit_clone_value`）贯穿 get/first/last/`[i]`/copy/slice/extend/filter/find；vec rvalue 临时实参登记 drop。memcheck clean | — | `src/codegen.c` |
+| L-011c | vec 尚未完全 first-class（剩余 D/C/F） | 阻塞「命名 struct MdDoc + 嵌套 vec lists/table」的干净 API：**D** `&!struct` 字段 vec 方法变更不写回调用方；**F** enum/struct payload 内**嵌套** vec 的 clone+drop 仍泄漏；**C** 跨模块 `type` 别名不可命名（`md.MdDoc` 用不了）。当前 std.md 用 `type MdDoc=vec(MdBlock)` + 扁平 list/table 规避（输出一致、memcheck clean） | 作为独立「vec first-class」专项：D 写回 + F enum/struct 嵌套 payload clone/drop + C 别名导出。每修一层会暴露下一层，需配套测试矩阵 | `docs/plan_std_md.md` |
 
 ---
 
