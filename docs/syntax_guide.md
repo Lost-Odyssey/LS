@@ -405,6 +405,9 @@ bool has = scores.contains_key("Bob")
 scores.remove("Bob")
 int count = scores.length          // 1
 bool empty = scores.is_empty()
+vec(string) ks = scores.keys()     // 所有键（vec(K)），可绑定或直接 for-in
+vec(int) vs = scores.values()      // 所有值（vec(V)）
+for k in scores.keys() { print(k) }
 scores.clear()
 ```
 

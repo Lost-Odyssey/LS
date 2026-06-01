@@ -430,6 +430,43 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
 
+# std.html Phase H1 (generation + render): functional bottom-up construction,
+# escaping, void tags, fmt_tag. JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_std_html_write
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/html_write.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=std_html_write
+        -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
+)
+
+# map.keys() / map.values() iteration + bound vec result. Regression for the
+# silent zero-iteration bug. JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_map_keys
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/map_keys.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=map_keys
+        -P ${CMAKE_SOURCE_DIR}/tests/test_map_keys.cmake
+)
+
+# Short-circuit (&& / ||) temp-flush: a string temp in a short-circuit operand
+# whose result is assigned to a bool/POD var must be freed (regression for the
+# bool-assign path that reset the temp count without freeing). JIT + AOT + memcheck.
+add_test(
+    NAME test_shortcircuit_temp
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/shortcircuit_temp.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=shortcircuit_temp
+        -P ${CMAKE_SOURCE_DIR}/tests/test_shortcircuit_temp.cmake
+)
+
 # Container value-semantics matrix (vec/map first-class — Phase 0 safety net).
 # Baseline-clean cases, locked under JIT memcheck. Broken target cases (D/F) are
 # tracked in tests/samples/cmatrix/MATRIX.md and registered as they turn green.

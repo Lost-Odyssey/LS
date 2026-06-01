@@ -10062,6 +10062,109 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef mv = LLVMBuildLoad2(ctx->builder, map_t, map_alloca, "mcpy.v");
         return emit_map_clone_val(ctx, mv, key_type, val_type);
     }
+    /* ---- keys() -> vec(K) / values() -> vec(V) ----
+       Traverse every bucket chain, deep-clone each key/val into a fresh vec so
+       the result owns independent copies (dropping it never double-frees the
+       map's storage). Element order follows bucket then chain order. */
+    if (strcmp(method, "keys") == 0 || strcmp(method, "values") == 0)
+    {
+        bool want_keys = (method[0] == 'k');
+        Type *elem_type = want_keys ? key_type : val_type;
+        LLVMTypeRef elem_llvm = want_keys ? key_lt : val_lt;
+        unsigned node_field = want_keys ? 1u : 2u;
+
+        emit_map_helpers_for(ctx, key_type, val_type);
+        LLVMTypeRef node_t = ls_map_node_type(ctx, key_type, val_type);
+        LLVMTypeRef map_t = ls_map_type(ctx);
+        LLVMTypeRef vec_t = ls_vec_type(ctx);
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+
+        /* Loop state allocas in the entry block (so they dominate all uses). */
+        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
+        LLVMBuilderRef eb = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
+        if (fi) LLVMPositionBuilderBefore(eb, fi);
+        else    LLVMPositionBuilderAtEnd(eb, entry_bb);
+        LLVMValueRef res  = LLVMBuildAlloca(eb, vec_t,  "kv.res");
+        LLVMValueRef bi_a = LLVMBuildAlloca(eb, i64_t,  "kv.bi");
+        LLVMValueRef nd_a = LLVMBuildAlloca(eb, ptr_t,  "kv.nd");
+        LLVMDisposeBuilder(eb);
+
+        /* res = empty vec {NULL, 0, 0} */
+        LLVMBuildStore(ctx->builder, LLVMConstNull(vec_t), res);
+
+        LLVMValueRef mv = LLVMBuildLoad2(ctx->builder, map_t, map_alloca, "kv.mv");
+        LLVMValueRef buckets = LLVMBuildExtractValue(ctx->builder, mv, 0, "kv.bkts");
+        LLVMValueRef cap_v = LLVMBuildExtractValue(ctx->builder, mv, 2, "kv.cap");
+        LLVMValueRef cap64 = LLVMBuildZExt(ctx->builder, cap_v, i64_t, "kv.cap64");
+        LLVMBuildStore(ctx->builder, LLVMConstInt(i64_t, 0, 0), bi_a);
+
+        LLVMBasicBlockRef ocond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "kv.ocond");
+        LLVMBasicBlockRef obody = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "kv.obody");
+        LLVMBasicBlockRef icond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "kv.icond");
+        LLVMBasicBlockRef ibody = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "kv.ibody");
+        LLVMBasicBlockRef onext = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "kv.onext");
+        LLVMBasicBlockRef kvdone = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "kv.done");
+        LLVMBuildBr(ctx->builder, ocond);
+
+        /* ocond: bi < cap ? obody : done */
+        LLVMPositionBuilderAtEnd(ctx->builder, ocond);
+        LLVMValueRef bi_v = LLVMBuildLoad2(ctx->builder, i64_t, bi_a, "kv.biv");
+        LLVMValueRef bilt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, bi_v, cap64, "kv.bilt");
+        LLVMBuildCondBr(ctx->builder, bilt, obody, kvdone);
+
+        /* obody: nd = buckets[bi]; -> icond */
+        LLVMPositionBuilderAtEnd(ctx->builder, obody);
+        LLVMValueRef slot_p = LLVMBuildGEP2(ctx->builder, ptr_t, buckets, &bi_v, 1, "kv.slotp");
+        LLVMValueRef slot = LLVMBuildLoad2(ctx->builder, ptr_t, slot_p, "kv.slot");
+        LLVMBuildStore(ctx->builder, slot, nd_a);
+        LLVMBuildBr(ctx->builder, icond);
+
+        /* icond: nd != NULL ? ibody : onext */
+        LLVMPositionBuilderAtEnd(ctx->builder, icond);
+        LLVMValueRef nd_v = LLVMBuildLoad2(ctx->builder, ptr_t, nd_a, "kv.ndv");
+        LLVMValueRef ndnull = LLVMBuildICmp(ctx->builder, LLVMIntEQ, nd_v,
+                                            LLVMConstNull(ptr_t), "kv.ndnull");
+        LLVMBuildCondBr(ctx->builder, ndnull, onext, ibody);
+
+        /* ibody: clone elem, push into res, advance nd -> next (field 3) */
+        LLVMPositionBuilderAtEnd(ctx->builder, ibody);
+        LLVMValueRef elem_p = LLVMBuildStructGEP2(ctx->builder, node_t, nd_v, node_field, "kv.ep");
+        LLVMValueRef elem_v = LLVMBuildLoad2(ctx->builder, elem_llvm, elem_p, "kv.ev");
+        LLVMValueRef cloned = emit_clone_value(ctx, elem_v, elem_llvm, elem_type);
+        /* push cloned into res: grow, data[len] = cloned, len++ */
+        emit_vec_grow_inline(ctx, res, elem_llvm);
+        LLVMValueRef rv = LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.rv");
+        LLVMValueRef rdata = LLVMBuildExtractValue(ctx->builder, rv, 0, "kv.rdata");
+        LLVMValueRef rlen = LLVMBuildExtractValue(ctx->builder, rv, 1, "kv.rlen");
+        LLVMValueRef rlen64 = LLVMBuildSExt(ctx->builder, rlen, i64_t, "kv.rlen64");
+        LLVMValueRef rslot = LLVMBuildGEP2(ctx->builder, elem_llvm, rdata, &rlen64, 1, "kv.rslot");
+        LLVMBuildStore(ctx->builder, cloned, rslot);
+        LLVMValueRef rlen1 = LLVMBuildAdd(ctx->builder, rlen, LLVMConstInt(i32_t, 1, 0), "kv.rlen1");
+        LLVMValueRef rv2 = LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.rv2");
+        rv2 = LLVMBuildInsertValue(ctx->builder, rv2, rlen1, 1, "kv.rv2u");
+        LLVMBuildStore(ctx->builder, rv2, res);
+        /* nd = nd->next */
+        LLVMValueRef nextp = LLVMBuildStructGEP2(ctx->builder, node_t, nd_v, 3u, "kv.nextp");
+        LLVMValueRef nextv = LLVMBuildLoad2(ctx->builder, ptr_t, nextp, "kv.nextv");
+        LLVMBuildStore(ctx->builder, nextv, nd_a);
+        LLVMBuildBr(ctx->builder, icond);
+
+        /* onext: bi++ -> ocond */
+        LLVMPositionBuilderAtEnd(ctx->builder, onext);
+        LLVMValueRef bi_v2 = LLVMBuildLoad2(ctx->builder, i64_t, bi_a, "kv.biv2");
+        LLVMValueRef bi_n = LLVMBuildAdd(ctx->builder, bi_v2, LLVMConstInt(i64_t, 1, 0), "kv.bin");
+        LLVMBuildStore(ctx->builder, bi_n, bi_a);
+        LLVMBuildBr(ctx->builder, ocond);
+
+        /* done: return the result vec value */
+        LLVMPositionBuilderAtEnd(ctx->builder, kvdone);
+        return LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.out");
+    }
+
     (void)val_lt;
     (void)key_lt;
 
@@ -13783,7 +13886,20 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 }
                 else
                 {
+                    /* POD / bool / int / float / char / ptr / object target.
+                       The store never takes ownership of a heap string, so any
+                       string temps created while evaluating the RHS (e.g. a
+                       render() call buried in `ok = check(render(x)==..., n)`)
+                       are pure garbage and MUST be freed here — not merely
+                       discarded by resetting the count, which leaked them.
+                       Free ONLY the string temps (not temp-drops / block-envs:
+                       those has_drop temporaries are released by the existing
+                       statement-boundary machinery, and double-flushing them
+                       here would double-free, e.g. by-value struct args in
+                       `acc = f(x) && f(x) && acc`). */
                     LLVMBuildStore(ctx->builder, val, sym->value);
+                    for (int ti = temp_mark; ti < ctx->temp_string_count; ti++)
+                        emit_string_free(ctx, ctx->temp_string_slots[ti]);
                     ctx->temp_string_count = temp_mark;
                 }
             }
@@ -14374,6 +14490,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMValueRef start_val = NULL, end_val = NULL;
         LLVMValueRef arr_ptr = NULL;    /* for fixed-array iter: alloca of array */
         LLVMValueRef vec_alloca = NULL; /* for vec iter: alloca of LsVec struct */
+        LLVMValueRef for_iter_tmp = NULL; /* owned temp vec (non-IDENT iter), dropped at end_bb */
 
         if (is_array_iter)
         {
@@ -14398,11 +14515,37 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         {
             /* Vec iteration: index from 0..len (runtime) */
             start_val = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, false);
+            LLVMTypeRef vec_t = ls_vec_type(ctx);
             if (iter_node->kind == AST_IDENT)
             {
                 CgSymbol *sym = cg_scope_resolve(ctx->current_scope, iter_node->as.ident.name);
                 if (sym)
-                    vec_alloca = sym->value;
+                    vec_alloca = sym->value;   /* iterate the variable in place (borrow) */
+            }
+            else
+            {
+                /* vec-typed expression (e.g. m.keys(), get_vec()): evaluate into a
+                   fresh alloca owned by this loop's scope. It holds an independent
+                   vec (keys()/copy() deep-clone), so register it so scope cleanup
+                   frees its buffer + elements on loop exit (no leak). */
+                LLVMValueRef iv = codegen_expr(ctx, iter_node);
+                if (iv == NULL)
+                {
+                    pop_scope(ctx);
+                    break;
+                }
+                LLVMBasicBlockRef e_bb = LLVMGetEntryBasicBlock(ctx->current_fn);
+                LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+                LLVMValueRef e_fi = LLVMGetFirstInstruction(e_bb);
+                if (e_fi) LLVMPositionBuilderBefore(tb, e_fi);
+                else      LLVMPositionBuilderAtEnd(tb, e_bb);
+                vec_alloca = LLVMBuildAlloca(tb, vec_t, "fv.iter");
+                LLVMDisposeBuilder(tb);
+                LLVMBuildStore(ctx->builder, iv, vec_alloca);
+                /* Drop this owned temp at end_bb (the single loop exit, reached
+                   by both normal completion and break). Not registered in the
+                   scope — that would let break's emit_cleanup_to double-drop it. */
+                for_iter_tmp = vec_alloca;
             }
             if (vec_alloca == NULL)
             {
@@ -14410,7 +14553,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 break;
             }
             /* end_val = vec.len (load now, before loop — snapshot at loop start) */
-            LLVMTypeRef vec_t = ls_vec_type(ctx);
             LLVMValueRef vv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "fv.v");
             end_val = LLVMBuildExtractValue(ctx->builder, vv, 1, "fv.len");
         }
@@ -14634,6 +14776,12 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
         pop_scope(ctx);
         LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+        /* Free the owned temp iterable vec (e.g. m.keys()) — its buffer and any
+           owned elements. cap==0 (empty) is guarded inside emit_vec_drop_at.
+           end_bb is the single loop exit (both normal completion and break land
+           here), so this drops exactly once per execution. */
+        if (for_iter_tmp != NULL && iter_type != NULL && iter_type->kind == TYPE_VECTOR)
+            emit_vec_drop_at(ctx, for_iter_tmp, iter_type->as.vec.elem);
         break;
     }
 
