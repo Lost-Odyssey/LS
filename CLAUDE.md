@@ -136,7 +136,9 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 | — | L-012 修复：match 拥有的 rvalue 临时 enum 主体现会析构（含裸 `_` 臂/未用绑定）；借用主体路径不变。`test_cmatrix_t07`。边界 ③（match 臂 `return f(binding)` 返回堆值临时被 clone 后泄漏）已修复：AST_RETURN 仅对别名表达式 clone vec，对 call/字面量改为移动。`test_cmatrix_t08` | ✅ |
 | — | **move-elision 优化（Q4）**（2026-06-01）：checker 在真正转移所有权处给源 IDENT 打 `moved_out`；codegen 在 var_decl/assign/field-assign 的 string·struct·enum·vec·map clone 点改为「move + 失效源」（统一 `cg_invalidate_moved_source`），借用源（cap=-2 string 参数等）回退 clone。顺带修 `vec b = a`/`map b = a` 既有 double-free。`test_move_elision`（JIT+AOT 正确性 + memcheck）| ✅ |
 
-**当前测试**：ctest 108/108（新增 `test_move_elision`；`test_cmatrix_t08_match_return_call`、`test_cmatrix_t07_match_owned_temp`；std.md 行内；写/读；REPL；操作符重载）
+| 10-G | **闭包 Phase G：Block env 深拷贝**（2026-06-01，解除 L-007）：`Block g = vec[i]` / `struct.field` / `map.get(k)` 现深拷贝 env——env 布局新增 `clone_fn` 槽（field 1，drop_fn 仍 field 0 不动），每闭包合成 `__env_clone_<id>`（by-ref vec/map 浅拷指针不双释，string/vec/map/struct/enum 经 `emit_*_clone_val` 深拷，POD 值拷）；copy-out 站点经 `cg_emit_block_env_clone` runtime 克隆（NULL env 安全）。checker 放开旧 F.3/F.4A 拒绝（保留 F.2 param-move）。工厂 `fn()->Block` 返回已拥有 env，不克隆。`test_phase_g_closure`（JIT+AOT+memcheck）| ✅ |
+
+**当前测试**：ctest 109/109（新增 `test_phase_g_closure`、`test_move_elision`；`test_cmatrix_t08_match_return_call`、`test_cmatrix_t07_match_owned_temp`；std.md 行内；写/读；REPL；操作符重载）
 
 > ⚠️ **REPL 已知限制 L-010**：`ls repl` 中跨多条输入行对同一类 has_drop enum/struct 值（如 `import std.json` 的 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件不受影响。根因：每条 REPL snippet 是独立 JIT 模块，imported 模块 drop/clone 辅助被跨模块 strip 与 RAII 析构交互出错。修法方向：imported 模块在 REPL 只发射一次。详见 [docs/feature_inventory.md](docs/feature_inventory.md) 三、L-010。
 
@@ -194,7 +196,7 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 - `vec.get` / `map.get` 改返回 `Option(T)`（breaking change）
 - 用户自定义泛型（`struct LinkedList(T)`）
 - 借用作为返回类型 / 变量声明 / struct 字段（需生命期系统）
-- **Phase G**：Block env 深拷贝（`Block g = ns[i]` 当前被 checker 拒绝）→ [docs/block_clone_plan.md](docs/block_clone_plan.md)
+- ~~**Phase G**：Block env 深拷贝~~ ✅ 已完成（2026-06-01）：`Block g = ns[i]` / `struct.field` / `map.get(k)` 深拷贝 env（env 加 `clone_fn` 槽 + 每闭包 `__env_clone_<id>`），解除 L-007。见阶段表 10-G。
 - ~~**Phase H**：struct 深拷贝~~ ✅ 已完成（验证 2026-05-29）：`MyStruct b = vec_of_struct[i]` 对 has_drop struct 自动深拷贝，memcheck clean（含嵌套 struct + 函数返回 vec）
 - ~~**L-009**：跨模块函数名 LLVM mangling~~ ✅ 已完成（2026-05-29）：模块自由函数符号前缀化 `<modpath>__<fn>`，消除同名崩溃/静默错值；根/主文件函数不变。
 - **L-009.1**：跨模块同名 mangling 收尾 → [docs/plan_l009_mangling.md](docs/plan_l009_mangling.md) §6

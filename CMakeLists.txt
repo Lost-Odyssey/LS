@@ -463,6 +463,19 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_move_elision.cmake
 )
 
+# Phase G (Block env deep-clone, resolves L-007): copying a Block out of a vec
+# element / struct field / map value deep-clones the closure env so the
+# destination owns an independent one. Asserts JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_phase_g_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/closure_g.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=phase_g_closure
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_g_closure.cmake
+)
+
 # AOT memcheck end-to-end test: compile a sample with `ls compile --memcheck`,
 # run the produced binary, assert the runtime report shows "OK clean".
 # Driven by a cmake -P script for cross-platform process invocation.

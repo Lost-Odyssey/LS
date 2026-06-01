@@ -1,6 +1,17 @@
 # Block Clone / Container 借用 规划文档
 # (可选阶段 Phase G — Block 深拷贝与容器借用)
 
+> **状态：✅ Phase G 已实现（2026-06-01，方案 B 深拷贝）**，解除 L-007。
+> `Block g = vec[i]` / `struct.field` / `map.get(k)` 现深拷贝 env：env 布局新增
+> `clone_fn` 槽（field 1，drop_fn 仍在 field 0），每闭包合成 `__env_clone_<id>`；
+> copy-out 站点经 `cg_emit_block_env_clone` runtime 克隆（NULL env 安全）。
+> **比原计划更全**：不止 POD+string，而是支持 *所有* capture 类型——string/vec/map/
+> struct(has_drop)/enum(has_drop) 经 `emit_*_clone_val` 深拷贝；by-ref vec/map 浅拷
+> 外层指针（env 不拥有，无双释，但仍受 L-002 逃逸约束）；POD/array(POD) 值拷贝。
+> 因此 checker 无需「capture 可克隆性」检查，直接放开旧 F.3/F.4A 拒绝（保留 F.2
+> param-move）。验收 `test_phase_g_closure`（JIT+AOT+memcheck），ctest 109/109。
+> 下方原始规划保留作设计记录。
+
 ## 背景
 
 当前（Phase F.4A）的策略是：**拒绝**将 Block 从容器（vec / map / struct 字段）中复制出来，

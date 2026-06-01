@@ -1,6 +1,6 @@
 # LS 功能清单与路线图
 
-> **最后更新**：2026-05-31  
+> **最后更新**：2026-06-01  
 > 本文档记录 LS 语言已实现功能的完整清单，以及尚未实现功能的工作量/风险/价值评估。
 
 ---
@@ -32,6 +32,7 @@
 | `object` 类型擦除指针 | `void*` 语义 | — |
 | 全局变量 | 顶层声明，跨函数/跨模块读写 | — |
 | 操作符重载 | Ruby 风符号方法名 `fn +`/`==`/`<` + 内建 trait `Add/Sub/Mul/Div/Rem/Eq/Ord`（软保留）；checker 把 `a OP b` 降级为合成方法调用；泛型 `T: Add` 体内可用 | `docs/plan_operator_overload.md` |
+| Move-elision 优化 (Q4) | checker 在真正转移所有权处给源 IDENT 打 `moved_out`；codegen 在 var_decl/assign/field-assign 的 string·struct·enum·vec·map clone 点改为「move + 失效源」（统一 `cg_invalidate_moved_source`），借用源（cap=−2 string 参数等）回退 clone；顺带修 `vec b = a` / `map b = a` 既有 double-free | `src/codegen.c` / `src/checker.c` |
 
 ### 2. 类型系统高级特性
 
@@ -72,6 +73,7 @@
 | Block 赋值 + 移动语义 | `F h = g` 后 g.env_ptr 置 NULL | `docs/closures_plan.md` Phase F.2 |
 | Block 作为 struct 字段 | has_drop 扩展，env 所有权转移给 struct | `docs/closures_plan.md` Phase F.3 |
 | vec(Block) / map(K, Block) | push/set 转移 env，drop 释放元素 env | `docs/closures_plan.md` Phase F.4 |
+| Block env 深拷贝 (Phase G) | `Block g = vec[i]` / `struct.field` / `map.get(k)` 深拷贝 env：env 加 `clone_fn` 槽 + 每闭包合成 `__env_clone_<id>`（深拷 string/vec/map/struct/enum capture，by-ref 浅拷共享，POD 值拷）；解除 L-007 | `docs/block_clone_plan.md` |
 
 ### 5. vec 函数式操作
 
@@ -148,7 +150,7 @@
 
 | 项目 | 数量 | 说明 |
 |------|------|------|
-| ctest 注册测试 | **106 个** | 全部通过（2026-05-31；含 std.md 写/读/行内 + 12 个容器值语义矩阵 `test_cmatrix_*`；flaky AOT 用 `--repeat until-pass:2` 自愈） |
+| ctest 注册测试 | **109 个** | 全部通过（2026-06-01；含 std.md 写/读/行内 + 容器值语义矩阵 `test_cmatrix_*` + `test_move_elision` + `test_phase_g_closure`；flaky AOT 用 `--repeat until-pass:2` 自愈） |
 | 单元测试 | `test_scanner` / `test_parser` / `test_types` / `test_codegen` / `test_jit` / `test_ffi` / `test_module` / `test_memory` / `test_operator_overload` / `test_repl` | C 单元测试 |
 | 端到端测试 | 大量 cmake 驱动（含 json / 模块命名空间 / 操作符重载 / REPL import 持久化 / BF-040~046 回归） | 每个测试覆盖 JIT + AOT 双路径，部分含 memcheck 验证 |
 
@@ -164,7 +166,7 @@
 |------|------|------|------|------|------|
 | ~~**操作符重载**~~ | — | — | ✅ 完成 | 2026-05-31：Ruby 风符号方法名 `fn +`/`==`/`<` + 内建 trait `Add/Sub/Mul/Div/Rem/Eq/Ord`（软保留）；checker 把 `a OP b` 降级为合成方法调用复用方法分派；比较"推导默认+逐个可覆写"；泛型 `T: Add` 体内可用；JIT+AOT+memcheck，ctest 88/88 | `docs/plan_operator_overload.md` |
 | ~~跨模块函数名 LLVM name mangling~~ | — | — | ✅ 完成 | 模块自由函数前缀化 `<modpath>__<fn>`，消除崩溃/静默错值（验证于 2026-05-29）；struct 方法+泛型跨模块同名留作 L-009.1 | `docs/plan_l009_mangling.md` |
-| **Block env 深拷贝 (Phase G)** | 5–7 天 | 低 | ★★★☆☆ | `Block g = vec[i]` 当前被 checker 拒绝（checker.c F.4A 系列守卫）；需合成 `__env_clone_N`，POD+string capture 可克隆 | `docs/block_clone_plan.md` |
+| ~~**Block env 深拷贝 (Phase G)**~~ | — | — | ✅ 完成 | 2026-06-01：`Block g = vec[i]` / `struct.field` / `map.get(k)` 深拷贝 env（env 加 `clone_fn` 槽 + 每闭包 `__env_clone_<id>`，支持 POD/string/vec/map/struct/enum capture，by-ref 浅拷共享）；checker 放开 F.3/F.4A；`test_phase_g_closure` JIT+AOT+memcheck | `docs/block_clone_plan.md` |
 | ~~struct 深拷贝 (Phase H)~~ | — | — | ✅ 完成 | `MyStruct s = vec_of_struct[i]` 已自动深拷贝（验证于 2026-05-29，memcheck clean）；见 L-008 | `docs/plan_memory_lifetime.md` |
 
 #### ★★★★ 高收益 · 中工期
@@ -206,7 +208,7 @@
 | L-004 | `io.read_file`/`io.read_all` 受 `long` 限制 | Windows 上 ≤ 2GB（seek/tell 已升级 i64） | 完全迁移到 64-bit API | CLAUDE.md §6 |
 | L-005 | 嵌套闭包不支持 | 闭包 body 内不能写 `\|y\| ...` | 需 capture 透传机制 | `docs/closures_plan.md` |
 | ~~L-006~~ | ~~enum 含 vec/map payload 的 drop~~ | ✅ 已修复（2026-05-20）：ctor source move + clone vec/map + AOT main i32 | — | — |
-| L-007 | Block env 不可克隆 | `Block g = vec[i]` 被 checker 拒绝 | Phase G (`docs/block_clone_plan.md`) | `docs/plan_memory_lifetime.md` |
+| ~~L-007~~ | ~~Block env 不可克隆~~ | ✅ 已修复（2026-06-01，Phase G）：`Block g = vec[i]` / `struct.field` / `map.get(k)` 现深拷贝 env——env 布局新增 `clone_fn` 槽（field 1，drop_fn 仍在 field 0），每闭包合成 `__env_clone_<id>`（by-ref vec/map 浅拷指针不双释，string/vec/map/struct/enum 经 `emit_*_clone_val` 深拷，POD 值拷）；copy-out 站点经 `cg_emit_block_env_clone` runtime 克隆（NULL env 安全）。checker 放开旧 F.3/F.4A 拒绝（保留 F.2 param-move）。`test_phase_g_closure`（JIT+AOT+memcheck）。工厂 `fn()->Block` 返回的是已拥有 env，不克隆 | — | `docs/block_clone_plan.md` |
 | ~~L-008~~ | ~~struct 不可从容器深拷贝~~ | ✅ 已修复（验证于 2026-05-29）：`MyStruct s = vec[i]` 对 has_drop struct 自动深拷贝（含嵌套 struct + 函数返回 vec），memcheck clean | — | — |
 | ~~L-009~~ | ~~LLVM 函数名不做模块 mangling~~ | ✅ 已修复（2026-05-29）：模块内自由函数 LLVM 符号前缀化为 `<modpath>__<fn>`（根/主文件函数保持不变）。两类后果均消除——① 本地 `read_file` + `import io` 不再崩溃；② 两模块同名 `helper` 各自正确返回。三重验证 AOT+JIT+memcheck（`test_l009_mangle`）+ json/stdlib 无回归 | — | `docs/plan_l009_mangling.md` |
 | L-010 | REPL 跨多条语句传递 has_drop enum/struct 值会崩溃 | 在 `ls repl` 中 `import std.json` 后，跨**不同输入行**对同一类 has_drop 值（如 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件**完全不受影响**；REPL 内 import 内建模块（math/io）、返回非 has_drop 值的 .ls 模块函数（strconv/path 等）、构造+立即析构 has_drop 值（不跨行）均正常 | 根因：REPL 每条 snippet 是独立 JIT 模块，imported 模块的 has_drop 自动 drop/clone 辅助函数被「strip 成声明跨模块解析」，与 RAII 析构语义在增量 JIT 下交互出错。修法方向：imported 模块在 REPL 只发射一次（declare-only on subsequent snippets），需 codegen 支持「跳过已发射模块 body」模式 | `src/jit.c` `jit_repl` |
@@ -230,10 +232,10 @@ Step 0  ✅ 修复 L-006：enum 含 vec/map payload 的 drop   已完成 2026-05
 Step 1  ✅ JSON 解析 + 输出（std.json）                 已完成 2026-05
    │    JsonValue enum 递归下降 parser + stringify
    │
-Step 2  Markdown 解析 + 输出（std.md）                  5-7 天 ← 下一步候选
-   │    MdNode 树结构依赖 enum + vec 自递归
+Step 2  ✅ Markdown 解析 + 输出（std.md）               已完成 2026-05-31
+   │    MdDoc/MdBlock/MdInline 树（enum + 嵌套 vec），写/读/行内 + extract_*
    │
-Step 3  HTML 解析 + 输出（std.html）                    5-7 天
+Step 3  HTML 解析 + 输出（std.html）                    5-7 天 ← 下一步候选
    │    HtmlNode 树结构同上
    │
 Step 4  Markdown ↔ HTML 互转                            2-3 天
@@ -256,19 +258,21 @@ Step 4  Markdown ↔ HTML 互转                            2-3 天
 ## 五、推荐实施顺序
 
 ```
-已完成（截至 2026-05-31）
+已完成（截至 2026-06-01）
   ├── ✅ L-006：enum 含 vec/map payload drop
   ├── ✅ JSON 解析 + 输出（std.json）
   ├── ✅ 操作符重载（Add/Sub/.../Ord）
   ├── ✅ L-009 + L-009.1：跨模块函数/泛型 mangling
   ├── ✅ 模块命名空间 B-1~B-6（真命名空间 + mod.Type 限定语法）
-  └── ✅ struct 深拷贝（L-008）+ BF-040~046 内存修复
+  ├── ✅ struct 深拷贝（L-008）+ BF-040~046 内存修复
+  ├── ✅ vec first-class（D/E/F）+ L-011a/b/c + L-012 ①②③
+  ├── ✅ Markdown 解析 + 输出（std.md Phase A/B/C，写/读/行内 + extract_*）
+  ├── ✅ Move-elision 优化（Q4）：move 点 elide 防御性 clone + 修 vec/map 赋值 double-free
+  └── ✅ Block env 深拷贝（Phase G）：解除 L-007，闭包系统补齐
 
-近期（1-2 周）—— 推荐二选一
-  ├── 【数据格式延续】Markdown 解析 + 输出（std.md，5-7 天）
-  │     直接复用 json 验证过的 enum 自递归 + vec 树结构能力，风险低、产出可感知
-  └── 【收尾闭包】Block env 深拷贝 Phase G（5-7 天）
-        解除 L-007（`Block g = vec[i]` 被 checker 拒绝），补齐闭包系统最后短板
+近期（1-2 周）
+  └── 【数据格式延续】HTML 解析 + 输出（std.html，5-7 天）
+        复用 std.md 验证过的 enum 自递归 + 嵌套 vec 树结构，风险低、产出可感知
 
 中期（3-6 周）
   ├── HTML 解析 + 输出（std.html，5-7 天）+ Markdown ↔ HTML 互转（2-3 天）
@@ -285,12 +289,12 @@ Step 4  Markdown ↔ HTML 互转                            2-3 天
 
 ### 下一步建议（优先级）
 
-1. **Markdown 模块（std.md）** — 最推荐。数据格式三件套的自然延续，json 已经证明
-   `enum + vec 自递归 + 字符串方法` 这条技术路径成熟，无新编译器前置依赖，5-7 天可交付，
-   用户可直接感知（文档处理）。
-2. **Block env 深拷贝 Phase G** — 若优先补语言完整性而非库生态。这是闭包系统目前唯一
-   明显缺口（L-007），影响"把闭包存进容器再取出"这类常见模式。工期同样 5-7 天。
-3. **DWARF 调试信息 D.1** — 若想提升开发体验上限。投入更大（10-14 天）但属一次性基础设施，
+1. **HTML 模块（std.html）** — 最推荐。数据格式三件套的最后一块，复用 std.md/json
+   已证明成熟的 `enum + 嵌套 vec 自递归 + 字符串方法` 路径，无新编译器前置依赖，5-7 天可交付，
+   用户可直接感知（文档处理 + Markdown↔HTML 互转）。闭包系统经 Phase G 已补齐，无明显内核缺口。
+2. **DWARF 调试信息 D.1** — 若想提升开发体验上限。投入更大（10-14 天）但属一次性基础设施，
    后续 VS Code DAP 调试器（D.2）依赖它。
+3. **生命期系统** — 若想攻坚语言安全性顶板。解决 L-002（by-ref 闭包逃逸——Phase G 的
+   by-ref capture 浅拷共享同样受此约束）、借用作返回类型/字段，前置依赖最多（21-30 天）。
 
-> 倾向 **Markdown（路线明确、低风险、库生态连续）**；若更看重语言内核完整度则选 **Phase G**。
+> 倾向 **std.html（路线明确、低风险、库生态连续）**；若更看重开发体验则选 **DWARF D.1**。
