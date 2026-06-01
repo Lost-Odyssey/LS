@@ -743,10 +743,10 @@ fn _inline_links(vec(MdInline) inls) -> vec(string) {
 
 fn _block_links(MdBlock b) -> vec(string) {
     match b {
-        // Bind before return: returning a heap-value call result directly from a
-        // match arm currently skips the subject param's drop (L-012 edge ③).
-        Heading(_, c)    => { vec(string) r = _inline_links(c); return r }
-        Paragraph(c)     => { vec(string) r = _inline_links(c); return r }
+        // L-012 ③ fixed: returning a heap-value call result directly from a
+        // match arm now moves the temp out (no spurious clone+leak).
+        Heading(_, c)    => { return _inline_links(c) }
+        Paragraph(c)     => { return _inline_links(c) }
         UnorderedList(items) => {
             vec(string) out = []
             int i = 0

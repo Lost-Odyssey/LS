@@ -438,7 +438,7 @@ foreach(cm
         b04_struct_vec_drop b05_enum_vec b06_map_scope t04_map_vec_value
         t03_enum_nested_vec
         t01_struct_field_push t02_struct_field_index t05_struct_map t06_field_assign
-        t07_match_owned_temp)
+        t07_match_owned_temp t08_match_return_call)
     add_test(
         NAME test_cmatrix_${cm}
         COMMAND ${CMAKE_COMMAND}
@@ -449,6 +449,32 @@ foreach(cm
             -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
     )
 endforeach()
+
+# Move-elision (Q4): owned movable sources are moved (not cloned) into a new
+# var / assignment when the checker confirms ownership transfer. Asserts JIT +
+# AOT value correctness and JIT memcheck cleanliness in one driver.
+add_test(
+    NAME test_move_elision
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/cmatrix/me01_move_elision.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=move_elision
+        -P ${CMAKE_SOURCE_DIR}/tests/test_move_elision.cmake
+)
+
+# Phase G (Block env deep-clone, resolves L-007): copying a Block out of a vec
+# element / struct field / map value deep-clones the closure env so the
+# destination owns an independent one. Asserts JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_phase_g_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/closure_g.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=phase_g_closure
+        -P ${CMAKE_SOURCE_DIR}/tests/test_phase_g_closure.cmake
+)
 
 # AOT memcheck end-to-end test: compile a sample with `ls compile --memcheck`,
 # run the produced binary, assert the runtime report shows "OK clean".

@@ -1441,6 +1441,10 @@ static void checker_try_mark_moved(Checker *c, AstNode *arg)
        Only applies to TYPE_STRING (other movable types have no "static" variant). */
     if (sym->type->kind == TYPE_STRING && sym->is_static_string) return;
     sym->is_moved = true;
+    /* Move-elision (Q4): record on the node that this use transferred ownership,
+       so codegen can move (not clone) the heap and invalidate the source.
+       Only reached for owned, non-borrow, non-static-string movable IDENTs. */
+    arg->moved_out = true;
 }
 
 /* Phase 5: reject attempts to move a borrowed variable (e.g. vec.push(s)
@@ -1535,62 +1539,10 @@ static bool checker_reject_block_param_move(Checker *c, AstNode *src, const char
     return true;
 }
 
-/* F.3: reading a Block field out of a struct and storing it into a variable
-   would create a second live reference to the same env — double-free on scope exit.
-   Only allow direct call `p.step1(args)`; reject `Block g = p.step1`. */
-static bool checker_reject_block_field_read(Checker *c, AstNode *src, const char *what)
-{
-    if (!src || src->kind != AST_FIELD) return false;
-    if (!src->resolved_type || src->resolved_type->kind != TYPE_BLOCK) return false;
-    checker_move_error(c, src->line, src->column,
-                       "cannot %s: reading a Block field out of a struct creates a "
-                       "second reference to the same env (double-free); "
-                       "call it directly: p.step1(args)",
-                       what);
-    return true;
-}
-
-/* F.4A: extracting a Block from a vec via index `vec[i]` would create a second
-   live reference to the same env — double-free when both the local var and the
-   vec element are dropped.  Only allow direct call: vec[i](args). */
-static bool checker_reject_block_vec_index(Checker *c, AstNode *src)
-{
-    if (!src || src->kind != AST_INDEX) return false;
-    if (!src->resolved_type || src->resolved_type->kind != TYPE_BLOCK) return false;
-    /* Confirm the container is a vec (not an array or map) */
-    AstNode *obj = src->as.index_expr.object;
-    if (!obj || !obj->resolved_type) return false;
-    if (obj->resolved_type->kind != TYPE_VECTOR) return false;
-    checker_move_error(c, src->line, src->column,
-                       "cannot copy Block out of vec: the env would be shared between "
-                       "the new variable and the vec element (double-free on drop); "
-                       "call it directly instead: vec[i](args)");
-    return true;
-}
-
-/* F.4A: extracting a Block from a map via map.get(k) would create a second
-   live reference to the same env — double-free hazard.
-   Only allow direct call: map.get(k)(args). */
-static bool checker_reject_block_map_get(Checker *c, AstNode *src)
-{
-    if (!src || src->kind != AST_CALL) return false;
-    if (!src->resolved_type || src->resolved_type->kind != TYPE_BLOCK) return false;
-    /* Detect map.get(key) call pattern */
-    AstNode *callee = src->as.call.callee;
-    if (!callee || callee->kind != AST_FIELD) return false;
-    if (strcmp(callee->as.field_access.field, "get") != 0) return false;
-    AstNode *map_obj = callee->as.field_access.object;
-    if (!map_obj || !map_obj->resolved_type) return false;
-    if (map_obj->resolved_type->kind != TYPE_MAP) return false;
-    /* Confirm the map value type is Block */
-    Type *val_t = map_obj->resolved_type->as.map.val;
-    if (!val_t || val_t->kind != TYPE_BLOCK) return false;
-    checker_move_error(c, src->line, src->column,
-                       "cannot copy Block out of map: the env would be shared between "
-                       "the new variable and the map entry (double-free on drop); "
-                       "call it directly instead: map.get(k)(args)");
-    return true;
-}
+/* Phase G note: the former F.3/F.4A rejections (copy a Block out of a struct
+   field / vec element / map value) have been removed — codegen now deep-clones
+   the closure env at the copy-out site (cg_emit_block_env_clone in codegen.c),
+   so the destination owns an independent env with no shared-env double-free. */
 
 /* Phase 5.6: reject copy-out of a vec borrow (both &vec and &!vec).
    Unlike string (whose by-value ABI lets `string t = s` produce a harmless
@@ -3484,6 +3436,11 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
             {
                 /* Force-mark as moved, even for static strings */
                 sym->is_moved = true;
+                /* Move-elision (Q4): explicit __move(x) transfers ownership; let
+                   codegen move instead of clone. Tag the inner IDENT (the value
+                   that flows into the dst is __move(x), but codegen inspects the
+                   unwrapped source via ast_unwrap_move). */
+                arg->moved_out = true;
             }
             else
             {
@@ -6211,12 +6168,10 @@ static void check_stmt(Checker *c, AstNode *node)
             /* F.2: Block parameters are shallow-copy borrows; cannot be moved out. */
             checker_reject_block_param_move(c, node->as.var_decl.init,
                                             "move Block into new variable");
-            /* F.3: Block struct fields cannot be aliased out; call them directly. */
-            checker_reject_block_field_read(c, node->as.var_decl.init,
-                                            "copy Block field into new variable");
-            /* F.4A: Block vec elements / map values cannot be aliased out either. */
-            checker_reject_block_vec_index(c, node->as.var_decl.init);
-            checker_reject_block_map_get(c, node->as.var_decl.init);
+            /* Phase G: copying a Block out of a struct field / vec element / map
+               value is now allowed — codegen deep-clones the env (see
+               cg_emit_block_env_clone), so the new variable owns an independent
+               env with no shared-env double-free. (Former F.3/F.4A rejections.) */
             /* Move tracking: if the initializer is a dynamic string IDENT, the source is moved.
                Static strings, borrow params, and non-string types are left untouched
                (checker_try_mark_moved skips them). Reading a borrow into a new local
@@ -6347,12 +6302,9 @@ static void check_stmt(Checker *c, AstNode *node)
             /* F.2: Block parameters are shallow-copy borrows; cannot be moved out. */
             checker_reject_block_param_move(c, node->as.assign.value,
                                             "assign Block parameter to another variable");
-            /* F.3: Block struct fields cannot be aliased out; call them directly. */
-            checker_reject_block_field_read(c, node->as.assign.value,
-                                            "assign Block field to another variable");
-            /* F.4A: Block vec elements / map values cannot be aliased out either. */
-            checker_reject_block_vec_index(c, node->as.assign.value);
-            checker_reject_block_map_get(c, node->as.assign.value);
+            /* Phase G: assigning a Block out of a struct field / vec element / map
+               value is now allowed — codegen deep-clones the env. (Former
+               F.3/F.4A rejections.) */
             /* If RHS is a dynamic string/Block/movable IDENT, mark it as moved */
             checker_try_mark_moved(c, node->as.assign.value);
 

@@ -2317,6 +2317,153 @@ static void cg_null_block_env(CodegenContext *ctx, LLVMValueRef blk_alloca)
     LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_t), env_field);
 }
 
+/* Phase G: deep-clone the env of a Block VALUE, producing a new LsBlock that
+   owns an independent env. Used at copy-out sites (`Block g = vec[i]` /
+   `struct.field` / `map.get(k)`) where the source LsBlock aliases an env still
+   owned by the container — without cloning, both the new variable and the
+   container element would free the same env on scope exit (double-free).
+
+   The per-closure clone_fn lives at env field 1 (see codegen_closure_literal
+   step 9a-clone). A NULL env (closure with no captures) is returned unchanged;
+   when env != NULL, clone_fn is guaranteed non-NULL. Runtime shape:
+       new_env = env ? ((ptr(*)(ptr))env[1])(env) : NULL
+       result  = { blk.fn, new_env }                                       */
+static LLVMValueRef cg_emit_block_env_clone(CodegenContext *ctx,
+                                            LLVMValueRef block_val)
+{
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, block_val, 0, "bc.fn");
+    LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, block_val, 1, "bc.env");
+
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    LLVMValueRef is_null = LLVMBuildICmp(ctx->builder, LLVMIntEQ, env_ptr,
+                                         LLVMConstNull(ptr_t), "bc.isnull");
+    LLVMBasicBlockRef from_bb  = LLVMGetInsertBlock(ctx->builder);
+    LLVMBasicBlockRef clone_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "bc.clone");
+    LLVMBasicBlockRef cont_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "bc.cont");
+    LLVMBuildCondBr(ctx->builder, is_null, cont_bb, clone_bb);
+
+    /* clone_bb: load clone_fn from env[1] and call it. */
+    LLVMPositionBuilderAtEnd(ctx->builder, clone_bb);
+    LLVMValueRef idx1 = LLVMConstInt(i64_t, 1, 0);
+    LLVMValueRef clone_slot = LLVMBuildInBoundsGEP2(ctx->builder, ptr_t, env_ptr,
+                                                    &idx1, 1, "bc.cfslot");
+    LLVMValueRef clone_fn = LLVMBuildLoad2(ctx->builder, ptr_t, clone_slot, "bc.cf");
+    LLVMTypeRef cf_param[1] = { ptr_t };
+    LLVMTypeRef cf_ty = LLVMFunctionType(ptr_t, cf_param, 1, 0);
+    LLVMValueRef new_env = LLVMBuildCall2(ctx->builder, cf_ty, clone_fn, &env_ptr, 1, "bc.newenv");
+    LLVMBasicBlockRef clone_end = LLVMGetInsertBlock(ctx->builder);
+    LLVMBuildBr(ctx->builder, cont_bb);
+
+    /* cont_bb: phi NULL (from null path) / new_env (from clone path). */
+    LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+    LLVMValueRef phi = LLVMBuildPhi(ctx->builder, ptr_t, "bc.envphi");
+    LLVMValueRef inc_vals[2] = { LLVMConstNull(ptr_t), new_env };
+    LLVMBasicBlockRef inc_bbs[2] = { from_bb, clone_end };
+    LLVMAddIncoming(phi, inc_vals, inc_bbs, 2);
+
+    LLVMValueRef result = LLVMGetUndef(LLVMTypeOf(block_val));
+    result = LLVMBuildInsertValue(ctx->builder, result, fn_ptr, 0, "bc.rfn");
+    result = LLVMBuildInsertValue(ctx->builder, result, phi, 1, "bc.renv");
+    cg_dbg_block_op(ctx, "clone", "env-deepcopy", phi);
+    return result;
+}
+
+/* Phase G: true when a Block-typed initializer reads a Block out of a container
+   it does not own — `vec[i]`, `struct.field`, or `map.get(k)`. These produce an
+   LsBlock that aliases the container's env, so a copy-out into a new variable
+   must deep-clone the env. A factory call `fn()->Block` returns an owned env and
+   is deliberately NOT matched here (no clone). Mirrors the checker's former
+   F.3/F.4A rejection patterns. */
+static bool cg_block_source_is_aliased(AstNode *src)
+{
+    if (!src) return false;
+    if (src->kind == AST_INDEX) {
+        AstNode *obj = src->as.index_expr.object;
+        return obj && obj->resolved_type && obj->resolved_type->kind == TYPE_VECTOR;
+    }
+    if (src->kind == AST_FIELD) {
+        AstNode *obj = src->as.field_access.object;
+        return obj && obj->resolved_type && obj->resolved_type->kind == TYPE_STRUCT;
+    }
+    if (src->kind == AST_CALL) {
+        AstNode *callee = src->as.call.callee;
+        if (!callee || callee->kind != AST_FIELD) return false;
+        if (strcmp(callee->as.field_access.field, "get") != 0) return false;
+        AstNode *mo = callee->as.field_access.object;
+        return mo && mo->resolved_type && mo->resolved_type->kind == TYPE_MAP;
+    }
+    return false;
+}
+
+/* Move-elision (Q4): invalidate a moved-from source variable so that its scope
+   cleanup (or a later overwrite drop) does not double-free heap now owned by the
+   destination. Called only when the checker tagged the source IDENT with
+   `moved_out` (see ast.h) — i.e. the source is a named, owned, non-borrow
+   variable whose later use the checker already rejects.
+
+   The invalidation per type mirrors the existing CG_XFER_INTO_CONTAINER paths in
+   cg_store_owned:
+     - string : mark_string_moved (cap = -1; runtime-guarded, no-op if static)
+     - struct : set moved_flag = 1 (scope-drop is moved_flag-conditional)
+     - enum   : set moved_flag = 1
+     - vec/map: zero the source's cap field (scope-drop frees only if cap > 0)
+   `source` is the raw RHS AST node (possibly wrapped in __move()); we unwrap and
+   resolve the underlying IDENT's symbol. Borrowed sources are never invalidated
+   (they hold no ownership). Returns true if the source was a recognised owned
+   IDENT (so the caller can skip cloning), false otherwise. */
+static bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Type *type)
+{
+    if (!source || !type) return false;
+    AstNode *src = ast_unwrap_move(source);
+    if (!src || src->kind != AST_IDENT) return false;
+    CgSymbol *sym = cg_scope_resolve(ctx->current_scope, src->as.ident.name);
+    if (!sym || !sym->value || sym->is_borrowed || sym->is_mut_borrow)
+        return false;
+
+    switch (type->kind)
+    {
+    case TYPE_STRING:
+        mark_string_moved(ctx, sym->value, "move-elision: string moved into dst");
+        return true;
+    case TYPE_STRUCT:
+        if (!type->as.strukt.has_drop) return false;
+        if (sym->moved_flag)
+            LLVMBuildStore(ctx->builder,
+                LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+                sym->moved_flag);
+        return true;
+    case TYPE_ENUM:
+        if (!type->as.enom.has_drop) return false;
+        if (sym->moved_flag)
+            LLVMBuildStore(ctx->builder,
+                LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+                sym->moved_flag);
+        return true;
+    case TYPE_VECTOR:
+    {
+        LLVMTypeRef vec_t = ls_vec_type(ctx);
+        LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, vec_t, sym->value, "mes.vcur");
+        LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
+            LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), 2, "mes.vzc");
+        LLVMBuildStore(ctx->builder, zeroed, sym->value);
+        return true;
+    }
+    case TYPE_MAP:
+    {
+        LLVMTypeRef map_t = ls_map_type(ctx);
+        LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, map_t, sym->value, "mes.mcur");
+        LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
+            LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), 2, "mes.mzc");
+        LLVMBuildStore(ctx->builder, zeroed, sym->value);
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 /* M-3: 统一所有权转移 API
    将 val 存入 dst_ptr，根据类型和来源节点自动选择 move/clone/store 语义。
    temp_mark: codegen_expr(source) 调用之前的 ctx->temp_string_count 快照。
@@ -13264,6 +13411,17 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                    already gave up ownership; cloning here would
                                    leak the heap that came back from the callee. */
                             }
+                            else if (init_node && init_node->moved_out &&
+                                     cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
+                            {
+                                /* Move-elision (Q4): the checker confirmed this
+                                   use transfers ownership (source rejected later),
+                                   and the source was a real owned variable, so the
+                                   source heap was moved + invalidated — no clone.
+                                   If cg_invalidate_moved_source returned false (e.g.
+                                   the source is a borrowed string param, cap=-2),
+                                   we fall through to clone instead. */
+                            }
                             else
                             {
                                 init = emit_string_clone_val(ctx, init);
@@ -13274,21 +13432,53 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                              var_type->as.strukt.has_drop &&
                              ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
                     {
-                        /* Source is another named struct variable — deep-clone so both
-                           this variable and the source have independently owned string
-                           fields and can be freed without double-free. */
-                        LLVMTypeRef llvm_st = type_to_llvm(ctx, var_type);
-                        init = emit_struct_clone_val(ctx, init, llvm_st, var_type);
+                        if (ast_unwrap_move(node->as.var_decl.init)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
+                        {
+                            /* Move-elision (Q4): ownership transferred and source
+                               was a real owned variable — moved + invalidated, no
+                               clone. Borrow sources return false → fall to clone. */
+                        }
+                        else
+                        {
+                            /* Source is another named struct variable — deep-clone so both
+                               this variable and the source have independently owned string
+                               fields and can be freed without double-free. */
+                            LLVMTypeRef llvm_st = type_to_llvm(ctx, var_type);
+                            init = emit_struct_clone_val(ctx, init, llvm_st, var_type);
+                        }
                     }
                     else if (var_type->kind == TYPE_ENUM &&
                              var_type->as.enom.has_drop &&
                              ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
                     {
-                        /* Source is another named has-drop enum variable — deep-clone so
-                           both this variable and the source have independently owned heap
-                           payloads and can be freed without double-free.
-                           e.g. JsonValue b = a  →  b gets its own deep copy of a. */
-                        init = emit_enum_clone_val(ctx, init, var_type);
+                        if (ast_unwrap_move(node->as.var_decl.init)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
+                        {
+                            /* Move-elision (Q4): ownership transferred and source
+                               was a real owned variable — moved + invalidated, no
+                               clone. Borrow sources return false → fall to clone. */
+                        }
+                        else
+                        {
+                            /* Source is another named has-drop enum variable — deep-clone so
+                               both this variable and the source have independently owned heap
+                               payloads and can be freed without double-free.
+                               e.g. JsonValue b = a  →  b gets its own deep copy of a. */
+                            init = emit_enum_clone_val(ctx, init, var_type);
+                        }
+                    }
+                    else if ((var_type->kind == TYPE_VECTOR || var_type->kind == TYPE_MAP) &&
+                             ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
+                    {
+                        /* Move-elision (Q4): `vec b = a` / `map b = a`. The checker
+                           rejects copy-out from a vec/map borrow (Phase 5.6/5.7), so a
+                           non-borrow IDENT source is always an owned move
+                           (moved_out set). Move the buffer and zero the source's cap
+                           so its scope cleanup skips the now-transferred heap.
+                           (Without this the source and dst share a buffer → the
+                           double-free that previously went uncaught for `vec b = a`.) */
+                        cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type);
                     }
                     else if (var_type->kind == TYPE_BLOCK)
                     {
@@ -13302,6 +13492,14 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                                               blk_init->as.ident.name);
                             if (src && !src->is_borrowed)
                                 cg_null_block_env(ctx, src->value); /* logs block.move internally */
+                        }
+                        else if (cg_block_source_is_aliased(blk_init))
+                        {
+                            /* Phase G: Block copied out of a vec/struct/map — the
+                               source LsBlock aliases an env owned by the container.
+                               Deep-clone the env so this variable owns an
+                               independent one (no shared-env double-free). */
+                            init = cg_emit_block_env_clone(ctx, init);
                         }
                         else if (ctx->temp_block_env_count > 0)
                         {
@@ -13412,6 +13610,25 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     {
                         /* Self-assignment (s = s): do nothing */
                     }
+                    else if (src_sym != NULL && !src_sym->is_borrowed &&
+                             !src_sym->is_mut_borrow &&
+                             ast_unwrap_move(node->as.assign.value)->moved_out)
+                    {
+                        /* Move-elision (Q4): the checker confirmed `dst = src`
+                           transfers ownership (src rejected later). Free the old
+                           dst, then move src's buffer in and invalidate src so its
+                           scope cleanup skips the now-transferred heap.
+                           Borrow sources are excluded — a string param carries the
+                           caller's buffer (cap=-2), so it must be cloned, never
+                           moved (see BF-045). */
+                        emit_string_free(ctx, sym->value);
+                        LLVMTypeRef str_type = ls_string_type(ctx);
+                        LLVMValueRef src_val = LLVMBuildLoad2(ctx->builder, str_type,
+                                                              src_sym->value, "sass.mv");
+                        LLVMBuildStore(ctx->builder, src_val, sym->value);
+                        mark_string_moved(ctx, src_sym->value,
+                                          "move-elision: string moved by assign");
+                    }
                     else if (src_sym != NULL)
                     {
                         /* String variable → string variable: clone semantics.
@@ -13451,14 +13668,23 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     /* Step 1: drop old value (runtime-conditional via moved_flag) */
                     emit_struct_drop_cond(ctx, sym->value, sym->type, sym->moved_flag);
 
-                    /* Step 2: clone if source is an IDENT (shared variable).
-                       __move(x) unwraps to x so the clone still protects against
-                       shallow-copy aliasing — the checker has blocked later use
-                       of x, but both ends of this assignment still scope-drop. */
+                    /* Step 2: clone if source is a shared IDENT. Move-elision (Q4):
+                       if the checker tagged the source moved_out (ownership truly
+                       transferred, later use rejected) we skip the clone and
+                       invalidate the source instead. */
                     if (ast_unwrap_move(node->as.assign.value)->kind == AST_IDENT)
                     {
-                        LLVMTypeRef llvm_st = type_to_llvm(ctx, sym->type);
-                        val = emit_struct_clone_val(ctx, val, llvm_st, sym->type);
+                        if (ast_unwrap_move(node->as.assign.value)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.assign.value, sym->type))
+                        {
+                            /* moved + invalidated (real owned source) — no clone.
+                               Borrow source → false → clone below. */
+                        }
+                        else
+                        {
+                            LLVMTypeRef llvm_st = type_to_llvm(ctx, sym->type);
+                            val = emit_struct_clone_val(ctx, val, llvm_st, sym->type);
+                        }
                     }
 
                     /* Step 3: store */
@@ -13503,7 +13729,17 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     }
                     if (ast_unwrap_move(node->as.assign.value)->kind == AST_IDENT)
                     {
-                        val = emit_enum_clone_val(ctx, val, sym->type);
+                        /* Move-elision (Q4): skip the clone when the checker
+                           confirmed ownership transfer AND the source is a real
+                           owned variable (helper returns true). Borrow sources
+                           return false → clone. */
+                        if (ast_unwrap_move(node->as.assign.value)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.assign.value, sym->type))
+                        {
+                            /* moved + invalidated — no clone */
+                        }
+                        else
+                            val = emit_enum_clone_val(ctx, val, sym->type);
                     }
                     LLVMBuildStore(ctx->builder, val, sym->value);
                     if (sym->moved_flag)
@@ -13521,8 +13757,15 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                        2. Store new Block value.
                        3. If source is an owned IDENT, zero its env_ptr. */
                     cg_emit_block_drop_at(ctx, sym->value);
+                    AstNode *rhs_node = ast_unwrap_move(node->as.assign.value);
+                    if (cg_block_source_is_aliased(rhs_node))
+                    {
+                        /* Phase G: Block copied out of a vec/struct/map — deep-clone
+                           the aliased env before storing so dst owns an independent
+                           one (no shared-env double-free). */
+                        val = cg_emit_block_env_clone(ctx, val);
+                    }
                     LLVMBuildStore(ctx->builder, val, sym->value);
-                    AstNode *rhs_node = node->as.assign.value;
                     if (rhs_node->kind == AST_IDENT)
                     {
                         CgSymbol *src = cg_scope_resolve(ctx->current_scope,
@@ -13530,7 +13773,8 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         if (src && !src->is_borrowed)
                             cg_null_block_env(ctx, src->value);
                     }
-                    else if (ctx->temp_block_env_count > 0)
+                    else if (!cg_block_source_is_aliased(rhs_node) &&
+                             ctx->temp_block_env_count > 0)
                     {
                         /* Closure literal on RHS — pop temp env; dst now owns it */
                         ctx->temp_block_env_count--;
@@ -13639,13 +13883,23 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 {
                     /* has_drop field (vec/map/has_drop struct|enum): drop the old
                        value, then store an independently-owned value. Clone if the
-                       source is a shared IDENT so field and source stay valid
-                       (correctness-first; move-elision is a future optimization). */
+                       source is a shared IDENT so field and source stay valid;
+                       move-elision (Q4) skips the clone when the checker confirmed
+                       ownership transfer (moved_out) and invalidates the source. */
                     emit_drop_value(ctx, field_ptr, field_type);
                     if (ast_unwrap_move(node->as.assign.value)->kind == AST_IDENT)
                     {
-                        LLVMTypeRef flt = type_to_llvm(ctx, field_type);
-                        val = emit_clone_value(ctx, val, flt, field_type);
+                        if (ast_unwrap_move(node->as.assign.value)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.assign.value, field_type))
+                        {
+                            /* moved + invalidated (real owned source) — no clone.
+                               Borrow source → false → clone below. */
+                        }
+                        else
+                        {
+                            LLVMTypeRef flt = type_to_llvm(ctx, field_type);
+                            val = emit_clone_value(ctx, val, flt, field_type);
+                        }
                     }
                     else
                     {
@@ -13964,9 +14218,21 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 else if (ret_type && ret_type->kind == TYPE_VECTOR &&
                          ret_expr->kind != AST_IDENT)
                 {
-                    /* vec return from non-IDENT (e.g. *ptr deref): deep-clone the vec.
-                       IDENT return is handled as move (return_alloca skip above). */
-                    val = emit_vec_clone_val(ctx, val, ret_type->as.vec.elem);
+                    /* vec return from a non-IDENT expression. Two cases:
+                       (a) ALIASING expr (*ptr deref / container[i] / obj.field):
+                           the buffer is still owned by something the function will
+                           clean up, so returning it by value would share ownership
+                           → deep-clone for an independent copy.
+                       (b) OWNED-producing expr (function/method call result, vec
+                           literal): a fresh temp with no other owner. Cloning it
+                           would copy the buffer and then abandon the original temp
+                           (no scope symbol / temp_drop owns it) → leak (L-012 ③).
+                           Move it out instead (no clone).
+                       IDENT return is the move path above (return_alloca skip). */
+                    bool ret_vec_owned = (ret_expr->kind == AST_CALL ||
+                                          ret_expr->kind == AST_ARRAY_LIT);
+                    if (!ret_vec_owned)
+                        val = emit_vec_clone_val(ctx, val, ret_type->as.vec.elem);
                 }
 
                 emit_cleanup_to(ctx, NULL, return_alloca);
@@ -14682,23 +14948,33 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
        - by-move captures (string/struct/[move vec]/[move map]): value type
        - by-ref captures (default vec/map without [move]): ptr to outer alloca
        When cap_n == 0 we still skip env entirely and pass NULL. */
+    /* Phase G env layout:
+         field 0: ptr drop_fn   (NULL when no has_drop captures)
+         field 1: ptr clone_fn  (Phase G: per-closure __env_clone_<id>, lets a
+                  `Block g = vec[i]` copy-out site deep-clone the env without
+                  statically knowing its struct type; NULL only when cap_n==0,
+                  in which case env itself is NULL and nothing reads this)
+         field 2..N+1: captures in declaration order
+       drop_fn stays at offset 0 so scope cleanup's raw offset-0 load is
+       unaffected by the inserted clone_fn slot. */
     LLVMTypeRef env_struct_t = NULL;
     if (cap_n > 0) {
         LLVMTypeRef *fields = (LLVMTypeRef*)malloc_safe(
-            (size_t)(cap_n + 1) * sizeof(LLVMTypeRef));
+            (size_t)(cap_n + 2) * sizeof(LLVMTypeRef));
         fields[0] = ptr_t; /* drop_fn slot */
+        fields[1] = ptr_t; /* clone_fn slot (Phase G) */
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
             bool explicit_move = node->as.closure.captures[i].is_explicit_move;
             bool is_default_by_ref = capture_type_is_by_ref_cg(ct) && !explicit_move;
             if (is_default_by_ref) {
-                fields[i + 1] = ptr_t; /* pointer to outer alloca */
+                fields[i + 2] = ptr_t; /* pointer to outer alloca */
             } else {
-                fields[i + 1] = type_to_llvm(ctx, ct);
+                fields[i + 2] = type_to_llvm(ctx, ct);
             }
         }
         env_struct_t = LLVMStructTypeInContext(ctx->context, fields,
-                                               (unsigned)(cap_n + 1), 0);
+                                               (unsigned)(cap_n + 2), 0);
         free(fields);
     }
 
@@ -14761,7 +15037,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             bool is_default_by_ref = capture_type_is_by_ref_cg(ct) && !explicit_move;
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, env_param,
-                (unsigned)(i + 1), "cap.gep");
+                (unsigned)(i + 2), "cap.gep");
 
             if (is_default_by_ref) {
                 /* By-ref (default vec/map): load the outer alloca pointer.
@@ -14889,7 +15165,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             if (!needs_drop) continue;
             LLVMValueRef slot = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, d_env,
-                (unsigned)(i + 1), "cap.slot");
+                (unsigned)(i + 2), "cap.slot");
 
             if (ct->kind == TYPE_STRING) {
                 LLVMValueRef strv = LLVMBuildLoad2(ctx->builder, str_t, slot,
@@ -15031,6 +15307,89 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         env_drop_fn = drop_fn;
     }
 
+    /* 9a-clone) Phase G: synthesise a per-closure
+         ptr __env_clone_<id>(ptr src_env)
+       that deep-copies the env so a copy-out site (`Block g = vec[i]`) can own an
+       INDEPENDENT env. Emitted whenever the closure has captures — even POD-only —
+       because the env block itself is heap-allocated and two Block values sharing
+       one env pointer would double-free it on scope exit.
+
+       Per-capture policy:
+         by-ref vec/map (default): copy the outer-alloca pointer shallowly. The
+           env does not own it (not in has_drop set), so the clone safely shares
+           the by-ref just like the original — no double-free.
+         string/vec/map/struct/enum (by-move or [move]): deep clone via the
+           existing emit_*_clone_val helpers.
+         POD / array(POD): plain value copy (emit_clone_value default). */
+    LLVMValueRef env_clone_fn = LLVMConstNull(ptr_t);
+    if (cap_n > 0) {
+        LLVMTypeRef clone_param_t[1] = { ptr_t };
+        LLVMTypeRef clone_fn_ty = LLVMFunctionType(ptr_t, clone_param_t, 1, 0);
+        char clone_name[80];
+        snprintf(clone_name, sizeof(clone_name), "__env_clone_%d", id);
+        LLVMValueRef clone_fn = LLVMAddFunction(ctx->module, clone_name,
+                                                clone_fn_ty);
+
+        LLVMBasicBlockRef c_saved_block = LLVMGetInsertBlock(ctx->builder);
+        LLVMValueRef c_saved_fn = ctx->current_fn;
+        LLVMBasicBlockRef c_entry = LLVMAppendBasicBlockInContext(
+            ctx->context, clone_fn, "entry");
+        LLVMPositionBuilderAtEnd(ctx->builder, c_entry);
+        ctx->current_fn = clone_fn;
+        LLVMValueRef c_src = LLVMGetParam(clone_fn, 0);
+
+        /* malloc a fresh env of identical size. */
+        unsigned long long esz = LLVMABISizeOfType(
+            LLVMGetModuleDataLayout(ctx->module), env_struct_t);
+        LLVMValueRef csz = LLVMConstInt(LLVMInt64TypeInContext(ctx->context),
+                                        esz, 0);
+        LLVMValueRef c_dst = cg_emit_alloc(ctx, csz, "closure.env.clone",
+                                           node->line, node->column);
+
+        /* Copy field 0 (drop_fn) and field 1 (clone_fn) verbatim. */
+        for (unsigned f = 0; f < 2; f++) {
+            LLVMValueRef sp = LLVMBuildStructGEP2(ctx->builder, env_struct_t,
+                                                  c_src, f, "cl.shdr");
+            LLVMValueRef dp = LLVMBuildStructGEP2(ctx->builder, env_struct_t,
+                                                  c_dst, f, "cl.dhdr");
+            LLVMValueRef hv = LLVMBuildLoad2(ctx->builder, ptr_t, sp, "cl.hdr");
+            LLVMBuildStore(ctx->builder, hv, dp);
+        }
+
+        /* Per-capture deep copy. */
+        for (int i = 0; i < cap_n; i++) {
+            Type *ct = node->as.closure.captures[i].type;
+            bool explicit_move_i = node->as.closure.captures[i].is_explicit_move;
+            bool is_default_by_ref_i =
+                capture_type_is_by_ref_cg(ct) && !explicit_move_i;
+            LLVMValueRef s_slot = LLVMBuildStructGEP2(
+                ctx->builder, env_struct_t, c_src, (unsigned)(i + 2), "cl.sslot");
+            LLVMValueRef d_slot = LLVMBuildStructGEP2(
+                ctx->builder, env_struct_t, c_dst, (unsigned)(i + 2), "cl.dslot");
+            if (is_default_by_ref_i) {
+                LLVMValueRef p = LLVMBuildLoad2(ctx->builder, ptr_t, s_slot,
+                                                "cl.refp");
+                LLVMBuildStore(ctx->builder, p, d_slot);
+            } else {
+                LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
+                LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, ct_llvm, s_slot,
+                                                 "cl.sv");
+                LLVMValueRef cv;
+                if (ct->kind == TYPE_MAP)
+                    cv = emit_map_clone_val(ctx, sv, ct->as.map.key,
+                                            ct->as.map.val);
+                else
+                    cv = emit_clone_value(ctx, sv, ct_llvm, ct);
+                LLVMBuildStore(ctx->builder, cv, d_slot);
+            }
+        }
+        LLVMBuildRet(ctx->builder, c_dst);
+
+        ctx->current_fn = c_saved_fn;
+        if (c_saved_block) LLVMPositionBuilderAtEnd(ctx->builder, c_saved_block);
+        env_clone_fn = clone_fn;
+    }
+
     /* 9b) Construct the env value (heap) and store each capture into it.
        Field 0 = drop_fn slot; user captures live at fields 1..N. For
        by-move (string) captures we additionally write cap=-1 to the OUTER
@@ -15055,11 +15414,16 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             ctx->builder, env_struct_t, env_val, 0u, "env.dropslot");
         LLVMBuildStore(ctx->builder, env_drop_fn, drop_slot);
 
+        /* Phase G: clone_fn slot at field 1. */
+        LLVMValueRef clone_slot = LLVMBuildStructGEP2(
+            ctx->builder, env_struct_t, env_val, 1u, "env.cloneslot");
+        LLVMBuildStore(ctx->builder, env_clone_fn, clone_slot);
+
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, env_val,
-                (unsigned)(i + 1), "cap.slot");
+                (unsigned)(i + 2), "cap.slot");
 
             /* Store capture into env:
                - by-ref (vec/map): cap_outer_vals[i] IS the outer alloca ptr,

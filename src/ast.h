@@ -150,6 +150,15 @@ struct AstNode
     AstNodeType kind;
     int line, column;
     Type *resolved_type; /* Filled by type checker (not owned by AST) */
+    /* Move-elision (Q4): set by the checker on a source IDENT node when that
+       use actually transferred ownership (the source variable was marked MOVED
+       and any later use is rejected). Codegen reads this to elide the defensive
+       deep-clone at var_decl / assignment sites — moving the heap and
+       invalidating the source instead. Only ever true on AST_IDENT nodes whose
+       symbol is owned (not a borrow, not a static string). Defaults to false
+       (ast_new zero-inits), so any node the checker does not touch keeps the
+       conservative clone behavior. */
+    bool moved_out;
     union
     {
         struct
