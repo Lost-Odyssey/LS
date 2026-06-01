@@ -199,7 +199,7 @@ emit_move_value (ctx, src_place,dst_place, type) // 拷头 + 失效源（标 mov
 | Q1 | map 是否一起做 | ✅ **一起**：drop / clone / place(索引/value 槽) 同时覆盖 vec 和 map（架构统一，map 现状同样有洞） |
 | Q2 | drop/clone 实现形式 | ✅ **每类型生成辅助函数**（`<T>.__drop` / `<T>.__clone`），调用点只 call；控制 IR 体积、可复用、与现有 struct/enum `__drop` 一致 |
 | Q3 | C（跨模块 type alias 命名） | ✅ **不单独做**。D 修好后 std.md 改用 `struct MdDoc { vec(MdBlock) blocks }`，struct 类型本就可跨模块命名（`md.MdDoc` 直接可用）→ C 多余。仅当未来想让"类型别名跨模块可引用"成为通用特性时另案 |
-| Q4 | move-of-rvalue 免 clone 优化 | ✅ **留后续**：先保证正确性，把"读后即用本可 move 免 clone"记为已知性能限制（feature_inventory），日后专门优化 |
+| Q4 | move-of-rvalue 免 clone 优化 | ✅ **已完成（2026-06-01）**：checker 在真正转移所有权处（`checker_try_mark_moved` / 显式 `__move`）给源 IDENT 打 `moved_out` 标记；codegen 在 var_decl / assign / field-assign 的 string·struct·enum·vec·map clone 点改为「move 堆 + 失效源」（统一 helper `cg_invalidate_moved_source`：string 设 cap=-1 / struct·enum 设 moved_flag / vec·map 清 cap）。借用源（string 参数 cap=-2 等 `is_borrowed`）回退到 clone，杜绝悬垂。顺带修掉 `vec b = a` / `map b = a` 一处既有 double-free。ctest 108/108（新增 `test_move_elision`：JIT+AOT 正确性 + memcheck）|
 
 ---
 

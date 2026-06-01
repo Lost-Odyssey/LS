@@ -1441,6 +1441,10 @@ static void checker_try_mark_moved(Checker *c, AstNode *arg)
        Only applies to TYPE_STRING (other movable types have no "static" variant). */
     if (sym->type->kind == TYPE_STRING && sym->is_static_string) return;
     sym->is_moved = true;
+    /* Move-elision (Q4): record on the node that this use transferred ownership,
+       so codegen can move (not clone) the heap and invalidate the source.
+       Only reached for owned, non-borrow, non-static-string movable IDENTs. */
+    arg->moved_out = true;
 }
 
 /* Phase 5: reject attempts to move a borrowed variable (e.g. vec.push(s)
@@ -3484,6 +3488,11 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
             {
                 /* Force-mark as moved, even for static strings */
                 sym->is_moved = true;
+                /* Move-elision (Q4): explicit __move(x) transfers ownership; let
+                   codegen move instead of clone. Tag the inner IDENT (the value
+                   that flows into the dst is __move(x), but codegen inspects the
+                   unwrapped source via ast_unwrap_move). */
+                arg->moved_out = true;
             }
             else
             {

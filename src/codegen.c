@@ -2317,6 +2317,73 @@ static void cg_null_block_env(CodegenContext *ctx, LLVMValueRef blk_alloca)
     LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_t), env_field);
 }
 
+/* Move-elision (Q4): invalidate a moved-from source variable so that its scope
+   cleanup (or a later overwrite drop) does not double-free heap now owned by the
+   destination. Called only when the checker tagged the source IDENT with
+   `moved_out` (see ast.h) — i.e. the source is a named, owned, non-borrow
+   variable whose later use the checker already rejects.
+
+   The invalidation per type mirrors the existing CG_XFER_INTO_CONTAINER paths in
+   cg_store_owned:
+     - string : mark_string_moved (cap = -1; runtime-guarded, no-op if static)
+     - struct : set moved_flag = 1 (scope-drop is moved_flag-conditional)
+     - enum   : set moved_flag = 1
+     - vec/map: zero the source's cap field (scope-drop frees only if cap > 0)
+   `source` is the raw RHS AST node (possibly wrapped in __move()); we unwrap and
+   resolve the underlying IDENT's symbol. Borrowed sources are never invalidated
+   (they hold no ownership). Returns true if the source was a recognised owned
+   IDENT (so the caller can skip cloning), false otherwise. */
+static bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Type *type)
+{
+    if (!source || !type) return false;
+    AstNode *src = ast_unwrap_move(source);
+    if (!src || src->kind != AST_IDENT) return false;
+    CgSymbol *sym = cg_scope_resolve(ctx->current_scope, src->as.ident.name);
+    if (!sym || !sym->value || sym->is_borrowed || sym->is_mut_borrow)
+        return false;
+
+    switch (type->kind)
+    {
+    case TYPE_STRING:
+        mark_string_moved(ctx, sym->value, "move-elision: string moved into dst");
+        return true;
+    case TYPE_STRUCT:
+        if (!type->as.strukt.has_drop) return false;
+        if (sym->moved_flag)
+            LLVMBuildStore(ctx->builder,
+                LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+                sym->moved_flag);
+        return true;
+    case TYPE_ENUM:
+        if (!type->as.enom.has_drop) return false;
+        if (sym->moved_flag)
+            LLVMBuildStore(ctx->builder,
+                LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+                sym->moved_flag);
+        return true;
+    case TYPE_VECTOR:
+    {
+        LLVMTypeRef vec_t = ls_vec_type(ctx);
+        LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, vec_t, sym->value, "mes.vcur");
+        LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
+            LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), 2, "mes.vzc");
+        LLVMBuildStore(ctx->builder, zeroed, sym->value);
+        return true;
+    }
+    case TYPE_MAP:
+    {
+        LLVMTypeRef map_t = ls_map_type(ctx);
+        LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, map_t, sym->value, "mes.mcur");
+        LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
+            LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), 2, "mes.mzc");
+        LLVMBuildStore(ctx->builder, zeroed, sym->value);
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 /* M-3: 统一所有权转移 API
    将 val 存入 dst_ptr，根据类型和来源节点自动选择 move/clone/store 语义。
    temp_mark: codegen_expr(source) 调用之前的 ctx->temp_string_count 快照。
@@ -13264,6 +13331,17 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                    already gave up ownership; cloning here would
                                    leak the heap that came back from the callee. */
                             }
+                            else if (init_node && init_node->moved_out &&
+                                     cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
+                            {
+                                /* Move-elision (Q4): the checker confirmed this
+                                   use transfers ownership (source rejected later),
+                                   and the source was a real owned variable, so the
+                                   source heap was moved + invalidated — no clone.
+                                   If cg_invalidate_moved_source returned false (e.g.
+                                   the source is a borrowed string param, cap=-2),
+                                   we fall through to clone instead. */
+                            }
                             else
                             {
                                 init = emit_string_clone_val(ctx, init);
@@ -13274,21 +13352,53 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                              var_type->as.strukt.has_drop &&
                              ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
                     {
-                        /* Source is another named struct variable — deep-clone so both
-                           this variable and the source have independently owned string
-                           fields and can be freed without double-free. */
-                        LLVMTypeRef llvm_st = type_to_llvm(ctx, var_type);
-                        init = emit_struct_clone_val(ctx, init, llvm_st, var_type);
+                        if (ast_unwrap_move(node->as.var_decl.init)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
+                        {
+                            /* Move-elision (Q4): ownership transferred and source
+                               was a real owned variable — moved + invalidated, no
+                               clone. Borrow sources return false → fall to clone. */
+                        }
+                        else
+                        {
+                            /* Source is another named struct variable — deep-clone so both
+                               this variable and the source have independently owned string
+                               fields and can be freed without double-free. */
+                            LLVMTypeRef llvm_st = type_to_llvm(ctx, var_type);
+                            init = emit_struct_clone_val(ctx, init, llvm_st, var_type);
+                        }
                     }
                     else if (var_type->kind == TYPE_ENUM &&
                              var_type->as.enom.has_drop &&
                              ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
                     {
-                        /* Source is another named has-drop enum variable — deep-clone so
-                           both this variable and the source have independently owned heap
-                           payloads and can be freed without double-free.
-                           e.g. JsonValue b = a  →  b gets its own deep copy of a. */
-                        init = emit_enum_clone_val(ctx, init, var_type);
+                        if (ast_unwrap_move(node->as.var_decl.init)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
+                        {
+                            /* Move-elision (Q4): ownership transferred and source
+                               was a real owned variable — moved + invalidated, no
+                               clone. Borrow sources return false → fall to clone. */
+                        }
+                        else
+                        {
+                            /* Source is another named has-drop enum variable — deep-clone so
+                               both this variable and the source have independently owned heap
+                               payloads and can be freed without double-free.
+                               e.g. JsonValue b = a  →  b gets its own deep copy of a. */
+                            init = emit_enum_clone_val(ctx, init, var_type);
+                        }
+                    }
+                    else if ((var_type->kind == TYPE_VECTOR || var_type->kind == TYPE_MAP) &&
+                             ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
+                    {
+                        /* Move-elision (Q4): `vec b = a` / `map b = a`. The checker
+                           rejects copy-out from a vec/map borrow (Phase 5.6/5.7), so a
+                           non-borrow IDENT source is always an owned move
+                           (moved_out set). Move the buffer and zero the source's cap
+                           so its scope cleanup skips the now-transferred heap.
+                           (Without this the source and dst share a buffer → the
+                           double-free that previously went uncaught for `vec b = a`.) */
+                        cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type);
                     }
                     else if (var_type->kind == TYPE_BLOCK)
                     {
@@ -13412,6 +13522,25 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     {
                         /* Self-assignment (s = s): do nothing */
                     }
+                    else if (src_sym != NULL && !src_sym->is_borrowed &&
+                             !src_sym->is_mut_borrow &&
+                             ast_unwrap_move(node->as.assign.value)->moved_out)
+                    {
+                        /* Move-elision (Q4): the checker confirmed `dst = src`
+                           transfers ownership (src rejected later). Free the old
+                           dst, then move src's buffer in and invalidate src so its
+                           scope cleanup skips the now-transferred heap.
+                           Borrow sources are excluded — a string param carries the
+                           caller's buffer (cap=-2), so it must be cloned, never
+                           moved (see BF-045). */
+                        emit_string_free(ctx, sym->value);
+                        LLVMTypeRef str_type = ls_string_type(ctx);
+                        LLVMValueRef src_val = LLVMBuildLoad2(ctx->builder, str_type,
+                                                              src_sym->value, "sass.mv");
+                        LLVMBuildStore(ctx->builder, src_val, sym->value);
+                        mark_string_moved(ctx, src_sym->value,
+                                          "move-elision: string moved by assign");
+                    }
                     else if (src_sym != NULL)
                     {
                         /* String variable → string variable: clone semantics.
@@ -13451,14 +13580,23 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     /* Step 1: drop old value (runtime-conditional via moved_flag) */
                     emit_struct_drop_cond(ctx, sym->value, sym->type, sym->moved_flag);
 
-                    /* Step 2: clone if source is an IDENT (shared variable).
-                       __move(x) unwraps to x so the clone still protects against
-                       shallow-copy aliasing — the checker has blocked later use
-                       of x, but both ends of this assignment still scope-drop. */
+                    /* Step 2: clone if source is a shared IDENT. Move-elision (Q4):
+                       if the checker tagged the source moved_out (ownership truly
+                       transferred, later use rejected) we skip the clone and
+                       invalidate the source instead. */
                     if (ast_unwrap_move(node->as.assign.value)->kind == AST_IDENT)
                     {
-                        LLVMTypeRef llvm_st = type_to_llvm(ctx, sym->type);
-                        val = emit_struct_clone_val(ctx, val, llvm_st, sym->type);
+                        if (ast_unwrap_move(node->as.assign.value)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.assign.value, sym->type))
+                        {
+                            /* moved + invalidated (real owned source) — no clone.
+                               Borrow source → false → clone below. */
+                        }
+                        else
+                        {
+                            LLVMTypeRef llvm_st = type_to_llvm(ctx, sym->type);
+                            val = emit_struct_clone_val(ctx, val, llvm_st, sym->type);
+                        }
                     }
 
                     /* Step 3: store */
@@ -13503,7 +13641,17 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     }
                     if (ast_unwrap_move(node->as.assign.value)->kind == AST_IDENT)
                     {
-                        val = emit_enum_clone_val(ctx, val, sym->type);
+                        /* Move-elision (Q4): skip the clone when the checker
+                           confirmed ownership transfer AND the source is a real
+                           owned variable (helper returns true). Borrow sources
+                           return false → clone. */
+                        if (ast_unwrap_move(node->as.assign.value)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.assign.value, sym->type))
+                        {
+                            /* moved + invalidated — no clone */
+                        }
+                        else
+                            val = emit_enum_clone_val(ctx, val, sym->type);
                     }
                     LLVMBuildStore(ctx->builder, val, sym->value);
                     if (sym->moved_flag)
@@ -13639,13 +13787,23 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 {
                     /* has_drop field (vec/map/has_drop struct|enum): drop the old
                        value, then store an independently-owned value. Clone if the
-                       source is a shared IDENT so field and source stay valid
-                       (correctness-first; move-elision is a future optimization). */
+                       source is a shared IDENT so field and source stay valid;
+                       move-elision (Q4) skips the clone when the checker confirmed
+                       ownership transfer (moved_out) and invalidates the source. */
                     emit_drop_value(ctx, field_ptr, field_type);
                     if (ast_unwrap_move(node->as.assign.value)->kind == AST_IDENT)
                     {
-                        LLVMTypeRef flt = type_to_llvm(ctx, field_type);
-                        val = emit_clone_value(ctx, val, flt, field_type);
+                        if (ast_unwrap_move(node->as.assign.value)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.assign.value, field_type))
+                        {
+                            /* moved + invalidated (real owned source) — no clone.
+                               Borrow source → false → clone below. */
+                        }
+                        else
+                        {
+                            LLVMTypeRef flt = type_to_llvm(ctx, field_type);
+                            val = emit_clone_value(ctx, val, flt, field_type);
+                        }
                     }
                     else
                     {
@@ -13964,9 +14122,21 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 else if (ret_type && ret_type->kind == TYPE_VECTOR &&
                          ret_expr->kind != AST_IDENT)
                 {
-                    /* vec return from non-IDENT (e.g. *ptr deref): deep-clone the vec.
-                       IDENT return is handled as move (return_alloca skip above). */
-                    val = emit_vec_clone_val(ctx, val, ret_type->as.vec.elem);
+                    /* vec return from a non-IDENT expression. Two cases:
+                       (a) ALIASING expr (*ptr deref / container[i] / obj.field):
+                           the buffer is still owned by something the function will
+                           clean up, so returning it by value would share ownership
+                           → deep-clone for an independent copy.
+                       (b) OWNED-producing expr (function/method call result, vec
+                           literal): a fresh temp with no other owner. Cloning it
+                           would copy the buffer and then abandon the original temp
+                           (no scope symbol / temp_drop owns it) → leak (L-012 ③).
+                           Move it out instead (no clone).
+                       IDENT return is the move path above (return_alloca skip). */
+                    bool ret_vec_owned = (ret_expr->kind == AST_CALL ||
+                                          ret_expr->kind == AST_ARRAY_LIT);
+                    if (!ret_vec_owned)
+                        val = emit_vec_clone_val(ctx, val, ret_type->as.vec.elem);
                 }
 
                 emit_cleanup_to(ctx, NULL, return_alloca);
