@@ -442,6 +442,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
 )
 
+# std.html Phase H2 (parsing): recursive-descent tolerant parser, attributes
+# (quoted/single/unquoted/boolean), void/self-closing, comments, DOCTYPE,
+# <script>/<style> raw text, entity decode (named + numeric), round-trip, and
+# query helpers (to_text / extract_links / find_by_tag / get_attr).
+# JIT + AOT correctness + memcheck. Reuses the std.html driver ("HTML PASS").
+add_test(
+    NAME test_std_html_parse
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/html_parse.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=std_html_parse
+        -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
+)
+
 # map.keys() / map.values() iteration + bound vec result. Regression for the
 # silent zero-iteration bug. JIT + AOT correctness + memcheck.
 add_test(

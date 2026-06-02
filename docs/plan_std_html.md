@@ -1,7 +1,19 @@
 # std.html — HTML 解析 / 生成模块 设计与实现计划
 
 > **日期**：2026-06-01
-> **状态**：设计完成，待实现（5–7 天）
+> **状态**：H1（生成+render）✅ 已完成（commit eb805a8）；H2（解析+查询）✅ 已完成
+> （2026-06-02）；H3（md.to_html，在 std.md）待做。
+>
+> **H2 落地说明**：递归下降容错解析器（`HtmlParser` + `&!P` 函数组，mirrors
+> json.ls）。`parse(string)->HtmlDoc` 无 Result（容错，不报错）。支持：标签开闭/
+> 嵌套/文本、void+自闭合、属性（双引号/单引号/无引号/布尔）、注释、DOCTYPE（归一为
+> `Comment("DOCTYPE html")` 以 round-trip）、`<script>`/`<style>` → RawText 原文、
+> 实体解码（`&amp; &lt; &gt; &quot; &apos;` + 数字 `&#NN;`/`&#xHH;`，字节范围）、
+> 容错（错配 close 自动收尾、EOF 未闭合自动收尾）。查询：`get_attr` / `to_text` /
+> `extract_links` / `find_by_tag`（递归收集，返回深拷贝 vec(HtmlNode)）。注意实际
+> 用 `vec(Attr)` 而非本文 §2 的 `map(string,string)`（H1 已定，map key 迭代不可用）。
+> 测试 `tests/samples/html_parse.ls`（20 项自检 "HTML PASS"）+ `test_std_html_parse`
+> （JIT+AOT+memcheck）。ctest 115/115。
 > **前置依赖**：无编译器改动。纯 LS，复用 string/vec/map/enum/match/io + vec
 > first-class（D/E/F）+ enum payload drop（L-006）+ struct 深拷贝。
 > **来源**：本文取代 `docs/plan_md_html.md` 中 HTML 部分（Phase 2/4/5），并依据
