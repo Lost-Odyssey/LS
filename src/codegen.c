@@ -1785,23 +1785,35 @@ static LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
         if (ft == NULL)
             continue;
 
-        if (ft->kind == TYPE_STRING)
+        /* Deep-clone every heap-owning field so the cloned struct owns
+           independent buffers. Without this, a shallow-copied vec/map/string
+           field shares the caller's heap → callee scope_drop + caller
+           scope_drop double-free (e.g. by-value `struct { vec(int) }` arg). */
+        bool field_needs_clone =
+            ft->kind == TYPE_STRING ||
+            ft->kind == TYPE_VECTOR ||
+            ft->kind == TYPE_MAP ||
+            (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop) ||
+            (ft->kind == TYPE_ENUM && ft->as.enom.has_drop);
+        if (!field_needs_clone)
+            continue;
+
+        LLVMValueRef field_val = LLVMBuildExtractValue(ctx->builder, result,
+                                                       (unsigned)fi, "sc.fld");
+        LLVMValueRef cloned;
+        if (ft->kind == TYPE_MAP)
         {
-            LLVMValueRef field_val = LLVMBuildExtractValue(ctx->builder, result,
-                                                           (unsigned)fi, "sc.fld");
-            LLVMValueRef cloned_str = emit_string_clone_val(ctx, field_val);
-            result = LLVMBuildInsertValue(ctx->builder, result, cloned_str,
-                                          (unsigned)fi, "sc.ins");
+            /* emit_clone_value keeps maps shallow; clone explicitly. */
+            cloned = emit_map_clone_val(ctx, field_val, ft->as.map.key,
+                                        ft->as.map.val);
         }
-        else if (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop)
+        else
         {
             LLVMTypeRef ft_llvm = type_to_llvm(ctx, ft);
-            LLVMValueRef fld_val = LLVMBuildExtractValue(ctx->builder, result,
-                                                         (unsigned)fi, "sc.sfld");
-            LLVMValueRef cloned_s = emit_struct_clone_val(ctx, fld_val, ft_llvm, ft);
-            result = LLVMBuildInsertValue(ctx->builder, result, cloned_s,
-                                          (unsigned)fi, "sc.sins");
+            cloned = emit_clone_value(ctx, field_val, ft_llvm, ft);
         }
+        result = LLVMBuildInsertValue(ctx->builder, result, cloned,
+                                      (unsigned)fi, "sc.ins");
     }
 
     (void)llvm_struct_type; /* used implicitly through extractValue field indices */
@@ -11854,6 +11866,23 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             if (uobj->kind == AST_INDEX &&
                 uobj->as.index_expr.object->resolved_type &&
                 uobj->as.index_expr.object->resolved_type->kind == TYPE_ARRAY)
+            {
+                struct_ptr = codegen_lvalue_ptr(ctx, uobj);
+            }
+            /* Transient read-through of a chained struct field: `a.b.c` where the
+               object `a.b` is itself a struct field rooted in stable named storage
+               (or an array element). Borrow `&a.b` via GEP instead of deep-cloning
+               the whole intermediate has_drop struct. The clone path below (11873)
+               produces an owned temporary that is never registered for drop → it
+               leaks its vec/map/string/nested heap, and re-fires user __drop side
+               effects. Reading through the borrow is safe — only the finally
+               accessed field is cloned below. When `a.b` is a terminal value
+               binding (`Box x = a.b`), the AST_FIELD object is an IDENT and is
+               handled above (struct_ptr from the symbol), so the clone is retained
+               there and correctly consumed by the binding. Mirrors the BF-040
+               array-element borrow; codegen_lvalue_ptr returns NULL for non-lvalue
+               roots (e.g. `make_box().inner`), falling through to the clone path. */
+            else if (uobj->kind == AST_FIELD)
             {
                 struct_ptr = codegen_lvalue_ptr(ctx, uobj);
             }

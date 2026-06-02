@@ -513,6 +513,37 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_phase_g_closure.cmake
 )
 
+# By-value has_drop struct argument ownership: passing a struct whose fields own
+# heap (vec/map/string/nested struct) by value deep-clones at the call site so
+# the callee owns an independent copy — no shared-buffer double-free between
+# callee scope_drop and caller scope_drop. Asserts JIT + AOT correctness +
+# memcheck. Regression for the vec/map field shallow-copy double-free.
+add_test(
+    NAME test_struct_byval_arg
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_byval_arg.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=struct_byval_arg
+        -P ${CMAKE_SOURCE_DIR}/tests/test_struct_byval.cmake
+)
+
+# Transient has_drop struct field read-through: reading through an intermediate
+# struct field (e.g. `o.inner.items.length`) borrows the field's address via GEP
+# instead of deep-cloning the whole intermediate struct, so its vec/map/string
+# heap is not leaked. A terminal binding (`Box b = o.inner`) still deep-clones.
+# Asserts JIT + AOT correctness (incl. consume-independence + mutate-through) +
+# memcheck.
+add_test(
+    NAME test_struct_field_readthrough
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_readthrough.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=struct_field_readthrough
+        -P ${CMAKE_SOURCE_DIR}/tests/test_struct_readthrough.cmake
+)
+
 # AOT memcheck end-to-end test: compile a sample with `ls compile --memcheck`,
 # run the produced binary, assert the runtime report shows "OK clean".
 # Driven by a cmake -P script for cross-platform process invocation.
