@@ -187,6 +187,7 @@ struct AstNode
                part_count == expr_count + 1 always. */
             char **parts;    /* text segments (part_count items) */
             AstNode **exprs; /* interpolated expressions (expr_count items) */
+            char **specs;    /* format specifiers (expr_count items; NULL = none) */
             int part_count;
             int expr_count;
         } format_string;

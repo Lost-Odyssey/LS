@@ -121,6 +121,7 @@ typedef enum {
     /* Format string (f"...{expr}...") */
     TOKEN_FSTRING_START,    /* f" — begins format string */
     TOKEN_FSTRING_TEXT,     /* literal text segment between { } */
+    TOKEN_FSTRING_SPEC,     /* :spec inside {expr:spec} — format specifier */
     TOKEN_FSTRING_END,      /* closing " of format string */
 
     /* Special */

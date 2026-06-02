@@ -284,7 +284,9 @@ static AstNode *prefix_fstring(Parser *p) {
     int parts_cap = 4, exprs_cap = 4;
     char **parts = (char **)malloc_safe((size_t)parts_cap * sizeof(char *));
     AstNode **exprs = (AstNode **)malloc_safe((size_t)exprs_cap * sizeof(AstNode *));
+    char **specs = (char **)malloc_safe((size_t)exprs_cap * sizeof(char *));
     int part_count = 0, expr_count = 0;
+    bool any_spec = false;
 
     for (;;) {
         if (check(p, TOKEN_FSTRING_TEXT)) {
@@ -311,11 +313,23 @@ static AstNode *prefix_fstring(Parser *p) {
                 error_at_current(p, "expected expression inside f-string interpolation");
                 break;
             }
-            consume(p, TOKEN_RBRACE, "expected '}' after f-string expression");
+            /* Optional format specifier: {expr:spec}. The scanner emits a
+               TOKEN_FSTRING_SPEC that has already consumed the trailing '}',
+               so don't expect a separate '}' in that case. */
+            char *spec = NULL;
+            if (check(p, TOKEN_FSTRING_SPEC)) {
+                advance(p);
+                spec = str_dup_n(p->previous.start, p->previous.length);
+                any_spec = true;
+            } else {
+                consume(p, TOKEN_RBRACE, "expected '}' after f-string expression");
+            }
             if (expr_count >= exprs_cap) {
                 exprs_cap = GROW_CAPACITY(exprs_cap);
                 exprs = realloc_safe(exprs, (size_t)exprs_cap * sizeof(AstNode *));
+                specs = realloc_safe(specs, (size_t)exprs_cap * sizeof(char *));
             }
+            specs[expr_count] = spec;
             exprs[expr_count++] = expr;
         } else if (check(p, TOKEN_FSTRING_END)) {
             advance(p);
@@ -341,6 +355,12 @@ static AstNode *prefix_fstring(Parser *p) {
     AstNode *n = new_node(AST_FORMAT_STRING, start_tok.line, start_tok.column);
     n->as.format_string.parts = parts;
     n->as.format_string.exprs = exprs;
+    if (any_spec) {
+        n->as.format_string.specs = specs;
+    } else {
+        free(specs);
+        n->as.format_string.specs = NULL;
+    }
     n->as.format_string.part_count = part_count;
     n->as.format_string.expr_count = expr_count;
     return n;

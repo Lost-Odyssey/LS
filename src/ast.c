@@ -157,6 +157,12 @@ void ast_free(AstNode *node) {
             ast_free(node->as.format_string.exprs[i]);
         }
         free(node->as.format_string.exprs);
+        if (node->as.format_string.specs) {
+            for (int i = 0; i < node->as.format_string.expr_count; i++) {
+                free(node->as.format_string.specs[i]);
+            }
+            free(node->as.format_string.specs);
+        }
         break;
     case AST_ARRAY_LIT:
         for (int i = 0; i < node->as.array_lit.count; i++) {
@@ -699,6 +705,14 @@ AstNode *ast_clone_deep(const AstNode *src) {
         n->as.format_string.exprs = ec > 0 ? (AstNode **)malloc_safe((size_t)ec * sizeof(AstNode *)) : NULL;
         for (int i = 0; i < ec; i++)
             n->as.format_string.exprs[i] = ast_clone_deep(src->as.format_string.exprs[i]);
+        if (src->as.format_string.specs && ec > 0) {
+            n->as.format_string.specs = (char **)malloc_safe((size_t)ec * sizeof(char *));
+            for (int i = 0; i < ec; i++)
+                n->as.format_string.specs[i] =
+                    src->as.format_string.specs[i] ? ast_strdup(src->as.format_string.specs[i]) : NULL;
+        } else {
+            n->as.format_string.specs = NULL;
+        }
         break;
     }
     case AST_ARRAY_LIT: {

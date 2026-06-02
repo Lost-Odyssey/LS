@@ -471,6 +471,63 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
 )
 
+# std/plotfmt.ls (plot infra Phase 0.2): pure-LS formatting helpers
+# (fmt_fixed/auto/sci/time, pad, clamp, rgb/hsv -> hex). Self-verifying sample
+# prints "PLOTFMT PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plotfmt
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plotfmt_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plotfmt
+        -DMARKER=PLOTFMT
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# f-string format specifiers (plot infra Phase 0.3): {expr:.2f} / {n:03d} etc.
+# scanner+parser+ast+codegen; runtime unchanged. Self-verifying sample prints
+# "FSPEC PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_fstring_spec
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fstring_spec_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=fstring_spec
+        -DMARKER=FSPEC
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# std/plot.ls (plot Phase 1 skeleton): data model + builder API + summary output.
+# Exercises deeply-nested has_drop (Figure -> vec(Axes) -> vec(LineStyle) ->
+# vec(f64)), Axes MOVE into Figure, and deep-copy reads. Self-verifying sample
+# prints "PLOT PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_skeleton
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_skeleton_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_skeleton
+        -DMARKER=PLOT
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# std/plot.ls tick engine (plot Phase 2): standard Heckbert nice-numbers,
+# generate_ticks, map_x/map_y, update_limits, finalize (margins + ticks).
+# Self-verifying sample prints "TICKS PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_ticks
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_ticks_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_ticks
+        -DMARKER=TICKS
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # map.keys() / map.values() iteration + bound vec result. Regression for the
 # silent zero-iteration bug. JIT + AOT correctness + memcheck.
 add_test(

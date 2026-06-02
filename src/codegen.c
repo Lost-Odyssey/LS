@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 /* CG_DEBUG is defined in common.h (default 0).
    Set to 1 via -DCG_DEBUG=1 at build time to inject runtime printf traces
@@ -4183,6 +4184,118 @@ static const char *printf_fmt_for_type(Type *t)
     }
 }
 
+/* Translate a user f-string format specifier (e.g. ".2f", "03d", ".0f") into a
+   printf conversion written to `out`. `*out_to_double` is set when the operand
+   must be widened to double (int/f32 operand with a float conversion). Returns
+   false (after reporting via cg_error) on an unsupported spec/type combination. */
+static bool cg_build_spec_conv(CodegenContext *ctx, int line, int col, Type *et,
+                               const char *spec, char *out, size_t out_sz,
+                               bool *out_to_double)
+{
+    *out_to_double = false;
+    size_t slen = strlen(spec);
+
+    bool is_float_type = et && (et->kind == TYPE_F32 || et->kind == TYPE_F64);
+    bool is_int_type = et && (et->kind == TYPE_INT || et->kind == TYPE_I8 ||
+        et->kind == TYPE_I16 || et->kind == TYPE_I32 || et->kind == TYPE_I64 ||
+        et->kind == TYPE_U8 || et->kind == TYPE_U16 || et->kind == TYPE_U32 ||
+        et->kind == TYPE_U64);
+    if (!is_float_type && !is_int_type) {
+        cg_error(ctx, line, col, "f-string format specifier ':%s' requires a numeric value", spec);
+        return false;
+    }
+    if (strchr(spec, '%') != NULL) {
+        cg_error(ctx, line, col, "f-string format specifier ':%s' must not contain '%%'", spec);
+        return false;
+    }
+
+    /* Trailing conversion char, if any. */
+    char conv_char = 0;
+    if (slen > 0 && strchr("fFeEgGdioxXu", spec[slen - 1]) != NULL)
+        conv_char = spec[slen - 1];
+    size_t body_len = conv_char ? slen - 1 : slen;
+
+    /* Validate the body (flags/width/precision only). */
+    for (size_t i = 0; i < body_len; i++) {
+        char ch = spec[i];
+        if (!(isdigit((unsigned char)ch) || ch == '.' || ch == '+' ||
+              ch == '-' || ch == '#' || ch == ' ')) {
+            cg_error(ctx, line, col, "invalid character in f-string format specifier ':%s'", spec);
+            return false;
+        }
+    }
+
+    bool want_float = conv_char ? (strchr("fFeEgG", conv_char) != NULL) : is_float_type;
+    if (want_float) {
+        char cc = conv_char ? conv_char : 'f';
+        snprintf(out, out_sz, "%%%.*s%c", (int)body_len, spec, cc);
+        if (is_int_type || (et && et->kind == TYPE_F32)) *out_to_double = true;
+    } else {
+        if (is_float_type) {
+            cg_error(ctx, line, col, "integer format specifier ':%s' applied to a float value", spec);
+            return false;
+        }
+        char cc = conv_char ? conv_char : 'd';
+        bool is64 = et->kind == TYPE_I64 || et->kind == TYPE_U64;
+        if (is64)
+            snprintf(out, out_sz, "%%%.*sll%c", (int)body_len, spec, cc);
+        else
+            snprintf(out, out_sz, "%%%.*s%c", (int)body_len, spec, cc);
+    }
+    return true;
+}
+
+/* Shared by both f-string codegen paths (string-building and the print()
+   fast path). Picks the printf conversion (default by type, or from `user_spec`),
+   appends it to fmt_buf, and applies the matching value coercion. Returns the
+   value to pass to sprintf/printf, or NULL on error. */
+static LLVMValueRef cg_fstring_emit_arg(CodegenContext *ctx, AstNode *expr,
+                                        LLVMValueRef val, const char *user_spec,
+                                        char *fmt_buf, int *p_fmt_len, int fmt_cap)
+{
+    Type *et = expr->resolved_type;
+    char conv[64];
+
+    if (user_spec != NULL) {
+        bool to_double = false;
+        if (!cg_build_spec_conv(ctx, expr->line, expr->column, et, user_spec,
+                                conv, sizeof(conv), &to_double))
+            return NULL;
+        if (to_double) {
+            LLVMTypeRef dty = LLVMDoubleTypeInContext(ctx->context);
+            if (et && et->kind == TYPE_F32)
+                val = LLVMBuildFPExt(ctx->builder, val, dty, "fstr.f2d");
+            else
+                val = LLVMBuildSIToFP(ctx->builder, val, dty, "fstr.i2d");
+        } else if (et && (et->kind == TYPE_I8 || et->kind == TYPE_I16)) {
+            val = LLVMBuildSExt(ctx->builder, val, LLVMInt32TypeInContext(ctx->context), "sext");
+        } else if (et && (et->kind == TYPE_U8 || et->kind == TYPE_U16)) {
+            val = LLVMBuildZExt(ctx->builder, val, LLVMInt32TypeInContext(ctx->context), "zext");
+        }
+    } else {
+        const char *d = printf_fmt_for_type(et);
+        snprintf(conv, sizeof(conv), "%s", d);
+        if (et && et->kind == TYPE_STRING) {
+            val = ls_string_data(ctx, val);
+        } else if (et && et->kind == TYPE_BOOL) {
+            LLVMValueRef true_str = LLVMBuildGlobalStringPtr(ctx->builder, "true", "true");
+            LLVMValueRef false_str = LLVMBuildGlobalStringPtr(ctx->builder, "false", "false");
+            val = LLVMBuildSelect(ctx->builder, val, true_str, false_str, "boolstr");
+        } else if (et && (et->kind == TYPE_I8 || et->kind == TYPE_I16)) {
+            val = LLVMBuildSExt(ctx->builder, val, LLVMInt32TypeInContext(ctx->context), "sext");
+        } else if (et && (et->kind == TYPE_U8 || et->kind == TYPE_U16)) {
+            val = LLVMBuildZExt(ctx->builder, val, LLVMInt32TypeInContext(ctx->context), "zext");
+        }
+    }
+
+    int slen = (int)strlen(conv);
+    if (*p_fmt_len + slen < fmt_cap - 4) {
+        memcpy(fmt_buf + *p_fmt_len, conv, (size_t)slen);
+        *p_fmt_len += slen;
+    }
+    return val;
+}
+
 /* Helper: emit a printf call with the given format string and args */
 static LLVMValueRef emit_printf(CodegenContext *ctx, const char *fmt,
                                 LLVMValueRef *extra_args, int extra_count)
@@ -4748,33 +4861,19 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
 
                 /* Expression — borrow vec(string)[i] instead of cloning */
                 AstNode *expr = arg->as.format_string.exprs[j];
+                const char *uspec = arg->as.format_string.specs
+                                        ? arg->as.format_string.specs[j] : NULL;
                 LLVMValueRef val = codegen_expr_or_borrow(ctx, expr);
                 if (val == NULL)
                 {
                     free(printf_args);
                     return NULL;
                 }
-
-                Type *et = expr->resolved_type;
-                const char *spec = printf_fmt_for_type(et);
-                int slen = (int)strlen(spec);
-                if (fmt_len + slen < 1020)
+                val = cg_fstring_emit_arg(ctx, expr, val, uspec, fmt_buf, &fmt_len, 1024);
+                if (val == NULL)
                 {
-                    memcpy(fmt_buf + fmt_len, spec, (size_t)slen);
-                    fmt_len += slen;
-                }
-
-                /* String: extract .data from LsString for printf */
-                if (et && et->kind == TYPE_STRING)
-                {
-                    val = ls_string_data(ctx, val);
-                }
-                /* Bool needs special handling: convert i1 to "true"/"false" string */
-                else if (et && et->kind == TYPE_BOOL)
-                {
-                    LLVMValueRef true_str = LLVMBuildGlobalStringPtr(ctx->builder, "true", "true");
-                    LLVMValueRef false_str = LLVMBuildGlobalStringPtr(ctx->builder, "false", "false");
-                    val = LLVMBuildSelect(ctx->builder, val, true_str, false_str, "boolstr");
+                    free(printf_args);
+                    return NULL;
                 }
                 printf_args[printf_argc++] = val;
             }
@@ -4945,42 +5044,19 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
 
         /* Expression */
         AstNode *expr = node->as.format_string.exprs[i];
+        const char *uspec = node->as.format_string.specs
+                                ? node->as.format_string.specs[i] : NULL;
         LLVMValueRef val = codegen_expr(ctx, expr);
         if (val == NULL)
         {
             free(vals);
             return NULL;
         }
-
-        Type *et = expr->resolved_type;
-        const char *spec = printf_fmt_for_type(et);
-        int slen = (int)strlen(spec);
-        if (fmt_len + slen < 1020)
+        val = cg_fstring_emit_arg(ctx, expr, val, uspec, fmt_buf, &fmt_len, 1024);
+        if (val == NULL)
         {
-            memcpy(fmt_buf + fmt_len, spec, (size_t)slen);
-            fmt_len += slen;
-        }
-
-        /* String: extract .data for sprintf */
-        if (et && et->kind == TYPE_STRING)
-        {
-            val = ls_string_data(ctx, val);
-        }
-        else if (et && et->kind == TYPE_BOOL)
-        {
-            LLVMValueRef true_str = LLVMBuildGlobalStringPtr(ctx->builder, "true", "true");
-            LLVMValueRef false_str = LLVMBuildGlobalStringPtr(ctx->builder, "false", "false");
-            val = LLVMBuildSelect(ctx->builder, val, true_str, false_str, "boolstr");
-        }
-        else if (et && (et->kind == TYPE_I8 || et->kind == TYPE_I16))
-        {
-            val = LLVMBuildSExt(ctx->builder, val,
-                                LLVMInt32TypeInContext(ctx->context), "sext");
-        }
-        else if (et && (et->kind == TYPE_U8 || et->kind == TYPE_U16))
-        {
-            val = LLVMBuildZExt(ctx->builder, val,
-                                LLVMInt32TypeInContext(ctx->context), "zext");
+            free(vals);
+            return NULL;
         }
 
         vals[val_count++] = val;

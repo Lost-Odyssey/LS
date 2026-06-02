@@ -525,6 +525,25 @@ static Token scanner_next_inner(Scanner *s) {
 
     /* Track brace depth inside f-string expressions */
     if (s->in_fstring && s->fstring_brace_depth > 0) {
+        /* Format specifier: a top-level ':' (depth exactly 1) separates the
+           interpolated expression from its printf-style spec, e.g. {x:.2f}.
+           Struct-literal colons live at depth >= 2, so they are unaffected.
+           Scan the spec text up to the closing '}', emit TOKEN_FSTRING_SPEC,
+           and return to text scanning (depth -> 0). */
+        if (s->fstring_brace_depth == 1 && *s->current == ':') {
+            advance(s); /* consume ':' */
+            s->start = s->current;       /* spec lexeme starts after ':' */
+            s->start_column = s->column;
+            while (!is_at_end(s) && peek(s) != '}' && peek(s) != '"') {
+                advance(s);
+            }
+            Token spec = make_token(s, TOKEN_FSTRING_SPEC);
+            if (peek(s) == '}') {
+                advance(s); /* consume '}' */
+                s->fstring_brace_depth = 0;
+            }
+            return spec;
+        }
         if (*s->current == '{') {
             s->fstring_brace_depth++;
         } else if (*s->current == '}') {
