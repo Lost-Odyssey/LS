@@ -44,7 +44,7 @@ struct Type {
         struct {                                        /* TYPE_STRUCT */
             const char *name;
             const char *llvm_name;   /* B-2: LLVM type name; prefixed for module types, NULL→use name */
-            struct { const char *name; Type *type; } *fields;
+            struct { const char *name; Type *type; void *default_expr; } *fields;  /* default_expr: AstNode* literal or NULL */
             int field_count;
             bool has_drop;           /* true if struct has a __drop destructor */
             bool has_user_drop;      /* true if __drop was user-defined (not auto-generated) */

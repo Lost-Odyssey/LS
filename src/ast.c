@@ -337,9 +337,12 @@ void ast_free(AstNode *node) {
         for (int i = 0; i < node->as.struct_decl.field_count; i++) {
             type_node_free(node->as.struct_decl.field_types[i]);
             free(node->as.struct_decl.field_names[i]);
+            if (node->as.struct_decl.field_defaults)
+                ast_free(node->as.struct_decl.field_defaults[i]);
         }
         free(node->as.struct_decl.field_types);
         free(node->as.struct_decl.field_names);
+        free(node->as.struct_decl.field_defaults);
         break;
     case AST_ENUM_DECL:
         free(node->as.enum_decl.name);

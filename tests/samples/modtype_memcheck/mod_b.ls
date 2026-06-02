@@ -1,7 +1,7 @@
 module mod_b
 
 /* Same names as mod_a (Node, Box) but DIFFERENT layouts. */
-struct Node { int id  string desc }
+struct Node { int id; string desc }
 impl Node {
     fn tag(&self) -> string { return self.desc }
 }

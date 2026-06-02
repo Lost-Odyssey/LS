@@ -20,7 +20,7 @@ struct Outer { Box inner }
 struct A { vec(int) v }
 struct B { A a }
 struct C { B b }
-struct Bag  { string name  map(string,int) m }
+struct Bag  { string name; map(string,int) m }
 struct Wrap { Bag bag }
 
 fn check(bool cond, string label) {

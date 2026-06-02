@@ -614,6 +614,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# struct field defaults + partial initialization (v1: literal defaults). Omitted
+# fields fall back to their declared default; has_drop struct (string default +
+# explicit vec field) stays memcheck-clean. Self-verifying sample prints
+# "SFDEF PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_struct_field_defaults
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=struct_field_defaults
+        -DMARKER=SFDEF
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # map.keys() / map.values() iteration + bound vec result. Regression for the
 # silent zero-iteration bug. JIT + AOT correctness + memcheck.
 add_test(

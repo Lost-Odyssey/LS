@@ -1,7 +1,7 @@
 module mod_a
 
 /* has_drop struct (owned string field) + same name as mod_b's. */
-struct Node { string label  int weight }
+struct Node { string label; int weight }
 impl Node {
     fn tag(&self) -> string { return self.label }
 }

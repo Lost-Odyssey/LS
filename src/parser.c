@@ -2309,6 +2309,26 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     return n;
 }
 
+/* struct field defaults (v1) may only be compile-time literals:
+   int/float/string/bool/nil, or a unary minus on a number. */
+static bool is_literal_default(const AstNode *e) {
+    if (e == NULL) return false;
+    switch (e->kind) {
+    case AST_INT_LIT:
+    case AST_FLOAT_LIT:
+    case AST_STRING_LIT:
+    case AST_BOOL_LIT:
+    case AST_NIL_LIT:
+        return true;
+    case AST_UNARY:
+        return e->as.unary.operand != NULL &&
+               (e->as.unary.operand->kind == AST_INT_LIT ||
+                e->as.unary.operand->kind == AST_FLOAT_LIT);
+    default:
+        return false;
+    }
+}
+
 static AstNode *parse_struct_decl(Parser *p) {
     /* 'struct' already consumed */
     int line = p->previous.line;
@@ -2392,6 +2412,7 @@ static AstNode *parse_struct_decl(Parser *p) {
 
     TypeNode **field_types = NULL;
     char **field_names = NULL;
+    AstNode **field_defaults = NULL;
     int field_count = 0;
     int field_cap = 0;
 
@@ -2412,16 +2433,44 @@ static AstNode *parse_struct_decl(Parser *p) {
         }
         advance(p);
         char *fname = str_dup_n(p->previous.start, p->previous.length);
-        skip_semicolons(p);
+
+        /* Optional default value: `= <literal>` (v1: literal only). */
+        AstNode *fdefault = NULL;
+        if (match_tok(p, TOKEN_ASSIGN)) {
+            fdefault = parse_expr_prec(p, PREC_ASSIGNMENT);
+            if (fdefault != NULL && !is_literal_default(fdefault)) {
+                error_at_current(p, "struct field default must be a literal (v1)");
+                ast_free(fdefault);
+                fdefault = NULL;
+            }
+        }
+        int field_end_line = p->previous.line;  /* last token of this field */
 
         if (field_count >= field_cap) {
             field_cap = GROW_CAPACITY(field_cap);
             field_types = GROW_ARRAY(TypeNode *, field_types, field_cap);
             field_names = GROW_ARRAY(char *, field_names, field_cap);
+            field_defaults = GROW_ARRAY(AstNode *, field_defaults, field_cap);
         }
         field_types[field_count] = ft;
         field_names[field_count] = fname;
+        field_defaults[field_count] = fdefault;
         field_count++;
+
+        /* Field separator: ',' / ';' (any number, trailing allowed) OR a
+           newline. Newline-separated fields need no separator (LS "semicolons
+           optional" style); but two fields on the SAME line must be separated
+           by ',' or ';' — same-line space-only separation is rejected. */
+        bool had_sep = false;
+        while (check(p, TOKEN_COMMA) || check(p, TOKEN_SEMICOLON)) {
+            advance(p);
+            had_sep = true;
+        }
+        if (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF) && !had_sep &&
+            p->current.line <= field_end_line) {
+            error_at_current(p,
+                "struct fields on the same line must be separated by ',' or ';'");
+        }
     }
     consume(p, TOKEN_RBRACE, "expected '}' after struct fields");
 
@@ -2432,6 +2481,7 @@ static AstNode *parse_struct_decl(Parser *p) {
     n->as.struct_decl.type_param_bounds = struct_type_param_bounds;
     n->as.struct_decl.field_types = field_types;
     n->as.struct_decl.field_names = field_names;
+    n->as.struct_decl.field_defaults = field_defaults;
     n->as.struct_decl.field_count = field_count;
     return n;
 }

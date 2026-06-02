@@ -910,6 +910,8 @@ Type *checker_instantiate_struct(Checker *c,
         }
         st->as.strukt.fields[i].name = decl->as.struct_decl.field_names[i];
         st->as.strukt.fields[i].type = ft;
+        st->as.strukt.fields[i].default_expr =
+            decl->as.struct_decl.field_defaults ? decl->as.struct_decl.field_defaults[i] : NULL;
 
         if (type_owns_heap_for_enum(ft)) has_drop = true;
     }
@@ -6007,6 +6009,37 @@ static Type *check_expr(Checker *c, AstNode *node)
             if (vt && vt->kind == TYPE_BLOCK)
                 checker_try_mark_moved(c, node->as.new_expr.field_inits[i].value);
         }
+        /* Struct field defaults (v1): an omitted field with a declared default
+           takes that default; an omitted field WITHOUT a default keeps LS's
+           existing zero-initialization (struct literals never required all
+           fields). Here we only type-check the defaults that exist. */
+        for (int j = 0; j < st->as.strukt.field_count; j++)
+        {
+            bool provided = false;
+            for (int i = 0; i < ninits; i++)
+            {
+                if (strcmp(node->as.new_expr.field_inits[i].name,
+                           st->as.strukt.fields[j].name) == 0)
+                {
+                    provided = true;
+                    break;
+                }
+            }
+            if (provided)
+                continue;
+            AstNode *deflt = (AstNode *)st->as.strukt.fields[j].default_expr;
+            if (deflt == NULL)
+                continue; /* omitted, no default -> zero-init (existing semantics) */
+            Type *dt = check_expr(c, deflt);
+            Type *fexp = st->as.strukt.fields[j].type;
+            if (dt && fexp && !type_equals(dt, fexp))
+            {
+                checker_error(c, node->line, node->column,
+                              "default for field '%s': expected '%s', got '%s'",
+                              st->as.strukt.fields[j].name,
+                              type_name(fexp), type_name(dt));
+            }
+        }
     new_expr_done:
         /* on_stack = struct value literal  S1{...} → resolves to TYPE_STRUCT
            !on_stack = new S1{...} (heap) → resolves to *TYPE_STRUCT */
@@ -6775,6 +6808,8 @@ static void check_struct_decl(Checker *c, AstNode *node)
         memcpy(fn_copy, fn, len + 1);
         st->as.strukt.fields[i].name = fn_copy;
         st->as.strukt.fields[i].type = ft;
+        st->as.strukt.fields[i].default_expr =
+            node->as.struct_decl.field_defaults ? node->as.struct_decl.field_defaults[i] : NULL;
 
         /* Check for duplicate fields */
         for (int j = 0; j < i; j++)

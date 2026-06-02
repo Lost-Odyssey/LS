@@ -263,6 +263,8 @@ Type *type_clone(const Type *t) {
                 }
                 c->as.strukt.fields[i].name = fn_copy;
                 c->as.strukt.fields[i].type = type_clone(t->as.strukt.fields[i].type);
+                /* AstNode* owned by the AST; shallow-copy the reference. */
+                c->as.strukt.fields[i].default_expr = t->as.strukt.fields[i].default_expr;
             }
         }
         break;

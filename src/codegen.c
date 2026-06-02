@@ -13307,6 +13307,39 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                            field_temp_mark, CG_XFER_INTO_CONTAINER);
         }
 
+        /* Fill any field not explicitly initialized with its declared default
+           (struct field default, v1). Defaults are evaluated here, at the
+           construction site — same ownership path as an explicit initializer. */
+        for (int j = 0; j < struct_type->as.strukt.field_count; j++)
+        {
+            bool provided = false;
+            for (int i = 0; i < ninits; i++)
+            {
+                if (strcmp(node->as.new_expr.field_inits[i].name,
+                           struct_type->as.strukt.fields[j].name) == 0)
+                {
+                    provided = true;
+                    break;
+                }
+            }
+            if (provided)
+                continue;
+            AstNode *deflt = (AstNode *)struct_type->as.strukt.fields[j].default_expr;
+            if (deflt == NULL)
+                continue; /* checker already errored; leave zero-init */
+
+            int field_temp_mark = ctx->temp_string_count;
+            LLVMValueRef val = codegen_expr(ctx, deflt);
+            if (val == NULL)
+                return NULL;
+            Type *field_type = struct_type->as.strukt.fields[j].type;
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
+                                                         storage, (unsigned)j,
+                                                         "field_ptr_def");
+            cg_store_owned(ctx, field_ptr, val, field_type, deflt,
+                           field_temp_mark, CG_XFER_INTO_CONTAINER);
+        }
+
         if (on_stack)
         {
             /* Return the loaded struct aggregate value */

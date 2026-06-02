@@ -4,7 +4,7 @@
    registers a statement-end drop for the temp. Named-IDENT values keep their scope
    drop (must not double-drop). memcheck must be clean. */
 
-struct N { string s  int n }
+struct N { string s; int n }
 enum  E { Empty, Holds(string) }
 
 fn main() -> int {

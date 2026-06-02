@@ -383,6 +383,7 @@ struct AstNode
             TypeParamBound *type_param_bounds;
             TypeNode **field_types;
             char **field_names;
+            AstNode **field_defaults; /* parallel to field_names; literal default value or NULL */
             int field_count;
         } struct_decl;
         struct

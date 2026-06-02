@@ -12,7 +12,7 @@
 // sample emits "BYVAL PASS" and never "FAIL", under JIT + AOT + memcheck.
 
 struct Box { vec(int) items }
-struct Bag { string name  map(string,int) counts }
+struct Bag { string name; map(string,int) counts }
 struct Inner { vec(int) data }
 struct Wrap  { Inner inner }
 

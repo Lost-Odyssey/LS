@@ -5,7 +5,7 @@
    Fix: string params are marked borrowed → cg_store_owned + AST_RETURN clone them.
    Must print the real strings under AOT and stay memcheck-clean. */
 
-struct S { string a  int n }
+struct S { string a; int n }
 
 fn of(string s) -> S { return S { a: s, n: 1 } }     // param → struct field → return
 fn id(string s) -> string { return s }                // param → return directly
