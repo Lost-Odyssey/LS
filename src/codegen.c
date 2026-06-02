@@ -311,6 +311,7 @@ static void emit_drop_value(CodegenContext *ctx, LLVMValueRef place_ptr, Type *t
 /* True if `t` owns heap and needs drop/clone (string/vec/map/has_drop struct|enum). */
 static bool cg_type_owns_heap_for_enum(const Type *t);
 static void emit_struct_drop(CodegenContext *ctx, LLVMValueRef drop_ptr, Type *struct_type);
+static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type);
 static void emit_struct_drop_cond(CodegenContext *ctx, LLVMValueRef drop_ptr,
                                   Type *struct_type, LLVMValueRef moved_flag);
 static LLVMBasicBlockRef emit_struct_drop_separate(CodegenContext *ctx, LLVMValueRef drop_ptr,
@@ -3173,6 +3174,16 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
                 }
 #endif
                 LLVMValueRef drop_fn = (LLVMValueRef)sym->type->as.strukt.drop_fn;
+                if (drop_fn == NULL)
+                {
+                    /* Module function bodies are emitted before the main-file
+                       Pass 2.5 that generates struct auto-drop fns, so a has_drop
+                       struct local in a module function would otherwise fall to
+                       the inline fallback below (which does not free vec/map/enum
+                       fields → leak). Generate the complete drop fn on demand. */
+                    emit_auto_drop_fn(ctx, sym->type);
+                    drop_fn = (LLVMValueRef)sym->type->as.strukt.drop_fn;
+                }
                 if (drop_fn != NULL && sym->moved_flag != NULL)
                 {
                     LLVMTypeRef i1_type = LLVMInt1TypeInContext(ctx->context);
@@ -3440,7 +3451,17 @@ static void emit_struct_drop_cond(CodegenContext *ctx, LLVMValueRef drop_ptr,
 
     LLVMValueRef drop_fn = (LLVMValueRef)struct_type->as.strukt.drop_fn;
     if (drop_fn == NULL)
-        return;
+    {
+        /* The struct's auto-drop fn has not been generated yet. This happens
+           when a has_drop struct LOCAL is dropped inside a *module* function,
+           whose body is emitted before the main-file Pass 2.5 that generates
+           drop fns (root/main functions are emitted after, so they're fine).
+           Generate on demand — emit_auto_drop_fn saves/restores the builder. */
+        emit_auto_drop_fn(ctx, struct_type);
+        drop_fn = (LLVMValueRef)struct_type->as.strukt.drop_fn;
+        if (drop_fn == NULL)
+            return;
+    }
 
     LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
     LLVMValueRef cur_fn = LLVMGetBasicBlockParent(cur_bb);
@@ -3505,7 +3526,14 @@ static LLVMBasicBlockRef emit_struct_drop_separate(CodegenContext *ctx, LLVMValu
 
     LLVMValueRef drop_fn = (LLVMValueRef)struct_type->as.strukt.drop_fn;
     if (drop_fn == NULL)
-        return NULL;
+    {
+        /* Lazily generate the auto-drop fn (see emit_struct_drop_cond): module
+           function bodies are emitted before the main-file Pass 2.5. */
+        emit_auto_drop_fn(ctx, struct_type);
+        drop_fn = (LLVMValueRef)struct_type->as.strukt.drop_fn;
+        if (drop_fn == NULL)
+            return NULL;
+    }
 
     LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
     LLVMValueRef cur_fn = LLVMGetBasicBlockParent(cur_bb);

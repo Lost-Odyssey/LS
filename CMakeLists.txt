@@ -457,6 +457,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
 )
 
+# std.md Phase H3 (Markdown -> HTML): md.to_html / to_html_full map MdBlock /
+# MdInline to HTML (headings, paragraphs, bold/italic/code, links, lists, code
+# blocks, hr, escaping, full-document wrapper). Lives in std.md (no std.html
+# dependency). JIT + AOT correctness + memcheck. Reuses the std.html driver.
+add_test(
+    NAME test_md_to_html
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_to_html.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=md_to_html
+        -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
+)
+
 # map.keys() / map.values() iteration + bound vec result. Regression for the
 # silent zero-iteration bug. JIT + AOT correctness + memcheck.
 add_test(

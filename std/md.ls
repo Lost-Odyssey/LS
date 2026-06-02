@@ -925,3 +925,208 @@ fn fmt_image(string alt, string url) -> string {
     string r = "!["; r.append(alt); r.append("]("); r.append(url); r.append(")")
     return r
 }
+
+// ====================================================================
+// Phase H3 — Markdown -> HTML. Parses the source into MdBlock/MdInline,
+// then emits HTML strings directly (no HtmlNode intermediate). Kept inside
+// std.md so the conversion has zero cross-module dependency on std.html
+// (per docs/plan_std_html.md §5). HTML escaping is inlined here.
+// ====================================================================
+
+fn _html_escape(string s) -> string {
+    string r = ""
+    int i = 0
+    int n = s.length
+    while i < n {
+        int c = s.at(i)
+        if c == '&' { r.append("&amp;") }
+        else if c == '<' { r.append("&lt;") }
+        else if c == '>' { r.append("&gt;") }
+        else { r.append(c) }
+        i = i + 1
+    }
+    return r
+}
+
+fn _html_escape_attr(string s) -> string {
+    string r = ""
+    int i = 0
+    int n = s.length
+    while i < n {
+        int c = s.at(i)
+        if c == '&' { r.append("&amp;") }
+        else if c == '<' { r.append("&lt;") }
+        else if c == '>' { r.append("&gt;") }
+        else if c == '"' { r.append("&quot;") }
+        else { r.append(c) }
+        i = i + 1
+    }
+    return r
+}
+
+fn _html_inline(MdInline x) -> string {
+    match x {
+        Text(c)       => { return _html_escape(c) }
+        Bold(c)       => {
+            string r = "<strong>"; r.append(_html_escape(c)); r.append("</strong>"); return r
+        }
+        Italic(c)     => {
+            string r = "<em>"; r.append(_html_escape(c)); r.append("</em>"); return r
+        }
+        BoldItalic(c) => {
+            string r = "<strong><em>"; r.append(_html_escape(c)); r.append("</em></strong>"); return r
+        }
+        Code(c)       => {
+            string r = "<code>"; r.append(_html_escape(c)); r.append("</code>"); return r
+        }
+        Link(t, u)    => {
+            string r = "<a href=\""; r.append(_html_escape_attr(u)); r.append("\">")
+            r.append(_html_escape(t)); r.append("</a>")
+            return r
+        }
+        Image(a, u)   => {
+            string r = "<img src=\""; r.append(_html_escape_attr(u)); r.append("\" alt=\"")
+            r.append(_html_escape_attr(a)); r.append("\">")
+            return r
+        }
+    }
+}
+
+fn _html_inlines(vec(MdInline) inls) -> string {
+    string out = ""
+    int i = 0
+    while i < inls.length {
+        out.append(_html_inline(inls.get(i)))
+        i = i + 1
+    }
+    return out
+}
+
+fn _html_table(vec(string) headers, vec(vec(string)) rows) -> string {
+    string r = "<table>\n<thead>\n<tr>"
+    int c = 0
+    while c < headers.length {
+        r.append("<th>")
+        r.append(_html_escape(headers.get(c)))
+        r.append("</th>")
+        c = c + 1
+    }
+    r.append("</tr>\n</thead>\n<tbody>\n")
+    int rr = 0
+    while rr < rows.length {
+        vec(string) row = rows.get(rr)
+        r.append("<tr>")
+        int cc = 0
+        while cc < headers.length {
+            string cell = ""
+            if cc < row.length { cell = row.get(cc) }
+            r.append("<td>")
+            r.append(_html_escape(cell))
+            r.append("</td>")
+            cc = cc + 1
+        }
+        r.append("</tr>\n")
+        rr = rr + 1
+    }
+    r.append("</tbody>\n</table>\n")
+    return r
+}
+
+fn _html_block(MdBlock b) -> string {
+    match b {
+        Heading(level, content) => {
+            string tag = f"h{level}"
+            string r = "<"; r.append(tag); r.append(">")
+            r.append(_html_inlines(content))
+            r.append("</"); r.append(tag); r.append(">\n")
+            return r
+        }
+        Paragraph(content) => {
+            string r = "<p>"
+            r.append(_html_inlines(content))
+            r.append("</p>\n")
+            return r
+        }
+        CodeBlock(lang, code) => {
+            string r = "<pre><code"
+            if lang.length > 0 {
+                r.append(" class=\"language-")
+                r.append(_html_escape_attr(lang))
+                r.append("\"")
+            }
+            r.append(">")
+            r.append(_html_escape(code))
+            r.append("</code></pre>\n")
+            return r
+        }
+        UnorderedList(items) => {
+            string r = "<ul>\n"
+            int i = 0
+            while i < items.length {
+                r.append("<li>")
+                r.append(_html_inlines(items.get(i)))
+                r.append("</li>\n")
+                i = i + 1
+            }
+            r.append("</ul>\n")
+            return r
+        }
+        OrderedList(items) => {
+            string r = "<ol>\n"
+            int i = 0
+            while i < items.length {
+                r.append("<li>")
+                r.append(_html_inlines(items.get(i)))
+                r.append("</li>\n")
+                i = i + 1
+            }
+            r.append("</ol>\n")
+            return r
+        }
+        Blockquote(children) => {
+            string r = "<blockquote>\n"
+            int i = 0
+            while i < children.length {
+                r.append(_html_block(children.get(i)))
+                i = i + 1
+            }
+            r.append("</blockquote>\n")
+            return r
+        }
+        Table(headers, rows) => {
+            return _html_table(headers, rows)
+        }
+        HorizontalRule => {
+            return "<hr>\n"
+        }
+    }
+}
+
+// Render an already-parsed document to an HTML fragment. Borrows the doc
+// (mirrors `render`), so the owning frame drops it exactly once.
+fn render_html(&MdDoc d) -> string {
+    string out = ""
+    int i = 0
+    while i < d.blocks.length {
+        out.append(_html_block(d.blocks.get(i)))
+        i = i + 1
+    }
+    return out
+}
+
+// Convert a Markdown source string to an HTML fragment (no <html> wrapper).
+fn to_html(string source) -> string {
+    MdDoc d = parse(source)
+    return render_html(d)
+}
+
+// Convert a Markdown source to a full HTML document with <!DOCTYPE> + <head>.
+fn to_html_full(string source, string title) -> string {
+    string body = to_html(source)
+    string r = "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>"
+    r.append(_html_escape(title))
+    r.append("</title>\n</head>\n<body>\n")
+    r.append(body)
+    r.append("</body>\n</html>\n")
+    return r
+}

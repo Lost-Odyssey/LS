@@ -2,7 +2,26 @@
 
 > **日期**：2026-06-01
 > **状态**：H1（生成+render）✅ 已完成（commit eb805a8）；H2（解析+查询）✅ 已完成
-> （2026-06-02）；H3（md.to_html，在 std.md）待做。
+> （2026-06-02）；H3（md.to_html，在 std.md）✅ 已完成（2026-06-02）。**std.html 全部完成。**
+>
+> **H3 落地说明**：在 std.md 增加 `to_html(source)->string`（HTML 片段）、
+> `render_html(&MdDoc)->string`（已解析文档→HTML）、`to_html_full(source, title)`
+> （完整 `<!DOCTYPE>`+`<head>`+`<body>` 文档）。`parse` → 递归遍历 MdBlock/MdInline →
+> 直接输出 HTML 字符串（无 HtmlNode 中间层，零依赖 std.html）。映射：Heading→`<hN>`、
+> Paragraph→`<p>`、Bold→`<strong>`、Italic→`<em>`、BoldItalic→`<strong><em>`、
+> Code/CodeBlock→`<code>`/`<pre><code class="language-..">`、Link→`<a href>`、
+> Image→`<img>`、UnorderedList/OrderedList→`<ul>/<ol><li>`、Blockquote→`<blockquote>`、
+> Table→`<table><thead><tbody>`、HorizontalRule→`<hr>`；文本/属性 HTML 转义内联实现。
+> 测试 `tests/samples/md_to_html.ls`（17 项 "HTML PASS"）+ `test_md_to_html`
+> （JIT+AOT+memcheck）。ctest 116/116。
+>
+> **附带修复的编译器 bug**：实现 H3 时发现「模块函数内拥有并 drop 的 has_drop struct
+> 局部不被析构 → 泄漏」——根因：模块函数体在主文件 Pass 2.5（生成 struct 自动 drop fn）
+> **之前**发射，故 cleanup 时 `drop_fn==NULL`，落到只处理 string/member-struct 字段的内联
+> fallback（不释放 vec/map/enum 字段）。既有 std.md/json 从不在模块函数内拥有 struct 局部
+> （全借用/返回），故未暴露；`to_html` 的 `MdDoc d = parse(source)` 是首例。修复：scope
+> cleanup 与 `emit_struct_drop_cond`/`_separate` 在 `drop_fn==NULL` 时按需 `emit_auto_drop_fn`
+> 惰性生成（幂等、保存/恢复 builder）。最小复现 + ctest 116/116 验证。
 >
 > **H2 落地说明**：递归下降容错解析器（`HtmlParser` + `&!P` 函数组，mirrors
 > json.ls）。`parse(string)->HtmlDoc` 无 Result（容错，不报错）。支持：标签开闭/
