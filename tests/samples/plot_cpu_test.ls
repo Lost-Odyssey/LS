@@ -1,0 +1,77 @@
+// plot_cpu_test.ls — TL-2: CPU scheduling timeline + Hyper-Threading coloring.
+// Prints "TL2 PASS" / "TL2 FAIL: ...".
+
+import plottl
+
+fn make_cpu_events() -> vec(CpuSchedEvent) {
+    vec(CpuSchedEvent) ev = []
+    ev.push(plottl.cpu_event(0, 5000000, 1234, "main", 0, "app"))        // core 0 primary
+    ev.push(plottl.cpu_event(3000000, 8000000, 5678, "worker-1", 32, "app"))   // core 0 HT sibling
+    ev.push(plottl.cpu_event(6000000, 12000000, 1234, "main", 1, "app"))        // core 1 primary
+    ev.push(plottl.cpu_event(9000000, 15000000, 9012, "worker-2", 33, "app"))   // core 1 HT sibling
+    return ev
+}
+
+fn has(string hay, string needle, string name) -> bool {
+    if hay.contains(needle) { return true }
+    print("TL2 FAIL: " + name + " missing [" + needle + "]")
+    return false
+}
+
+fn check(string got, string want, string name) -> bool {
+    if got == want { return true }
+    print("TL2 FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+    return false
+}
+
+fn count_occ(string hay, string needle) -> int {
+    int n = 0
+    int i = 0
+    int hl = hay.length
+    int nl = needle.length
+    while i + nl <= hl {
+        if hay.substr(i, nl) == needle { n = n + 1; i = i + nl }
+        else { i = i + 1 }
+    }
+    return n
+}
+
+fn main() {
+    bool ok = true
+
+    // ---- color math ----
+    ok = check(plottl.cpu_color(0, 32), "#bf4343", "cpu_color.0") && ok
+    // CPU 0 and CPU 32 are on the same physical core -> identical hue
+    ok = check(f"{plottl.cpu_hue(0, 32):.2f}", f"{plottl.cpu_hue(32, 32):.2f}", "same.hue") && ok
+    // ... but distinguishable colors (HT sibling is dimmer)
+    if plottl.cpu_color(32, 32) == plottl.cpu_color(0, 32) {
+        print("TL2 FAIL: HT sibling not distinguishable"); ok = false
+    }
+    if plottl.is_ht_sibling(0, 32) { print("TL2 FAIL: cpu0 flagged HT"); ok = false }
+    if !plottl.is_ht_sibling(32, 32) { print("TL2 FAIL: cpu32 not HT"); ok = false }
+    if plottl.physical_core(33, 32) != 1 { print("TL2 FAIL: phys core 33"); ok = false }
+
+    // ---- SVG ----
+    plottl.CpuTopology topo = plottl.topology(64, 32)
+    string svg = plottl.cpu_timeline_svg(make_cpu_events(), topo, 1000, 400)
+    ok = has(svg, "CPU Scheduling Timeline", "svg.title") && ok
+    ok = has(svg, "<pattern id=\"ht32\"", "ht.pattern.def") && ok
+    ok = has(svg, "url(#ht32)", "ht.fill") && ok
+    ok = has(svg, "fill=\"#bf4343\"", "cpu0.solid") && ok
+    ok = has(svg, ">CPU 0  core 0<", "legend.cpu0") && ok
+    ok = has(svg, ">CPU 32  core 0 (HT)<", "legend.cpu32.ht") && ok
+    // legend entry count == unique CPUs (0, 32, 1, 33) = 4 ("  core " only in legend)
+    int legn = count_occ(svg, "  core ")
+    if legn != 4 {
+        print("TL2 FAIL: legend count got=" + f"{legn}" + " want=4"); ok = false
+    }
+
+    // ---- Text backend: thread activity only, no CPU info ----
+    string txt = plottl.cpu_timeline_text(make_cpu_events(), 50)
+    ok = has(txt, "main", "text.main") && ok
+    ok = has(txt, "worker-1", "text.worker1") && ok
+    if txt.contains("CPU") { print("TL2 FAIL: text leaks 'CPU'"); ok = false }
+    if txt.contains("core") { print("TL2 FAIL: text leaks 'core'"); ok = false }
+
+    if ok { print("TL2 PASS") }
+}

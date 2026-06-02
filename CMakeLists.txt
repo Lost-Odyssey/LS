@@ -528,6 +528,77 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# std/plot.ls SVG backend (plot Phase 2b): layout, polyline, axes, ticks, grid,
+# title/labels (escaped), scatter circles. Self-verifying sample prints
+# "SVG PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_svg
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_svg_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_svg
+        -DMARKER=SVG
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# std/plot.ls Text/ASCII backend (plot Phase 2c): vec(string) grid, _put_char,
+# DDA line rasterization, y/x labels + axes. Self-verifying sample prints
+# "TEXT PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_text
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_text_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_text
+        -DMARKER=TEXT
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# std/plottl.ls timeline (plot TL-1): swimlane SVG (rects + <title> + time
+# ticks) and text backend. Self-verifying sample prints "TL PASS".
+# JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_timeline
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_timeline_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_timeline
+        -DMARKER=TL
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# std/plottl.ls CSV input (plot TL-1.5): parse_timeline_csv (header/blank skip,
+# auto palette color), load_timeline_csv. Self-verifying sample prints
+# "CSV PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_csv
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_csv_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_csv
+        -DMARKER=CSV
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# std/plottl.ls CPU timeline (plot TL-2): CpuSchedEvent/CpuTopology, HT coloring
+# (cpu_hue/cpu_color via plotfmt.hsv_to_hex), SVG swimlanes + diagonal-stripe
+# HT patterns + CPU legend, text backend. Self-verifying sample prints
+# "TL2 PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_cpu
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_cpu_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_cpu
+        -DMARKER=TL2
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # map.keys() / map.values() iteration + bound vec result. Regression for the
 # silent zero-iteration bug. JIT + AOT correctness + memcheck.
 add_test(

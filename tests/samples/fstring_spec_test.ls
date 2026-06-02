@@ -36,6 +36,13 @@ fn main() {
     // (no struct here; verify nested braces in text still fine)
     ok = check(f"{1.0:.1f} done", "1.0 done", "trailing") && ok
 
+    // ---- literal '%' in a no-interpolation f-string must NOT be doubled ----
+    ok = check(f"100%", "100%", "pct.noexpr") && ok
+    ok = check(f"width=\"50%\"", "width=\"50%\"", "pct.noexpr2") && ok
+    // '%' alongside interpolation (sprintf path) stays correct too
+    int done = 50
+    ok = check(f"{done}% done", "50% done", "pct.withexpr") && ok
+
     // ---- print() fast path must match string-building path ----
     print(f"PRINTPATH {9.87654:.3f}")   // expect: PRINTPATH 9.877
 

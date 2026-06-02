@@ -314,14 +314,275 @@ fn show_text(&Figure fig) -> string {
 }
 
 fn print_text(&Figure fig) {
-    print(show_text(fig))
+    print(to_text(fig))
 }
 
-// to_svg: Phase 1 placeholder (well-formed but minimal). Phase 2 replaces this
-// with the real layout + tick + polyline renderer.
+// ---- SVG backend ----
+
+struct Layout {
+    int left
+    int top
+    int width
+    int height
+}
+
+fn _svg_escape(string s) -> string {
+    string r = ""
+    int i = 0
+    int n = s.length
+    while i < n {
+        int ch = s.at(i)
+        if ch == '&' { r.append("&amp;") }
+        else if ch == '<' { r.append("&lt;") }
+        else if ch == '>' { r.append("&gt;") }
+        else if ch == '"' { r.append("&quot;") }
+        else { r.append(ch) }
+        i = i + 1
+    }
+    return r
+}
+
+fn _layout(int sw, int sh) -> Layout {
+    int left = 70                 // y tick labels + y axis label
+    int top = 40                  // title
+    int right = sw - 25
+    int bottom = sh - 45          // x tick labels + x axis label
+    return Layout { left: left, top: top, width: right - left, height: bottom - top }
+}
+
+// Render one finalized Axes (owned by value) into SVG fragments.
+fn _render_axes_svg(Axes ax, Layout lo) -> string {
+    string s = ""
+    int bottom = lo.top + lo.height
+    int right = lo.left + lo.width
+
+    // plot-area background + border
+    s = s + f"<rect x=\"{lo.left}\" y=\"{lo.top}\" width=\"{lo.width}\" height=\"{lo.height}\" fill=\"#fafafa\" stroke=\"#333333\" stroke-width=\"1\"/>"
+
+    // x ticks: optional grid + tick mark + label
+    int i = 0
+    while i < ax.xticks.length {
+        f64 tx = ax.xticks[i]
+        f64 pxf = map_x(tx, ax.xmin, ax.xmax, lo.left, lo.width)
+        if ax.grid_visible {
+            s = s + f"<line x1=\"{pxf:.1f}\" y1=\"{lo.top}\" x2=\"{pxf:.1f}\" y2=\"{bottom}\" stroke=\"#e0e0e0\" stroke-width=\"0.5\"/>"
+        }
+        s = s + f"<line x1=\"{pxf:.1f}\" y1=\"{bottom}\" x2=\"{pxf:.1f}\" y2=\"{bottom + 4}\" stroke=\"#333333\" stroke-width=\"1\"/>"
+        string lbl = plotfmt.fmt_auto(tx)
+        s = s + f"<text x=\"{pxf:.1f}\" y=\"{bottom + 16}\" font-size=\"10\" font-family=\"monospace\" fill=\"#555555\" text-anchor=\"middle\">{lbl}</text>"
+        i = i + 1
+    }
+
+    // y ticks
+    int j = 0
+    while j < ax.yticks.length {
+        f64 ty = ax.yticks[j]
+        f64 pyf = map_y(ty, ax.ymin, ax.ymax, lo.top, lo.height)
+        if ax.grid_visible {
+            s = s + f"<line x1=\"{lo.left}\" y1=\"{pyf:.1f}\" x2=\"{right}\" y2=\"{pyf:.1f}\" stroke=\"#e0e0e0\" stroke-width=\"0.5\"/>"
+        }
+        s = s + f"<line x1=\"{lo.left - 4}\" y1=\"{pyf:.1f}\" x2=\"{lo.left}\" y2=\"{pyf:.1f}\" stroke=\"#333333\" stroke-width=\"1\"/>"
+        string lbl = plotfmt.fmt_auto(ty)
+        s = s + f"<text x=\"{lo.left - 6}\" y=\"{pyf:.1f}\" font-size=\"10\" font-family=\"monospace\" fill=\"#555555\" text-anchor=\"end\">{lbl}</text>"
+        j = j + 1
+    }
+
+    // data series
+    int li = 0
+    while li < ax.lines.length {
+        LineStyle ln = ax.lines[li]
+        int n = math.min(ln.xs.length, ln.ys.length)
+        if ln.is_scatter {
+            int k = 0
+            while k < n {
+                f64 cx = map_x(ln.xs[k], ax.xmin, ax.xmax, lo.left, lo.width)
+                f64 cy = map_y(ln.ys[k], ax.ymin, ax.ymax, lo.top, lo.height)
+                s = s + f"<circle cx=\"{cx:.1f}\" cy=\"{cy:.1f}\" r=\"3\" fill=\"{ln.color}\"/>"
+                k = k + 1
+            }
+        } else {
+            string pts = ""
+            int k = 0
+            while k < n {
+                if k > 0 { pts = pts + " " }
+                f64 px = map_x(ln.xs[k], ax.xmin, ax.xmax, lo.left, lo.width)
+                f64 py = map_y(ln.ys[k], ax.ymin, ax.ymax, lo.top, lo.height)
+                pts = pts + f"{px:.1f},{py:.1f}"
+                k = k + 1
+            }
+            s = s + f"<polyline fill=\"none\" stroke=\"{ln.color}\" stroke-width=\"{ln.linewidth:.1f}\" points=\"{pts}\"/>"
+        }
+        li = li + 1
+    }
+
+    // title + axis labels
+    int cx = lo.left + lo.width / 2
+    if ax.title.length > 0 {
+        s = s + f"<text x=\"{cx}\" y=\"24\" font-size=\"16\" font-family=\"sans-serif\" font-weight=\"bold\" fill=\"#000000\" text-anchor=\"middle\">{_svg_escape(ax.title)}</text>"
+    }
+    if ax.xlabel.length > 0 {
+        s = s + f"<text x=\"{cx}\" y=\"{bottom + 34}\" font-size=\"12\" font-family=\"sans-serif\" fill=\"#333333\" text-anchor=\"middle\">{_svg_escape(ax.xlabel)}</text>"
+    }
+    if ax.ylabel.length > 0 {
+        int yc = lo.top + lo.height / 2
+        s = s + f"<text x=\"16\" y=\"{yc}\" font-size=\"12\" font-family=\"sans-serif\" fill=\"#333333\" text-anchor=\"middle\" transform=\"rotate(-90 16 {yc})\">{_svg_escape(ax.ylabel)}</text>"
+    }
+    return s
+}
+
+// to_svg: render the whole Figure to an SVG document string. Each Axes is
+// deep-copied and finalized locally (limits/margins/ticks), so the call is
+// read-only on `fig` and idempotent. (Multi-subplot layout: Phase 2b.)
 fn to_svg(&Figure fig) -> string {
+    Layout lo = _layout(fig.svg_width, fig.svg_height)
+    string body = ""
+    int i = 0
+    while i < fig.axes_list.length {
+        Axes a = fig.axes_list[i]
+        finalize(&!a)
+        body = body + _render_axes_svg(a, lo)
+        i = i + 1
+    }
     string head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{fig.svg_width}\" height=\"{fig.svg_height}\">"
-    string body = f"<rect width=\"100%\" height=\"100%\" fill=\"{fig.background}\"/>"
-    string foot = "</svg>"
-    return head + body + foot
+    string bg = f"<rect width=\"100%\" height=\"100%\" fill=\"{fig.background}\"/>"
+    return head + bg + body + "</svg>"
+}
+
+// ---- Text / ASCII backend ----
+//
+// The grid is a vec(string), one string per row, each a run of single-byte
+// ASCII chars. (Unicode block glyphs ▁▂▃█ are multi-byte UTF-8 and would
+// desync the byte-offset _put_char column math; an Unicode cell-grid is a
+// later enhancement.)
+
+fn _make_grid(int w, int h) -> vec(string) {
+    string row = ""
+    int j = 0
+    while j < w { row = row + " "; j = j + 1 }
+    vec(string) g = []
+    int i = 0
+    while i < h { g.push(row.copy()); i = i + 1 }
+    return g
+}
+
+// Write a single ASCII char at (col,row). NOTE: build the new row in a local
+// before assigning to the vec element — assigning a concat rvalue directly to
+// g[row] leaks a temporary string in current LS.
+fn _put(&!vec(string) g, int col, int row, string ch) {
+    if row < 0 || row >= g.length { return }
+    string r = g[row]
+    if col < 0 || col >= r.length { return }
+    string nr = r.substr(0, col) + ch + r.substr(col + 1, r.length - col - 1)
+    g[row] = nr
+}
+
+fn _col_text(f64 x, f64 xmin, f64 xmax, int gw) -> int {
+    f64 denom = xmax - xmin
+    if denom == 0.0 { denom = 1.0 }
+    f64 frac = (x - xmin) / denom
+    int c = (frac * (gw as f64)) as int
+    return plotfmt.clamp_i(c, 0, gw - 1)
+}
+
+fn _row_text(f64 y, f64 ymin, f64 ymax, int gh) -> int {
+    f64 denom = ymax - ymin
+    if denom == 0.0 { denom = 1.0 }
+    f64 frac = (y - ymin) / denom
+    int r = (gh - 1) - ((frac * (gh as f64)) as int)
+    return plotfmt.clamp_i(r, 0, gh - 1)
+}
+
+// DDA line rasterization, choosing a slope-appropriate ASCII glyph.
+fn _rasterize_line(&!vec(string) g, LineStyle ln,
+                   f64 xmin, f64 xmax, f64 ymin, f64 ymax, int gw, int gh) {
+    int n = math.min(ln.xs.length, ln.ys.length)
+    if n == 1 {
+        _put(&!g, _col_text(ln.xs[0], xmin, xmax, gw),
+                  _row_text(ln.ys[0], ymin, ymax, gh), "*")
+        return
+    }
+    int i = 0
+    while i < n - 1 {
+        int c0 = _col_text(ln.xs[i], xmin, xmax, gw)
+        int r0 = _row_text(ln.ys[i], ymin, ymax, gh)
+        int c1 = _col_text(ln.xs[i + 1], xmin, xmax, gw)
+        int r1 = _row_text(ln.ys[i + 1], ymin, ymax, gh)
+        int dc = c1 - c0
+        int dr = r1 - r0
+        string ch = "*"
+        if ln.is_scatter { ch = "o" }
+        else if math.abs(dr) * 2 < math.abs(dc) { ch = "-" }
+        else if math.abs(dc) * 2 < math.abs(dr) { ch = "|" }
+        else if dc * dr < 0 { ch = "/" }
+        else { ch = "\\" }
+        int steps = math.max(math.abs(dc), math.abs(dr))
+        if steps == 0 {
+            _put(&!g, c0, r0, ch)
+        } else {
+            int t = 0
+            while t <= steps {
+                int c = c0 + dc * t / steps
+                int r = r0 + dr * t / steps
+                _put(&!g, c, r, ch)
+                t = t + 1
+            }
+        }
+        i = i + 1
+    }
+}
+
+fn _render_axes_text(Axes ax, int w, int h) -> string {
+    int label_w = 6
+    int gw = w - label_w - 1
+    int gh = h - 1
+    if gw < 1 { gw = 1 }
+    if gh < 1 { gh = 1 }
+
+    vec(string) g = _make_grid(gw, gh)
+    int li = 0
+    while li < ax.lines.length {
+        LineStyle ln = ax.lines[li]
+        _rasterize_line(&!g, ln, ax.xmin, ax.xmax, ax.ymin, ax.ymax, gw, gh)
+        li = li + 1
+    }
+
+    string s = ""
+    if ax.title.length > 0 { s = s + ax.title + "\n" }
+    int row = 0
+    while row < gh {
+        string ylab = ""
+        if row == 0 { ylab = plotfmt.fmt_auto(ax.ymax) }
+        else if row == gh - 1 { ylab = plotfmt.fmt_auto(ax.ymin) }
+        string padded = plotfmt.pad_left(ylab, label_w)
+        string line = g[row]
+        s = s + padded + "|" + line + "\n"
+        row = row + 1
+    }
+
+    // x axis
+    string axisline = plotfmt.pad_left("", label_w) + "+"
+    int c = 0
+    while c < gw { axisline = axisline + "-"; c = c + 1 }
+    s = s + axisline + "\n"
+
+    // x range labels (xmin left, xmax right)
+    string lo_lab = plotfmt.fmt_auto(ax.xmin)
+    string hi_lab = plotfmt.fmt_auto(ax.xmax)
+    string xline = plotfmt.pad_left("", label_w + 1) + plotfmt.pad_right(lo_lab, gw - hi_lab.length) + hi_lab
+    s = s + xline + "\n"
+    return s
+}
+
+// to_text: render the whole Figure to a terminal string. Each Axes is
+// deep-copied and finalized locally (read-only on `fig`, idempotent).
+fn to_text(&Figure fig) -> string {
+    string out = ""
+    int ai = 0
+    while ai < fig.axes_list.length {
+        Axes a = fig.axes_list[ai]
+        finalize(&!a)
+        out = out + _render_axes_text(a, fig.text_width, fig.text_height)
+        ai = ai + 1
+    }
+    return out
 }

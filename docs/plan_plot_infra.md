@@ -138,7 +138,36 @@ JIT+AOT+memcheck，全量 **119/119**。
 **验收**：`tests/samples/plot_ticks_test.ls`（`test_plot_ticks`，MARKER=TICKS）：5 组 `generate_ticks`
 + 4 组 `map_x/map_y` + `finalize` 的 limits/margins/ticks 全 `assert_eq`；JIT+AOT+memcheck，全量 **120/120**。
 
-> 之后进 SVG 后端 / Text 后端 / 特殊图，按原计划 Phase 2~4 推进，每个 `.ls` 测试均过 AOT+JIT+`--memcheck` 三重。
+### Phase 2b — SVG 折线图后端 ✅ 已完成（2026-06-02）
+
+`to_svg(&Figure)` 真实渲染器替换占位桩：`_layout`（plot-area 边距布局）+ `_render_axes_svg`
+（背景框 + x/y 网格 + 刻度标记 + 刻度标签 + `<polyline>` 折线 + `<circle>` 散点 + 标题/轴标签
+经 `_svg_escape` 转义 + y 轴标签 `rotate(-90)`）。坐标用 `map_x/map_y` + **f-string `{expr:.1f}` 直接格式化**
+（dogfood Phase 0.3）。`to_svg` 对每个 Axes 深拷 + 本地 `finalize`（只读 `fig`、幂等）。
+
+**所有权**：深拷 Axes → finalize 副本 → by-value move 进 `_render_axes_svg` → 函数尾 drop；
+string 字段（title/xlabel/ylabel）传 `_svg_escape` 无双释放。全 memcheck 干净。
+
+**验收**：`tests/samples/plot_svg_test.ls`（`test_plot_svg`，MARKER=SVG）：折线 + 散点 + 网格 +
+转义标题（`sine &amp; pts`）+ 旋转 y 标签，结构断言（header/footer/plot-area/polyline/circle/grid/
+tick/rotate）；JIT+AOT+memcheck，全量 **121/121**。
+
+### Phase 2c — Text/ASCII 后端 ✅ 已完成（2026-06-02）
+
+`to_text(&Figure)` / `print_text` 终端渲染：`vec(string)` 行网格（`_make_grid`）+ `_put`
+（单字节 ASCII 写格）+ `_rasterize_line`（DDA 光栅化，斜率感知字形 `-` `|` `/` `\`，散点 `o`）
++ y 轴标签（ymax/ymin）+ x 轴 `+---` + xmin/xmax 标签。`to_text` 同样深拷 + 本地 `finalize`。
+
+> ⚠️ **限制**：网格是字节序列，仅用 ASCII（Unicode 块字符 `▁▂▃█` 多字节会让 `_put` 的字节列
+> 偏移错位）。Unicode cell-grid 留作增强。
+
+**memcheck 抓到的关键陷阱（已记录）**：`vec(string)` 元素赋拼接 rvalue（`g[row] = a + ch + b`）
+**会漏一个临时 string**。安全 idiom：先存局部再 move（`string nr = a+ch+b; g[row] = nr`）。
+
+**验收**：`tests/samples/plot_text_test.ls`（`test_plot_text`，MARKER=TEXT）：渲染 y=x 斜线，
+断言标题/y 轴/x 轴/刻度标签/斜率字形 + 精确行数；JIT+AOT+memcheck，全量 **122/122**。
+
+> 之后进 多子图 / 柱状渲染 / 对数坐标 / 特殊图（火焰图·时间线·调用图），按原计划推进，每个 `.ls` 测试均过 AOT+JIT+`--memcheck` 三重。
 
 ---
 
@@ -247,3 +276,88 @@ Phase 2    刻度引擎 + assert_eq 验收   ✅ 已完成（test_plot_ticks，1
 > **Phase 0 全部完成（2026-06-02）**。基础设施就位：plot 代码现在可直接写
 > `f"{px:.1f}"`、`{n:03d}`，数值/颜色格式化走 `std/plotfmt`，f64 min/max 走 `math`。
 > 下一步进入 Phase 1：把 `plan_plot.md` 机械改写为可编译的 `std/plot.ls` 骨架。
+
+---
+
+## 7. CPU/Thread 时间线（Timeline）规划 — TL-1~3
+
+> 设计源自 [plan_plot.md](plan_plot.md) §7.2。基础设施（`plotfmt.hsv_to_hex` /
+> `rgb_to_hex` / `fmt_time`）已在 Phase 0.2 就位。独立模块 **`std/plottl.ls`**
+> （依赖 plotfmt + math，不改动 plot.ls），零编译器改动。
+
+### TL-1 — 基础时间线/甘特泳道（先不碰 HT） ✅ 已完成（2026-06-02，`std/plottl.ls`，`test_plot_timeline`，123/123）
+
+- 数据：`TimelineEvent { i64 start_ns; i64 end_ns; string lane; string label; string color }`
+- `timeline_svg(vec(TimelineEvent), int w, int h, string title) -> string`：
+  求时间范围 + 泳道去重（保持出现序）→ 每泳道一行 `<rect>`，x 按 `_map_time` 映射，
+  `<title>` 悬浮 label；底部时间轴 `fmt_time` 刻度。
+- `timeline_text(vec(TimelineEvent), int w) -> string`：每泳道一行，活跃段 `#`（复用网格思路）。
+- 所有权：events 按值传入（owned），多趟遍历读元素深拷；泳道名 `lane.copy()` 入 `vec(string)`。
+- **验收**：已知事件集 → SVG 含正确 rect 数 + 坐标 + `<title>`；Text 泳道行数=unique lane 数。
+
+### TL-1.5 — CSV 输入层 ✅ 已完成（2026-06-02，`test_plot_csv`，124/124）
+
+> LS 已有零件：`io.read_file`（Result）、`string.lines/split/trim`、`string.to_i64()`（Result）。
+> `parse_timeline_csv(string) -> vec(TimelineEvent)`：格式 `start_ns,end_ns,lane,label[,color]`，
+> 表头/空行/坏行自动跳过（`_starts_num` 判首列数字），缺颜色列时按 lane 首现序自动分配调色板色。
+> `load_timeline_csv(path)` 经 `io.read_file` + `match` 解包（失败返回空 vec）。
+> 解析数字用 `match s.to_i64() { Ok(v)=>.. Err(e)=>.. }`（`_to_i64_or`）。
+> 验收：表头跳过 + 空行跳过 + 自动配色（worker→palette[1]=#e6194b）+ 解析结果可渲染。
+>
+> 后续（按需）：JSON Chrome Trace Event 格式（用 std.json）。
+
+### TL-2 — CPU 调度 + Hyper-Threading 配色 ✅ 已完成（2026-06-02，`test_plot_cpu`，有效 125/125）
+
+> `CpuSchedEvent`/`CpuTopology` + `cpu_event`/`topology` 构造。配色（纯数学 + `plotfmt.hsv_to_hex`）：
+> `physical_core`/`is_ht_sibling`/`cpu_hue`（按物理核 = `cpu_id % phys` 定色相）/`cpu_color`
+> （首线程 hsv(h,.65,.75) 亮、HT 次线程 hsv(h,.60,.55) 暗）。`cpu_color(0,32)=#bf4343`，
+> CPU 0/32 同物理核同色相但颜色可区分。`cpu_timeline_svg`：按 tid 分泳道，HT 次线程用
+> `<pattern>` 斜线纹理（`<defs>` 每 HT-CPU 一个），bar 无可见 CPU 文本（CPU 在 hover `<title>`），
+> 底部 CPU↔物理核图例。`cpu_timeline_text`：仅线程活跃段，不含 CPU/core 字样。
+> 验收：颜色断言 + 同核同色相 + HT 可区分 + `<pattern>`/`url(#htN)` + 图例条数=unique CPU + Text 不泄露 CPU。
+>
+> 下面为原始设计细节：
+
+- 数据：`CpuSchedEvent { i64 start_ns; i64 end_ns; int tid; string tname; int cpu_id; string proc }`、
+  `CpuTopology { int total_logical; int total_physical; int threads_per_core }`
+- 配色（纯数学，用 `plotfmt.hsv_to_hex`）：`_cpu_hue(cpu_id, total_physical)`、
+  `cpu_color(cpu_id, total_physical)`、`cpu_color_ht(cpu_id, total_physical)`（实心色 + 暗色）。
+  规则：同物理 core（`cpu_id % total_physical`）共色相；首线程实心、次线程斜线纹理（明度低）。
+- `cpu_timeline_svg(vec(CpuSchedEvent), CpuTopology, w, h) -> string`：泳道按 tid 分组；
+  bar 上**不标 CPU 文本**（颜色/样式承载）；次线程用 `<pattern>` 斜线或 `stroke-dasharray`；
+  独立图例（出现过的物理 core 每行双色：实心 CPU n + 纹理 CPU n+phys）。
+- Text 后端：仅显示线程活跃段（不区分 CPU，终端分辨率不足）。
+- **验收**：`cpu_color(0,32)` 等颜色断言；同物理 core 两 CPU 色相差 <1°；图例条数=unique CPU 数；
+  SVG bar 无 `CPU` 文本；Text 仅含活跃字符。
+
+### TL-3 — 聚合模式
+
+- `cpu_timeline_aggregated(events, topo, time_window_ns, w, h)`：按时间窗口取该窗口占比最大的 CPU。
+
+### TL-4 — JSON 输入：Chrome Trace Event Format（在 TL-3 之后）
+
+> 对接真实 profiler 的事实标准（`chrome://tracing` / Perfetto / 多数 tracer 的原生输出）。
+> 用既有 `std.json`（纯 LS）解析，零编译器改动。
+
+- 解析 `{"traceEvents":[ {"name","ts","dur","tid","pid","ph":"X", ...}, ... ]}`：
+  - 完整 duration 事件 `ph:"X"`（`ts`+`dur`）直接映射为一条 interval。
+  - 配对 `ph:"B"`(begin)/`ph:"E"`(end) → 按 tid 栈配对成 interval（次要，先支持 `X`）。
+  - 单位：Trace 的 `ts`/`dur` 为**微秒**（µs）→ 乘 1000 转 ns。
+  - lane = `tname`/`tid`（结合 `pid`）；label = `name`；color 自动调色板。
+- `parse_trace_json(string) -> vec(TimelineEvent)` / `load_trace_json(path)`。
+- 复用 TL-1 渲染 + TL-2 配色（若含 cpu 字段）。
+- **验收**：已知 traceEvents → 正确 interval 数 + µs→ns 换算 + lane 分组；`std.json` round-trip。
+- ⚠️ 风险：大文件下 `std.json` 递归下降 parser 的性能/深度；先支持中小 trace。
+
+### TL-5 — 纯文本：`perf script` 风格（最后，按需）
+
+> Linux `perf script` 原始输出列格式因版本/事件类型而异、容错难，价值低于 CSV/JSON。
+> 仅在有明确需求时做，且**先支持单一固定列布局**，复杂场景建议用户先转 CSV。
+
+- 逐行正则/分词提取 `comm tid [cpu] timestamp event`，按相邻 sched_switch 配对成 interval。
+- `parse_perf_script(string, <列布局描述>) -> vec(CpuSchedEvent)`。
+- **验收**：固定样例输出 → 正确 interval；非常宽松，无法解析的行跳过。
+
+**节奏**：各步独立测试（JIT+AOT+memcheck），约各 0.5~1 天。
+
+**输入格式优先级**：CSV（✅ TL-1.5，已完成）→ JSON Trace（TL-4）→ perf 纯文本（TL-5，按需）。

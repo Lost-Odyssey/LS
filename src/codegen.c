@@ -5070,10 +5070,14 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
     }
     fmt_buf[fmt_len] = '\0';
 
-    /* If no expressions, just return as static LsString */
+    /* If no expressions, return the raw text as a static LsString. Use the
+       unescaped parts[0] (not fmt_buf, which has '%' doubled to '%%' for the
+       sprintf path) — otherwise a literal f-string like f"100%" would yield
+       "100%%". */
     if (expr_count == 0)
     {
-        LLVMValueRef result = ls_string_from_literal(ctx, fmt_buf, "fstr");
+        const char *lit = (part_count > 0) ? node->as.format_string.parts[0] : "";
+        LLVMValueRef result = ls_string_from_literal(ctx, lit, "fstr");
         free(vals);
         return result;
     }
