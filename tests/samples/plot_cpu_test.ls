@@ -51,17 +51,27 @@ fn main() {
     if !plottl.is_ht_sibling(32, 32) { print("TL2 FAIL: cpu32 not HT"); ok = false }
     if plottl.physical_core(33, 32) != 1 { print("TL2 FAIL: phys core 33"); ok = false }
 
+    // ---- color themes ----
+    ok = check(plottl.cpu_theme_color(0, 4, "viridis"), "#440154", "theme.viridis0") && ok
+    ok = check(plottl.cpu_theme_color(0, 32, "rainbow"), "#bf4343", "theme.rainbow0") && ok
+
+    // topology2 (total CPUs + HT flag)
+    plottl.CpuTopology t2 = plottl.topology2(64, true)
+    if t2.total_physical != 32 { print("TL2 FAIL: topology2 phys"); ok = false }
+
     // ---- SVG ----
     plottl.CpuTopology topo = plottl.topology(64, 32)
-    string svg = plottl.cpu_timeline_svg(make_cpu_events(), topo, 1000, 400)
+    string svg = plottl.cpu_timeline_svg(make_cpu_events(), topo, 1000, 400, "rainbow")
     ok = has(svg, "CPU Scheduling Timeline", "svg.title") && ok
     ok = has(svg, "<pattern id=\"ht32\"", "ht.pattern.def") && ok
     ok = has(svg, "url(#ht32)", "ht.fill") && ok
     ok = has(svg, "fill=\"#bf4343\"", "cpu0.solid") && ok
-    ok = has(svg, ">CPU 0  core 0<", "legend.cpu0") && ok
-    ok = has(svg, ">CPU 32  core 0 (HT)<", "legend.cpu32.ht") && ok
-    // legend entry count == unique CPUs (0, 32, 1, 33) = 4 ("  core " only in legend)
-    int legn = count_occ(svg, "  core ")
+    // legend: only "CPU x" (no "core X"), sorted ascending
+    ok = has(svg, ">CPU 0<", "legend.cpu0") && ok
+    ok = has(svg, ">CPU 32 (HT)<", "legend.cpu32.ht") && ok
+    if svg.contains("core 0<") { print("TL2 FAIL: legend still shows core"); ok = false }
+    // legend entry count == unique CPUs (0,1,32,33) = 4 (14x10 swatch only in legend)
+    int legn = count_occ(svg, "width=\"14\" height=\"10\"")
     if legn != 4 {
         print("TL2 FAIL: legend count got=" + f"{legn}" + " want=4"); ok = false
     }

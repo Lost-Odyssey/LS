@@ -18,7 +18,7 @@ fn main() {
     plottl.CpuTopology topo = plottl.topology(8, 4)
 
     // SVG -> file
-    string svg = plottl.cpu_timeline_svg(make_events(), topo, 900, 360)
+    string svg = plottl.cpu_timeline_svg(make_events(), topo, 900, 360, "rainbow")
     match io.write_file("cpu_timeline_demo.svg", svg) {
         Ok(nbytes) => { print("wrote cpu_timeline_demo.svg") }
         Err(e) => { print("write error: " + e) }

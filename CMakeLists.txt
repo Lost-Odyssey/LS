@@ -599,6 +599,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# std/plottl.ls scrollable HTML wrapper (plot TL-2b): cpu_timeline_html emits a
+# self-contained single-file HTML with a fixed lane column + horizontally
+# scrollable wide SVG (pure CSS overflow, zero JS). Self-verifying sample prints
+# "HTML PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_html
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_html_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_html
+        -DMARKER=HTML
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # map.keys() / map.values() iteration + bound vec result. Regression for the
 # silent zero-iteration bug. JIT + AOT correctness + memcheck.
 add_test(
