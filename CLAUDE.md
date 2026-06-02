@@ -138,7 +138,12 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 
 | 10-G | **闭包 Phase G：Block env 深拷贝**（2026-06-01，解除 L-007）：`Block g = vec[i]` / `struct.field` / `map.get(k)` 现深拷贝 env——env 布局新增 `clone_fn` 槽（field 1，drop_fn 仍 field 0 不动），每闭包合成 `__env_clone_<id>`（by-ref vec/map 浅拷指针不双释，string/vec/map/struct/enum 经 `emit_*_clone_val` 深拷，POD 值拷）；copy-out 站点经 `cg_emit_block_env_clone` runtime 克隆（NULL env 安全）。checker 放开旧 F.3/F.4A 拒绝（保留 F.2 param-move）。工厂 `fn()->Block` 返回已拥有 env，不克隆。`test_phase_g_closure`（JIT+AOT+memcheck）| ✅ |
 
-**当前测试**：ctest 109/109（新增 `test_phase_g_closure`、`test_move_elision`；`test_cmatrix_t08_match_return_call`、`test_cmatrix_t07_match_owned_temp`；std.md 行内；写/读；REPL；操作符重载）
+| — | **std.html**（纯 LS，HtmlNode 自递归 enum + `vec(Attr)` 属性 + `HtmlDoc{vec roots}` 森林）：H1 生成+render（bottom-up 构造器/escape/void/fmt_tag，commit eb805a8）；H2 递归下降容错解析器（`parse->HtmlDoc`：标签/嵌套/void/自闭合、属性双单无引号+布尔、注释、DOCTYPE、script/style RawText、实体解码命名+数字、错配/EOF 容错）+ 查询 `get_attr`/`to_text`/`extract_links`/`find_by_tag`；`test_std_html_parse`（JIT+AOT+memcheck，20 项）| ✅ |
+| — | **std.md Phase H3：Markdown→HTML**（2026-06-02，放 std.md 零依赖 std.html）：`to_html`/`render_html(&MdDoc)`/`to_html_full`，MdBlock/MdInline→HTML 直出（含转义）。`test_md_to_html`（JIT+AOT+memcheck，17 项）。**std.html 全阶段完成** | ✅ |
+| — | **BF：has_drop struct 字段所有权**（2026-06-02，commit 993b32c）：① 按值传 struct 实参时 `emit_struct_clone_val` 现深拷贝 vec/map/has_drop-enum 字段（原仅 string/嵌套 struct → 浅拷贝共享 buffer → 双释放）；② 读穿透中间 struct 字段（`o.inner.items.length` 的 `o.inner`）改为 `codegen_lvalue_ptr` 借址 GEP 而非深拷贝临时（消除瞬态泄漏 + __drop 重复触发），终端绑定 `Box b=o.inner` 仍深拷贝。`test_struct_byval_arg`/`test_struct_field_readthrough` | ✅ |
+| — | **BF：模块函数内 struct 局部 drop 泄漏**（2026-06-02，commit 08cc07c）：模块函数体在主文件 Pass 2.5（生成 struct 自动 drop fn）**前**发射 → cleanup 时 `drop_fn==NULL` → 落到不释放 vec/map/enum 字段的内联 fallback → 泄漏（main 函数在 Pass 2.5 后发射故无碍；既有 std 模块从不在模块函数内拥有 struct 局部）。修复：drop_fn==NULL 时按需 `emit_auto_drop_fn` 惰性生成（scope cleanup + `emit_struct_drop_cond`/`_separate` 三处）| ✅ |
+
+**当前测试**：ctest 116/116（新增 `test_struct_byval_arg`、`test_struct_field_readthrough`、`test_std_html_parse`、`test_md_to_html`；`test_phase_g_closure`、`test_move_elision`；`test_cmatrix_t08_match_return_call`、`test_cmatrix_t07_match_owned_temp`；std.md 行内；写/读；REPL；操作符重载）
 
 > ⚠️ **REPL 已知限制 L-010**：`ls repl` 中跨多条输入行对同一类 has_drop enum/struct 值（如 `import std.json` 的 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件不受影响。根因：每条 REPL snippet 是独立 JIT 模块，imported 模块 drop/clone 辅助被跨模块 strip 与 RAII 析构交互出错。修法方向：imported 模块在 REPL 只发射一次。详见 [docs/feature_inventory.md](docs/feature_inventory.md) 三、L-010。
 
