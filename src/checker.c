@@ -5039,10 +5039,26 @@ static Type *check_expr(Checker *c, AstNode *node)
         }
         else
         {
-            if (actual != user_expected)
+            /* Param defaults (档1): trailing params with a default may be omitted.
+               min_required = count of user params without a default. */
+            int min_required = user_expected;
+            if (callee_type->as.function.param_defaults)
             {
-                checker_error(c, node->line, node->column,
-                              "wrong number of arguments: expected %d, got %d", user_expected, actual);
+                min_required = 0;
+                for (int i = param_offset; i < expected; i++)
+                    if (callee_type->as.function.param_defaults[i] == NULL)
+                        min_required++;
+            }
+            if (actual < min_required || actual > user_expected)
+            {
+                if (min_required == user_expected)
+                    checker_error(c, node->line, node->column,
+                                  "wrong number of arguments: expected %d, got %d",
+                                  user_expected, actual);
+                else
+                    checker_error(c, node->line, node->column,
+                                  "wrong number of arguments: expected %d..%d, got %d",
+                                  min_required, user_expected, actual);
                 result = NULL;
                 break;
             }
@@ -5082,6 +5098,36 @@ static Type *check_expr(Checker *c, AstNode *node)
         for (int i = user_expected; i < actual; i++)
         {
             check_expr(c, node->as.call.args[i]);
+        }
+
+        /* Param defaults (档1): append cloned default exprs for omitted trailing
+           params so codegen sees a complete arg list (no codegen changes).
+           Idempotent: after appending, arg_count == user_expected. */
+        if (args_ok && callee_type->as.function.param_defaults && actual < user_expected)
+        {
+            node->as.call.args = (AstNode **)realloc_safe(
+                node->as.call.args, (size_t)user_expected * sizeof(AstNode *));
+            for (int i = actual; i < user_expected; i++)
+            {
+                AstNode *pd = (AstNode *)callee_type->as.function.param_defaults[i + param_offset];
+                AstNode *clone = ast_clone_deep(pd);
+                Type *pt = callee_type->as.function.params[i + param_offset];
+                if (pt && pt->kind == TYPE_VECTOR && clone->kind == AST_ARRAY_LIT &&
+                    clone->resolved_type == NULL)
+                {
+                    for (int k = 0; k < clone->as.array_lit.count; k++)
+                        check_expr(c, clone->as.array_lit.elements[k]);
+                    clone->resolved_type = pt;
+                }
+                Type *se = c->expected_type;
+                if (pt && (pt->kind == TYPE_STRUCT || pt->kind == TYPE_BLOCK))
+                    c->expected_type = pt;
+                check_expr(c, clone);
+                c->expected_type = se;
+                node->as.call.args[i] = clone;
+            }
+            node->as.call.arg_count = user_expected;
+            actual = user_expected;
         }
 
         /* Phase 5.5 Step 4 — call-site aliasing check for writable borrows.
@@ -6740,6 +6786,56 @@ static int find_fn_template(Checker *c, const char *name) {
     return -1;
 }
 
+/* Function parameter defaults (档1): attach the fn_decl's literal defaults to
+   the function type, require defaulted params be trailing, and type-check each
+   default against its param type. `params` are the resolved param types. */
+static void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type **params)
+{
+    int n = node->as.fn_decl.param_count;
+    if (!node->as.fn_decl.param_defaults || n <= 0)
+        return;
+    fn_type->as.function.param_defaults = (void **)malloc_safe((size_t)n * sizeof(void *));
+    bool seen_default = false;
+    for (int i = 0; i < n; i++)
+    {
+        AstNode *pd = node->as.fn_decl.param_defaults[i];
+        fn_type->as.function.param_defaults[i] = pd;
+        if (pd != NULL)
+            seen_default = true;
+        else if (seen_default)
+            checker_error(c, node->line, node->column,
+                "parameter '%s' (no default) must come before parameters with defaults",
+                node->as.fn_decl.param_names[i]);
+        if (pd != NULL && params && params[i])
+        {
+            Type *fpt = params[i];
+            if (fpt->kind == TYPE_VECTOR && pd->kind == AST_ARRAY_LIT &&
+                pd->resolved_type == NULL)
+            {
+                Type *E = fpt->as.vec.elem;
+                for (int k = 0; k < pd->as.array_lit.count; k++)
+                {
+                    Type *et = check_expr(c, pd->as.array_lit.elements[k]);
+                    if (et && !type_assignable(E, et))
+                        checker_error(c, pd->line, pd->column,
+                            "default for parameter '%s': vec element expected '%s', got '%s'",
+                            node->as.fn_decl.param_names[i], type_name(E), type_name(et));
+                }
+                pd->resolved_type = fpt;
+            }
+            Type *saved_pexp = c->expected_type;
+            if (fpt->kind == TYPE_STRUCT || fpt->kind == TYPE_BLOCK)
+                c->expected_type = fpt;
+            Type *dt = check_expr(c, pd);
+            c->expected_type = saved_pexp;
+            if (dt && !type_equals(dt, fpt))
+                checker_error(c, pd->line, pd->column,
+                    "default for parameter '%s': expected '%s', got '%s'",
+                    node->as.fn_decl.param_names[i], type_name(fpt), type_name(dt));
+        }
+    }
+}
+
 static void check_fn_decl(Checker *c, AstNode *node)
 {
     /* G2: skip generic function templates — registered in forward_pass,
@@ -6788,6 +6884,7 @@ static void check_fn_decl(Checker *c, AstNode *node)
     Type *ret = resolve_type_node(c, node->as.fn_decl.return_type,
                                   node->line, node->column);
     Type *fn_type = type_function(params, n, ret, false);
+    /* param defaults already attached in forward_pass (the type calls resolve to). */
 
     /* Define function in current scope */
     if (!scope_define(c->current_scope, node->as.fn_decl.name, fn_type))
@@ -8214,6 +8311,7 @@ static void forward_pass(Checker *c, AstNode *program)
             Type *ret = resolve_type_node(c, decl->as.fn_decl.return_type,
                                           decl->line, decl->column);
             Type *fn_type = type_function(params, n, ret, false);
+            attach_param_defaults(c, decl, fn_type, params);
             scope_define(c->current_scope, decl->as.fn_decl.name, fn_type);
             decl->resolved_type = fn_type;
             break;

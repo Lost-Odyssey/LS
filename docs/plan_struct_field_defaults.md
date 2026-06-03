@@ -272,7 +272,17 @@ fn topology(int total_cpus, TopoOpts opts = ...) // （注：函数级默认见 
 
 ---
 
-## 8. 与函数默认参数（Python 式）的关系
+## 8. 与函数默认参数的关系（档 1 ✅ 已实现 2026-06-03）
+
+> **函数位置默认参数（档 1）已落地**：`fn f(int x, string s = "hi", int n = 1)`，尾随参数
+> 带字面量/vec/struct 字面量默认值，调用点可省略（`f("x")`）。实现：fn_decl 加
+> `param_defaults[]`；`parse_param_list` 解析 `= 默认值`；函数 Type 加 `param_defaults`，在
+> **forward_pass**（调用解析用的类型）经 `attach_param_defaults` 挂载 + 校验尾随 + 类型检查；
+> checker 调用点放宽 arity（`min_required..param_count`）并**把 clone 的默认值表达式追加到
+> `call.args`**（codegen 零改动）。**关键组合**：`fn render(title, Opts o = Opts{})` 让 opts 参数
+> 默认为空 options struct → 调用极简 `plottl.cpu_timeline_svg(ev, topo)`（无需写 `CpuPlotOpts{}`）。
+> 跨模块 + AOT + memcheck 全过。`tests/samples/fn_default_params_test.ls`（`test_fn_default_params`）。
+> **档 2（调用点具名实参）仍未做**（按需）。
 
 | | struct 字段默认（本计划） | 函数默认 + 具名参数（Python 式） |
 |---|---|---|

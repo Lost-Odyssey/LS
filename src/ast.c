@@ -314,9 +314,12 @@ void ast_free(AstNode *node) {
         for (int i = 0; i < node->as.fn_decl.param_count; i++) {
             type_node_free(node->as.fn_decl.param_types[i]);
             free(node->as.fn_decl.param_names[i]);
+            if (node->as.fn_decl.param_defaults)
+                ast_free(node->as.fn_decl.param_defaults[i]);
         }
         free(node->as.fn_decl.param_types);
         free(node->as.fn_decl.param_names);
+        free(node->as.fn_decl.param_defaults);
         type_node_free(node->as.fn_decl.return_type);
         ast_free(node->as.fn_decl.body);
         break;
@@ -804,9 +807,14 @@ AstNode *ast_clone_deep(const AstNode *src) {
         if (pc > 0) {
             n->as.fn_decl.param_types = (TypeNode **)malloc_safe((size_t)pc * sizeof(TypeNode *));
             n->as.fn_decl.param_names = (char **)malloc_safe((size_t)pc * sizeof(char *));
+            if (src->as.fn_decl.param_defaults)
+                n->as.fn_decl.param_defaults = (AstNode **)malloc_safe((size_t)pc * sizeof(AstNode *));
             for (int i = 0; i < pc; i++) {
                 n->as.fn_decl.param_types[i] = type_node_clone(src->as.fn_decl.param_types[i]);
                 n->as.fn_decl.param_names[i] = ast_strdup(src->as.fn_decl.param_names[i]);
+                if (src->as.fn_decl.param_defaults)
+                    n->as.fn_decl.param_defaults[i] =
+                        src->as.fn_decl.param_defaults[i] ? ast_clone_deep(src->as.fn_decl.param_defaults[i]) : NULL;
             }
         }
         n->as.fn_decl.return_type = type_node_clone(src->as.fn_decl.return_type);

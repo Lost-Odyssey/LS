@@ -535,7 +535,7 @@ fn cpu_timeline_text(vec(CpuSchedEvent) events, int w) -> string {
 
 // ---- SVG backend: swimlanes per thread, HT coloring, CPU legend ----
 
-fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts) -> string {
+fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
     int w = opts.w
     int h = opts.h
     string theme = opts.theme
@@ -695,7 +695,7 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
 // browser provides a native horizontal scrollbar; the thread-name column sits
 // outside the scroll area and stays fixed. Zero JS, self-contained single file.
 
-fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts) -> string {
+fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
     int chart_width = opts.chart_width
     string theme = opts.theme
     int n = events.length
@@ -864,7 +864,7 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
 // axis is redrawn by JS on each transform so labels never stretch. Self-contained
 // single file, no external deps.
 
-fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts) -> string {
+fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
     int w = opts.w
     int h = opts.h
     string theme = opts.theme
@@ -1029,7 +1029,7 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
 // (bounded), not event count.
 
 fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
-                           i64 time_window_ns, CpuPlotOpts opts) -> string {
+                           i64 time_window_ns, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
     int w = opts.w
     int h = opts.h
     string theme = opts.theme

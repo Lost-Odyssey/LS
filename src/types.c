@@ -236,6 +236,12 @@ Type *type_clone(const Type *t) {
         }
         c->as.function.params = params;
         c->as.function.param_count = n;
+        /* AstNode* owned by the AST; shallow-copy the pointer array. */
+        if (t->as.function.param_defaults && n > 0) {
+            c->as.function.param_defaults = (void **)malloc_safe((size_t)n * sizeof(void *));
+            for (int i = 0; i < n; i++)
+                c->as.function.param_defaults[i] = t->as.function.param_defaults[i];
+        }
         c->as.function.return_type = type_clone(t->as.function.return_type);
         c->as.function.is_vararg = t->as.function.is_vararg;
         break;

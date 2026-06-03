@@ -363,6 +363,7 @@ struct AstNode
             TypeParamBound *type_param_bounds;  /* NULL if no bounds on any param */
             TypeNode **param_types;
             char **param_names;
+            AstNode **param_defaults;     /* parallel to param_names; literal default or NULL */
             int param_count;
             TypeNode *return_type;
             AstNode *body;

@@ -37,6 +37,7 @@ struct Type {
         struct { Type *key; Type *val; } map;             /* TYPE_MAP */
         struct {                                        /* TYPE_FUNCTION */
             Type **params;
+            void **param_defaults;   /* parallel to params; AstNode* literal default or NULL */
             int param_count;
             Type *return_type;
             bool is_vararg;

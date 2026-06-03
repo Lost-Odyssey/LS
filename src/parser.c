@@ -2033,13 +2033,17 @@ static AstNode *parse_var_decl(Parser *p) {
     return n;
 }
 
+static bool is_literal_default(const AstNode *e);  /* fwd decl */
+
 /* Parse parameter list into arrays. Returns true on success. */
 static bool parse_param_list(Parser *p,
                               TypeNode ***out_types, char ***out_names,
                               int *out_count,
-                              bool *out_is_vararg) {
+                              bool *out_is_vararg,
+                              AstNode ***out_defaults) {
     TypeNode **param_types = NULL;
     char **param_names = NULL;
+    AstNode **param_defaults = NULL;
     int param_count = 0;
     int param_cap = 0;
     bool is_vararg = false;
@@ -2057,9 +2061,11 @@ static bool parse_param_list(Parser *p,
                 for (int i = 0; i < param_count; i++) {
                     type_node_free(param_types[i]);
                     free(param_names[i]);
+                    if (param_defaults) ast_free(param_defaults[i]);
                 }
                 free(param_types);
                 free(param_names);
+                free(param_defaults);
                 return false;
             }
             char *pname = NULL;
@@ -2080,13 +2086,26 @@ static bool parse_param_list(Parser *p,
             } else {
                 pname = str_dup_n("_", 1);
             }
+            /* Optional default value: `= <literal | [..] | Foo{..}>`. */
+            AstNode *pdefault = NULL;
+            if (match_tok(p, TOKEN_ASSIGN)) {
+                pdefault = parse_expr_prec(p, PREC_ASSIGNMENT);
+                if (pdefault != NULL && !is_literal_default(pdefault)) {
+                    error_at_current(p, "function parameter default must be a literal, "
+                                        "vec literal ([..]), or struct literal (Foo{..})");
+                    ast_free(pdefault);
+                    pdefault = NULL;
+                }
+            }
             if (param_count >= param_cap) {
                 param_cap = GROW_CAPACITY(param_cap);
                 param_types = GROW_ARRAY(TypeNode *, param_types, param_cap);
                 param_names = GROW_ARRAY(char *, param_names, param_cap);
+                param_defaults = GROW_ARRAY(AstNode *, param_defaults, param_cap);
             }
             param_types[param_count] = pt;
             param_names[param_count] = pname;
+            param_defaults[param_count] = pdefault;
             param_count++;
         } while (match_tok(p, TOKEN_COMMA));
     }
@@ -2095,6 +2114,8 @@ static bool parse_param_list(Parser *p,
     *out_names = param_names;
     *out_count = param_count;
     if (out_is_vararg) *out_is_vararg = is_vararg;
+    if (out_defaults) *out_defaults = param_defaults;
+    else free(param_defaults);
     return true;
 }
 
@@ -2149,8 +2170,9 @@ static AstNode *parse_fn_signature(Parser *p) {
 
     TypeNode **param_types = NULL;
     char **param_names = NULL;
+    AstNode **param_defaults = NULL;
     int param_count = 0;
-    if (!parse_param_list(p, &param_types, &param_names, &param_count, NULL)) {
+    if (!parse_param_list(p, &param_types, &param_names, &param_count, NULL, &param_defaults)) {
         free(name);
         return NULL;
     }
@@ -2171,6 +2193,7 @@ static AstNode *parse_fn_signature(Parser *p) {
     n->as.fn_decl.type_param_count = 0;
     n->as.fn_decl.param_types = param_types;
     n->as.fn_decl.param_names = param_names;
+    n->as.fn_decl.param_defaults = param_defaults;
     n->as.fn_decl.param_count = param_count;
     n->as.fn_decl.return_type = return_type;
     n->as.fn_decl.body = NULL;
@@ -2357,8 +2380,9 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
 
     TypeNode **param_types = NULL;
     char **param_names = NULL;
+    AstNode **param_defaults = NULL;
     int param_count = 0;
-    if (!parse_param_list(p, &param_types, &param_names, &param_count, NULL)) {
+    if (!parse_param_list(p, &param_types, &param_names, &param_count, NULL, &param_defaults)) {
         free(name);
         return NULL;
     }
@@ -2381,6 +2405,7 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     n->as.fn_decl.type_param_bounds = fn_type_param_bounds;
     n->as.fn_decl.param_types = param_types;
     n->as.fn_decl.param_names = param_names;
+    n->as.fn_decl.param_defaults = param_defaults;
     n->as.fn_decl.param_count = param_count;
     n->as.fn_decl.return_type = return_type;
     n->as.fn_decl.body = body;
@@ -3009,7 +3034,7 @@ static AstNode *parse_extern_fn_body(Parser *p, int line, int col) {
     char **param_names = NULL;
     int param_count = 0;
     bool is_vararg = false;
-    if (!parse_param_list(p, &param_types, &param_names, &param_count, &is_vararg)) {
+    if (!parse_param_list(p, &param_types, &param_names, &param_count, &is_vararg, NULL)) {
         free(name);
         return NULL;
     }

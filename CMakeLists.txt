@@ -671,6 +671,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# function positional default parameters (档1): fn f(x, y="x", z=1); trailing
+# params with literal/struct defaults may be omitted at the call site (checker
+# appends cloned default exprs). Self-verifying sample prints "FNDEF PASS".
+# JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_fn_default_params
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fn_default_params_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=fn_default_params
+        -DMARKER=FNDEF
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # map.keys() / map.values() iteration + bound vec result. Regression for the
 # silent zero-iteration bug. JIT + AOT correctness + memcheck.
 add_test(
