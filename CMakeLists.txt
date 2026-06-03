@@ -614,6 +614,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# B-4 cross-module struct literal `mod.Type{...}` + struct field defaults
+# (options-struct pattern). main.ls imports opt.ls and constructs opt.PlotOpts{}.
+# Self-verifying sample prints "MSL PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_mod_struct_literal
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modstructlit/main.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=mod_struct_literal
+        -DMARKER=MSL
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # struct field defaults + partial initialization (v1: literal defaults). Omitted
 # fields fall back to their declared default; has_drop struct (string default +
 # explicit vec field) stays memcheck-clean. Self-verifying sample prints

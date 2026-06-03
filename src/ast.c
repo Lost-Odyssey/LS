@@ -397,6 +397,7 @@ void ast_free(AstNode *node) {
         break;
     case AST_NEW_EXPR:
         free(node->as.new_expr.struct_name);
+        free(node->as.new_expr.module);
         for (int i = 0; i < node->as.new_expr.field_init_count; i++) {
             free(node->as.new_expr.field_inits[i].name);
             ast_free(node->as.new_expr.field_inits[i].value);
@@ -737,6 +738,7 @@ AstNode *ast_clone_deep(const AstNode *src) {
     }
     case AST_NEW_EXPR: {
         n->as.new_expr.struct_name = ast_strdup(src->as.new_expr.struct_name);
+        n->as.new_expr.module = src->as.new_expr.module ? ast_strdup(src->as.new_expr.module) : NULL;
         int fc = src->as.new_expr.field_init_count;
         if (fc > 0) {
             size_t sz = (size_t)fc * sizeof(src->as.new_expr.field_inits[0]);

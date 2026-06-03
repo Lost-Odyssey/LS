@@ -505,6 +505,87 @@ static AstNode *prefix_ident(Parser *p) {
         }
     }
 
+    /* B-4: qualified struct literal  mod.Type{...} / a.b.Type{...}.
+       Lookahead: IDENT (.IDENT)+ '{' ('}' | IDENT ':'). Otherwise leave the '.'
+       to the normal infix field-access path (e.g. mod.func(), mod.CONST). */
+    if (check(p, TOKEN_DOT)) {
+        Scanner saved_scanner = p->scanner;
+        Token saved_current   = p->current;
+        Token saved_previous  = p->previous;
+        bool ok = true;
+        int segs = 0;
+        while (check(p, TOKEN_DOT)) {
+            advance(p);                       /* '.' */
+            if (!check(p, TOKEN_IDENTIFIER)) { ok = false; break; }
+            advance(p);                       /* IDENT */
+            segs++;
+        }
+        bool is_qual_lit = false;
+        if (ok && segs >= 1 && check(p, TOKEN_LBRACE)) {
+            advance(p);                       /* '{' */
+            is_qual_lit = check(p, TOKEN_RBRACE) ||
+                (check(p, TOKEN_IDENTIFIER) &&
+                 scanner_peek(&p->scanner).type == TOKEN_COLON);
+        }
+        p->scanner  = saved_scanner;
+        p->current  = saved_current;
+        p->previous = saved_previous;
+
+        if (is_qual_lit) {
+            /* Consume the dotted path: module = tok + all-but-last seg, name = last. */
+            char *module = str_dup_n(tok.start, tok.length);
+            char *sname  = NULL;
+            for (int i = 0; i < segs; i++) {
+                advance(p);                   /* '.' */
+                advance(p);                   /* IDENT */
+                Token seg = p->previous;
+                if (i == segs - 1) {
+                    sname = str_dup_n(seg.start, seg.length);
+                } else {
+                    size_t ml = strlen(module), sl = (size_t)seg.length;
+                    char *nm = (char *)malloc_safe(ml + 1 + sl + 1);
+                    memcpy(nm, module, ml);
+                    nm[ml] = '.';
+                    memcpy(nm + ml + 1, seg.start, sl);
+                    nm[ml + 1 + sl] = '\0';
+                    free(module);
+                    module = nm;
+                }
+            }
+
+            AstNode *n = new_node(AST_NEW_EXPR, tok.line, tok.column);
+            n->as.new_expr.struct_name = sname;
+            n->as.new_expr.module = module;
+            n->as.new_expr.field_inits = NULL;
+            n->as.new_expr.field_init_count = 0;
+            n->as.new_expr.on_stack = true;
+            n->as.new_expr.type_args = NULL;
+            n->as.new_expr.type_arg_count = 0;
+
+            consume(p, TOKEN_LBRACE, "expected '{' in struct literal");
+            int cap = 0, count = 0;
+            struct { char *name; AstNode *value; } *inits = NULL;
+            while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+                consume(p, TOKEN_IDENTIFIER, "expected field name in struct literal");
+                Token fname = p->previous;
+                consume(p, TOKEN_COLON, "expected ':' after field name in struct literal");
+                AstNode *val = parse_expr_prec(p, PREC_ASSIGNMENT);
+                if (count >= cap) {
+                    cap = GROW_CAPACITY(cap);
+                    inits = realloc_safe(inits, (size_t)cap * sizeof(inits[0]));
+                }
+                inits[count].name  = str_dup_n(fname.start, fname.length);
+                inits[count].value = val;
+                count++;
+                if (!match_tok(p, TOKEN_COMMA)) break;
+            }
+            consume(p, TOKEN_RBRACE, "expected '}' after struct literal fields");
+            n->as.new_expr.field_inits = (void *)inits;
+            n->as.new_expr.field_init_count = count;
+            return n;
+        }
+    }
+
     /* G1: Detect GenericStruct(type_args) { field: val, ... } — generic struct literal.
        Heuristic: IDENT '(' ... ')' '{' ('}' | IDENT ':')
        Save/restore scanner state to peek past balanced parens. */

@@ -19,6 +19,6 @@ fn ev() -> vec(CpuSchedEvent) {
 }
 fn main() {
   plottl.CpuTopology topo = plottl.topology(8, 4)
-  string html = plottl.cpu_timeline_html_zoom(ev(), topo, 1200, 240, "viridis")
+  string html = plottl.cpu_timeline_html_zoom(ev(), topo, plottl.CpuPlotOpts{w: 1200, h: 240, theme: "viridis"})
   match io.write_file("cpu_timeline_zoom.html", html) { Ok(nb) => { print("wrote cpu_timeline_zoom.html") } Err(er) => { print("err "+er) } }
 }

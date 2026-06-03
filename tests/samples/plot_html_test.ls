@@ -21,7 +21,7 @@ fn main() {
     bool ok = true
 
     plottl.CpuTopology topo = plottl.topology(8, 4)
-    string html = plottl.cpu_timeline_html(make_events(), topo, 2400, "rainbow")
+    string html = plottl.cpu_timeline_html(make_events(), topo, plottl.CpuPlotOpts{})
 
     // document + scroll container (pure scheme A)
     ok = has(html, "<!DOCTYPE html>", "doctype") && ok

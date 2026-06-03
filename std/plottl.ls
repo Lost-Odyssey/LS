@@ -331,6 +331,18 @@ struct CpuTopology {
     int threads_per_core
 }
 
+// Rendering options for the cpu_timeline_* family (options-struct pattern;
+// field defaults + partial init mean callers only set what they care about).
+//   w / h         : SVG and zoom-HTML canvas size
+//   chart_width   : scrollable-HTML (scheme A) wide canvas width
+//   theme         : "rainbow" (default) / "viridis" / "warm" / "cool"
+struct CpuPlotOpts {
+    int w = 1000
+    int h = 400
+    int chart_width = 2400
+    string theme = "rainbow"
+}
+
 fn cpu_event(i64 s, i64 e, int tid, string tname, int cpu_id, string proc) -> CpuSchedEvent {
     return CpuSchedEvent { start_ns: s, end_ns: e, tid: tid, tname: tname, cpu_id: cpu_id, proc: proc }
 }
@@ -523,7 +535,10 @@ fn cpu_timeline_text(vec(CpuSchedEvent) events, int w) -> string {
 
 // ---- SVG backend: swimlanes per thread, HT coloring, CPU legend ----
 
-fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, int w, int h, string theme) -> string {
+fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts) -> string {
+    int w = opts.w
+    int h = opts.h
+    string theme = opts.theme
     int n = events.length
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
@@ -680,7 +695,9 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, int w, int h, s
 // browser provides a native horizontal scrollbar; the thread-name column sits
 // outside the scroll area and stays fixed. Zero JS, self-contained single file.
 
-fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, int chart_width, string theme) -> string {
+fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts) -> string {
+    int chart_width = opts.chart_width
+    string theme = opts.theme
     int n = events.length
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
@@ -847,7 +864,10 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, int chart_widt
 // axis is redrawn by JS on each transform so labels never stretch. Self-contained
 // single file, no external deps.
 
-fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, int w, int h, string theme) -> string {
+fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts) -> string {
+    int w = opts.w
+    int h = opts.h
+    string theme = opts.theme
     int n = events.length
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }

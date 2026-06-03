@@ -5909,8 +5909,37 @@ static Type *check_expr(Checker *c, AstNode *node)
 
     case AST_NEW_EXPR:
     {
-        /* Look up the struct type */
-        Type *st = find_struct_type(c, node->as.new_expr.struct_name);
+        /* Look up the struct type. B-4: module-qualified literal `mod.Type{...}`
+           resolves through the imported module's export table. */
+        Type *st = NULL;
+        if (node->as.new_expr.module != NULL)
+        {
+            Symbol *modsym = scope_resolve(c->current_scope, node->as.new_expr.module);
+            if (modsym == NULL || modsym->type == NULL ||
+                modsym->type->kind != TYPE_MODULE)
+            {
+                checker_error(c, node->line, node->column,
+                              "unknown module '%s' in '%s.%s{...}'",
+                              node->as.new_expr.module, node->as.new_expr.module,
+                              node->as.new_expr.struct_name);
+                result = NULL;
+                break;
+            }
+            Type *ex = type_module_find_export(modsym->type, node->as.new_expr.struct_name);
+            if (ex == NULL || ex->kind != TYPE_STRUCT)
+            {
+                checker_error(c, node->line, node->column,
+                              "module '%s' has no struct '%s'",
+                              node->as.new_expr.module, node->as.new_expr.struct_name);
+                result = NULL;
+                break;
+            }
+            st = ex;
+        }
+        else
+        {
+            st = find_struct_type(c, node->as.new_expr.struct_name);
+        }
 
         /* G1: If the parser provided explicit type_args (e.g. Pair(int,string){...}),
            resolve each arg and instantiate the generic struct template. */

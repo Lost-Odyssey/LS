@@ -23,7 +23,7 @@ fn make_events() -> vec(CpuSchedEvent) {
 fn main() {
     plottl.CpuTopology topo = plottl.topology(8, 4)
     // chart_width = 2400px -> wide enough to need a horizontal scrollbar
-    string html = plottl.cpu_timeline_html(make_events(), topo, 2400, "rainbow")
+    string html = plottl.cpu_timeline_html(make_events(), topo, plottl.CpuPlotOpts{})
     match io.write_file("cpu_timeline_scroll.html", html) {
         Ok(nbytes) => { print("wrote cpu_timeline_scroll.html") }
         Err(e) => { print("write error: " + e) }

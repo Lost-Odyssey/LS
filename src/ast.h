@@ -438,6 +438,7 @@ struct AstNode
         struct
         {
             char *struct_name;
+            char *module;            /* B-4: module qualifier for `mod.Type{...}`; NULL if unqualified */
             struct
             {
                 char *name;

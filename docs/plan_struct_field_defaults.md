@@ -137,6 +137,14 @@ PlotOpts{data: xs}    ≡    PlotOpts{w: 1000, h: 400, theme: "rainbow", data: x
 > `Foo{}`/`Pod{}` 合法性断言回归。LS 实际一直允许部分初始化（缺字段零填充）。已改为"只对有
 > 默认值的省略字段填默认，其余零填充"，回归全消。
 
+> ✅ **跨模块 options struct 已打通（B-4，2026-06-03）**：实测发现 `mod.Opts{...}` 跨模块
+> struct 字面量是 LS 既有的缺口（与默认值无关）—— 解析成 field-access、不识别为 struct 字面量。
+> 已补 B-4：parser 识别 `mod.Type{...}` / `a.b.Type{...}`（new_expr 加 `module` 字段 + dotted
+> 路径前瞻），checker 经 `scope_resolve`+`type_module_find_export` 解析模块导出 struct，codegen
+> 走 `resolved_type`（B-2 前缀 llvm_name）零改动。空字面量 + 带初始化 + import 别名都通，
+> 模块函数调用 `mod.func()` 不被误判。`tests/samples/modstructlit/`（`test_mod_struct_literal`，
+> MARKER=MSL）。**至此 options struct 跨模块完全可用，plot 改造的前提已就绪。**
+
 ### 第 2 步 —— 默认值扩展到「构造点可求值的表达式」
 
 - 空容器 `vec(f64) data = []`、`map(K,V) m = {}`；嵌套 struct 字面量 `Sub s = Sub{}`；
@@ -218,7 +226,16 @@ struct Bad { int w = foo() }    // ❌ struct field default must be a literal (v
 
 ---
 
-## 7. 受益示例（真实 plot API 改造）
+## 7. 受益示例（真实 plot API 改造） ✅ 已应用（2026-06-03）
+
+> `std/plottl.ls` 的 `cpu_timeline_svg` / `cpu_timeline_html` / `cpu_timeline_html_zoom` 已从
+> 尾随参数 `(events, topo, w, h, theme)` 改为 `(events, topo, CpuPlotOpts opts)`。`CpuPlotOpts`
+> 含字段默认值（w=1000/h=400/chart_width=2400/theme="rainbow"）。调用点用跨模块字面量：
+> `plottl.cpu_timeline_svg(ev, topo, plottl.CpuPlotOpts{})` /
+> `plottl.CpuPlotOpts{theme:"viridis"}`。测试 `test_plot_cpu`/`test_plot_html` 已用新写法，
+> 全量 128/128、memcheck 干净。**这同时验证了"struct 字段默认值 + 跨模块字面量 + has_drop
+> options struct 按值传参"三者组合在真实 API 上的人体工学与正确性。**
+
 
 ```ls
 // 改造前（尾随参数，每个调用点重复默认）

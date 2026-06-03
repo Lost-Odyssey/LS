@@ -61,7 +61,7 @@ fn main() {
 
     // ---- SVG ----
     plottl.CpuTopology topo = plottl.topology(64, 32)
-    string svg = plottl.cpu_timeline_svg(make_cpu_events(), topo, 1000, 400, "rainbow")
+    string svg = plottl.cpu_timeline_svg(make_cpu_events(), topo, plottl.CpuPlotOpts{})
     ok = has(svg, "CPU Scheduling Timeline", "svg.title") && ok
     ok = has(svg, "<pattern id=\"ht32\"", "ht.pattern.def") && ok
     ok = has(svg, "url(#ht32)", "ht.fill") && ok
@@ -75,6 +75,10 @@ fn main() {
     if legn != 4 {
         print("TL2 FAIL: legend count got=" + f"{legn}" + " want=4"); ok = false
     }
+
+    // ---- options-struct theme override flows through (cross-module literal) ----
+    string svg_v = plottl.cpu_timeline_svg(make_cpu_events(), topo, plottl.CpuPlotOpts{theme: "viridis"})
+    ok = has(svg_v, "fill=\"#440154\"", "opts.theme.viridis") && ok
 
     // ---- Text backend: thread activity only, no CPU info ----
     string txt = plottl.cpu_timeline_text(make_cpu_events(), 50)
