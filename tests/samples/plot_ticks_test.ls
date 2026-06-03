@@ -42,7 +42,7 @@ fn main() {
     plot.Axes ax = plot.axes()
     vec(f64) xs = [0.0, 1.0, 2.0, 3.0]
     vec(f64) ys = [0.0, 10.0, 5.0, 20.0]
-    plot.plot_xy(&!ax, xs, ys)
+    plot.line(&!ax, xs, ys, plot.LineOpts{})
     plot.finalize(&!ax)
 
     ok = check(plotfmt.fmt_fixed(ax.xmin, 2), "-0.15", "xmin") && ok

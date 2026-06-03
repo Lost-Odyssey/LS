@@ -6059,14 +6059,55 @@ static Type *check_expr(Checker *c, AstNode *node)
             AstNode *deflt = (AstNode *)st->as.strukt.fields[j].default_expr;
             if (deflt == NULL)
                 continue; /* omitted, no default -> zero-init (existing semantics) */
-            Type *dt = check_expr(c, deflt);
             Type *fexp = st->as.strukt.fields[j].type;
+            const char *jfn = st->as.strukt.fields[j].name;
+            /* v2: pre-tag container defaults so empty [] / {} resolve against the
+               field type (mirrors the vec/map var-decl special case). Shared node,
+               tagged once. */
+            if (fexp && fexp->kind == TYPE_VECTOR &&
+                deflt->kind == AST_ARRAY_LIT && deflt->resolved_type == NULL)
+            {
+                Type *E = fexp->as.vec.elem;
+                for (int k = 0; k < deflt->as.array_lit.count; k++)
+                {
+                    Type *et = check_expr(c, deflt->as.array_lit.elements[k]);
+                    if (et && !type_assignable(E, et))
+                        checker_error(c, deflt->line, deflt->column,
+                            "default for field '%s': vec element expected '%s', got '%s'",
+                            jfn, type_name(E), type_name(et));
+                }
+                deflt->resolved_type = fexp;
+            }
+            else if (fexp && fexp->kind == TYPE_MAP &&
+                     deflt->kind == AST_MAP_LIT && deflt->resolved_type == NULL)
+            {
+                Type *K = fexp->as.map.key;
+                Type *V = fexp->as.map.val;
+                for (int k = 0; k < deflt->as.map_lit.pair_count; k++)
+                {
+                    Type *kt = check_expr(c, deflt->as.map_lit.keys[k]);
+                    Type *vt = check_expr(c, deflt->as.map_lit.vals[k]);
+                    if (kt && !type_assignable(K, kt))
+                        checker_error(c, deflt->line, deflt->column,
+                            "default for field '%s': map key expected '%s', got '%s'",
+                            jfn, type_name(K), type_name(kt));
+                    if (vt && !type_assignable(V, vt))
+                        checker_error(c, deflt->line, deflt->column,
+                            "default for field '%s': map value expected '%s', got '%s'",
+                            jfn, type_name(V), type_name(vt));
+                }
+                deflt->resolved_type = fexp;
+            }
+            Type *saved_def_exp = c->expected_type;
+            if (fexp && (fexp->kind == TYPE_STRUCT || fexp->kind == TYPE_BLOCK))
+                c->expected_type = fexp;
+            Type *dt = check_expr(c, deflt);
+            c->expected_type = saved_def_exp;
             if (dt && fexp && !type_equals(dt, fexp))
             {
                 checker_error(c, node->line, node->column,
                               "default for field '%s': expected '%s', got '%s'",
-                              st->as.strukt.fields[j].name,
-                              type_name(fexp), type_name(dt));
+                              jfn, type_name(fexp), type_name(dt));
             }
         }
     new_expr_done:

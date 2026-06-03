@@ -77,16 +77,39 @@ fn color_at(int i) -> string {
     return "#fabebe"                    // pink
 }
 
+// ---- Options structs (field defaults + partial init) ----
+
+struct FigureOpts {
+    int svg_w = 800
+    int svg_h = 500
+    int text_w = 70
+    int text_h = 20
+    string background = "#ffffff"
+}
+
+// LineOpts: color "" means auto-assign from the palette by series index.
+struct LineOpts {
+    string color = ""
+    string label = ""
+    f64 width = 2.0
+    bool scatter = false
+}
+
+struct BarOpts {
+    string color = "#4363d8"
+    string label = ""
+}
+
 // ---- Constructors ----
 
-fn figure(int svg_w, int svg_h, int text_w, int text_h) -> Figure {
+fn figure(FigureOpts opts) -> Figure {
     vec(Axes) al = []
     return Figure {
         axes_list: al,
         rows: 1, cols: 1,
-        svg_width: svg_w, svg_height: svg_h,
-        text_width: text_w, text_height: text_h,
-        background: "#ffffff"
+        svg_width: opts.svg_w, svg_height: opts.svg_h,
+        text_width: opts.text_w, text_height: opts.text_h,
+        background: opts.background
     }
 }
 
@@ -244,28 +267,22 @@ fn plot(&!Axes ax, vec(f64) ys) {
     })
 }
 
-fn plot_xy(&!Axes ax, vec(f64) xs, vec(f64) ys) {
-    string c = color_at(ax.lines.length)
+// line: one series (line or scatter) with styling via LineOpts.
+// Replaces plot_xy / plot_styled / scatter. opts.color == "" -> auto palette.
+fn line(&!Axes ax, vec(f64) xs, vec(f64) ys, LineOpts opts) {
+    string c = opts.color
+    if c.length == 0 { c = color_at(ax.lines.length) }
     ax.lines.push(LineStyle {
-        xs: xs, ys: ys, color: c, label: "", linewidth: 2.0, is_scatter: false
+        xs: xs, ys: ys, color: c, label: opts.label,
+        linewidth: opts.width, is_scatter: opts.scatter
     })
 }
 
-fn plot_styled(&!Axes ax, vec(f64) xs, vec(f64) ys, string color, string label) {
-    ax.lines.push(LineStyle {
-        xs: xs, ys: ys, color: color, label: label, linewidth: 2.0, is_scatter: false
-    })
-}
-
-fn scatter(&!Axes ax, vec(f64) xs, vec(f64) ys, string color, string label) {
-    ax.lines.push(LineStyle {
-        xs: xs, ys: ys, color: color, label: label, linewidth: 0.0, is_scatter: true
-    })
-}
-
-fn bar(&!Axes ax, vec(string) labels, vec(f64) values, string color, string label) {
+fn bar(&!Axes ax, vec(string) labels, vec(f64) values, BarOpts opts) {
+    string c = opts.color
+    if c.length == 0 { c = color_at(ax.bars.length) }
     ax.bars.push(BarSeries {
-        labels: labels, values: values, color: color, label: label
+        labels: labels, values: values, color: c, label: opts.label
     })
 }
 

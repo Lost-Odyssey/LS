@@ -2390,8 +2390,9 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     return n;
 }
 
-/* struct field defaults (v1) may only be compile-time literals:
-   int/float/string/bool/nil, or a unary minus on a number. */
+/* struct field defaults: compile-time literals (v1) plus, for v2, expressions
+   constructible at the construction site — array/map literals (incl. empty
+   []/{}) and struct literals Foo{...}. */
 static bool is_literal_default(const AstNode *e) {
     if (e == NULL) return false;
     switch (e->kind) {
@@ -2405,6 +2406,11 @@ static bool is_literal_default(const AstNode *e) {
         return e->as.unary.operand != NULL &&
                (e->as.unary.operand->kind == AST_INT_LIT ||
                 e->as.unary.operand->kind == AST_FLOAT_LIT);
+    /* v2: empty/literal vec and struct literals (constructed at the site).
+       (map defaults deferred — map literal codegen is var-decl-special.) */
+    case AST_ARRAY_LIT:
+    case AST_NEW_EXPR:
+        return true;
     default:
         return false;
     }
@@ -2515,12 +2521,13 @@ static AstNode *parse_struct_decl(Parser *p) {
         advance(p);
         char *fname = str_dup_n(p->previous.start, p->previous.length);
 
-        /* Optional default value: `= <literal>` (v1: literal only). */
+        /* Optional default value: `= <literal | [..] | Foo{..}>`. */
         AstNode *fdefault = NULL;
         if (match_tok(p, TOKEN_ASSIGN)) {
             fdefault = parse_expr_prec(p, PREC_ASSIGNMENT);
             if (fdefault != NULL && !is_literal_default(fdefault)) {
-                error_at_current(p, "struct field default must be a literal (v1)");
+                error_at_current(p, "struct field default must be a literal, "
+                                    "vec literal ([..]), or struct literal (Foo{..})");
                 ast_free(fdefault);
                 fdefault = NULL;
             }

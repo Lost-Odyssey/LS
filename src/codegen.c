@@ -13329,13 +13329,62 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 continue; /* checker already errored; leave zero-init */
 
             int field_temp_mark = ctx->temp_string_count;
-            LLVMValueRef val = codegen_expr(ctx, deflt);
-            if (val == NULL)
-                return NULL;
             Type *field_type = struct_type->as.strukt.fields[j].type;
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
                                                          storage, (unsigned)j,
                                                          "field_ptr_def");
+
+            /* v2: vec(T) field with an array-literal default — build the vec in
+               place (codegen_expr on an array literal yields a fixed array, not
+               a vec). The field is already zero-initialized (cap=0/len=0/NULL),
+               so we grow + push each element directly into field_ptr. Empty []
+               leaves the valid zero vec. */
+            if (field_type && field_type->kind == TYPE_VECTOR &&
+                deflt->kind == AST_ARRAY_LIT)
+            {
+                int dcount = deflt->as.array_lit.count;
+                Type *velem = field_type->as.vec.elem;
+                LLVMTypeRef velem_llvm = type_to_llvm(ctx, velem);
+                LLVMTypeRef vec_t_llvm = ls_vec_type(ctx);
+                LLVMTypeRef i32_t_llvm = LLVMInt32TypeInContext(ctx->context);
+                LLVMTypeRef i64_t_llvm = LLVMInt64TypeInContext(ctx->context);
+                for (int k = 0; k < dcount; k++)
+                {
+                    int push_mark = ctx->temp_string_count;
+                    LLVMValueRef ev = codegen_expr(ctx, deflt->as.array_lit.elements[k]);
+                    if (ev == NULL)
+                        continue;
+                    emit_vec_grow_inline(ctx, field_ptr, velem_llvm);
+                    if (velem->kind == TYPE_STRING)
+                    {
+                        if (ctx->temp_string_count > push_mark)
+                            cg_mark_last_temp_moved(ctx, push_mark, "vec field default: temp owned by vec");
+                        else
+                        {
+                            AstNode *src = ast_unwrap_move(deflt->as.array_lit.elements[k]);
+                            if (src->kind == AST_IDENT)
+                                ev = emit_string_clone_val(ctx, ev);
+                        }
+                    }
+                    LLVMValueRef vv = LLVMBuildLoad2(ctx->builder, vec_t_llvm, field_ptr, "vfd.v");
+                    LLVMValueRef dp = LLVMBuildExtractValue(ctx->builder, vv, 0, "vfd.data");
+                    LLVMValueRef ln = LLVMBuildExtractValue(ctx->builder, vv, 1, "vfd.len");
+                    LLVMValueRef ln64 = LLVMBuildSExt(ctx->builder, ln, i64_t_llvm, "vfd.len64");
+                    LLVMValueRef sl = LLVMBuildGEP2(ctx->builder, velem_llvm, dp, &ln64, 1, "vfd.slot");
+                    LLVMBuildStore(ctx->builder, ev, sl);
+                    LLVMValueRef one = LLVMConstInt(i32_t_llvm, 1, 0);
+                    LLVMValueRef nlen = LLVMBuildAdd(ctx->builder, ln, one, "vfd.nlen");
+                    LLVMValueRef vu = LLVMBuildLoad2(ctx->builder, vec_t_llvm, field_ptr, "vfd.upd");
+                    vu = LLVMBuildInsertValue(ctx->builder, vu, nlen, 1, "vfd.ul");
+                    LLVMBuildStore(ctx->builder, vu, field_ptr);
+                }
+                ctx->temp_string_count = field_temp_mark;
+                continue;
+            }
+
+            LLVMValueRef val = codegen_expr(ctx, deflt);
+            if (val == NULL)
+                return NULL;
             cg_store_owned(ctx, field_ptr, val, field_type, deflt,
                            field_temp_mark, CG_XFER_INTO_CONTAINER);
         }

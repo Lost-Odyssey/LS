@@ -29,13 +29,13 @@ fn main() {
         ys.push(math.sin(t))
         i = i + 1
     }
-    plot.plot_styled(&!ax, xs, ys, "#e6194b", "sin")
+    plot.line(&!ax, xs, ys, plot.LineOpts{color: "#e6194b", label: "sin"})
 
     vec(f64) sx = [0.0, 1.0, 2.0, 3.0]
     vec(f64) sy = [0.5, -0.5, 0.25, -0.25]
-    plot.scatter(&!ax, sx, sy, "#4363d8", "pts")
+    plot.line(&!ax, sx, sy, plot.LineOpts{color: "#4363d8", label: "pts", scatter: true})
 
-    plot.Figure fig = plot.figure(800, 500, 70, 20)
+    plot.Figure fig = plot.figure(plot.FigureOpts{})
     plot.add_axes(&!fig, ax)
 
     string svg = plot.to_svg(fig)

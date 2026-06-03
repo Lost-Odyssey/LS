@@ -145,13 +145,20 @@ PlotOpts{data: xs}    ≡    PlotOpts{w: 1000, h: 400, theme: "rainbow", data: x
 > 模块函数调用 `mod.func()` 不被误判。`tests/samples/modstructlit/`（`test_mod_struct_literal`，
 > MARKER=MSL）。**至此 options struct 跨模块完全可用，plot 改造的前提已就绪。**
 
-### 第 2 步 —— 默认值扩展到「构造点可求值的表达式」
+### 第 2 步 —— vec/嵌套 struct 默认值 ✅ 已完成（2026-06-03）
 
-- 空容器 `vec(f64) data = []`、`map(K,V) m = {}`；嵌套 struct 字面量 `Sub s = Sub{}`；
-  枚举构造 `Option(int) o = None`；常量表达式。
-- 所有权路径仍是"构造点求值" → drop 安全，纯粹是 codegen 要为这些字段在构造点生成构造代码，
-  且测试面更大（嵌套 has_drop、空容器 drop 等）。
-- 非 MVP，按需推进。
+- **已支持**：空/字面量 vec 默认 `vec(T) x = []` / `[1,2,3]`、嵌套 struct 默认 `Sub s = Sub{}`。
+- 实现：parser 门槛放开到 `AST_ARRAY_LIT` / `AST_NEW_EXPR`；checker 对 vec 默认预标
+  `resolved_type = 字段 vec 类型`（复刻 var-decl 特例，空 `[]` 才能推断），struct 默认设
+  `expected_type`；codegen 默认填充对 vec 字段**在 field_ptr 处 in-place 逐个 push 构建**
+  （`codegen_expr(array_lit)` 只会建定长 array 而非 vec —— 这是 vec 与 map/struct 的关键差异：
+  map/struct 走 `codegen_expr` 即可，vec 必须特殊处理）。nested struct 走 `codegen_expr` 正常。
+  memcheck 干净（默认 vec/嵌套 struct 随宿主 struct 自动 drop）。
+  `tests/samples/struct_field_defaults_v2_test.ls`（`test_struct_field_defaults_v2`）。
+- **仍 deferred**：map 默认 `{}`（codegen_expr(MAP_LIT) 同样是 var-decl-special，需类似 in-place
+  构建，按需再补）；enum 默认（`None` 等）；非字面量常量表达式。
+- ⚠️ 正交的既有限制（与默认值无关）：把 struct 的 vec 字段复制到局部 `vec v = c.field` 或在复杂
+  f-string 里索引 `{c.field[i]}` 有既有问题；直接 `c.field[i]` / `.length` / `.push` 正常。
 
 > 默认值表达式**不允许**引用其它字段、不允许函数副作用调用（v1/v2 都不做），保持"构造点
 > 纯求值、可预测、无序依赖"。

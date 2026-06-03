@@ -28,9 +28,9 @@ fn main() {
     // simple ascending line y = x
     vec(f64) xs = [0.0, 1.0, 2.0, 3.0, 4.0]
     vec(f64) ys = [0.0, 1.0, 2.0, 3.0, 4.0]
-    plot.plot_xy(&!ax, xs, ys)
+    plot.line(&!ax, xs, ys, plot.LineOpts{})
 
-    plot.Figure fig = plot.figure(800, 500, 50, 12)
+    plot.Figure fig = plot.figure(plot.FigureOpts{text_w: 50, text_h: 12})
     plot.add_axes(&!fig, ax)
 
     string txt = plot.to_text(fig)

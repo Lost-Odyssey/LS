@@ -1018,3 +1018,190 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     html = html + "</body></html>"
     return html
 }
+
+// ====================================================================
+//  TL-3 — aggregated CPU timeline (time-window down-sampling)
+// ====================================================================
+//
+// For long/dense perf data: bucket time into fixed windows; for each
+// (thread, window) pick the CPU the thread spent the most time on, and draw
+// one cell colored by that dominant CPU. Rect count = lanes x windows
+// (bounded), not event count.
+
+fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
+                           i64 time_window_ns, CpuPlotOpts opts) -> string {
+    int w = opts.w
+    int h = opts.h
+    string theme = opts.theme
+    int n = events.length
+    int phys = topo.total_physical
+    if phys < 1 { phys = 1 }
+    i64 win = time_window_ns
+    if win < 1 { win = 1 }
+
+    // time range
+    bool first = true
+    i64 tmin = 0
+    i64 tmax = 1
+    int i = 0
+    while i < n {
+        CpuSchedEvent e = events[i]
+        if first { tmin = e.start_ns; tmax = e.end_ns; first = false }
+        else {
+            if e.start_ns < tmin { tmin = e.start_ns }
+            if e.end_ns > tmax { tmax = e.end_ns }
+        }
+        i = i + 1
+    }
+    if tmax <= tmin { tmax = tmin + 1 }
+
+    // number of windows (capped to keep rect count bounded)
+    int nwin = ((tmax - tmin) / win + 1) as int
+    if nwin < 1 { nwin = 1 }
+    if nwin > 2000 { nwin = 2000 }
+
+    // unique lanes (tid + name) and CPUs
+    vec(int) lane_tids = []
+    vec(string) lane_names = []
+    vec(int) cpus = []
+    i = 0
+    while i < n {
+        CpuSchedEvent e = events[i]
+        bool lf = false
+        int j = 0
+        while j < lane_tids.length { if lane_tids[j] == e.tid { lf = true } j = j + 1 }
+        if !lf { lane_tids.push(e.tid); lane_names.push(e.tname.copy()) }
+        bool cf = false
+        j = 0
+        while j < cpus.length { if cpus[j] == e.cpu_id { cf = true } j = j + 1 }
+        if !cf { cpus.push(e.cpu_id) }
+        i = i + 1
+    }
+
+    int label_w = 100
+    int left = label_w
+    int top = 36
+    int right = w - 20
+    int width = right - left
+    int lane_h = 24
+    int plot_bottom = top + lane_tids.length * lane_h
+
+    // <defs> HT stripe patterns
+    string defs = "<defs>"
+    int ci = 0
+    while ci < cpus.length {
+        int cpu = cpus[ci]
+        if cpu >= phys {
+            string dim = cpu_theme_color(cpu, phys, theme)
+            string acc = cpu_theme_color(cpu % phys, phys, theme)
+            defs = defs + f"<pattern id=\"ht{cpu}\" width=\"6\" height=\"6\" patternUnits=\"userSpaceOnUse\" patternTransform=\"rotate(45)\"><rect width=\"6\" height=\"6\" fill=\"{dim}\"/><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"{acc}\" stroke-width=\"1.5\"/></pattern>"
+        }
+        ci = ci + 1
+    }
+    defs = defs + "</defs>"
+
+    string s = ""
+    int cx = left + width / 2
+    string wlabel = plotfmt.fmt_time(win)
+    s = s + f"<text x=\"{cx}\" y=\"22\" font-size=\"15\" font-family=\"sans-serif\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#000000\">CPU Scheduling Timeline (aggregated, window={wlabel})</text>"
+
+    // lane labels + separators
+    int li = 0
+    while li < lane_tids.length {
+        string lname = lane_names[li]
+        int tid = lane_tids[li]
+        int ly = top + li * lane_h
+        s = s + f"<text x=\"{left - 8}\" y=\"{ly + lane_h / 2 + 4}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"end\" fill=\"#333333\">{_tl_escape(lname)} ({tid})</text>"
+        s = s + f"<line x1=\"{left}\" y1=\"{ly}\" x2=\"{right}\" y2=\"{ly}\" stroke=\"#eeeeee\" stroke-width=\"0.5\"/>"
+        li = li + 1
+    }
+
+    // aggregated cells: per (lane, window) dominant CPU
+    li = 0
+    while li < lane_tids.length {
+        int tid = lane_tids[li]
+        string lname2 = lane_names[li]
+        int wi = 0
+        while wi < nwin {
+            i64 ws = tmin + (wi as i64) * win
+            i64 we = ws + win
+            if we > tmax { we = tmax }
+            // dominant CPU in this window for this lane
+            i64 best_time = 0
+            int best_cpu = 0 - 1
+            int ck = 0
+            while ck < cpus.length {
+                int cpu = cpus[ck]
+                i64 acc = 0
+                int ei = 0
+                while ei < n {
+                    CpuSchedEvent e = events[ei]
+                    if e.tid == tid {
+                        if e.cpu_id == cpu {
+                            i64 a = e.start_ns
+                            if a < ws { a = ws }
+                            i64 b = e.end_ns
+                            if b > we { b = we }
+                            if b > a { acc = acc + (b - a) }
+                        }
+                    }
+                    ei = ei + 1
+                }
+                if acc > best_time { best_time = acc; best_cpu = cpu }
+                ck = ck + 1
+            }
+            if best_cpu >= 0 {
+                f64 x0 = _map_time(ws, tmin, tmax, left, width)
+                f64 x1 = _map_time(we, tmin, tmax, left, width)
+                f64 ww = x1 - x0
+                if ww < 1.0 { ww = 1.0 }
+                int ry = top + li * lane_h + 3
+                int rh = lane_h - 6
+                int pc = best_cpu % phys
+                string fill = cpu_theme_color(best_cpu, phys, theme)
+                if best_cpu >= phys { fill = f"url(#ht{best_cpu})" }
+                int htflag = 0
+                if best_cpu >= phys { htflag = 1 }
+                s = s + f"<rect x=\"{x0:.1f}\" y=\"{ry}\" width=\"{ww:.1f}\" height=\"{rh}\" fill=\"{fill}\"><title>{_tl_escape(lname2)} on CPU {best_cpu} [core {pc}, HT={htflag}]</title></rect>"
+            }
+            wi = wi + 1
+        }
+        li = li + 1
+    }
+
+    // time axis + ticks
+    s = s + f"<line x1=\"{left}\" y1=\"{plot_bottom}\" x2=\"{right}\" y2=\"{plot_bottom}\" stroke=\"#333333\" stroke-width=\"1\"/>"
+    int nt = 5
+    int ti = 0
+    while ti <= nt {
+        i64 tv = tmin + (tmax - tmin) * (ti as i64) / (nt as i64)
+        f64 tx = _map_time(tv, tmin, tmax, left, width)
+        s = s + f"<line x1=\"{tx:.1f}\" y1=\"{plot_bottom}\" x2=\"{tx:.1f}\" y2=\"{plot_bottom + 4}\" stroke=\"#333333\" stroke-width=\"1\"/>"
+        string tl = plotfmt.fmt_time(tv - tmin)
+        s = s + f"<text x=\"{tx:.1f}\" y=\"{plot_bottom + 16}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"middle\" fill=\"#555555\">{tl}</text>"
+        ti = ti + 1
+    }
+
+    // legend (sorted CPUs)
+    _sort_int(&!cpus)
+    int leg_y = plot_bottom + 32
+    s = s + f"<text x=\"{left}\" y=\"{leg_y}\" font-size=\"11\" font-family=\"sans-serif\" font-weight=\"bold\" fill=\"#000000\">Legend (CPU)</text>"
+    ci = 0
+    while ci < cpus.length {
+        int cpu = cpus[ci]
+        int ry = leg_y + 8 + ci * 16
+        string fill = cpu_theme_color(cpu, phys, theme)
+        if cpu >= phys { fill = f"url(#ht{cpu})" }
+        s = s + f"<rect x=\"{left}\" y=\"{ry}\" width=\"14\" height=\"10\" fill=\"{fill}\" stroke=\"#999999\" stroke-width=\"0.5\"/>"
+        string htmark = ""
+        if cpu >= phys { htmark = " (HT)" }
+        s = s + f"<text x=\"{left + 20}\" y=\"{ry + 9}\" font-size=\"10\" font-family=\"monospace\" fill=\"#333333\">CPU {cpu}{htmark}</text>"
+        ci = ci + 1
+    }
+
+    int svgh = leg_y + 8 + cpus.length * 16 + 12
+    if svgh < h { svgh = h }
+    string head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
+    string bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
+    return head + bg + defs + s + "</svg>"
+}

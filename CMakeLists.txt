@@ -614,6 +614,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# std/plottl.ls aggregated CPU timeline (plot TL-3): cpu_timeline_aggregated
+# buckets time into windows and renders the per-(thread,window) dominant CPU.
+# Self-verifying sample prints "AGG PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_plot_agg
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_agg_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=plot_agg
+        -DMARKER=AGG
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # B-4 cross-module struct literal `mod.Type{...}` + struct field defaults
 # (options-struct pattern). main.ls imports opt.ls and constructs opt.PlotOpts{}.
 # Self-verifying sample prints "MSL PASS". JIT + AOT correctness + memcheck.
@@ -640,6 +654,20 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=struct_field_defaults
         -DMARKER=SFDEF
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# struct field defaults v2: empty/literal vec defaults (vec(T) x = [] / [1,2,3])
+# built in place at the construction site, and nested struct defaults (Sub{}).
+# Self-verifying sample prints "SFD2 PASS". JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_struct_field_defaults_v2
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_v2_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=struct_field_defaults_v2
+        -DMARKER=SFD2
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 

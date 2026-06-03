@@ -32,7 +32,7 @@ fn main() {
         ys_cos.push(math.cos(t))
         i = i + 1
     }
-    plot.plot_styled(&!ax1, xs, ys_sin, "#e6194b", "sin")
+    plot.line(&!ax1, xs, ys_sin, plot.LineOpts{color: "#e6194b", label: "sin"})
     // second series: auto-x, auto-color
     plot.plot(&!ax1, ys_cos)
 
@@ -41,10 +41,10 @@ fn main() {
     plot.set_title(&!ax2, "counts")
     vec(string) labels = ["a", "b", "c"]
     vec(f64) vals = [3.0, 7.0, 5.0]
-    plot.bar(&!ax2, labels, vals, "#4363d8", "n")
+    plot.bar(&!ax2, labels, vals, plot.BarOpts{color: "#4363d8", label: "n"})
 
     // ---- assemble figure (MOVE axes in) ----
-    plot.Figure fig = plot.figure(800, 500, 70, 20)
+    plot.Figure fig = plot.figure(plot.FigureOpts{})
     plot.add_axes(&!fig, ax1)
     plot.add_axes(&!fig, ax2)
 
