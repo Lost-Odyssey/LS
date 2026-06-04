@@ -252,6 +252,54 @@ static void register_struct_template(Checker *c, const char *base_name,
     c->struct_templates[idx].type_param_count = type_param_count;
     c->struct_templates[idx].decl_node        = decl_node;
     c->struct_templates[idx].impl_node        = NULL;
+    /* Owning module: the module currently being checked (NULL for the root/main
+       file). Lets cross-module ambiguity detection tell same-name generics apart. */
+    c->struct_templates[idx].module_name      = c->module_name;
+}
+
+/* Step 0 / B-4-for-generics: register a generic struct template that comes from
+   an IMPORTED module. Unlike register_struct_template (same-file, errors on a
+   duplicate), this is idempotent across transitive re-imports and tolerant of
+   the same generic name appearing in two different modules:
+     - same base_name + same owning module  → skip (already registered);
+     - same base_name + DIFFERENT module     → register AND mark the bare name
+       ambiguous, so any unqualified use errors clearly instead of silently
+       binding to whichever module was imported first;
+     - new base_name                         → register.
+   Returns the template index (or the existing one). */
+static int register_imported_struct_template(Checker *c, const char *base_name,
+                                             char **type_params, int type_param_count,
+                                             AstNode *decl_node, const char *module_path)
+{
+    int existing = -1, conflict = -1;
+    for (int i = 0; i < c->struct_template_count; i++)
+    {
+        if (strcmp(c->struct_templates[i].base_name, base_name) != 0) continue;
+        const char *mn = c->struct_templates[i].module_name;
+        if (mn && module_path && strcmp(mn, module_path) == 0) { existing = i; break; }
+        conflict = i; /* same name, different (or root) module */
+    }
+    if (existing >= 0) return existing; /* transitive re-import — idempotent */
+
+    if (c->struct_template_count >= c->struct_template_cap)
+    {
+        c->struct_template_cap = c->struct_template_cap < 4 ? 4
+                                 : c->struct_template_cap * 2;
+        c->struct_templates = realloc_safe(c->struct_templates,
+            (size_t)c->struct_template_cap * sizeof(c->struct_templates[0]));
+    }
+    int idx = c->struct_template_count++;
+    c->struct_templates[idx].base_name        = base_name;
+    c->struct_templates[idx].type_params      = type_params;
+    c->struct_templates[idx].type_param_count = type_param_count;
+    c->struct_templates[idx].decl_node        = decl_node;
+    c->struct_templates[idx].impl_node        = NULL;
+    c->struct_templates[idx].module_name      = module_path;
+
+    if (conflict >= 0)
+        checker_mark_ambiguous_type(c, c->struct_templates[idx].base_name);
+
+    return idx;
 }
 
 /* ---- Type alias registry ---- */
@@ -1199,6 +1247,63 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
             return NULL;
         }
 
+        /* Qualified GENERIC instantiation: `mod.Stack(int)`. Validate the
+           qualifier resolves to a module that owns a generic named `name`, then
+           instantiate. Two modules defining the same generic name → ambiguous;
+           using more than one simultaneously is not yet supported (would need
+           module-prefixed instance names), so error clearly instead of silently
+           binding whichever was imported first. */
+        if (tn->as.named.module != NULL && tn->as.named.arg_count > 0)
+        {
+            Symbol *modsym = scope_resolve(c->current_scope, tn->as.named.module);
+            if (modsym == NULL || modsym->type == NULL ||
+                modsym->type->kind != TYPE_MODULE)
+            {
+                checker_error(c, line, col,
+                    "unknown module '%s' in qualified type '%s.%s(...)'",
+                    tn->as.named.module, tn->as.named.module, tn->as.named.name);
+                return NULL;
+            }
+            const char *qbase = tn->as.named.name;
+            if (checker_type_is_ambiguous(c, qbase))
+            {
+                checker_error(c, line, col,
+                    "generic type '%s' is defined in multiple imported modules; "
+                    "using more than one of them simultaneously is not yet supported",
+                    qbase);
+                return NULL;
+            }
+            int qtidx = find_struct_template_idx(c, qbase);
+            if (qtidx < 0)
+            {
+                checker_error(c, line, col,
+                    "module '%s' has no generic type '%s'",
+                    tn->as.named.module, qbase);
+                return NULL;
+            }
+            /* Validate the qualifier actually names the owning module (alias ok:
+               modsym->type->as.module.name is the resolved import path). */
+            const char *owner = c->struct_templates[qtidx].module_name;
+            const char *qmod  = modsym->type->as.module.name;
+            if (owner && qmod && strcmp(owner, qmod) != 0)
+            {
+                checker_error(c, line, col,
+                    "module '%s' has no generic type '%s'",
+                    tn->as.named.module, qbase);
+                return NULL;
+            }
+            int qn = tn->as.named.arg_count;
+            Type **qta = (Type **)malloc_safe((size_t)qn * sizeof(Type *));
+            for (int i = 0; i < qn; i++)
+            {
+                qta[i] = resolve_type_node(c, tn->as.named.args[i], line, col);
+                if (qta[i] == NULL) { free(qta); return NULL; }
+            }
+            Type *qinst = checker_instantiate_struct(c, qbase, qta, qn, line, col);
+            free(qta);
+            return qinst;
+        }
+
         /* Plain named type: try Self, then alias, then struct, then enum. */
         if (tn->as.named.arg_count == 0)
         {
@@ -1249,6 +1354,19 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
         if (st_cached) return st_cached;
         Type *et = find_enum_type(c, buf);
         if (et) return et;
+
+        /* B-4-for-generics: a bare generic name owned by 2+ imported modules is
+           ambiguous — refuse to silently pick one. (Single-owner names are never
+           marked, so the common case is unaffected.) */
+        if (checker_type_is_ambiguous(c, base))
+        {
+            checker_error(c, line, col,
+                "generic type '%s' is defined in multiple imported modules; "
+                "qualify it as `mod.%s(...)` (note: using more than one "
+                "simultaneously is not yet supported)",
+                base, base);
+            return NULL;
+        }
 
         /* G1: Try user generic struct instantiation */
         if (find_struct_template_idx(c, base) >= 0)
@@ -2290,9 +2408,13 @@ static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
                           "vec.push() takes 1 argument, got %d", argc);
             return NULL;
         }
-        /* F.4: propagate expected_type for Block elem so closure literals can infer types */
+        /* Propagate expected_type = elem so the argument can infer against the
+           element type: Block elems for closure literals (F.4), AND bare variant
+           ctors like `push(None)` / `push(Some(x))` so they disambiguate when
+           several enum instantiations (e.g. Option(int) + Option(string)) share
+           the variant name. */
         Type *saved_exp_push = c->expected_type;
-        if (elem && elem->kind == TYPE_BLOCK)
+        if (elem)
             c->expected_type = elem;
         Type *arg = check_expr(c, call_node->as.call.args[0]);
         c->expected_type = saved_exp_push;
@@ -6334,7 +6456,13 @@ static void check_stmt(Checker *c, AstNode *node)
     case AST_ASSIGN:
     {
         Type *target = check_expr(c, node->as.assign.target);
+        /* Plumb expected_type = target type so a bare variant ctor on the RHS
+           (`x = None`, `self.buf[i] = Some(v)`) disambiguates when several enum
+           instantiations share the variant name (e.g. Option(int)+Option(string)). */
+        Type *saved_exp_assign = c->expected_type;
+        if (target) c->expected_type = target;
         Type *value = check_expr(c, node->as.assign.value);
+        c->expected_type = saved_exp_assign;
         if (target == NULL || value == NULL)
             break;
 
@@ -8434,6 +8562,18 @@ static void forward_pass(Checker *c, AstNode *program)
                     type_module_add_export(mod_type,
                                            d->as.fn_decl.name, d->resolved_type);
                 }
+                /* Step 0 (cross-module generics): a generic free function
+                   (type_param_count > 0) has no resolved_type — it is a template,
+                   not a concrete fn. Register it into THIS importer's fn-template
+                   registry (idempotent) so call sites here can instantiate it,
+                   e.g. new_stack(int)(). The instantiation machinery (checker
+                   ~L4369 + codegen pending-gm) is origin-agnostic and takes over. */
+                else if (d->kind == AST_FN_DECL &&
+                         d->as.fn_decl.type_param_count > 0)
+                {
+                    if (find_fn_template(c, d->as.fn_decl.name) < 0)
+                        register_fn_template(c, d);
+                }
                 else if (d->kind == AST_STRUCT_DECL && d->resolved_type)
                 {
                     type_module_add_export(mod_type,
@@ -8456,6 +8596,40 @@ static void forward_pass(Checker *c, AstNode *program)
                                importer's struct registry so user code can name it
                                directly (e.g. `File f` after `import io`). */
                             checker_register_struct(c, sname, d->resolved_type);
+                        }
+                    }
+                }
+                /* Step 0 (cross-module generics): a generic struct template
+                   (type_param_count > 0) has no resolved_type. Register it into
+                   THIS importer's struct-template registry (idempotent) and attach
+                   the module's matching generic impl, so `Stack(int)` at a call
+                   site here flows through checker_instantiate_struct exactly like a
+                   same-file generic. NOTE: two modules defining the same generic
+                   name collide on the bare name — v1 keeps the first registration
+                   (single-definition use is unambiguous). */
+                else if (d->kind == AST_STRUCT_DECL &&
+                         d->as.struct_decl.type_param_count > 0)
+                {
+                    const char *gname = d->as.struct_decl.name;
+                    int tidx = register_imported_struct_template(
+                        c, gname,
+                        d->as.struct_decl.type_params,
+                        d->as.struct_decl.type_param_count, d, import_path);
+                    /* Attach the module's generic impl(T) block, if present and not
+                       already attached (idempotent on transitive re-import). */
+                    if (tidx >= 0 && c->struct_templates[tidx].impl_node == NULL)
+                    {
+                        for (int k = 0; k < mod_ast->as.program.decl_count; k++)
+                        {
+                            AstNode *id = mod_ast->as.program.decls[k];
+                            if (id->kind == AST_IMPL_DECL &&
+                                id->as.impl_decl.type_param_count > 0 &&
+                                id->as.impl_decl.name &&
+                                strcmp(id->as.impl_decl.name, gname) == 0)
+                            {
+                                c->struct_templates[tidx].impl_node = id;
+                                break;
+                            }
                         }
                     }
                 }

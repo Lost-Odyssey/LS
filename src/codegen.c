@@ -11140,6 +11140,29 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                          struct_name ? struct_name : "", method_name);
                 fn_name = qualified_name;
                 callee = LLVMGetNamedFunction(ctx->module, fn_name);
+                /* Step 0 (cross-module generics): a generic struct method
+                   (e.g. Stack(int).push) can be referenced from a *module*
+                   function body emitted in Pass B, before the pending-gm
+                   forward-declaration block (~L20815) runs. Resolve it on demand
+                   by forward-declaring the matching pending entry — the same
+                   fallback the free-function generic path uses (~L11237). The
+                   body is still emitted later, guarded against duplication. */
+                if (callee == NULL)
+                {
+                    for (int gi = 0; gi < ctx->pending_gm_count; gi++)
+                    {
+                        if (strcmp(ctx->pending_generic_methods[gi].mangled_name,
+                                   fn_name) != 0)
+                            continue;
+                        AstNode *cfn = ctx->pending_generic_methods[gi].cloned_fn;
+                        if (cfn == NULL || cfn->resolved_type == NULL ||
+                            cfn->resolved_type->kind != TYPE_FUNCTION)
+                            break;
+                        LLVMTypeRef gft = type_to_llvm(ctx, cfn->resolved_type);
+                        callee = LLVMAddFunction(ctx->module, fn_name, gft);
+                        break;
+                    }
+                }
                 if (callee == NULL)
                 {
                     cg_error(ctx, node->line, node->column,
@@ -14264,14 +14287,13 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
             if (obj_type && obj_type->kind == TYPE_VECTOR)
             {
-                /* vec[i] = val — load data ptr, GEP, drop old if needed, store */
-                LLVMValueRef vec_alloca = NULL;
-                if (obj->kind == AST_IDENT)
-                {
-                    CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj->as.ident.name);
-                    if (sym)
-                        vec_alloca = sym->value;
-                }
+                /* vec[i] = val — load data ptr, GEP, drop old if needed, store.
+                   Use codegen_lvalue_ptr so the vec can be ANY lvalue, not just
+                   a bare local: `self.buf[i] = x` / `w.v[i] = x` (object is a
+                   field access) must write the field's real backing buffer, not
+                   a discarded clone. (Previously only AST_IDENT was handled, so
+                   index-assign through a struct field silently did nothing.) */
+                LLVMValueRef vec_alloca = codegen_lvalue_ptr(ctx, obj);
                 if (vec_alloca == NULL)
                     return;
 
@@ -14302,14 +14324,9 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             }
             else if (obj_type && obj_type->kind == TYPE_MAP)
             {
-                /* map[key] = val — call __ls_map_XX_YY_set(map, key, val) */
-                LLVMValueRef map_alloca = NULL;
-                if (obj->kind == AST_IDENT)
-                {
-                    CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj->as.ident.name);
-                    if (sym)
-                        map_alloca = sym->value;
-                }
+                /* map[key] = val — call __ls_map_XX_YY_set(map, key, val).
+                   codegen_lvalue_ptr so `self.m[k] = v` (field map) works too. */
+                LLVMValueRef map_alloca = codegen_lvalue_ptr(ctx, obj);
                 if (map_alloca == NULL)
                     return;
                 emit_map_helpers_for(ctx, obj_type->as.map.key, obj_type->as.map.val);

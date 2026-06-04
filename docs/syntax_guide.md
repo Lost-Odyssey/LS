@@ -379,8 +379,9 @@ vec(int) v
 v.push(1)
 v.push(2)
 v.push(3)
-int top = v.pop()           // 3
-int val = v.get(0)          // 1（越界返回零值 + warning）
+int last = v.last()         // 3（深拷贝末元素，不移除）
+v.pop()                     // 移除并 drop 末元素，返回 void（不产出元素）
+int val = v.get(0)          // 1（深拷贝；越界返回零值 + warning）
 v.set(0, 99)
 int n = v.len()             // 2
 bool empty = v.is_empty()

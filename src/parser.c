@@ -1939,6 +1939,39 @@ static bool starts_var_decl(Parser *p) {
                     result = true;
                     break;
                 }
+                if (p->current.type == TOKEN_LPAREN) {
+                    /* `... .Seg(args) varname` → qualified GENERIC type + var name,
+                       e.g. `st.Stack(int) s`. Skip the balanced type-arg parens,
+                       then require an IDENT var name on the same line. */
+                    advance(p);  /* consume '(' */
+                    int gdepth = 1;
+                    while (gdepth > 0 && p->current.type != TOKEN_EOF) {
+                        if (p->current.type == TOKEN_LPAREN) gdepth++;
+                        else if (p->current.type == TOKEN_RPAREN) {
+                            gdepth--;
+                            if (gdepth == 0) break;
+                        }
+                        advance(p);
+                    }
+                    if (p->current.type == TOKEN_RPAREN) {
+                        advance(p);  /* consume ')' */
+                        /* Require IDENT var name on the same line AND the token
+                           after it to be '=' / ';' / EOF — otherwise this is a
+                           qualified method call like `r.append(x)` (possibly
+                           followed on the same line by another statement
+                           `r.append(y)`), NOT a var decl. Mirrors the safeguard
+                           on the non-qualified `Foo(args) var` branch below. */
+                        if (p->current.type == TOKEN_IDENTIFIER &&
+                            p->current.line == saved_cur.line) {
+                            Token after = scanner_peek(&p->scanner);
+                            if (after.type == TOKEN_ASSIGN ||
+                                after.type == TOKEN_SEMICOLON ||
+                                after.type == TOKEN_EOF)
+                                result = true;
+                        }
+                    }
+                    break;
+                }
                 /* otherwise keep scanning the dotted chain (e.g. std.json.Value) */
             }
             p->scanner = saved;

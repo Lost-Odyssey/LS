@@ -1333,6 +1333,72 @@ add_test(
 )
 set_tests_properties(test_generics_g2 PROPERTIES DEPENDS "test_generics_g1")
 
+# Cross-module generic container (Step 0): `import std.stack` + Stack(int)/Stack(string)
+# instantiated at the importer's call site. JIT + AOT correctness + memcheck.
+add_test(
+    NAME test_stack
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_stack.cmake
+)
+set_tests_properties(test_stack PROPERTIES DEPENDS "test_generics_g2")
+
+# Cross-module / transitive generic container: a module that imports std.stack
+# and uses Stack(int) internally, imported alongside a direct Stack(string) use.
+# Regression for idempotent template registration + on-demand generic-method
+# forward-declaration. Reuses test_stack.cmake (STACK PASS sentinel).
+add_test(
+    NAME test_stack_xmod
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_xmod/main.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -DTEST_NAME=stack_xmod
+        -P ${CMAKE_SOURCE_DIR}/tests/test_stack.cmake
+)
+set_tests_properties(test_stack_xmod PROPERTIES DEPENDS "test_stack")
+
+# Module-qualified generic type `st.Stack(int)` (single-owner). JIT+AOT+memcheck.
+add_test(
+    NAME test_stack_qual
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_qual.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -DTEST_NAME=stack_qual
+        -P ${CMAKE_SOURCE_DIR}/tests/test_stack.cmake
+)
+set_tests_properties(test_stack_qual PROPERTIES DEPENDS "test_stack")
+
+# Cross-module same-name generic → clear ambiguity error on bare use (negative).
+add_test(
+    NAME test_generic_ambig
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -P ${CMAKE_SOURCE_DIR}/tests/test_generic_ambig.cmake
+)
+set_tests_properties(test_generic_ambig PROPERTIES DEPENDS "test_stack_qual")
+
+# std.ring — rte_ring-style fixed-capacity ring (single-threaded). Exercises
+# vec(Option(T)) slot ownership, wrap-around, full/empty, burst, clear, with both
+# Ring(int) and Ring(string) coexisting. JIT + AOT + memcheck.
+add_test(
+    NAME test_ring
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ring_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_ring.cmake
+)
+set_tests_properties(test_ring PROPERTIES DEPENDS "test_generic_ambig")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

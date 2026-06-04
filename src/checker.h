@@ -56,6 +56,10 @@ typedef struct Checker {
         int         type_param_count;
         AstNode    *decl_node;      /* AST_STRUCT_DECL (not owned) */
         AstNode    *impl_node;      /* AST_IMPL_DECL (not owned), NULL initially; G1.5 */
+        const char *module_name;    /* owning module's import path; NULL = root/same-file.
+                                       Used to detect same-name generics from 2+ modules
+                                       (cross-module ambiguity) and to validate
+                                       `mod.Stack(int)` qualifiers. */
     } *struct_templates;
     int struct_template_count;
     int struct_template_cap;
