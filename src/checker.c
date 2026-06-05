@@ -5711,6 +5711,18 @@ static Type *check_expr(Checker *c, AstNode *node)
             break;
         }
 
+        /* Phase B: detect if the match subject is a borrowed enum variable.
+           When true, owned payload binders (string/vec/map/struct/enum) are
+           marked is_borrow=true so checker prevents moves and mutations. */
+        bool subj_is_enum_borrow = false;
+        if (node->as.match.subject->kind == AST_IDENT && subject &&
+            subject->kind == TYPE_ENUM)
+        {
+            Symbol *ssym = scope_resolve(c->current_scope,
+                                         node->as.match.subject->as.ident.name);
+            if (ssym && ssym->is_borrow) subj_is_enum_borrow = true;
+        }
+
         /* Enum subjects: variant patterns + exhaustiveness check */
         if (subject->kind == TYPE_ENUM)
         {
@@ -5790,8 +5802,19 @@ static Type *check_expr(Checker *c, AstNode *node)
                     const char *bname = bnode->as.ident.name;
                     if (strcmp(bname, "_") == 0) continue;  /* skip wildcard binder */
                     Type *bt = subject->as.enom.variants[variant_idx].payload_types[b];
-                    scope_define(c->current_scope, bname, bt);
+                    Symbol *bsym = scope_define(c->current_scope, bname, bt);
                     bnode->resolved_type = bt;
+                    /* Phase B: for borrowed enum subject, mark owned payload binders
+                       as read-only borrows — prevents moves and mutating methods. */
+                    if (bsym && subj_is_enum_borrow && bt &&
+                        (bt->kind == TYPE_STRING ||
+                         bt->kind == TYPE_VECTOR ||
+                         bt->kind == TYPE_MAP ||
+                         (bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
+                         (bt->kind == TYPE_ENUM   && bt->as.enom.has_drop)))
+                    {
+                        bsym->is_borrow = true;
+                    }
                 }
 
                 Type *body_type = check_expr(c, arm->body);

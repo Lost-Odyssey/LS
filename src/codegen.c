@@ -11584,7 +11584,37 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
             for (int i = 0; i < user_argc; i++)
             {
-                LLVMValueRef arg_val = codegen_expr(ctx, node->as.call.args[i]);
+                /* Phase B: vec[i] → &T (borrow) — skip clone, pass element address.
+                   When the callee's LLVM param is a pointer, codegen_lvalue_ptr returns
+                   the GEP address of the element in the vec's data buffer directly.
+                   This avoids the emit_clone_value inside case AST_INDEX and the
+                   resulting orphaned clone that leaks (no owner to drop it). */
+                bool use_elem_addr = false;
+                {
+                    AstNode *arg_n = node->as.call.args[i];
+                    if (arg_n->kind == AST_INDEX &&
+                        arg_n->as.index_expr.object &&
+                        arg_n->as.index_expr.object->resolved_type &&
+                        arg_n->as.index_expr.object->resolved_type->kind == TYPE_VECTOR)
+                    {
+                        unsigned llvm_slot = (unsigned)(i + arg_offset);
+                        unsigned pc2 = LLVMCountParams(callee);
+                        if (llvm_slot < pc2) {
+                            LLVMTypeRef pt = LLVMTypeOf(LLVMGetParam(callee, llvm_slot));
+                            if (LLVMGetTypeKind(pt) == LLVMPointerTypeKind)
+                                use_elem_addr = true;
+                        }
+                    }
+                }
+                LLVMValueRef arg_val;
+                if (use_elem_addr)
+                {
+                    arg_val = codegen_lvalue_ptr(ctx, node->as.call.args[i]);
+                    if (arg_val == NULL) { free(args); return NULL; }
+                    args[i + arg_offset] = arg_val;
+                    continue;
+                }
+                arg_val = codegen_expr(ctx, node->as.call.args[i]);
                 if (arg_val == NULL)
                 {
                     free(args);
@@ -11768,6 +11798,21 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             continue;
                         }
                     }
+                    /* Phase B: vec[i] rvalue — pass element address directly (zero-copy).
+                       Avoids emit_clone_value in the normal vec-index path which would
+                       produce an owned copy with no owner to drop it. */
+                    if (a->kind == AST_INDEX &&
+                        a->as.index_expr.object &&
+                        a->as.index_expr.object->resolved_type &&
+                        a->as.index_expr.object->resolved_type->kind == TYPE_VECTOR)
+                    {
+                        LLVMValueRef elem_ptr = codegen_lvalue_ptr(ctx, a);
+                        if (elem_ptr != NULL)
+                        {
+                            args[i] = elem_ptr;
+                            continue;
+                        }
+                    }
                     /* Fallback: materialise a temporary alloca to stabilise addr. */
                     LLVMTypeRef store_t;
                     const char *tmp_name;
@@ -11787,6 +11832,17 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     LLVMValueRef tmp = cg_entry_alloca(ctx, store_t, tmp_name);
                     LLVMBuildStore(ctx->builder, args[i], tmp);
                     args[i] = tmp;
+                    /* Phase B: for owned rvalue (non-IDENT, non-vec[i]) passed as &T,
+                       the callee borrows but doesn't own — register the temp for drop
+                       so the heap inside is released after the statement. */
+                    AstNode *aa = node->as.call.args[i - arg_offset];
+                    bool is_rvalue_temp = (aa->kind != AST_IDENT);
+                    if (is_rvalue_temp &&
+                        ((arg_type->kind == TYPE_ENUM   && arg_type->as.enom.has_drop) ||
+                         (arg_type->kind == TYPE_STRUCT && arg_type->as.strukt.has_drop)))
+                    {
+                        cg_push_temp_drop(ctx, tmp, arg_type);
+                    }
                 }
             }
 
@@ -12424,18 +12480,59 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
                         LLVMTypeRef field_llvm = type_to_llvm(ctx, pt);
 
-                        /* Phase 9: borrow path — for self-recursive (box) payload, use
-                           the box pointer directly as sym->value so auto-borrow at the
-                           call site passes it zero-copy (no full struct load+store). */
-                        if (subj_is_enum_borrow && pt == subj_type) {
-                            LLVMValueRef box = LLVMBuildLoad2(ctx->builder, ptr_type,
-                                                              field_ptr, "box");
-                            /* sym->value = box_ptr: IDENT load will deref through it;
-                               auto-borrow passes it directly as pointer — zero-copy. */
-                            CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
-                                                            box, pt, NULL);
-                            if (sym) sym->is_borrowed = true;
-                            continue;
+                        /* Phase 9 / Phase B: borrow subject — owned payload bindings
+                           are borrows: zero-copy for vec/map/struct/nested-enum via
+                           direct field pointer; cap-marked borrow for string. */
+                        if (subj_is_enum_borrow) {
+                            /* Phase A: self-recursive (box) payload. */
+                            if (pt == subj_type) {
+                                LLVMValueRef box = LLVMBuildLoad2(ctx->builder, ptr_type,
+                                                                  field_ptr, "box");
+                                CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
+                                                                box, pt, NULL);
+                                if (sym) sym->is_borrowed = true;
+                                continue;
+                            }
+
+                            /* Phase B: vec/map/struct/nested-has_drop-enum payload.
+                               Use field_ptr directly as sym->value (pointer into the
+                               enum payload storage) — zero-copy, same ABI as &T params. */
+                            if (pt->kind == TYPE_VECTOR ||
+                                pt->kind == TYPE_MAP ||
+                                pt->kind == TYPE_STRUCT ||
+                                (pt->kind == TYPE_ENUM && pt->as.enom.has_drop)) {
+                                CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
+                                                                field_ptr, pt, NULL);
+                                if (sym) sym->is_borrowed = true;
+                                continue;
+                            }
+
+                            /* Phase B: string payload — load value and mark cap as
+                               LS_CAP_BORROWED so emit_string_free skips it and
+                               emit_string_clone_val clones on copy. */
+                            if (pt->kind == TYPE_STRING) {
+                                LLVMTypeRef str_t = ls_string_type(ctx);
+                                LLVMValueRef str_val = LLVMBuildLoad2(
+                                    ctx->builder, str_t, field_ptr, "s.bval");
+                                LLVMValueRef cap_b = LLVMConstInt(
+                                    LLVMInt32TypeInContext(ctx->context),
+                                    (unsigned long long)LS_CAP_BORROWED, 0);
+                                str_val = LLVMBuildInsertValue(
+                                    ctx->builder, str_val, cap_b, 2, "s.borrow");
+                                LLVMBuilderRef bb_tmp = LLVMCreateBuilderInContext(ctx->context);
+                                LLVMValueRef first_i = LLVMGetFirstInstruction(entry);
+                                if (first_i) LLVMPositionBuilderBefore(bb_tmp, first_i);
+                                else         LLVMPositionBuilderAtEnd(bb_tmp, entry);
+                                LLVMValueRef bind_alloca = LLVMBuildAlloca(bb_tmp, str_t, bname);
+                                LLVMDisposeBuilder(bb_tmp);
+                                LLVMBuildStore(ctx->builder, str_val, bind_alloca);
+                                CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
+                                                                bind_alloca, pt, NULL);
+                                if (sym) sym->is_borrowed = true;
+                                continue;
+                            }
+                            /* Scalars (int/f64/bool/char) and other non-owned types:
+                               fall through to the normal load-into-alloca path below. */
                         }
 
                         LLVMValueRef val;

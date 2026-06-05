@@ -1890,3 +1890,16 @@ set_tests_properties(test_enum_borrow PROPERTIES
     DEPENDS "test_string_loop"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+add_test(
+    NAME test_enum_borrow_b
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_borrow_b.cmake
+)
+set_tests_properties(test_enum_borrow_b PROPERTIES
+    DEPENDS "test_enum_borrow"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

@@ -628,7 +628,7 @@ fn _format_number(f64 n) -> string {
     return f"{n}"
 }
 
-fn _stringify_impl(JsonValue val, int depth, int indent) -> string {
+fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
     match val {
         Null => { return "null" }
         Bool(b) => {
