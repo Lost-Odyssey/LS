@@ -1399,6 +1399,18 @@ add_test(
 )
 set_tests_properties(test_ring PROPERTIES DEPENDS "test_generic_ambig")
 
+# RawVec Step 1 — realloc() exposed to LS surface; memcheck tracks the realloc
+# chain (malloc -> realloc x3 -> free) as a single migrating object. 0/0/0.
+add_test(
+    NAME test_rawvec_realloc
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_realloc.cmake
+)
+set_tests_properties(test_rawvec_realloc PROPERTIES DEPENDS "test_ring")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

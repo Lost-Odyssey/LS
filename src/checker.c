@@ -8871,6 +8871,14 @@ static void register_builtins(Checker *c)
         Type *ft = type_function(params, 1, type_pointer(type_u8()), false);
         scope_define(c->current_scope, "malloc", ft);
     }
+    /* realloc(*u8, i64) -> *u8 — grow/shrink a heap buffer (NULL ptr == malloc) */
+    {
+        Type **params = (Type **)malloc_safe(2 * sizeof(Type *));
+        params[0] = type_pointer(type_u8());
+        params[1] = type_i64();
+        Type *ft = type_function(params, 2, type_pointer(type_u8()), false);
+        scope_define(c->current_scope, "realloc", ft);
+    }
     /* free(*u8) -> void */
     {
         Type **params = (Type **)malloc_safe(sizeof(Type *));
