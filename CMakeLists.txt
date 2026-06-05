@@ -1435,6 +1435,18 @@ add_test(
 )
 set_tests_properties(test_rawvec_ptr_index PROPERTIES DEPENDS "test_rawvec_sizeof")
 
+# RawVec Step 4 / Gate M0 — hand-written RawVecI (POD) over raw malloc/realloc/
+# free + sizeof + p[i]; __drop frees once; memcheck 0/0/0 through realloc chain.
+add_test(
+    NAME test_rawvec_poc
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_poc.cmake
+)
+set_tests_properties(test_rawvec_poc PROPERTIES DEPENDS "test_rawvec_ptr_index")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

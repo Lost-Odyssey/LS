@@ -120,6 +120,11 @@ struct RawVec(T) {
 > 目的：**用最小代价点亮三个真缺口 G1/G2/G3 的"可行性信号"**，并固定验收预言。
 > 即使 RawVec 完整实现还没写，先让一个手搓的最小用例跑通，就能确认基础设施够用。
 
+> ✅ **Gate M0 已通过 2026-06-05**：`test_rawvec_poc`（手写 `RawVecI`，push 20 触发
+> 4 次 realloc 迁移 0→4→8→16→32，`__drop` free 一次，外加第二个 buffer）JIT+AOT+memcheck
+> **0/0/0**。基础设施（g4/G1/G2）贯通，POD 裸内存自管容器内存安全成立。`new_rawveci()`
+> return 的 struct move 不产生双释放。
+
 ### 3.1 PoC 范围（POD 元素，最小内存语义）
 
 先做 `RawVec(int)`（POD，无 has_drop）—— 把 **G1+G2+g4** 走通，**回避 G3**（POD move-out
