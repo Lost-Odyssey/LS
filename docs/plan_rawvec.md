@@ -248,7 +248,15 @@ fn main() {
 - **测试**：`sizeof(int)==4`、`sizeof(i64)==8`、`sizeof(bool)==1`、`sizeof` 在泛型 `fn f(T)()`
   体内随实例化变化。
 
-### Step C：`*T` typed 下标 `p[i]`（G2）
+### Step C：`*T` typed 下标 `p[i]`（G2） — ✅ 完成 2026-06-05
+
+> 实现：checker `AST_INDEX` 加 `TYPE_POINTER` 分支（整型索引 → pointee 结果）；
+> codegen 读路径 + `codegen_lvalue_ptr` 均加指针分支（load 指针值 → typed GEP
+> `elem_llvm, ptr, [i]` → load/返回地址）；AST_ASSIGN 加 `p[i] = val` **raw-store**
+> 分支：typed-GEP + `cg_store_owned`，**不 drop 旧槽**（与 vec/array 有意区分——
+> 指针是 unsafe 层，槽可能是未初始化内存）。GEP 步长与 `sizeof(T)` 同源自 DataLayout，
+> 故 struct padding 自动正确（`Pt{i8,i64}` stride=16 实测吻合）。
+> `test_rawvec_ptr_index`（POD/padded-struct/字段访问 q[i].v/*u8 字节，JIT+AOT+memcheck）。
 
 - **checker**（`src/checker.c:5330` `AST_INDEX`）：在 array/vec/map 分支后**新增 `TYPE_POINTER`
   分支**：`p[i]` 要求 `i` 整型，结果类型 = `obj->as.pointer_to`（pointee）。

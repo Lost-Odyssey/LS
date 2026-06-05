@@ -5379,6 +5379,29 @@ static Type *check_expr(Checker *c, AstNode *node)
                 result = obj->as.map.val;
             }
         }
+        else if (obj->kind == TYPE_POINTER)
+        {
+            /* p[i] on a raw *T pointer — element access, no bounds check (unsafe
+               layer). Result is the pointee type. The store form (p[i] = x) is a
+               RAW store: it does NOT drop the old slot (the slot may be
+               uninitialized memory), unlike vec/array element assignment. */
+            if (!type_is_integer(idx))
+            {
+                checker_error(c, node->line, node->column,
+                              "pointer index must be integer, got '%s'", type_name(idx));
+                result = NULL;
+            }
+            else if (obj->as.pointer_to == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "cannot index opaque pointer");
+                result = NULL;
+            }
+            else
+            {
+                result = obj->as.pointer_to;
+            }
+        }
         else
         {
             checker_error(c, node->line, node->column,

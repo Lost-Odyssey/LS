@@ -4131,6 +4131,23 @@ static LLVMValueRef codegen_lvalue_ptr(CodegenContext *ctx, AstNode *node)
             return LLVMBuildGEP2(ctx->builder, elem_llvm, data, &index, 1, "vec.elem.ptr");
         }
 
+        /* p[i] place on a raw *T pointer: load the pointer value, typed-GEP the
+           element address. Valid until the buffer is realloc'd (caller's
+           responsibility — same escape constraint as vec). */
+        if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
+        {
+            LLVMValueRef ptr_val = codegen_expr(ctx, obj);
+            if (ptr_val == NULL)
+                return NULL;
+            LLVMValueRef index = codegen_expr(ctx, node->as.index_expr.index);
+            if (index == NULL)
+                return NULL;
+            if (LLVMTypeOf(index) != i64_type)
+                index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_type, "lp.idx");
+            LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.pointer_to);
+            return LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val, &index, 1, "ptr.elem.ptr");
+        }
+
         return NULL;
     }
 
@@ -13460,6 +13477,28 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return mg;
         }
 
+        /* p[i] on a raw *T pointer — load the pointer value, typed-GEP element,
+           load it. RAW read: no bounds check, no clone (the unsafe primitive;
+           ownership of has_drop elements is managed by the surrounding code,
+           e.g. RawVec methods). The GEP stride comes from the SAME DataLayout as
+           sizeof(T), so struct padding is handled automatically. */
+        if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
+        {
+            LLVMValueRef ptr_val = codegen_expr(ctx, obj);
+            if (ptr_val == NULL)
+                return NULL;
+            LLVMValueRef index = codegen_expr(ctx, idx_node);
+            if (index == NULL)
+                return NULL;
+            LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+            if (LLVMTypeOf(index) != i64_t)
+                index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t, "pi.idx");
+            LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.pointer_to);
+            LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val,
+                                             &index, 1, "ptr.idx");
+            return LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "ptr.elem");
+        }
+
         /* arr[index] — GEP into fixed array + load element */
         if (obj_type == NULL || obj_type->kind != TYPE_ARRAY)
         {
@@ -14668,6 +14707,31 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef margs[] = {map_alloca, mk, val};
                 LLVMBuildCall2(ctx->builder, mft, mfn, margs, 3, "");
                 ctx->temp_string_count = temp_mark;
+            }
+            else if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
+            {
+                /* p[i] = val on a raw *T pointer — RAW store: typed-GEP the
+                   element address and store. Does NOT drop the old slot (it may
+                   be uninitialized memory — the unsafe-primitive contract; cf.
+                   vec/array which drop the old element). Ownership of `val` is
+                   still transferred via cg_store_owned (owned temp marked moved /
+                   borrowed cloned) so a has_drop value isn't double-freed. */
+                LLVMValueRef ptr_val = codegen_expr(ctx, obj);
+                if (ptr_val == NULL)
+                    return;
+                LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.pointer_to);
+                LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
+                LLVMValueRef index = codegen_expr(ctx, target->as.index_expr.index);
+                if (index == NULL)
+                    return;
+                if (LLVMTypeOf(index) != i64_type)
+                    index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_type, "pis.idx");
+                LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val,
+                                                 &index, 1, "pis.ep");
+                cg_store_owned(ctx, gep, val, obj_type->as.pointer_to,
+                               node->as.assign.value, temp_mark,
+                               CG_XFER_INTO_CONTAINER);
+                cg_flush_temps(ctx, temp_mark, true);
             }
             else
             {
