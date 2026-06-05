@@ -1,0 +1,11 @@
+﻿string benchmark results
+=========================
+  n = 200000, iterations = 10
+  (Python/Ruby: 1 actual iter, mean 脳10 for 10-iters estimate)
+  total wall time: 2.4 s
+
+C (MSVC): 104220.0 ns  (result=1000020)
+LS (AOT): 26510.0 ns  (result=1000020)
+LS (JIT): 347199.8 ns  (result=1000020)
+Python: 115848000 ns  (result=100002)
+Ruby: 273044000 ns  (result=100002)

@@ -1924,12 +1924,14 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
     }
 
     /* s.at(int i) -> int */
-    if (strcmp(method, "at") == 0)
+    if (strcmp(method, "at") == 0 || strcmp(method, "at_unsafe") == 0 ||
+        strcmp(method, "skip_ws") == 0 || strcmp(method, "scan_plain") == 0 ||
+        strcmp(method, "scan_digits") == 0)
     {
         if (argc != 1)
         {
             checker_error(c, call_node->line, call_node->column,
-                          "string.at() takes 1 argument, got %d", argc);
+                          "string.%s() takes 1 argument, got %d", method, argc);
             return NULL;
         }
         Type *arg = check_expr(c, call_node->as.call.args[0]);
@@ -1937,7 +1939,7 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
         {
             checker_error(c, call_node->as.call.args[0]->line,
                           call_node->as.call.args[0]->column,
-                          "string.at() index must be integer, got '%s'", type_name(arg));
+                          "string.%s() index must be integer, got '%s'", method, type_name(arg));
             return NULL;
         }
         return type_int();
@@ -2516,12 +2518,12 @@ static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
 
     /* v.get(i) -> T  — deep clone of element at index i (alias of v[i]).
        Out-of-bounds yields zero/empty default value. */
-    if (strcmp(method, "get") == 0)
+    if (strcmp(method, "get") == 0 || strcmp(method, "get_unsafe") == 0)
     {
         if (argc != 1)
         {
             checker_error(c, call_node->line, call_node->column,
-                          "vec.get() takes 1 argument, got %d", argc);
+                          "vec.%s() takes 1 argument, got %d", method, argc);
             return NULL;
         }
         Type *arg = check_expr(c, call_node->as.call.args[0]);
@@ -2529,8 +2531,8 @@ static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
         {
             checker_error(c, call_node->as.call.args[0]->line,
                           call_node->as.call.args[0]->column,
-                          "vec.get() index must be integer, got '%s'",
-                          type_name(arg));
+                          "vec.%s() index must be integer, got '%s'",
+                          method, type_name(arg));
             return NULL;
         }
         return elem;
@@ -3954,7 +3956,16 @@ static Type *check_expr(Checker *c, AstNode *node)
     switch (node->kind)
     {
     case AST_INT_LIT:
-        result = node->as.int_lit.is_char ? type_char() : type_int();
+        if (node->as.int_lit.is_char) {
+            result = type_char();
+        } else {
+            /* An int literal that does not fit in i32 is typed i64, otherwise
+               codegen (which emits int literals as i32) would truncate it.
+               e.g. `i64 a = 9000000000`. */
+            long long v = node->as.int_lit.value;
+            result = (v > 2147483647LL || v < -2147483648LL)
+                         ? type_i64() : type_int();
+        }
         break;
 
     case AST_FLOAT_LIT:

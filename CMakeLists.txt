@@ -1793,3 +1793,87 @@ set_tests_properties(test_bf046_map_struct_val PROPERTIES
     DEPENDS "test_bf045_string_param"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- Bug #22: proc.args() works in AOT (not just JIT) ----
+add_test(
+    NAME test_proc_args
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_proc_args.cmake
+)
+set_tests_properties(test_proc_args PROPERTIES
+    DEPENDS "test_bf046_map_struct_val"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- Bug #23: int literals > i32 range no longer truncated ----
+add_test(
+    NAME test_i64_literal
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_i64_literal.cmake
+)
+set_tests_properties(test_i64_literal PROPERTIES
+    DEPENDS "test_proc_args"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- Bug #24: struct literal alloca in loop → JIT stack overflow ----
+add_test(
+    NAME test_struct_loop
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_struct_loop.cmake
+)
+set_tests_properties(test_struct_loop PROPERTIES
+    DEPENDS "test_i64_literal"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- Bug #25: enum payload alignment (f64/i64 fast access) ----
+add_test(
+    NAME test_enum_align
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_align.cmake
+)
+set_tests_properties(test_enum_align PROPERTIES
+    DEPENDS "test_struct_loop"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- vec.get_unsafe(i) — unchecked index load ----
+add_test(
+    NAME test_vec_get_unsafe
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_get_unsafe.cmake
+)
+set_tests_properties(test_vec_get_unsafe PROPERTIES
+    DEPENDS "test_enum_align"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- Bug #26: loop-body temp allocas → JIT stack overflow (entry-block fix) ----
+add_test(
+    NAME test_string_loop
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_string_loop.cmake
+)
+set_tests_properties(test_string_loop PROPERTIES
+    DEPENDS "test_vec_get_unsafe"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

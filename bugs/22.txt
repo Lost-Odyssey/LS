@@ -1,0 +1,48 @@
+## Bug #22 — AOT 模式下 proc.args() 不工作（__ls_set_args 未调用）
+
+### 状态：FIXED（2026-06-04）
+
+### 修复实现
+codegen 在 AOT 模式（`ctx->aot_entry`，仅 `compile`/`emit-ir` 路径置位，JIT 不置）下：
+1. `src/codegen.h`：新增 `bool aot_entry` 标志。
+2. `src/main.c`：`compile`/`emit-ir` 两条 AOT 路径置 `ctx.aot_entry = true`（JIT 走 main.c
+   既有 `__ls_set_args` 调用，不受影响）。
+3. `src/codegen.c` 入口 `main` 改用 C 签名 `int main(i32 argc, i8** argv)`——
+   两处必须一致：Pass 1 前向声明（~L20502）与 `codegen_fn_decl`（~L16022），否则函数体
+   复用旧无参声明，argv 传不进来（本次定位的关键坑）。同样覆盖 synthetic main（无 main
+   的顶层程序）。
+4. 入口注入块（~L21006）在 ffi_init/global_stmts 之前插入 `__ls_set_args(argc, argv)`。
+
+回归测试：`tests/test_proc_args.cmake`（JIT+AOT+memcheck，传 `foo bar baz` 验证
+`proc.args()` 返回 3 项）。ctest 137/137。
+
+### 现象（修复前）
+
+### 现象
+AOT 编译出的 `.exe` 调用 `proc.args()` 始终返回空 `vec(string)`，
+因为全局变量 `g_argc` 未被初始化（永远为 0）。
+
+### 根因
+`proc.args()` 的实现流程：
+```
+proc.args() → c.__ls_get_argc() → runtime/builtins.c 的全局 int g_argc
+```
+
+`g_argc` 由 `__ls_set_args(argc, argv)` 设置，该函数仅在 JIT 入口
+`src/main.c:481` 处调用。AOT 编译出的 exe 的入口函数是 LS 用户的
+`main()`，它直接跳转到 LS 代码，不调用 `__ls_set_args`。
+
+### 影响范围
+- 依赖 `proc.args()` 的 LS 代码在 AOT 模式下永远拿不到命令行参数
+- JIT 模式（`ls run`）不受影响
+- 所有使用 `proc.args()` 的 stdlib 模块（`proc.args`、`proc.program` 等）
+
+### 修补方向（需修改编译器）
+1. 在 codegen 中，AOT 模式下的 `main()` 函数开头插入对
+   `__ls_set_args(argc, argv)` 的调用
+2. LS `main()` 需要能接收 C 的 `argc`/`argv` 参数（当前只生成 `void main()`）
+3. 或者：LS `main()` 的入口包装函数 `main(argc, argv) { __ls_set_args(argc, argv); return ls_main(); }`
+
+### 临时绕过
+- 在 fib.ls 等 benchmark 代码中硬编码 n 值
+- 使用 JIT 模式（`ls run`）带参数运行

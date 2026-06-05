@@ -1,0 +1,38 @@
+## Bug #23 — i64 整数字面量被截断成 i32
+
+### 状态：FIXED（2026-06-04）
+
+### 现象
+不能用 i32 表示的整数字面量在赋给 i64 时被截断：
+```
+i64 a = 9000000000
+print(a)              // 输出 410065408  (= 9000000000 mod 2^32)
+```
+`print(a)` 不经 f-string 也复现 → 与 f-string 无关。
+运行时 i64 算术正确（`i64 c=100; i64 d=c*50000000; print(d)` → 5000000000），
+仅**字面量**出错。
+
+### 根因
+- `src/parser.c` 用 `strtoll` 正确解析为 `long long`，`ast.h` 的 `int_lit.value` 也是
+  `long long` —— 解析无误。
+- `src/checker.c` AST_INT_LIT **一律**定为 `type_int()`（i32）。
+- `src/codegen.c` AST_INT_LIT **一律**发射 `LLVMConstInt(i32, ...)` —— 大值在此截断。
+
+### 修复
+1. checker（AST_INT_LIT）：值超出 i32 范围（`>2147483647` 或 `<-2147483648`）的字面量
+   定为 `type_i64()`，否则仍 `type_int()`。
+2. codegen（AST_INT_LIT）：按 `node->resolved_type` 发射——i64/u64 发 i64 常量，
+   其余仍 i32（小整数行为不变）。
+
+二者配合：大字面量 checker 定 i64 → codegen 发 i64 → `i64 a = <i64const>` 直接存，
+`cg_widen` 因 `type_equals(i64,i64)` 短路、不再 sext 截断值。
+
+### 不在本次范围（与 C 语义一致，非本 bug）
+`i64 d = 100 * 50000000`：两个 i32 字面量相乘在 i32 下溢出后才 widen（705032704），
+与 C 的 `long d = 100*50000000` 行为相同。修它需把字面量算术提升到上下文类型，是更大的
+语义改动，另行评估。
+
+### 回归测试
+`tests/test_i64_literal.cmake` + `tests/samples/i64_literal_test.ls`
+（JIT + AOT + memcheck，覆盖大正/负字面量、十六进制、f-string 插值、i32 不变、i64 变量算术）。
+ctest 138/138。

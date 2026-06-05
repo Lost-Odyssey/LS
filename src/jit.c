@@ -11,7 +11,9 @@
 #include <llvm-c/Orc.h>
 #include <llvm-c/OrcEE.h>
 #include <llvm-c/Target.h>
+#include <llvm-c/TargetMachine.h>
 #include <llvm-c/Error.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -176,6 +178,12 @@ int jit_init(JitEngine *engine) {
         /* strconv float helpers */
         extern void        __ls_float_fixed_exec(double, int);
         extern void       *__ls_float_fixed_ptr(void);
+        /* f-string bounded formatter */
+        extern int         __ls_fstr_format(char *, size_t, const char *, ...);
+        /* string bulk-scan helpers (for parsers) */
+        extern int         __ls_str_skip_ws(const char *, int, int);
+        extern int         __ls_str_scan_plain(const char *, int, int);
+        extern int         __ls_str_scan_digits(const char *, int, int);
 
         LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
@@ -189,7 +197,7 @@ int jit_init(JitEngine *engine) {
     pairs[i].Sym.Flags.TargetFlags = 0; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[73];
+        LLVMOrcCSymbolMapPair pairs[77];
         /* 0-5: memcheck */
         REG( 0, ls_mc_alloc);
         REG( 1, ls_mc_free);
@@ -274,9 +282,13 @@ int jit_init(JitEngine *engine) {
         /* 71-72: strconv float helpers */
         REG(71, __ls_float_fixed_exec);
         REG(72, __ls_float_fixed_ptr);
+        REG(73, __ls_fstr_format);
+        REG(74, __ls_str_skip_ws);
+        REG(75, __ls_str_scan_plain);
+        REG(76, __ls_str_scan_digits);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 73);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 77);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */
@@ -591,6 +603,34 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
         if (err_msg) LLVMDisposeMessage(err_msg);
     }
 
+    /* Optionally run O2 optimization pipeline on the module before handing it
+       to LLJIT. Enables inlining, loop vectorization, DCE, etc. — the same
+       passes AOT gets. Controlled by engine->jit_optimize (set from --optimize
+       flag or LS_JIT_OPT=1 env var). Off by default: O2 adds ~1s compile time
+       for large modules (e.g. std.json). */
+    if (engine->jit_optimize) {
+        char *target_triple = LLVMGetDefaultTargetTriple();
+        LLVMTargetRef target_ref;
+        char *tm_err = NULL;
+        if (!LLVMGetTargetFromTriple(target_triple, &target_ref, &tm_err)) {
+            LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+                target_ref, target_triple, "generic", "",
+                LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelDefault);
+            LLVMPassBuilderOptionsRef pb_opts = LLVMCreatePassBuilderOptions();
+            LLVMErrorRef pass_err = LLVMRunPasses(module, "default<O2>", tm, pb_opts);
+            if (pass_err) {
+                char *msg = LLVMGetErrorMessage(pass_err);
+                fprintf(stderr, "[jit] O2 pass error: %s\n", msg);
+                LLVMDisposeErrorMessage(msg);
+            }
+            LLVMDisposePassBuilderOptions(pb_opts);
+            LLVMDisposeTargetMachine(tm);
+        } else {
+            if (tm_err) LLVMDisposeMessage(tm_err);
+        }
+        LLVMDisposeMessage(target_triple);
+    }
+
     /* Clean up codegen (but DON'T dispose context or module — they belong to JIT) */
     LLVMDisposeBuilder(cg.builder);
     /* Don't free scope chain here — codegen_compile manages it */
@@ -601,13 +641,14 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
 
 /* ---- jit_run_file ---- */
 
-static int jit_run_file_impl(const char *path, bool memcheck, bool profile);
+static int jit_run_file_impl(const char *path, bool memcheck, bool profile, bool optimize);
 
-int jit_run_file(const char *path) { return jit_run_file_impl(path, false, false); }
-int jit_run_file_memcheck(const char *path) { return jit_run_file_impl(path, true, false); }
-int jit_run_file_profile(const char *path) { return jit_run_file_impl(path, false, true); }
+int jit_run_file(const char *path) { return jit_run_file_impl(path, false, false, false); }
+int jit_run_file_memcheck(const char *path) { return jit_run_file_impl(path, true, false, false); }
+int jit_run_file_profile(const char *path) { return jit_run_file_impl(path, false, true, false); }
+int jit_run_file_optimize(const char *path) { return jit_run_file_impl(path, false, false, true); }
 
-static int jit_run_file_impl(const char *path, bool memcheck, bool profile) {
+static int jit_run_file_impl(const char *path, bool memcheck, bool profile, bool optimize) {
     char *source = read_file(path);
     if (source == NULL) return 1;
 
@@ -638,6 +679,7 @@ static int jit_run_file_impl(const char *path, bool memcheck, bool profile) {
     }
     engine.memcheck_enabled = memcheck;
     engine.profile_enabled = profile;
+    engine.jit_optimize = optimize;
 
     /* Log incremental info */
     if (ast->kind == AST_PROGRAM) {

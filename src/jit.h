@@ -32,6 +32,7 @@ typedef struct {
     bool initialized;
     bool memcheck_enabled;  /* propagate to CodegenContext for each module */
     bool profile_enabled;   /* propagate to CodegenContext for each module */
+    bool jit_optimize;      /* --optimize: run O2 pipeline on each module before JIT */
 } JitEngine;
 
 /* Initialize the JIT engine */
@@ -57,6 +58,11 @@ int jit_run_file_memcheck(const char *path);
    Injects ls_prof_enter/leave at every function boundary and prints a
    sorted timing report at exit. */
 int jit_run_file_profile(const char *path);
+
+/* Same as jit_run_file but runs the full O2 optimization pipeline on each
+   JIT module before execution. Enables inlining, loop vectorization, DCE, etc.
+   Trade-off: larger modules (e.g. std.json) take ~1s extra to compile. */
+int jit_run_file_optimize(const char *path);
 
 /* Run the REPL (interactive incremental JIT) */
 int jit_repl(void);

@@ -59,6 +59,8 @@ typedef struct {
 
     bool had_error;
     bool extern_builtins;   /* JIT mode: declare builtins without bodies (defined elsewhere) */
+    bool aot_entry;         /* AOT compile: entry main() gets C sig int main(argc,argv) +
+                               forwards to __ls_set_args so proc.args() works (bug #22) */
     bool memcheck_enabled;  /* --memcheck: route all malloc/free through ls_mc_* tracker */
     bool profile_enabled;   /* --profile: inject ls_prof_enter/leave for function profiling */
 

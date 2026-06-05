@@ -1,0 +1,10 @@
+﻿vecbench results
+================
+  n = 10000000 (total us all 4 ops, lower=faster)
+
+  LS (JIT)           125,373 us     1.71x
+  LS (JIT -O)         81,813 us     1.11x
+  LS (AOT)            78,392 us     1.07x
+  Rust                73,434 us     1.00x
+  C++                 88,796 us     1.21x
+  Python (est)     2,311,110 us    31.47x

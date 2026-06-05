@@ -1,0 +1,13 @@
+﻿alloc benchmark results
+=======================
+  n = 200000, iterations = 5 (per-iter mean ns)
+  workload: vec(string) growth + map(string,int) word-freq, RAII drop
+  correctness: all match (10485410)
+  total wall time: 8.5 s
+
+  LS (JIT)      56,588,400.0 ns     2.25x
+  LS (AOT)      52,705,780.2 ns     2.10x
+  Rust          65,124,380.0 ns     2.59x
+  C++           25,125,200.0 ns     1.00x
+  Python       131,786,220.0 ns     5.25x
+  Ruby         185,985,320.0 ns     7.40x

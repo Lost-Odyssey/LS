@@ -5,6 +5,167 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
+
+/* ---- f-string formatter (used by codegen) ----
+   __ls_fstr_format(buf, size, fmt, ...) has snprintf semantics: writes at most
+   size-1 chars + NUL, returns the FULL length the result needs (even if
+   truncated). Codegen calls this rather than snprintf directly because on
+   Windows/UCRT `snprintf` is a header inline with no JIT-resolvable symbol; this
+   is a real exported symbol (AOT-linked via ls_os_backend, JIT-registered).
+
+   Fast path: when the format contains only the integer/string conversions LS
+   actually emits for plain interpolations (%d %i %u %lld %llu %s %c %%) — no
+   float, width, precision or flags — we assemble the result with a hand-rolled
+   itoa + memcpy, bypassing the CRT printf state machine (locale handling, format
+   re-parsing). Anything else (%f, %.2f, %x, %p, padding, …) falls back to
+   vsnprintf so behaviour is unchanged. */
+
+/* Bound-aware append of `len` bytes; advances *total by len (snprintf counting,
+   even past the buffer). Reserves buf[size-1] for the NUL. */
+static void ls_fmt_put(char *buf, size_t size, size_t *total,
+                       const char *src, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        size_t idx = *total + i;
+        if (idx + 1 < size) buf[idx] = src[i];
+    }
+    *total += len;
+}
+
+/* unsigned -> decimal, written to out (no NUL); returns digit count. */
+static int ls_u64_dec(unsigned long long v, char *out) {
+    char tmp[20];
+    int n = 0;
+    if (v == 0) { out[0] = '0'; return 1; }
+    while (v) { tmp[n++] = (char)('0' + (int)(v % 10)); v /= 10; }
+    for (int i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+    return n;
+}
+
+/* signed -> decimal (handles INT64_MIN safely); returns char count. */
+static int ls_i64_dec(long long v, char *out) {
+    if (v < 0) {
+        out[0] = '-';
+        unsigned long long uv = (unsigned long long)(-(v + 1)) + 1ULL;
+        return 1 + ls_u64_dec(uv, out + 1);
+    }
+    return ls_u64_dec((unsigned long long)v, out);
+}
+
+/* Returns 1 if every conversion in fmt is one this fast path can handle. Must
+   stay exactly in sync with the switch in ls_fast_vformat below. */
+static int ls_fmt_is_simple(const char *fmt) {
+    for (const char *p = fmt; *p; p++) {
+        if (*p != '%') continue;
+        char c = p[1];
+        if (c == '%' || c == 'd' || c == 'i' || c == 'u' || c == 's' || c == 'c') {
+            p++;  /* consume the conversion char */
+        } else if (c == 'l' && p[2] == 'l' && (p[3] == 'd' || p[3] == 'u')) {
+            p += 3;
+        } else {
+            return 0;  /* float / hex / pointer / width / precision / flags */
+        }
+    }
+    return 1;
+}
+
+static int ls_fast_vformat(char *buf, size_t size, const char *fmt, va_list ap) {
+    size_t total = 0;
+    char num[24];
+    const char *p = fmt;
+    while (*p) {
+        if (*p != '%') {
+            const char *start = p;
+            while (*p && *p != '%') p++;
+            ls_fmt_put(buf, size, &total, start, (size_t)(p - start));
+            continue;
+        }
+        /* *p == '%' */
+        char c = p[1];
+        if (c == '%') {
+            ls_fmt_put(buf, size, &total, "%", 1);
+            p += 2;
+        } else if (c == 'd' || c == 'i') {
+            int v = va_arg(ap, int);
+            ls_fmt_put(buf, size, &total, num, (size_t)ls_i64_dec(v, num));
+            p += 2;
+        } else if (c == 'u') {
+            unsigned v = va_arg(ap, unsigned);
+            ls_fmt_put(buf, size, &total, num, (size_t)ls_u64_dec(v, num));
+            p += 2;
+        } else if (c == 's') {
+            const char *s = va_arg(ap, const char *);
+            if (s == NULL) s = "(null)";
+            ls_fmt_put(buf, size, &total, s, strlen(s));
+            p += 2;
+        } else if (c == 'c') {
+            int ch = va_arg(ap, int);
+            char cc = (char)ch;
+            ls_fmt_put(buf, size, &total, &cc, 1);
+            p += 2;
+        } else { /* c == 'l': %lld / %llu (guaranteed by ls_fmt_is_simple) */
+            if (p[3] == 'd') {
+                long long v = va_arg(ap, long long);
+                ls_fmt_put(buf, size, &total, num, (size_t)ls_i64_dec(v, num));
+            } else {
+                unsigned long long v = va_arg(ap, unsigned long long);
+                ls_fmt_put(buf, size, &total, num, (size_t)ls_u64_dec(v, num));
+            }
+            p += 4;
+        }
+    }
+    if (size > 0) buf[total < size ? total : size - 1] = '\0';
+    return (int)total;
+}
+
+int __ls_fstr_format(char *buf, size_t size, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n;
+    if (ls_fmt_is_simple(fmt))
+        n = ls_fast_vformat(buf, size, fmt, ap);
+    else
+        n = vsnprintf(buf, size, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
+/* __ls_str_skip_ws(data, len, start) -> int
+   Scan forward from `start`, skipping ' ' '\t' '\n' '\r', return first
+   non-ws position (or len if all ws). Single tight C loop — replaces the
+   LS-level _skip_ws that called at()/at_unsafe() per character. */
+int __ls_str_skip_ws(const char *data, int len, int start) {
+    int i = start;
+    while (i < len) {
+        char c = data[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+            i++;
+        else
+            break;
+    }
+    return i;
+}
+
+/* __ls_str_scan_plain(data, len, start) -> int
+   Scan forward from `start` until '"' or '\\' or end, return the position.
+   Used by JSON string parser to bulk-skip unescaped chars. */
+int __ls_str_scan_plain(const char *data, int len, int start) {
+    int i = start;
+    while (i < len) {
+        char c = data[i];
+        if (c == '"' || c == '\\') break;
+        i++;
+    }
+    return i;
+}
+
+/* __ls_str_scan_digits(data, len, start) -> int
+   Scan forward from `start` while chars are '0'-'9', return first non-digit pos. */
+int __ls_str_scan_digits(const char *data, int len, int start) {
+    int i = start;
+    while (i < len && data[i] >= '0' && data[i] <= '9') i++;
+    return i;
+}
 
 /* print(string) — print a string followed by newline */
 void ls_print(const char *s) {

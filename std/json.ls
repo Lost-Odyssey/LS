@@ -241,7 +241,7 @@ fn _new_parser(string input) -> JParser {
 // Skip whitespace (space, tab, \n, \r)
 fn _skip_ws(&!JParser p) {
     while p.pos < p.len {
-        int ch = p.input.at(p.pos)
+        int ch = p.input.at_unsafe(p.pos)
         if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
             p.pos = p.pos + 1
         } else {
@@ -253,13 +253,13 @@ fn _skip_ws(&!JParser p) {
 // Peek current char (returns -1 at end)
 fn _peek(&!JParser p) -> int {
     if p.pos >= p.len { return 0 - 1 }
-    return p.input.at(p.pos)
+    return p.input.at_unsafe(p.pos)
 }
 
 // Consume one char and advance
 fn _advance(&!JParser p) -> int {
     if p.pos >= p.len { return 0 - 1 }
-    int ch = p.input.at(p.pos)
+    int ch = p.input.at_unsafe(p.pos)
     p.pos = p.pos + 1
     return ch
 }
@@ -282,7 +282,7 @@ fn _expect(&!JParser p, int expected) -> Result(int, string) {
 fn _scan_plain(&!JParser p) -> int {
     int start = p.pos
     while p.pos < p.len {
-        int c = p.input.at(p.pos)
+        int c = p.input.at_unsafe(p.pos)
         if c == '"' || c == '\\' { return p.pos - start }
         p.pos = p.pos + 1
     }
@@ -345,22 +345,22 @@ fn _parse_number(&!JParser p) -> Result(JsonValue, string) {
     if !_is_digit(_peek(&!p)) {
         return Err(f"json: expected digit at position {p.pos}")
     }
-    while p.pos < p.len && _is_digit(p.input.at(p.pos)) {
+    while p.pos < p.len && _is_digit(p.input.at_unsafe(p.pos)) {
         p.pos = p.pos + 1
     }
     // Optional fraction
-    if p.pos < p.len && p.input.at(p.pos) == '.' {
+    if p.pos < p.len && p.input.at_unsafe(p.pos) == '.' {
         p.pos = p.pos + 1
         if !_is_digit(_peek(&!p)) {
             return Err(f"json: expected digit after '.' at position {p.pos}")
         }
-        while p.pos < p.len && _is_digit(p.input.at(p.pos)) {
+        while p.pos < p.len && _is_digit(p.input.at_unsafe(p.pos)) {
             p.pos = p.pos + 1
         }
     }
     // Optional exponent
     if p.pos < p.len {
-        int ec = p.input.at(p.pos)
+        int ec = p.input.at_unsafe(p.pos)
         if ec == 'e' || ec == 'E' {
             p.pos = p.pos + 1
             int sc = _peek(&!p)
@@ -368,7 +368,7 @@ fn _parse_number(&!JParser p) -> Result(JsonValue, string) {
             if !_is_digit(_peek(&!p)) {
                 return Err(f"json: expected digit in exponent at position {p.pos}")
             }
-            while p.pos < p.len && _is_digit(p.input.at(p.pos)) {
+            while p.pos < p.len && _is_digit(p.input.at_unsafe(p.pos)) {
                 p.pos = p.pos + 1
             }
         }
@@ -494,19 +494,19 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
 
 fn _match4(&!JParser p, int c0, int c1, int c2, int c3) -> bool {
     if p.pos + 4 > p.len { return false }
-    return p.input.at(p.pos)   == c0 &&
-           p.input.at(p.pos+1) == c1 &&
-           p.input.at(p.pos+2) == c2 &&
-           p.input.at(p.pos+3) == c3
+    return p.input.at_unsafe(p.pos)   == c0 &&
+           p.input.at_unsafe(p.pos+1) == c1 &&
+           p.input.at_unsafe(p.pos+2) == c2 &&
+           p.input.at_unsafe(p.pos+3) == c3
 }
 
 fn _match5(&!JParser p, int c0, int c1, int c2, int c3, int c4) -> bool {
     if p.pos + 5 > p.len { return false }
-    return p.input.at(p.pos)   == c0 &&
-           p.input.at(p.pos+1) == c1 &&
-           p.input.at(p.pos+2) == c2 &&
-           p.input.at(p.pos+3) == c3 &&
-           p.input.at(p.pos+4) == c4
+    return p.input.at_unsafe(p.pos)   == c0 &&
+           p.input.at_unsafe(p.pos+1) == c1 &&
+           p.input.at_unsafe(p.pos+2) == c2 &&
+           p.input.at_unsafe(p.pos+3) == c3 &&
+           p.input.at_unsafe(p.pos+4) == c4
 }
 
 fn _parse_value(&!JParser p) -> Result(JsonValue, string) {
@@ -580,12 +580,12 @@ fn _escape_string(string s) -> string {
     // Fast-path: scan for first char that needs escaping.
     // Most JSON keys/values are plain ASCII — avoid per-char match entirely.
     while i < n {
-        int ch = s.at(i)
+        int ch = s.at_unsafe(i)
         if ch == '"' || ch == '\\' || ch == '\n' || ch == '\r' || ch == '\t' || ch == 8 || ch == 12 {
             // Slow path: copy clean prefix, then escape from i onward.
             string result = s.substr(0, i)
             while i < n {
-                ch = s.at(i)
+                ch = s.at_unsafe(i)
                 match ch {
                     '"'  => { result.append("\\\"") }
                     '\\' => { result.append("\\\\") }

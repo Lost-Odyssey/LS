@@ -1,0 +1,63 @@
+## 修 json 端到端 测试发现的 double-free 问题
+
+##
+PS C:\Yang\10003_language\LS> .\build\Release\ls.exe run .\tests\samples\json_e2e_test.ls
+[jit] compiling function 'print_value' (hash=51983c74a0f75b36)
+[jit] compiling function 'main' (hash=4fcc630852a579ad)
+Top-level keys: 8
+name = LS Language
+version = 1.0
+active = true
+count = 42.000000
+nothing = null
+tags = [ 3  items]
+author = { 2  keys}
+features = { 3  keys}
+round-trip: {"name":"LS Language","version":"1.0","active":true,"count":42,"nothing":null,"tags":["compiler","llvm","jit"],"author":{"name":"miosa","year":2026},"features":{"jit":true,"aot":true,"memcheck":true}}
+PS C:\Yang\10003_language\LS> .\build\Release\ls.exe run --memcheck .\tests\samples\json_e2e_test.ls
+[jit] compiling function 'print_value' (hash=51983c74a0f75b36)
+[jit] compiling function 'main' (hash=4fcc630852a579ad)
+Top-level keys: 8
+name = LS Language
+version = 1.0
+active = true
+count = 42.000000
+nothing = null
+tags = [ 3  items]
+author = { 2  keys}
+features = { 3  keys}
+round-trip: {"name":"LS Language","version":"1.0","active":true,"count":42,"nothing":null,"tags":["compiler","llvm","jit"],"author":{"name":"miosa","year":2026},"features":{"jit":true,"aot":true,"memcheck":true}}
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (string.vec_elem_drop)  ptr=000002123F3AC790
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (string.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (string.vec_elem_drop)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (string.vec_elem_drop)  ptr=000002123F3ACD90
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (string.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (string.vec_elem_drop)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (string.vec_elem_drop)  ptr=000002123F3ACEF0
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (string.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (string.vec_elem_drop)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (string.vec_elem_drop)  ptr=000002123F3ACDB0
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (string.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (string.vec_elem_drop)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (string.vec_elem_drop)  ptr=000002123F3ACC10
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (string.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (string.vec_elem_drop)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (string.vec_elem_drop)  ptr=000002123F3ACB50
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (string.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (string.vec_elem_drop)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (string.vec_elem_drop)  ptr=000002123F3AC9F0
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (string.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (string.vec_elem_drop)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (string.vec_elem_drop)  ptr=000002123F3ACDD0
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (string.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (string.vec_elem_drop)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (enum.vec.payload)  ptr=000002123F160DC0
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (vec.clone)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (enum.vec.payload)
+[memcheck] DOUBLE FREE   .\tests\samples\json_e2e_test.ls:0:0  (map.scope_drop)  ptr=000002123F161240
+[memcheck]   originally allocated at .\tests\samples\json_e2e_test.ls:0:0 (unknown)
+[memcheck]   first freed at         .\tests\samples\json_e2e_test.ls:0:0 (map.scope_drop)
+
+=== LS memcheck report ===
+[memcheck] SUMMARY: 0 leak(s) (0 bytes), 10 double-free, 0 invalid free
+=== end ===

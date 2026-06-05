@@ -169,6 +169,7 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
     codegen_init(&ctx, path);
     ctx.memcheck_enabled = memcheck;
     ctx.profile_enabled = profile;
+    ctx.aot_entry = true;  /* AOT: forward argc/argv to __ls_set_args (bug #22) */
 
     /* G1.5: transfer pending generic methods to codegen */
     if (gm.count > 0) {
@@ -350,6 +351,7 @@ static int cmd_emit_ir(const char *path) {
 
     CodegenContext ctx;
     codegen_init(&ctx, path);
+    ctx.aot_entry = true;  /* emit-ir is an AOT path: forward argc/argv (bug #22) */
     if (gm2.count > 0) {
         ctx.pending_gm_count = gm2.count;
         size_t sz = (size_t)gm2.count * sizeof(ctx.pending_generic_methods[0]);
@@ -387,6 +389,7 @@ static void usage(void) {
         "  emit-ir <file>             Emit LLVM IR to stdout\n"
         "  compile <file> [-o out]    Compile to executable\n"
         "  run <file>                 JIT execute (Phase 5)\n"
+        "  run --optimize <file>      JIT with O2 optimization (inlining+vectorize)\n"
         "  repl                       Interactive REPL (Phase 5)\n"
     );
 }
@@ -460,11 +463,13 @@ int main(int argc, char *argv[]) {
     if (strcmp(cmd, "run") == 0) {
         bool memcheck = false;
         bool profile = false;
+        bool optimize = false;
         const char *file = NULL;
         int file_idx = -1;
         for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--memcheck") == 0) memcheck = true;
             else if (strcmp(argv[i], "--profile") == 0) profile = true;
+            else if (strcmp(argv[i], "--optimize") == 0 || strcmp(argv[i], "-O") == 0) optimize = true;
             else if (file == NULL) { file = argv[i]; file_idx = i; }
         }
         if (file == NULL) {
@@ -482,6 +487,7 @@ int main(int argc, char *argv[]) {
         }
         if (memcheck) return jit_run_file_memcheck(file);
         if (profile) return jit_run_file_profile(file);
+        if (optimize) return jit_run_file_optimize(file);
         return jit_run_file(file);
     }
 

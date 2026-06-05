@@ -319,7 +319,10 @@ static LLVMBasicBlockRef emit_struct_drop_separate(CodegenContext *ctx, LLVMValu
                                                    Type *struct_type, LLVMValueRef moved_flag);
 static void emit_drop_field_cleanup(CodegenContext *ctx);
 LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t);
+static LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const char *name);
 static LLVMTypeRef build_variant_payload_struct(CodegenContext *ctx, Type *enum_type, int variant_idx);
+static void cg_enum_payload_dims(CodegenContext *ctx, Type *et, int *out_size, int *out_align);
+static void cg_enum_body_fields(CodegenContext *ctx, int max_payload, int max_align, LLVMTypeRef body_out[2]);
 static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                                    Type *enum_type, int variant_idx,
                                    AstNode **args, int arg_count);
@@ -702,7 +705,7 @@ static LLVMValueRef cg_get_perf_now(CodegenContext *ctx) {
 
     LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
     /* counter alloca + QPC call */
-    LLVMValueRef counter_alloca = LLVMBuildAlloca(ctx->builder, i64_t, "counter");
+    LLVMValueRef counter_alloca = cg_entry_alloca(ctx, i64_t, "counter");
     LLVMValueRef qpc_args[1] = { counter_alloca };
     LLVMBuildCall2(ctx->builder, LLVMGlobalGetValueType(qpc_fn), qpc_fn, qpc_args, 1, "");
     LLVMValueRef counter = LLVMBuildLoad2(ctx->builder, i64_t, counter_alloca, "cnt");
@@ -727,7 +730,7 @@ static LLVMValueRef cg_get_perf_now(CodegenContext *ctx) {
     /* struct timespec { i64 tv_sec; i64 tv_nsec; } */
     LLVMTypeRef ts_fields[2] = { i64_t, i64_t };
     LLVMTypeRef ts_ty = LLVMStructTypeInContext(ctx->context, ts_fields, 2, 0);
-    LLVMValueRef ts_alloca = LLVMBuildAlloca(ctx->builder, ts_ty, "ts");
+    LLVMValueRef ts_alloca = cg_entry_alloca(ctx, ts_ty, "ts");
     /* CLOCK_MONOTONIC = 1 on Linux */
     LLVMValueRef cgt_args[2] = { LLVMConstInt(i32_t, 1, 0), ts_alloca };
     LLVMBuildCall2(ctx->builder, LLVMGlobalGetValueType(cgt_fn), cgt_fn, cgt_args, 2, "");
@@ -1122,6 +1125,27 @@ static void cg_install_memcheck_wrappers(CodegenContext *ctx) {
    through. Falls back to 0/0 when no current node is set. */
 #define CG_LINE(ctx) ((ctx)->current_node ? (ctx)->current_node->line   : 0)
 #define CG_COL(ctx)  ((ctx)->current_node ? (ctx)->current_node->column : 0)
+
+/* Allocate a stack slot in the CURRENT function's ENTRY block, regardless of
+   where the builder currently sits. Bug #24/#26 family: a plain
+   LLVMBuildAlloca at the current position, if that position is inside a loop
+   body, allocates a fresh slot every iteration (LLVM allocas are only released
+   on function return) → stack overflow. Entry-block allocas live once per call
+   and are reused. Use this for any scratch slot created during expression /
+   statement codegen (string method temps, loop indices, etc.). */
+static LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const char *name)
+{
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
+    LLVMValueRef fn = LLVMGetBasicBlockParent(cur);
+    LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(fn);
+    LLVMBuilderRef eb = LLVMCreateBuilderInContext(ctx->context);
+    LLVMValueRef first = LLVMGetFirstInstruction(entry_bb);
+    if (first) LLVMPositionBuilderBefore(eb, first);
+    else       LLVMPositionBuilderAtEnd(eb, entry_bb);
+    LLVMValueRef slot = LLVMBuildAlloca(eb, ty, name);
+    LLVMDisposeBuilder(eb);
+    return slot;
+}
 
 /* Emit an allocation. When memcheck is on, calls ls_mc_alloc(size, site).
    When off, calls plain malloc(size). Returns the pointer value.
@@ -3962,19 +3986,11 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
 
             /* Lazy build for instantiated templates (Option(int), Result(...)).
                Mirrors codegen_enum_decl but works straight from the Type
-               structure without an AST node. */
-            LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
-            LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
-            int max_payload = 0;
-            for (int v = 0; v < t->as.enom.variant_count; v++)
-            {
-                if (t->as.enom.variants[v].payload_count == 0) continue;
-                LLVMTypeRef vstruct = build_variant_payload_struct(ctx, t, v);
-                unsigned long long sz = LLVMABISizeOfType(td, vstruct);
-                if ((int)sz > max_payload) max_payload = (int)sz;
-            }
-            LLVMTypeRef payload = LLVMArrayType2(i8, (uint64_t)max_payload);
-            LLVMTypeRef body[2] = { i8, payload };
+               structure without an AST node. Aligned payload (bug #25). */
+            int max_payload = 0, max_align = 1;
+            cg_enum_payload_dims(ctx, t, &max_payload, &max_align);
+            LLVMTypeRef body[2];
+            cg_enum_body_fields(ctx, max_payload, max_align, body);
             LLVMTypeRef llvm_type = LLVMStructCreateNamed(ctx->context, ln);
             LLVMStructSetBody(llvm_type, body, 2, 0);
             register_enum_llvm(ctx, ln, llvm_type, t, max_payload);
@@ -4488,9 +4504,9 @@ static void codegen_print_map(CodegenContext *ctx, AstNode *arg)
 
     /* ---- loop_init_bb: allocate loop state ---- */
     LLVMPositionBuilderAtEnd(ctx->builder, loop_init_bb);
-    LLVMValueRef bi_a = LLVMBuildAlloca(ctx->builder, i64_t, "bi");   /* bucket index */
-    LLVMValueRef nd_a = LLVMBuildAlloca(ctx->builder, ptr_t, "nd");   /* current node */
-    LLVMValueRef cnt_a = LLVMBuildAlloca(ctx->builder, i32_t, "cnt"); /* pairs printed */
+    LLVMValueRef bi_a = cg_entry_alloca(ctx, i64_t, "bi");   /* bucket index */
+    LLVMValueRef nd_a = cg_entry_alloca(ctx, ptr_t, "nd");   /* current node */
+    LLVMValueRef cnt_a = cg_entry_alloca(ctx, i32_t, "cnt"); /* pairs printed */
     LLVMBuildStore(ctx->builder, LLVMConstInt(i64_t, 0, 0), bi_a);
     LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), cnt_a);
 
@@ -5082,61 +5098,96 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
         return result;
     }
 
-    /* We'll use snprintf to measure, then malloc, then sprintf to fill.
-       For simplicity, use a stack buffer of 4096 as intermediate. */
-
-    /* Declare strlen for measuring the result */
-    LLVMValueRef strlen_fn = LLVMGetNamedFunction(ctx->module, "strlen");
+    /* Format into a small reused entry-block stack scratch buffer, then copy out
+       exactly len+1 bytes onto the heap. snprintf is *bounded* (never overflows
+       the scratch) and returns the FULL length the result needs even when it had
+       to truncate — so a runtime check takes the fast path (fits in scratch →
+       memcpy) or, rarely, reformats straight into an exact-size heap buffer. This
+       replaces the old design's fixed 4096-byte (page-sized) heap buffer per
+       f-string (cap=4096): when the result outlived the call (e.g. pushed into a
+       vec) each one touched a fresh page → ~1 minor page fault apiece (~1.4us).
+       Exact sizing lets hundreds of small strings share a page, and there is no
+       longer any hard length cap. See benchmarks/alloc/alloc_analysis.md. */
+    enum { LS_FSTR_SCRATCH = 256 };
     LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
     LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-    if (strlen_fn == NULL)
-    {
-        LLVMTypeRef sl_params[] = {ptr_t};
-        LLVMTypeRef sl_type = LLVMFunctionType(i64_t, sl_params, 1, 0);
-        strlen_fn = LLVMAddFunction(ctx->module, "strlen", sl_type);
-    }
+    LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
 
-    /* Declare sprintf for string formatting */
-    LLVMValueRef sprintf_fn = LLVMGetNamedFunction(ctx->module, "sprintf");
-    if (sprintf_fn == NULL)
+    /* Bounded formatter: int __ls_fstr_format(char*, size_t, const char*, ...).
+       A runtime wrapper around vsnprintf — see runtime/builtins.c. (snprintf
+       itself has no JIT-resolvable symbol on Windows/UCRT, hence the wrapper.) */
+    LLVMValueRef snprintf_fn = LLVMGetNamedFunction(ctx->module, "__ls_fstr_format");
+    if (snprintf_fn == NULL)
     {
-        LLVMTypeRef sp_params[] = {ptr_t, ptr_t};
-        LLVMTypeRef sp_type = LLVMFunctionType(i32_t, sp_params, 2, 1);
-        sprintf_fn = LLVMAddFunction(ctx->module, "sprintf", sp_type);
+        LLVMTypeRef sp_params[] = {ptr_t, i64_t, ptr_t};
+        LLVMTypeRef sp_type0 = LLVMFunctionType(i32_t, sp_params, 3, 1);
+        snprintf_fn = LLVMAddFunction(ctx->module, "__ls_fstr_format", sp_type0);
     }
-    LLVMTypeRef sp_type = LLVMGlobalGetValueType(sprintf_fn);
+    LLVMTypeRef sp_type = LLVMGlobalGetValueType(snprintf_fn);
 
     LLVMValueRef fmt_str = LLVMBuildGlobalStringPtr(ctx->builder, fmt_buf, "fstr.fmt");
 
-    /* Allocate heap buffer: 4096 bytes (should be enough for most f-strings) */
-    LLVMValueRef buf_size = LLVMConstInt(i32_t, 4096, 0);
-    LLVMValueRef buf_size64 = LLVMBuildZExt(ctx->builder, buf_size, i64_t, "fstr.size64");
-    LLVMValueRef buf = cg_emit_alloc(ctx, buf_size64, "string.fstring",
+    /* Small reusable scratch buffer in the function entry block. Constant-size
+       alloca → reserved once in the frame, reused across loop iterations (no
+       per-iteration stack growth). Only emitted because we are compiling an
+       f-string; f-string-free functions get none. */
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    LLVMBuilderRef entry_b = LLVMCreateBuilderInContext(ctx->context);
+    LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
+    LLVMValueRef first_instr = LLVMGetFirstInstruction(entry_bb);
+    if (first_instr)
+        LLVMPositionBuilderBefore(entry_b, first_instr);
+    else
+        LLVMPositionBuilderAtEnd(entry_b, entry_bb);
+    LLVMValueRef tmp_buf = LLVMBuildArrayAlloca(
+        entry_b, i8_t, LLVMConstInt(i32_t, LS_FSTR_SCRATCH, 0), "fstr.tmp");
+    LLVMDisposeBuilder(entry_b);
+
+    /* n = snprintf(tmp, 256, fmt, vals...) — bounded; returns full needed length. */
+    int spn = 3 + val_count;
+    LLVMValueRef *sp_args = (LLVMValueRef *)malloc_safe((size_t)spn * sizeof(LLVMValueRef));
+    sp_args[0] = tmp_buf;
+    sp_args[1] = LLVMConstInt(i64_t, LS_FSTR_SCRATCH, 0);
+    sp_args[2] = fmt_str;
+    for (int i = 0; i < val_count; i++)
+        sp_args[3 + i] = vals[i];
+    LLVMValueRef n = LLVMBuildCall2(ctx->builder, sp_type, snprintf_fn,
+                                    sp_args, (unsigned)spn, "fstr.n");
+
+    /* cap = n+1; buf = malloc(cap). */
+    LLVMValueRef cap = LLVMBuildAdd(ctx->builder, n, LLVMConstInt(i32_t, 1, 0), "fstr.cap");
+    LLVMValueRef cap64 = LLVMBuildZExt(ctx->builder, cap, i64_t, "fstr.cap64");
+    LLVMValueRef buf = cg_emit_alloc(ctx, cap64, "string.fstring",
                                      node->line, node->column);
 
-    /* Call sprintf(buf, fmt, ...) */
-    int total = 2 + val_count;
-    LLVMValueRef *sp_args = (LLVMValueRef *)malloc_safe((size_t)total * sizeof(LLVMValueRef));
-    sp_args[0] = buf;
-    sp_args[1] = fmt_str;
-    for (int i = 0; i < val_count; i++)
-        sp_args[2 + i] = vals[i];
+    /* if (n < 256) the scratch already holds the full result → memcpy it out;
+       else it was truncated → reformat straight into the exact heap buffer. */
+    LLVMValueRef fits = LLVMBuildICmp(ctx->builder, LLVMIntULT, n,
+                                      LLVMConstInt(i32_t, LS_FSTR_SCRATCH, 0), "fstr.fits");
+    LLVMBasicBlockRef fits_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "fstr.fits");
+    LLVMBasicBlockRef big_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "fstr.big");
+    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "fstr.done");
+    LLVMBuildCondBr(ctx->builder, fits, fits_bb, big_bb);
 
-    LLVMBuildCall2(ctx->builder, sp_type, sprintf_fn,
-                   sp_args, (unsigned)total, "");
+    /* fast path: scratch holds the full result incl NUL (n+1 <= 256 bytes). */
+    LLVMPositionBuilderAtEnd(ctx->builder, fits_bb);
+    LLVMBuildMemCpy(ctx->builder, buf, 1, tmp_buf, 1, cap64);
+    LLVMBuildBr(ctx->builder, done_bb);
+
+    /* fallback: result longer than scratch → reformat directly into buf. */
+    LLVMPositionBuilderAtEnd(ctx->builder, big_bb);
+    sp_args[0] = buf;
+    sp_args[1] = cap64;
+    LLVMBuildCall2(ctx->builder, sp_type, snprintf_fn, sp_args, (unsigned)spn, "");
+    LLVMBuildBr(ctx->builder, done_bb);
+
     free(sp_args);
     free(vals);
 
-    /* Measure result length with strlen(buf) */
-    LLVMTypeRef sl_type = LLVMGlobalGetValueType(strlen_fn);
-    LLVMValueRef len64 = LLVMBuildCall2(ctx->builder, sl_type, strlen_fn,
-                                        &buf, 1, "fstr.len64");
-    LLVMValueRef len = LLVMBuildTrunc(ctx->builder, len64, i32_t, "fstr.len");
-
-    /* Build LsString: { data=buf, len=len, cap=4096 (heap-allocated) } */
-    LLVMValueRef cap = LLVMConstInt(i32_t, 4096, 0);
-    return cg_push_temp_string(ctx, ls_string_make(ctx, buf, len, cap));
+    LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+    /* LsString{ data=buf, len=n, cap=n+1 } (cap>0 = heap-owned → freed on drop). */
+    return cg_push_temp_string(ctx, ls_string_make(ctx, buf, n, cap));
 }
 
 /* Codegen for to_string(x) builtin — converts numeric/bool to LsString */
@@ -5724,6 +5775,59 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         return phi;
     }
 
+    /* s.at_unsafe(int i) -> int: unchecked byte load — GEP+load only, no
+       branches, no phi. Callers MUST guarantee 0 <= i < len (typically by
+       having already checked `pos < len` in their own loop condition).
+       Used by performance-critical parsers (std/json.ls, std/html.ls, etc.)
+       to avoid the 3-basic-block bounds-check overhead of at(). */
+    if (strcmp(method, "at_unsafe") == 0)
+    {
+        LLVMValueRef idx = codegen_expr(ctx, node->as.call.args[0]);
+        if (idx == NULL)
+            return NULL;
+        LLVMTypeRef idx_type = LLVMTypeOf(idx);
+        if (idx_type != i32_type)
+        {
+            if (LLVMGetTypeKind(idx_type) == LLVMIntegerTypeKind &&
+                LLVMGetIntTypeWidth(idx_type) > 32)
+                idx = LLVMBuildTrunc(ctx->builder, idx, i32_type, "atu.idx32");
+            else
+                idx = LLVMBuildSExtOrBitCast(ctx->builder, idx, i32_type, "atu.idx32");
+        }
+        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder,
+                                         LLVMInt8TypeInContext(ctx->context), s_data, &idx, 1, "atu.ptr");
+        LLVMValueRef byte = LLVMBuildLoad2(ctx->builder,
+                                           LLVMInt8TypeInContext(ctx->context), gep, "atu.byte");
+        return LLVMBuildZExt(ctx->builder, byte, i32_type, "atu.val");
+    }
+
+    /* s.skip_ws(int start) -> int: bulk skip whitespace from start, returns
+       first non-ws position. C runtime tight loop (__ls_str_skip_ws). */
+    if (strcmp(method, "skip_ws") == 0 ||
+        strcmp(method, "scan_plain") == 0 ||
+        strcmp(method, "scan_digits") == 0)
+    {
+        LLVMValueRef start = codegen_expr(ctx, node->as.call.args[0]);
+        if (start == NULL) return NULL;
+        LLVMTypeRef idx_type = LLVMTypeOf(start);
+        if (idx_type != i32_type)
+            start = LLVMBuildSExtOrBitCast(ctx->builder, start, i32_type, "scan.s32");
+        const char *fn_name;
+        if (strcmp(method, "skip_ws") == 0) fn_name = "__ls_str_skip_ws";
+        else if (strcmp(method, "scan_plain") == 0) fn_name = "__ls_str_scan_plain";
+        else fn_name = "__ls_str_scan_digits";
+        LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, fn_name);
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+        if (fn == NULL) {
+            LLVMTypeRef ps[] = { ptr_t, i32_type, i32_type };
+            LLVMTypeRef ft = LLVMFunctionType(i32_type, ps, 3, 0);
+            fn = LLVMAddFunction(ctx->module, fn_name, ft);
+        }
+        LLVMTypeRef ft = LLVMGlobalGetValueType(fn);
+        LLVMValueRef args[] = { s_data, s_len, start };
+        return LLVMBuildCall2(ctx->builder, ft, fn, args, 3, "scan.r");
+    }
+
     /* s.find(string sub) -> int: strstr then pointer subtraction, -1 if NULL */
     if (strcmp(method, "find") == 0)
     {
@@ -5912,7 +6016,7 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
             ctx->context, current_fn, "up.end");
 
         /* alloca for loop index */
-        LLVMValueRef idx_ptr = LLVMBuildAlloca(ctx->builder, i32_type, "up.idx");
+        LLVMValueRef idx_ptr = cg_entry_alloca(ctx, i32_type, "up.idx");
         LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), idx_ptr);
         LLVMBuildBr(ctx->builder, cond_bb);
 
@@ -5989,7 +6093,7 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(
             ctx->context, current_fn, "lo.end");
 
-        LLVMValueRef idx_ptr = LLVMBuildAlloca(ctx->builder, i32_type, "lo.idx");
+        LLVMValueRef idx_ptr = cg_entry_alloca(ctx, i32_type, "lo.idx");
         LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), idx_ptr);
         LLVMBuildBr(ctx->builder, cond_bb);
 
@@ -6099,8 +6203,8 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
             LLVMGetInsertBlock(ctx->builder));
 
         /* Alloca for start and end indices */
-        LLVMValueRef start_ptr = LLVMBuildAlloca(ctx->builder, i32_type, "tr.start");
-        LLVMValueRef end_ptr = LLVMBuildAlloca(ctx->builder, i32_type, "tr.end");
+        LLVMValueRef start_ptr = cg_entry_alloca(ctx, i32_type, "tr.start");
+        LLVMValueRef end_ptr = cg_entry_alloca(ctx, i32_type, "tr.end");
         LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), start_ptr);
         LLVMValueRef len_minus1 = LLVMBuildSub(ctx->builder, s_len,
                                                LLVMConstInt(i32_type, 1, 0), "tr.lm1");
@@ -6283,7 +6387,7 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
                 return NULL;
             LLVMValueRef char_i8 = LLVMBuildTrunc(ctx->builder, char_val, i8_t, "ap.ci8");
             /* Store char into a stack slot so we have an i8* to pass */
-            LLVMValueRef char_slot = LLVMBuildAlloca(ctx->builder, i8_t, "ap.slot");
+            LLVMValueRef char_slot = cg_entry_alloca(ctx, i8_t, "ap.slot");
             LLVMBuildStore(ctx->builder, char_i8, char_slot);
             LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
             emit_string_append_inline(ctx, str_alloca, char_slot, one32);
@@ -6312,7 +6416,7 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         LLVMValueRef replace_fn = LLVMGetNamedFunction(ctx->module, "__ls_str_replace");
         LLVMTypeRef replace_type = LLVMGlobalGetValueType(replace_fn);
 
-        LLVMValueRef out_len_ptr = LLVMBuildAlloca(ctx->builder, i32_type, "rp.outlen");
+        LLVMValueRef out_len_ptr = cg_entry_alloca(ctx, i32_type, "rp.outlen");
         LLVMValueRef rp_args[] = {
             s_data, s_len, old_data, old_len, new_data, new_len, out_len_ptr};
         LLVMValueRef result_buf = LLVMBuildCall2(ctx->builder, replace_type,
@@ -6346,8 +6450,8 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         LLVMValueRef sub_len_v = ls_string_len(ctx, sub_val);
 
         LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMValueRef last_ptr = LLVMBuildAlloca(ctx->builder, ptr_type, "rf.last");
-        LLVMValueRef p_ptr = LLVMBuildAlloca(ctx->builder, ptr_type, "rf.p");
+        LLVMValueRef last_ptr = cg_entry_alloca(ctx, ptr_type, "rf.last");
+        LLVMValueRef p_ptr = cg_entry_alloca(ctx, ptr_type, "rf.p");
         LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_type), last_ptr);
         LLVMBuildStore(ctx->builder, s_data, p_ptr);
 
@@ -6407,8 +6511,8 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         LLVMValueRef sub_len_v = ls_string_len(ctx, sub_val);
 
         LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMValueRef cnt_ptr = LLVMBuildAlloca(ctx->builder, i32_type, "cn.cnt");
-        LLVMValueRef p_ptr = LLVMBuildAlloca(ctx->builder, ptr_type, "cn.p");
+        LLVMValueRef cnt_ptr = cg_entry_alloca(ctx, i32_type, "cn.cnt");
+        LLVMValueRef p_ptr = cg_entry_alloca(ctx, ptr_type, "cn.p");
         LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), cnt_ptr);
         LLVMBuildStore(ctx->builder, s_data, p_ptr);
 
@@ -6463,9 +6567,9 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         LLVMTypeRef vec_t = ls_vec_type(ctx);
 
         /* Out-param allocas for __ls_str_split */
-        LLVMValueRef out_data_pp = LLVMBuildAlloca(ctx->builder, ptr_type, "spl.odp");
-        LLVMValueRef out_len_p = LLVMBuildAlloca(ctx->builder, i32_type, "spl.olp");
-        LLVMValueRef out_cap_p = LLVMBuildAlloca(ctx->builder, i32_type, "spl.ocp");
+        LLVMValueRef out_data_pp = cg_entry_alloca(ctx, ptr_type, "spl.odp");
+        LLVMValueRef out_len_p = cg_entry_alloca(ctx, i32_type, "spl.olp");
+        LLVMValueRef out_cap_p = cg_entry_alloca(ctx, i32_type, "spl.ocp");
         LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_type), out_data_pp);
         LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_len_p);
         LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_cap_p);
@@ -6496,7 +6600,7 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         LLVMValueRef vec_data_v = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "jn.vd");
         LLVMValueRef vec_len_v = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "jn.vl");
 
-        LLVMValueRef out_len_p = LLVMBuildAlloca(ctx->builder, i32_type, "jn.olp");
+        LLVMValueRef out_len_p = cg_entry_alloca(ctx, i32_type, "jn.olp");
 
         LLVMValueRef join_fn = LLVMGetNamedFunction(ctx->module, "__ls_str_join");
         LLVMTypeRef join_t = LLVMGlobalGetValueType(join_fn);
@@ -6775,9 +6879,9 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
     {
         LLVMTypeRef vec_t = ls_vec_type(ctx);
 
-        LLVMValueRef out_data_pp = LLVMBuildAlloca(ctx->builder, ptr_type, "ln.odp");
-        LLVMValueRef out_len_p   = LLVMBuildAlloca(ctx->builder, i32_type, "ln.olp");
-        LLVMValueRef out_cap_p   = LLVMBuildAlloca(ctx->builder, i32_type, "ln.ocp");
+        LLVMValueRef out_data_pp = cg_entry_alloca(ctx, ptr_type, "ln.odp");
+        LLVMValueRef out_len_p   = cg_entry_alloca(ctx, i32_type, "ln.olp");
+        LLVMValueRef out_cap_p   = cg_entry_alloca(ctx, i32_type, "ln.ocp");
         LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_type), out_data_pp);
         LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_len_p);
         LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_cap_p);
@@ -7874,6 +7978,50 @@ static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, 
             ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
         }
         return r;
+    }
+
+    /* ---- get_unsafe(i) -> T — unchecked index load (GEP + load + clone). ----
+       No bounds check, no branches: caller MUST guarantee 0 <= i < len (e.g.
+       via a `for i in 0..v.length` loop). Mirrors string.at_unsafe — for hot
+       loops where the redundant bounds check of v[i]/v.get(i) is the bottleneck.
+       Returns a deep clone for owned element types (same ownership as get). */
+    if (strcmp(method, "get_unsafe") == 0)
+    {
+        LLVMValueRef i_val = codegen_expr(ctx, call_node->as.call.args[0]);
+        if (i_val == NULL)
+            return NULL;
+        if (LLVMTypeOf(i_val) != i32_t)
+            i_val = LLVMBuildIntCast2(ctx->builder, i_val, i32_t, 1, "vgu.i32");
+
+        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vgu.v");
+        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vgu.data");
+        LLVMValueRef i64 = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vgu.i64");
+        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &i64, 1, "vgu.ep");
+        LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vgu.elem");
+        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
+
+        /* Track a cloned string as a temp for ownership cleanup (same as get). */
+        if (elem_type && elem_type->kind == TYPE_STRING && ctx->current_fn != NULL)
+        {
+            LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
+            LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(ctx->current_fn);
+            LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
+            if (fi) LLVMPositionBuilderBefore(tb, fi);
+            else    LLVMPositionBuilderAtEnd(tb, entry_bb);
+            LLVMValueRef slot = LLVMBuildAlloca(tb, elem_llvm, "vgu.tmp");
+            LLVMDisposeBuilder(tb);
+            LLVMBuildStore(ctx->builder, elem, slot);
+            if (ctx->temp_string_count >= ctx->temp_string_cap)
+            {
+                ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
+                ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
+                                                    ctx->temp_string_slots,
+                                                    ctx->temp_string_cap);
+            }
+            ctx->temp_string_slots[ctx->temp_string_count++] = slot;
+            elem = LLVMBuildLoad2(ctx->builder, elem_llvm, slot, "vgu.r");
+        }
+        return elem;
     }
 
     /* ---- truncate(n) -> void  — drop [n, len), set len = n ---- */
@@ -10394,7 +10542,7 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
             else
             {
                 LLVMTypeRef st_llvm = type_to_llvm(ctx, struct_type);
-                struct_ptr = LLVMBuildAlloca(ctx->builder, st_llvm, "tmp.struct");
+                struct_ptr = cg_entry_alloca(ctx, st_llvm, "tmp.struct");
                 LLVMBuildStore(ctx->builder, sub_val, struct_ptr);
             }
         }
@@ -10471,8 +10619,16 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
     switch (node->kind)
     {
     case AST_INT_LIT:
-        return LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
-                            (unsigned long long)node->as.int_lit.value, 1);
+    {
+        /* Emit i64 when the checker typed this literal i64/u64 (value didn't fit
+           i32); otherwise i32 as usual. Without this, a literal like 9000000000
+           would be truncated to i32 here even in an i64 context. */
+        Type *rt = node->resolved_type;
+        LLVMTypeRef ity = (rt && (rt->kind == TYPE_I64 || rt->kind == TYPE_U64))
+                              ? LLVMInt64TypeInContext(ctx->context)
+                              : LLVMInt32TypeInContext(ctx->context);
+        return LLVMConstInt(ity, (unsigned long long)node->as.int_lit.value, 1);
+    }
 
     case AST_FLOAT_LIT:
         return LLVMConstReal(LLVMDoubleTypeInContext(ctx->context),
@@ -11394,7 +11550,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             if (_e2_needs_sret)
             {
                 LLVMTypeRef st_lt = type_to_llvm(ctx, _e2_callee_lst->as.function.return_type);
-                sret_slot = LLVMBuildAlloca(ctx->builder, st_lt, "sret.slot");
+                sret_slot = cg_entry_alloca(ctx, st_lt, "sret.slot");
                 args[0] = sret_slot;
                 arg_offset = 1;
             }
@@ -11623,7 +11779,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         store_t = type_to_llvm(ctx, arg_type);
                         tmp_name = "struct.borrow.tmp";
                     }
-                    LLVMValueRef tmp = LLVMBuildAlloca(ctx->builder, store_t, tmp_name);
+                    LLVMValueRef tmp = cg_entry_alloca(ctx, store_t, tmp_name);
                     LLVMBuildStore(ctx->builder, args[i], tmp);
                     args[i] = tmp;
                 }
@@ -11701,7 +11857,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 else
                 {
                     LLVMTypeRef st_lt = type_to_llvm(ctx, at);
-                    LLVMValueRef tmp = LLVMBuildAlloca(ctx->builder, st_lt,
+                    LLVMValueRef tmp = cg_entry_alloca(ctx, st_lt,
                                                        "ext.arg.tmp");
                     LLVMBuildStore(ctx->builder, args[slot], tmp);
                     args[slot] = LLVMBuildLoad2(ctx->builder, int_t, tmp,
@@ -11736,7 +11892,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                      && extern_struct_fits_in_reg(sz))
             {
                 LLVMTypeRef st_lt = type_to_llvm(ctx, ls_ret_ty);
-                LLVMValueRef slot = LLVMBuildAlloca(ctx->builder, st_lt,
+                LLVMValueRef slot = cg_entry_alloca(ctx, st_lt,
                                                     "ext.ret.slot");
                 LLVMBuildStore(ctx->builder, result, slot);
                 result = LLVMBuildLoad2(ctx->builder, st_lt, slot,
@@ -12035,7 +12191,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             {
                 /* Spill struct value to a temp alloca */
                 LLVMTypeRef st_llvm = type_to_llvm(ctx, struct_type);
-                struct_ptr = LLVMBuildAlloca(ctx->builder, st_llvm, "tmp.struct");
+                struct_ptr = cg_entry_alloca(ctx, st_llvm, "tmp.struct");
                 LLVMBuildStore(ctx->builder, sub_val, struct_ptr);
 
                 /* M-4.5: when the object is vec[i]/arr[i] of a has_drop struct,
@@ -13278,11 +13434,27 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
         LLVMTypeRef st_llvm = type_to_llvm(ctx, struct_type);
 
-        /* Allocate storage: stack alloca for value literal, malloc for new */
+        /* Allocate storage: stack alloca for value literal, malloc for new.
+           Bug #24: the alloca MUST be in the function entry block, not at the
+           current builder position. If this struct literal is inside a loop
+           body, a per-iteration alloca grows the stack without bound (LLVM
+           alloca is only freed on function return) → stack overflow in JIT
+           (default 1 MB stack; 100k × 16B = 1.6 MB). AOT hides it because
+           the O2 mem2reg pass promotes the alloca to a register. */
         LLVMValueRef storage;
         if (on_stack)
         {
-            storage = LLVMBuildAlloca(ctx->builder, st_llvm, "sl.tmp");
+            LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
+                LLVMGetInsertBlock(ctx->builder));
+            LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
+            LLVMBuilderRef entry_b = LLVMCreateBuilderInContext(ctx->context);
+            LLVMValueRef first_instr = LLVMGetFirstInstruction(entry_bb);
+            if (first_instr)
+                LLVMPositionBuilderBefore(entry_b, first_instr);
+            else
+                LLVMPositionBuilderAtEnd(entry_b, entry_bb);
+            storage = LLVMBuildAlloca(entry_b, st_llvm, "sl.tmp");
+            LLVMDisposeBuilder(entry_b);
         }
         else
         {
@@ -13512,7 +13684,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             (var_type->kind == TYPE_ENUM   && var_type->as.enom.has_drop))
         {
             LLVMTypeRef i1_type = LLVMInt1TypeInContext(ctx->context);
-            moved_flag = LLVMBuildAlloca(ctx->builder, i1_type, "var.moved");
+            moved_flag = cg_entry_alloca(ctx, i1_type, "var.moved");
             LLVMBuildStore(ctx->builder, LLVMConstInt(i1_type, 0, 0), moved_flag);
         }
 
@@ -13904,7 +14076,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         LLVMTypeRef i8_t = LLVMInt8TypeInContext(ctx->context);
                         LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
                         LLVMValueRef ci8 = LLVMBuildTrunc(ctx->builder, rhs, i8_t, "opt.ci8");
-                        LLVMValueRef slot = LLVMBuildAlloca(ctx->builder, i8_t, "opt.slot");
+                        LLVMValueRef slot = cg_entry_alloca(ctx, i8_t, "opt.slot");
                         LLVMBuildStore(ctx->builder, ci8, slot);
                         emit_string_append_inline(ctx, sym->value, slot,
                                                   LLVMConstInt(i32_t, 1, 0));
@@ -14163,7 +14335,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         LLVMTypeRef i8_t = LLVMInt8TypeInContext(ctx->context);
                         LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
                         LLVMValueRef char_i8 = LLVMBuildTrunc(ctx->builder, val, i8_t, "paeq.ci8");
-                        LLVMValueRef char_slot = LLVMBuildAlloca(ctx->builder, i8_t, "paeq.slot");
+                        LLVMValueRef char_slot = cg_entry_alloca(ctx, i8_t, "paeq.slot");
                         LLVMBuildStore(ctx->builder, char_i8, char_slot);
                         LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
                         emit_string_append_inline(ctx, sym->value, char_slot, one32);
@@ -14964,7 +15136,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                    The assignment path clears it to 0 when x is first written,
                    so subsequent cleanup correctly drops the owned copy. */
                 LLVMTypeRef i1_ty = LLVMInt1TypeInContext(ctx->context);
-                loop_var_moved_flag = LLVMBuildAlloca(ctx->builder, i1_ty, "fv.borrowed");
+                loop_var_moved_flag = cg_entry_alloca(ctx, i1_ty, "fv.borrowed");
                 LLVMBuildStore(ctx->builder, LLVMConstInt(i1_ty, 1, 0), loop_var_moved_flag);
             }
 
@@ -15467,7 +15639,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         Type *pt = block_t->as.function.params[i];
         LLVMTypeRef pt_llvm = type_to_llvm(ctx, pt);
         LLVMValueRef param_val = LLVMGetParam(fn, (unsigned)(i + 1));
-        LLVMValueRef alloca = LLVMBuildAlloca(ctx->builder, pt_llvm,
+        LLVMValueRef alloca = cg_entry_alloca(ctx, pt_llvm,
                                               node->as.closure.param_names[i]);
         LLVMBuildStore(ctx->builder, param_val, alloca);
         CgSymbol *psym = cg_scope_define(ctx->current_scope,
@@ -16022,10 +16194,26 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
     bool is_main_void = (strcmp(name, "main") == 0 &&
                          fn_type_ml->as.function.return_type->kind == TYPE_VOID &&
                          user_n == 0);
-    if (is_main_void)
+    /* bug #22: in AOT, the entry main() takes the C signature
+       int main(int argc, char **argv) so we can forward argc/argv to
+       __ls_set_args (done in the injection pass below), making proc.args()
+       work in compiled executables. JIT sets args in main.c, so it is excluded
+       via ctx->aot_entry. Module-emitted mains are never the entry point. */
+    bool is_main_entry = (strcmp(name, "main") == 0 && user_n == 0 &&
+                          ctx->aot_entry && ctx->current_emit_module == NULL);
+    if (is_main_void || is_main_entry)
     {
         LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-        fn_type = LLVMFunctionType(i32_t, NULL, 0, 0);
+        if (is_main_entry)
+        {
+            LLVMTypeRef pt = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
+            LLVMTypeRef ps[] = { i32_t, pt };  /* argc, argv */
+            fn_type = LLVMFunctionType(i32_t, ps, 2, 0);
+        }
+        else
+        {
+            fn_type = LLVMFunctionType(i32_t, NULL, 0, 0);
+        }
     }
 
     /* L-009: free functions in an imported module use a module-prefixed LLVM
@@ -16093,7 +16281,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         {
             Type *self_type = fn_type_ml->as.function.params[0]; /* *Struct */
             LLVMTypeRef self_llvm = type_to_llvm(ctx, self_type);
-            LLVMValueRef self_alloca = LLVMBuildAlloca(ctx->builder, self_llvm, "self");
+            LLVMValueRef self_alloca = cg_entry_alloca(ctx, self_llvm, "self");
             LLVMBuildStore(ctx->builder, LLVMGetParam(fn, 0), self_alloca);
             cg_scope_define(ctx->current_scope, "self", self_alloca, self_type, NULL);
         }
@@ -16169,7 +16357,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         if (param_type && param_type->kind == TYPE_REFERENCE)
             param_type = param_type->as.pointer_to;
         LLVMTypeRef param_llvm = type_to_llvm(ctx, param_type);
-        LLVMValueRef alloca = LLVMBuildAlloca(ctx->builder, param_llvm,
+        LLVMValueRef alloca = cg_entry_alloca(ctx, param_llvm,
                                               node->as.fn_decl.param_names[i]);
         LLVMBuildStore(ctx->builder, LLVMGetParam(fn, (unsigned)llvm_idx), alloca);
         /* Allocate moved_flag for struct-with-drop and has_drop enum parameters.
@@ -16180,7 +16368,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
              (param_type->kind == TYPE_ENUM   && param_type->as.enom.has_drop)))
         {
             LLVMTypeRef i1_type = LLVMInt1TypeInContext(ctx->context);
-            moved_flag = LLVMBuildAlloca(ctx->builder, i1_type, "param.moved");
+            moved_flag = cg_entry_alloca(ctx, i1_type, "param.moved");
             LLVMBuildStore(ctx->builder, LLVMConstInt(i1_type, 0, 0), moved_flag);
         }
         /* String parameters: mark cap = LS_CAP_BORROWED (-2) so:
@@ -16388,6 +16576,54 @@ static LLVMTypeRef build_variant_payload_struct(CodegenContext *ctx, Type *enum_
     return ty;
 }
 
+/* Compute the enum payload's max size AND max alignment across all variants.
+   Bug #25: the old layout `{ i8 tag, [N x i8] payload }` is byte-aligned, so an
+   f64/i64 stored in the payload gets `align 1` loads/stores — significantly
+   slower (misaligned access). We instead build the payload from an array of an
+   alignment-carrying integer type so the whole enum aligns to its widest member.
+   *out_size = max payload bytes, *out_align = max ABI alignment (>=1). */
+static void cg_enum_payload_dims(CodegenContext *ctx, Type *et,
+                                 int *out_size, int *out_align)
+{
+    LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
+    int max_payload = 0;
+    int max_align = 1;
+    for (int v = 0; v < et->as.enom.variant_count; v++)
+    {
+        if (et->as.enom.variants[v].payload_count == 0) continue;
+        LLVMTypeRef vstruct = build_variant_payload_struct(ctx, et, v);
+        unsigned long long sz = LLVMABISizeOfType(td, vstruct);
+        unsigned al = LLVMABIAlignmentOfType(td, vstruct);
+        if ((int)sz > max_payload) max_payload = (int)sz;
+        if ((int)al > max_align) max_align = (int)al;
+    }
+    *out_size = max_payload;
+    *out_align = max_align;
+}
+
+/* Build the enum body type { i8 tag, <aligned payload> } given size+align.
+   The payload is an array of an integer type whose width == max_align, so the
+   payload (and thus the whole struct) carries that alignment. */
+static void cg_enum_body_fields(CodegenContext *ctx, int max_payload, int max_align,
+                                LLVMTypeRef body_out[2])
+{
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
+    LLVMTypeRef align_elem;
+    switch (max_align)
+    {
+    case 8:  align_elem = LLVMInt64TypeInContext(ctx->context); break;
+    case 4:  align_elem = LLVMInt32TypeInContext(ctx->context); break;
+    case 2:  align_elem = LLVMInt16TypeInContext(ctx->context); break;
+    default: align_elem = i8; break;  /* align 1 (or no payload) */
+    }
+    int elem_sz = max_align >= 1 ? max_align : 1;
+    /* round payload size up to a whole number of align-elements */
+    int count = (max_payload + elem_sz - 1) / elem_sz;
+    if (count < 0) count = 0;
+    body_out[0] = i8;
+    body_out[1] = LLVMArrayType2(align_elem, (uint64_t)count);
+}
+
 static void codegen_enum_decl(CodegenContext *ctx, AstNode *node)
 {
     Type *et = node->resolved_type;
@@ -16396,22 +16632,12 @@ static void codegen_enum_decl(CodegenContext *ctx, AstNode *node)
     const char *llvm_name = enum_llvm_name_of(et);
     if (find_enum_llvm(ctx, llvm_name)) return;  /* already registered */
 
-    LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
+    /* Compute max payload size + alignment, build aligned body (bug #25). */
+    int max_payload = 0, max_align = 1;
+    cg_enum_payload_dims(ctx, et, &max_payload, &max_align);
 
-    /* Compute max payload size across all variants */
-    LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
-    int max_payload = 0;
-    for (int v = 0; v < et->as.enom.variant_count; v++)
-    {
-        if (et->as.enom.variants[v].payload_count == 0) continue;
-        LLVMTypeRef vstruct = build_variant_payload_struct(ctx, et, v);
-        unsigned long long sz = LLVMABISizeOfType(td, vstruct);
-        if ((int)sz > max_payload) max_payload = (int)sz;
-    }
-
-    /* Build {i8 disc, [N x i8] payload} as a named opaque struct */
-    LLVMTypeRef payload = LLVMArrayType2(i8, (uint64_t)max_payload);
-    LLVMTypeRef body[2] = { i8, payload };
+    LLVMTypeRef body[2];
+    cg_enum_body_fields(ctx, max_payload, max_align, body);
     LLVMTypeRef llvm_type = LLVMStructCreateNamed(ctx->context, llvm_name);
     LLVMStructSetBody(llvm_type, body, 2, 0);
 
@@ -16762,7 +16988,7 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
 
     /* Load the full enum value and store into a mutable local. */
     LLVMValueRef orig_val = LLVMBuildLoad2(ctx->builder, enum_llvm, self_ptr, "ec.orig");
-    LLVMValueRef tmp = LLVMBuildAlloca(ctx->builder, enum_llvm, "ec.tmp");
+    LLVMValueRef tmp = cg_entry_alloca(ctx, enum_llvm, "ec.tmp");
     LLVMBuildStore(ctx->builder, orig_val, tmp);
 
     /* disc = tmp->field[0] */
@@ -16827,7 +17053,7 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
                 LLVMValueRef new_box = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn,
                                                        &box_sz, 1, "ec.newbox");
                 /* Store cloned inner value into new box */
-                LLVMValueRef new_box_tmp = LLVMBuildAlloca(ctx->builder, enum_llvm, "ec.nbt");
+                LLVMValueRef new_box_tmp = cg_entry_alloca(ctx, enum_llvm, "ec.nbt");
                 LLVMBuildStore(ctx->builder, inner, new_box_tmp);
                 LLVMValueRef cloned_inner = LLVMBuildCall2(ctx->builder, fn_type, clone_fn,
                                                             &new_box_tmp, 1, "ec.ci");
@@ -17946,10 +18172,10 @@ static void emit_str_replace_helper(CodegenContext *ctx)
     LLVMPositionBuilderAtEnd(ctx->builder, entry_bb);
 
     /* Allocas */
-    LLVMValueRef count_ptr = LLVMBuildAlloca(ctx->builder, i32_t, "count");
-    LLVMValueRef p_ptr = LLVMBuildAlloca(ctx->builder, ptr_t, "p");
-    LLVMValueRef src_ptr = LLVMBuildAlloca(ctx->builder, ptr_t, "src");
-    LLVMValueRef dst_ptr = LLVMBuildAlloca(ctx->builder, ptr_t, "dst");
+    LLVMValueRef count_ptr = cg_entry_alloca(ctx, i32_t, "count");
+    LLVMValueRef p_ptr = cg_entry_alloca(ctx, ptr_t, "p");
+    LLVMValueRef src_ptr = cg_entry_alloca(ctx, ptr_t, "src");
+    LLVMValueRef dst_ptr = cg_entry_alloca(ctx, ptr_t, "dst");
 
     LLVMBuildStore(ctx->builder, zero, count_ptr);
     LLVMBuildStore(ctx->builder, s_data, p_ptr);
@@ -18132,9 +18358,9 @@ static void emit_str_split_helper(CodegenContext *ctx)
 
     /* entry: allocas, check sep_len == 0 */
     LLVMPositionBuilderAtEnd(ctx->builder, entry_bb);
-    LLVMValueRef count_ptr = LLVMBuildAlloca(ctx->builder, i32_t, "count");
-    LLVMValueRef p_ptr = LLVMBuildAlloca(ctx->builder, ptr_t, "p");
-    LLVMValueRef i_ptr = LLVMBuildAlloca(ctx->builder, i32_t, "spl.i");
+    LLVMValueRef count_ptr = cg_entry_alloca(ctx, i32_t, "count");
+    LLVMValueRef p_ptr = cg_entry_alloca(ctx, ptr_t, "p");
+    LLVMValueRef i_ptr = cg_entry_alloca(ctx, i32_t, "spl.i");
     LLVMValueRef sep_empty = LLVMBuildICmp(ctx->builder, LLVMIntEQ, sep_len, zero32, "sep.empty");
     LLVMBuildCondBr(ctx->builder, sep_empty, special_bb, cnt_init_bb);
 
@@ -18322,9 +18548,9 @@ static void emit_str_join_helper(CodegenContext *ctx)
 
     /* entry: allocas, check empty vec */
     LLVMPositionBuilderAtEnd(ctx->builder, entry_bb);
-    LLVMValueRef total_ptr = LLVMBuildAlloca(ctx->builder, i32_t, "total");
-    LLVMValueRef i_ptr = LLVMBuildAlloca(ctx->builder, i32_t, "i");
-    LLVMValueRef dst_ptr = LLVMBuildAlloca(ctx->builder, ptr_t, "dst");
+    LLVMValueRef total_ptr = cg_entry_alloca(ctx, i32_t, "total");
+    LLVMValueRef i_ptr = cg_entry_alloca(ctx, i32_t, "i");
+    LLVMValueRef dst_ptr = cg_entry_alloca(ctx, ptr_t, "dst");
     LLVMValueRef is_empty = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
                                           vec_len, zero32, "jn.empty");
     LLVMBuildCondBr(ctx->builder, is_empty, empty_bb, tot_init_bb);
@@ -18487,11 +18713,11 @@ static void emit_str_lines_helper(CodegenContext *ctx)
 
     /* entry: allocas, handle empty string */
     LLVMPositionBuilderAtEnd(ctx->builder, entry_bb);
-    LLVMValueRef cnt_ptr   = LLVMBuildAlloca(ctx->builder, i32_t, "ln.cnt");
-    LLVMValueRef i_ptr     = LLVMBuildAlloca(ctx->builder, i32_t, "ln.i");
-    LLVMValueRef start_ptr = LLVMBuildAlloca(ctx->builder, i32_t, "ln.start");
-    LLVMValueRef eidx_ptr  = LLVMBuildAlloca(ctx->builder, i32_t, "ln.eidx");
-    LLVMValueRef arr_ptr   = LLVMBuildAlloca(ctx->builder, ptr_t,  "ln.arr");
+    LLVMValueRef cnt_ptr   = cg_entry_alloca(ctx, i32_t, "ln.cnt");
+    LLVMValueRef i_ptr     = cg_entry_alloca(ctx, i32_t, "ln.i");
+    LLVMValueRef start_ptr = cg_entry_alloca(ctx, i32_t, "ln.start");
+    LLVMValueRef eidx_ptr  = cg_entry_alloca(ctx, i32_t, "ln.eidx");
+    LLVMValueRef arr_ptr   = cg_entry_alloca(ctx, ptr_t,  "ln.arr");
     LLVMBuildStore(ctx->builder, zero32, cnt_ptr);
     LLVMBuildStore(ctx->builder, zero32, i_ptr);
     LLVMValueRef is_empty = LLVMBuildICmp(ctx->builder, LLVMIntEQ, src_len, zero32, "ln.isempty");
@@ -19065,8 +19291,8 @@ static void emit_map_hash_s_helper(CodegenContext *ctx)
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx->context, fn, "entry");
     LLVMPositionBuilderAtEnd(ctx->builder, entry);
 
-    LLVMValueRef hash_ptr = LLVMBuildAlloca(ctx->builder, i64_t, "hash");
-    LLVMValueRef p_ptr = LLVMBuildAlloca(ctx->builder, ptr_t, "p");
+    LLVMValueRef hash_ptr = cg_entry_alloca(ctx, i64_t, "hash");
+    LLVMValueRef p_ptr = cg_entry_alloca(ctx, ptr_t, "p");
 
     /* FNV offset basis */
     LLVMValueRef fnv_basis = LLVMConstInt(i64_t, 14695981039346656037ULL, 0);
@@ -19410,7 +19636,7 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
                                                   &bucket32, 1, "bptr");
             /* Wait: buckets is ptr to array of ptr. Each slot is a ptr. GEP needs i64. */
             LLVMValueRef node_p = LLVMBuildLoad2(ctx->builder, ptr_t, node_ptr, "node");
-            LLVMValueRef node_alloca = LLVMBuildAlloca(ctx->builder, ptr_t, "nptr");
+            LLVMValueRef node_alloca = cg_entry_alloca(ctx, ptr_t, "nptr");
             LLVMBuildStore(ctx->builder, node_p, node_alloca);
             LLVMBuildBr(ctx->builder, check);
 
@@ -19572,7 +19798,7 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
                 }
 #endif
                 /* Relink loop: for b in 0..old_cap */
-                LLVMValueRef bi_alloca = LLVMBuildAlloca(ctx->builder, i64_t, "bi");
+                LLVMValueRef bi_alloca = cg_entry_alloca(ctx, i64_t, "bi");
                 LLVMBuildStore(ctx->builder, LLVMConstInt(i64_t, 0, 0), bi_alloca);
                 LLVMBasicBlockRef rl_cond = LLVMAppendBasicBlockInContext(ctx->context, fn_s, "rl.cond");
                 LLVMBasicBlockRef rl_body = LLVMAppendBasicBlockInContext(ctx->context, fn_s, "rl.body");
@@ -19587,7 +19813,7 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
                 LLVMPositionBuilderAtEnd(ctx->builder, rl_body);
                 LLVMValueRef slot_p = LLVMBuildGEP2(ctx->builder, ptr_t, old_bkts, &bi, 1, "slp");
                 LLVMValueRef head = LLVMBuildLoad2(ctx->builder, ptr_t, slot_p, "head");
-                LLVMValueRef nd_alloca = LLVMBuildAlloca(ctx->builder, ptr_t, "nd");
+                LLVMValueRef nd_alloca = cg_entry_alloca(ctx, ptr_t, "nd");
                 LLVMBuildStore(ctx->builder, head, nd_alloca);
 
                 LLVMBasicBlockRef nd_cond = LLVMAppendBasicBlockInContext(ctx->context, fn_s, "nd.cond");
@@ -19829,8 +20055,8 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
             LLVMValueRef bkts = LLVMBuildExtractValue(ctx->builder, map_val, 0, "bkts");
             LLVMValueRef slot_p = LLVMBuildGEP2(ctx->builder, ptr_t, bkts, &buck64, 1, "slp");
 
-            LLVMValueRef prev_alloca = LLVMBuildAlloca(ctx->builder, ptr_t, "prev");
-            LLVMValueRef cur_alloca = LLVMBuildAlloca(ctx->builder, ptr_t, "cur");
+            LLVMValueRef prev_alloca = cg_entry_alloca(ctx, ptr_t, "prev");
+            LLVMValueRef cur_alloca = cg_entry_alloca(ctx, ptr_t, "cur");
             LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_t), prev_alloca);
             LLVMValueRef slot_v = LLVMBuildLoad2(ctx->builder, ptr_t, slot_p, "sv");
             LLVMBuildStore(ctx->builder, slot_v, cur_alloca);
@@ -19960,8 +20186,8 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
             LLVMPositionBuilderAtEnd(ctx->builder, bb_entry);
 
             /* Allocate loop counter in entry */
-            LLVMValueRef bi_a2 = LLVMBuildAlloca(ctx->builder, i64_t, "bi");
-            LLVMValueRef nd_a2 = LLVMBuildAlloca(ctx->builder, ptr_t, "nd");
+            LLVMValueRef bi_a2 = cg_entry_alloca(ctx, i64_t, "bi");
+            LLVMValueRef nd_a2 = cg_entry_alloca(ctx, ptr_t, "nd");
 
             LLVMValueRef mv2 = LLVMBuildLoad2(ctx->builder, map_t, p_map, "mv");
             LLVMValueRef cap2 = LLVMBuildExtractValue(ctx->builder, mv2, 2, "cap");
@@ -20483,12 +20709,28 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             {
                 LLVMTypeRef fn_type = type_to_llvm(ctx, fn_type_ml);
                 /* AOT: fn main() (void) → i32 main() for CRT compatibility */
-                if (strcmp(decl->as.fn_decl.name, "main") == 0 &&
-                    fn_type_ml->as.function.return_type->kind == TYPE_VOID &&
-                    decl->as.fn_decl.param_count == 0)
+                bool fwd_main = (strcmp(decl->as.fn_decl.name, "main") == 0 &&
+                                 decl->as.fn_decl.param_count == 0);
+                bool fwd_main_void = (fwd_main &&
+                                      fn_type_ml->as.function.return_type->kind == TYPE_VOID);
+                /* bug #22: AOT entry main gets C sig int main(argc,argv). Must match
+                   the signature codegen_fn_decl builds, or the body reuses this
+                   forward decl and argv never reaches __ls_set_args. */
+                bool fwd_main_entry = (fwd_main && ctx->aot_entry &&
+                                       ctx->current_emit_module == NULL);
+                if (fwd_main_void || fwd_main_entry)
                 {
                     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-                    fn_type = LLVMFunctionType(i32_t, NULL, 0, 0);
+                    if (fwd_main_entry)
+                    {
+                        LLVMTypeRef pt = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
+                        LLVMTypeRef ps[] = { i32_t, pt };
+                        fn_type = LLVMFunctionType(i32_t, ps, 2, 0);
+                    }
+                    else
+                    {
+                        fn_type = LLVMFunctionType(i32_t, NULL, 0, 0);
+                    }
                 }
                 LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, decl->as.fn_decl.name);
                 if (fn == NULL)
@@ -20934,7 +21176,19 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         if (has_setup && !has_user_main)
         {
             LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-            LLVMTypeRef main_ft = LLVMFunctionType(i32_t, NULL, 0, 0);
+            LLVMTypeRef main_ft;
+            /* bug #22: AOT synthetic main also gets C sig int main(argc,argv) so
+               proc.args() works in top-level (mainless) programs too. */
+            if (ctx->aot_entry)
+            {
+                LLVMTypeRef pt = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
+                LLVMTypeRef ps[] = { i32_t, pt };
+                main_ft = LLVMFunctionType(i32_t, ps, 2, 0);
+            }
+            else
+            {
+                main_ft = LLVMFunctionType(i32_t, NULL, 0, 0);
+            }
             LLVMValueRef syn_main = LLVMAddFunction(ctx->module, "main", main_ft);
             LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(
                 ctx->context, syn_main, "entry");
@@ -20990,6 +21244,23 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 LLVMPositionBuilderBefore(tmp, first);
                 LLVMTypeRef init_type = LLVMFunctionType(
                     LLVMVoidTypeInContext(ctx->context), NULL, 0, 0);
+                /* bug #22: forward argc/argv to __ls_set_args before any setup
+                   runs, so proc.args() works in AOT. main has the C signature
+                   (argc, argv) only when ctx->aot_entry gave it params. */
+                if (ctx->aot_entry && LLVMCountParams(main_fn) >= 2)
+                {
+                    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+                    LLVMTypeRef pt = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
+                    LLVMTypeRef sa_params[] = { i32_t, pt };
+                    LLVMTypeRef sa_type = LLVMFunctionType(
+                        LLVMVoidTypeInContext(ctx->context), sa_params, 2, 0);
+                    LLVMValueRef sa_fn = LLVMGetNamedFunction(ctx->module, "__ls_set_args");
+                    if (!sa_fn)
+                        sa_fn = LLVMAddFunction(ctx->module, "__ls_set_args", sa_type);
+                    LLVMValueRef sa_args[] = {
+                        LLVMGetParam(main_fn, 0), LLVMGetParam(main_fn, 1) };
+                    LLVMBuildCall2(tmp, sa_type, sa_fn, sa_args, 2, "");
+                }
                 if (ctx->memcheck_enabled)
                 {
                     LLVMValueRef mc_ensure = LLVMGetNamedFunction(ctx->module,

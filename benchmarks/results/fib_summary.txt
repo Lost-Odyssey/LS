@@ -1,0 +1,11 @@
+﻿fib benchmark results
+======================
+  n = 35, iterations = 10
+  (Python/Ruby: 1 actual iter, mean 脳10 for 10-iters estimate)
+  total wall time: 10.0 s
+
+C (MSVC): 36879030.0 ns  (result=92274650)
+LS (AOT): 27184610.0 ns  (result=92274650)
+LS (JIT): 46791840.0 ns  (result=92274650)
+Python: 22773840000 ns  (result=9227465)
+Ruby: 8248049000 ns  (result=9227465)
