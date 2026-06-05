@@ -48,3 +48,31 @@ test_output.exe.obj
 
 # claude worktrees
 .claude/worktrees
+
+# tool metadata
+.codegraph/
+.deepseek/
+.opencode/
+
+# scratch outputs at repo root
+cpu_timeline_demo.png
+cpu_timeline_demo.svg
+cpu_timeline_scroll.html
+cpu_timeline_zoom.html
+json_e2e_out.json
+string.cod
+
+# benchmark build artifacts
+benchmarks/**/target/
+benchmarks/json/rust/Cargo.lock
+
+# benchmark scratch / early probe files at benchmarks/ root (not part of suites)
+benchmarks/*.ls
+benchmarks/*.c
+benchmarks/results/*_jit.txt
+benchmarks/results/*_aot.txt
+benchmarks/results/*_cpp.txt
+benchmarks/results/*_rs.txt
+benchmarks/results/*_py.txt
+benchmarks/results/*_rb.txt
+benchmarks/results/*_c.txt
