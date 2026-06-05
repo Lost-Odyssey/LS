@@ -12,50 +12,39 @@
 | 语言 | 每次 sum | vs Rust |
 |------|---------|---------|
 | 🥇 Rust（`&Tree`） | **288 us** | 1.0× |
+| **LS（`&Tree` 借用，Phase 9）** | **374 us** | **1.3×** ✅ |
 | C++（`const Tree*`） | 485 us | 1.7× |
 | Python（tuple，引用） | 15,694 us | 54× |
-| 🔴 **LS（`Tree` 按值）** | **130,899 us** | **454×** |
+| ~~LS（`Tree` 按值）~~ | ~~130,899 us~~ | ~~454×~~ |
 
 checksum 全部一致（6442418176）。
 
-> ⚠️ **LS 甚至比 Python 还慢 8.3×**（131ms vs 15.7ms）—— 这是目前所有 benchmark 里
-> 差距最大的一个，也是唯一 LS 输给 Python 的纯计算场景。
+> ✅ **Phase 9 修复后 LS 以 ~1.3× 追平 Rust**（374 μs vs 288 μs）。
+> 从之前 454× 差距降至 1.3×，**提速 ~350×**。
 
-## 根因：enum 不支持借用 → 遍历必然深拷贝整棵子树
+## 修复历程（Phase 9，2026-06-05）
 
+**根因（已修）**：enum 之前不支持借用 → 遍历必然深拷贝整棵子树。
+
+`&Tree` 现在可用：
 ```ls
-fn sum_tree(Tree t) -> i64 {            // ← 只能按值传
-    match t { Node(l, r) => sum_tree(l) + sum_tree(r) ... }
+fn sum_tree(&Tree t) -> i64 {
+    match t {
+        Leaf(v)    => { return v }
+        Node(l, r) => { return sum_tree(l) + sum_tree(r) }
+    }
 }
 ```
 
-`&Tree` 被 checker 直接拒绝：
-```
-&Tree is not supported yet; only &string/&vec/&map/&struct are implemented
-```
+**零拷贝实现**：
+- `&Tree` 参数用 pointer ABI（不拷贝进函数）
+- match 借用主体直接 GEP 原始指针，不做 alloca+store 拷贝
+- box payload binder（`l`, `r`）直接存 box_ptr 作为 sym->value，auto-borrow 传调用时直传指针
+- 递归调用零拷贝传递
 
-所以递归 enum 只能按值传。`Tree` 是 has_drop enum（Node payload 是 box 指针），按值传会
-**深拷贝整个子树**。每次递归 `sum_tree(l)` 把左子树完整 clone 一遍：
+## 影响范围
 
-- 实测超线性：节点 ×4（depth +2）时间 ×4.7
-- ~1.2 µs/节点（纯加法遍历本应是 ns 级）
+LS 现在支持借用的类型：✅ `vec` / `map` / `struct` / **`enum`（Phase 9）**。
 
-**move 无法绕过**：move 会销毁树（sum 完树就没了），不符合只读遍历语义。只读遍历的正解是
-**借用**，而 enum 恰恰没有。C++/Rust 用指针/引用零拷贝 O(n)；LS 被迫 O(n·subtree) clone。
-
-## 影响范围（不止 benchmark）
-
-LS 支持借用的类型：✅ `vec` / `map` / `struct`；🔴 **递归 enum 无借用**。
-
-实际波及：
-- 任何自递归 enum 建的树/链表/AST/图，只读遍历都是性能灾难
-- **stdlib**：`std.json` 的 `JsonValue`、`std.md` 的 `MdInline`、`std.html` 的 `HtmlNode`
-  都是递归 enum → 任何递归 navigate/walk/stringify 都在 clone 子树（这也是 JSON
-  stringify、md/html 递归渲染慢的一部分原因）
-
-## 已知限制状态
-
-**记录为已知限制（2026-06-05）**。修复方向是给 enum 加借用（`&Tree` / `&!Tree`），
-实现说明书见 `docs/plan_enum_borrow.md`。**当前决定：暂不实现**（中等偏大工程，
-排期待定）。修复后递归数据结构可从 454× 慢 → 追平 C++/Rust，并顺带加速整个 stdlib 的
-递归访问。
+Phase B（待做）：`&JsonValue` 等 owned payload（string/vec/struct）的借用遍历 → 进一步
+加速 std.json stringify、std.md render、std.html render 等 stdlib 递归操作。

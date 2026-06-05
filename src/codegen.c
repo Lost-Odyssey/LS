@@ -3898,7 +3898,8 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
         if (t->as.pointer_to &&
             (t->as.pointer_to->kind == TYPE_VECTOR ||
              t->as.pointer_to->kind == TYPE_MAP ||
-             t->as.pointer_to->kind == TYPE_STRUCT))
+             t->as.pointer_to->kind == TYPE_STRUCT ||
+             t->as.pointer_to->kind == TYPE_ENUM))   /* Phase 9: &enum → ptr */
             return LLVMPointerTypeInContext(ctx->context, 0);
         return type_to_llvm(ctx, t->as.pointer_to);
     case TYPE_LIB:
@@ -11750,7 +11751,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     Type *arg_type = node->as.call.args[user_i]->resolved_type;
                     if (!(arg_type && (arg_type->kind == TYPE_VECTOR ||
                                        arg_type->kind == TYPE_MAP ||
-                                       arg_type->kind == TYPE_STRUCT))) continue;
+                                       arg_type->kind == TYPE_STRUCT ||
+                                       arg_type->kind == TYPE_ENUM))) continue;
                     if ((unsigned)i >= pc) continue;
                     LLVMTypeRef param_llvm = LLVMTypeOf(LLVMGetParam(callee, (unsigned)i));
                     if (LLVMGetTypeKind(param_llvm) != LLVMPointerTypeKind) continue;
@@ -11775,6 +11777,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     } else if (arg_type->kind == TYPE_MAP) {
                         store_t = ls_map_type(ctx);
                         tmp_name = "map.borrow.tmp";
+                    } else if (arg_type->kind == TYPE_ENUM) {
+                        store_t = type_to_llvm(ctx, arg_type);
+                        tmp_name = "enum.borrow.tmp";
                     } else {
                         store_t = type_to_llvm(ctx, arg_type);
                         tmp_name = "struct.borrow.tmp";
@@ -12293,20 +12298,43 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
             LLVMTypeRef ptr_type = LLVMPointerTypeInContext(ctx->context, 0);
 
-            /* Stash subject in an alloca so we can GEP into the payload. */
-            LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
-            LLVMBuilderRef tmp_b = LLVMCreateBuilderInContext(ctx->context);
-            LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
-            if (first_inst) LLVMPositionBuilderBefore(tmp_b, first_inst);
-            else            LLVMPositionBuilderAtEnd(tmp_b, entry);
-            LLVMValueRef subj_alloca = LLVMBuildAlloca(tmp_b, enum_llvm, "match.subj");
-            LLVMDisposeBuilder(tmp_b);
-            LLVMBuildStore(ctx->builder, subject, subj_alloca);
+            /* Phase 9: detect borrow subject — AST_IDENT with is_borrowed=true.
+               For &Enum params, sym->value IS the pointer; skip alloca+store copy
+               and GEP directly through the pointer (zero-copy borrow match). */
+            bool subj_is_enum_borrow = false;
+            LLVMValueRef subj_ptr_val = NULL; /* pointer to the enum, borrow path */
+            {
+                AstNode *sn = node->as.match.subject;
+                if (sn->kind == AST_IDENT) {
+                    CgSymbol *bsym = cg_scope_resolve(ctx->current_scope,
+                                                      sn->as.ident.name);
+                    if (bsym && bsym->is_borrowed) {
+                        subj_is_enum_borrow = true;
+                        subj_ptr_val = bsym->value;
+                    }
+                }
+            }
 
-            /* L-012: own the temp scrutinee — drop it at statement end / on return
-               (binders below are cloned, so this never double-frees). */
-            if (subj_owned_temp)
-                cg_push_temp_drop(ctx, subj_alloca, subj_type);
+            LLVMValueRef subj_alloca;  /* pointer (alloca or incoming ptr) used for GEP */
+            LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
+            if (subj_is_enum_borrow) {
+                /* Borrow path: use the incoming pointer directly — no copy. */
+                subj_alloca = subj_ptr_val;
+            } else {
+                /* Owned path: stash subject in an alloca so we can GEP into the payload. */
+                LLVMBuilderRef tmp_b = LLVMCreateBuilderInContext(ctx->context);
+                LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
+                if (first_inst) LLVMPositionBuilderBefore(tmp_b, first_inst);
+                else            LLVMPositionBuilderAtEnd(tmp_b, entry);
+                subj_alloca = LLVMBuildAlloca(tmp_b, enum_llvm, "match.subj");
+                LLVMDisposeBuilder(tmp_b);
+                LLVMBuildStore(ctx->builder, subject, subj_alloca);
+
+                /* L-012: own the temp scrutinee — drop it at statement end / on return
+                   (binders below are cloned, so this never double-frees). */
+                if (subj_owned_temp)
+                    cg_push_temp_drop(ctx, subj_alloca, subj_type);
+            }
 
             LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, subj_alloca, 0, "disc.p");
             LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "disc");
@@ -12395,11 +12423,26 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             ctx->builder, variant_struct, payload_ptr, (unsigned)b, "binder.p");
 
                         LLVMTypeRef field_llvm = type_to_llvm(ctx, pt);
+
+                        /* Phase 9: borrow path — for self-recursive (box) payload, use
+                           the box pointer directly as sym->value so auto-borrow at the
+                           call site passes it zero-copy (no full struct load+store). */
+                        if (subj_is_enum_borrow && pt == subj_type) {
+                            LLVMValueRef box = LLVMBuildLoad2(ctx->builder, ptr_type,
+                                                              field_ptr, "box");
+                            /* sym->value = box_ptr: IDENT load will deref through it;
+                               auto-borrow passes it directly as pointer — zero-copy. */
+                            CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
+                                                            box, pt, NULL);
+                            if (sym) sym->is_borrowed = true;
+                            continue;
+                        }
+
                         LLVMValueRef val;
                         if (pt == subj_type) {
-                            /* Self-recursive payload: payload slot stores an i8*
-                               pointing at a heap-boxed enum.  Load the box pointer,
-                               then load the enum value through it. */
+                            /* Self-recursive payload (owned subject): payload slot stores
+                               an i8* pointing at a heap-boxed enum.  Load the box
+                               pointer, then load the enum value through it. */
                             LLVMValueRef box = LLVMBuildLoad2(ctx->builder, ptr_type,
                                                               field_ptr, "box");
                             val = LLVMBuildLoad2(ctx->builder, field_llvm, box, bname);
@@ -12423,8 +12466,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                                is independent of the subject (which we drop). */
                             val = emit_clone_value(ctx, val, field_llvm, pt);
                             binder_owns = true;
-                        } else if (pt && pt->kind == TYPE_STRING) {
-                            /* Borrow subject: clone strings only (existing behavior). */
+                        } else if (!subj_is_enum_borrow && pt && pt->kind == TYPE_STRING) {
+                            /* Owned borrow subject: clone strings only (existing behavior).
+                               Borrow path skips clone — string payloads in borrow match
+                               are treated like scalars (not owned). */
                             val = emit_string_clone_val(ctx, val);
                             binder_owns = true;
                         }
@@ -16328,17 +16373,17 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             (void)is_mut_borrow_param;
             continue;
         }
-        /* Phase 5.6/5.7: &vec(T) / &map(K,V) (read-only) use pointer ABI like
-           the writable variants. Register sym->value as a raw pointer to the
-           underlying LsVec or LsMap struct — every vec/map codegen path
-           already treats sym->value as a pointer to that struct. The checker statically forbids any mutating
-           method on this symbol, so writes never happen through this pointer. */
+        /* Phase 5.6/5.7/9: &vec(T) / &map(K,V) / &struct / &enum (read-only) use
+           pointer ABI. Register sym->value as a raw pointer to the underlying
+           struct — all codegen paths treat sym->value as a pointer.
+           Checker statically forbids mutating calls on this symbol. */
         if (param_type && param_type->kind == TYPE_REFERENCE &&
             !param_type->is_mut &&
             param_type->as.pointer_to &&
             (param_type->as.pointer_to->kind == TYPE_VECTOR ||
              param_type->as.pointer_to->kind == TYPE_MAP ||
-             param_type->as.pointer_to->kind == TYPE_STRUCT))
+             param_type->as.pointer_to->kind == TYPE_STRUCT ||
+             param_type->as.pointer_to->kind == TYPE_ENUM))
         {
             param_type = param_type->as.pointer_to;
             LLVMValueRef ptr = LLVMGetParam(fn, (unsigned)llvm_idx);

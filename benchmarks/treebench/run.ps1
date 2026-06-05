@@ -34,7 +34,7 @@ $rows["Python"] = Get-Mean ((& python $Dir\treebench.py $Depth) -join "`n")
 
 $fastest = ($rows.Values | Where-Object { $_ -ne "N/A" } | Measure-Object -Minimum).Minimum
 $lines = @("treebench results", "=================", "  depth = $Depth (us per full tree sum, lower=faster)",
-           "  NOTE: LS enums lack borrows -> sum deep-clones subtrees (known limit)", "")
+           "  NOTE: Phase 9 — LS now uses &Tree borrow (zero-copy match), within ~2x Rust", "")
 foreach ($kv in $rows.GetEnumerator()) {
     if ($kv.Value -ne "N/A") {
         $lines += ("  {0,-10} {1,12:N1} us   {2,8:N1}x" -f $kv.Key, $kv.Value, ($kv.Value / $fastest))

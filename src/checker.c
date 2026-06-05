@@ -1152,19 +1152,19 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     {
         Type *pointee = resolve_type_node(c, tn->as.pointee, line, col);
         if (pointee == NULL) return NULL;
-        /* Phase 5/5.5/5.6/5.7/5.8: supported borrow pointees are
-           string / vec / map / struct(POD).
-           Other kinds TBD. */
+        /* Phase 5/5.5/5.6/5.7/5.8/9: supported borrow pointees are
+           string / vec / map / struct / enum. */
         bool ok_kind = (pointee->kind == TYPE_STRING ||
                         pointee->kind == TYPE_VECTOR ||
                         pointee->kind == TYPE_MAP ||
-                        pointee->kind == TYPE_STRUCT);
+                        pointee->kind == TYPE_STRUCT ||
+                        pointee->kind == TYPE_ENUM);   /* Phase 9: enum borrow */
         if (!ok_kind)
         {
             checker_error(c, line, col,
                           "&%s%s is not supported yet; only &string / &!string / "
                           "&vec(T) / &!vec(T) / &map(K,V) / &!map(K,V) / "
-                          "&struct / &!struct are implemented",
+                          "&struct / &!struct / &enum are implemented",
                           tn->is_mut ? "!" : "",
                           type_name(pointee));
             return NULL;

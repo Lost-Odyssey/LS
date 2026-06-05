@@ -3,8 +3,8 @@
   depth = 16 (us per full tree sum, lower=faster)
   NOTE: LS enums lack borrows -> sum deep-clones subtrees (known limit)
 
-  LS (JIT)      131,730.4 us      456.4x
-  LS (AOT)      134,454.5 us      465.9x
-  Rust              288.6 us        1.0x
-  C++               480.3 us        1.7x
-  Python         15,600.0 us       54.1x
+  LS (JIT)          500.5 us        1.8x
+  LS (AOT)          482.0 us        1.7x
+  Rust              284.7 us        1.0x
+  C++               673.2 us        2.4x
+  Python         16,134.2 us       56.7x

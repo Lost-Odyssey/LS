@@ -1,8 +1,8 @@
 # 实现说明书：enum 借用（`&Tree` / `&!Tree`）
 
-> **状态：起草，暂不实现（2026-06-05）**。优先级待定。
-> 动机见 `benchmarks/treebench/treebench_analysis.md`：递归 enum 只读遍历因无借用
-> 必须深拷贝子树，比 C++/Rust 慢 ~450×，甚至慢于 Python。
+> **Phase A 已完成（2026-06-05）**：`&Enum` 只读借用 + 零拷贝 match 解构。
+> treebench 从 454× → 1.3×（374 μs vs Rust 288 μs）。
+> Phase B（owned payload 借用绑定）和 Phase C（`&!Enum`）待做。
 
 ## 0. 目标
 

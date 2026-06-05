@@ -1877,3 +1877,16 @@ set_tests_properties(test_string_loop PROPERTIES
     DEPENDS "test_vec_get_unsafe"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+add_test(
+    NAME test_enum_borrow
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_borrow.cmake
+)
+set_tests_properties(test_enum_borrow PROPERTIES
+    DEPENDS "test_string_loop"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
