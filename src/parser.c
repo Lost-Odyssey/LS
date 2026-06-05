@@ -1047,6 +1047,19 @@ static AstNode *infix_assign(Parser *p, AstNode *left) {
 static AstNode *infix_call(Parser *p, AstNode *left) {
     Token call_tok = p->previous; /* the '(' */
 
+    /* sizeof(Type): the operand is a TYPE, not an expression. Intercept before
+       the generic-call heuristic (which would try to parse `int` as an expr).
+       Produces an AST_SIZEOF node carrying the parsed TypeNode. */
+    if (left->kind == AST_IDENT && strcmp(left->as.ident.name, "sizeof") == 0) {
+        TypeNode *t = parse_type(p);
+        consume(p, TOKEN_RPAREN, "expected ')' after sizeof type");
+        AstNode *n = new_node(AST_SIZEOF, call_tok.line, call_tok.column);
+        n->as.sizeof_expr.type_node  = t;
+        n->as.sizeof_expr.sized_type = NULL;
+        ast_free(left); /* the bare `sizeof` ident node is no longer needed */
+        return n;
+    }
+
     /* G2: detect generic function call — ident(TypeArgs)(args).
        If left is AST_IDENT and the first token after '(' is a type keyword
        or uppercase identifier followed by ',' or ')', this is a type arg list. */

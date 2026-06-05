@@ -3855,6 +3855,8 @@ static void capture_walk(CaptureScan *s, AstNode *node) {
     case AST_CAST:
         capture_walk(s, node->as.cast.expr);
         return;
+    case AST_SIZEOF:
+        return; /* operand is a type, no sub-expression to walk */
     case AST_RANGE:
         capture_walk(s, node->as.range.start);
         capture_walk(s, node->as.range.end);
@@ -5974,6 +5976,23 @@ static Type *check_expr(Checker *c, AstNode *node)
                           type_name(expr), type_name(target));
             result = NULL;
         }
+        break;
+    }
+
+    case AST_SIZEOF:
+    {
+        /* sizeof(Type) -> i64, compile-time byte size. Resolve the operand type
+           (type-param `T` is resolved via the active type-alias substitution
+           registered during generic instantiation, same as cast). */
+        Type *st = resolve_type_node(c, node->as.sizeof_expr.type_node,
+                                     node->line, node->column);
+        if (st == NULL)
+        {
+            result = NULL;
+            break;
+        }
+        node->as.sizeof_expr.sized_type = st;
+        result = type_i64();
         break;
     }
 
@@ -8886,13 +8905,8 @@ static void register_builtins(Checker *c)
         Type *ft = type_function(params, 1, type_void(), false);
         scope_define(c->current_scope, "free", ft);
     }
-    /* sizeof(type) -> int — treated as special; for now just register */
-    {
-        Type **params = (Type **)malloc_safe(sizeof(Type *));
-        params[0] = type_int(); /* placeholder */
-        Type *ft = type_function(params, 1, type_int(), false);
-        scope_define(c->current_scope, "sizeof", ft);
-    }
+    /* sizeof(Type) is handled as a compile-time AST_SIZEOF node (see parser
+       infix_call + check_expr), not a runtime function — nothing to register. */
     /* sqrt(f64) -> f64 */
     {
         Type **params = (Type **)malloc_safe(sizeof(Type *));

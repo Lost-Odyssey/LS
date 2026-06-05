@@ -1411,6 +1411,18 @@ add_test(
 )
 set_tests_properties(test_rawvec_realloc PROPERTIES DEPENDS "test_ring")
 
+# RawVec Step 2 — sizeof(T) compile-time evaluation (primitive/pointer sizes +
+# generic struct method monomorphization + arithmetic). JIT + AOT.
+add_test(
+    NAME test_rawvec_sizeof
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_sizeof.cmake
+)
+set_tests_properties(test_rawvec_sizeof PROPERTIES DEPENDS "test_rawvec_realloc")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

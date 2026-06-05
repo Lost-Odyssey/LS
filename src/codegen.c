@@ -13258,6 +13258,18 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return val;
     }
 
+    case AST_SIZEOF:
+    {
+        /* sizeof(Type) -> i64 compile-time constant via LLVMSizeOf. The checker
+           resolved the operand to a concrete type (type-param T already
+           substituted per monomorphization). */
+        Type *st = node->as.sizeof_expr.sized_type;
+        if (st == NULL)
+            return LLVMConstInt(LLVMInt64TypeInContext(ctx->context), 0, 0);
+        LLVMTypeRef llt = type_to_llvm(ctx, st);
+        return LLVMSizeOf(llt); /* i64 constant */
+    }
+
     case AST_BLOCK:
     {
         /* Block as expression: value is last expression */

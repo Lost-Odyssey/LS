@@ -246,6 +246,9 @@ void ast_free(AstNode *node) {
         ast_free(node->as.cast.expr);
         type_node_free(node->as.cast.target_type);
         break;
+    case AST_SIZEOF:
+        type_node_free(node->as.sizeof_expr.type_node);
+        break;
     case AST_TRY:
         ast_free(node->as.try_expr.expr);
         break;
@@ -489,6 +492,7 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_MATCH:        return "MATCH";
     case AST_TRY:          return "TRY";
     case AST_CAST:         return "CAST";
+    case AST_SIZEOF:       return "SIZEOF";
     case AST_RANGE:        return "RANGE";
     case AST_VAR_DECL:     return "VAR_DECL";
     case AST_ASSIGN:       return "ASSIGN";
@@ -695,6 +699,10 @@ AstNode *ast_clone_deep(const AstNode *src) {
     case AST_CAST:
         n->as.cast.expr        = ast_clone_deep(src->as.cast.expr);
         n->as.cast.target_type = type_node_clone(src->as.cast.target_type);
+        break;
+    case AST_SIZEOF:
+        n->as.sizeof_expr.type_node  = type_node_clone(src->as.sizeof_expr.type_node);
+        n->as.sizeof_expr.sized_type = NULL; /* re-resolved per instantiation */
         break;
     case AST_TRY:
         n->as.try_expr.expr = ast_clone_deep(src->as.try_expr.expr);
@@ -976,6 +984,11 @@ void ast_print(AstNode *node, int indent) {
         type_node_print(node->as.cast.target_type);
         printf("\n");
         ast_print(node->as.cast.expr, indent + 1);
+        break;
+    case AST_SIZEOF:
+        printf("SIZEOF ");
+        type_node_print(node->as.sizeof_expr.type_node);
+        printf("\n");
         break;
     case AST_TRY:
         printf("TRY\n");

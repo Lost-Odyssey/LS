@@ -105,6 +105,7 @@ typedef enum
     AST_MATCH_OR_PATTERN, /* A | B | C inside a match arm — OR-pattern */
     AST_TRY,          /* try expr — Zig-style early return for Result/Option */
     AST_CAST,
+    AST_SIZEOF,       /* sizeof(Type) — compile-time byte size as i64 */
     AST_RANGE,
     /* Statements */
     AST_VAR_DECL,
@@ -291,6 +292,11 @@ struct AstNode
             AstNode *expr;
             TypeNode *target_type;
         } cast;
+        struct
+        {
+            TypeNode *type_node;  /* the parsed operand type, e.g. sizeof(T) */
+            Type     *sized_type; /* filled by checker: resolved concrete type */
+        } sizeof_expr;
         struct
         {
             AstNode *expr;     /* Result/Option expression to unwrap */

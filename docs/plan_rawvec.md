@@ -134,7 +134,11 @@ struct RawVec {
 }
 
 fn new_rawvec() -> RawVec {
-    return RawVec { data: null, len: 0, cap: 0 }
+    // NOTE: a nil pointer cannot be written directly in a struct literal field
+    // (checker rejects `data: nil`); bind it to a local *T first, then use it.
+    // Casts use `expr as type` (NOT C-style `(type)expr`). Verified 2026-06-05.
+    *int p = nil
+    return RawVec { data: p, len: 0, cap: 0 }
 }
 
 impl RawVec {
@@ -143,7 +147,7 @@ impl RawVec {
             int ncap = 4
             if self.cap > 0 { ncap = self.cap * 2 }
             // realloc 旧 buffer 到新容量（G1 sizeof + g4 realloc）
-            self.data = (*int) realloc((*u8) self.data, ncap * sizeof(int))
+            self.data = realloc(self.data as *u8, ncap * sizeof(int)) as *int
             self.cap = ncap
         }
         self.data[self.len] = x        // G2: *int 的 typed 下标写
@@ -156,7 +160,7 @@ impl RawVec {
 
     // C2: POD 无元素 drop，但裸 buffer 必须 free 恰好一次
     fn __drop(&!self) {
-        if self.cap > 0 { free((*u8) self.data) }
+        if self.cap > 0 { free(self.data as *u8) }
     }
 }
 
@@ -207,7 +211,7 @@ fn main() {
 
 > 每步独立可测、保持全量 ctest 绿。顺序按依赖：g4 → G1 → G2 → G3 →（可选 Index trait）。
 
-### Step A：暴露 `realloc`（g4，最易，先做）
+### Step A：暴露 `realloc`（g4，最易，先做） — ✅ 完成 2026-06-05（commit fca6000）
 
 - **改动**：`src/checker.c` `register_builtins`（紧邻 `malloc` 注册，~L8873）增加：
   ```c
@@ -222,7 +226,14 @@ fn main() {
   确认用户级 `realloc(...)` 调用解析到该 wrapper（与 malloc 同路径）。
 - **测试**：`malloc → realloc → free` 三步 .ls，memcheck `0/0/0`，且 realloc 被记为同对象迁移。
 
-### Step B：`sizeof(T)` 真实求值（G1）
+### Step B：`sizeof(T)` 真实求值（G1） — ✅ 完成 2026-06-05
+
+> 实现：新增 `AST_SIZEOF` 节点（parser `infix_call` 在泛型启发式**之前**拦截
+> `sizeof(` → 解析 TYPE）；checker `resolve_type_node`（泛型形参 `T` 经实例化时
+> 注册的 type-alias 自动代换）→ `sized_type`，结果 `i64`；codegen `LLVMSizeOf` 发
+> 编译期常量。`test_rawvec_sizeof`（17 项，JIT+AOT）。
+> 已知边界：泛型**自由函数** `fn f(T)()`（仅类型参、无值参）实例化仍报 `f(?)`——
+> 既有泛型限制，与 sizeof 无关；RawVec 用泛型 **struct 方法**路径（已验证可用）。
 
 当前 `sizeof` 形参是 `type_int()` 占位，**无法接收类型**。需让它接受**类型实参**。
 
