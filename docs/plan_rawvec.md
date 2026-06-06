@@ -274,7 +274,29 @@ fn main() {
 - **测试**：对 `malloc` 出的 `*int` 做 `p[i]=…` / 读回；越界不做运行时检查（与 array/vec 一致，
   `unsafe` 语义，文档标注）。
 
-### Step D：元素 move-out / move-in（G3，C2 核心）
+### Step D：元素 move-out / move-in（G3，C2 核心） — ✅ 完成 2026-06-05（Gate M1 通过）
+
+> **实现**：新增最小原语 **`__drop_at(place)`**（checker 识别 + codegen 经
+> `codegen_lvalue_ptr` 取址后 `emit_drop_value` 递归析构，POD 为 no-op）。配合既有
+> `__move`，确立全套**内存安全惯用法**（`test_rawvec_m1`，JIT+AOT+memcheck 0/0/0）：
+>
+> | 操作 | 惯用法 | 说明 |
+> |------|--------|------|
+> | push 临时 | `v.push(f"...")` | 临时被消费，调用方不 drop |
+> | push 命名局部 | `v.push(__move(local))` | 显式 move 标记局部，避免浅拷双释放 |
+> | string 读/get | `string t = self.data[i]; return t` | var_decl 可靠深拷 string |
+> | pop/move-out | `T o = self.data[i]; __drop_at(self.data[i]); len-=1; return o` | clone + drop slot |
+> | set | `__drop_at(self.data[i]); self.data[i] = x` | drop 旧 + raw store |
+> | `__drop` | `for i { __drop_at(self.data[i]) }; free(data)` | 递归析构,嵌套自动 |
+>
+> **嵌套 drop 已验证**：`RawVec(Person{string})`（递归 struct drop）+
+> `RawVec(RawVec(string))`（两级递归，`__drop_at`→`RawVecS.__drop`→inner 释放）均 0/0/0。
+>
+> ⚠️ **关键限制（超出 M1，属借用议题）**：读取 has_drop **聚合体**元素（struct/嵌套容器）
+> **by-value 或字段读穿透**（`self.data[i].field`）**不安全**——会物化一个别名 slot 资源的临时
+> 并析构它 → 双释放。**仅 string 元素可安全 by-value 读**（var_decl 深拷 string）。读取
+> struct/聚合元素需要 `&self.data[i]` 借用（borrow/借址读穿透），是独立工作项。这直接影响
+> RawVec 能否完全替代内建 vec（vec 的 `v[i]` 读能正确深拷聚合体）——列入 M3 决策考量。
 
 这是最需谨慎的一步——直接决定 has_drop 元素是否双释放/泄漏。
 

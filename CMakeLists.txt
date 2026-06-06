@@ -1447,6 +1447,19 @@ add_test(
 )
 set_tests_properties(test_rawvec_poc PROPERTIES DEPENDS "test_rawvec_ptr_index")
 
+# RawVec Step 5 / Gate M1 — has_drop element ownership: move-in/out, per-element
+# recursive drop, nested drop (RawVec of struct / RawVec of RawVec). __drop_at
+# intrinsic + __move. memcheck 0/0/0.
+add_test(
+    NAME test_rawvec_m1
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_m1.cmake
+)
+set_tests_properties(test_rawvec_m1 PROPERTIES DEPENDS "test_rawvec_poc")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

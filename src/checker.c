@@ -3579,6 +3579,32 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return arg_type; /* transparent: __move(s) has the same type as s */
     }
 
+    /* __drop_at(place) -> void — run the recursive destructor on the value at an
+       lvalue place (e.g. a raw pointer slot p[i]). POD is a no-op. Lets a
+       self-managed container (RawVec) drop owned elements in __drop/set/clear
+       WITHOUT freeing the backing buffer. The slot is left logically dead;
+       liveness is the container's responsibility (its `len` bound). */
+    if (strcmp(name, "__drop_at") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__drop_at() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__drop_at() requires a place expression (p[i], field, or *p)");
+            return NULL;
+        }
+        return type_void();
+    }
+
     return NULL;
 }
 
@@ -3591,7 +3617,8 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "from_cstr") == 0 ||
            strcmp(name, "__string_take_buffer") == 0 ||
            strcmp(name, "errno") == 0 ||
-           strcmp(name, "__move") == 0;
+           strcmp(name, "__move") == 0 ||
+           strcmp(name, "__drop_at") == 0;
 }
 
 /* ---- Phase C closure capture analysis ----

@@ -11128,6 +11128,28 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             }
         }
 
+        /* Intercept __drop_at(place) — run the recursive destructor on the value
+           stored at an lvalue place (raw pointer slot p[i], field, *p) WITHOUT
+           freeing any backing buffer. No-op for POD. Returns void. The nested
+           drop is automatic: emit_drop_value recurses (string free / vec / map /
+           struct.__drop / enum.__drop), so __drop_at on a RawVec(RawVec(T)) slot
+           dispatches to the inner RawVec's user __drop. */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "__drop_at") == 0 &&
+            node->as.call.arg_count == 1)
+        {
+            AstNode *place = node->as.call.args[0];
+            LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
+            if (ptr == NULL)
+            {
+                cg_error(ctx, node->line, node->column,
+                         "__drop_at: argument is not an addressable place");
+                return NULL;
+            }
+            emit_drop_value(ctx, ptr, place->resolved_type);
+            return NULL; /* void */
+        }
+
         /* Intercept string builtin method calls: s.method(args...) */
         if (node->as.call.callee->kind == AST_FIELD)
         {
