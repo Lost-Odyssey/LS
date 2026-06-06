@@ -1001,6 +1001,15 @@ static void instantiate_impl_method_types(
         int sbk = method->as.fn_decl.self_borrow_kind;
         int pc = method->as.fn_decl.param_count;
 
+        /* A user-defined __drop forces has_drop on this monomorphized instance
+           (mirrors the non-generic path, checker ~L7670). Without this, a generic
+           container whose fields are all POD/raw-pointer (e.g. RawVec(int) with a
+           *T buffer) would not be marked has_drop, so scope-exit would skip its
+           __drop and leak the buffer. It also enables emit_struct_clone_val's
+           user-__clone dispatch (which early-returns when !has_drop). */
+        if (strcmp(mname, "__drop") == 0)
+            struct_type->as.strukt.has_drop = true;
+
         /* Build concrete method type: self ptr (if instance) + user params */
         int total = is_static ? pc : pc + 1;
         Type **params = (Type **)malloc_safe((size_t)total * sizeof(Type *));

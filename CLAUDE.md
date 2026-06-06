@@ -146,7 +146,7 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 | — | **enum 借用 Phase A（&Enum 只读借用）**（2026-06-05）：checker 白名单加 `TYPE_ENUM`；codegen `&enum` 参数 pointer ABI；match 借用主体零拷贝路径（borrow 检测 → 直接 GEP 原始指针，box 子树 binder `sym->value=box_ptr` 零拷贝传递，auto-borrow 传调用时直传指针）；auto-borrow call fixup 加 `TYPE_ENUM`。treebench 454× → 1.3×（374 μs vs Rust 288 μs）。`test_enum_borrow`（JIT+AOT+memcheck，8 项）| ✅ |
 | — | **enum 借用 Phase B（owned payload 借用绑定）**（2026-06-05）：checker 检测借用 match 主体（`subj_is_enum_borrow`），owned payload binder（string/vec/map/struct/has_drop-enum）标 `is_borrow=true`；codegen string binder 设 `cap=LS_CAP_BORROWED`，vec/map/struct/嵌套 enum binder `sym->value=field_ptr` 零拷贝；`vec[i] → &T` auto-borrow 改用 `codegen_lvalue_ptr` 取元素地址（绕过 `emit_clone_value` 泄漏）；rvalue owned 实参 temp alloca 注册 `cg_push_temp_drop`。`std.json._stringify_impl` 改为 `&JsonValue`。`test_enum_borrow_b`（JIT+AOT+memcheck，10 项）| ✅ |
 
-**当前测试**：ctest 144/144（新增 `test_enum_borrow_b`）
+**当前测试**：ctest 150/150（分支 `feat/rawvec`：纯 LS 自管裸内存容器 `std.rawvec` RawVec(T)，新增 6 个 rawvec 测试 M0~M2 + realloc/sizeof/ptr-index 基础设施）
 
 > ⚠️ **REPL 已知限制 L-010**：`ls repl` 中跨多条输入行对同一类 has_drop enum/struct 值（如 `import std.json` 的 `JsonValue`）反复调用会析构的函数（`stringify` 等）→ 段错误。`ls run` 跑 `.ls` 文件不受影响。根因：每条 REPL snippet 是独立 JIT 模块，imported 模块 drop/clone 辅助被跨模块 strip 与 RAII 析构交互出错。修法方向：imported 模块在 REPL 只发射一次。详见 [docs/feature_inventory.md](docs/feature_inventory.md) 三、L-010。
 

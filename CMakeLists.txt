@@ -1460,6 +1460,18 @@ add_test(
 )
 set_tests_properties(test_rawvec_m1 PROPERTIES DEPENDS "test_rawvec_poc")
 
+# RawVec Step 6 / Gate M2 — generic std.rawvec RawVec(T) (int/string/Pt) under
+# monomorphization, matching vec semantics. Imports std.rawvec (LS_HOME=repo).
+add_test(
+    NAME test_rawvec_m2
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_m2.cmake
+)
+set_tests_properties(test_rawvec_m2 PROPERTIES DEPENDS "test_rawvec_m1")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

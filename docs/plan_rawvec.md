@@ -509,10 +509,24 @@ impl(T) RawVec(T) {
 
 | 门 | 内容 | 决策 |
 |----|------|------|
-| **M0** | PoC POD（§3.1）跑通 + memcheck `0/0/0` | G1/G2/g4 基础设施可行？否→评估单点 intrinsic 成本 |
-| **M1** | PoC string（§3.2）+ Step D | **C2 核心（move-out + 嵌套 drop）成立？** 这是最硬的门 |
-| **M2** | 泛型 `RawVec(T)` + §7 矩阵全绿 | 纯 LS 自管内存容器内存安全成立 |
+| **M0** | PoC POD（§3.1）跑通 + memcheck `0/0/0` | ✅ 通过（commit c3df8d2） |
+| **M1** | PoC string（§3.2）+ Step D | ✅ 通过（commit e8c4d3d）：move-out + 嵌套 drop + 全套惯用法 0/0/0 |
+| **M2** | 泛型 `std.rawvec RawVec(T)` + 矩阵全绿 | ✅ 通过（2026-06-05）：`test_rawvec_m2`（int/string/Pt × push-grow/get-clone/pop-move/set/clear/scope-drop/容器-move，JIT+AOT+memcheck 0/0/0）。**RawVec 与 vec 语义/内存全对齐。** |
 | **M3** | §8 性能对比（O2 内联后） | **替换 vec 在性能上成立？** 给战略问题最终数据 |
+
+> **M2 实施记录（2026-06-05）**：`std/rawvec.ls` 泛型 `RawVec(T)`（new/push/pop/get/set/
+> reserve/clear/length/capacity/is_empty/`__clone`/`__drop`）。两处编译器补丁让钩子在
+> **单态化**下生效：
+> 1. `instantiate_impl_method_types`：用户 `__drop` 强制实例 `has_drop=true`（否则全 POD/
+>    裸指针字段的 `RawVec(int)` 不被标 has_drop → scope 退出不调 `__drop` → buffer 泄漏）。
+> 2. **顺带修了一个 LS 通用 bug**：`f().field` / `obj.method(i).field`——返回 has_drop struct
+>    的右值字段访问，其临时 struct 未登记 drop → 泄漏其它字段。原 codegen 只对 `vec[i].field`
+>    （AST_INDEX）登记 temp-drop，现扩到 `AST_CALL`。内建 `vec[i].field` 不受影响（走索引路径）。
+>
+> ⚠️ **嵌套泛型容器 `RawVec(RawVec(T))` 暂阻（通用泛型/parser 限制，非 RawVec 内存问题）**：
+> ① parser 不解析声明位 `*RawVec(int) p`（指针到带实参泛型）；② 泛型自由函数以泛型实例为类型
+> 实参 `new_rawvec(RawVec(int))()` mangle 截断为 `new_rawvec(RawVec)`。嵌套 drop/clone 机制本身
+> 已由 M1 手写非泛型类型证明正确。两项是独立的语言层 gap，列待办。
 
 > M1 + M3 是两个真正的决策点：M1 回答"纯 LS 能不能安全管裸内存"，M3 回答"快不快"。两者都绿，
 > "用纯 LS 替换内建 vec"才从设想变成可执行选项；任一不达标，则结论是"纯 LS 容器留在内建原语

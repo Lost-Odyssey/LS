@@ -12321,8 +12321,14 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    Register the spill slot so the statement-end flush drops it. The
                    accessed field is independently cloned below, so dropping the
                    temporary here does not invalidate the returned value. */
+                /* Owned rvalue struct sources whose temp must be dropped after the
+                   field read: container index (vec[i]/p[i]) AND a CALL returning a
+                   has_drop struct by value (f().field / obj.method(i).field). Without
+                   the CALL case, the returned struct's other owned fields leak (the
+                   accessed field is cloned below, so dropping the temp is safe). */
+                AstNode *uobj_src = ast_unwrap_move(obj_node);
                 if (struct_type->as.strukt.has_drop &&
-                    ast_unwrap_move(obj_node)->kind == AST_INDEX)
+                    (uobj_src->kind == AST_INDEX || uobj_src->kind == AST_CALL))
                 {
                     cg_push_temp_drop(ctx, struct_ptr, struct_type);
                 }
