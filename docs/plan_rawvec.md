@@ -297,10 +297,14 @@ fn main() {
 > （`self.data[i].name` / `.age`）现全部 memcheck 0/0/0；同时消除了读取在 var_decl 与 return
 > 之间的 clone 不一致（现统一在读路径 clone）。`test_rawvec_m1` 含这些读取验收。
 >
-> ⚠️ **唯一剩余差异 vs vec（需用户 `__clone`）**：读取**嵌套用户容器**元素 by-value
-> （`RawVecS inner = self.data[i]`）无法深拷内层裸 `*T` buffer——编译器不能 auto-clone 裸指针
-> 字段。内建 `vec(vec(T))` 读会深拷内层 vec。补齐需**用户 `__clone` 钩子**（对称于用户
-> `__drop`），让 `emit_clone_value` 遇到带用户 `__clone` 的 struct 时调用之。下一步处理。
+> ✅ **嵌套容器读取差异已消除 2026-06-05（用户 `__clone` 钩子）**：`emit_struct_clone_val`
+> 顶部新增——若 struct 定义了 `fn __clone(&self) -> Self`，clone 时调用它（spill 取 &self →
+> 调 `<name>.__clone`）而非字段逐拷。对称于用户 `__drop`。这样含裸 `*T` buffer 的用户容器
+> 也能被深拷：`RawVec(RawVec(T))` 读内层经 `RawVecS.__clone` 深拷，与 `vec(vec(T))` 一致。
+> `test_rawvec_m1` 含 RawVecV 嵌套读取（row_len / row_get，JIT+AOT+memcheck 0/0/0）。
+>
+> **结论：RawVec 与内建 vec 的语义/内存差异已全部消除**——元素读 clone、字段读穿透、嵌套
+> 容器读（用户 `__clone`）、整容器 move、逐元素递归 drop（`__drop_at`）、move-in/out 全部对齐。
 
 这是最需谨慎的一步——直接决定 has_drop 元素是否双释放/泄漏。
 

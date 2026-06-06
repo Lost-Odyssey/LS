@@ -1793,6 +1793,26 @@ static LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
     if (!struct_type->as.strukt.has_drop)
         return struct_val; /* no owned resources — plain value copy is fine */
 
+    /* User-defined __clone hook: if the struct provides `fn __clone(&self) -> Self`,
+       call it instead of field-wise auto-clone. Required for structs that own heap
+       through a raw *T pointer field (e.g. a hand-written container): the compiler
+       cannot auto-deep-clone a raw pointer, so the user supplies the deep copy.
+       Symmetric with the user __drop override. */
+    {
+        char clone_fn_name[256];
+        snprintf(clone_fn_name, sizeof(clone_fn_name), "%s.__clone",
+                 struct_llvm_name(struct_type));
+        LLVMValueRef user_clone = LLVMGetNamedFunction(ctx->module, clone_fn_name);
+        if (user_clone != NULL)
+        {
+            /* __clone(&self): spill the value to a temp to get a self pointer. */
+            LLVMValueRef self_tmp = cg_entry_alloca(ctx, llvm_struct_type, "uc.self");
+            LLVMBuildStore(ctx->builder, struct_val, self_tmp);
+            LLVMTypeRef ft = LLVMGlobalGetValueType(user_clone);
+            return LLVMBuildCall2(ctx->builder, ft, user_clone, &self_tmp, 1, "uc.r");
+        }
+    }
+
 #if CG_DEBUG
     {
         char dbg_fmt[128];
