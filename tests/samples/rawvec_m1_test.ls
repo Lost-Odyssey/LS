@@ -12,14 +12,14 @@
 //   * __drop             : for i in 0..len { __drop_at(self.data[i]) }; free(data)
 //   * __drop_at recurses via emit_drop_value -> string free / struct.__drop / nested.
 //
-// KNOWN LIMITATION (out of M1 scope — belongs to a borrow story):
-//   Reading a has_drop AGGREGATE element (struct/nested-container) BY VALUE or via
-//   field read-through (`self.data[i].field`) is UNSAFE: it materializes a temp that
-//   aliases the slot's owned sub-resources and then drops it -> double free. Only
-//   string elements are safely readable (var_decl deep-clones strings). Reading
-//   struct/aggregate elements needs &self.data[i] borrowing (a separate concern).
-//   So RawVecP / RawVecV below only push + __drop (no element reads) — which is
-//   exactly what the M1 drop/move gate verifies.
+// Reads match vec[i] exactly: p[i] DEEP-CLONES owned element data (string/struct/
+// has_drop), so struct element reads and field read-throughs (self.data[i].name)
+// are memory-safe — see RawVecP below.
+// REMAINING DIFFERENCE vs vec (pending user __clone): reading a NESTED user
+// container element BY VALUE (`RawVecS inner = self.data[i]`) cannot deep-clone the
+// inner's raw *T buffer (the compiler can't auto-clone a raw pointer field), so
+// RawVecV below only push + __drop. vec(vec(T)) deep-clones the inner; matching
+// that needs a user-defined __clone hook (tracked separately).
 //
 // Prints "ok <label>" / "FAIL <label>" then "M1 PASS".
 
@@ -76,6 +76,11 @@ impl RawVecP {
         self.len = self.len + 1
     }
     fn count(&self) -> int { return self.len }
+    // Aggregate element reads now match vec[i]: a read DEEP-CLONES the element,
+    // so these are memory-safe (struct read, string field read-through, POD field).
+    fn get_full(&self, int i) -> Person { Person pp = self.data[i]; return pp }
+    fn name_of(&self, int i) -> string { return self.data[i].name }
+    fn age_of(&self, int i) -> int { return self.data[i].age }
     fn __drop() {
         // __drop_at on each struct slot recurses into Person's auto __drop, which
         // frees the `name` string field — proving recursive (nested) struct drop.
@@ -131,6 +136,12 @@ fn main() {
         pv.push(__move(p))              // named local -> explicit move
     }
     check(pv.count() == 5, "RawVecP count 5")
+    // aggregate element reads (now clone-on-read, matching vec[i])
+    Person g = pv.get_full(2)
+    check(g.name == "person-2", "get_full(2).name = person-2")
+    check(pv.name_of(0) == "person-0", "name_of(0) field read-through = person-0")
+    check(pv.name_of(4) == "person-4", "name_of(4) field read-through = person-4")
+    check(pv.age_of(3) == 30, "age_of(3) POD field = 30")
 
     // ---- RawVecV: nested RawVec of RawVecS (two-level recursive drop) ----
     RawVecV vv = new_rvv()

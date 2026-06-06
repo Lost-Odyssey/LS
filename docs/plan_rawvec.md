@@ -292,11 +292,15 @@ fn main() {
 > **嵌套 drop 已验证**：`RawVec(Person{string})`（递归 struct drop）+
 > `RawVec(RawVec(string))`（两级递归，`__drop_at`→`RawVecS.__drop`→inner 释放）均 0/0/0。
 >
-> ⚠️ **关键限制（超出 M1，属借用议题）**：读取 has_drop **聚合体**元素（struct/嵌套容器）
-> **by-value 或字段读穿透**（`self.data[i].field`）**不安全**——会物化一个别名 slot 资源的临时
-> 并析构它 → 双释放。**仅 string 元素可安全 by-value 读**（var_decl 深拷 string）。读取
-> struct/聚合元素需要 `&self.data[i]` 借用（borrow/借址读穿透），是独立工作项。这直接影响
-> RawVec 能否完全替代内建 vec（vec 的 `v[i]` 读能正确深拷聚合体）——列入 M3 决策考量。
+> ✅ **聚合元素读取差异已消除 2026-06-05**：`p[i]` 读路径改为 `emit_clone_value` 深拷 +
+> string temp 登记，**完全镜像 `vec[i]`/`array[i]` 读语义**。struct 元素整读 + 字段读穿透
+> （`self.data[i].name` / `.age`）现全部 memcheck 0/0/0；同时消除了读取在 var_decl 与 return
+> 之间的 clone 不一致（现统一在读路径 clone）。`test_rawvec_m1` 含这些读取验收。
+>
+> ⚠️ **唯一剩余差异 vs vec（需用户 `__clone`）**：读取**嵌套用户容器**元素 by-value
+> （`RawVecS inner = self.data[i]`）无法深拷内层裸 `*T` buffer——编译器不能 auto-clone 裸指针
+> 字段。内建 `vec(vec(T))` 读会深拷内层 vec。补齐需**用户 `__clone` 钩子**（对称于用户
+> `__drop`），让 `emit_clone_value` 遇到带用户 `__clone` 的 struct 时调用之。下一步处理。
 
 这是最需谨慎的一步——直接决定 has_drop 元素是否双释放/泄漏。
 

@@ -13500,10 +13500,14 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         }
 
         /* p[i] on a raw *T pointer — load the pointer value, typed-GEP element,
-           load it. RAW read: no bounds check, no clone (the unsafe primitive;
-           ownership of has_drop elements is managed by the surrounding code,
-           e.g. RawVec methods). The GEP stride comes from the SAME DataLayout as
-           sizeof(T), so struct padding is handled automatically. */
+           load it, then DEEP-CLONE owned element data — matching vec[i]/array[i]
+           read semantics exactly (a read yields an independent copy; the slot
+           keeps its own, so both can be dropped without double-free). POD /
+           non-has_drop is returned as-is (emit_clone_value is a no-op). The GEP
+           stride comes from the SAME DataLayout as sizeof(T), so struct padding
+           is handled automatically. No bounds check (unsafe layer).
+           NOTE: zero-copy move-out is NOT done here (would alias); a container
+           that wants move-out reads + __drop_at(slot) (clone + drop original). */
         if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
         {
             LLVMValueRef ptr_val = codegen_expr(ctx, obj);
@@ -13515,10 +13519,18 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
             if (LLVMTypeOf(index) != i64_t)
                 index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t, "pi.idx");
-            LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.pointer_to);
+            Type *elem_type = obj_type->as.pointer_to;
+            LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
             LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val,
                                              &index, 1, "ptr.idx");
-            return LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "ptr.elem");
+            LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "ptr.elem");
+            /* Deep-clone owned element data (string/vec/has_drop struct|enum). */
+            elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
+            /* Register a string clone as a statement temp so a transient use frees
+               it and a binding/return transfers ownership (mirrors vec[i]/map[k]). */
+            if (elem_type->kind == TYPE_STRING && ctx->current_fn != NULL)
+                elem = cg_push_temp_string(ctx, elem);
+            return elem;
         }
 
         /* arr[index] — GEP into fixed array + load element */
