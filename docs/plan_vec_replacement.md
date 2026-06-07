@@ -232,18 +232,23 @@ static bool is_import_path_segment(TokenType t) {
 
 | 编号 | 问题 | 触发/表现 | 当前绕行 |
 |------|------|-----------|----------|
-| VR-LIM-001 | `Vec` 不是编译器内建 for-in 迭代对象 | `for x in v` 仅对内建 `vec` 有特殊 codegen；`Vec(T)` 迁移后不能直接 for-in | 改为索引循环：`for (int i = 0; i < v.len(); i = i + 1) { T x = v[i] ... }` |
-| VR-LIM-002 | 纯 LS `Vec` 全局变量不会自动调用 `__drop` | 全局 `Vec` push 后 memcheck 泄漏 raw buffer；局部变量作用域退出正常 drop | 样本末尾显式 `clear()` + `shrink_to_fit()`，或把容器改为局部 |
+| ~~VR-LIM-001~~ | ~~`Vec` 不是编译器内建 for-in 迭代对象~~ | ✅ 已解除（2026-06-07）：用户迭代协议已落地，`Vec.iter()` + `VecIter.next()` 支持 `for x in v`，含 rvalue 源/嵌套迭代。 | 验证：`test_iter_protocol`（JIT+AOT+memcheck 0/0/0）。迁移时可保留/使用 `for x in Vec`。 |
+| ~~VR-LIM-002~~ | ~~纯 LS `Vec` 全局变量不会自动调用 `__drop`~~ | ✅ 已解除（2026-06-07）：全局 cleanup 已覆盖 `TYPE_STRUCT(has_drop)` 等用户容器路径。 | 验证：`test_vec_global_drop`（JIT+AOT+memcheck 0/0/0）。迁移时不再需要末尾手动 `clear()` + `shrink_to_fit()`，除非样本本身想测试该 API。 |
 | VR-LIM-003 | 内建 `vec` 的越界容错/默认值 API 与 `Vec` 不同 | 旧样本依赖 `get(99)`/`first()`/`last()`/`remove(99)`/`swap(0,99)` 警告并返回默认值；纯 LS `Vec` 当前多为 unchecked 或返回 `Option(T)` | 迁移样本按 `Vec` API 重写断言；越界容错旧行为不保留 |
 | VR-LIM-004 | 内建 `vec.resize(n)` 有默认填充值，`Vec.resize(n, fill)` 需要显式 fill | `vec_batch_d` 一类样本调用 `resize(6)` 期待 0/空字符串填充 | 改为 `resize(n, 0)`、`resize(n, f"")` 等显式填充值 |
 | VR-LIM-005 | 闭包捕获外层 `Vec` 修改不等价于内建 `vec` by-ref 捕获 | `nums.each(|x| { acc.push(x) })` 这类样本对纯 LS `Vec` 会触发 by-move/所有权语义差异 | 桶 B 机械迁移中先避免外层 `Vec` 写捕获；需要改为 `&!Vec` 参数或归入桶 D 专项 |
 | VR-LIM-006 | 闭包直接返回 string 形参存在既有脆弱边界 | 长链测试中 `reduce(string)(..., |acc, s| { if acc.length == 0 { return s } ... })` 曾出现首元素错值 | 样本中改为返回新字符串表达式，如 `f"" + s`；编译器层后续另案 |
-| VR-LIM-007 | 自定义 `__drop` 副作用精确计数与纯 LS `Vec` 不等价 | `vec_struct_test` 迁移后，`Vec` 的 clone/临时/`Option(T)` 返回值 drop 路径会额外触发 `Item.__drop`，旧的 `drop_count` 精确断言失败 | 本轮不修；这类样本只可改为 memcheck/行为验收，或暂留内建 `vec` 到 drop 副作用语义另案处理 |
-| VR-LIM-008 | `Vec(struct含string)[i]` 读出 clone 存在泄漏 | `vec_struct_clone_test` 迁移为 `Vec(Person)` 后，`Vec.__index -> get` 读出 `Person{name:string}` 的 clone 在 memcheck 下泄漏 string clone | 本轮不修；涉及 has_drop struct 元素按值读出的样本暂留内建 `vec` 或改为不读出整 struct |
-| VR-LIM-009 | `Vec(string).push(rvalue string)` 与后续覆盖/清理组合存在泄漏边界 | `vec_string_test` 迁移后，`v.push("hello".upper())` 再经 `pop`/`v[0]=...` 路径，memcheck 报最初 `string.upper` 分配泄漏；先绑定局部再 push 的样本干净 | 本轮不修；rvalue string 直接 push 的样本暂留内建 `vec`，或改为 `string tmp = ...; v.push(tmp)` 后再迁 |
-| VR-LIM-010 | 命名函数值不能直接传给 `Block(...)` 参数 | `d.sort_by(cmp_desc)` 报 expected/got 同为 `Block(int, int) -> int`，但 checker 不接受函数名作为 Block 实参 | 改为内联 closure：`d.sort_by(|a, b| cmp_desc(a, b))` 或直接写比较逻辑 |
-| VR-LIM-011 | `Vec` 作为 has_drop enum payload 不稳定 | `enum_vec_payload_test` 将 `Numbers(vec(int))` / `Mixed(string, vec(string))` 迁为 `Vec` payload 后，JIT 直接访问冲突 | 本轮不修；enum payload 中持有容器的样本暂留内建 `vec`，等 enum payload + user `__drop/__clone` 组合另案处理 |
-| VR-LIM-012 | struct 字段默认值中的 `[..]` 未走 `Vec.__from_list` | `struct_field_defaults_v2_test` 将 `Vec(int) preset = [1,2,3]` / `Vec(string) names = [...]` 作为字段默认值时，checker 仍把默认值判为 `array(...)`；`Vec(f64) data = []` 也无法推断元素类型 | 本轮不修；struct 字段默认值测试暂留内建 `vec`，普通局部 `Vec(T) v = [..]` 仍可迁移 |
+| ~~VR-LIM-007~~ | ~~自定义 `__drop` 副作用精确计数与纯 LS `Vec` 不等价~~ | ✅ 实质解除为迁移规约：`Vec` 走普通用户容器 clone/drop 语义，副作用计数不应再按内建 `vec` 的旧精确次数断言。 | 迁移 `vec_struct_test` 这类样本时改为行为 + memcheck 验收；不要保留旧 `drop_count` 精确实现细节断言。 |
+| VR-LIM-008 | `Vec(struct含string)[i]` 读出 clone 存在剩余泄漏边界 | 部分解除（2026-06-07）：`v[i].field` / `v[i].inner.field` / `f(v[i])` / `Person p=v[i]` 已由 `test_vec_owndrop` 验证 JIT+AOT+memcheck 0/0/0；但复核迁移 `vec_struct_clone_test` 时，`print(vp[0])` 这类“整个 has_drop struct rvalue 直接作为 builtin/print 实参”仍泄漏 `Vec(Person).get` 中的 string clone。 | 暂不要迁移依赖 `print(v[i])` / builtin 直接消费整 struct rvalue 的样本；可迁移 field-read、显式函数实参、终端绑定路径。 |
+| ~~VR-LIM-009~~ | ~~`Vec(string).push(rvalue string)` 与后续覆盖/清理组合存在泄漏边界~~ | ✅ 已解除（2026-06-07）：owned rvalue string move-into-container ABI 已覆盖用户 `Vec.push/insert/set/index_set`。 | 验证：`test_vec_owndrop`（JIT+AOT+memcheck 0/0/0）。迁移时可直接保留 `v.push("x".upper())` 等 rvalue 写入。 |
+| ~~VR-LIM-010~~ | ~~命名函数值不能直接传给 `Block(...)` 参数~~ | ✅ 已解除：命名函数可作为 `Block(...)` 值使用。 | 验证：`test_fn_as_block`。迁移时可把 `d.sort_by(cmp_desc)` 保留为命名函数实参。 |
+| ~~VR-LIM-011~~ | ~~`Vec` 作为 has_drop enum payload 不稳定~~ | ✅ 已解除（2026-06-07）：enum payload 持有用户 `Vec(T)` 已覆盖。 | 验证：`test_enum_user_vec_payload`（JIT+AOT+memcheck 0/0/0）。可迁移 enum payload 中的 `vec(T)` → `Vec(T)`。 |
+| ~~VR-LIM-012~~ | ~~struct 字段默认值中的 `[..]` 未走 `Vec.__from_list`~~ | ✅ 已解除（2026-06-07）：struct 字段默认值已支持用户容器 `__from_list` / 空初始化推断。 | 验证：`test_struct_field_defaults_uservec`（JIT+AOT+memcheck 0/0/0）。可迁移字段默认值里的 `vec(T)` → `Vec(T)`。 |
+| VR-LIM-013 | `Vec(Option(T))` 这类嵌套泛型实参仍有替换边界 | 2026-06-07 复核 `std.ring` 迁移时触发：`Vec(Option(T)).get/set` 单态化后把元素类型错推成内层 `T`，报 `cannot initialize 'tmp' (type 'int') with value of type 'Option(int)'` / `cannot assign '*string' to '*Option(string)'`。 | 本轮暂不迁移 `std.ring` 的 `vec(Option(T))` backing buffer；待泛型实参递归替换修复后再迁。 |
+| VR-LIM-014 | `Vec.pop()` discard rvalue `Option(T)` temp 未释放内部 has_drop T | 2026-06-08 迁移 `vec_string_test` 时发现：`v.pop()` 丢弃返回值时，`Option(string)` rvalue 内的 `Some(string)` 不触发 `__drop`，string buffer 泄漏 16 字节。赋给变量 `Option(T) _ = v.pop()` 则 0/0/0。 | 迁移样本中把 `v.pop()` 改为 `Option(T) _ = v.pop()` 绕行。编译器层面需要排查 rvalue enum temp 清理路径。 |
+| VR-LIM-015 | `Vec(T)` generic 方法的 by-value 参数不标记 named var 为 moved | 2026-06-08 迁移 `test_mem_m5_neg_push` 时发现：`Vec(string).push(s)` 调用后 checker 不标记 `s` 为 moved（generic `T` 参数不触发 move 分析），内建 `vec(string).push(s)` 正常标记。 | 迁移时负向测试（move-after-use 检查）不适用于 Vec(T)。`Vec(T)` 的 by-value 参数一律 clone（源继续保持 live）。 |
+| ~~VR-LIM-016~~ | ~~全局变量 `Vec(T) v = [literal]` 触发 `__from_list` 缺失~~ | ✅ 已修复（F1，2026-06-08）：根因是 `__ls_global_stmts`（含全局 init）在 G1.5 pending-generic-method 发射**之前**生成，故 `Vec(T).__from_list` 尚未单态化。修法：`emit_user_from_list_value` 在 `LLVMGetNamedFunction` 落空时改 `cg_declare_pending_generic_method` 从 checker pending 队列前向声明，body 仍在 G1.5 发射（镜像局部路径与其他泛型调用点）。 | 验证：`test_global_vec_lit` 还原全局字面量 `Vec(int)=[1,2,3]`/`Vec(string)`/`Vec(Tag)`（has_drop），JIT+AOT+memcheck 0/0/0。ctest 166/166。 |
+| VR-LIM-017 | `Vec(Block(...))` 不兼容——`push` 内部赋值 Block 参数被 checker 拒绝 | 2026-06-08 迁移 `closure_g.ls` 时发现：`Vec(Fn).push(|x| x + base)` 触发 `cannot assign Block parameter`。Vec.push 的方法体 `self.data[self.len] = x` 中 `x` 是 `T` 类型参数，当 `T=Block` 时 checker 拒绝赋值 Block 参数。 | 本轮不迁移含有 `Vec(Block)` 的文件。保留内建 vec。待编译器允许 Block 参数赋值后再迁。 |
 
 ---
 

@@ -1,26 +1,25 @@
-/* BF-042 / BF-043 regression: global vec with a list literal initializer.
-   Pre-fix the global vec struct {data,len,cap} stayed zeroed (the generic
-   global-init path stored an array aggregate, not a heap vec) → reads returned
-   empty/0. Now emit_global_var_init builds the vec in place via push.
-   BF-042 covers POD elements; BF-043 adds owned (string/has_drop) elements with
-   per-element drop at exit (emit_global_vec_cleanup) — memcheck must stay clean. */
+/* BF-042 / BF-043 regression: global Vec with a list literal initializer.
+   VR-LIM-016 (fixed F1): global `Vec(T) v = [...]` now monomorphizes
+   `Vec(T).__from_list` via forward-declare from the pending-generic queue. */
+
+import std.vec
 
 struct Tag { string label }
 
-vec(int)    nums  = [1, 2, 3]                                  // POD (BF-042)
-vec(string) words = ["foo".upper(), "bar".upper()]            // owned string (BF-043)
-vec(Tag)    tags  = [Tag { label: "x".upper() }, Tag { label: "y".upper() }] // has_drop struct (BF-043)
+Vec(int)    nums  = [1, 2, 3]                                   // global list literal
+Vec(string) words = ["foo".upper(), "bar".upper()]             // owned-element literal
+Vec(Tag)    tags  = [Tag { label: "x".upper() }, Tag { label: "y".upper() }]  // has_drop struct
 
 fn main() -> int {
     int s = nums[0] + nums[1] + nums[2]
     print(f"sum={s}")
 
-    /* mutate after literal init — must still behave like a normal vec */
+    /* mutate after literal init — must still behave like a normal Vec */
     nums.push(4)
     int s2 = s + nums[3]
     print(f"sum2={s2}")
 
-    /* owned-element vecs read back correctly */
+    /* owned-element Vecs read back correctly */
     print(f"words={words[0]}{words[1]}")
     print(f"tags={tags[0].label}{tags[1].label}")
 

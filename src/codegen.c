@@ -1223,6 +1223,15 @@ static LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_
     LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
     if (fl_fn == NULL)
     {
+        /* VR-LIM-016: global `Vec(T) v = [..]` init is emitted (in
+           __ls_global_stmts) BEFORE the G1.5 pending-generic-method pass, so the
+           monomorphized `Vec(T).__from_list` body doesn't exist yet. Forward-
+           declare it from the checker's pending queue; the body lands later in
+           G1.5. Mirrors the local var-decl path and other generic call sites. */
+        fl_fn = cg_declare_pending_generic_method(ctx, fl_name);
+    }
+    if (fl_fn == NULL)
+    {
         cg_error(ctx, lit->line, lit->column,
                  "missing __from_list method for '%s'",
                  struct_type->as.strukt.name);
