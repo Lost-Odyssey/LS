@@ -1521,6 +1521,16 @@ add_test(
 set_tests_properties(test_rawvec_kid PROPERTIES DEPENDS "test_rawvec_api")
 
 add_test(
+    NAME test_rawvec_parity_p1
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_parity_p1.cmake
+)
+set_tests_properties(test_rawvec_parity_p1 PROPERTIES DEPENDS "test_rawvec_kid")
+
+add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>

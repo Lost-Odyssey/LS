@@ -534,6 +534,52 @@ impl(T) RawVec(T) {
 
 ---
 
+## 9.1 RawVec → vec 替换路线（2026-06-07）
+
+最终目标：删除编译器内建 `TYPE_VECTOR` / `check_vector_method` / `emit_vec_*` 的用户可见容器语义，
+stdlib 里由 `RawVec(T)` 接管，最后把 `RawVec` 改名/导出为 `vec`。
+
+迁移原则：
+
+1. **先 parity，后替换名字**：所有 `tests/samples/vec_*` 的行为先用 `RawVec` 镜像测试跑绿，再考虑
+   parser/checker 把 `vec(T)` 解析到 stdlib 类型。
+2. **先非高阶，后高阶**：普通容器 API 不依赖 Block/方法级泛型，风险低；`map/reduce/filter/sort_by`
+   涉及 `Block(T)` has_drop ABI，必须单独修。
+3. **保留内建 vec 到最后一刻**：迁移过程中 stdlib（md/html/json/plot/ring/stack）仍可用内建 vec，
+   等 RawVec 通过完整矩阵后再批量替换。
+
+当前 parity 状态：
+
+| 类别 | RawVec 状态 | 备注 |
+|------|-------------|------|
+| 构造/字面量 | ✅ `{}` / `[..]` | 经 `__from_list` 协议 |
+| 基础查询 | ✅ `length/capacity/is_empty` | `length` 目前是方法；内建 vec 还有 `.length` 字段式语法 |
+| 裸指针 | ✅ `as_ptr` | P1 |
+| 访问 | ✅ `get/get_unsafe/[i]` | out-of-bounds 行为仍需单独对齐；RawVec 当前是 unchecked |
+| 修改 | ✅ `push/set/[i]=/insert/remove/pop/clear/truncate/reserve/shrink_to_fit` | `pop/remove` 返回 move-out 值/Option，比部分旧内建 API 更合理 |
+| 拷贝/切片/扩展 | ✅ `copy/slice/extend` | P1：`test_rawvec_parity_p1` |
+| Eq 搜索 | ✅ `contains/index_of/count_eq where T: Eq` | KI-D 已由 lazy method + where 解决 |
+| 默认填充 resize | ⚠️ 未等价 | 内建 `resize(n)` 零/空填充；RawVec 当前 `resize(n, fill)`，缺 generic default value |
+| 排序 | ⚠️ 未等价 | `sort()` 需要 Ord/string 规则；`sort_by` 需要修 Block(T,T) has_drop ABI |
+| 函数式方法 | ⚠️ 未等价 | `any/all/count/each/filter/find/find_index/map/reduce` 依赖 Block(T)；string 路径已定位到 has_drop 按值 Block 调用问题 |
+| 方法级泛型结果 | ⚠️ 未等价 | `map(Block(T)->U)->RawVec(U)` / `reduce(A, Block(A,T)->A)->A` 需要泛型方法自身类型参数 |
+| stdlib 全量替换 | ⏳ 未开始 | 等以上 API 和性能门槛通过后再做 |
+
+P1 已完成：`as_ptr/get_unsafe/extend/slice`，测试 `test_rawvec_parity_p1`。
+
+后续建议顺序：
+
+1. **P2：generic default value**：实现 `__default(T)` 或 zero/default 初始化协议，让 `RawVec.resize(n)`
+   对齐内建 vec（int→0、string→有效空串、struct/enum 走合法默认或拒绝）。
+2. **P3：Block has_drop ABI**：修纯 LS 泛型方法里 `Block(T)` 参数传 string/has_drop 时的所有权；
+   然后恢复 `any/all/count/each/filter/find/find_index/sort_by`。
+3. **P4：方法级泛型**：支持 `fn map(U)(...) -> RawVec(U)`、`fn reduce(A)(...) -> A`。
+4. **P5：语法接管**：让 `vec(T)` 解析/绑定到 stdlib RawVec，批量替换 stdlib 与测试。
+5. **P6：删除内建 vec**：移除 `TYPE_VECTOR` 用户层方法和 codegen 专用路径，只保留必要低层 intrinsic
+   （`__take/__drop_at/realloc/sizeof` 等）。
+
+---
+
 ## 9.5 已知问题（待后续修，不阻塞 RawVec）
 
 > 记录于 2026-06-06。这两项是通用语言层缺口（非 RawVec 内存/性能问题），已确认对当前

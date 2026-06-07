@@ -57,6 +57,7 @@ impl(T) RawVec(T) {
     fn length(&self) -> int { return self.len }
     fn capacity(&self) -> int { return self.cap }
     fn is_empty(&self) -> bool { return self.len == 0 }
+    fn as_ptr(&self) -> object { return self.data as object }
 
     // ---- add ----
 
@@ -129,6 +130,8 @@ impl(T) RawVec(T) {
         return tmp
     }
 
+    fn get_unsafe(&self, int i) -> T { return self.get(i) }
+
     // Overwrite element i: drop the old, move the new in.
     fn set(&!self, int i, T x) {
         __drop_at(self.data[i])
@@ -139,6 +142,34 @@ impl(T) RawVec(T) {
     // and `v[i] = x` (write, drop old + move new), matching builtin vec[i].
     fn __index(&self, int i) -> T { return self.get(i) }
     fn __index_set(&!self, int i, T x) { self.set(i, x) }
+
+    // Append deep clones of every element in src. The source RawVec is borrowed
+    // and remains usable after extend, matching builtin vec.extend.
+    fn extend(&!self, &RawVec(T) src) {
+        self.reserve(self.len + src.len)
+        for (int i = 0; i < src.len; i = i + 1) {
+            T e = src.data[i]
+            self.push(e)
+        }
+    }
+
+    // Deep-clone [start, end), clamping to [0, len].
+    fn slice(&self, int start, int stop) -> RawVec(T) {
+        RawVec(T) out = {}
+        int s = start
+        int e = stop
+        if s < 0 { s = 0 }
+        if e < 0 { e = 0 }
+        if s > self.len { s = self.len }
+        if e > self.len { e = self.len }
+        if e <= s { return out }
+        out.reserve(e - s)
+        for (int i = s; i < e; i = i + 1) {
+            T x = self.data[i]
+            out.push(x)
+        }
+        return out
+    }
 
     // Clone of the first / last element, or None when empty.
     fn first(&self) -> Option(T) {
