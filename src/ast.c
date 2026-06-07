@@ -1,5 +1,6 @@
 /* ast.c — AST node printing and memory management */
 #include "ast.h"
+#include "types.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -139,6 +140,7 @@ AstNode *ast_new(AstNodeType kind, int line, int col) {
 
 void ast_free(AstNode *node) {
     if (node == NULL) return;
+    type_free(node->coerce_block_type);
     switch (node->kind) {
     case AST_INT_LIT:
     case AST_FLOAT_LIT:
@@ -609,6 +611,9 @@ AstNode *ast_clone_deep(const AstNode *src) {
     AstNode *n = (AstNode *)malloc_safe(sizeof(AstNode));
     *n = *src;                  /* shallow copy first */
     n->resolved_type = NULL;    /* must be re-checked */
+    n->coerce_block_type = src->coerce_block_type
+        ? type_clone(src->coerce_block_type)
+        : NULL;
 
     switch (src->kind) {
     case AST_INT_LIT:

@@ -336,6 +336,7 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
 /* Phase B closures: lifted-fn synthesiser + indirect-call lowering. */
 static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node);
+static LLVMValueRef codegen_fn_to_block(CodegenContext *ctx, AstNode *node);
 
 /* M-3: 统一所有权转移 API */
 typedef enum {
@@ -2476,6 +2477,156 @@ static LLVMValueRef cg_emit_block_env_clone(CodegenContext *ctx,
     result = LLVMBuildInsertValue(ctx->builder, result, fn_ptr, 0, "bc.rfn");
     result = LLVMBuildInsertValue(ctx->builder, result, phi, 1, "bc.renv");
     cg_dbg_block_op(ctx, "clone", "env-deepcopy", phi);
+    return result;
+}
+
+static LLVMValueRef cg_resolve_function_for_block(CodegenContext *ctx,
+                                                  AstNode *node,
+                                                  char *name_buf,
+                                                  size_t name_cap)
+{
+    if (!node || !name_buf || name_cap == 0)
+        return NULL;
+    name_buf[0] = '\0';
+
+    if (node->kind == AST_IDENT)
+    {
+        snprintf(name_buf, name_cap, "%s", node->as.ident.name);
+        if (ctx->current_emit_module != NULL)
+        {
+            char mod_sym[512];
+            cg_module_fn_symbol(mod_sym, sizeof(mod_sym),
+                                ctx->current_emit_module, node->as.ident.name);
+            LLVMValueRef mod_fn = LLVMGetNamedFunction(ctx->module, mod_sym);
+            if (mod_fn)
+            {
+                snprintf(name_buf, name_cap, "%s", mod_sym);
+                return mod_fn;
+            }
+            snprintf(name_buf, name_cap, "%s", mod_sym);
+        }
+        LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, node->as.ident.name);
+        if (fn)
+        {
+            snprintf(name_buf, name_cap, "%s", node->as.ident.name);
+            return fn;
+        }
+    }
+    else if (node->kind == AST_FIELD &&
+             node->as.field_access.object &&
+             node->as.field_access.object->resolved_type &&
+             node->as.field_access.object->resolved_type->kind == TYPE_MODULE)
+    {
+        Type *mod_t = node->as.field_access.object->resolved_type;
+        const char *field = node->as.field_access.field;
+        if (mod_t->as.module.name)
+        {
+            cg_module_fn_symbol(name_buf, name_cap, mod_t->as.module.name, field);
+            LLVMValueRef mod_fn = LLVMGetNamedFunction(ctx->module, name_buf);
+            if (mod_fn)
+                return mod_fn;
+            LLVMValueRef bare_fn = LLVMGetNamedFunction(ctx->module, field);
+            if (bare_fn)
+            {
+                snprintf(name_buf, name_cap, "%s", field);
+                return bare_fn;
+            }
+        }
+        else
+        {
+            snprintf(name_buf, name_cap, "%s", field);
+            LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, name_buf);
+            if (fn)
+                return fn;
+        }
+    }
+
+    if (node->resolved_type && node->resolved_type->kind == TYPE_FUNCTION &&
+        name_buf[0] != '\0')
+    {
+        LLVMTypeRef fn_type = type_to_llvm(ctx, node->resolved_type);
+        return LLVMAddFunction(ctx->module, name_buf, fn_type);
+    }
+    return NULL;
+}
+
+static LLVMValueRef codegen_fn_to_block(CodegenContext *ctx, AstNode *node)
+{
+    Type *block_t = node->coerce_block_type;
+    Type *fn_t = node->resolved_type;
+    if (!block_t || block_t->kind != TYPE_BLOCK ||
+        !fn_t || fn_t->kind != TYPE_FUNCTION)
+    {
+        cg_error(ctx, node->line, node->column,
+                 "internal: fn-to-Block coercion without matching types");
+        return NULL;
+    }
+
+    char fn_name[512];
+    LLVMValueRef target_fn = cg_resolve_function_for_block(ctx, node,
+                                                           fn_name, sizeof(fn_name));
+    if (!target_fn)
+    {
+        cg_error(ctx, node->line, node->column,
+                 "undefined function '%s'", fn_name[0] ? fn_name : "<fn>");
+        return NULL;
+    }
+
+    int n = block_t->as.function.param_count;
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef *params = (LLVMTypeRef *)malloc_safe(
+        (size_t)(n + 1) * sizeof(LLVMTypeRef));
+    params[0] = ptr_t;
+    for (int i = 0; i < n; i++)
+        params[i + 1] = type_to_llvm(ctx, block_t->as.function.params[i]);
+    LLVMTypeRef ret_t = type_to_llvm(ctx, block_t->as.function.return_type);
+    LLVMTypeRef thunk_type = LLVMFunctionType(ret_t, params, (unsigned)(n + 1), 0);
+    free(params);
+
+    char thunk_name[128];
+    snprintf(thunk_name, sizeof(thunk_name), "__fnthunk_%d",
+             ctx->closure_id_counter++);
+    LLVMValueRef thunk = LLVMAddFunction(ctx->module, thunk_name, thunk_type);
+
+    LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(ctx->builder);
+    LLVMValueRef saved_fn = ctx->current_fn;
+    Type *saved_ret = ctx->current_fn_return_type;
+
+    LLVMBasicBlockRef entry =
+        LLVMAppendBasicBlockInContext(ctx->context, thunk, "entry");
+    LLVMPositionBuilderAtEnd(ctx->builder, entry);
+    ctx->current_fn = thunk;
+    ctx->current_fn_return_type = block_t->as.function.return_type;
+
+    LLVMValueRef *call_args = NULL;
+    if (n > 0)
+    {
+        call_args = (LLVMValueRef *)malloc_safe((size_t)n * sizeof(LLVMValueRef));
+        for (int i = 0; i < n; i++)
+            call_args[i] = LLVMGetParam(thunk, (unsigned)(i + 1));
+    }
+
+    LLVMTypeRef target_type = LLVMGlobalGetValueType(target_fn);
+    bool void_ret = (LLVMGetTypeKind(ret_t) == LLVMVoidTypeKind);
+    LLVMValueRef call = LLVMBuildCall2(ctx->builder, target_type, target_fn,
+                                       call_args, (unsigned)n,
+                                       void_ret ? "" : "fnthunk.call");
+    free(call_args);
+    if (void_ret)
+        LLVMBuildRetVoid(ctx->builder);
+    else
+        LLVMBuildRet(ctx->builder, call);
+
+    ctx->current_fn = saved_fn;
+    ctx->current_fn_return_type = saved_ret;
+    if (saved_bb)
+        LLVMPositionBuilderAtEnd(ctx->builder, saved_bb);
+
+    LLVMTypeRef block_llvm = type_to_llvm(ctx, block_t);
+    LLVMValueRef result = LLVMGetUndef(block_llvm);
+    result = LLVMBuildInsertValue(ctx->builder, result, thunk, 0, "f2b.fn");
+    result = LLVMBuildInsertValue(ctx->builder, result,
+                                  LLVMConstNull(ptr_t), 1, "f2b.env");
     return result;
 }
 
@@ -10618,6 +10769,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
     case AST_IDENT:
     {
+        if (node->coerce_fn_to_block)
+            return codegen_fn_to_block(ctx, node);
+
         /* Variant ctor with no payload (e.g. `Red`, `None`).  The checker
            has set resolved_type to the enum and validated the variant name. */
         if (node->resolved_type && node->resolved_type->kind == TYPE_ENUM)
@@ -12211,6 +12365,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
     case AST_FIELD:
     {
+        if (node->coerce_fn_to_block)
+            return codegen_fn_to_block(ctx, node);
+
         AstNode *obj_node = node->as.field_access.object;
         Type *obj_type = obj_node->resolved_type;
 

@@ -168,6 +168,11 @@ struct AstNode
        (ast_new zero-inits), so any node the checker does not touch keeps the
        conservative clone behavior. */
     bool moved_out;
+    /* fn -> Block coercion: set by checker when a named function value appears
+       where a Block(P...)->R is expected. Codegen wraps the raw function in an
+       env-ignoring thunk and returns the usual {fn, env} Block value. */
+    bool coerce_fn_to_block;
+    Type *coerce_block_type; /* owned clone of the expected Block type */
     union
     {
         struct

@@ -1909,6 +1909,22 @@ static bool type_assignable(const Type *dst, const Type *src)
     if (dst == NULL || src == NULL)
         return false;
 
+    /* A named function can be coerced to a Block value with the same signature.
+       The ABI adaptation is handled by codegen via a thunk that ignores env. */
+    if (dst->kind == TYPE_BLOCK && src->kind == TYPE_FUNCTION)
+    {
+        if (dst->as.function.param_count != src->as.function.param_count)
+            return false;
+        if (dst->as.function.is_vararg != src->as.function.is_vararg)
+            return false;
+        if (!type_equals(dst->as.function.return_type, src->as.function.return_type))
+            return false;
+        for (int i = 0; i < dst->as.function.param_count; i++)
+            if (!type_equals(dst->as.function.params[i], src->as.function.params[i]))
+                return false;
+        return true;
+    }
+
     /* Implicit numeric widening (Zig-style): only when dst can represent
        every value of src. Narrowing, signed↔unsigned same-width, float→int,
        and i64↔f64 (mantissa overflow) all remain compile errors. */
@@ -6952,7 +6968,17 @@ static Type *check_expr(Checker *c, AstNode *node)
     }
 
     if (node)
+    {
+        if (c->expected_type && c->expected_type->kind == TYPE_BLOCK &&
+            result && result->kind == TYPE_FUNCTION &&
+            type_assignable(c->expected_type, result))
+        {
+            node->coerce_fn_to_block = true;
+            type_free(node->coerce_block_type);
+            node->coerce_block_type = type_clone(c->expected_type);
+        }
         node->resolved_type = result;
+    }
     return result;
 }
 
