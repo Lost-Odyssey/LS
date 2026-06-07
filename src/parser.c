@@ -1047,13 +1047,27 @@ static AstNode *infix_assign(Parser *p, AstNode *left) {
 static AstNode *infix_call(Parser *p, AstNode *left) {
     Token call_tok = p->previous; /* the '(' */
 
+    /* sizeof(Type): the operand is a TYPE, not an expression. Intercept before
+       the generic-call heuristic (which would try to parse `int` as an expr).
+       Produces an AST_SIZEOF node carrying the parsed TypeNode. */
+    if (left->kind == AST_IDENT && strcmp(left->as.ident.name, "sizeof") == 0) {
+        TypeNode *t = parse_type(p);
+        consume(p, TOKEN_RPAREN, "expected ')' after sizeof type");
+        AstNode *n = new_node(AST_SIZEOF, call_tok.line, call_tok.column);
+        n->as.sizeof_expr.type_node  = t;
+        n->as.sizeof_expr.sized_type = NULL;
+        ast_free(left); /* the bare `sizeof` ident node is no longer needed */
+        return n;
+    }
+
     /* G2: detect generic function call — ident(TypeArgs)(args).
        If left is AST_IDENT and the first token after '(' is a type keyword
        or uppercase identifier followed by ',' or ')', this is a type arg list. */
     TypeNode **call_type_args = NULL;
     int call_type_arg_count = 0;
-    if (left->kind == AST_IDENT) {
-        /* G2: detect generic function call — ident(TypeArgs)(realArgs).
+    if (left->kind == AST_IDENT || left->kind == AST_FIELD) {
+        /* G2: detect generic function call — ident(TypeArgs)(realArgs)
+           or method call — obj.method(TypeArgs)(realArgs).
            Heuristic: first token is a type keyword, or uppercase ident, or *&.
            We save parser state and try parsing types; if the list ends with ')'
            followed by '(' it's a genuine generic call. Otherwise restore. */
@@ -1249,6 +1263,41 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
    An empty map literal {} is also allowed (type must be declared). */
 static AstNode *prefix_map_lit(Parser *p) {
     Token tok = p->previous; /* the '{' token */
+
+    /* Anonymous struct literal `{ field: val, ... }` — the struct type is inferred
+       from the expected type at the use site (checker uses c->expected_type).
+       Unambiguous vs a map literal: maps use `key -> val`, so `IDENT :` can only
+       be a struct field. Mirrors the prefixed StructName{field: val} parser. */
+    if (check(p, TOKEN_IDENTIFIER) &&
+        scanner_peek(&p->scanner).type == TOKEN_COLON) {
+        AstNode *n = new_node(AST_NEW_EXPR, tok.line, tok.column);
+        n->as.new_expr.struct_name = NULL;   /* anonymous: infer from expected type */
+        n->as.new_expr.module = NULL;
+        n->as.new_expr.on_stack = true;
+        n->as.new_expr.type_args = NULL;
+        n->as.new_expr.type_arg_count = 0;
+        int sc_cap = 0, sc_count = 0;
+        struct { char *name; AstNode *value; } *inits = NULL;
+        while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+            consume(p, TOKEN_IDENTIFIER, "expected field name in struct literal");
+            Token fname = p->previous;
+            consume(p, TOKEN_COLON, "expected ':' after field name in struct literal");
+            AstNode *val = parse_expr_prec(p, PREC_ASSIGNMENT);
+            if (sc_count >= sc_cap) {
+                sc_cap = GROW_CAPACITY(sc_cap);
+                inits = realloc_safe(inits, (size_t)sc_cap * sizeof(inits[0]));
+            }
+            inits[sc_count].name  = str_dup_n(fname.start, fname.length);
+            inits[sc_count].value = val;
+            sc_count++;
+            if (!match_tok(p, TOKEN_COMMA)) break;
+        }
+        consume(p, TOKEN_RBRACE, "expected '}' after struct literal fields");
+        n->as.new_expr.field_inits = (void *)inits;
+        n->as.new_expr.field_init_count = sc_count;
+        return n;
+    }
+
     AstNode **keys = NULL;
     AstNode **vals = NULL;
     int count = 0;
@@ -2260,6 +2309,65 @@ static char *operator_method_name(TokenType t) {
     return str_dup_n(s, (int)strlen(s));
 }
 
+static bool check_ident_text(Parser *p, const char *text) {
+    size_t n = strlen(text);
+    return check(p, TOKEN_IDENTIFIER) &&
+           (size_t)p->current.length == n &&
+           strncmp(p->current.start, text, n) == 0;
+}
+
+static WhereBound *parse_where_bounds(Parser *p, int *out_count) {
+    *out_count = 0;
+    if (!check_ident_text(p, "where"))
+        return NULL;
+    advance(p); /* consume where */
+
+    WhereBound *bounds = NULL;
+    int count = 0;
+    int cap = 0;
+    do {
+        if (!check(p, TOKEN_IDENTIFIER)) {
+            error_at_current(p, "expected type parameter name after 'where'");
+            break;
+        }
+        advance(p);
+        char *tpname = str_dup_n(p->previous.start, p->previous.length);
+        consume(p, TOKEN_COLON, "expected ':' in where clause");
+
+        if (count >= cap) {
+            cap = cap < 4 ? 4 : cap * 2;
+            bounds = realloc_safe(bounds, (size_t)cap * sizeof(bounds[0]));
+        }
+        bounds[count].type_param_name = tpname;
+        bounds[count].bounds.trait_names = NULL;
+        bounds[count].bounds.count = 0;
+
+        int bcap = 0;
+        do {
+            if (!check(p, TOKEN_IDENTIFIER)) {
+                error_at_current(p, "expected trait name in where clause");
+                break;
+            }
+            advance(p);
+            char *tname = str_dup_n(p->previous.start, p->previous.length);
+            int bc = bounds[count].bounds.count;
+            if (bc >= bcap) {
+                bcap = bcap < 4 ? 4 : bcap * 2;
+                bounds[count].bounds.trait_names =
+                    realloc_safe(bounds[count].bounds.trait_names,
+                                 (size_t)bcap * sizeof(char *));
+            }
+            bounds[count].bounds.trait_names[bc] = tname;
+            bounds[count].bounds.count++;
+        } while (match_tok(p, TOKEN_PLUS));
+
+        count++;
+    } while (match_tok(p, TOKEN_COMMA));
+
+    *out_count = count;
+    return bounds;
+}
+
 /* allow_operator_name: when true (only inside `impl Trait for Type` blocks),
    an operator token is accepted as the method name and canonicalized to its
    $op_* internal name. Elsewhere only TOKEN_IDENTIFIER is a valid name, so
@@ -2276,6 +2384,10 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     } else if (allow_operator_name &&
                (name = operator_method_name(p->current.type)) != NULL) {
         advance(p);  /* consume the operator token used as the method name */
+    } else if (check(p, TOKEN_MAP)) {
+        /* map is a keyword (map(K,V) type) but also a valid method name */
+        advance(p);
+        name = str_dup_n(p->previous.start, p->previous.length);
     } else {
         error_at_current(p, "expected function name after 'fn'");
         return NULL;
@@ -2429,6 +2541,9 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
         p->in_return_type = save;
     }
 
+    int where_bound_count = 0;
+    WhereBound *where_bounds = parse_where_bounds(p, &where_bound_count);
+
     AstNode *body = parse_block(p);
 
     AstNode *n = new_node(AST_FN_DECL, line, col);
@@ -2436,6 +2551,8 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     n->as.fn_decl.type_params = fn_type_params;
     n->as.fn_decl.type_param_count = fn_type_param_count;
     n->as.fn_decl.type_param_bounds = fn_type_param_bounds;
+    n->as.fn_decl.where_bounds = where_bounds;
+    n->as.fn_decl.where_bound_count = where_bound_count;
     n->as.fn_decl.param_types = param_types;
     n->as.fn_decl.param_names = param_names;
     n->as.fn_decl.param_defaults = param_defaults;
@@ -2965,6 +3082,16 @@ static AstNode *parse_module_decl(Parser *p) {
     return n;
 }
 
+/* A module-path segment is normally an identifier, but a few type keywords
+   (vec / map / array) are valid std module file names (std/vec.ls etc.). The
+   scanner lexes those as keyword tokens, not TOKEN_IDENTIFIER, so without this
+   `import std.vec` would truncate at the keyword. The segment's source text is
+   intact on the token, so it copies into the path the same way. */
+static bool is_import_path_segment(TokenType t) {
+    return t == TOKEN_IDENTIFIER ||
+           t == TOKEN_VEC || t == TOKEN_MAP || t == TOKEN_ARRAY;
+}
+
 static AstNode *parse_import_decl(Parser *p) {
     /* 'import' already consumed */
     int line = p->previous.line;
@@ -2974,7 +3101,7 @@ static AstNode *parse_import_decl(Parser *p) {
     char path_buf[256];
     int path_len = 0;
 
-    if (!check(p, TOKEN_IDENTIFIER)) {
+    if (!is_import_path_segment(p->current.type)) {
         error_at_current(p, "expected module path after 'import'");
         return NULL;
     }
@@ -2987,7 +3114,7 @@ static AstNode *parse_import_decl(Parser *p) {
 
     while (check(p, TOKEN_DOT)) {
         advance(p); /* consume '.' */
-        if (!check(p, TOKEN_IDENTIFIER)) break;
+        if (!is_import_path_segment(p->current.type)) break;
         advance(p);
         Token seg = p->previous;
         if (path_len + 1 + seg.length < (int)sizeof(path_buf) - 1) {

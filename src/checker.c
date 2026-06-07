@@ -696,6 +696,49 @@ static int method_self_borrow_kind(Checker *c, const char *struct_name,
     return 0;
 }
 
+/* Local strdup (checker-owned). */
+static char *chk_strdup(const char *s)
+{
+    size_t n = strlen(s);
+    char *d = (char *)malloc_safe(n + 1);
+    memcpy(d, s, n + 1);
+    return d;
+}
+
+/* Build the equivalent method call for the Index/IndexMut protocol:
+   `v[i]` -> `v.<m>(i)`, `v[i]=x` -> `v.<m>(i, x)`. `obj`, `idx`, and optional
+   `val` are reused (not cloned). */
+static AstNode *make_index_protocol_call(int line, int column,
+                                         AstNode *obj, AstNode *idx,
+                                         AstNode *val, const char *method)
+{
+    AstNode *call = ast_new(AST_CALL, line, column);
+    AstNode *callee = ast_new(AST_FIELD, line, column);
+    callee->as.field_access.object = obj;
+    callee->as.field_access.field  = chk_strdup(method);
+    int argc = val ? 2 : 1;
+    AstNode **args = (AstNode **)malloc_safe((size_t)argc * sizeof(AstNode *));
+    args[0] = idx;
+    if (val) args[1] = val;
+    call->as.call.callee = callee;
+    call->as.call.args = args;
+    call->as.call.arg_count = argc;
+    call->as.call.type_args = NULL;
+    call->as.call.type_arg_count = 0;
+    return call;
+}
+
+/* Rewrite an expression AST_INDEX node in place into an AST_CALL. */
+static void rewrite_index_to_call(AstNode *node, AstNode *obj, AstNode *idx,
+                                  const char *method)
+{
+    AstNode *call = make_index_protocol_call(node->line, node->column,
+                                             obj, idx, NULL, method);
+    node->kind = AST_CALL;
+    node->as.call = call->as.call;
+    free(call);
+}
+
 static Type *find_method(Checker *c, const char *struct_name, const char *method_name)
 {
     for (int i = 0; i < c->impl_count; i++)
@@ -869,6 +912,7 @@ static Type *resolve_type_node_with_substitution(
 static void push_scope(Checker *c);
 static void pop_scope(Checker *c);
 static void check_stmt(Checker *c, AstNode *node);
+static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name);
 static void instantiate_impl_method_types(
     Checker *c, Type *struct_type, const char *mangled_name,
     AstNode *impl_node,
@@ -975,10 +1019,442 @@ Type *checker_instantiate_struct(Checker *c,
     return st;
 }
 
+static bool generic_method_is_eager(const char *name)
+{
+    return strcmp(name, "__drop") == 0 ||
+           strcmp(name, "__clone") == 0 ||
+           strcmp(name, "__from_list") == 0;
+}
+
+static void pending_generic_method_add(Checker *c, AstNode *cloned,
+                                       char *owned_mangled, Type *struct_type)
+{
+    if (c->pending_gm_count >= c->pending_gm_cap) {
+        c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
+        c->pending_generic_methods = realloc_safe(c->pending_generic_methods,
+            (size_t)c->pending_gm_cap * sizeof(c->pending_generic_methods[0]));
+    }
+    int idx = c->pending_gm_count++;
+    c->pending_generic_methods[idx].cloned_fn = cloned;
+    c->pending_generic_methods[idx].mangled_name = owned_mangled;
+    c->pending_generic_methods[idx].struct_type = struct_type;
+}
+
+static Type *lookup_impl_type_arg(char **tp_names, Type **type_args, int tp_count,
+                                  const char *name)
+{
+    for (int i = 0; i < tp_count; i++)
+        if (strcmp(tp_names[i], name) == 0)
+            return type_args[i];
+    return NULL;
+}
+
+static bool check_method_where_bounds(Checker *c, AstNode *method,
+                                      const char *qualified_name,
+                                      char **tp_names, Type **type_args,
+                                      int tp_count)
+{
+    int wc = method->as.fn_decl.where_bound_count;
+    for (int wi = 0; wi < wc; wi++) {
+        WhereBound *wb = &method->as.fn_decl.where_bounds[wi];
+        Type *concrete = lookup_impl_type_arg(tp_names, type_args, tp_count,
+                                              wb->type_param_name);
+        if (concrete == NULL) {
+            checker_error(c, method->line, method->column,
+                          "unknown type parameter '%s' in where clause of '%s'",
+                          wb->type_param_name, qualified_name);
+            return false;
+        }
+        for (int bi = 0; bi < wb->bounds.count; bi++) {
+            const char *trait = wb->bounds.trait_names[bi];
+            if (!checker_type_satisfies_trait(c, concrete, trait)) {
+                checker_error(c, method->line, method->column,
+                              "method '%s' requires %s: %s, but '%s' does not implement %s",
+                              qualified_name, wb->type_param_name, trait,
+                              type_name(concrete), trait);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
+                                           const char *mangled_name,
+                                           AstNode *method, Type *mtype,
+                                           char **tp_names, Type **type_args,
+                                           int tp_count, int line, int col)
+{
+    const char *mname = method->as.fn_decl.name;
+    char mfn_name[512];
+    snprintf(mfn_name, sizeof(mfn_name), "%s.%s", mangled_name, mname);
+
+    if (!check_method_where_bounds(c, method, mfn_name, tp_names, type_args, tp_count))
+        return false;
+
+    bool is_static = method->as.fn_decl.is_static;
+    int sbk = method->as.fn_decl.self_borrow_kind;
+    int pc = method->as.fn_decl.param_count;
+
+    AstNode *cloned = ast_clone_deep(method);
+    cloned->as.fn_decl.impl_struct_name = mangled_name; /* not owned */
+
+    int saved_alias_count = c->type_alias_count;
+    for (int i = 0; i < tp_count; i++)
+        register_type_alias(c, tp_names[i], type_args[i]);
+
+    push_scope(c);
+    if (!is_static) {
+        if (sbk == 0) {
+            scope_define(c->current_scope, "self", type_pointer(struct_type));
+        } else {
+            Symbol *self_sym = scope_define(c->current_scope, "self", struct_type);
+            if (self_sym) {
+                if (sbk == 1) self_sym->is_borrow = true;
+                else if (sbk == 2) self_sym->is_mut_borrow = true;
+            }
+        }
+    }
+    for (int j = 0; j < pc; j++) {
+        Type *pt = is_static ? mtype->as.function.params[j]
+                             : mtype->as.function.params[j + 1];
+        if (pt) {
+            bool is_borrow = false, is_mut_borrow = false;
+            Type *sym_type = pt;
+            if (sym_type->kind == TYPE_REFERENCE) {
+                if (sym_type->is_mut) is_mut_borrow = true;
+                else                  is_borrow = true;
+                sym_type = sym_type->as.pointer_to;
+            }
+            Symbol *psym = scope_define(c->current_scope,
+                cloned->as.fn_decl.param_names[j], sym_type);
+            if (psym) {
+                psym->is_borrow = is_borrow;
+                psym->is_mut_borrow = is_mut_borrow;
+                if (sym_type->kind == TYPE_STRING) psym->is_static_string = false;
+                if (sym_type->kind == TYPE_BLOCK)  psym->is_borrow = true;
+            }
+        }
+    }
+    Type *saved_ret = c->current_fn_return;
+    c->current_fn_return = mtype->as.function.return_type;
+    check_stmt(c, cloned->as.fn_decl.body);
+    c->current_fn_return = saved_ret;
+    pop_scope(c);
+    c->type_alias_count = saved_alias_count;
+
+    if (c->had_error) {
+        ast_free(cloned);
+        return false;
+    }
+
+    cloned->resolved_type = mtype;
+    char *owned_mfn = (char *)malloc_safe(strlen(mfn_name) + 1);
+    memcpy(owned_mfn, mfn_name, strlen(mfn_name) + 1);
+    pending_generic_method_add(c, cloned, owned_mfn, struct_type);
+    (void)line;
+    (void)col;
+    return true;
+}
+
+static void register_lazy_generic_method(Checker *c, const char *mfn_name,
+                                         AstNode *method, Type *mtype,
+                                         Type *struct_type, char **tp_names,
+                                         Type **type_args, int tp_count)
+{
+    for (int i = 0; i < c->lazy_gm_count; i++)
+        if (strcmp(c->lazy_generic_methods[i].mangled_name, mfn_name) == 0)
+            return;
+    if (c->lazy_gm_count >= c->lazy_gm_cap) {
+        c->lazy_gm_cap = c->lazy_gm_cap < 8 ? 8 : c->lazy_gm_cap * 2;
+        c->lazy_generic_methods = realloc_safe(c->lazy_generic_methods,
+            (size_t)c->lazy_gm_cap * sizeof(c->lazy_generic_methods[0]));
+    }
+    int idx = c->lazy_gm_count++;
+    c->lazy_generic_methods[idx].mangled_name =
+        (char *)malloc_safe(strlen(mfn_name) + 1);
+    memcpy(c->lazy_generic_methods[idx].mangled_name, mfn_name,
+           strlen(mfn_name) + 1);
+    c->lazy_generic_methods[idx].template_method = method;
+    c->lazy_generic_methods[idx].method_type = mtype;
+    c->lazy_generic_methods[idx].struct_type = struct_type;
+    c->lazy_generic_methods[idx].tp_names = tp_names;
+    c->lazy_generic_methods[idx].type_args =
+        (Type **)malloc_safe((size_t)tp_count * sizeof(Type *));
+    for (int i = 0; i < tp_count; i++)
+        c->lazy_generic_methods[idx].type_args[i] = type_args[i];
+    c->lazy_generic_methods[idx].tp_count = tp_count;
+    c->lazy_generic_methods[idx].state = 0;
+}
+
+static bool ensure_generic_method_instantiated(Checker *c,
+                                               const char *mangled_struct,
+                                               const char *method_name,
+                                               int line, int col)
+{
+    char mfn_name[512];
+    snprintf(mfn_name, sizeof(mfn_name), "%s.%s", mangled_struct, method_name);
+    for (int i = 0; i < c->lazy_gm_count; i++) {
+        if (strcmp(c->lazy_generic_methods[i].mangled_name, mfn_name) != 0)
+            continue;
+        if (c->lazy_generic_methods[i].state == 2 ||
+            c->lazy_generic_methods[i].state == 1)
+            return true;
+        c->lazy_generic_methods[i].state = 1;
+        bool ok = check_and_queue_generic_method(
+            c,
+            c->lazy_generic_methods[i].struct_type,
+            mangled_struct,
+            c->lazy_generic_methods[i].template_method,
+            c->lazy_generic_methods[i].method_type,
+            c->lazy_generic_methods[i].tp_names,
+            c->lazy_generic_methods[i].type_args,
+            c->lazy_generic_methods[i].tp_count,
+            line, col);
+        c->lazy_generic_methods[i].state = ok ? 2 : 0;
+        return ok;
+    }
+    return true;
+}
+
+/* Try to instantiate a method-level generic impl method.
+   Called when find_method returns NULL but the call site provides
+   explicit type arguments. Looks up generic_impl_method_templates,
+   resolves the method-level type params, combines them with the
+   impl-level params, builds the concrete signature, and queues
+   the body for lazy codegen. Returns the concrete TYPE_FUNCTION
+   on success, NULL on failure (caller should issue the usual "no
+   such method" error). */
+static Type *try_instantiate_method_level_generic(Checker *c,
+    const char *impl_key, const char *method_name,
+    TypeNode **call_type_args, int call_type_arg_count,
+    int line, int col)
+{
+    /* Step 1: find matching template */
+    int tmpl_idx = -1;
+    for (int i = 0; i < c->generic_impl_mt_count; i++) {
+        if (strcmp(c->generic_impl_method_templates[i].method_name, method_name) != 0)
+            continue;
+        if (strcmp(c->generic_impl_method_templates[i].impl_key, impl_key) != 0)
+            continue;
+        tmpl_idx = i;
+        break;
+    }
+    if (tmpl_idx < 0)
+        return NULL;
+
+    AstNode *method_ast = c->generic_impl_method_templates[tmpl_idx].method_ast;
+    if (method_ast->kind != AST_FN_DECL)
+        return NULL;
+
+    int mtp_count = method_ast->as.fn_decl.type_param_count;
+    if (call_type_arg_count != mtp_count) {
+        checker_error(c, line, col,
+            "method '%s' expects %d type argument(s), got %d",
+            method_name, mtp_count, call_type_arg_count);
+        return NULL;
+    }
+
+    /* Step 2: resolve method-level type args */
+    Type **mtp_type_args = (Type **)malloc_safe((size_t)mtp_count * sizeof(Type *));
+    bool ok = true;
+    for (int ti = 0; ti < mtp_count; ti++) {
+        mtp_type_args[ti] = resolve_type_node(c, call_type_args[ti], line, col);
+        if (!mtp_type_args[ti]) { ok = false; break; }
+    }
+    if (!ok) { free(mtp_type_args); return NULL; }
+
+    /* Step 3: combine impl-level + method-level type params */
+    int impl_tp_count = c->generic_impl_method_templates[tmpl_idx].impl_tp_count;
+    char **impl_tp_names = c->generic_impl_method_templates[tmpl_idx].impl_tp_names;
+    Type **impl_tp_types = c->generic_impl_method_templates[tmpl_idx].impl_tp_types;
+    int total_tp_count = impl_tp_count + mtp_count;
+
+    char **all_tp_names = NULL;
+    Type **all_tp_types = NULL;
+    if (total_tp_count > 0) {
+        all_tp_names = (char **)malloc_safe((size_t)total_tp_count * sizeof(char *));
+        all_tp_types = (Type **)malloc_safe((size_t)total_tp_count * sizeof(Type *));
+        for (int i = 0; i < impl_tp_count; i++) {
+            all_tp_names[i] = impl_tp_names[i];
+            all_tp_types[i] = impl_tp_types[i];
+        }
+        for (int i = 0; i < mtp_count; i++) {
+            /* Method-level type param names from the AST */
+            all_tp_names[impl_tp_count + i] = method_ast->as.fn_decl.type_params[i];
+            all_tp_types[impl_tp_count + i] = mtp_type_args[i];
+        }
+    }
+
+    /* Step 4: build mangled call name: "RawVec(int).map(string)" */
+    char mangled[512];
+    int pos = snprintf(mangled, sizeof(mangled), "%s.%s(", impl_key, method_name);
+    for (int ti = 0; ti < mtp_count && pos < (int)sizeof(mangled) - 2; ti++) {
+        if (ti > 0) pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ",");
+        pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, "%s",
+            type_name(mtp_type_args[ti]));
+    }
+    snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ")");
+
+    /* Step 5: set up type aliases for combined params and build concrete signature */
+    int saved_alias_count = c->type_alias_count;
+    for (int i = 0; i < total_tp_count; i++)
+        register_type_alias(c, all_tp_names[i], all_tp_types[i]);
+
+    /* Build self + param types */
+    bool is_static = method_ast->as.fn_decl.is_static;
+    int pc = method_ast->as.fn_decl.param_count;
+    int total_param_count = is_static ? pc : pc + 1;
+    Type **params = (Type **)malloc_safe((size_t)total_param_count * sizeof(Type *));
+    int offset = 0;
+    if (!is_static) {
+        Type *self_type = find_struct_type(c, impl_key);
+        if (!self_type) {
+            checker_error(c, line, col,
+                "internal error: cannot find struct type '%s' for method-level generic",
+                impl_key);
+            c->type_alias_count = saved_alias_count;
+            free(params); free(all_tp_names); free(all_tp_types);
+            free(mtp_type_args);
+            return NULL;
+        }
+        params[0] = type_pointer(self_type);
+        offset = 1;
+    }
+
+    for (int j = 0; j < pc; j++) {
+        Type *pt = resolve_type_node_with_substitution(
+            c, method_ast->as.fn_decl.param_types[j],
+            all_tp_names, all_tp_types, total_tp_count);
+        params[offset + j] = pt ? pt : type_int();
+    }
+
+    Type *ret = method_ast->as.fn_decl.return_type
+        ? resolve_type_node_with_substitution(
+            c, method_ast->as.fn_decl.return_type,
+            all_tp_names, all_tp_types, total_tp_count)
+        : type_void();
+
+    Type *concrete_type = type_function(params, total_param_count, ret, false);
+
+    /* Step 6: check where bounds on method-level type params */
+    int wc = method_ast->as.fn_decl.where_bound_count;
+    for (int wi = 0; wi < wc; wi++) {
+        WhereBound *wb = &method_ast->as.fn_decl.where_bounds[wi];
+        /* Look up the concrete type for this bound's type param */
+        Type *bound_type = NULL;
+        for (int i = 0; i < total_tp_count; i++) {
+            if (strcmp(all_tp_names[i], wb->type_param_name) == 0) {
+                bound_type = all_tp_types[i];
+                break;
+            }
+        }
+        if (!bound_type) {
+            checker_error(c, line, col,
+                "unknown type parameter '%s' in where clause of '%s'",
+                wb->type_param_name, mangled);
+            c->type_alias_count = saved_alias_count;
+            free(params); free(all_tp_names); free(all_tp_types);
+            free(mtp_type_args);
+            return NULL;
+        }
+        for (int bi = 0; bi < wb->bounds.count; bi++) {
+            if (!checker_type_satisfies_trait(c, bound_type, wb->bounds.trait_names[bi])) {
+                checker_error(c, line, col,
+                    "type '%s' does not satisfy trait '%s' "
+                    "(required by method '%s')",
+                    type_name(bound_type), wb->bounds.trait_names[bi], mangled);
+                c->type_alias_count = saved_alias_count;
+                free(params); free(all_tp_names); free(all_tp_types);
+                free(mtp_type_args);
+                return NULL;
+            }
+        }
+    }
+
+    /* Step 7: clone AST and type-check body, queue for codegen */
+    AstNode *cloned = ast_clone_deep(method_ast);
+    cloned->as.fn_decl.type_param_count = 0; /* now concrete */
+    cloned->as.fn_decl.type_params = NULL; /* safety */
+    /* impl_struct_name drives is_instance_method in codegen_fn_decl.
+       Without it param_offset stays 0 and self/arg mapping is wrong. */
+    cloned->as.fn_decl.impl_struct_name = impl_key; /* points into template, not owned */
+
+    /* Type-check the method body in a fresh scope */
+    push_scope(c);
+
+    /* Set up the return type for body checking */
+    Type *saved_return = c->current_fn_return;
+    c->current_fn_return = ret;
+
+    /* Register combined type aliases in the new scope */
+    int scope_saved_alias = c->type_alias_count;
+    for (int i = 0; i < total_tp_count; i++)
+        register_type_alias(c, all_tp_names[i], all_tp_types[i]);
+
+    /* Register self param (if instance method) in scope.
+       sbk=0: params[0] is *Struct → register as pointer (checker sees obj_type=*Struct).
+       sbk=1/2 (&self/&!self): codegen registers sym->type=Struct (bare), so checker
+       must also see Struct — otherwise obj_node->resolved_type=*Struct triggers the
+       wrong is_ptr_deref path in codegen field access (double-load crash). */
+    int sbk_ml = method_ast->as.fn_decl.self_borrow_kind;
+    if (!is_static) {
+        Type *self_scope_type = (sbk_ml == 0)
+            ? concrete_type->as.function.params[0]          /* *Struct */
+            : concrete_type->as.function.params[0]->as.pointer_to; /* Struct */
+        Symbol *self_sym = scope_define(c->current_scope, "self", self_scope_type);
+        if (self_sym && sbk_ml == 1) self_sym->is_borrow = true;
+        if (self_sym && sbk_ml == 2) self_sym->is_mut_borrow = true;
+    }
+
+    /* Register remaining params (param_names excludes the implicit self) */
+    for (int j = 0; j < pc; j++) {
+        const char *pname = method_ast->as.fn_decl.param_names
+            ? method_ast->as.fn_decl.param_names[j]
+            : "?";
+        scope_define(c->current_scope, pname,
+                     concrete_type->as.function.params[is_static ? j : j + 1]);
+    }
+
+    /* Check the body */
+    if (cloned->as.fn_decl.body) {
+        bool old_silent = c->silent_move_errors;
+        bool old_return = c->in_return_expr;
+        c->in_return_expr = false;
+
+        check_stmt(c, cloned->as.fn_decl.body);
+
+        c->in_return_expr = old_return;
+        c->silent_move_errors = old_silent;
+    }
+
+    c->type_alias_count = scope_saved_alias;
+    c->current_fn_return = saved_return;
+    pop_scope(c);
+
+    /* Set resolved_type so codegen can find the function */
+    cloned->resolved_type = concrete_type;
+
+    /* Queue for codegen */
+    pending_generic_method_add(c, cloned, strdup(mangled),
+        /* struct_type: find from impl_key */
+        find_struct_type(c, impl_key));
+
+    /* Restore type aliases */
+    c->type_alias_count = saved_alias_count;
+
+    free(all_tp_names);
+    free(all_tp_types);
+    free(mtp_type_args);
+    /* params ownership transferred to concrete_type via type_function() — do NOT free */
+
+    return concrete_type;
+}
+
 /* G1.5: For each method in a generic impl, resolve its param/return types
-   with the concrete type arguments, register the method signature in
-   the impl_registry, clone + type-check the method body, and push
-   the cloned fn_decl into pending_generic_methods for codegen. */
+   with the concrete type arguments and register the method signature. Ordinary
+   method bodies are checked lazily at call sites; compiler-reserved hooks that
+   codegen calls by name are still checked and queued eagerly. */
 static void instantiate_impl_method_types(
     Checker *c, Type *struct_type, const char *mangled_name,
     AstNode *impl_node,
@@ -991,6 +1467,19 @@ static void instantiate_impl_method_types(
     for (int i = 0; i < tp_count; i++)
         register_type_alias(c, tp_names[i], type_args[i]);
 
+    /* G1.5+: also register generic impl type params (e.g. impl(W) → W=int).
+       The impl's N-th type param maps to the N-th struct type arg because
+       the impl signature is `impl(Param) StructName(Param)`.  This ensures
+       method-level generics can resolve the impl's type param names when
+       they appear in method signatures (e.g. `fn map(U)(&self, Block(W)->U f)`). */
+    if (impl_node->as.impl_decl.type_param_count > 0) {
+        for (int i = 0; i < impl_node->as.impl_decl.type_param_count && i < tp_count; i++) {
+            if (strcmp(impl_node->as.impl_decl.type_params[i], tp_names[i]) == 0)
+                continue;  /* already registered above */
+            register_type_alias(c, impl_node->as.impl_decl.type_params[i], type_args[i]);
+        }
+    }
+
     int mc = impl_node->as.impl_decl.method_count;
     for (int m = 0; m < mc; m++) {
         AstNode *method = impl_node->as.impl_decl.methods[m];
@@ -1000,6 +1489,47 @@ static void instantiate_impl_method_types(
         bool is_static = method->as.fn_decl.is_static;
         int sbk = method->as.fn_decl.self_borrow_kind;
         int pc = method->as.fn_decl.param_count;
+
+        /* Method-level type parameters: skip eager/lazy registration.
+           Store as template for on-demand instantiation at call site.
+           Also register a placeholder in impl_registry so that
+           find_method / method_is_static / method_self_borrow_kind
+           work (they only need existence + is_static + sbk). */
+        if (method->as.fn_decl.type_param_count > 0) {
+            if (c->generic_impl_mt_count >= c->generic_impl_mt_cap) {
+                int new_cap = c->generic_impl_mt_cap ? c->generic_impl_mt_cap * 2 : 8;
+                c->generic_impl_method_templates = realloc_safe(
+                    c->generic_impl_method_templates,
+                    (size_t)new_cap * sizeof(c->generic_impl_method_templates[0]));
+                c->generic_impl_mt_cap = new_cap;
+            }
+            int idx = c->generic_impl_mt_count++;
+            c->generic_impl_method_templates[idx].method_name = mname;
+            c->generic_impl_method_templates[idx].impl_key = strdup(mangled_name);
+            c->generic_impl_method_templates[idx].method_ast = method;
+            c->generic_impl_method_templates[idx].impl_tp_names =
+                impl_node->as.impl_decl.type_param_count > 0
+                    ? impl_node->as.impl_decl.type_params
+                    : tp_names;
+            c->generic_impl_method_templates[idx].impl_tp_types =
+                (Type **)malloc_safe((size_t)tp_count * sizeof(Type *));
+            for (int ti = 0; ti < tp_count; ti++)
+                c->generic_impl_method_templates[idx].impl_tp_types[ti] = type_args[ti];
+            c->generic_impl_method_templates[idx].impl_tp_count = tp_count;
+            /* Register placeholder in impl_registry for borrow/static checks */
+            register_method(c, impl_idx, mname, type_void(), is_static, sbk,
+                            method->line, method->column);
+            continue;
+        }
+
+        /* A user-defined __drop forces has_drop on this monomorphized instance
+           (mirrors the non-generic path, checker ~L7670). Without this, a generic
+           container whose fields are all POD/raw-pointer (e.g. RawVec(int) with a
+           *T buffer) would not be marked has_drop, so scope-exit would skip its
+           __drop and leak the buffer. It also enables emit_struct_clone_val's
+           user-__clone dispatch (which early-returns when !has_drop). */
+        if (strcmp(mname, "__drop") == 0)
+            struct_type->as.strukt.has_drop = true;
 
         /* Build concrete method type: self ptr (if instance) + user params */
         int total = is_static ? pc : pc + 1;
@@ -1028,68 +1558,16 @@ static void instantiate_impl_method_types(
         register_method(c, impl_idx, mname, mtype, is_static, sbk,
                         method->line, method->column);
 
-        /* Clone the method AST and type-check the body with substitutions */
-        AstNode *cloned = ast_clone_deep(method);
-        cloned->as.fn_decl.impl_struct_name = mangled_name; /* not owned */
-
-        /* Type-check cloned method body in a fresh scope */
-        push_scope(c);
-        if (!is_static) {
-            if (sbk == 0) {
-                scope_define(c->current_scope, "self", type_pointer(struct_type));
-            } else {
-                Symbol *self_sym = scope_define(c->current_scope, "self", struct_type);
-                if (self_sym) {
-                    if (sbk == 1) self_sym->is_borrow = true;
-                    else if (sbk == 2) self_sym->is_mut_borrow = true;
-                }
-            }
-        }
-        for (int j = 0; j < pc; j++) {
-            Type *pt = is_static ? params[j] : params[j + 1];
-            if (pt) {
-                bool is_borrow = false, is_mut_borrow = false;
-                Type *sym_type = pt;
-                if (sym_type->kind == TYPE_REFERENCE) {
-                    if (sym_type->is_mut) is_mut_borrow = true;
-                    else                  is_borrow = true;
-                    sym_type = sym_type->as.pointer_to;
-                }
-                Symbol *psym = scope_define(c->current_scope,
-                    cloned->as.fn_decl.param_names[j], sym_type);
-                if (psym) {
-                    psym->is_borrow = is_borrow;
-                    psym->is_mut_borrow = is_mut_borrow;
-                    if (sym_type->kind == TYPE_STRING) psym->is_static_string = false;
-                    if (sym_type->kind == TYPE_BLOCK)  psym->is_borrow = true;
-                }
-            }
-        }
-        Type *saved_ret = c->current_fn_return;
-        c->current_fn_return = ret;
-        check_stmt(c, cloned->as.fn_decl.body);
-        c->current_fn_return = saved_ret;
-        pop_scope(c);
-
-        cloned->resolved_type = mtype;
-
         /* Build mangled function name: "Pair(int,string).get_first" */
         char mfn_name[512];
         snprintf(mfn_name, sizeof(mfn_name), "%s.%s", mangled_name, mname);
-        size_t mlen = strlen(mfn_name);
-        char *owned_mfn = (char *)malloc_safe(mlen + 1);
-        memcpy(owned_mfn, mfn_name, mlen + 1);
-
-        /* Push to pending list */
-        if (c->pending_gm_count >= c->pending_gm_cap) {
-            c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
-            c->pending_generic_methods = realloc_safe(c->pending_generic_methods,
-                (size_t)c->pending_gm_cap * sizeof(c->pending_generic_methods[0]));
-        }
-        int idx = c->pending_gm_count++;
-        c->pending_generic_methods[idx].cloned_fn = cloned;
-        c->pending_generic_methods[idx].mangled_name = owned_mfn;
-        c->pending_generic_methods[idx].struct_type = struct_type;
+        if (generic_method_is_eager(mname))
+            check_and_queue_generic_method(c, struct_type, mangled_name, method,
+                                           mtype, tp_names, type_args, tp_count,
+                                           method->line, method->column);
+        else
+            register_lazy_generic_method(c, mfn_name, method, mtype, struct_type,
+                                         tp_names, type_args, tp_count);
     }
 
     /* Remove temporary type aliases */
@@ -3579,6 +4057,58 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return arg_type; /* transparent: __move(s) has the same type as s */
     }
 
+    /* __drop_at(place) -> void — run the recursive destructor on the value at an
+       lvalue place (e.g. a raw pointer slot p[i]). POD is a no-op. Lets a
+       self-managed container (RawVec) drop owned elements in __drop/set/clear
+       WITHOUT freeing the backing buffer. The slot is left logically dead;
+       liveness is the container's responsibility (its `len` bound). */
+    if (strcmp(name, "__drop_at") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__drop_at() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__drop_at() requires a place expression (p[i], field, or *p)");
+            return NULL;
+        }
+        return type_void();
+    }
+
+    /* __take(place) -> T — move-OUT of an lvalue slot: bit-read the value WITHOUT
+       cloning; the caller takes ownership and the slot is logically vacated (the
+       container must drop its `len`/track liveness). The move-out counterpart of
+       `__drop_at`; used by RawVec.pop / remove / insert / swap to relocate elements
+       without a clone. Returns the element (pointee) type. */
+    if (strcmp(name, "__take") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__take() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__take() requires a place expression (p[i], field, or *p)");
+            return NULL;
+        }
+        return arg_type; /* the element type read out of the slot */
+    }
+
     return NULL;
 }
 
@@ -3591,7 +4121,9 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "from_cstr") == 0 ||
            strcmp(name, "__string_take_buffer") == 0 ||
            strcmp(name, "errno") == 0 ||
-           strcmp(name, "__move") == 0;
+           strcmp(name, "__move") == 0 ||
+           strcmp(name, "__drop_at") == 0 ||
+           strcmp(name, "__take") == 0;
 }
 
 /* ---- Phase C closure capture analysis ----
@@ -3855,6 +4387,8 @@ static void capture_walk(CaptureScan *s, AstNode *node) {
     case AST_CAST:
         capture_walk(s, node->as.cast.expr);
         return;
+    case AST_SIZEOF:
+        return; /* operand is a type, no sub-expression to walk */
     case AST_RANGE:
         capture_walk(s, node->as.range.start);
         capture_walk(s, node->as.range.end);
@@ -4452,10 +4986,15 @@ static Type *check_expr(Checker *c, AstNode *node)
         case TOKEN_GT:
         case TOKEN_LEQ:
         case TOKEN_GEQ:
-            if (!type_is_numeric(left) || !type_is_numeric(right))
+            if (left && right &&
+                left->kind == TYPE_STRING && right->kind == TYPE_STRING)
+            {
+                result = type_bool();
+            }
+            else if (!type_is_numeric(left) || !type_is_numeric(right))
             {
                 checker_error(c, node->line, node->column,
-                              "comparison requires numeric types, got '%s' and '%s'",
+                              "comparison requires numeric or string types, got '%s' and '%s'",
                               type_name(left), type_name(right));
                 result = NULL;
             }
@@ -5058,8 +5597,34 @@ static Type *check_expr(Checker *c, AstNode *node)
                 result = NULL;
                 break;
             }
+
+            /* Method-level generic: if the call site provides type args, try
+               to build the concrete signature on-the-fly.  The placeholder
+               returned by find_method has type_void() — the real type is built
+               and body-checked here. */
+            if (node->as.call.type_arg_count > 0) {
+                Type *concrete = try_instantiate_method_level_generic(
+                    c, method_struct, method_name,
+                    node->as.call.type_args, node->as.call.type_arg_count,
+                    node->line, node->column);
+                if (concrete) {
+                    callee_type = concrete;
+                    node->as.call.callee->resolved_type = callee_type;
+                    /* Body already checked+queued by try_instantiate; skip lazy path */
+                    goto after_method_check;
+                }
+            }
+
+            if (!ensure_generic_method_instantiated(c, method_struct, method_name,
+                                                     node->line, node->column))
+            {
+                result = NULL;
+                break;
+            }
             /* Set resolved_type on the callee node so codegen can find it */
             node->as.call.callee->resolved_type = callee_type;
+
+            after_method_check: ;
 
             /* Check for dangerous __drop call in user-defined __drop */
             if (c->in_user_defined_drop &&
@@ -5376,6 +5941,41 @@ static Type *check_expr(Checker *c, AstNode *node)
             {
                 result = obj->as.map.val;
             }
+        }
+        else if (obj->kind == TYPE_POINTER)
+        {
+            /* p[i] on a raw *T pointer — element access, no bounds check (unsafe
+               layer). Result is the pointee type. The store form (p[i] = x) is a
+               RAW store: it does NOT drop the old slot (the slot may be
+               uninitialized memory), unlike vec/array element assignment. */
+            if (!type_is_integer(idx))
+            {
+                checker_error(c, node->line, node->column,
+                              "pointer index must be integer, got '%s'", type_name(idx));
+                result = NULL;
+            }
+            else if (obj->as.pointer_to == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "cannot index opaque pointer");
+                result = NULL;
+            }
+            else
+            {
+                result = obj->as.pointer_to;
+            }
+        }
+        else if (obj->kind == TYPE_STRUCT &&
+                 find_method(c, impl_key_of_type(obj), "__index") != NULL)
+        {
+            /* Index protocol: `v[i]` on a struct that opts in via
+               `__index(&self, int) -> T` desugars to `v.__index(i)`. Rewrite the
+               node in place to the method call and re-check (reuses all call
+               machinery: monomorphization, return-value ownership, etc.). */
+            AstNode *objn = node->as.index_expr.object;
+            AstNode *idxn = node->as.index_expr.index;
+            rewrite_index_to_call(node, objn, idxn, "__index");
+            result = check_expr(c, node);
         }
         else
         {
@@ -5977,6 +6577,23 @@ static Type *check_expr(Checker *c, AstNode *node)
         break;
     }
 
+    case AST_SIZEOF:
+    {
+        /* sizeof(Type) -> i64, compile-time byte size. Resolve the operand type
+           (type-param `T` is resolved via the active type-alias substitution
+           registered during generic instantiation, same as cast). */
+        Type *st = resolve_type_node(c, node->as.sizeof_expr.type_node,
+                                     node->line, node->column);
+        if (st == NULL)
+        {
+            result = NULL;
+            break;
+        }
+        node->as.sizeof_expr.sized_type = st;
+        result = type_i64();
+        break;
+    }
+
     case AST_TRY:
     {
         if (c->current_fn_return == NULL)
@@ -6114,7 +6731,27 @@ static Type *check_expr(Checker *c, AstNode *node)
         /* Look up the struct type. B-4: module-qualified literal `mod.Type{...}`
            resolves through the imported module's export table. */
         Type *st = NULL;
-        if (node->as.new_expr.module != NULL)
+        /* Anonymous struct literal `{ field: val, ... }` (no type prefix): the
+           parser left struct_name NULL. Infer the struct type from the expected
+           type (LHS of a var-decl / return / arg slot). */
+        if (node->as.new_expr.struct_name == NULL)
+        {
+            if (c->expected_type == NULL || c->expected_type->kind != TYPE_STRUCT)
+            {
+                checker_error(c, node->line, node->column,
+                              "cannot infer struct type for `{...}` literal here "
+                              "(no expected struct type in this context)");
+                result = NULL;
+                break;
+            }
+            st = c->expected_type;
+            /* adopt the inferred name so downstream field lookup / codegen work */
+            size_t snl = strlen(st->as.strukt.name);
+            char *sdup = (char *)malloc_safe(snl + 1);
+            memcpy(sdup, st->as.strukt.name, snl + 1);
+            node->as.new_expr.struct_name = sdup;
+        }
+        else if (node->as.new_expr.module != NULL)
         {
             Symbol *modsym = scope_resolve(c->current_scope, node->as.new_expr.module);
             if (modsym == NULL || modsym->type == NULL ||
@@ -6395,6 +7032,61 @@ static void check_stmt(Checker *c, AstNode *node)
                 }
                 al->resolved_type = declared; /* signal check_expr / codegen */
             }
+            else if (declared && declared->kind == TYPE_STRUCT &&
+                node->as.var_decl.init->kind == AST_ARRAY_LIT &&
+                find_method(c, impl_key_of_type(declared), "__from_list") != NULL)
+            {
+                /* Collection-literal init for a user container (matches builtin
+                   `vec(T) v = [..]`): `Type v = [e1, e2, ...]` works iff the struct
+                   explicitly opts in via the reserved method `__from_list(&!self, E)`
+                   — an LS reserved-method protocol (like __drop/__clone), since LS
+                   has no generic traits. Codegen zero-inits the struct then calls
+                   __from_list for each element. Validate elements against E
+                   (__from_list's 2nd param, after the self pointer). */
+                AstNode *al = node->as.var_decl.init;
+                Type *fl = find_method(c, impl_key_of_type(declared), "__from_list");
+                Type *E = (fl && fl->kind == TYPE_FUNCTION &&
+                           fl->as.function.param_count >= 2)
+                          ? fl->as.function.params[1] : NULL;
+                for (int i = 0; i < al->as.array_lit.count; i++)
+                {
+                    Type *et = check_expr(c, al->as.array_lit.elements[i]);
+                    if (E && et && !type_assignable(E, et))
+                        checker_error(c, al->as.array_lit.elements[i]->line,
+                                      al->as.array_lit.elements[i]->column,
+                                      "list-literal element type mismatch: expected '%s', got '%s'",
+                                      type_name(E), type_name(et));
+                }
+                al->resolved_type = declared; /* signal codegen */
+            }
+            else if (declared && declared->kind == TYPE_STRUCT &&
+                node->as.var_decl.init->kind == AST_MAP_LIT &&
+                node->as.var_decl.init->as.map_lit.pair_count == 0)
+            {
+                /* Inferred aggregate init: `Type v = {}` zero-initializes a struct
+                   (C++-style), inferring the struct type from the declared LHS.
+                   Reinterpret the empty brace literal (parsed as an empty map) as a
+                   zero-init struct literal of `declared`. Unspecified fields are
+                   zero (AST_NEW_EXPR codegen ConstNull's the whole struct first).
+                   Lets `RawVec(string) v = {}` replace `new_rawvec(string)()`,
+                   matching the builtin `vec(T) v = []`. */
+                AstNode *ml = node->as.var_decl.init;
+                /* free the (empty) map-lit arrays before repurposing the node */
+                free(ml->as.map_lit.keys);
+                free(ml->as.map_lit.vals);
+                ml->kind = AST_NEW_EXPR;
+                size_t snl = strlen(declared->as.strukt.name);
+                char *sdup = (char *)malloc_safe(snl + 1);
+                memcpy(sdup, declared->as.strukt.name, snl + 1);
+                ml->as.new_expr.struct_name = sdup;
+                ml->as.new_expr.module = NULL;
+                ml->as.new_expr.field_inits = NULL;
+                ml->as.new_expr.field_init_count = 0;
+                ml->as.new_expr.on_stack = true;
+                ml->as.new_expr.type_args = NULL;
+                ml->as.new_expr.type_arg_count = 0;
+                ml->resolved_type = declared;
+            }
             else if (declared && declared->kind == TYPE_MAP &&
                 node->as.var_decl.init->kind == AST_MAP_LIT)
             {
@@ -6489,6 +7181,30 @@ static void check_stmt(Checker *c, AstNode *node)
 
     case AST_ASSIGN:
     {
+        /* IndexMut protocol: `v[i] = x` where v is a struct opting in via
+           `__index_set(&!self, int, E)` desugars to `v.__index_set(i, x)`. Must
+           run BEFORE check_expr(target) (which would read-rewrite v[i] to
+           __index). Reuses tobj/idxn/valn; rewrites the assign node into a call. */
+        if (node->as.assign.target->kind == AST_INDEX)
+        {
+            AstNode *tobj = node->as.assign.target->as.index_expr.object;
+            Type *to = check_expr(c, tobj);
+            if (to && to->kind == TYPE_STRUCT &&
+                find_method(c, impl_key_of_type(to), "__index_set") != NULL)
+            {
+                AstNode *idxn = node->as.assign.target->as.index_expr.index;
+                AstNode *valn = node->as.assign.value;
+                /* (the small AST_INDEX shell is intentionally leaked, not freed,
+                   to avoid any aliasing with the union we overwrite below) */
+                AstNode *call = make_index_protocol_call(node->line, node->column,
+                                                         tobj, idxn, valn,
+                                                         "__index_set");
+                node->kind = AST_EXPR_STMT;
+                node->as.expr_stmt.expr = call;
+                check_expr(c, call);
+                break;
+            }
+        }
         Type *target = check_expr(c, node->as.assign.target);
         /* Plumb expected_type = target type so a bare variant ctor on the RHS
            (`x = None`, `self.buf[i] = Some(v)`) disambiguates when several enum
@@ -7973,6 +8689,17 @@ static bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *r
 static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name)
 {
     if (type == NULL) return false;
+    if (strcmp(trait_name, "Eq") == 0)
+    {
+        if (type->kind == TYPE_STRING || type->kind == TYPE_BOOL ||
+            type_is_numeric(type) || type_is_pointer_like(type))
+            return true;
+    }
+    else if (strcmp(trait_name, "Ord") == 0)
+    {
+        if (type->kind == TYPE_STRING || type_is_numeric(type))
+            return true;
+    }
     const char *tname = type_name(type);
     for (int i = 0; i < c->trait_impl_count; i++)
     {
@@ -8871,6 +9598,14 @@ static void register_builtins(Checker *c)
         Type *ft = type_function(params, 1, type_pointer(type_u8()), false);
         scope_define(c->current_scope, "malloc", ft);
     }
+    /* realloc(*u8, i64) -> *u8 — grow/shrink a heap buffer (NULL ptr == malloc) */
+    {
+        Type **params = (Type **)malloc_safe(2 * sizeof(Type *));
+        params[0] = type_pointer(type_u8());
+        params[1] = type_i64();
+        Type *ft = type_function(params, 2, type_pointer(type_u8()), false);
+        scope_define(c->current_scope, "realloc", ft);
+    }
     /* free(*u8) -> void */
     {
         Type **params = (Type **)malloc_safe(sizeof(Type *));
@@ -8878,13 +9613,8 @@ static void register_builtins(Checker *c)
         Type *ft = type_function(params, 1, type_void(), false);
         scope_define(c->current_scope, "free", ft);
     }
-    /* sizeof(type) -> int — treated as special; for now just register */
-    {
-        Type **params = (Type **)malloc_safe(sizeof(Type *));
-        params[0] = type_int(); /* placeholder */
-        Type *ft = type_function(params, 1, type_int(), false);
-        scope_define(c->current_scope, "sizeof", ft);
-    }
+    /* sizeof(Type) is handled as a compile-time AST_SIZEOF node (see parser
+       infix_call + check_expr), not a runtime function — nothing to register. */
     /* sqrt(f64) -> f64 */
     {
         Type **params = (Type **)malloc_safe(sizeof(Type *));
@@ -8941,6 +9671,11 @@ bool checker_check(AstNode *program, const char *source_path,
     }
 
     /* Cleanup */
+    for (int i = 0; i < c.lazy_gm_count; i++) {
+        free(c.lazy_generic_methods[i].mangled_name);
+        free(c.lazy_generic_methods[i].type_args);
+    }
+    free(c.lazy_generic_methods);
     scope_free(c.current_scope);
     /* Note: struct types and function types are intentionally leaked for now
        since AST nodes reference them via resolved_type. They will be freed

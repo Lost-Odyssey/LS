@@ -246,6 +246,9 @@ void ast_free(AstNode *node) {
         ast_free(node->as.cast.expr);
         type_node_free(node->as.cast.target_type);
         break;
+    case AST_SIZEOF:
+        type_node_free(node->as.sizeof_expr.type_node);
+        break;
     case AST_TRY:
         ast_free(node->as.try_expr.expr);
         break;
@@ -311,6 +314,13 @@ void ast_free(AstNode *node) {
             }
             free(node->as.fn_decl.type_param_bounds);
         }
+        for (int i = 0; i < node->as.fn_decl.where_bound_count; i++) {
+            free(node->as.fn_decl.where_bounds[i].type_param_name);
+            for (int j = 0; j < node->as.fn_decl.where_bounds[i].bounds.count; j++)
+                free(node->as.fn_decl.where_bounds[i].bounds.trait_names[j]);
+            free(node->as.fn_decl.where_bounds[i].bounds.trait_names);
+        }
+        free(node->as.fn_decl.where_bounds);
         for (int i = 0; i < node->as.fn_decl.param_count; i++) {
             type_node_free(node->as.fn_decl.param_types[i]);
             free(node->as.fn_decl.param_names[i]);
@@ -489,6 +499,7 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_MATCH:        return "MATCH";
     case AST_TRY:          return "TRY";
     case AST_CAST:         return "CAST";
+    case AST_SIZEOF:       return "SIZEOF";
     case AST_RANGE:        return "RANGE";
     case AST_VAR_DECL:     return "VAR_DECL";
     case AST_ASSIGN:       return "ASSIGN";
@@ -696,6 +707,10 @@ AstNode *ast_clone_deep(const AstNode *src) {
         n->as.cast.expr        = ast_clone_deep(src->as.cast.expr);
         n->as.cast.target_type = type_node_clone(src->as.cast.target_type);
         break;
+    case AST_SIZEOF:
+        n->as.sizeof_expr.type_node  = type_node_clone(src->as.sizeof_expr.type_node);
+        n->as.sizeof_expr.sized_type = NULL; /* re-resolved per instantiation */
+        break;
     case AST_TRY:
         n->as.try_expr.expr = ast_clone_deep(src->as.try_expr.expr);
         break;
@@ -802,6 +817,27 @@ AstNode *ast_clone_deep(const AstNode *src) {
             }
         } else {
             n->as.fn_decl.type_param_bounds = NULL;
+        }
+        int wbc = src->as.fn_decl.where_bound_count;
+        n->as.fn_decl.where_bound_count = wbc;
+        if (wbc > 0) {
+            n->as.fn_decl.where_bounds = (WhereBound *)
+                malloc_safe((size_t)wbc * sizeof(WhereBound));
+            for (int i = 0; i < wbc; i++) {
+                n->as.fn_decl.where_bounds[i].type_param_name =
+                    ast_strdup(src->as.fn_decl.where_bounds[i].type_param_name);
+                int bc = src->as.fn_decl.where_bounds[i].bounds.count;
+                n->as.fn_decl.where_bounds[i].bounds.count = bc;
+                if (bc > 0) {
+                    n->as.fn_decl.where_bounds[i].bounds.trait_names =
+                        (char **)malloc_safe((size_t)bc * sizeof(char *));
+                    for (int j = 0; j < bc; j++)
+                        n->as.fn_decl.where_bounds[i].bounds.trait_names[j] =
+                            ast_strdup(src->as.fn_decl.where_bounds[i].bounds.trait_names[j]);
+                } else {
+                    n->as.fn_decl.where_bounds[i].bounds.trait_names = NULL;
+                }
+            }
         }
         int pc = src->as.fn_decl.param_count;
         if (pc > 0) {
@@ -976,6 +1012,11 @@ void ast_print(AstNode *node, int indent) {
         type_node_print(node->as.cast.target_type);
         printf("\n");
         ast_print(node->as.cast.expr, indent + 1);
+        break;
+    case AST_SIZEOF:
+        printf("SIZEOF ");
+        type_node_print(node->as.sizeof_expr.type_node);
+        printf("\n");
         break;
     case AST_TRY:
         printf("TRY\n");
