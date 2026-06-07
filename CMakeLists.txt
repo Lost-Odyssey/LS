@@ -1484,6 +1484,18 @@ add_test(
 )
 set_tests_properties(test_rawvec_move PROPERTIES DEPENDS "test_rawvec_m2")
 
+# Inferred aggregate init: `Type v = {}` zero-inits a struct (LHS-inferred),
+# replacing new_rawvec(T)() with `RawVec(T) v = {}` (matches vec(T) v = []).
+add_test(
+    NAME test_inferred_init
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_inferred_init.cmake
+)
+set_tests_properties(test_inferred_init PROPERTIES DEPENDS "test_rawvec_move")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

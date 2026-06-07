@@ -6473,6 +6473,34 @@ static void check_stmt(Checker *c, AstNode *node)
                 }
                 al->resolved_type = declared; /* signal check_expr / codegen */
             }
+            else if (declared && declared->kind == TYPE_STRUCT &&
+                node->as.var_decl.init->kind == AST_MAP_LIT &&
+                node->as.var_decl.init->as.map_lit.pair_count == 0)
+            {
+                /* Inferred aggregate init: `Type v = {}` zero-initializes a struct
+                   (C++-style), inferring the struct type from the declared LHS.
+                   Reinterpret the empty brace literal (parsed as an empty map) as a
+                   zero-init struct literal of `declared`. Unspecified fields are
+                   zero (AST_NEW_EXPR codegen ConstNull's the whole struct first).
+                   Lets `RawVec(string) v = {}` replace `new_rawvec(string)()`,
+                   matching the builtin `vec(T) v = []`. */
+                AstNode *ml = node->as.var_decl.init;
+                /* free the (empty) map-lit arrays before repurposing the node */
+                free(ml->as.map_lit.keys);
+                free(ml->as.map_lit.vals);
+                ml->kind = AST_NEW_EXPR;
+                size_t snl = strlen(declared->as.strukt.name);
+                char *sdup = (char *)malloc_safe(snl + 1);
+                memcpy(sdup, declared->as.strukt.name, snl + 1);
+                ml->as.new_expr.struct_name = sdup;
+                ml->as.new_expr.module = NULL;
+                ml->as.new_expr.field_inits = NULL;
+                ml->as.new_expr.field_init_count = 0;
+                ml->as.new_expr.on_stack = true;
+                ml->as.new_expr.type_args = NULL;
+                ml->as.new_expr.type_arg_count = 0;
+                ml->resolved_type = declared;
+            }
             else if (declared && declared->kind == TYPE_MAP &&
                 node->as.var_decl.init->kind == AST_MAP_LIT)
             {
