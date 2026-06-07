@@ -11192,6 +11192,28 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return NULL; /* void */
         }
 
+        /* Intercept __take(place) — move-OUT: load the value at an lvalue place
+           WITHOUT cloning (the raw bit-read), handing ownership to the caller. The
+           slot is left holding stale bits; the container excludes it via its len
+           (or overwrites it). Counterpart of __drop_at; used to relocate elements
+           (pop/remove/insert/swap) without a clone. */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "__take") == 0 &&
+            node->as.call.arg_count == 1)
+        {
+            AstNode *place = node->as.call.args[0];
+            LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
+            if (ptr == NULL)
+            {
+                cg_error(ctx, node->line, node->column,
+                         "__take: argument is not an addressable place");
+                return NULL;
+            }
+            Type *et = place->resolved_type;
+            LLVMTypeRef elt = type_to_llvm(ctx, et);
+            return LLVMBuildLoad2(ctx->builder, elt, ptr, "take");
+        }
+
         /* Intercept string builtin method calls: s.method(args...) */
         if (node->as.call.callee->kind == AST_FIELD)
         {

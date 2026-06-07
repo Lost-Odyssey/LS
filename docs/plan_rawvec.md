@@ -545,6 +545,14 @@ impl(T) RawVec(T) {
   `*T/int/int`,不受影响。修法方向：`AST_NEW_EXPR` 零初始化后，对未显式初始化的 `string`
   字段填有效空串（`ls_string_from_literal("")`，cap=0），vec/map/has_drop 字段同理填空容器。
 
+- **KI-D：泛型方法用 `==`/`<` 会强制所有实例满足 `Eq`/`Ord`（无条件 impl / 急切单态化）。**
+  LS 在 struct 实例化时**急切单态化所有方法**,所以若 `RawVec(T)` 有用 `==` 的方法
+  (contains/index_of/count),则 `RawVec(Pt)`(Pt 无 Eq)实例化时也会检查该方法体 → 报
+  "Pt does not implement Eq",**即使从不调用**。因此这三个方法暂未提供(用户可内联搜索:
+  `for i in 0..v.length() { if v.get(i) == x {..} }`)。Rust 用条件 impl
+  `impl<T: PartialEq> Vec<T> { fn contains.. }` 解决。LS 需补「条件/带 trait-bound 的
+  impl」或「仅单态化被调用的方法(lazy)」才能内置这类方法。
+
 - **KI-C（设计记录,非缺陷）：列表初始化 `RawVec(T) v = [..]` 走 `__from_list` 保留方法协议。**
   LS 无泛型 trait（实测 `trait Foo(T)` 不解析），所以 Rust 式 `FromList(T)` trait 无法表达。
   采用 LS 既有的**保留方法协议**(同 `__drop`/`__clone`):容器定义 `fn __from_list(&!self, T x)`

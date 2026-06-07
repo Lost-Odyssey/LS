@@ -1496,6 +1496,18 @@ add_test(
 )
 set_tests_properties(test_inferred_init PROPERTIES DEPENDS "test_rawvec_move")
 
+# Comprehensive RawVec(T) API parity with vec (insert/remove/swap/reverse/first/
+# last/index_of/contains/count/resize/copy/truncate/shrink_to_fit), int + string.
+add_test(
+    NAME test_rawvec_api
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_api.cmake
+)
+set_tests_properties(test_rawvec_api PROPERTIES DEPENDS "test_inferred_init")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

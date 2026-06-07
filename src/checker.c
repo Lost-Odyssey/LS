@@ -3614,6 +3614,32 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return type_void();
     }
 
+    /* __take(place) -> T — move-OUT of an lvalue slot: bit-read the value WITHOUT
+       cloning; the caller takes ownership and the slot is logically vacated (the
+       container must drop its `len`/track liveness). The move-out counterpart of
+       `__drop_at`; used by RawVec.pop / remove / insert / swap to relocate elements
+       without a clone. Returns the element (pointee) type. */
+    if (strcmp(name, "__take") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__take() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__take() requires a place expression (p[i], field, or *p)");
+            return NULL;
+        }
+        return arg_type; /* the element type read out of the slot */
+    }
+
     return NULL;
 }
 
@@ -3627,7 +3653,8 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "__string_take_buffer") == 0 ||
            strcmp(name, "errno") == 0 ||
            strcmp(name, "__move") == 0 ||
-           strcmp(name, "__drop_at") == 0;
+           strcmp(name, "__drop_at") == 0 ||
+           strcmp(name, "__take") == 0;
 }
 
 /* ---- Phase C closure capture analysis ----
