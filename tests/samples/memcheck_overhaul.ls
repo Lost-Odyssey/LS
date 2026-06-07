@@ -1,23 +1,8 @@
 // memcheck_overhaul.ls — 内存模型整改（M-1 ~ M-5）汇总回归测试。
 // 覆盖每个修复路径的极端场景，作为永久的内存安全回归守护。
 // 目标：JIT + AOT 下 memcheck OK clean（0 leak / 0 dfree / 0 ifree）。
-//
-// 场景索引：
-//   1. print 各种动态 string 参数            (M-1)
-//   2. borrowed string 跨函数边界            (M-2 / BF-032)
-//   3. enum ctor with borrowed string        (M-2 / BF-032)
-//   4. struct ctor with string method        (M-4)
-//   5. vec 元素 swap（index assign）         (M-4 / bug_23)
-//   6. vec(string) push + pop + for          (BF-001)
-//   7. map(string,string) set + get + read   (M-4 / BF-039)
-//   8. match binder return                   (BF-029)
-//   9. try 早返路径 string                   (BF-012)
-//  10. 循环内 string 分配 + break            (BF-012)
-//  11. 闭包捕获 string + int                 (Phase C/F)
-//  12. 自递归 enum（Tree）recursive drop     (BF-015/023)
-//  13. f-string with % literal               (今日修复)
-//  14. vec(has_drop struct) index field 临时 (M-4.5)
-//  15. map[key] string value 临时 / 转移      (BF-039)
+
+import std.vec
 
 struct Item {
     string name
@@ -114,8 +99,8 @@ fn main() -> int {
     Item it2 = Item{name: "alice".upper(), qty: 30}
     print(it2.name)
 
-    // ===== 5. vec 元素 swap via index assign (M-4/bug_23) =====
-    vec(string) vs = ["AAA".copy(), "BBB".copy()]
+    // ===== 5. Vec 元素 swap via index assign (M-4/bug_23) =====
+    Vec(string) vs = ["AAA".copy(), "BBB".copy()]
     string a = vs[0]
     string b = vs[1]
     vs[0] = b
@@ -123,13 +108,13 @@ fn main() -> int {
     print(vs[0])
     print(vs[1])
 
-    // ===== 6. vec(string) push + pop + for (BF-001) =====
-    vec(string) names = []
+    // ===== 6. Vec(string) push + pop + for (BF-001) =====
+    Vec(string) names = {}
     names.push("n1".upper())
     names.push("n2".upper())
     names.push("n3".upper())
-    names.pop()
-    for i in 0..names.length {
+    Option(string) _pn = names.pop()        // VR-LIM-014: must assign
+    for i in 0..names.len() {
         print(names[i])
     }
 
@@ -187,8 +172,8 @@ fn main() -> int {
     int pct = 50
     print(f"{pct}% complete")
 
-    // ===== 14. vec(has_drop struct) index field 临时 (M-4.5) =====
-    vec(Item) vit = []
+    // ===== 14. Vec(has_drop struct) index field 临时 (M-4.5) =====
+    Vec(Item) vit = {}
     vit.push(Item{name: "i1".upper(), qty: 1})
     vit.push(Item{name: "i2".upper(), qty: 2})
     print(vit[0].name)                      // 临时 struct clone，取字段后丢弃
@@ -196,8 +181,8 @@ fn main() -> int {
     Item taken = vit[0]                     // 所有权转移
     print(taken.name)
 
-    // ===== 15. enum vec index 临时 (M-4.5 对照) =====
-    vec(Box) vb = []
+    // ===== 15. enum Vec index 临时 (M-4.5 对照) =====
+    Vec(Box) vb = {}
     vb.push(One("e0".upper()))
     vb.push(One("e1".upper()))
     match vb[0] {                           // 临时 enum clone

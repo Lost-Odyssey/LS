@@ -2,16 +2,18 @@
 // 目标：memcheck OK clean（0 leak / 0 dfree / 0 ifree）
 //
 // 已由 M-3 cg_store_owned 处理（不在本测试范围）：
-//   vec.push / vec.insert / vec[i]= / enum ctor payload / struct ctor field
+//   Vec.push / Vec.insert / Vec[i]= / enum ctor payload / struct ctor field
 //
 // 本测试覆盖：
-//   1. AST_VAR_DECL × {string, struct, enum, vec, map}
-//   2. AST_ASSIGN var × {string, struct, enum, vec, map}
+//   1. AST_VAR_DECL × {string, struct, enum, Vec, map}
+//   2. AST_ASSIGN var × {string, struct, enum, Vec, map}
 //   3. AST_ASSIGN field.x × {string, struct}
-//   4. AST_RETURN × {string, struct, enum, vec, map}
-//   5. vec 字面量 + map 字面量 + map.set / map[k]=
+//   4. AST_RETURN × {string, struct, enum, Vec, map}
+//   5. Vec 字面量 + map 字面量 + map.set / map[k]=
 //   6. 函数实参 → 形参 (by-value move)
 //   7. match arm binder × {string, struct, enum}
+
+import std.vec
 
 struct Item {
     string name
@@ -32,8 +34,8 @@ enum Holder {
 fn mk_str() -> string { return "rvalue".upper() }
 fn mk_item() -> Item { return Item{name: "from-fn".upper(), qty: 7} }
 fn mk_box() -> Box  { return One("box-rval".upper()) }
-fn mk_vec() -> vec(string) {
-    vec(string) v = ["a".upper(), "b".upper()]
+fn mk_vec() -> Vec(string) {
+    Vec(string) v = ["a".upper(), "b".upper()]
     return v
 }
 fn mk_map() -> map(string, int) {
@@ -69,7 +71,7 @@ fn main() -> int {
         Pair(x, n) => { print(x) }
     }
 
-    vec(string) v_var = mk_vec()
+    Vec(string) v_var = mk_vec()
     print(v_var[0])
 
     map(string, int) m_var = mk_map()
@@ -91,8 +93,8 @@ fn main() -> int {
 
     // ========== 4. AST_RETURN ========== (覆盖通过 mk_* 已隐式测试)
 
-    // ========== 5. vec / map 字面量 + map.set / map[k]= ==========
-    vec(string) v_lit = ["x".upper(), "y".upper(), "z".upper()]
+    // ========== 5. Vec / map 字面量 + map.set / map[k]= ==========
+    Vec(string) v_lit = ["x".upper(), "y".upper(), "z".upper()]
     print(v_lit[2])
 
     map(string, int) m_lit = {"hello".upper() -> 100, "world".upper() -> 200}
@@ -138,20 +140,20 @@ fn main() -> int {
     }
 
     // ========== 8. 嵌套容器 ==========
-    // vec(struct has_drop)
-    vec(Item) vit = []
+    // Vec(struct has_drop)
+    Vec(Item) vit = {}
     vit.push(Item{name: "n1".upper(), qty: 1})
     vit.push(Item{name: "n2".upper(), qty: 2})
-    // M-4.5 已修复 "vec(has_drop T) index field-access clone leak"：
-    // vec[i].field 的临时 struct 深拷贝在语句结束被 drop。
+    // M-4.5 已修复 "Vec(has_drop T) index field-access clone leak"：
+    // Vec[i].field 的临时 struct 深拷贝在语句结束被 drop。
     print(vit[0].name)              // 直接字段访问（M-4.5 修复点）
     Item it0 = vit[0]               // 变量绑定（所有权转移，基线已正确）
     print(it0.name)
 
-    // vec(vec(string)) — 暂不测：同样涉及嵌套 vec 借用 bug
+    // Vec(Vec(string)) — 暂不测：同样涉及嵌套 vec 借用 bug
     // 已派生独立任务跟踪
 
-    // map(string, vec(string)) — 暂不测：runtime symbol mismatch bug
+    // map(string, Vec(string)) — 暂不测：runtime symbol mismatch bug
     // 已派生独立任务跟踪
 
     // ========== 9. has_drop struct/enum 整体赋值 ==========

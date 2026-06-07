@@ -1,6 +1,8 @@
 // std/strconv.ls — String formatting and number-base conversion utilities.
 // Pure LS module; float_fixed uses two thin C helpers in runtime/builtins.c.
 
+import std.vec
+
 // ---- C helpers for float formatting ----
 // __ls_float_fixed_exec formats val into a global static buffer (no malloc).
 // __ls_float_fixed_ptr returns a pointer to that buffer; caller must copy
@@ -9,11 +11,11 @@
 extern fn __ls_float_fixed_exec(f64 val, int digits)
 extern fn __ls_float_fixed_ptr() -> object
 
-// ---- format(fmt, vec(string) args) -> string ----
+// ---- format(fmt, Vec(string) args) -> string ----
 // Replaces each "{}" placeholder in fmt with successive elements of args.
-// Extra "{}" beyond args.length are replaced with empty string; extra args are ignored.
+// Extra "{}" beyond args.len() are replaced with empty string; extra args are ignored.
 
-fn format(string fmt, vec(string) args) -> string {
+fn format(string fmt, Vec(string) args) -> string {
     string result = ""
     int arg_idx = 0
     int i = 0
@@ -25,7 +27,7 @@ fn format(string fmt, vec(string) args) -> string {
             if i > seg_start {
                 result.append(fmt.substr(seg_start, i - seg_start))
             }
-            if arg_idx < args.length {
+            if arg_idx < args.len() {
                 result.append(args[arg_idx])
                 arg_idx = arg_idx + 1
             }

@@ -1,4 +1,5 @@
 // tests/samples/regex_test.ls — Integration tests for std.regex
+import std.vec
 import std.regex as re
 
 fn test_basic() {
@@ -13,8 +14,8 @@ fn test_basic() {
 
 fn test_quantifiers() {
     // greedy *
-    vec(string) v = re.find_all("aabbb", "a*")
-    if v.length == 0 { print("FAIL: greedy star"); return }
+    Vec(string) v = re.find_all("aabbb", "a*")
+    if v.len() == 0 { print("FAIL: greedy star"); return }
     // + requires at least one
     if re.matches("b", "a+") { print("FAIL: plus neg"); return }
     if !re.matches("aa", "a+") { print("FAIL: plus pos"); return }
@@ -22,9 +23,9 @@ fn test_quantifiers() {
     if !re.matches("aaa", "a{3}") { print("FAIL: {n}"); return }
     if re.matches("aa", "a{3}") { print("FAIL: {n} neg"); return }
     if !re.matches("aaaa", "a{2,4}") { print("FAIL: {n,m}"); return }
-    // lazy — capture returns vec(string), empty = no match
-    vec(string) c = re.capture("aXbXc", "(a.*?c)")
-    if c.length == 0 { print("FAIL: lazy none"); return }
+    // lazy — capture returns Vec(string), empty = no match
+    Vec(string) c = re.capture("aXbXc", "(a.*?c)")
+    if c.len() == 0 { print("FAIL: lazy none"); return }
     if c[0] != "aXbXc" { print(f"FAIL: lazy wrong: {c[0]}"); return }
     print("PASS: quantifiers")
 }
@@ -56,8 +57,8 @@ fn test_find() {
         Some(s) => { if s != "42.5" { print("FAIL: find got " + s); return } }
         None    => { print("FAIL: find none"); return }
     }
-    vec(string) all = re.find_all("a1 b2 c3", "\\d+")
-    if all.length != 3 { print("FAIL: find_all count"); return }
+    Vec(string) all = re.find_all("a1 b2 c3", "\\d+")
+    if all.len() != 3 { print("FAIL: find_all count"); return }
     if all[0] != "1" { print("FAIL: find_all[0]"); return }
     if all[1] != "2" { print("FAIL: find_all[1]"); return }
     if all[2] != "3" { print("FAIL: find_all[2]"); return }
@@ -65,10 +66,10 @@ fn test_find() {
 }
 
 fn test_capture() {
-    // capture returns vec(string): [full, g1, g2, ...]  empty = no match
-    vec(string) caps = re.capture("2024-01-15", "(\\d{4})-(\\d{2})-(\\d{2})")
-    if caps.length == 0 { print("FAIL: capture none"); return }
-    if caps.length != 4 { print(f"FAIL: capture length {caps.length}"); return }
+    // capture returns Vec(string): [full, g1, g2, ...]  empty = no match
+    Vec(string) caps = re.capture("2024-01-15", "(\\d{4})-(\\d{2})-(\\d{2})")
+    if caps.len() == 0 { print("FAIL: capture none"); return }
+    if caps.len() != 4 { print(f"FAIL: capture length {caps.len()}"); return }
     if caps[0] != "2024-01-15" { print("FAIL: cap[0]"); return }
     if caps[1] != "2024" { print("FAIL: cap[1]"); return }
     if caps[2] != "01" { print("FAIL: cap[2]"); return }
@@ -80,8 +81,8 @@ fn test_capture() {
     string cap_all_pat = "(\\w+)=(\\d+)"
     int stride = re.group_count(cap_all_pat) + 1
     if stride != 3 { print(f"FAIL: group_count {stride}"); return }
-    vec(string) flat = re.capture_all("a=1 b=2 c=3", cap_all_pat)
-    if flat.length != 9 { print(f"FAIL: capture_all count {flat.length}"); return }
+    Vec(string) flat = re.capture_all("a=1 b=2 c=3", cap_all_pat)
+    if flat.len() != 9 { print(f"FAIL: capture_all count {flat.len()}"); return }
     // match 0: flat[0]="a=1"  flat[1]="a"  flat[2]="1"
     // match 1: flat[3]="b=2"  flat[4]="b"  flat[5]="2"
     // match 2: flat[6]="c=3"  flat[7]="c"  flat[8]="3"
@@ -112,13 +113,13 @@ fn test_named_capture() {
 
 fn test_lookahead() {
     // positive lookahead: foo only when followed by bar
-    vec(string) v = re.find_all("foobar foobaz", "foo(?=bar)")
-    if v.length != 1 { print(f"FAIL: pos lookahead count {v.length}"); return }
+    Vec(string) v = re.find_all("foobar foobaz", "foo(?=bar)")
+    if v.len() != 1 { print(f"FAIL: pos lookahead count {v.len()}"); return }
     if v[0] != "foo"  { print("FAIL: pos lookahead val"); return }
 
     // negative lookahead: foo when NOT followed by bar
-    vec(string) v2 = re.find_all("foobar foobaz", "foo(?!bar)")
-    if v2.length != 1 { print(f"FAIL: neg lookahead count {v2.length}"); return }
+    Vec(string) v2 = re.find_all("foobar foobaz", "foo(?!bar)")
+    if v2.len() != 1 { print(f"FAIL: neg lookahead count {v2.len()}"); return }
     if v2[0] != "foo"  { print("FAIL: neg lookahead val"); return }
     print("PASS: lookahead")
 }
@@ -149,18 +150,18 @@ fn test_replace() {
 }
 
 fn test_split() {
-    vec(string) parts = re.split("one,,two,,,three", ",+")
-    if parts.length != 3 { print(f"FAIL: split count {parts.length}"); return }
+    Vec(string) parts = re.split("one,,two,,,three", ",+")
+    if parts.len() != 3 { print(f"FAIL: split count {parts.len()}"); return }
     if parts[0] != "one"   { print("FAIL: split[0]"); return }
     if parts[1] != "two"   { print("FAIL: split[1]"); return }
     if parts[2] != "three" { print("FAIL: split[2]"); return }
 
-    vec(string) ws = re.split("  hello   world  ", "\\s+")
+    Vec(string) ws = re.split("  hello   world  ", "\\s+")
     // leading/trailing empty strings dropped
     bool found_hello = false
     bool found_world = false
     int i = 0
-    while i < ws.length {
+    while i < ws.len() {
         if ws[i] == "hello" { found_hello = true }
         if ws[i] == "world" { found_world = true }
         i = i + 1

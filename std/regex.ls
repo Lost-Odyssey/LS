@@ -8,13 +8,13 @@
 //   LS_RE_MULTILINE  = 2  (also activated by (?m))
 //   LS_RE_DOTALL     = 4  (also activated by (?s))
 //
-// NOTE: Option(vec(string)) and vec(vec(string)) are not used because LS
-// does not yet support enum/vec drop for vec-payload types.  Instead:
-//   capture()     -> vec(string)        — empty = no match
-//   capture_all() -> vec(string)        — flat: all groups from all matches
+// All vec-returning functions now use Vec(string) (std.vec replacement).
+//   capture()     -> Vec(string)        — empty = no match
+//   capture_all() -> Vec(string)        — flat: all groups from all matches
 //   capture_named() -> map(string,str)  — empty = no match
 // Use group_count(pattern) to get the per-match stride for capture_all.
 
+import std.vec
 import std.c as c
 
 // ---- internal helpers ----
@@ -73,8 +73,8 @@ fn find(string text, string pattern) -> Option(string) {
 }
 
 // Returns all non-overlapping full matches.
-fn find_all(string text, string pattern) -> vec(string) {
-    vec(string) result = []
+fn find_all(string text, string pattern) -> Vec(string) {
+    Vec(string) result = {}
     int h = _compile(pattern, 0)
     if h < 0 { return result }
     int pos = 0
@@ -93,9 +93,9 @@ fn find_all(string text, string pattern) -> vec(string) {
 
 // ---- 3.3 Numbered capture groups ----
 
-// Returns [full_match, group1, group2, ...] for the first match, or empty vec.
-fn capture(string text, string pattern) -> vec(string) {
-    vec(string) caps = []
+// Returns [full_match, group1, group2, ...] for the first match, or empty Vec.
+fn capture(string text, string pattern) -> Vec(string) {
+    Vec(string) caps = {}
     int h = _compile(pattern, 0)
     if h < 0 { return caps }
     int n = _exec(h, text)
@@ -118,11 +118,11 @@ fn group_count(string pattern) -> int {
     return n
 }
 
-// Returns all matches with all groups, packed flat into a single vec.
+// Returns all matches with all groups, packed flat into a single Vec.
 // Layout: [g0_m0, g1_m0, ..., gN_m0, g0_m1, g1_m1, ..., gN_m1, ...]
-// Stride = group_count(pattern) + 1.  Returns empty vec if no matches.
-fn capture_all(string text, string pattern) -> vec(string) {
-    vec(string) result = []
+// Stride = group_count(pattern) + 1.  Returns empty Vec if no matches.
+fn capture_all(string text, string pattern) -> Vec(string) {
+    Vec(string) result = {}
     int h = _compile(pattern, 0)
     if h < 0 { return result }
     int pos = 0
@@ -207,8 +207,8 @@ fn replace_all(string text, string pattern, string replacement) -> string {
 
 // Splits text at each match of pattern; empty strings from consecutive
 // separators are omitted.
-fn split(string text, string pattern) -> vec(string) {
-    vec(string) result = []
+fn split(string text, string pattern) -> Vec(string) {
+    Vec(string) result = {}
     int h = _compile(pattern, 0)
     if h < 0 { result.push(text.copy()); return result }
     int pos = 0

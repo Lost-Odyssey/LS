@@ -1,4 +1,6 @@
-// Phase E.3.3 — string.from_cstr / s.to_cstr / vec.as_ptr glue functions
+// Phase E.3.3 — string.from_cstr / s.to_cstr / Vec.as_ptr glue functions
+
+import std.vec
 
 extern fn strlen(string s) -> i64
 extern fn getenv(string name) -> object
@@ -45,8 +47,8 @@ fn main() {
     }
     print("PASS: to_cstr() returns byte-equal NUL-terminated buffer")
 
-    // === vec.as_ptr ===
-    vec(i32) buf = []
+    // === Vec.as_ptr ===
+    Vec(i32) buf = {}
     i32 e1 = 11
     i32 e2 = 22
     i32 e3 = 33
@@ -57,7 +59,7 @@ fn main() {
     // We can't compare 'object' to nil directly in current LS; instead
     // verify the buffer round-trips through memcmp against an expected
     // literal. (Trust LLVM that as_ptr returns non-NULL for a non-empty vec.)
-    print("PASS: vec.as_ptr() compiled and returned data pointer")
+    print("PASS: Vec.as_ptr() compiled and returned data pointer")
 
     print("ALL PASS")
 }

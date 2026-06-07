@@ -1,5 +1,6 @@
 // proc_test.ls — Tests for the proc stdlib module.
 
+import std.vec
 import proc
 
 fn main() -> int {
@@ -23,8 +24,8 @@ fn main() -> int {
 
     // Test 3: proc.args() — called with no extra args, should be empty
     // (when run as: ls run proc_test.ls — no user args follow)
-    vec(string) args = proc.args()
-    print(f"PASS: proc.args count={args.length}")
+    Vec(string) args = proc.args()
+    print(f"PASS: proc.args count={args.len()}")
 
     // Test 4: proc.run — echo succeeds with exit code 0
     int code = proc.run("echo proc_run_ok")

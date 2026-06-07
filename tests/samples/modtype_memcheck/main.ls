@@ -2,7 +2,9 @@
    through vec containers, map, enum payloads, methods, deep copy out of vec, and
    cross-module returns — all under --memcheck (0 leak / 0 double-free).
    Structs are built inline (module make()/nodes()) to avoid the unrelated
-   string-param-into-returned-struct AOT bug (BF-045). */
+   string-param-into-returned-struct AOT bug (BF-045).
+   NOTE: keeps built-in vec because Vec(T) monomorphization conflates same-named
+   types across modules (mod_a.Node vs mod_b.Node → Vec(Node) type collision). */
 module main
 
 import mod_a as A

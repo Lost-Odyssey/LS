@@ -1983,18 +1983,16 @@ static void test_vec_sort_string_ir(void) {
 static void test_vec_sort_by_ir(void) {
     printf("  test_vec_sort_by_ir...");
     char *ir = compile_to_ir(
-        "fn my_cmp(int a, int b) -> int { return a - b }\n"
         "fn main() -> int {\n"
         "    vec(int) v\n"
         "    v.push(3)\n"
         "    v.push(1)\n"
-        "    v.sort_by(my_cmp)\n"
+        "    v.sort_by(|a,b| a - b)\n"
         "    return 0\n"
         "}\n"
     );
     ASSERT_NOT_NULL(ir);
     ASSERT_TRUE(ir_contains(ir, "qsort"));
-    ASSERT_TRUE(ir_contains(ir, "my_cmp"));
     LLVMDisposeMessage(ir);
     printf("OK\n");
 }

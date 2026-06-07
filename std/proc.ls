@@ -2,7 +2,7 @@
 // Pure LS — no platform conditionals, no direct extern fn.
 // All OS differences handled by std.os; C bindings via std.c.
 
-
+import std.vec
 import std.os as _os
 import std.c as c
 
@@ -17,9 +17,9 @@ struct ExecResult {
 // ---- Public API ----
 
 // Returns command-line arguments (excluding argv[0]).
-fn args() -> vec(string) {
+fn args() -> Vec(string) {
     int n = c.__ls_get_argc()
-    vec(string) result = []
+    Vec(string) result = {}
     int i = 1
     while i < n {
         result.push(from_cstr(c.__ls_get_argv(i)))

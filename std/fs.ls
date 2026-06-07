@@ -1,16 +1,17 @@
 // std/fs.ls — Filesystem utilities: directory listing, path operations.
 // Pure LS — platform differences handled by std.os (os_win32.c / os_posix.c).
 
+import std.vec
 import std.os as _os
 
 // ---- Directory listing ----
 
 // Returns names of all entries in path (files and subdirectories),
-// excluding "." and "..".  Returns an empty vec on error.
-fn list_dir(string path) -> vec(string) {
+// excluding "." and "..".  Returns an empty Vec on error.
+fn list_dir(string path) -> Vec(string) {
     _os.raw_listdir_prepare(path)
     int n = _os.raw_listdir_count()
-    vec(string) result = []
+    Vec(string) result = {}
     int i = 0
     while i < n {
         result.push(from_cstr(_os.raw_listdir_entry(i)))

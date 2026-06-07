@@ -184,6 +184,7 @@ add_executable(test_parser
     src/scanner.c
     src/ast.c
     src/parser.c
+    src/types.c
 )
 target_include_directories(test_parser PRIVATE src/ include/)
 add_test(NAME test_parser COMMAND test_parser)

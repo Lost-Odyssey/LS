@@ -283,3 +283,14 @@ static bool is_import_path_segment(TokenType t) {
 | `v[i]` / `v.push(x)` / `v.pop()` / `v.get(i)` / `v.set(i,x)` / `v.map/filter/reduce/...` | 同名 | — |
 | `vec(T) v = []` | `Vec(T) v = {}` | 空构造 |
 | `vec(T) v = [a,b]` | `Vec(T) v = [a,b]` | 字面量不变 |
+
+---
+
+## 8. 迁移过程中发现的非 vec 相关 bugs
+
+以下 bug 是在执行 vec 替换过程中意外发现的，与 vec 本身无关，作为副产品记录以便后续修复。
+
+| 编号 | 文件 | 问题 | 详情 |
+|------|------|------|------|
+| IR-001 | `runtime/os_win32.c:311` | `ls_os_listdir_prepare` 的 Windows 搜索模式错误 | `snprintf(pattern, sizeof(pattern), "%s\*", path)` 中 `\*` 不是合法转义，C 将其解释为裸 `*`，导致生成的 pattern 是 `"std*"` 而非 `"std\*"`。`FindFirstFile("std*")` 匹配以 `std` 开头的文件/目录（包括目录自身），不列举目录内容。修复：改为 `"%s\\*"`。 |
+| IR-002 | `CMakeLists.txt` | `ls_regex.c` 未加入 `LS_SOURCES` | `runtime/ls_regex.c` 和 `runtime/ls_regex.h` 存在，但未在 `CMakeLists.txt` 的 `LS_SOURCES` 列表中。`std/regex.ls` 调用的 `__ls_regex_*` C 函数无法被 JIT/AOT 解析。修复：将 `runtime/ls_regex.c` 加入 `LS_SOURCES`。 |

@@ -1,5 +1,6 @@
 // tests/samples/io_fs_test.ls — Integration test for io.read_line + fs.list_dir
 
+import std.vec
 import std.io as io
 import std.fs as fs
 
@@ -51,8 +52,8 @@ fn test_readline() {
 fn test_list_dir() {
     // List the std/ directory — we know it contains at least io.ls, fs.ls, os.ls
     // The LS_HOME env var points to the project root; build the path from there.
-    vec(string) entries = fs.list_dir("std")
-    if entries.length == 0 {
+    Vec(string) entries = fs.list_dir("std")
+    if entries.len() == 0 {
         print("FAIL: list_dir returned empty vec for 'std'")
         return
     }
@@ -60,7 +61,7 @@ fn test_list_dir() {
     bool found_io = false
     bool found_fs = false
     int i = 0
-    while i < entries.length {
+    while i < entries.len() {
         string name = entries[i]
         if name == "io.ls" { found_io = true }
         if name == "fs.ls" { found_fs = true }

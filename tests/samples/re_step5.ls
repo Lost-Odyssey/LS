@@ -1,5 +1,7 @@
-fn make_opt() -> Option(vec(string)) {
-    vec(string) v = []
+import std.vec
+
+fn make_opt() -> Option(Vec(string)) {
+    Vec(string) v = {}
     v.push("hello")
     v.push("world")
     return Some(v)
@@ -7,10 +9,10 @@ fn make_opt() -> Option(vec(string)) {
 
 fn main() {
     print("a")
-    Option(vec(string)) r = make_opt()
+    Option(Vec(string)) r = make_opt()
     print("b")
     match r {
-        Some(v) => { print(f"len={v.length}") }
+        Some(v) => { print(f"len={v.len()}") }
         None    => { print("none") }
     }
     print("done")

@@ -1,6 +1,7 @@
 /* fs_test.ls — Batch-1 filesystem operations smoke test.
    Runs in a temp subdirectory to avoid side effects. */
 
+import std.vec
 import std.fs as fs
 import std.io as io
 
@@ -61,8 +62,8 @@ fn main() {
     print(src_gone)                       /* false */
 
     /* ---- list_dir ---- */
-    vec(string) entries = fs.list_dir(base)
-    bool has_entries = entries.length > 0
+    Vec(string) entries = fs.list_dir(base)
+    bool has_entries = entries.len() > 0
     print(has_entries)                    /* true */
 
     /* ---- rmdir (clean up leaves first) ---- */

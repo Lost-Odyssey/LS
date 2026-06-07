@@ -3,6 +3,8 @@
 // 目标：编译通过 + memcheck OK clean（0 leak / 0 dfree / 0 ifree）。
 // 负向（move-after-use 编译期拒绝）见 test_mem_m5_neg_*.ls。
 
+import std.vec
+
 struct P { string name }
 enum E { V(string) N }
 
@@ -15,7 +17,7 @@ fn main() -> int {
     // ===== move 语义：move 后不再使用源（合法） =====
     // vec.push 是 move
     string a = "aaa".upper()
-    vec(string) v = []
+    Vec(string) v = {}
     v.push(a)                       // a 被 move 进 v
     print(v[0])
 

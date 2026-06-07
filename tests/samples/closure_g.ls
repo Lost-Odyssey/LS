@@ -2,6 +2,9 @@
 // Copying a Block out of a vec element / struct field / map value deep-clones
 // the closure env, so the destination owns an independent env (no shared-env
 // double-free). Self-verifying: prints "G PASS" only if every check holds.
+//
+// NOTE: uses built-in vec because Vec(Block) is incompatible — Vec.push assigns
+// Block parameters internally, which the checker rejects (VR-LIM-017).
 
 type Fn = Block(int) -> int
 

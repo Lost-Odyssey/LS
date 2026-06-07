@@ -1,3 +1,4 @@
+import std.vec
 import std.regex as re
 
 fn main() {
@@ -9,12 +10,12 @@ fn main() {
         None    => { print("find: none") }
     }
     print("c")
-    vec(string) all = re.find_all("a1 b2 c3", "\\d+")
+    Vec(string) all = re.find_all("a1 b2 c3", "\\d+")
     print("d")
-    print(f"find_all count: {all.length}")
+    print(f"find_all count: {all.len()}")
     print("e")
     int i = 0
-    while i < all.length {
+    while i < all.len() {
         print(all[i])
         i = i + 1
     }

@@ -1,5 +1,7 @@
-// Phase B 极端场景压测：vec / map / struct / enum / 嵌套 try / 循环 + owned 借用。
+// Phase B 极端场景压测：Vec / map / struct / enum / 嵌套 try / 循环 + owned 借用。
 // 期望：跑 `ls run --memcheck` 输出 OK clean。任何 LEAK / DOUBLE FREE 都是真实 bug。
+
+import std.vec
 
 struct Person {
     string name
@@ -44,13 +46,13 @@ fn break_with_owned(int n) -> int {
 }
 
 fn main() -> int {
-    // ---- vec(string) ----
-    vec(string) names = ["alice".upper(), "bob".upper(), "charlie".upper()]
+    // ---- Vec(string) ----
+    Vec(string) names = ["alice".upper(), "bob".upper(), "charlie".upper()]
     for n in names { print(n) }
 
-    vec(int) nums = []
-    for i in 0..20 { nums.push(i * i) }   // triggers vec.grow (realloc)
-    print(nums.length)
+    Vec(int) nums = {}
+    for i in 0..20 { nums.push(i * i) }   // triggers Vec.grow (realloc)
+    print(nums.len())
 
     // ---- map(string, int) ----
     map(string, int) ages = {}

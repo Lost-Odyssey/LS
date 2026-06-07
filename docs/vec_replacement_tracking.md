@@ -124,19 +124,19 @@
 | 19 | modtype_memcheck/mod_a.ls | test_modtype_memcheck | 待做 |
 | 20 | modtype_memcheck/mod_b.ls | test_modtype_memcheck | 待做 |
 | 21 | bf044_shortcircuit/main.ls | test_bf044_shortcircuit | 待做 |
-| 22 | fs_test.ls | (非 ctest) | 待做 |
+| 22 | fs_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 23 | io_fs_test.ls | (非 ctest) | 待做 |
 | 24 | json_infra_test.ls | (非 ctest) | 待做 |
 | 25 | json_file_io_test.ls | (非 ctest) | 待做 |
 | 26 | json_file_test.ls | (非 ctest) | 待做 |
-| 27 | proc_args_test.ls | (非 ctest) | 待做 |
-| 28 | proc_test.ls | (非 ctest) | 待做 |
-| 29 | test_proc_args.ls | (非 ctest) | 待做 |
-| 30 | regex_test.ls | (非 ctest) | 待做 |
-| 31 | re_step2.ls | (非 ctest) | 待做 |
-| 32 | re_step3.ls | (非 ctest) | 待做 |
-| 33 | re_step4.ls | (非 ctest) | 待做 |
-| 34 | re_step5.ls | (非 ctest) | 待做 |
+| 27 | proc_args_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
+| 28 | proc_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
+| 29 | test_proc_args.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
+| 30 | regex_test.ls | (非 ctest) | ✅ | LS 编译通过，C 符号缺失不可执行(IR-002) |
+| 31 | re_step2.ls | (非 ctest) | ✅ | 同上 |
+| 32 | re_step3.ls | (非 ctest) | ✅ | 同上 |
+| 33 | re_step4.ls | (非 ctest) | ✅ | 同上 |
+| 34 | re_step5.ls | (非 ctest) | ✅ | 同上，含 `Option(Vec(string))` 验证 |
 | 35 | strconv_test.ls | test_strconv | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 36 | test_bug_22.ls | (非 ctest) | 待做 |
 | 37 | rawvec_m1_test.ls | test_vec_m1 | 待做 |
@@ -153,9 +153,9 @@
 | 4 | std/md.ls | 待做 |
 | 5 | std/plot.ls | 待做 |
 | 6 | std/plottl.ls | 待做 |
-| 7 | std/fs.ls | 待做 |
-| 8 | std/proc.ls | 待做 |
-| 9 | std/regex.ls | 待做 |
+| 7 | std/fs.ls | ✅ | `list_dir` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
+| 8 | std/proc.ls | ✅ | `args` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
+| 9 | std/regex.ls | ✅ | `find_all`/`capture`/`capture_all`/`split` 返回 `Vec(string)`；注：`ls_regex.c` 未链接进 `ls.exe`，测试不可执行（预存问题） |
 | 10 | std/ring.ls | 待做 |
 | 11 | std/stack.ls | 待做 |
 
@@ -177,7 +177,7 @@
 
 - 基线: 166/166
 - 当前: 166/166
-- 迁移完成: 20 文件（14 ctest + 5 非 ctest + 1 std 库）
+- 迁移完成: 32 文件（14 ctest + 12 非 ctest + 4 std 库 + 2 pre-existing issues）
 - JIT ✅: 18
 - AOT ✅: 18
 - Memcheck 0/0/0: 18
