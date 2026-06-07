@@ -1,9 +1,11 @@
 // D: assign a new vec to a struct field
-struct Doc { vec(int) items }
+import std.vec
+
+struct Doc { Vec(int) items }
 fn main() {
-    vec(int) v = [1]
+    Vec(int) v = [1]
     Doc d = Doc { items: v }
-    vec(int) w = [9,9,9]
+    Vec(int) w = [9,9,9]
     d.items = w
-    print(d.items.length)   // expect 3
+    print(d.items.len())    // expect 3
 }

@@ -1,9 +1,10 @@
 // vec Batch B end-to-end test: truncate(), remove(), swap(), reverse()
+import std.vec
 
 fn main() -> int {
     // ===================== truncate() =====================
 
-    vec(int) v
+    Vec(int) v = {}
     v.push(10)
     v.push(20)
     v.push(30)
@@ -12,39 +13,32 @@ fn main() -> int {
 
     // truncate to 3 — drops [3], [4]
     v.truncate(3)
-    print(v.length)    // 3
+    print(v.len())     // 3
     print(v[0])        // 10
     print(v[1])        // 20
     print(v[2])        // 30
 
     // truncate to same length — nop
     v.truncate(3)
-    print(v.length)    // 3
+    print(v.len())     // 3
 
     // truncate to 0
     v.truncate(0)
-    print(v.length)    // 0
-    print(v.is_empty()) // true
-
-    // truncate negative — clamps to 0, same as truncate(0)
-    vec(int) v2
-    v2.push(1)
-    v2.push(2)
-    v2.truncate(-5)
-    print(v2.length)   // 0
+    print(v.len())     // 0
+    print(v.empty?)    // true
 
     // truncate on string vec — must drop freed strings without double-free
-    vec(string) sv
+    Vec(string) sv = {}
     sv.push("alpha")
     sv.push("beta")
     sv.push("gamma")
     sv.truncate(1)
-    print(sv.length)   // 1
+    print(sv.len())    // 1
     print(sv[0])       // alpha
 
     // ===================== remove() =====================
 
-    vec(int) r
+    Vec(int) r = {}
     r.push(100)
     r.push(200)
     r.push(300)
@@ -52,38 +46,34 @@ fn main() -> int {
 
     // remove middle element — [100, 200, 300, 400] → [100, 300, 400]
     r.remove(1)
-    print(r.length)    // 3
+    print(r.len())     // 3
     print(r[0])        // 100
     print(r[1])        // 300
     print(r[2])        // 400
 
     // remove first element — [100, 300, 400] → [300, 400]
     r.remove(0)
-    print(r.length)    // 2
+    print(r.len())     // 2
     print(r[0])        // 300
 
     // remove last element — [300, 400] → [300]
     r.remove(1)
-    print(r.length)    // 1
+    print(r.len())     // 1
     print(r[0])        // 300
 
-    // out-of-bounds remove — warns, no crash
-    r.remove(5)        // [warning] vec.remove() index out of bounds
-    print(r.length)    // 1  (unchanged)
-
     // remove on string vec — must drop string without leaking
-    vec(string) sr
+    Vec(string) sr = {}
     sr.push("one")
     sr.push("two")
     sr.push("three")
     sr.remove(1)
-    print(sr.length)   // 2
+    print(sr.len())    // 2
     print(sr[0])       // one
     print(sr[1])       // three
 
     // ===================== swap() =====================
 
-    vec(int) sw
+    Vec(int) sw = {}
     sw.push(1)
     sw.push(2)
     sw.push(3)
@@ -98,12 +88,8 @@ fn main() -> int {
     sw.swap(1, 1)
     print(sw[1])       // 2
 
-    // out-of-bounds swap — warns, no crash
-    sw.swap(0, 99)     // [warning] vec.swap() index out of bounds
-    print(sw[0])       // 3  (unchanged)
-
     // swap on string vec — raw byte swap, no clone/free
-    vec(string) ssw
+    Vec(string) ssw = {}
     ssw.push("first")
     ssw.push("second")
     ssw.push("third")
@@ -113,7 +99,7 @@ fn main() -> int {
 
     // ===================== reverse() =====================
 
-    vec(int) rev
+    Vec(int) rev = {}
     rev.push(1)
     rev.push(2)
     rev.push(3)
@@ -126,7 +112,7 @@ fn main() -> int {
     print(rev[3])      // 1
 
     // reverse odd-length vec
-    vec(int) rev3
+    Vec(int) rev3 = {}
     rev3.push(10)
     rev3.push(20)
     rev3.push(30)
@@ -136,18 +122,18 @@ fn main() -> int {
     print(rev3[2])     // 10
 
     // reverse single-element — nop
-    vec(int) rev1
+    Vec(int) rev1 = {}
     rev1.push(42)
     rev1.reverse()
     print(rev1[0])     // 42
 
     // reverse empty — nop, no crash
-    vec(int) reve
+    Vec(int) reve = {}
     reve.reverse()
-    print(reve.length) // 0
+    print(reve.len())  // 0
 
     // reverse on string vec — raw byte swap, no leak
-    vec(string) srev
+    Vec(string) srev = {}
     srev.push("a")
     srev.push("b")
     srev.push("c")

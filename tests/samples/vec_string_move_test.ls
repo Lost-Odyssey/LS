@@ -1,5 +1,7 @@
+import std.vec
+
 fn main() -> int {
-    vec(string) v
+    Vec(string) v = {}
     string s = "hello".upper()
     v.push(s)
     string t = "world".lower()

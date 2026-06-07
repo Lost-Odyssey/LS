@@ -185,6 +185,22 @@ static bool is_import_path_segment(TokenType t) {
 - **2E** 桶 E（borrow/move 按 struct 语义重写）。
 - 每子阶段：迁移 → 该批绿 → 全量 `--repeat until-pass:2` 绿 + 抽样 `--memcheck` 0/0/0。
 
+### Phase 2.5：内建 string→vec 方法下沉到 `impl string`（**Phase 3 前置**）✅ 已完成（2026-06-07）
+> 详细设计 + 落地补记见独立文档 [plan_impl_builtin_types.md](plan_impl_builtin_types.md)。
+> 摘要：`impl string` 语言特性三层落地；`split`/`lines`/`chars`/`join` 迁到 `std/string.ls`
+> 返回 `Vec(T)`，内建 checker+codegen 分支删除；调用方「内建优先→回退用户 impl」。
+> `test_impl_string`（JIT+AOT+memcheck 0/0/0），迁移文件 + std.md/std.plottl 全绿，ctest 162/162。
+> 已知限制 VR-LIM-002（模块函数内 Vec 局部不自动 drop）用显式 clear+shrink 绕行。
+- 新增语言特性「`impl` 内建类型（扩展方法）」：parser 允许 `impl string`、checker 注册到
+  `impl_registry["string"]`、codegen 发裸名 `string.<method>`、调用解析内建优先→回退用户 impl。
+- 把 `s.split`/`s.lines`/`s.chars`/`sep.join`（现 `codegen.c:6618/6938/7199/6654` 用 C 构造
+  内建 vec）迁到纯 LS `std/string.ls` 的 `impl string`，返回 `Vec(T)`；删除对应内建分支 +
+  runtime helper（`__ls_str_split`/`__ls_str_join`）。
+- 受影响调用点（~10 文件：`std/md.ls` `std/plottl.ls` + `str_split_*`/`string_utils_test`/
+  `regex_test`/`string_batch3`/`string_loop` 等）加 `import std.string`。
+- **硬约束**：必须在 Phase 3 之前完成——否则删 `TYPE_VECTOR` 后这些方法返回类型悬空。
+- 验收：`impl_string_test` + 迁移文件全绿 + memcheck 0/0/0 + 输出与内建逐字一致。
+
 ### Phase 3：拆除内建 vec（**最后做，不可逆，分 3A~3F 小步**）
 - **3A** scanner：删 `TOKEN_VEC`（`scanner.c:167`）；Phase 0 谓词回退为只认 IDENTIFIER。
 - **3B** parser：删 `vec(T)` 类型语法 + vec 字面量特殊路径（**保留**通用 `[..]`→`__from_list`）。
@@ -208,6 +224,26 @@ static bool is_import_path_segment(TokenType t) {
 | D1 by-move 改写引入悬垂/双释放 | 中 | by-move 是已验证成熟路径；逐个 memcheck |
 | 性能回归（纯 LS Vec 慢于内建） | 中 | 依赖 JIT O2 内联（plan_rawvec §6）；迁移后跑 alloc bench 复测 |
 | 两套容器并存期 `[..]` 字面量歧义 | 低 | 并存期 `vec(T)=[..]` 走内建、`Vec(T)=[..]/{}` 走 `__from_list`；类型标注消歧 |
+
+### 6.1 Phase 2 已知限制 / 暂不处理问题（迁移时记录）
+
+这些是迁移过程中暴露的旧内建 `vec` 与纯 LS `Vec` 语义差异或既有编译器边界。本轮替换先记录并绕行，
+不展开编译器修复。
+
+| 编号 | 问题 | 触发/表现 | 当前绕行 |
+|------|------|-----------|----------|
+| VR-LIM-001 | `Vec` 不是编译器内建 for-in 迭代对象 | `for x in v` 仅对内建 `vec` 有特殊 codegen；`Vec(T)` 迁移后不能直接 for-in | 改为索引循环：`for (int i = 0; i < v.len(); i = i + 1) { T x = v[i] ... }` |
+| VR-LIM-002 | 纯 LS `Vec` 全局变量不会自动调用 `__drop` | 全局 `Vec` push 后 memcheck 泄漏 raw buffer；局部变量作用域退出正常 drop | 样本末尾显式 `clear()` + `shrink_to_fit()`，或把容器改为局部 |
+| VR-LIM-003 | 内建 `vec` 的越界容错/默认值 API 与 `Vec` 不同 | 旧样本依赖 `get(99)`/`first()`/`last()`/`remove(99)`/`swap(0,99)` 警告并返回默认值；纯 LS `Vec` 当前多为 unchecked 或返回 `Option(T)` | 迁移样本按 `Vec` API 重写断言；越界容错旧行为不保留 |
+| VR-LIM-004 | 内建 `vec.resize(n)` 有默认填充值，`Vec.resize(n, fill)` 需要显式 fill | `vec_batch_d` 一类样本调用 `resize(6)` 期待 0/空字符串填充 | 改为 `resize(n, 0)`、`resize(n, f"")` 等显式填充值 |
+| VR-LIM-005 | 闭包捕获外层 `Vec` 修改不等价于内建 `vec` by-ref 捕获 | `nums.each(|x| { acc.push(x) })` 这类样本对纯 LS `Vec` 会触发 by-move/所有权语义差异 | 桶 B 机械迁移中先避免外层 `Vec` 写捕获；需要改为 `&!Vec` 参数或归入桶 D 专项 |
+| VR-LIM-006 | 闭包直接返回 string 形参存在既有脆弱边界 | 长链测试中 `reduce(string)(..., |acc, s| { if acc.length == 0 { return s } ... })` 曾出现首元素错值 | 样本中改为返回新字符串表达式，如 `f"" + s`；编译器层后续另案 |
+| VR-LIM-007 | 自定义 `__drop` 副作用精确计数与纯 LS `Vec` 不等价 | `vec_struct_test` 迁移后，`Vec` 的 clone/临时/`Option(T)` 返回值 drop 路径会额外触发 `Item.__drop`，旧的 `drop_count` 精确断言失败 | 本轮不修；这类样本只可改为 memcheck/行为验收，或暂留内建 `vec` 到 drop 副作用语义另案处理 |
+| VR-LIM-008 | `Vec(struct含string)[i]` 读出 clone 存在泄漏 | `vec_struct_clone_test` 迁移为 `Vec(Person)` 后，`Vec.__index -> get` 读出 `Person{name:string}` 的 clone 在 memcheck 下泄漏 string clone | 本轮不修；涉及 has_drop struct 元素按值读出的样本暂留内建 `vec` 或改为不读出整 struct |
+| VR-LIM-009 | `Vec(string).push(rvalue string)` 与后续覆盖/清理组合存在泄漏边界 | `vec_string_test` 迁移后，`v.push("hello".upper())` 再经 `pop`/`v[0]=...` 路径，memcheck 报最初 `string.upper` 分配泄漏；先绑定局部再 push 的样本干净 | 本轮不修；rvalue string 直接 push 的样本暂留内建 `vec`，或改为 `string tmp = ...; v.push(tmp)` 后再迁 |
+| VR-LIM-010 | 命名函数值不能直接传给 `Block(...)` 参数 | `d.sort_by(cmp_desc)` 报 expected/got 同为 `Block(int, int) -> int`，但 checker 不接受函数名作为 Block 实参 | 改为内联 closure：`d.sort_by(|a, b| cmp_desc(a, b))` 或直接写比较逻辑 |
+| VR-LIM-011 | `Vec` 作为 has_drop enum payload 不稳定 | `enum_vec_payload_test` 将 `Numbers(vec(int))` / `Mixed(string, vec(string))` 迁为 `Vec` payload 后，JIT 直接访问冲突 | 本轮不修；enum payload 中持有容器的样本暂留内建 `vec`，等 enum payload + user `__drop/__clone` 组合另案处理 |
+| VR-LIM-012 | struct 字段默认值中的 `[..]` 未走 `Vec.__from_list` | `struct_field_defaults_v2_test` 将 `Vec(int) preset = [1,2,3]` / `Vec(string) names = [...]` 作为字段默认值时，checker 仍把默认值判为 `array(...)`；`Vec(f64) data = []` 也无法推断元素类型 | 本轮不修；struct 字段默认值测试暂留内建 `vec`，普通局部 `Vec(T) v = [..]` 仍可迁移 |
 
 ---
 

@@ -2,9 +2,11 @@
 ================
   n = 10000000 (total us all 4 ops, lower=faster)
 
-  LS (JIT)           126,643 us     1.66x
-  LS (JIT -O)         82,553 us     1.08x
-  LS (AOT)            81,327 us     1.07x
-  Rust                76,340 us     1.00x
-  C++                 94,093 us     1.23x
-  Python (est)     2,326,310 us    30.47x
+  LS (JIT)           132,372 us     1.97x
+  LS (JIT -O)         78,195 us     1.16x
+  LS (AOT)            80,295 us     1.20x
+  LS Vec (JIT)       198,318 us     2.95x
+  LS Vec (JIT -O)       67,162 us     1.00x
+  LS Vec (AOT)        67,399 us     1.00x
+  Rust                72,229 us     1.08x
+  Python (est)     2,311,590 us    34.42x

@@ -379,7 +379,8 @@ static int find_variant(Checker *c, const char *vname,
         Type *et = c->expected_type;
         for (int v = 0; v < et->as.enom.variant_count; v++)
         {
-            if (strcmp(et->as.enom.variants[v].name, vname) == 0)
+            const char *vnm = et->as.enom.variants[v].name;
+            if (vnm && strcmp(vnm, vname) == 0)
             {
                 *out_enum = et;
                 *out_variant_idx = v;
@@ -394,7 +395,8 @@ static int find_variant(Checker *c, const char *vname,
         Type *et = c->enum_types[i].type;
         for (int v = 0; v < et->as.enom.variant_count; v++)
         {
-            if (strcmp(et->as.enom.variants[v].name, vname) == 0)
+            const char *vnm = et->as.enom.variants[v].name;
+            if (vnm && strcmp(vnm, vname) == 0)
             {
                 if (matches == 0)
                 {
@@ -594,6 +596,10 @@ static const char *impl_key_of_type(const Type *t)
         return t->as.strukt.llvm_name ? t->as.strukt.llvm_name : t->as.strukt.name;
     if (t->kind == TYPE_ENUM)
         return t->as.enom.llvm_name ? t->as.enom.llvm_name : t->as.enom.name;
+    /* Phase 2.5: builtin types can carry user `impl` methods, keyed by their
+       bare type name (global, not module-prefixed). Currently only string. */
+    if (t->kind == TYPE_STRING)
+        return "string";
     return NULL;
 }
 
@@ -1529,7 +1535,10 @@ static void instantiate_impl_method_types(
            __drop and leak the buffer. It also enables emit_struct_clone_val's
            user-__clone dispatch (which early-returns when !has_drop). */
         if (strcmp(mname, "__drop") == 0)
+        {
             struct_type->as.strukt.has_drop = true;
+            struct_type->as.strukt.has_user_drop = true;
+        }
 
         /* Build concrete method type: self ptr (if instance) + user params */
         int total = is_static ? pc : pc + 1;
@@ -2684,46 +2693,9 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
     }
 
     /* s.split(string sep) -> vec(string) */
-    if (strcmp(method, "split") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.split() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.split() separator must be string, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_vector(type_string());
-    }
-
-    /* sep.join(vec(string)) -> string */
-    if (strcmp(method, "join") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.join() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && (arg->kind != TYPE_VECTOR || arg->as.vec.elem->kind != TYPE_STRING))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.join() argument must be vec(string), got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_string();
-    }
+    /* Phase 2.5: split / join / lines / chars were moved out of the compiler
+       into pure-LS `impl string` (std/string.ls), returning Vec(T). They are no
+       longer builtin — calls fall through to the user impl lookup. */
 
     /* s.to_int() -> Result(int, string) */
     if (strcmp(method, "to_int") == 0)
@@ -2773,18 +2745,6 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
         return checker_instantiate_result(c, type_bool(), type_string());
     }
 
-    /* s.lines() -> vec(string) */
-    if (strcmp(method, "lines") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.lines() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_vector(type_string());
-    }
-
     /* s.repeat(int n) -> string */
     if (strcmp(method, "repeat") == 0)
     {
@@ -2823,20 +2783,9 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
         return type_string();
     }
 
-    /* s.chars() -> vec(int)  (byte-level codepoints, v1) */
-    if (strcmp(method, "chars") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.chars() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_vector(type_int());
-    }
-
-    checker_error(c, call_node->line, call_node->column,
-                  "string has no method '%s'", method);
+    /* Phase 2.5: not a builtin string method — signal the caller to try a
+       user-defined `impl string` method (Step 11) before reporting an error. */
+    c->string_no_builtin_match = true;
     return NULL;
 }
 
@@ -5410,11 +5359,28 @@ static Type *check_expr(Checker *c, AstNode *node)
             {
                 Type *obj_type = check_expr(c, obj_node);
 
-                /* Intercept string builtin method calls: s.method(args...) */
+                /* Intercept string builtin method calls: s.method(args...).
+                   Phase 2.5: if the name matches no builtin method, fall through
+                   to the user `impl string` lookup (Step 11) below. */
                 if (obj_type && obj_type->kind == TYPE_STRING)
                 {
+                    c->string_no_builtin_match = false;
                     result = check_string_method(c, node, obj_type);
-                    break;
+                    if (!c->string_no_builtin_match)
+                        break;
+                    /* Not a builtin: require a user `impl string` method, else
+                       give a clear hint to import the stdlib that defines it. */
+                    if (find_method(c, "string", method_name) == NULL)
+                    {
+                        checker_error(c, node->line, node->column,
+                                      "string has no method '%s' "
+                                      "(did you forget `import std.string`?)",
+                                      method_name);
+                        result = NULL;
+                        break;
+                    }
+                    /* else: fall through (deref stays string, struct/enum blocks
+                       skipped, Step 11 resolves the user method). */
                 }
 
                 /* Intercept vec builtin method calls: v.method(args...) or (*vec).method() */
@@ -6990,6 +6956,132 @@ static Type *check_expr(Checker *c, AstNode *node)
     return result;
 }
 
+/* ---- for-in iterator-protocol desugaring (docs/plan_userdef_for_in.md) ---- */
+
+static char *foreach_strdup(const char *s)
+{
+    size_t n = strlen(s) + 1;
+    char *p = (char *)malloc_safe(n);
+    memcpy(p, s, n);
+    return p;
+}
+
+static AstNode *foreach_mk_ident(const char *name, int line, int col)
+{
+    AstNode *n = ast_new(AST_IDENT, line, col);
+    n->as.ident.name = foreach_strdup(name);
+    return n;
+}
+
+/* recv.method()  — recv is consumed (owned by the returned node). */
+static AstNode *foreach_mk_call0(AstNode *recv, const char *method, int line, int col)
+{
+    AstNode *fld = ast_new(AST_FIELD, line, col);
+    fld->as.field_access.object = recv;
+    fld->as.field_access.field = foreach_strdup(method);
+    AstNode *call = ast_new(AST_CALL, line, col);
+    call->as.call.callee = fld;
+    call->as.call.args = NULL;
+    call->as.call.arg_count = 0;
+    call->as.call.type_args = NULL;
+    call->as.call.type_arg_count = 0;
+    return call;
+}
+
+/* `name = init`  — type-inferred local (var_type NULL). init is consumed. */
+static AstNode *foreach_mk_let(const char *name, AstNode *init, int line, int col)
+{
+    AstNode *vd = ast_new(AST_VAR_DECL, line, col);
+    vd->as.var_decl.var_type = NULL;
+    vd->as.var_decl.name = foreach_strdup(name);
+    vd->as.var_decl.init = init;
+    return vd;
+}
+
+static AstNode *foreach_mk_block(AstNode **stmts, int n, int line, int col)
+{
+    AstNode *b = ast_new(AST_BLOCK, line, col);
+    b->as.block.stmts = (AstNode **)malloc_safe((size_t)(n > 0 ? n : 1) * sizeof(AstNode *));
+    for (int i = 0; i < n; i++) b->as.block.stmts[i] = stmts[i];
+    b->as.block.stmt_count = n;
+    return b;
+}
+
+/* Build the iterator-protocol equivalent of `for var in <iter>` and store it on
+   node->as.for_stmt.desugared.  has_iter: the iter type exposes iter()->I (call
+   it); otherwise the value is itself an iterator (drive next() directly).
+   src_is_ident: the source is a bare variable (borrow in place) — otherwise the
+   source is materialized into an owned __src local that outlives the loop. */
+static int g_foreach_uid = 0;
+
+static AstNode *build_foreach_desugar(AstNode *node, bool has_iter, bool src_is_ident)
+{
+    int line = node->line, col = node->column;
+    const char *var = node->as.for_stmt.var;
+    int uid = g_foreach_uid++;
+    char itname[40], srcname[40];
+    snprintf(itname, sizeof itname, "__it$%d", uid);
+    snprintf(srcname, sizeof srcname, "__src$%d", uid);
+
+    AstNode *outer[3];
+    int oc = 0;
+
+    AstNode *recv;
+    if (src_is_ident)
+    {
+        recv = ast_clone_deep(node->as.for_stmt.iter);   /* IDENT(v) — borrow */
+    }
+    else
+    {
+        /* materialize the temporary so its buffer outlives the loop */
+        outer[oc++] = foreach_mk_let(srcname,
+                                     ast_clone_deep(node->as.for_stmt.iter), line, col);
+        recv = foreach_mk_ident(srcname, line, col);
+    }
+
+    AstNode *it_init = has_iter ? foreach_mk_call0(recv, "iter", line, col) : recv;
+    outer[oc++] = foreach_mk_let(itname, it_init, line, col);
+
+    /* match __it.next() { Some(var) => {BODY}  None => { break } } */
+    AstNode *next_call = foreach_mk_call0(foreach_mk_ident(itname, line, col), "next", line, col);
+
+    AstNode *some_pat = ast_new(AST_CALL, line, col);
+    some_pat->as.call.callee = foreach_mk_ident("Some", line, col);
+    some_pat->as.call.args = (AstNode **)malloc_safe(sizeof(AstNode *));
+    some_pat->as.call.args[0] = foreach_mk_ident(var, line, col);
+    some_pat->as.call.arg_count = 1;
+    some_pat->as.call.type_args = NULL;
+    some_pat->as.call.type_arg_count = 0;
+
+    AstNode *some_body = ast_clone_deep(node->as.for_stmt.body);
+
+    AstNode *brk = ast_new(AST_BREAK, line, col);
+    AstNode *none_body = foreach_mk_block(&brk, 1, line, col);
+    AstNode *none_pat = foreach_mk_ident("None", line, col);
+
+    AstNode *mtch = ast_new(AST_MATCH, line, col);
+    mtch->as.match.subject = next_call;
+    mtch->as.match.arms = (MatchArm *)malloc_safe(2 * sizeof(MatchArm));
+    mtch->as.match.arms[0].pattern = some_pat;
+    mtch->as.match.arms[0].body = some_body;
+    mtch->as.match.arms[1].pattern = none_pat;
+    mtch->as.match.arms[1].body = none_body;
+    mtch->as.match.arm_count = 2;
+
+    AstNode *match_stmt = ast_new(AST_EXPR_STMT, line, col);
+    match_stmt->as.expr_stmt.expr = mtch;
+
+    AstNode *while_body = foreach_mk_block(&match_stmt, 1, line, col);
+    AstNode *cond = ast_new(AST_BOOL_LIT, line, col);
+    cond->as.bool_lit.value = true;
+    AstNode *whl = ast_new(AST_WHILE, line, col);
+    whl->as.while_stmt.cond = cond;
+    whl->as.while_stmt.body = while_body;
+
+    outer[oc++] = whl;
+    return foreach_mk_block(outer, oc, line, col);
+}
+
 /* ---- Statement checking ---- */
 
 static void check_stmt(Checker *c, AstNode *node)
@@ -7001,6 +7093,21 @@ static void check_stmt(Checker *c, AstNode *node)
     {
     case AST_VAR_DECL:
     {
+        /* Type-inferred local (var_type == NULL).  Only synthesized by the
+           for-in desugarer (the parser always requires an explicit type); infer
+           the type from the initializer and bind. */
+        if (node->as.var_decl.var_type == NULL)
+        {
+            Type *it = node->as.var_decl.init
+                           ? check_expr(c, node->as.var_decl.init)
+                           : NULL;
+            if (it == NULL)
+                break;
+            node->resolved_type = it;
+            scope_define(c->current_scope, node->as.var_decl.name, it);
+            break;
+        }
+
         Type *declared = resolve_type_node(c, node->as.var_decl.var_type,
                                            node->line, node->column);
         if (declared == NULL)
@@ -7504,6 +7611,26 @@ static void check_stmt(Checker *c, AstNode *node)
     case AST_FOR:
     {
         Type *iter = check_expr(c, node->as.for_stmt.iter);
+
+        /* Iterator-protocol path: a struct that exposes iter()->I or is itself an
+           iterator (has next()) is desugared into the equivalent while/match loop
+           and that subtree is checked instead (docs/plan_userdef_for_in.md). */
+        if (iter != NULL && iter->kind == TYPE_STRUCT)
+        {
+            const char *key = impl_key_of_type(iter);
+            bool has_iter = key && find_method(c, key, "iter") != NULL;
+            bool has_next = key && find_method(c, key, "next") != NULL;
+            if (has_iter || has_next)
+            {
+                bool src_is_ident = (node->as.for_stmt.iter->kind == AST_IDENT);
+                AstNode *d = build_foreach_desugar(node, has_iter, src_is_ident);
+                node->as.for_stmt.desugared = d;
+                check_stmt(c, d);
+                break;
+            }
+            /* fall through to the generic "not iterable" error below */
+        }
+
         push_scope(c);
         if (iter != NULL)
         {
@@ -7531,7 +7658,8 @@ static void check_stmt(Checker *c, AstNode *node)
             {
                 checker_error(c, node->as.for_stmt.iter->line,
                               node->as.for_stmt.iter->column,
-                              "cannot iterate over '%s'; expected range (a..b), array, vec, or integer",
+                              "cannot iterate over '%s'; expected range (a..b), array, vec, "
+                              "integer, or a type with an iter()->Iterator(T) / next()->Option(T) method",
                               type_name(iter));
             }
         }
@@ -7957,9 +8085,14 @@ static void check_enum_decl(Checker *c, AstNode *node)
        map(string, EnumName).  has_drop is updated after the loop. */
     register_enum_type(c, name, et);
 
+    /* Pass A: copy ALL variant names first (with duplicate check).  This must
+       happen before any payload type is resolved: resolving a generic-struct
+       payload (e.g. Vec(int)) recursively type-checks that struct's methods,
+       which can call find_variant() and iterate THIS still-being-built enum's
+       variants.  If a later variant's name were still NULL at that point,
+       find_variant's strcmp would dereference NULL → crash. */
     for (int i = 0; i < n; i++)
     {
-        /* Duplicate variant name check */
         const char *vn = node->as.enum_decl.variants[i].name;
         for (int j = 0; j < i; j++)
         {
@@ -7969,13 +8102,15 @@ static void check_enum_decl(Checker *c, AstNode *node)
                               "duplicate variant '%s' in enum '%s'", vn, name);
             }
         }
-
-        /* Copy variant name */
         size_t vlen = strlen(vn);
         char *vn_copy = (char *)malloc_safe(vlen + 1);
         memcpy(vn_copy, vn, vlen + 1);
         et->as.enom.variants[i].name = vn_copy;
+    }
 
+    /* Pass B: resolve payload types for each variant. */
+    for (int i = 0; i < n; i++)
+    {
         int pc = node->as.enum_decl.variants[i].payload_count;
         et->as.enom.variants[i].payload_count = pc;
         if (pc > 0)
@@ -8118,25 +8253,44 @@ static void check_impl_decl(Checker *c, AstNode *node)
     Type *st = find_struct_type(c, name);
     Type *et = NULL;
     bool is_enum_impl = false;
+    bool is_builtin_impl = false;  /* Phase 2.5: impl on a builtin type (string) */
+    Type *builtin_self = NULL;
     if (st == NULL)
     {
         et = find_enum_type(c, name);
         if (et == NULL)
         {
-            checker_error(c, node->line, node->column,
-                          "impl for undefined type '%s'", name);
-            return;
+            /* Phase 2.5: allow `impl string` (and future builtin types).
+               resolve_builtin_type returns a fresh Type for known names. */
+            builtin_self = resolve_builtin_type_by_name(name);
+            if (builtin_self == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "impl for undefined type '%s'", name);
+                return;
+            }
+            if (builtin_self->kind != TYPE_STRING)
+            {
+                checker_error(c, node->line, node->column,
+                              "impl on builtin type '%s' is not yet supported "
+                              "(only 'string' for now)", name);
+                return;
+            }
+            is_builtin_impl = true;
         }
-        is_enum_impl = true;
+        else
+        {
+            is_enum_impl = true;
+        }
     }
 
     /* Set Self context so resolve_type_node can resolve 'Self'
        (struct and enum are mutually exclusive). */
     Type *saved_impl_st = c->current_impl_struct_type;
     Type *saved_impl_et = c->current_impl_enum_type;
-    c->current_impl_struct_type = is_enum_impl ? NULL : st;
+    c->current_impl_struct_type = (is_enum_impl || is_builtin_impl) ? NULL : st;
     c->current_impl_enum_type   = is_enum_impl ? et : NULL;
-    Type *self_type = st ? st : et;
+    Type *self_type = is_builtin_impl ? builtin_self : (st ? st : et);
 
     /* B-4.1: key the impl_registry by the type's unique name (llvm_name for module
        types) so same-named impls across modules don't collide. */
@@ -8295,6 +8449,12 @@ static void check_impl_decl(Checker *c, AstNode *node)
                               "enum '%s' cannot have a user-defined __drop method",
                               name);
             }
+            else if (is_builtin_impl)
+            {
+                checker_error(c, method->line, method->column,
+                              "builtin type '%s' cannot have a user-defined "
+                              "__drop method", name);
+            }
             else
             {
                 /* __drop must be an instance method with no user parameters and void return */
@@ -8315,6 +8475,7 @@ static void check_impl_decl(Checker *c, AstNode *node)
                 */
                 /* Mark struct as having a destructor */
                 st->as.strukt.has_drop = true;
+                st->as.strukt.has_user_drop = true;
             }
         }
     }

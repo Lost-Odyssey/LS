@@ -1,3 +1,6 @@
+import std.vec
+import std.string
+
 fn main() {
     int pass = 0
     int fail = 0
@@ -54,30 +57,30 @@ fn main() {
     }
 
     // ── lines: basic LF ───────────────────────────────────────────────────────
-    vec(string) ls1 = "hello\nworld\n".lines()
-    if ls1.length == 2 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines LF len={ls1.length}") }
+    Vec(string) ls1 = "hello\nworld\n".lines()
+    if ls1.len() == 2 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines LF len={ls1.len()}") }
     if ls1[0].compare("hello") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines[0]={ls1[0]}") }
     if ls1[1].compare("world") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines[1]={ls1[1]}") }
 
     // ── lines: CRLF ───────────────────────────────────────────────────────────
-    vec(string) ls2 = "a\r\nb\r\nc".lines()
-    if ls2.length == 3 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines CRLF len={ls2.length}") }
+    Vec(string) ls2 = "a\r\nb\r\nc".lines()
+    if ls2.len() == 3 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines CRLF len={ls2.len()}") }
     if ls2[0].compare("a") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines CRLF[0]={ls2[0]}") }
     if ls2[1].compare("b") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines CRLF[1]={ls2[1]}") }
     if ls2[2].compare("c") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines CRLF[2]={ls2[2]}") }
 
     // ── lines: single line, no newline ────────────────────────────────────────
-    vec(string) ls3 = "single".lines()
-    if ls3.length == 1 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines single len={ls3.length}") }
+    Vec(string) ls3 = "single".lines()
+    if ls3.len() == 1 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines single len={ls3.len()}") }
     if ls3[0].compare("single") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines single[0]={ls3[0]}") }
 
     // ── lines: empty string ───────────────────────────────────────────────────
-    vec(string) ls4 = "".lines()
-    if ls4.length == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines empty len={ls4.length}") }
+    Vec(string) ls4 = "".lines()
+    if ls4.len() == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines empty len={ls4.len()}") }
 
     // ── lines: no trailing newline ────────────────────────────────────────────
-    vec(string) ls5 = "foo\nbar".lines()
-    if ls5.length == 2 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines notail len={ls5.length}") }
+    Vec(string) ls5 = "foo\nbar".lines()
+    if ls5.len() == 2 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines notail len={ls5.len()}") }
     if ls5[0].compare("foo") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines notail[0]={ls5[0]}") }
     if ls5[1].compare("bar") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: lines notail[1]={ls5[1]}") }
 
@@ -119,17 +122,17 @@ fn main() {
     if pr3.compare("toolong") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: pad_right no-trunc={pr3}") }
 
     // ── chars ─────────────────────────────────────────────────────────────────
-    vec(int) cs1 = "ABC".chars()
-    if cs1.length == 3 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars len={cs1.length}") }
+    Vec(int) cs1 = "ABC".chars()
+    if cs1.len() == 3 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars len={cs1.len()}") }
     if cs1[0] == 65 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars[0]={cs1[0]}") }
     if cs1[1] == 66 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars[1]={cs1[1]}") }
     if cs1[2] == 67 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars[2]={cs1[2]}") }
 
-    vec(int) cs2 = "".chars()
-    if cs2.length == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars empty len={cs2.length}") }
+    Vec(int) cs2 = "".chars()
+    if cs2.len() == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars empty len={cs2.len()}") }
 
-    vec(int) cs3 = "hello".chars()
-    if cs3.length == 5 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars hello len={cs3.length}") }
+    Vec(int) cs3 = "hello".chars()
+    if cs3.len() == 5 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars hello len={cs3.len()}") }
     if cs3[0] == 104 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: chars h={cs3[0]}") }
 
     // ── Summary ───────────────────────────────────────────────────────────────

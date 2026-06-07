@@ -2,6 +2,9 @@
 // (upper/lower/substr/replace/split) crashed JIT when called in a large loop
 // (per-iteration alloca grew the stack). Fixed by entry-block allocas.
 // n=200000 would overflow the 1MB JIT stack before the fix.
+// Phase 2.5: split now returns std.vec Vec(string) from std.string.
+import std.vec
+import std.string
 fn main() -> int {
     int n = 200000
     string base = "The Quick Brown Fox"
@@ -12,9 +15,9 @@ fn main() -> int {
         string l = base.lower()
         string s = base.substr(4, 5)
         string r = base.replace("o", "0")
-        vec(string) parts = base.split(" ")
+        Vec(string) parts = base.split(" ")
         acc = acc + u.length as i64 + l.length as i64 + s.length as i64
-              + r.length as i64 + parts.length as i64
+              + r.length as i64 + parts.len() as i64
     }
 
     // per iter: upper 19 + lower 19 + substr 5 + replace 19 + parts 4 = 66

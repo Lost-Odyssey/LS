@@ -1,8 +1,9 @@
-// vec_algorithms_test.ls — practical algorithms using vec(T)
+// vec_algorithms_test.ls — practical algorithms using Vec(T)
+import std.vec
 
 // ---- Bubble sort ----
-fn bubble_sort(vec(int) v) {
-    int n = v.length
+fn bubble_sort(&!Vec(int) v) {
+    int n = v.len()
     for i in 0..n {
         for j in 0..(n - 1) {
             if (v[j] > v[j + 1]) {
@@ -15,36 +16,43 @@ fn bubble_sort(vec(int) v) {
 }
 
 // ---- Linear search: return index or -1 ----
-fn find_first(vec(int) v, int target) -> int {
-    for i in 0..v.length {
+fn find_first(&Vec(int) v, int target) -> int {
+    for i in 0..v.len() {
         if (v[i] == target) { return i }
     }
     return -1
 }
 
 // ---- Filter: return new vec with elements > threshold ----
-fn filter_gt(vec(int) v, int threshold) -> int {
-    vec(int) result
-    for x in v {
+fn filter_gt(&Vec(int) v, int threshold) -> int {
+    Vec(int) result = {}
+    for (int i = 0; i < v.len(); i = i + 1) {
+        int x = v[i]
         if (x > threshold) { result.push(x) }
     }
     int s = 0
-    for x in result { s = s + x }
+    for (int i = 0; i < result.len(); i = i + 1) {
+        int x = result[i]
+        s = s + x
+    }
     return s
 }
 
 // ---- Map: multiply each element by factor, return sum ----
-fn map_sum(vec(int) v, int factor) -> int {
+fn map_sum(&Vec(int) v, int factor) -> int {
     int s = 0
-    for x in v { s = s + x * factor }
+    for (int i = 0; i < v.len(); i = i + 1) {
+        int x = v[i]
+        s = s + x * factor
+    }
     return s
 }
 
 // ---- Reverse in place ----
-fn reverse_vec(vec(int) v) {
+fn reverse_vec(&!Vec(int) v) {
     int lo = 0
-    int hi = v.length - 1
-    for i in 0..(v.length / 2) {
+    int hi = v.len() - 1
+    for i in 0..(v.len() / 2) {
         int tmp = v[lo]
         v[lo] = v[hi]
         v[hi] = tmp
@@ -55,14 +63,14 @@ fn reverse_vec(vec(int) v) {
 
 fn main() -> int {
     // === Bubble sort ===
-    vec(int) data
+    Vec(int) data = {}
     data.push(5)
     data.push(2)
     data.push(8)
     data.push(1)
     data.push(9)
     data.push(3)
-    bubble_sort(data)
+    bubble_sort(&!data)
     print(data[0])   // 1
     print(data[1])   // 2
     print(data[2])   // 3
@@ -86,13 +94,13 @@ fn main() -> int {
     print(msum)      // (1+2+3+5+8+9)*2 = 56
 
     // === Reverse ===
-    vec(int) rev
+    Vec(int) rev = {}
     rev.push(1)
     rev.push(2)
     rev.push(3)
     rev.push(4)
     rev.push(5)
-    reverse_vec(rev)
+    reverse_vec(&!rev)
     print(rev[0])   // 5
     print(rev[1])   // 4
     print(rev[2])   // 3
@@ -100,11 +108,11 @@ fn main() -> int {
     print(rev[4])   // 1
 
     // === Reserve + batch push ===
-    vec(int) big
+    Vec(int) big = {}
     big.reserve(32)
     for i in 0..10 { big.push(i) }
-    print(big.length)     // 10
-    print(big.capacity >= 32)   // 1
+    print(big.len())      // 10
+    print(big.cap() >= 32)   // 1
 
     return 0
 }

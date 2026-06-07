@@ -453,6 +453,22 @@ static AstNode *prefix_new_expr(Parser *p) {
     return n;
 }
 
+static bool ident_has_auto_call_suffix(const char *name) {
+    size_t len = strlen(name);
+    if (len == 0) return false;
+    return name[len - 1] == '?' || name[len - 1] == '!';
+}
+
+static AstNode *wrap_zero_arg_call(AstNode *callee, int line, int column) {
+    AstNode *call = new_node(AST_CALL, line, column);
+    call->as.call.callee = callee;
+    call->as.call.args = NULL;
+    call->as.call.arg_count = 0;
+    call->as.call.type_args = NULL;
+    call->as.call.type_arg_count = 0;
+    return call;
+}
+
 static AstNode *prefix_ident(Parser *p) {
     Token tok = p->previous;
 
@@ -679,6 +695,9 @@ static AstNode *prefix_ident(Parser *p) {
 
     AstNode *n = new_node(AST_IDENT, tok.line, tok.column);
     n->as.ident.name = str_dup_n(tok.start, tok.length);
+    if (!check(p, TOKEN_LPAREN) && ident_has_auto_call_suffix(n->as.ident.name)) {
+        return wrap_zero_arg_call(n, tok.line, tok.column);
+    }
     return n;
 }
 
@@ -1502,6 +1521,9 @@ static AstNode *infix_field(Parser *p, AstNode *left) {
     AstNode *n = new_node(AST_FIELD, dot_tok.line, dot_tok.column);
     n->as.field_access.object = left;
     n->as.field_access.field = field_name;
+    if (!check(p, TOKEN_LPAREN) && ident_has_auto_call_suffix(field_name)) {
+        return wrap_zero_arg_call(n, dot_tok.line, dot_tok.column);
+    }
     return n;
 }
 
@@ -2979,8 +3001,16 @@ static AstNode *parse_impl_decl(Parser *p) {
         consume(p, TOKEN_RPAREN, "expected ')' after impl type params");
     }
 
-    if (!check(p, TOKEN_IDENTIFIER)) {
+    /* Phase 2.5: allow `impl <builtin type>` (currently only string) so the
+       standard library can attach extension methods to builtin types. */
+    if (!check(p, TOKEN_IDENTIFIER) && !check(p, TOKEN_TYPE_STRING)) {
         error_at_current(p, "expected struct name after 'impl'");
+        for (int i = 0; i < type_param_count; i++) free(type_params[i]);
+        free(type_params);
+        return NULL;
+    }
+    if (check(p, TOKEN_TYPE_STRING) && type_param_count > 0) {
+        error_at_current(p, "cannot impl a generic block for builtin type 'string'");
         for (int i = 0; i < type_param_count; i++) free(type_params[i]);
         free(type_params);
         return NULL;
@@ -3089,7 +3119,8 @@ static AstNode *parse_module_decl(Parser *p) {
    intact on the token, so it copies into the path the same way. */
 static bool is_import_path_segment(TokenType t) {
     return t == TOKEN_IDENTIFIER ||
-           t == TOKEN_VEC || t == TOKEN_MAP || t == TOKEN_ARRAY;
+           t == TOKEN_VEC || t == TOKEN_MAP || t == TOKEN_ARRAY ||
+           t == TOKEN_TYPE_STRING;  /* Phase 2.5: `import std.string` */
 }
 
 static AstNode *parse_import_decl(Parser *p) {

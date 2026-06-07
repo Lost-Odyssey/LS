@@ -284,6 +284,7 @@ void ast_free(AstNode *node) {
         free(node->as.for_stmt.var);
         ast_free(node->as.for_stmt.iter);
         ast_free(node->as.for_stmt.body);
+        ast_free(node->as.for_stmt.desugared);
         break;
     case AST_FOR_C:
         ast_free(node->as.for_c_stmt.init);
@@ -696,6 +697,9 @@ AstNode *ast_clone_deep(const AstNode *src) {
         n->as.for_stmt.var  = ast_strdup(src->as.for_stmt.var);
         n->as.for_stmt.iter = ast_clone_deep(src->as.for_stmt.iter);
         n->as.for_stmt.body = ast_clone_deep(src->as.for_stmt.body);
+        /* desugared is re-synthesized by the checker on the clone; never copy it
+           (the clone's body lives in for_stmt.body until then). */
+        n->as.for_stmt.desugared = NULL;
         break;
     case AST_FOR_C:
         n->as.for_c_stmt.init   = ast_clone_deep(src->as.for_c_stmt.init);

@@ -14,10 +14,11 @@
 //
 // Convention: print "<label> PASS"/"<label> FAIL"; the cmake driver asserts the
 // sample emits "READTHROUGH PASS" and never "FAIL", under JIT + AOT + memcheck.
+import std.vec
 
-struct Box   { vec(int) items }
+struct Box   { Vec(int) items }
 struct Outer { Box inner }
-struct A { vec(int) v }
+struct A { Vec(int) v }
 struct B { A a }
 struct C { B b }
 struct Bag  { string name; map(string,int) m }
@@ -29,29 +30,29 @@ fn check(bool cond, string label) {
 
 fn main() {
     // --- transient read-through of a nested has_drop struct field (the leak) ---
-    vec(int) iv = []
+    Vec(int) iv = {}
     iv.push(1) iv.push(2)
     Outer o = Outer { inner: Box { items: iv } }
-    check(o.inner.items.length == 2, "transient")
+    check(o.inner.items.len() == 2, "transient")
 
     // --- consume path: `Box b = o.inner` deep-clones; b is independent of o ---
     Box b = o.inner
     b.items.push(99)
-    check(b.items.length == 3, "consume_independent")
-    check(o.inner.items.length == 2, "source_unchanged")   // o not affected
+    check(b.items.len() == 3, "consume_independent")
+    check(o.inner.items.len() == 2, "source_unchanged")   // o not affected
 
     // --- mutation through a chained field must persist to the source ---
     o.inner.items.push(7)
-    check(o.inner.items.length == 3, "mutate_through")
+    check(o.inner.items.len() == 3, "mutate_through")
     check(o.inner.items[2] == 7, "mutate_value")
 
     // --- 3-level chain read-through + mid-level consume ---
-    vec(int) jv = []
+    Vec(int) jv = {}
     jv.push(5)
     C c = C { b: B { a: A { v: jv } } }
-    check(c.b.a.v.length == 1, "chain3_transient")
+    check(c.b.a.v.len() == 1, "chain3_transient")
     A mid = c.b.a
-    check(mid.v.length == 1, "chain3_consume")
+    check(mid.v.len() == 1, "chain3_consume")
 
     // --- string + map fields read through a chain, then consume ---
     map(string,int) mm = {}

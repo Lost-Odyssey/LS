@@ -499,6 +499,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# Identifier predicate/unsafe suffixes: `name?` and `name!`, while preserving
+# `!=` and prefix `!expr`. Self-verifying sample prints "IDENTSUF PASS".
+add_test(
+    NAME test_ident_suffix
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ident_suffix_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=ident_suffix
+        -DMARKER=IDENTSUF
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+set_tests_properties(test_ident_suffix PROPERTIES DEPENDS "test_fstring_spec")
+
 # std/plot.ls (plot Phase 1 skeleton): data model + builder API + summary output.
 # Exercises deeply-nested has_drop (Figure -> vec(Axes) -> vec(LineStyle) ->
 # vec(f64)), Axes MOVE into Figure, and deep-copy reads. Self-verifying sample
@@ -1402,87 +1416,87 @@ set_tests_properties(test_ring PROPERTIES DEPENDS "test_generic_ambig")
 # RawVec Step 1 — realloc() exposed to LS surface; memcheck tracks the realloc
 # chain (malloc -> realloc x3 -> free) as a single migrating object. 0/0/0.
 add_test(
-    NAME test_rawvec_realloc
+    NAME test_vec_realloc
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_realloc.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_realloc.cmake
 )
-set_tests_properties(test_rawvec_realloc PROPERTIES DEPENDS "test_ring")
+set_tests_properties(test_vec_realloc PROPERTIES DEPENDS "test_ring")
 
 # RawVec Step 2 — sizeof(T) compile-time evaluation (primitive/pointer sizes +
 # generic struct method monomorphization + arithmetic). JIT + AOT.
 add_test(
-    NAME test_rawvec_sizeof
+    NAME test_vec_sizeof
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_sizeof.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_sizeof.cmake
 )
-set_tests_properties(test_rawvec_sizeof PROPERTIES DEPENDS "test_rawvec_realloc")
+set_tests_properties(test_vec_sizeof PROPERTIES DEPENDS "test_vec_realloc")
 
 # RawVec Step 3 — typed *T pointer indexing p[i] (read + raw-store write). POD +
 # padded struct stride + field access on index read + *u8 bytes. JIT+AOT+memcheck.
 add_test(
-    NAME test_rawvec_ptr_index
+    NAME test_vec_ptr_index
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_ptr_index.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_ptr_index.cmake
 )
-set_tests_properties(test_rawvec_ptr_index PROPERTIES DEPENDS "test_rawvec_sizeof")
+set_tests_properties(test_vec_ptr_index PROPERTIES DEPENDS "test_vec_sizeof")
 
 # RawVec Step 4 / Gate M0 — hand-written RawVecI (POD) over raw malloc/realloc/
 # free + sizeof + p[i]; __drop frees once; memcheck 0/0/0 through realloc chain.
 add_test(
-    NAME test_rawvec_poc
+    NAME test_vec_poc
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_poc.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_poc.cmake
 )
-set_tests_properties(test_rawvec_poc PROPERTIES DEPENDS "test_rawvec_ptr_index")
+set_tests_properties(test_vec_poc PROPERTIES DEPENDS "test_vec_ptr_index")
 
 # RawVec Step 5 / Gate M1 — has_drop element ownership: move-in/out, per-element
 # recursive drop, nested drop (RawVec of struct / RawVec of RawVec). __drop_at
 # intrinsic + __move. memcheck 0/0/0.
 add_test(
-    NAME test_rawvec_m1
+    NAME test_vec_m1
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_m1.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_m1.cmake
 )
-set_tests_properties(test_rawvec_m1 PROPERTIES DEPENDS "test_rawvec_poc")
+set_tests_properties(test_vec_m1 PROPERTIES DEPENDS "test_vec_poc")
 
 # RawVec Step 6 / Gate M2 — generic std.rawvec RawVec(T) (int/string/Pt) under
 # monomorphization, matching vec semantics. Imports std.rawvec (LS_HOME=repo).
 add_test(
-    NAME test_rawvec_m2
+    NAME test_vec_m2
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_m2.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_m2.cmake
 )
-set_tests_properties(test_rawvec_m2 PROPERTIES DEPENDS "test_rawvec_m1")
+set_tests_properties(test_vec_m2 PROPERTIES DEPENDS "test_vec_m1")
 
 # RawVec owned-param / move-into-container — rvalue & __move string args MOVE into
 # the container (no clone); named-var args borrow (clone, caller stays valid).
 add_test(
-    NAME test_rawvec_move
+    NAME test_vec_move
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_move.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_move.cmake
 )
-set_tests_properties(test_rawvec_move PROPERTIES DEPENDS "test_rawvec_m2")
+set_tests_properties(test_vec_move PROPERTIES DEPENDS "test_vec_m2")
 
 # Inferred aggregate init: `Type v = {}` zero-inits a struct (LHS-inferred),
 # replacing new_rawvec(T)() with `RawVec(T) v = {}` (matches vec(T) v = []).
@@ -1494,64 +1508,102 @@ add_test(
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_inferred_init.cmake
 )
-set_tests_properties(test_inferred_init PROPERTIES DEPENDS "test_rawvec_move")
+set_tests_properties(test_inferred_init PROPERTIES DEPENDS "test_vec_move")
 
 # Comprehensive RawVec(T) API parity with vec (insert/remove/swap/reverse/first/
 # last/index_of/contains/count/resize/copy/truncate/shrink_to_fit), int + string.
 add_test(
-    NAME test_rawvec_api
+    NAME test_vec_api
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_api.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_api.cmake
 )
-set_tests_properties(test_rawvec_api PROPERTIES DEPENDS "test_inferred_init")
+set_tests_properties(test_vec_api PROPERTIES DEPENDS "test_inferred_init")
 
 # KI-D: RawVec(Pt) without Eq stays usable until an equality-search method is
 # called; calling one reports the method-level `where T: Eq` bound.
 add_test(
-    NAME test_rawvec_kid
+    NAME test_vec_kid
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_kid.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_kid.cmake
 )
-set_tests_properties(test_rawvec_kid PROPERTIES DEPENDS "test_rawvec_api")
+set_tests_properties(test_vec_kid PROPERTIES DEPENDS "test_vec_api")
 
 add_test(
-    NAME test_rawvec_parity_p1
+    NAME test_vec_parity_p1
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_parity_p1.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_parity_p1.cmake
 )
-set_tests_properties(test_rawvec_parity_p1 PROPERTIES DEPENDS "test_rawvec_kid")
+set_tests_properties(test_vec_parity_p1 PROPERTIES DEPENDS "test_vec_kid")
 
 add_test(
-    NAME test_rawvec_functional_p3
+    NAME test_vec_functional_p3
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_functional_p3.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_functional_p3.cmake
 )
-set_tests_properties(test_rawvec_functional_p3 PROPERTIES DEPENDS "test_rawvec_parity_p1")
+set_tests_properties(test_vec_functional_p3 PROPERTIES DEPENDS "test_vec_parity_p1")
 
 # RawVec method-level generics — map(U) / reduce(U) parity with builtin vec,
 # incl. chained `v.map(U)(...).reduce(U)(...)` (rvalue-receiver self drop +
 # closure body temp-stack isolation). int/string/struct elems, JIT+AOT+memcheck.
 add_test(
-    NAME test_rawvec_map_reduce
+    NAME test_vec_map_reduce
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_map_reduce.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_map_reduce.cmake
 )
-set_tests_properties(test_rawvec_map_reduce PROPERTIES DEPENDS "test_rawvec_functional_p3")
+set_tests_properties(test_vec_map_reduce PROPERTIES DEPENDS "test_vec_functional_p3")
+
+# Vec(T) element ownership / clone / drop correctness (plan_vec_ownership_drop.md):
+# §008 index-read-through of has_drop struct (v[i].field / v[i].inner.field /
+# f(v[i])) + §009 rvalue string moved into the container (push/insert/set).
+# JIT + AOT + memcheck 0/0/0.
+add_test(
+    NAME test_vec_owndrop
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_owndrop.cmake
+)
+set_tests_properties(test_vec_owndrop PROPERTIES DEPENDS "test_vec_map_reduce")
+
+# `for x in v` over pure-LS Vec(T) via the Iterator(T) protocol
+# (docs/plan_userdef_for_in.md). JIT + AOT + memcheck 0/0/0.
+add_test(
+    NAME test_iter_protocol
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_iter_protocol.cmake
+)
+set_tests_properties(test_iter_protocol PROPERTIES DEPENDS "test_vec_owndrop")
+
+# Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
+# (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
+add_test(
+    NAME test_impl_string
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_impl_string.cmake
+)
+set_tests_properties(test_impl_string PROPERTIES DEPENDS "test_iter_protocol")
 
 add_test(
     NAME test_string_ord
@@ -1561,7 +1613,7 @@ add_test(
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_string_ord.cmake
 )
-set_tests_properties(test_string_ord PROPERTIES DEPENDS "test_rawvec_map_reduce")
+set_tests_properties(test_string_ord PROPERTIES DEPENDS "test_vec_map_reduce")
 
 add_test(
     NAME test_trait_parse
@@ -1699,6 +1751,20 @@ add_test(
 )
 set_tests_properties(test_enum_vec_map_payload PROPERTIES DEPENDS "test_memory")
 
+# ---- enum with user-defined Vec(T) payload ----
+add_test(
+    NAME test_enum_user_vec_payload
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_user_vec_payload.cmake
+)
+set_tests_properties(test_enum_user_vec_payload PROPERTIES
+    DEPENDS "test_enum_vec_map_payload"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- std.json module ----
 add_test(
     NAME test_std_json
@@ -1709,7 +1775,7 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_json.cmake
 )
 set_tests_properties(test_std_json PROPERTIES
-    DEPENDS "test_enum_vec_map_payload"
+    DEPENDS "test_enum_user_vec_payload"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 

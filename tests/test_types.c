@@ -1175,12 +1175,16 @@ static void test_check_string_substr_one_arg_ok(void) {
     printf(" ok\n");
 }
 
+/* Phase 2.5: split/join are no longer compiler builtins — they live in pure-LS
+   std/string.ls (`impl string`). Without `import std.string` (which this
+   no-stdlib checker harness cannot resolve), `s.split(...)` / `sep.join(...)`
+   must be rejected as "string has no method". */
 static void test_check_string_split_ok(void) {
-    printf("  test_check_string_split_ok...");
-    ASSERT_TRUE(check_source(
+    printf("  test_check_string_split_no_import_rejected...");
+    ASSERT_TRUE(!check_source(
         "fn main() -> int {\n"
         "    string s = \"a,b,c\"\n"
-        "    vec(string) parts = s.split(\",\")\n"
+        "    string parts = s.split(\",\")\n"
         "    return 0\n"
         "}\n"
     ));
@@ -1188,13 +1192,11 @@ static void test_check_string_split_ok(void) {
 }
 
 static void test_check_string_join_ok(void) {
-    printf("  test_check_string_join_ok...");
-    ASSERT_TRUE(check_source(
+    printf("  test_check_string_join_no_import_rejected...");
+    ASSERT_TRUE(!check_source(
         "fn main() -> int {\n"
-        "    vec(string) words\n"
-        "    words.push(\"hello\")\n"
-        "    words.push(\"world\")\n"
-        "    string result = \", \".join(words)\n"
+        "    string sep = \", \"\n"
+        "    string result = sep.join(\"x\")\n"
         "    return 0\n"
         "}\n"
     ));

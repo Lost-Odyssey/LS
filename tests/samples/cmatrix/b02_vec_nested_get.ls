@@ -1,7 +1,9 @@
 // vec(vec(string)) build + .get + drop (B)
+import std.vec
+
 fn main() {
-    vec(vec(string)) m = []
-    vec(string) r = ["a","b"]; m.push(r)
-    vec(string) g = m.get(0)
-    print(g.length)
+    Vec(Vec(string)) m = {}
+    Vec(string) r = ["a","b"]; m.push(r)
+    Vec(string) g = m.get(0)
+    print(g.len())
 }

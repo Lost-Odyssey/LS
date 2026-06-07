@@ -1,8 +1,9 @@
-// Phase V.5 — vec.sort_by(Block(T,T)->int) inline insertion sort
+// Phase V.5 — Vec.sort_by(Block(T,T)->int) inline insertion sort
+import std.vec
 
 fn main() {
     // === ascending sort with lambda ===
-    vec(int) nums = [3, 1, 4, 1, 5, 9, 2, 6]
+    Vec(int) nums = [3, 1, 4, 1, 5, 9, 2, 6]
     nums.sort_by(|a, b| a - b)
     if nums[0] != 1 {
         print("FAIL: asc sort[0] expected 1 got")
@@ -18,7 +19,7 @@ fn main() {
 
     // === descending sort — closure captures bool ===
     bool desc = true
-    vec(int) vals = [5, 2, 8, 1, 9]
+    Vec(int) vals = [5, 2, 8, 1, 9]
     vals.sort_by(|a, b| {
         if desc { return b - a }
         return a - b
@@ -36,7 +37,7 @@ fn main() {
     print("PASS: descending sort with captured bool")
 
     // === sort strings by length ===
-    vec(string) words = []
+    Vec(string) words = {}
     string w1 = "banana"
     string w2 = "hi"
     string w3 = "apple"
@@ -58,7 +59,7 @@ fn main() {
 
     // === sort by distance from pivot (captured int) ===
     int pivot = 5
-    vec(int) around = [1, 9, 4, 6, 3, 7]
+    Vec(int) around = [1, 9, 4, 6, 3, 7]
     around.sort_by(|a, b| {
         int da = a - pivot
         if da < 0 { da = 0 - da }
@@ -79,17 +80,17 @@ fn main() {
     }
     print("PASS: sort by distance from captured pivot")
 
-    // === empty vec (edge case) ===
-    vec(int) empty = []
+    // === empty Vec (edge case) ===
+    Vec(int) empty = {}
     empty.sort_by(|a, b| a - b)
-    if empty.length != 0 {
+    if empty.len() != 0 {
         print("FAIL: empty sort changed length")
         return
     }
     print("PASS: empty vec sort")
 
     // === single element (edge case) ===
-    vec(int) single = [42]
+    Vec(int) single = [42]
     single.sort_by(|a, b| a - b)
     if single[0] != 42 {
         print("FAIL: single element sort")
@@ -98,7 +99,7 @@ fn main() {
     print("PASS: single element sort")
 
     // === already sorted (no swaps needed) ===
-    vec(int) sorted = [1, 2, 3, 4, 5]
+    Vec(int) sorted = [1, 2, 3, 4, 5]
     sorted.sort_by(|a, b| a - b)
     if sorted[0] != 1 || sorted[4] != 5 {
         print("FAIL: already-sorted vec corrupted")
@@ -107,7 +108,7 @@ fn main() {
     print("PASS: already sorted vec")
 
     // === reverse sorted input ===
-    vec(int) rev = [5, 4, 3, 2, 1]
+    Vec(int) rev = [5, 4, 3, 2, 1]
     rev.sort_by(|a, b| a - b)
     if rev[0] != 1 || rev[4] != 5 {
         print("FAIL: reverse sorted input")

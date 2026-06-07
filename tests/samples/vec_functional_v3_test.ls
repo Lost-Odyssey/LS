@@ -1,11 +1,12 @@
-// Phase V.3 — vec.map(Block(T)->U) -> vec(U)
+// Phase V.3 — Vec.map(U)(Block(T)->U) -> Vec(U)
+import std.vec
 
 fn main() {
-    vec(int) nums = [1, 2, 3, 4, 5]
+    Vec(int) nums = [1, 2, 3, 4, 5]
 
     // === map same type: int -> int ===
-    vec(int) doubled = nums.map(|x| x * 2)
-    if doubled.length != 5 {
+    Vec(int) doubled = nums.map(int)(|x| x * 2)
+    if doubled.len() != 5 {
         print("FAIL: doubled.length expected 5")
         return
     }
@@ -20,8 +21,8 @@ fn main() {
     print("PASS: map int->int doubled")
 
     // === map cross type: int -> string ===
-    vec(string) strs = nums.map(|x| f"v={x}")
-    if strs.length != 5 {
+    Vec(string) strs = nums.map(string)(|x| f"v={x}")
+    if strs.len() != 5 {
         print("FAIL: strs.length expected 5")
         return
     }
@@ -36,32 +37,32 @@ fn main() {
     print("PASS: map int->string fstring")
 
     // === map with condition (multiply only evens, else 0) ===
-    vec(int) evens_doubled = nums.map(|x| x * 2)
+    Vec(int) evens_doubled = nums.map(int)(|x| x * 2)
     if evens_doubled.get(1) != 4 {
         print("FAIL: evens_doubled[1] expected 4")
         return
     }
     print("PASS: map positional check")
 
-    // === map on empty vec ===
-    vec(int) empty = []
-    vec(int) empty_mapped = empty.map(|x| x + 1)
-    if empty_mapped.length != 0 {
+    // === map on empty Vec ===
+    Vec(int) empty = {}
+    Vec(int) empty_mapped = empty.map(int)(|x| x + 1)
+    if empty_mapped.len() != 0 {
         print("FAIL: empty map expected length 0")
         return
     }
     print("PASS: map on empty vec")
 
-    // === map string vec -> string vec (length transform) ===
-    vec(string) words = []
+    // === map string Vec -> string Vec (length transform) ===
+    Vec(string) words = {}
     string w1 = "hello"
     string w2 = "world"
     string w3 = "hi"
     words.push(w1)
     words.push(w2)
     words.push(w3)
-    vec(int) lengths = words.map(|s| s.length)
-    if lengths.length != 3 {
+    Vec(int) lengths = words.map(int)(|s| s.length)
+    if lengths.len() != 3 {
         print("FAIL: lengths.length expected 3")
         return
     }
@@ -80,8 +81,8 @@ fn main() {
     print("PASS: map string->int (length)")
 
     // === map string -> string (upper) ===
-    vec(string) uppers = words.map(|s| s.upper())
-    if uppers.length != 3 {
+    Vec(string) uppers = words.map(string)(|s| s.upper())
+    if uppers.len() != 3 {
         print("FAIL: uppers.length expected 3")
         return
     }
@@ -96,9 +97,9 @@ fn main() {
     print("PASS: map string->string (upper)")
 
     // === chain: map then filter (via intermediate variable for RAII cleanup) ===
-    vec(int) tripled = nums.map(|x| x * 3)
-    vec(int) big = tripled.filter(|x| x > 9)
-    if big.length != 2 {
+    Vec(int) tripled = nums.map(int)(|x| x * 3)
+    Vec(int) big = tripled.filter(|x| x > 9)
+    if big.len() != 2 {
         print("FAIL: chain map.filter expected len 2")
         return
     }
@@ -113,8 +114,8 @@ fn main() {
     print("PASS: chain map->filter")
 
     // === map bool result ===
-    vec(bool) bools = nums.map(|x| x > 3)
-    if bools.length != 5 {
+    Vec(bool) bools = nums.map(bool)(|x| x > 3)
+    if bools.len() != 5 {
         print("FAIL: bools.length expected 5")
         return
     }

@@ -1,5 +1,6 @@
 // struct_field_defaults_test.ls — struct field defaults + partial init (v1).
 // Prints "SFDEF PASS" / "SFDEF FAIL: ...".
+import std.vec
 
 // POD + string + bool + f64 + negative-literal defaults
 struct Cfg {
@@ -14,7 +15,7 @@ struct Cfg {
 // has_drop struct: string field has a default, vec field has none (must be explicit)
 struct Box {
     string label = "box"
-    vec(f64) data
+    Vec(f64) data
 }
 
 // field separators: comma / semicolon / newline / mixed / trailing all compile
@@ -38,11 +39,11 @@ fn cfg_str(Cfg c) -> string {
 fn box_sum(Box b) -> string {
     f64 s = 0.0
     int i = 0
-    while i < b.data.length {
+    while i < b.data.len() {
         s = s + b.data[i]
         i = i + 1
     }
-    return f"{b.label}:{b.data.length}:{s:.1f}"
+    return f"{b.label}:{b.data.len()}:{s:.1f}"
 }
 
 fn main() {
@@ -59,11 +60,11 @@ fn main() {
                "1,2,x,false,1.50,3", "all_explicit") && ok
 
     // has_drop struct: label defaults, data explicit (moved in)
-    vec(f64) d1 = [1.0, 2.0, 3.0]
+    Vec(f64) d1 = [1.0, 2.0, 3.0]
     Box b1 = Box{data: d1}
     ok = check(box_sum(b1), "box:3:6.0", "box_default_label") && ok
 
-    vec(f64) d2 = [10.0, 20.0]
+    Vec(f64) d2 = [10.0, 20.0]
     Box b2 = Box{label: "custom", data: d2}
     ok = check(box_sum(b2), "custom:2:30.0", "box_explicit_label") && ok
 

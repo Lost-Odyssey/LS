@@ -1056,20 +1056,20 @@ static void test_string_substr_one_arg_ir(void) {
     printf(" ok\n");
 }
 
+/* Phase 2.5: split/join are no longer compiler builtins — they were moved to
+   pure-LS `impl string` in std/string.ls (returning std.vec Vec(string)). With
+   no `import std.string`, `s.split(...)` must be rejected by the checker, so
+   compilation yields no IR. */
 static void test_string_split_ir(void) {
     printf("  test_string_split_ir...");
     char *ir = compile_to_ir(
         "fn main() -> int {\n"
         "    string s = \"a,b,c\"\n"
-        "    vec(string) parts = s.split(\",\")\n"
+        "    string parts = s.split(\",\")\n"
         "    return 0\n"
         "}\n"
     );
-    ASSERT_NOT_NULL(ir);
-    ASSERT_TRUE(ir_contains(ir, "@__ls_str_split"));
-    ASSERT_TRUE(ir_contains(ir, "spl.cnt.cond"));
-    ASSERT_TRUE(ir_contains(ir, "spl.fill.cond"));
-    LLVMDisposeMessage(ir);
+    ASSERT_TRUE(ir == NULL);
     printf(" ok\n");
 }
 
@@ -1077,18 +1077,12 @@ static void test_string_join_ir(void) {
     printf("  test_string_join_ir...");
     char *ir = compile_to_ir(
         "fn main() -> int {\n"
-        "    vec(string) words\n"
-        "    words.push(\"hello\")\n"
-        "    words.push(\"world\")\n"
-        "    string result = \", \".join(words)\n"
+        "    string sep = \", \"\n"
+        "    string result = sep.join(\"x\")\n"
         "    return 0\n"
         "}\n"
     );
-    ASSERT_NOT_NULL(ir);
-    ASSERT_TRUE(ir_contains(ir, "@__ls_str_join"));
-    ASSERT_TRUE(ir_contains(ir, "jn.tot.cond"));
-    ASSERT_TRUE(ir_contains(ir, "jn.fill.cond"));
-    LLVMDisposeMessage(ir);
+    ASSERT_TRUE(ir == NULL);
     printf(" ok\n");
 }
 

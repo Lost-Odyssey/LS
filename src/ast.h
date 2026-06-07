@@ -350,6 +350,15 @@ struct AstNode
             char *var;
             AstNode *iter;
             AstNode *body;
+            /* Iterator-protocol desugaring (for x in <struct with iter()/next()>):
+               filled by the checker with the equivalent
+                 { [Iter __it = src.iter()]  while true {
+                       match __it.next() { Some(x) => {BODY}  None => break } } }
+               AST subtree. When non-NULL, codegen emits this block instead of the
+               builtin range/array/vec foreach. `body` is moved into the Some arm
+               (left NULL here). NULL for builtin iterables. See
+               docs/plan_userdef_for_in.md. */
+            AstNode *desugared;
         } for_stmt;
         struct
         {

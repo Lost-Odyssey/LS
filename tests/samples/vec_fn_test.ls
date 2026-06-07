@@ -1,6 +1,8 @@
 // Test in function
+import std.vec
+
 fn test() {
-    vec(string) v
+    Vec(string) v = {}
     v.push("hello")
     v.pop()
     print("done")

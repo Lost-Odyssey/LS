@@ -176,6 +176,11 @@ typedef struct Checker {
     /* __drop detection: true if currently checking a user-defined __drop() method */
     bool in_user_defined_drop;
 
+    /* Phase 2.5 (impl builtin types): set by check_string_method when the method
+       name matched no builtin string method, so the caller falls through to the
+       user `impl string` lookup (Step 11) instead of erroring immediately. */
+    bool string_no_builtin_match;
+
     /* map() closure return-type inference: when non-NULL, AST_RETURN writes the
        inferred return type here instead of erroring about NULL current_fn_return. */
     Type **closure_infer_return_slot;

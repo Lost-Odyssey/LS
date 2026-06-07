@@ -4,7 +4,7 @@
 // (struct inference only triggers when the declared type is a struct).
 // Prints "ok <label>" / "FAIL <label>" then "INIT PASS".
 
-import std.rawvec
+import std.vec
 
 struct Point { int x; int y; int z }
 struct Mixed { int n; bool flag; *int ptr }
@@ -37,30 +37,30 @@ fn main() {
     // mixed POD/pointer struct: int 0, bool false, ptr null
     // (NOTE: zero-init of a `string` FIELD yields null-data, not a valid "" —
     //  a pre-existing struct-literal limitation, orthogonal to inferred init;
-    //  RawVec's fields are *T/int/int so it is unaffected.)
+    //  Vec's fields are *T/int/int so it is unaffected.)
     Mixed m = {}
     check(m.n == 0, "Mixed {} int zero")
     check(m.flag == false, "Mixed {} bool false")
 
-    // RawVec(string) v = {} replaces new_rawvec(string)() — matches vec(T) v = []
-    RawVec(string) v = {}
-    check(v.length() == 0, "RawVec {} empty")
+    // Vec(string) v = {} replaces new_rawvec(string)() — matches vec(T) v = []
+    Vec(string) v = {}
+    check(v.len() == 0, "Vec {} empty")
     v.push(f"a"); v.push(f"b")
-    check(v.length() == 2, "RawVec {} push works")
-    check(v.get(0) == "a", "RawVec {} get(0)")
+    check(v.len() == 2, "Vec {} push works")
+    check(v.get(0) == "a", "Vec {} get(0)")
 
-    // RawVec(int) too
-    RawVec(int) vi = {}
+    // Vec(int) too
+    Vec(int) vi = {}
     for (int i = 0; i < 5; i = i + 1) { vi.push(i * i) }
-    check(vi.length() == 5 && vi.get(4) == 16, "RawVec(int) {} works")
+    check(vi.len() == 5 && vi.get(4) == 16, "Vec(int) {} works")
 
     // ---- list-literal init (the __from_list protocol; matches vec(T) v = [..]) ----
-    RawVec(int) li = [10, 20, 30, 40]
-    check(li.length() == 4 && li.get(0) == 10 && li.get(3) == 40, "RawVec(int) = [..]")
-    RawVec(string) ls = [f"a", f"b", f"c"]
-    check(ls.length() == 3 && ls.get(1) == "b", "RawVec(string) = [..]")
-    RawVec(int) le = []
-    check(le.length() == 0, "RawVec = [] empty")
+    Vec(int) li = [10, 20, 30, 40]
+    check(li.len() == 4 && li.get(0) == 10 && li.get(3) == 40, "Vec(int) = [..]")
+    Vec(string) ls = [f"a", f"b", f"c"]
+    check(ls.len() == 3 && ls.get(1) == "b", "Vec(string) = [..]")
+    Vec(int) le = []
+    check(le.len() == 0, "Vec = [] empty")
 
     // empty map literal still resolves via declared map type (not hijacked)
     map(string, int) mp = {}

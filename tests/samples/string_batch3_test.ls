@@ -1,5 +1,8 @@
 // string Batch 3 end-to-end test: rfind / count / substr(1-arg) / split / join
 
+import std.vec
+import std.string
+
 fn main() -> int {
     // ===================== rfind() =====================
 
@@ -63,35 +66,35 @@ fn main() -> int {
 
     // basic split
     string csv = "apple,banana,cherry"
-    vec(string) parts = csv.split(",")
-    print(parts.length)   // 3
+    Vec(string) parts = csv.split(",")
+    print(parts.len())   // 3
     print(parts[0])       // apple
     print(parts[1])       // banana
     print(parts[2])       // cherry
 
     // split with multi-char separator
     string s4 = "one::two::three"
-    vec(string) ps4 = s4.split("::")
-    print(ps4.length)   // 3
+    Vec(string) ps4 = s4.split("::")
+    print(ps4.len())   // 3
     print(ps4[0])       // one
     print(ps4[1])       // two
     print(ps4[2])       // three
 
     // split: no separator found → 1-element vec
     string s5 = "nosep"
-    vec(string) ps5 = s5.split(",")
-    print(ps5.length)   // 1
+    Vec(string) ps5 = s5.split(",")
+    print(ps5.len())   // 1
     print(ps5[0])       // nosep
 
     // split: empty separator → 1-element vec with copy of src
-    vec(string) ps6 = s5.split("")
-    print(ps6.length)   // 1
+    Vec(string) ps6 = s5.split("")
+    print(ps6.len())   // 1
     print(ps6[0])       // nosep
 
     // split: trailing separator creates empty last element
     string s7 = "a,b,"
-    vec(string) ps7 = s7.split(",")
-    print(ps7.length)   // 3
+    Vec(string) ps7 = s7.split(",")
+    print(ps7.len())   // 3
     print(ps7[0])       // a
     print(ps7[1])       // b
     print(ps7[2].length) // 0 (empty string)
@@ -99,7 +102,7 @@ fn main() -> int {
     // ===================== join() =====================
 
     // basic join
-    vec(string) words
+    Vec(string) words = {}
     words.push("hello")
     words.push("world")
     words.push("foo")
@@ -111,20 +114,20 @@ fn main() -> int {
     print(joined2)  // helloworldfoo
 
     // join single element
-    vec(string) one_elem
+    Vec(string) one_elem = {}
     one_elem.push("only")
     string joined3 = "-".join(one_elem)
     print(joined3)  // only
 
     // join empty vec → empty string
-    vec(string) empty_vec
+    Vec(string) empty_vec = {}
     string joined4 = ",".join(empty_vec)
     print(joined4.length)  // 0
 
     // ===================== round-trip: split then join =====================
 
     string original = "a:b:c:d"
-    vec(string) split_parts = original.split(":")
+    Vec(string) split_parts = original.split(":")
     string rejoined = ":".join(split_parts)
     print(rejoined)   // a:b:c:d
 

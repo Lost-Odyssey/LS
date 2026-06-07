@@ -5,6 +5,8 @@
 // first class: MdDoc is a struct with a vec field; lists/table hold nested vecs.
 
 import io
+import std.vec
+import std.string
 
 // ---- Core types ----
 
@@ -374,7 +376,19 @@ fn _is_table_sep(string line) -> bool {
 }
 
 fn _split_table_row(string line) -> vec(string) {
-    vec(string) raw = line.split("|")
+    // Phase 2.5: string.split now returns std.vec Vec(string); copy into the
+    // builtin vec this file still uses internally.
+    Vec(string) _raw = line.split("|")
+    vec(string) raw = []
+    int _ri = 0
+    while _ri < _raw.len() {
+        raw.push(_raw.get(_ri))
+        _ri = _ri + 1
+    }
+    // VR-LIM-002: a pure-LS Vec local in an imported-module function is not
+    // auto-dropped; release it explicitly.
+    _raw.clear()
+    _raw.shrink_to_fit()
     vec(string) cells = []
     int rn = raw.length
     int i = 0
@@ -537,7 +551,16 @@ fn _parse_inlines(string text) -> vec(MdInline) {
 // Parse `input` into a list of blocks (internal; `parse` wraps it in MdDoc).
 fn _parse_blocks(string input) -> vec(MdBlock) {
     vec(MdBlock) blocks = []
-    vec(string) lines = input.lines()
+    Vec(string) _lines = input.lines()
+    vec(string) lines = []
+    int _li = 0
+    while _li < _lines.len() {
+        lines.push(_lines.get(_li))
+        _li = _li + 1
+    }
+    // VR-LIM-002: release the module-local pure-LS Vec explicitly.
+    _lines.clear()
+    _lines.shrink_to_fit()
     int nl = lines.length
     int i = 0
 

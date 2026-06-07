@@ -1,6 +1,9 @@
-/* Test vec.get(i) */
+/* Test builtin vec.get(i) (including out-of-bounds warning + default). */
 fn main() -> int {
-    vec(string) v = "a,b,c".split(",")
+    vec(string) v = []
+    v.push("a")
+    v.push("b")
+    v.push("c")
     print(v.get(0))     /* a */
     print(v.get(1))     /* b */
     print(v.get(2))     /* c */

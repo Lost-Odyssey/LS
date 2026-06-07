@@ -1,9 +1,12 @@
 /* Smoke test: split + join. */
+import std.vec
+import std.string
+
 fn main() -> int {
     string s = "a,b,c,d"
-    vec(string) parts = s.split(",")
-    print(parts.length)
-    for i in 0..parts.length {
+    Vec(string) parts = s.split(",")
+    print(parts.len())
+    for i in 0..parts.len() {
         print(parts[i])
     }
     string back = ",".join(parts)

@@ -1,0 +1,4 @@
+1. std.vec 用来管理裸内存的 free/alloc/realloc, 应该放到 std.c 的封装里面
+2. sort_by 是一个 冒泡排序? 大size 优化?
+3. reduce(U) 里面会产生大量临时copy吗? LLVM O2 会不会优化掉?
+4. std.vec 各个函数 都没有 越界检查

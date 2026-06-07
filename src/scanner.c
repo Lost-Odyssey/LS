@@ -329,6 +329,13 @@ static Token scan_identifier(Scanner *s) {
     }
 
     TokenType type = check_keyword(s->start, length);
+    if (type == TOKEN_IDENTIFIER) {
+        if (peek(s) == '?') {
+            advance(s);
+        } else if (peek(s) == '!' && peek_next(s) != '=') {
+            advance(s);
+        }
+    }
     return make_token(s, type);
 }
 

@@ -351,6 +351,55 @@ static void cg_store_owned(CodegenContext *ctx,
                            int temp_mark,
                            CgTransferKind kind);
 
+static LLVMValueRef cg_declare_pending_generic_method(CodegenContext *ctx,
+                                                      const char *name)
+{
+    LLVMValueRef existing = LLVMGetNamedFunction(ctx->module, name);
+    if (existing != NULL)
+        return existing;
+
+    for (int i = 0; i < ctx->pending_gm_count; i++)
+    {
+        if (strcmp(ctx->pending_generic_methods[i].mangled_name, name) != 0)
+            continue;
+
+        AstNode *cfn = ctx->pending_generic_methods[i].cloned_fn;
+        if (cfn == NULL || cfn->resolved_type == NULL ||
+            cfn->resolved_type->kind != TYPE_FUNCTION)
+            return NULL;
+
+        LLVMTypeRef fn_type = type_to_llvm(ctx, cfn->resolved_type);
+        return LLVMAddFunction(ctx->module, name, fn_type);
+    }
+
+    return NULL;
+}
+
+static LLVMValueRef cg_ensure_user_struct_drop_decl(CodegenContext *ctx,
+                                                    Type *struct_type)
+{
+    if (struct_type == NULL || struct_type->kind != TYPE_STRUCT)
+        return NULL;
+
+    char drop_name[256];
+    snprintf(drop_name, sizeof(drop_name), "%s.__drop",
+             struct_llvm_name(struct_type));
+
+    LLVMValueRef drop_fn = LLVMGetNamedFunction(ctx->module, drop_name);
+    if (drop_fn == NULL)
+        drop_fn = cg_declare_pending_generic_method(ctx, drop_name);
+    if (drop_fn == NULL)
+    {
+        LLVMTypeRef ptr_struct = LLVMPointerTypeInContext(ctx->context, 0);
+        LLVMTypeRef fn_type = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+                                               &ptr_struct, 1, 0);
+        drop_fn = LLVMAddFunction(ctx->module, drop_name, fn_type);
+    }
+    LLVMSetFunctionCallConv(drop_fn, LLVMCCallConv);
+    struct_type->as.strukt.drop_fn = drop_fn;
+    return drop_fn;
+}
+
 /* Phase C.5/C.7: capture types that need release work in env_drop.
    Currently:
      TYPE_STRING — env_drop frees data when cap > 0 (cap is 0 when the
@@ -1803,6 +1852,8 @@ static LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
         snprintf(clone_fn_name, sizeof(clone_fn_name), "%s.__clone",
                  struct_llvm_name(struct_type));
         LLVMValueRef user_clone = LLVMGetNamedFunction(ctx->module, clone_fn_name);
+        if (user_clone == NULL)
+            user_clone = cg_declare_pending_generic_method(ctx, clone_fn_name);
         if (user_clone != NULL)
         {
             /* __clone(&self): spill the value to a temp to get a self pointer. */
@@ -3682,6 +3733,11 @@ static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
         return; /* already has user drop */
     if (!struct_type->as.strukt.has_drop)
         return; /* nothing to drop */
+    if (struct_type->as.strukt.has_user_drop)
+    {
+        cg_ensure_user_struct_drop_decl(ctx, struct_type);
+        return;
+    }
     if (struct_type->as.strukt.field_count == 0)
         return;
 
@@ -3812,6 +3868,20 @@ static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
             {
                 /* Fallback: use drop_fn stored in the type (set by Pass 2a or earlier iteration) */
                 member_drop_fn = (LLVMValueRef)field_type->as.strukt.drop_fn;
+            }
+            if (member_drop_fn == NULL)
+            {
+                /* The member's __drop hasn't been generated yet. This happens when
+                   the OUTER struct's drop fn is emitted lazily (e.g. a Vec(Person)
+                   method monomorphization triggers Person.__drop before the main-file
+                   Pass 2.5 reaches Inner). Generate it on demand — emit_auto_drop_fn
+                   saves/restores the builder, so the recursion is position-safe (same
+                   pattern as emit_struct_drop_cond/_separate). Without this, the nested
+                   struct's owned fields (Inner.tag) silently leak. */
+                emit_auto_drop_fn(ctx, field_type);
+                member_drop_fn = (LLVMValueRef)field_type->as.strukt.drop_fn;
+                if (member_drop_fn == NULL)
+                    member_drop_fn = LLVMGetNamedFunction(ctx->module, member_drop_name);
             }
             if (member_drop_fn != NULL)
             {
@@ -6615,69 +6685,8 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         return LLVMBuildLoad2(ctx->builder, i32_type, cnt_ptr, "count.res");
     }
 
-    /* s.split(string sep) -> vec(string) */
-    if (strcmp(method, "split") == 0)
-    {
-        LLVMValueRef sep_val = codegen_expr(ctx, node->as.call.args[0]);
-        if (sep_val == NULL)
-            return NULL;
-        LLVMValueRef sep_data_v = ls_string_data(ctx, sep_val);
-        LLVMValueRef sep_len_v = ls_string_len(ctx, sep_val);
-
-        LLVMTypeRef vec_t = ls_vec_type(ctx);
-
-        /* Out-param allocas for __ls_str_split */
-        LLVMValueRef out_data_pp = cg_entry_alloca(ctx, ptr_type, "spl.odp");
-        LLVMValueRef out_len_p = cg_entry_alloca(ctx, i32_type, "spl.olp");
-        LLVMValueRef out_cap_p = cg_entry_alloca(ctx, i32_type, "spl.ocp");
-        LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_type), out_data_pp);
-        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_len_p);
-        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_cap_p);
-
-        LLVMValueRef split_fn = LLVMGetNamedFunction(ctx->module, "__ls_str_split");
-        LLVMTypeRef split_t = LLVMGlobalGetValueType(split_fn);
-        LLVMValueRef spl_args[] = {s_data, s_len, sep_data_v, sep_len_v,
-                                   out_data_pp, out_len_p, out_cap_p};
-        LLVMBuildCall2(ctx->builder, split_t, split_fn, spl_args, 7, "");
-
-        LLVMValueRef res_data = LLVMBuildLoad2(ctx->builder, ptr_type, out_data_pp, "spl.data");
-        LLVMValueRef res_len = LLVMBuildLoad2(ctx->builder, i32_type, out_len_p, "spl.len");
-        LLVMValueRef res_cap = LLVMBuildLoad2(ctx->builder, i32_type, out_cap_p, "spl.cap");
-
-        LLVMValueRef result = LLVMGetUndef(vec_t);
-        result = LLVMBuildInsertValue(ctx->builder, result, res_data, 0, "spl.r0");
-        result = LLVMBuildInsertValue(ctx->builder, result, res_len, 1, "spl.r1");
-        result = LLVMBuildInsertValue(ctx->builder, result, res_cap, 2, "spl.r2");
-        return result;
-    }
-
-    /* sep.join(vec(string)) -> string */
-    if (strcmp(method, "join") == 0)
-    {
-        LLVMValueRef vec_val = codegen_expr(ctx, node->as.call.args[0]);
-        if (vec_val == NULL)
-            return NULL;
-        LLVMValueRef vec_data_v = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "jn.vd");
-        LLVMValueRef vec_len_v = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "jn.vl");
-
-        LLVMValueRef out_len_p = cg_entry_alloca(ctx, i32_type, "jn.olp");
-
-        LLVMValueRef join_fn = LLVMGetNamedFunction(ctx->module, "__ls_str_join");
-        LLVMTypeRef join_t = LLVMGlobalGetValueType(join_fn);
-        LLVMValueRef jn_args[] = {vec_data_v, vec_len_v, s_data, s_len, out_len_p};
-        LLVMValueRef result_buf = LLVMBuildCall2(ctx->builder, join_t, join_fn,
-                                                 jn_args, 5, "jn.buf");
-
-        LLVMValueRef result_len = LLVMBuildLoad2(ctx->builder, i32_type, out_len_p, "jn.len");
-        LLVMValueRef one = LLVMConstInt(i32_type, 1, 0);
-        LLVMValueRef alloc_need = LLVMBuildAdd(ctx->builder, result_len, one, "jn.need");
-        LLVMValueRef min_cap = LLVMConstInt(i32_type, LS_MIN_STR_CAP, 0);
-        LLVMValueRef jn_gt = LLVMBuildICmp(ctx->builder, LLVMIntUGT,
-                                           alloc_need, min_cap, "jn.gt");
-        LLVMValueRef cap = LLVMBuildSelect(ctx->builder, jn_gt,
-                                           alloc_need, min_cap, "jn.cap");
-        return cg_push_temp_string(ctx, ls_string_make(ctx, result_buf, result_len, cap));
-    }
+    /* Phase 2.5: split / join moved to pure-LS `impl string` (std/string.ls).
+       They are no longer builtin and never reach this emitter. */
 
     /* s.to_int() -> Result(int, string)
        s.to_i64() -> Result(i64, string)
@@ -6934,33 +6943,7 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         return LLVMBuildLoad2(ctx->builder, result_llvm, res_alloca, "tb.ret");
     }
 
-    /* s.lines() -> vec(string) */
-    if (strcmp(method, "lines") == 0)
-    {
-        LLVMTypeRef vec_t = ls_vec_type(ctx);
-
-        LLVMValueRef out_data_pp = cg_entry_alloca(ctx, ptr_type, "ln.odp");
-        LLVMValueRef out_len_p   = cg_entry_alloca(ctx, i32_type, "ln.olp");
-        LLVMValueRef out_cap_p   = cg_entry_alloca(ctx, i32_type, "ln.ocp");
-        LLVMBuildStore(ctx->builder, LLVMConstNull(ptr_type), out_data_pp);
-        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_len_p);
-        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_type, 0, 0), out_cap_p);
-
-        LLVMValueRef lines_fn = LLVMGetNamedFunction(ctx->module, "__ls_str_lines");
-        LLVMTypeRef lines_ft  = LLVMGlobalGetValueType(lines_fn);
-        LLVMValueRef ln_args[] = {s_data, s_len, out_data_pp, out_len_p, out_cap_p};
-        LLVMBuildCall2(ctx->builder, lines_ft, lines_fn, ln_args, 5, "");
-
-        LLVMValueRef res_data = LLVMBuildLoad2(ctx->builder, ptr_type, out_data_pp, "ln.data");
-        LLVMValueRef res_len  = LLVMBuildLoad2(ctx->builder, i32_type, out_len_p,   "ln.len");
-        LLVMValueRef res_cap  = LLVMBuildLoad2(ctx->builder, i32_type, out_cap_p,   "ln.cap");
-
-        LLVMValueRef result = LLVMGetUndef(vec_t);
-        result = LLVMBuildInsertValue(ctx->builder, result, res_data, 0, "ln.r0");
-        result = LLVMBuildInsertValue(ctx->builder, result, res_len,  1, "ln.r1");
-        result = LLVMBuildInsertValue(ctx->builder, result, res_cap,  2, "ln.r2");
-        return result;
-    }
+    /* Phase 2.5: lines() moved to pure-LS `impl string` (std/string.ls). */
 
     /* s.repeat(int n) -> string */
     if (strcmp(method, "repeat") == 0)
@@ -7195,98 +7178,8 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
         return cg_push_temp_string(ctx, str_phi);
     }
 
-    /* s.chars() -> vec(int)   (byte-level, v1) */
-    if (strcmp(method, "chars") == 0)
-    {
-        LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
-        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-        LLVMTypeRef vec_t = ls_vec_type(ctx);
+    /* Phase 2.5: chars() moved to pure-LS impl string (std/string.ls). */
 
-        LLVMValueRef zero32   = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32    = LLVMConstInt(i32_t, 1, 0);
-
-        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
-        LLVMTypeRef  malloc_ft = LLVMGlobalGetValueType(malloc_fn);
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-        /* Blocks */
-        LLVMBasicBlockRef empty_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.empty");
-        LLVMBasicBlockRef alloc_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.alloc");
-        LLVMBasicBlockRef loop_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.loop");
-        LLVMBasicBlockRef lbody_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.lbody");
-        LLVMBasicBlockRef done_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ch.done");
-
-        /* Alloca for loop index */
-        LLVMBasicBlockRef entry_block = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef entry_fi = LLVMGetFirstInstruction(entry_block);
-        if (entry_fi) LLVMPositionBuilderBefore(tb, entry_fi);
-        else LLVMPositionBuilderAtEnd(tb, entry_block);
-        LLVMValueRef ch_idx_ptr = LLVMBuildAlloca(tb, i32_t, "ch.idx");
-        LLVMValueRef ch_arr_ptr = LLVMBuildAlloca(tb, LLVMPointerTypeInContext(ctx->context, 0), "ch.arrp");
-        LLVMDisposeBuilder(tb);
-
-        /* if s_len == 0 → empty vec */
-        LLVMValueRef is_empty = LLVMBuildICmp(ctx->builder, LLVMIntEQ, s_len, zero32, "ch.empty");
-        LLVMBuildCondBr(ctx->builder, is_empty, empty_bb, alloc_bb);
-
-        /* empty_bb */
-        LLVMPositionBuilderAtEnd(ctx->builder, empty_bb);
-        LLVMBuildBr(ctx->builder, done_bb);
-
-        /* alloc_bb: arr = malloc(s_len * 4) */
-        LLVMPositionBuilderAtEnd(ctx->builder, alloc_bb);
-        LLVMValueRef four  = LLVMConstInt(i64_t, 4, 0);
-        LLVMValueRef sl64  = LLVMBuildZExt(ctx->builder, s_len, i64_t, "ch.sl64");
-        LLVMValueRef arrsz = LLVMBuildMul(ctx->builder, sl64, four, "ch.arrsz");
-        LLVMValueRef arr   = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn, &arrsz, 1, "ch.arr");
-        LLVMBuildStore(ctx->builder, arr, ch_arr_ptr);
-        LLVMBuildStore(ctx->builder, zero32, ch_idx_ptr);
-        LLVMBuildBr(ctx->builder, loop_bb);
-
-        /* loop_bb: while idx < s_len */
-        LLVMPositionBuilderAtEnd(ctx->builder, loop_bb);
-        LLVMValueRef ch_idx = LLVMBuildLoad2(ctx->builder, i32_t, ch_idx_ptr, "ch.idx");
-        LLVMValueRef ldone  = LLVMBuildICmp(ctx->builder, LLVMIntSGE, ch_idx, s_len, "ch.ldone");
-        LLVMBuildCondBr(ctx->builder, ldone, done_bb, lbody_bb);
-
-        /* lbody_bb: load byte, zext to i32, store into arr[idx] */
-        LLVMPositionBuilderAtEnd(ctx->builder, lbody_bb);
-        LLVMValueRef idx64 = LLVMBuildZExt(ctx->builder, ch_idx, i64_t, "ch.idx64");
-        LLVMValueRef bptr  = LLVMBuildGEP2(ctx->builder, i8_t, s_data, &idx64, 1, "ch.bptr");
-        LLVMValueRef byte  = LLVMBuildLoad2(ctx->builder, i8_t, bptr, "ch.byte");
-        LLVMValueRef codepoint = LLVMBuildZExt(ctx->builder, byte, i32_t, "ch.cp");
-        LLVMValueRef arr_cur = LLVMBuildLoad2(ctx->builder, LLVMPointerTypeInContext(ctx->context, 0), ch_arr_ptr, "ch.arrc");
-        LLVMValueRef dst   = LLVMBuildGEP2(ctx->builder, i32_t, arr_cur, &idx64, 1, "ch.dst");
-        LLVMBuildStore(ctx->builder, codepoint, dst);
-        LLVMBuildStore(ctx->builder,
-                       LLVMBuildAdd(ctx->builder, ch_idx, one32, "ch.idxnext"), ch_idx_ptr);
-        LLVMBuildBr(ctx->builder, loop_bb);
-
-        /* done_bb: build vec(int) */
-        LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
-        /* PHI for arr and len */
-        LLVMTypeRef  ptr_t   = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMValueRef arr_phi = LLVMBuildPhi(ctx->builder, ptr_t, "ch.arrphi");
-        LLVMValueRef len_phi = LLVMBuildPhi(ctx->builder, i32_t, "ch.lenphi");
-        LLVMValueRef null_ptr = LLVMConstNull(ptr_t);
-        /* arr was stored in alloc_bb; alloc_bb dominates loop_bb so arr dominates
-           the loop_bb→done_bb edge — use it directly as the PHI incoming value. */
-        LLVMValueRef phi_arr_vals[2] = { null_ptr, arr };
-        LLVMBasicBlockRef phi_arr_bbs[2] = { empty_bb, loop_bb };
-        LLVMAddIncoming(arr_phi, phi_arr_vals, phi_arr_bbs, 2);
-        LLVMValueRef phi_len_vals[2] = { zero32, s_len };
-        LLVMBasicBlockRef phi_len_bbs[2] = { empty_bb, loop_bb };
-        LLVMAddIncoming(len_phi, phi_len_vals, phi_len_bbs, 2);
-
-        LLVMValueRef result = LLVMGetUndef(vec_t);
-        result = LLVMBuildInsertValue(ctx->builder, result, arr_phi, 0, "ch.v0");
-        result = LLVMBuildInsertValue(ctx->builder, result, len_phi, 1, "ch.v1");
-        result = LLVMBuildInsertValue(ctx->builder, result, len_phi, 2, "ch.v2");
-        return result;
-    }
 
     cg_error(ctx, node->line, node->column,
              "unknown string method '%s'", method);
@@ -11313,13 +11206,18 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return LLVMBuildLoad2(ctx->builder, elt, ptr, "take");
         }
 
-        /* Intercept string builtin method calls: s.method(args...) */
+        /* Intercept string builtin method calls: s.method(args...).
+           Phase 2.5: a user `impl string` method has its callee resolved to a
+           TYPE_FUNCTION by the checker — route those to the generic builtin-impl
+           dispatch (Step 11) below instead of the builtin string emitter. */
         if (node->as.call.callee->kind == AST_FIELD)
         {
             AstNode *obj_node = node->as.call.callee->as.field_access.object;
             if (obj_node->resolved_type && obj_node->resolved_type->kind == TYPE_STRING)
             {
-                return codegen_string_method(ctx, node);
+                Type *crt = node->as.call.callee->resolved_type;
+                if (!(crt && crt->kind == TYPE_FUNCTION))
+                    return codegen_string_method(ctx, node);
             }
         }
 
@@ -11560,6 +11458,20 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         LLVMTypeRef gft = type_to_llvm(ctx, cfn->resolved_type);
                         callee = LLVMAddFunction(ctx->module, fn_name, gft);
                         break;
+                    }
+                }
+                /* Phase 2.5: builtin-type extension methods (e.g. string.split)
+                   live in a stdlib module that may be emitted AFTER the caller
+                   (transitive import order). Forward-declare from the call site's
+                   resolved method type; the body reuses this decl when std.string
+                   is processed. Same pattern as the generic-method fallback. */
+                if (callee == NULL)
+                {
+                    Type *crt = node->as.call.callee->resolved_type;
+                    if (crt && crt->kind == TYPE_FUNCTION)
+                    {
+                        LLVMTypeRef bft = type_to_llvm(ctx, crt);
+                        callee = LLVMAddFunction(ctx->module, fn_name, bft);
                     }
                 }
                 if (callee == NULL)
@@ -11804,6 +11716,22 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 AstNode *obj_node = node->as.call.callee->as.field_access.object;
                 /* codegen_addr_of handles AST_IDENT, AST_FIELD (nested), etc. */
                 LLVMValueRef self_ptr = codegen_addr_of(ctx, obj_node);
+                if (self_ptr == NULL)
+                {
+                    /* Phase 2.5: rvalue receiver (string literal, call result, …)
+                       for a pointer-self method. Evaluate it and spill to a temp
+                       alloca so we can pass its address — needed by `impl string`
+                       methods like "a,b".split(","). Only sound for read-only
+                       (&self): a writable receiver rvalue is meaningless. */
+                    LLVMValueRef self_val = codegen_expr(ctx, obj_node);
+                    Type *ort = obj_node->resolved_type;
+                    if (self_val != NULL && ort != NULL)
+                    {
+                        LLVMTypeRef slt = type_to_llvm(ctx, ort);
+                        self_ptr = cg_entry_alloca(ctx, slt, "self.spill");
+                        LLVMBuildStore(ctx->builder, self_val, self_ptr);
+                    }
+                }
                 if (self_ptr == NULL)
                 {
                     cg_error(ctx, node->line, node->column,
@@ -12555,13 +12483,19 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    accessed field is independently cloned below, so dropping the
                    temporary here does not invalidate the returned value. */
                 /* Owned rvalue struct sources whose temp must be dropped after the
-                   field read: container index (vec[i]/p[i]) AND a CALL returning a
-                   has_drop struct by value (f().field / obj.method(i).field). Without
-                   the CALL case, the returned struct's other owned fields leak (the
-                   accessed field is cloned below, so dropping the temp is safe). */
+                   field read: container index (vec[i]/p[i]), a CALL returning a
+                   has_drop struct by value (f().field / obj.method(i).field), AND a
+                   nested field read whose own object had no stable lvalue
+                   (`v[i].inner.field`): there the intermediate `v[i].inner` is itself
+                   an owned struct clone (emit_struct_clone_val), so its other owned
+                   fields would leak. Reaching this else-branch at all means obj_node
+                   has no backing lvalue (codegen_lvalue_ptr returned NULL above) → the
+                   spilled struct value is an owned rvalue → the accessed field is
+                   cloned below, so dropping the temp is safe for any has_drop source. */
                 AstNode *uobj_src = ast_unwrap_move(obj_node);
                 if (struct_type->as.strukt.has_drop &&
-                    (uobj_src->kind == AST_INDEX || uobj_src->kind == AST_CALL))
+                    (uobj_src->kind == AST_INDEX || uobj_src->kind == AST_CALL ||
+                     uobj_src->kind == AST_FIELD))
                 {
                     cg_push_temp_drop(ctx, struct_ptr, struct_type);
                 }
@@ -15454,6 +15388,15 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
     case AST_FOR:
     {
+        /* Iterator-protocol desugaring (for x in <user iterable>): the checker
+           rewrote this into an equivalent while/match block. Emit that and stop;
+           the builtin range/array/vec paths below never run for it. */
+        if (node->as.for_stmt.desugared != NULL)
+        {
+            codegen_stmt(ctx, node->as.for_stmt.desugared);
+            break;
+        }
+
         /* foreach loop: for var in iter { body }
            Supported iterators:
              - Range expression (a..b): iterate var from a to b-1
@@ -17467,6 +17410,18 @@ static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
             }
             else if (pt && pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop)
             {
+                /* has_drop struct payload (e.g. Vec(T) owning a raw *T buffer).
+                   If the struct has a user __drop hook, bind or declare that hook;
+                   auto-generating here would create an empty raw-pointer fallback
+                   and block the real pending generic body.  Plain compiler-managed
+                   structs still get their auto-drop lazily. */
+                if (pt->as.strukt.drop_fn == NULL)
+                {
+                    if (pt->as.strukt.has_user_drop)
+                        cg_ensure_user_struct_drop_decl(ctx, pt);
+                    else
+                        emit_auto_drop_fn(ctx, pt);
+                }
                 emit_struct_drop(ctx, field_ptr, pt);
             }
             else if (pt && pt->kind == TYPE_VECTOR)
@@ -17966,12 +17921,21 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
     if (node->as.impl_decl.type_param_count > 0) return;
 
     const char *bare_name = node->as.impl_decl.name;
+    /* Phase 2.5: `impl <builtin type>` (e.g. string). Builtin types are global,
+       not owned by any module — their methods use the bare name `string.split`
+       so callers in any importing file resolve the same symbol (§2.4). Skip the
+       B-3 module prefixing applied to struct/enum impls. */
+    bool is_builtin_impl =
+        strcmp(bare_name, "string") == 0 || strcmp(bare_name, "int") == 0 ||
+        strcmp(bare_name, "i64") == 0    || strcmp(bare_name, "f64") == 0 ||
+        strcmp(bare_name, "bool") == 0   || strcmp(bare_name, "char") == 0;
     /* B-3: when emitting inside a module, prefix the struct/enum LLVM name so
        that qualified method names become "<mod>__Struct.method" rather than
        "Struct.method" (consistent with codegen_struct_decl's B-2 prefixing). */
     char prefixed_name_buf[512];
     const char *struct_name = bare_name;
-    if (ctx->current_emit_module != NULL && ctx->current_emit_module[0] != '\0')
+    if (!is_builtin_impl &&
+        ctx->current_emit_module != NULL && ctx->current_emit_module[0] != '\0')
     {
         cg_module_fn_symbol(prefixed_name_buf, sizeof(prefixed_name_buf),
                             ctx->current_emit_module, bare_name);

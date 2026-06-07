@@ -1,52 +1,63 @@
 // vec Batch A end-to-end test: is_empty(), first(), last()
+import std.vec
 
 fn main() -> int {
     // --- is_empty() ---
-    vec(int) v
-    bool e1 = v.is_empty()
+    Vec(int) v = {}
+    bool e1 = v.empty?
     print(e1)              // true
 
     v.push(10)
     v.push(20)
     v.push(30)
 
-    bool e2 = v.is_empty()
+    bool e2 = v.empty?
     print(e2)              // false
 
     // --- first() ---
-    int f = v.first()
-    print(f)               // 10
+    match v.first() {
+        Some(f) => { print(f) }   // 10
+        None => { print(0) }
+    }
 
     // --- last() ---
-    int l = v.last()
-    print(l)               // 30
+    match v.last() {
+        Some(l) => { print(l) }   // 30
+        None => { print(0) }
+    }
 
-    // --- first/last on single-element vec ---
-    vec(int) single
+    // --- first/last on single-element Vec ---
+    Vec(int) single = {}
     single.push(99)
-    print(single.first())  // 99
-    print(single.last())   // 99
+    match single.first() { Some(x) => { print(x) } None => { print(0) } }  // 99
+    match single.last()  { Some(x) => { print(x) } None => { print(0) } }  // 99
 
-    // --- first/last on empty vec (should warn, return 0) ---
-    vec(int) empty
-    int ef = empty.first()  // [warning] vec.first() called on empty vec
-    int el = empty.last()   // [warning] vec.last() called on empty vec
-    print(ef)               // 0
-    print(el)               // 0
+    // --- first/last on empty Vec returns None ---
+    Vec(int) empty = {}
+    match empty.first() { Some(x) => { print(x) } None => { print(0) } }  // 0
+    match empty.last()  { Some(x) => { print(x) } None => { print(0) } }  // 0
 
-    // --- string vec: first() and last() return owned clones ---
-    vec(string) sv
+    // --- string Vec: first() and last() return owned clones ---
+    Vec(string) sv = {}
     sv.push("alpha")
     sv.push("beta")
     sv.push("gamma")
 
-    bool se = sv.is_empty()
+    bool se = sv.empty?
     print(se)               // false
 
-    string sf = sv.first()
+    string sf = ""
+    match sv.first() {
+        Some(x) => { sf = x }
+        None => { sf = "" }
+    }
     print(sf)               // alpha
 
-    string sl = sv.last()
+    string sl = ""
+    match sv.last() {
+        Some(x) => { sl = x }
+        None => { sl = "" }
+    }
     print(sl)               // gamma
 
     // Mutations on the original vec do not affect the clones
@@ -56,7 +67,7 @@ fn main() -> int {
 
     // --- is_empty() after clear ---
     sv.clear()
-    bool sc = sv.is_empty()
+    bool sc = sv.empty?
     print(sc)               // true
 
     return 0

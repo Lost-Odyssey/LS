@@ -9,6 +9,8 @@
 import math
 import plotfmt
 import io
+import std.vec
+import std.string
 
 struct TimelineEvent {
     i64 start_ns
@@ -257,13 +259,32 @@ fn _palette(int i) -> string {
 fn parse_timeline_csv(string text) -> vec(TimelineEvent) {
     vec(TimelineEvent) out = []
     vec(string) lane_seen = []
-    vec(string) rows = text.lines()
+    // Phase 2.5: string.lines/split return std.vec Vec(string); copy into the
+    // builtin vec this file still uses internally.
+    Vec(string) _rows = text.lines()
+    vec(string) rows = []
+    int _ri = 0
+    while _ri < _rows.len() {
+        rows.push(_rows.get(_ri))
+        _ri = _ri + 1
+    }
+    // VR-LIM-002: release the module-local pure-LS Vec explicitly.
+    _rows.clear()
+    _rows.shrink_to_fit()
     int r = 0
     while r < rows.length {
         string line = rows[r]
         string t = line.trim()
         if t.length > 0 {
-            vec(string) f = t.split(",")
+            Vec(string) _f = t.split(",")
+            vec(string) f = []
+            int _fi = 0
+            while _fi < _f.len() {
+                f.push(_f.get(_fi))
+                _fi = _fi + 1
+            }
+            _f.clear()
+            _f.shrink_to_fit()
             if f.length >= 4 {
                 string c0 = f[0].trim()
                 if _starts_num(c0) {

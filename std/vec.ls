@@ -1,11 +1,11 @@
-// std/rawvec.ls — generic dynamic array over RAW malloc/realloc/free.
+// std/vec.ls — generic dynamic array over RAW malloc/realloc/free.
 //
 // A pure-LS container that manages its OWN heap buffer (unlike std.stack, which
 // wraps the builtin vec(T)). Goal: be memory-identical and behave identically to
 // the builtin vec(T). Construction matches vec:
 //
-//     RawVec(string) v = {}            // empty   (= vec(string) v = [])
-//     RawVec(int)    v = [1, 2, 3]     // literal (= vec(int) v = [1,2,3])
+//     Vec(string) v = {}            // empty   (= vec(string) v = [])
+//     Vec(int)    v = [1, 2, 3]     // literal (= vec(int) v = [1,2,3])
 //
 // Ownership primitives used:
 //   * sizeof(T)         — element byte size (compile-time, per monomorphization)
@@ -15,7 +15,7 @@
 //   * __take(slot)      — move OUT of a slot (bit-read, no clone)
 //   * __drop_at(slot)   — recursive destructor on a slot (frees owned data)
 //   * __move(local)     — transfer ownership of a named local
-//   * fn __clone(&self) — user deep-copy hook (RawVec(RawVec(T)) reads deep-clone)
+//   * fn __clone(&self) — user deep-copy hook (Vec(Vec(T)) reads deep-clone)
 //   * fn __from_list    — list-literal init opt-in (the `[..]` protocol)
 //
 // Ownership contract (identical to vec(T)):
@@ -23,9 +23,9 @@
 //   get/first/last  return a deep CLONE.   set  drops old, moves new in.
 //   clear / scope-drop  drop every live element, then free the buffer.
 
-struct RawVec(T) { *T data; int len; int cap }
+struct Vec(T) { *T data; int len; int cap }
 
-impl(T) RawVec(T) {
+impl(T) Vec(T) {
     // ---- capacity ----
 
     // Ensure capacity for at least `need` elements (geometric growth).
@@ -54,10 +54,20 @@ impl(T) RawVec(T) {
 
     // ---- queries ----
 
-    fn length(&self) -> int { return self.len }
-    fn capacity(&self) -> int { return self.cap }
-    fn is_empty(&self) -> bool { return self.len == 0 }
+    fn len(&self) -> int { return self.len }
+    fn cap(&self) -> int { return self.cap }
+    fn empty?(&self) -> bool { return self.len == 0 }
     fn as_ptr(&self) -> object { return self.data as object }
+
+    // ---- iteration (Iterator(T) protocol — docs/plan_userdef_for_in.md) ----
+
+    // Borrowing iterator over the elements. `&self` only reads v, so v stays
+    // usable after the loop. VecIter holds a raw pointer into v's buffer (it does
+    // NOT own it), so it must not outlive v. `for x in v` desugars to driving this
+    // iterator's next() under the hood.
+    fn iter(&self) -> VecIter(T) {
+        return VecIter(T){ data: self.data, len: self.len, i: 0 }
+    }
 
     // ---- add ----
 
@@ -82,7 +92,7 @@ impl(T) RawVec(T) {
     }
 
     // List-literal init opt-in (reserved-method protocol, like __drop/__clone):
-    // having this method enables `RawVec(T) v = [a, b, c]` (matches vec(T) v=[..]).
+    // having this method enables `Vec(T) v = [a, b, c]` (matches vec(T) v=[..]).
     fn __from_list(&!self, T x) { self.push(x) }
 
     // ---- remove ----
@@ -130,7 +140,7 @@ impl(T) RawVec(T) {
         return tmp
     }
 
-    fn get_unsafe(&self, int i) -> T { return self.get(i) }
+    fn get!(&self, int i) -> T { return self.get(i) }
 
     // Overwrite element i: drop the old, move the new in.
     fn set(&!self, int i, T x) {
@@ -143,9 +153,9 @@ impl(T) RawVec(T) {
     fn __index(&self, int i) -> T { return self.get(i) }
     fn __index_set(&!self, int i, T x) { self.set(i, x) }
 
-    // Append deep clones of every element in src. The source RawVec is borrowed
+    // Append deep clones of every element in src. The source Vec is borrowed
     // and remains usable after extend, matching builtin vec.extend.
-    fn extend(&!self, &RawVec(T) src) {
+    fn extend(&!self, &Vec(T) src) {
         self.reserve(self.len + src.len)
         for (int i = 0; i < src.len; i = i + 1) {
             T e = src.data[i]
@@ -154,8 +164,8 @@ impl(T) RawVec(T) {
     }
 
     // Deep-clone [start, end), clamping to [0, len].
-    fn slice(&self, int start, int stop) -> RawVec(T) {
-        RawVec(T) out = {}
+    fn slice(&self, int start, int stop) -> Vec(T) {
+        Vec(T) out = {}
         int s = start
         int e = stop
         if s < 0 { s = 0 }
@@ -230,8 +240,8 @@ impl(T) RawVec(T) {
     // ---- search ----
 
     // Search helpers require equality on T. Method-level `where` plus lazy generic
-    // method monomorphization means RawVec(Pt) remains usable when Pt has no Eq,
-    // and only `v.contains(p)` reports the missing bound.
+    // method monomorphization means Vec(Pt) remains usable when Pt has no Eq,
+    // and only `v.has?(p)` reports the missing bound.
     fn index_of(&self, T x) -> int where T: Eq {
         for (int i = 0; i < self.len; i = i + 1) {
             T e = self.data[i]
@@ -240,7 +250,7 @@ impl(T) RawVec(T) {
         return -1
     }
 
-    fn contains(&self, T x) -> bool where T: Eq {
+    fn has?(&self, T x) -> bool where T: Eq {
         return self.index_of(x) >= 0
     }
 
@@ -287,8 +297,8 @@ impl(T) RawVec(T) {
         }
     }
 
-    fn filter(&self, Block(T) -> bool pred) -> RawVec(T) {
-        RawVec(T) out = {}
+    fn filter(&self, Block(T) -> bool pred) -> Vec(T) {
+        Vec(T) out = {}
         for (int i = 0; i < self.len; i = i + 1) {
             T e = self.data[i]
             if pred(e) {
@@ -310,7 +320,7 @@ impl(T) RawVec(T) {
         return None
     }
 
-    fn find_index(&self, Block(T) -> bool pred) -> int {
+    fn pos(&self, Block(T) -> bool pred) -> int {
         for (int i = 0; i < self.len; i = i + 1) {
             T e = self.data[i]
             if pred(e) { return i }
@@ -318,11 +328,11 @@ impl(T) RawVec(T) {
         return -1
     }
 
-    // Transform each element with f, collecting results into a new RawVec(U).
+    // Transform each element with f, collecting results into a new Vec(U).
     // Ownership: each element is deep-cloned from the buffer and moved into f;
     // f returns U which is moved into the output vector.
-    fn map(U)(&self, Block(T)->U f) -> RawVec(U) {
-        RawVec(U) out = {}
+    fn map(U)(&self, Block(T)->U f) -> Vec(U) {
+        Vec(U) out = {}
         out.reserve(self.len)
         for (int i = 0; i < self.len; i = i + 1) {
             T e = self.data[i]
@@ -370,8 +380,8 @@ impl(T) RawVec(T) {
     // ---- copy ----
 
     // Independent deep copy.
-    fn copy(&self) -> RawVec(T) {
-        RawVec(T) out = {}
+    fn copy(&self) -> Vec(T) {
+        Vec(T) out = {}
         out.reserve(self.len)
         for (int i = 0; i < self.len; i = i + 1) {
             T e = self.data[i]               // clone-on-read each element
@@ -380,14 +390,31 @@ impl(T) RawVec(T) {
         return out
     }
 
-    // User deep-copy hook: emit_clone_value calls this when RawVec(T) is cloned
+    // User deep-copy hook: emit_clone_value calls this when Vec(T) is cloned
     // (e.g. read by value as a nested element), instead of the field-wise auto-clone
     // (which cannot deep-copy the raw *T buffer).
-    fn __clone(&self) -> RawVec(T) { return self.copy() }
+    fn __clone(&self) -> Vec(T) { return self.copy() }
 
     // Drop every live element (recursively), then free the buffer.
     fn __drop() {
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
         if self.cap > 0 { free(self.data as *u8) }
+    }
+}
+
+// Borrowing iterator over a Vec(T). Holds a RAW pointer into the source vec's
+// buffer plus a cursor — it does NOT own the buffer, so it is non-has_drop and
+// must not outlive the vec it iterates. Produced by Vec.iter(); driven by the
+// `for x in v` desugaring (see docs/plan_userdef_for_in.md).
+struct VecIter(T) { *T data; int len; int i }
+
+impl(T) VecIter(T) {
+    // Iterator(T) protocol: yield the next element by value (clone-on-read for
+    // has_drop T, matching Vec.get), or None when exhausted.
+    fn next(&!self) -> Option(T) {
+        if self.i >= self.len { return None }
+        T e = self.data[self.i]          // clone-on-read; buffer keeps its own
+        self.i = self.i + 1
+        return Some(e)                   // move the clone into Some
     }
 }

@@ -1,10 +1,11 @@
-// Phase V.4 — vec.reduce(init, Block(A,T)->A) -> A
+// Phase V.4 — Vec.reduce(U)(init, Block(U,T)->U) -> U
+import std.vec
 
 fn main() {
-    vec(int) nums = [1, 2, 3, 4, 5]
+    Vec(int) nums = [1, 2, 3, 4, 5]
 
     // === reduce: sum ===
-    int sum = nums.reduce(0, |acc, x| acc + x)
+    int sum = nums.reduce(int)(0, |acc, x| acc + x)
     if sum != 15 {
         print("FAIL: sum expected 15 got")
         print(sum)
@@ -13,7 +14,7 @@ fn main() {
     print("PASS: reduce sum = 15")
 
     // === reduce: product ===
-    int prod = nums.reduce(1, |acc, x| acc * x)
+    int prod = nums.reduce(int)(1, |acc, x| acc * x)
     if prod != 120 {
         print("FAIL: product expected 120 got")
         print(prod)
@@ -22,8 +23,8 @@ fn main() {
     print("PASS: reduce product = 120")
 
     // === reduce: max ===
-    vec(int) vals = [3, 1, 4, 1, 5, 9, 2, 6]
-    int mx = vals.reduce(0, |acc, x| {
+    Vec(int) vals = [3, 1, 4, 1, 5, 9, 2, 6]
+    int mx = vals.reduce(int)(0, |acc, x| {
         if x > acc {
             return x
         }
@@ -37,7 +38,7 @@ fn main() {
     print("PASS: reduce max = 9")
 
     // === reduce: count matches ===
-    int big_count = nums.reduce(0, |acc, x| {
+    int big_count = nums.reduce(int)(0, |acc, x| {
         if x > 3 {
             return acc + 1
         }
@@ -50,9 +51,9 @@ fn main() {
     }
     print("PASS: reduce count>3 = 2")
 
-    // === reduce on empty vec ===
-    vec(int) empty = []
-    int empty_sum = empty.reduce(42, |acc, x| acc + x)
+    // === reduce on empty Vec ===
+    Vec(int) empty = {}
+    int empty_sum = empty.reduce(int)(42, |acc, x| acc + x)
     if empty_sum != 42 {
         print("FAIL: empty reduce expected 42 got")
         print(empty_sum)
@@ -61,8 +62,8 @@ fn main() {
     print("PASS: reduce empty = init value")
 
     // === reduce: single element ===
-    vec(int) single = [7]
-    int sv = single.reduce(0, |acc, x| acc + x)
+    Vec(int) single = [7]
+    int sv = single.reduce(int)(0, |acc, x| acc + x)
     if sv != 7 {
         print("FAIL: single reduce expected 7 got")
         print(sv)
@@ -71,14 +72,14 @@ fn main() {
     print("PASS: reduce single = 7")
 
     // === reduce with string concatenation ===
-    vec(string) words = []
+    Vec(string) words = {}
     string w1 = "hello"
     string w2 = " "
     string w3 = "world"
     words.push(w1)
     words.push(w2)
     words.push(w3)
-    string joined = words.reduce("", |acc, s| acc + s)
+    string joined = words.reduce(string)(f"", |acc, s| acc + s)
     if joined.compare("hello world") != 0 {
         print("FAIL: string reduce expected 'hello world' got")
         print(joined)
@@ -87,7 +88,7 @@ fn main() {
     print("PASS: reduce string concat = 'hello world'")
 
     // === reduce: string length sum ===
-    int total_len = words.reduce(0, |acc, s| acc + s.length)
+    int total_len = words.reduce(int)(0, |acc, s| acc + s.length)
     if total_len != 11 {
         print("FAIL: total_len expected 11 got")
         print(total_len)
@@ -96,8 +97,8 @@ fn main() {
     print("PASS: reduce string lengths sum = 11")
 
     // === reduce f64 sum ===
-    vec(int) fv = [1, 2, 3]
-    f64 fsum = fv.reduce(0.0, |acc, x| acc + x)
+    Vec(int) fv = [1, 2, 3]
+    f64 fsum = fv.reduce(f64)(0.0, |acc, x| acc + x)
     if fsum < 5.99 {
         print("FAIL: f64 sum expected 6.0")
         return

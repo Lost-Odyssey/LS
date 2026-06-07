@@ -1,6 +1,8 @@
 // vec(string) build + scope drop
+import std.vec
+
 fn main() {
-    vec(string) v = []
+    Vec(string) v = {}
     v.push("a".copy()); v.push("b".copy())
-    print(v.length)
+    print(v.len())
 }
