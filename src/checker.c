@@ -356,6 +356,7 @@ static Type *find_enum_type(Checker *c, const char *name)
 
 /* Forward decls for helpers used before their definitions. */
 static Type *check_expr(Checker *c, AstNode *node);
+static bool type_assignable(const Type *dst, const Type *src);
 static bool type_owns_heap_for_enum(const Type *t);
 static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name);
 /* Operator overloading: try to lower `a OP b` to a user operator-method call.
@@ -760,6 +761,47 @@ static Type *find_method(Checker *c, const char *struct_name, const char *method
         }
     }
     return NULL;
+}
+
+/* Tag `[..]` as a user container literal when the expected type is a struct
+   that opts into the reserved __from_list(&!self, E) protocol. This mirrors the
+   var-decl path and is reused for struct field defaults/overrides. */
+static bool checker_tag_user_from_list_literal(Checker *c, Type *expected,
+                                               AstNode *lit,
+                                               const char *what)
+{
+    if (c == NULL || expected == NULL || lit == NULL)
+        return false;
+    if (expected->kind != TYPE_STRUCT || lit->kind != AST_ARRAY_LIT)
+        return false;
+
+    Type *fl = find_method(c, impl_key_of_type(expected), "__from_list");
+    if (fl == NULL)
+        return false;
+
+    Type *elem_expected = (fl->kind == TYPE_FUNCTION &&
+                           fl->as.function.param_count >= 2)
+                          ? fl->as.function.params[1] : NULL;
+    for (int i = 0; i < lit->as.array_lit.count; i++)
+    {
+        AstNode *elem = lit->as.array_lit.elements[i];
+        if (elem_expected)
+            checker_tag_user_from_list_literal(c, elem_expected, elem, what);
+
+        Type *saved_expected = c->expected_type;
+        c->expected_type = elem_expected;
+        Type *et = check_expr(c, elem);
+        c->expected_type = saved_expected;
+        if (elem_expected && et && !type_assignable(elem_expected, et))
+        {
+            checker_error(c, elem->line, elem->column,
+                          "%s element type mismatch: expected '%s', got '%s'",
+                          what ? what : "list-literal",
+                          type_name(elem_expected), type_name(et));
+        }
+    }
+    lit->resolved_type = expected;
+    return true;
 }
 
 /* Check if a registered method is static. Returns -1 if not found, 0 if instance, 1 if static */
@@ -6840,8 +6882,11 @@ static Type *check_expr(Checker *c, AstNode *node)
             /* Type-check the value; set expected_type so closure literals can
                infer their param/return types from the field's Block type. */
             Type *field_expected = st->as.strukt.fields[field_idx].type;
+            checker_tag_user_from_list_literal(c, field_expected,
+                node->as.new_expr.field_inits[i].value, "field list-literal");
             Type *saved_expected2 = c->expected_type;
-            if (field_expected && field_expected->kind == TYPE_BLOCK)
+            if (field_expected && (field_expected->kind == TYPE_BLOCK ||
+                                   field_expected->kind == TYPE_STRUCT))
                 c->expected_type = field_expected;
             Type *vt = check_expr(c, node->as.new_expr.field_inits[i].value);
             c->expected_type = saved_expected2;
@@ -6918,6 +6963,13 @@ static Type *check_expr(Checker *c, AstNode *node)
                             jfn, type_name(V), type_name(vt));
                 }
                 deflt->resolved_type = fexp;
+            }
+            else if (fexp && fexp->kind == TYPE_STRUCT &&
+                     deflt->kind == AST_ARRAY_LIT &&
+                     deflt->resolved_type == NULL)
+            {
+                checker_tag_user_from_list_literal(c, fexp, deflt,
+                                                   "default list-literal");
             }
             Type *saved_def_exp = c->expected_type;
             if (fexp && (fexp->kind == TYPE_STRUCT || fexp->kind == TYPE_BLOCK))
@@ -7169,28 +7221,8 @@ static void check_stmt(Checker *c, AstNode *node)
                 node->as.var_decl.init->kind == AST_ARRAY_LIT &&
                 find_method(c, impl_key_of_type(declared), "__from_list") != NULL)
             {
-                /* Collection-literal init for a user container (matches builtin
-                   `vec(T) v = [..]`): `Type v = [e1, e2, ...]` works iff the struct
-                   explicitly opts in via the reserved method `__from_list(&!self, E)`
-                   — an LS reserved-method protocol (like __drop/__clone), since LS
-                   has no generic traits. Codegen zero-inits the struct then calls
-                   __from_list for each element. Validate elements against E
-                   (__from_list's 2nd param, after the self pointer). */
-                AstNode *al = node->as.var_decl.init;
-                Type *fl = find_method(c, impl_key_of_type(declared), "__from_list");
-                Type *E = (fl && fl->kind == TYPE_FUNCTION &&
-                           fl->as.function.param_count >= 2)
-                          ? fl->as.function.params[1] : NULL;
-                for (int i = 0; i < al->as.array_lit.count; i++)
-                {
-                    Type *et = check_expr(c, al->as.array_lit.elements[i]);
-                    if (E && et && !type_assignable(E, et))
-                        checker_error(c, al->as.array_lit.elements[i]->line,
-                                      al->as.array_lit.elements[i]->column,
-                                      "list-literal element type mismatch: expected '%s', got '%s'",
-                                      type_name(E), type_name(et));
-                }
-                al->resolved_type = declared; /* signal codegen */
+                checker_tag_user_from_list_literal(c, declared,
+                    node->as.var_decl.init, "list-literal");
             }
             else if (declared && declared->kind == TYPE_STRUCT &&
                 node->as.var_decl.init->kind == AST_MAP_LIT &&

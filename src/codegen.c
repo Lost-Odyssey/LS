@@ -300,6 +300,9 @@ static LLVMValueRef emit_map_clone_val(CodegenContext *ctx, LLVMValueRef map_val
 /* Unified value/element deep-clone dispatcher (string/vec/has_drop struct/enum). */
 static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
                                      LLVMTypeRef llvm_type, Type *type);
+static void mark_string_moved(CodegenContext *ctx, LLVMValueRef str_alloca,
+                              const char *reason);
+static void cg_mark_last_temp_moved(CodegenContext *ctx, int mark, const char *reason);
 static void emit_scope_cleanup(CodegenContext *ctx);
 static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloca);
 /* Drop a whole vec stored at `vec_ptr` (a *LsVec): free owned elements + buffer.
@@ -319,7 +322,10 @@ static LLVMBasicBlockRef emit_struct_drop_separate(CodegenContext *ctx, LLVMValu
                                                    Type *struct_type, LLVMValueRef moved_flag);
 static void emit_drop_field_cleanup(CodegenContext *ctx);
 LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t);
+LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const char *name);
+static LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_type,
+                                              AstNode *lit);
 static LLVMTypeRef build_variant_payload_struct(CodegenContext *ctx, Type *enum_type, int variant_idx);
 static void cg_enum_payload_dims(CodegenContext *ctx, Type *et, int *out_size, int *out_align);
 static void cg_enum_body_fields(CodegenContext *ctx, int max_payload, int max_align, LLVMTypeRef body_out[2]);
@@ -1195,6 +1201,78 @@ static LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const c
     LLVMValueRef slot = LLVMBuildAlloca(eb, ty, name);
     LLVMDisposeBuilder(eb);
     return slot;
+}
+
+/* Emit a user-container list literal: `StructWithFromList v = [a, b]`.
+   The checker guarantees `lit->resolved_type == struct_type` and that the
+   struct has `__from_list(&!self, E)`. */
+static LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_type,
+                                              AstNode *lit)
+{
+    if (ctx == NULL || struct_type == NULL || lit == NULL ||
+        struct_type->kind != TYPE_STRUCT || lit->kind != AST_ARRAY_LIT)
+        return NULL;
+
+    LLVMTypeRef st_llvm = type_to_llvm(ctx, struct_type);
+    LLVMValueRef tmp = cg_entry_alloca(ctx, st_llvm, "ufl.tmp");
+    LLVMBuildStore(ctx->builder, LLVMConstNull(st_llvm), tmp);
+
+    char fl_name[256];
+    snprintf(fl_name, sizeof(fl_name), "%s.__from_list",
+             struct_llvm_name(struct_type));
+    LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
+    if (fl_fn == NULL)
+    {
+        cg_error(ctx, lit->line, lit->column,
+                 "missing __from_list method for '%s'",
+                 struct_type->as.strukt.name);
+        return NULL;
+    }
+
+    LLVMTypeRef fl_ft = LLVMGlobalGetValueType(fl_fn);
+    for (int i = 0; i < lit->as.array_lit.count; i++)
+    {
+        AstNode *elem = lit->as.array_lit.elements[i];
+        int pm = ctx->temp_string_count;
+        LLVMValueRef ev = codegen_expr(ctx, elem);
+        if (ev == NULL)
+            continue;
+        Type *et = elem->resolved_type;
+
+        if (et && et->kind == TYPE_STRING)
+        {
+            AstNode *raw = elem;
+            AstNode *uw = ast_unwrap_move(raw);
+            bool is_move = (raw != uw);
+            if (uw->kind == AST_IDENT)
+            {
+                if (is_move)
+                {
+                    CgSymbol *as = cg_scope_resolve(ctx->current_scope,
+                                                    uw->as.ident.name);
+                    if (as && as->value)
+                        mark_string_moved(ctx, as->value, "list: __move elem");
+                }
+                else
+                {
+                    LLVMValueRef capb = LLVMConstInt(
+                        LLVMInt32TypeInContext(ctx->context),
+                        (unsigned long long)LS_CAP_BORROWED, 0);
+                    ev = LLVMBuildInsertValue(ctx->builder, ev, capb, 2,
+                                              "list.borrow");
+                }
+            }
+            else
+            {
+                cg_mark_last_temp_moved(ctx, pm, "list: rvalue string elem");
+            }
+        }
+
+        LLVMValueRef fl_args[2] = { tmp, ev };
+        LLVMBuildCall2(ctx->builder, fl_ft, fl_fn, fl_args, 2, "");
+    }
+
+    return LLVMBuildLoad2(ctx->builder, st_llvm, tmp, "ufl.val");
 }
 
 /* Emit an allocation. When memcheck is on, calls ls_mc_alloc(size, site).
@@ -13941,6 +14019,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         /* Array literal — build constant array if possible, else return NULL
            (caller VAR_DECL handles element-by-element store) */
         Type *arr_type = node->resolved_type;
+        if (arr_type && arr_type->kind == TYPE_STRUCT)
+            return emit_user_from_list_value(ctx, arr_type, node);
         if (arr_type == NULL || arr_type->kind != TYPE_ARRAY)
             return NULL;
 
@@ -21710,16 +21790,21 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         }
     }
 
-    /* Generate __ls_global_cleanup: free all global dynamic string variables (BUG #1 fix).
-       Called just before main() returns so global strings don't leak at program exit. */
+    /* Generate __ls_global_cleanup for globals that own heap data.
+       Called just before main() returns so global values don't leak at program exit. */
     {
-        /* Collect all global VAR_DECLs that need cleanup (string or vec) */
+        /* Collect all global VAR_DECLs that need cleanup. */
         bool has_global_cleanup = false;
 
-#define DECL_NEEDS_GLOBAL_CLEANUP(d)                    \
-    ((d)->kind == AST_VAR_DECL && (d)->resolved_type && \
-     ((d)->resolved_type->kind == TYPE_STRING ||        \
-      (d)->resolved_type->kind == TYPE_VECTOR))
+#define DECL_NEEDS_GLOBAL_CLEANUP(d)                                      \
+    ((d)->kind == AST_VAR_DECL && (d)->resolved_type &&                   \
+     ((d)->resolved_type->kind == TYPE_STRING ||                          \
+      (d)->resolved_type->kind == TYPE_VECTOR ||                          \
+      (d)->resolved_type->kind == TYPE_MAP ||                             \
+      ((d)->resolved_type->kind == TYPE_STRUCT &&                         \
+       (d)->resolved_type->as.strukt.has_drop) ||                         \
+      ((d)->resolved_type->kind == TYPE_ENUM &&                           \
+       (d)->resolved_type->as.enom.has_drop)))
 
         for (int i = 0; i < ast->as.program.decl_count && !has_global_cleanup; i++)
         {
@@ -21794,6 +21879,24 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                free(data) if cap > 0. POD-element vecs skip the element loop. */    \
             emit_global_vec_cleanup(ctx, gv,                                                             \
                 (decl)->resolved_type->as.vec.elem, gcleanup_idx++);                                     \
+        }                                                                                                \
+        else if ((decl)->resolved_type->kind == TYPE_STRUCT &&                                           \
+                 (decl)->resolved_type->as.strukt.has_drop)                                             \
+        {                                                                                                \
+            if ((decl)->resolved_type->as.strukt.drop_fn == NULL)                                        \
+                emit_auto_drop_fn(ctx, (decl)->resolved_type);                                           \
+            emit_drop_value(ctx, gv, (decl)->resolved_type);                                             \
+        }                                                                                                \
+        else if ((decl)->resolved_type->kind == TYPE_ENUM &&                                             \
+                 (decl)->resolved_type->as.enom.has_drop)                                               \
+        {                                                                                                \
+            if ((decl)->resolved_type->as.enom.drop_fn == NULL)                                          \
+                emit_auto_enum_drop_fn(ctx, (decl)->resolved_type);                                      \
+            emit_drop_value(ctx, gv, (decl)->resolved_type);                                             \
+        }                                                                                                \
+        else if ((decl)->resolved_type->kind == TYPE_MAP)                                                \
+        {                                                                                                \
+            emit_drop_value(ctx, gv, (decl)->resolved_type);                                             \
         }                                                                                                \
     } while (0)
 

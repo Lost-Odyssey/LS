@@ -685,6 +685,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# VR-LIM-012: user Vec(T) struct field defaults use __from_list / zero init.
+add_test(
+    NAME test_struct_field_defaults_uservec
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_uservec_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=struct_field_defaults_uservec
+        -DMARKER=USERVEC_FIELD_DEFAULTS
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+set_tests_properties(test_struct_field_defaults_uservec PROPERTIES
+    DEPENDS "test_struct_field_defaults_v2")
+
 # function positional default parameters (档1): fn f(x, y="x", z=1); trailing
 # params with literal/struct defaults may be omitted at the call site (checker
 # appends cloned default exprs). Self-verifying sample prints "FNDEF PASS".
@@ -1531,6 +1545,17 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_vec_api.cmake
 )
 set_tests_properties(test_vec_api PROPERTIES DEPENDS "test_inferred_init")
+
+add_test(
+    NAME test_vec_global_drop
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_global_drop_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_global_drop.cmake
+)
+set_tests_properties(test_vec_global_drop PROPERTIES DEPENDS "test_vec_api")
 
 # KI-D: RawVec(Pt) without Eq stays usable until an equality-search method is
 # called; calling one reports the method-level `where T: Eq` bound.
