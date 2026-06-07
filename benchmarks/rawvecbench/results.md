@@ -69,9 +69,35 @@ RawVec memory-safety scope but decisive for has_drop performance parity.
 ## Verdict (M3)
 
 - RawVec is **memory-identical** to vec (Gates M1/M2: 0/0/0 across int/string/struct).
-- RawVec is **performance-identical for POD**, but **~7–8× slower for has_drop
-  elements** due to the param-borrow clone — a general user-container limitation, not
-  a RawVec flaw.
-- "Pure LS replaces vec" is **true for POD today**; for has_drop it hinges on adding
-  owned/move-into-container parameter semantics (a worthwhile general language
-  improvement that also speeds up std.stack and every future container).
+- RawVec is **performance-identical for POD**.
+- **string: FIXED (2026-06-06)** via the owned-param / move-into-container ABI
+  (below). RawVec string push went **52ms → ~7ms ≈ vec** (7–8× → ~1×).
+- **struct (has_drop): already at parity** — an rvalue struct push moves (1.0×); no
+  change needed.
+- **vec/map elements: still clone on push** (params stay `is_borrowed`), but this only
+  matters for container-of-container (`RawVec(vec(int))`), currently unreachable due
+  to the nested-generic parser/mangle gaps — deferred until those are fixed.
+
+→ **"Pure LS replaces vec" now holds for POD, string, and has_drop struct elements**
+(memory- and performance-identical). Only nested generic containers remain (blocked by
+generics gaps, not by memory/perf).
+
+## Owned-param / move-into-container ABI (2026-06-06)
+
+The fix that closed the string gap. Model chosen: **rvalue / `__move` arguments
+transfer ownership; named-variable arguments keep borrow semantics** (no breaking
+change to existing read-after-pass code).
+
+- **Param prologue** (`codegen_fn_decl`): string params no longer force `cap=-2` and
+  are no longer marked `is_borrowed`. Cleanup is now **cap-driven** (`emit_string_free`
+  frees `cap>0`, skips `cap<=0`), so an owned param the callee doesn't move out is
+  still freed.
+- **Call site**: a named-variable string arg gets `cap=-2` inserted (borrow, caller
+  keeps it); an owned rvalue / `__move(x)` arg keeps `cap>0` and its source temp/var
+  is marked moved (caller won't free).
+- **`cg_store_owned` (string)**: runtime `cap` branch — `cap>0` → move (store + mark
+  source moved); `cap<=0` → clone (preserves the caller's copy; no-op for static).
+
+Verified: `test_rawvec_move` (rvalue move / named-var stays valid / `__move`) +
+ctest 151/151, all memcheck 0/0/0. The same cap-driven model extends to `vec`/`map`
+params when nested generics are unblocked.

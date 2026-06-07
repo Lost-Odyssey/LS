@@ -1472,6 +1472,18 @@ add_test(
 )
 set_tests_properties(test_rawvec_m2 PROPERTIES DEPENDS "test_rawvec_m1")
 
+# RawVec owned-param / move-into-container — rvalue & __move string args MOVE into
+# the container (no clone); named-var args borrow (clone, caller stays valid).
+add_test(
+    NAME test_rawvec_move
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_move.cmake
+)
+set_tests_properties(test_rawvec_move PROPERTIES DEPENDS "test_rawvec_m2")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

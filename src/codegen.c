@@ -2580,9 +2580,31 @@ static void cg_store_owned(CodegenContext *ctx,
             }
             else
             {
-                /* INTO_CONTAINER / RETURN：move 语义，source 标记为已移动 */
+                /* INTO_CONTAINER / RETURN：运行时检查 cap。
+                   cap > 0  → owned（来自 rvalue/__move 实参）：move 语义
+                   cap == LS_CAP_BORROWED (-2) → 借用（来自命名变量实参）：clone */
+                LLVMValueRef cap_xfer = LLVMBuildExtractValue(ctx->builder, val, 2, "xfer.str.cap");
+                LLVMValueRef zero32 = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0);
+                LLVMValueRef is_owned_xfer = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap_xfer, zero32, "xfer.str.owned");
+                LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+                LLVMBasicBlockRef owned_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "xfer.str.owned");
+                LLVMBasicBlockRef borrow_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "xfer.str.borrow");
+                LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "xfer.str.merge");
+                LLVMBuildCondBr(ctx->builder, is_owned_xfer, owned_bb, borrow_bb);
+
+                /* Owned: move 语义 */
+                LLVMPositionBuilderAtEnd(ctx->builder, owned_bb);
                 LLVMBuildStore(ctx->builder, val, dst_ptr);
-                mark_string_moved(ctx, src_sym->value, "xfer: string moved into container");
+                mark_string_moved(ctx, src_sym->value, "xfer: owned string moved into container");
+                LLVMBuildBr(ctx->builder, merge_bb);
+
+                /* Borrowed: clone 语义 */
+                LLVMPositionBuilderAtEnd(ctx->builder, borrow_bb);
+                LLVMValueRef cloned = emit_string_clone_val(ctx, val);
+                LLVMBuildStore(ctx->builder, cloned, dst_ptr);
+                LLVMBuildBr(ctx->builder, merge_bb);
+
+                LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
             }
         }
         else
@@ -11643,6 +11665,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
             for (int i = 0; i < user_argc; i++)
             {
+                /* Save temp_string_count before arg eval so we can mark
+                   rvalue string-arg temps as moved (prevent double-free
+                   when callee owns the passed string). */
+                int arg_temp_mark = ctx->temp_string_count;
                 /* Phase B: vec[i] → &T (borrow) — skip clone, pass element address.
                    When the callee's LLVM param is a pointer, codegen_lvalue_ptr returns
                    the GEP address of the element in the vec's data buffer directly.
@@ -11823,6 +11849,60 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         cg_push_temp_drop(ctx, vtmp, arg_type);
                     }
                 }
+                /* String arg ownership: distinguish owned (rvalue/__move) from
+                   borrowed (named variable). Owned strings keep real cap > 0 so the
+                   callee can move into containers; borrowed strings get cap = -2 so
+                   the callee clones when storing (preserving caller's copy). */
+                else if (arg_val && arg_type && arg_type->kind == TYPE_STRING)
+                {
+                    unsigned llvm_slot = (unsigned)(i + arg_offset);
+                    bool is_c_abi_ptr = false;
+                    if (llvm_slot < LLVMCountParams(callee)) {
+                        LLVMTypeRef pt = LLVMTypeOf(LLVMGetParam(callee, llvm_slot));
+                        if (LLVMGetTypeKind(pt) == LLVMPointerTypeKind)
+                            is_c_abi_ptr = true;
+                    }
+                    if (!is_c_abi_ptr)
+                    {
+                        AstNode *raw = node->as.call.args[i];
+                        AstNode *unwrapped = ast_unwrap_move(raw);
+                        bool is_move_expr = (raw != unwrapped);
+                        if (unwrapped->kind == AST_IDENT)
+                        {
+                            if (is_move_expr)
+                            {
+                                /* __move(s): keep cap as-is (owned), mark source
+                                   moved so caller won't double-free. */
+                                CgSymbol *argsym = cg_scope_resolve(
+                                    ctx->current_scope, unwrapped->as.ident.name);
+                                if (argsym && argsym->value)
+                                    mark_string_moved(ctx, argsym->value,
+                                        "xfer: __move string arg");
+                            }
+                            else
+                            {
+                                /* Named variable: set cap=-2 (borrowed), caller
+                                   retains ownership. */
+                                LLVMValueRef cap_borrowed = LLVMConstInt(
+                                    LLVMInt32TypeInContext(ctx->context),
+                                    (unsigned long long)LS_CAP_BORROWED, 0);
+                                arg_val = LLVMBuildInsertValue(ctx->builder,
+                                    arg_val, cap_borrowed, 2, "arg.borrow");
+                            }
+                        }
+                        else
+                        {
+                            /* Rvalue expr: keep cap as-is (owned). Mark the
+                               last string temp as moved so statement cleanup
+                               won't free it (callee now owns the heap buffer).
+                               Earlier intermediate temps (e.g. substr result
+                               before .trim()) remain owned by the temp system
+                               and are freed at the statement boundary. */
+                            cg_mark_last_temp_moved(ctx, arg_temp_mark,
+                                "xfer: rvalue string arg");
+                        }
+                    }
+                }
                 args[i + arg_offset] = arg_val;
             }
 
@@ -11905,7 +11985,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 }
             }
 
-            /* String arg fixup: borrow (zero cap) for LS functions, extract .data for C ABI. */
+            /* String arg fixup: extract .data for C ABI / variadic calls.
+               LS ABI (struct by-value) is handled in the main arg loop above
+               with per-arg ownership (rvalue/__move → owned; named var → borrow). */
             unsigned param_count = LLVMCountParams(callee);
             for (int i = arg_offset; i < total_argc; i++)
             {
@@ -11922,17 +12004,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             /* C ABI: pass raw data pointer */
                             args[i] = ls_string_data(ctx, args[i]);
                         }
-                        else
-                        {
-                            /* LS ABI: set cap = LS_CAP_BORROWED (-2) so the callee
-                               won't free the data (caller retains ownership), but WILL
-                               clone it when storing into enum/struct fields (M-2). */
-                            LLVMValueRef cap_borrowed = LLVMConstInt(
-                                LLVMInt32TypeInContext(ctx->context),
-                                (unsigned long long)LS_CAP_BORROWED, 0);
-                            args[i] = LLVMBuildInsertValue(
-                                ctx->builder, args[i], cap_borrowed, 2, "arg.borrow");
-                        }
+                        /* else: LS ABI — already handled above, skip */
                     }
                     else if (LLVMIsFunctionVarArg(fn_type))
                     {
@@ -16649,30 +16721,13 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             moved_flag = cg_entry_alloca(ctx, i1_type, "param.moved");
             LLVMBuildStore(ctx->builder, LLVMConstInt(i1_type, 0, 0), moved_flag);
         }
-        /* String parameters: mark cap = LS_CAP_BORROWED (-2) so:
-             - emit_string_free skips the free (cap <= 0 → not owned).
-             - emit_string_clone_val DOES clone (cap == -2 → needs deep copy).
-             - emit_string_append_inline uses fresh malloc (cap <= 0 → static/borrowed).
-           M-2: was cap=0 (LS_CAP_STATIC), which conflated static literals with borrowed
-           params; clone was skipped for both, causing use-after-free when the borrowed
-           string was stored into an enum/struct field (BF-032). */
-        if (param_type && param_type->kind == TYPE_STRING)
-        {
-            LLVMTypeRef str_type = ls_string_type(ctx);
-            LLVMValueRef str_val = LLVMBuildLoad2(ctx->builder, str_type, alloca, "param.str");
-            LLVMValueRef cap_borrowed = LLVMConstInt(
-                LLVMInt32TypeInContext(ctx->context), (unsigned long long)LS_CAP_BORROWED, 0);
-            str_val = LLVMBuildInsertValue(ctx->builder, str_val, cap_borrowed, 2, "param.borrow");
-            LLVMBuildStore(ctx->builder, str_val, alloca);
-#if CG_DEBUG
-            {
-                LLVMValueRef dbg_ptr = LLVMBuildExtractValue(ctx->builder, str_val, 0, "pb.dbg.p");
-                LLVMValueRef dbg_len = LLVMBuildExtractValue(ctx->builder, str_val, 1, "pb.dbg.l");
-                LLVMValueRef dbg_args[2] = {dbg_len, dbg_ptr};
-                cg_emit_debug_printf(ctx, "[cg] param.borrow  cap=-2 len=%d ptr=%p\n", dbg_args, 2);
-            }
-#endif
-        }
+        /* String parameters: keep incoming cap value.
+           - cap == LS_CAP_BORROWED (-2): caller retains ownership, callee borrows.
+             emit_string_free skips (cap <= 0), cg_store_owned clones on store.
+           - cap > 0 (owned): callee owns the string. Passed for rvalue/__move args.
+             emit_string_free frees on scope exit; cg_store_owned moves on store.
+           The call site sets cap=-2 for named variable args and leaves cap>0
+           for rvalue/__move args, so the distinction is preserved through ABI. */
         CgSymbol *psym = cg_scope_define(ctx->current_scope, node->as.fn_decl.param_names[i], alloca, param_type, moved_flag);
         /* vec / map parameters are borrowed: the caller owns the data
            buffer / bucket array. Without this, the callee's scope cleanup
@@ -16681,14 +16736,6 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
            map; vec was already correct.) */
         if (psym && param_type &&
             (param_type->kind == TYPE_VECTOR || param_type->kind == TYPE_MAP))
-            psym->is_borrowed = true;
-        /* BF-045: string params are borrows (prologue above marks cap=-2). Mark the
-           symbol borrowed too, so cg_store_owned routes a `S { a: s }` field store
-           (and `return s`) through emit_string_clone_val (which deep-copies cap=-2)
-           instead of the move branch (which stored the borrow as-is). Without this
-           the struct field aliased the caller's buffer; when the caller freed its
-           temp after the call, the escaped field dangled (AOT garbage, JIT lucky UAF). */
-        if (psym && param_type && param_type->kind == TYPE_STRING)
             psym->is_borrowed = true;
         /* Phase C.5: Block-typed parameters are call-borrowed — the caller
            owns the closure's env block, so the callee's scope cleanup must
