@@ -1262,6 +1262,41 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
    An empty map literal {} is also allowed (type must be declared). */
 static AstNode *prefix_map_lit(Parser *p) {
     Token tok = p->previous; /* the '{' token */
+
+    /* Anonymous struct literal `{ field: val, ... }` — the struct type is inferred
+       from the expected type at the use site (checker uses c->expected_type).
+       Unambiguous vs a map literal: maps use `key -> val`, so `IDENT :` can only
+       be a struct field. Mirrors the prefixed StructName{field: val} parser. */
+    if (check(p, TOKEN_IDENTIFIER) &&
+        scanner_peek(&p->scanner).type == TOKEN_COLON) {
+        AstNode *n = new_node(AST_NEW_EXPR, tok.line, tok.column);
+        n->as.new_expr.struct_name = NULL;   /* anonymous: infer from expected type */
+        n->as.new_expr.module = NULL;
+        n->as.new_expr.on_stack = true;
+        n->as.new_expr.type_args = NULL;
+        n->as.new_expr.type_arg_count = 0;
+        int sc_cap = 0, sc_count = 0;
+        struct { char *name; AstNode *value; } *inits = NULL;
+        while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+            consume(p, TOKEN_IDENTIFIER, "expected field name in struct literal");
+            Token fname = p->previous;
+            consume(p, TOKEN_COLON, "expected ':' after field name in struct literal");
+            AstNode *val = parse_expr_prec(p, PREC_ASSIGNMENT);
+            if (sc_count >= sc_cap) {
+                sc_cap = GROW_CAPACITY(sc_cap);
+                inits = realloc_safe(inits, (size_t)sc_cap * sizeof(inits[0]));
+            }
+            inits[sc_count].name  = str_dup_n(fname.start, fname.length);
+            inits[sc_count].value = val;
+            sc_count++;
+            if (!match_tok(p, TOKEN_COMMA)) break;
+        }
+        consume(p, TOKEN_RBRACE, "expected '}' after struct literal fields");
+        n->as.new_expr.field_inits = (void *)inits;
+        n->as.new_expr.field_init_count = sc_count;
+        return n;
+    }
+
     AstNode **keys = NULL;
     AstNode **vals = NULL;
     int count = 0;

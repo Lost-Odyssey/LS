@@ -6192,7 +6192,27 @@ static Type *check_expr(Checker *c, AstNode *node)
         /* Look up the struct type. B-4: module-qualified literal `mod.Type{...}`
            resolves through the imported module's export table. */
         Type *st = NULL;
-        if (node->as.new_expr.module != NULL)
+        /* Anonymous struct literal `{ field: val, ... }` (no type prefix): the
+           parser left struct_name NULL. Infer the struct type from the expected
+           type (LHS of a var-decl / return / arg slot). */
+        if (node->as.new_expr.struct_name == NULL)
+        {
+            if (c->expected_type == NULL || c->expected_type->kind != TYPE_STRUCT)
+            {
+                checker_error(c, node->line, node->column,
+                              "cannot infer struct type for `{...}` literal here "
+                              "(no expected struct type in this context)");
+                result = NULL;
+                break;
+            }
+            st = c->expected_type;
+            /* adopt the inferred name so downstream field lookup / codegen work */
+            size_t snl = strlen(st->as.strukt.name);
+            char *sdup = (char *)malloc_safe(snl + 1);
+            memcpy(sdup, st->as.strukt.name, snl + 1);
+            node->as.new_expr.struct_name = sdup;
+        }
+        else if (node->as.new_expr.module != NULL)
         {
             Symbol *modsym = scope_resolve(c->current_scope, node->as.new_expr.module);
             if (modsym == NULL || modsym->type == NULL ||
