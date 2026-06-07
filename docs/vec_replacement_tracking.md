@@ -132,11 +132,11 @@
 | 27 | proc_args_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
 | 28 | proc_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
 | 29 | test_proc_args.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
-| 30 | regex_test.ls | (非 ctest) | ✅ | LS 编译通过，C 符号缺失不可执行(IR-002) |
-| 31 | re_step2.ls | (非 ctest) | ✅ | 同上 |
-| 32 | re_step3.ls | (非 ctest) | ✅ | 同上 |
-| 33 | re_step4.ls | (非 ctest) | ✅ | 同上 |
-| 34 | re_step5.ls | (非 ctest) | ✅ | 同上，含 `Option(Vec(string))` 验证 |
+| 30 | regex_test.ls | **test_regex** (新注册 ctest) | ✅ | IR-002 已解除：`ls_regex.c` 接入构建 + jit.c 注册符号。JIT ✅ AOT ✅ Memcheck 0/0/0，12/12 PASS |
+| 31 | re_step2.ls | (非 ctest) | ✅ | JIT 运行 OK |
+| 32 | re_step3.ls | (非 ctest) | ✅ | JIT 运行 OK |
+| 33 | re_step4.ls | (非 ctest) | ✅ | JIT 运行 OK |
+| 34 | re_step5.ls | (非 ctest) | ✅ | JIT 运行 OK，含 `Option(Vec(string))` 验证 |
 | 35 | strconv_test.ls | test_strconv | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 36 | test_bug_22.ls | (非 ctest) | 待做 |
 | 37 | rawvec_m1_test.ls | test_vec_m1 | 待做 |
@@ -155,7 +155,7 @@
 | 6 | std/plottl.ls | 待做 |
 | 7 | std/fs.ls | ✅ | `list_dir` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
 | 8 | std/proc.ls | ✅ | `args` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
-| 9 | std/regex.ls | ✅ | `find_all`/`capture`/`capture_all`/`split` 返回 `Vec(string)`；注：`ls_regex.c` 未链接进 `ls.exe`，测试不可执行（预存问题） |
+| 9 | std/regex.ls | ✅ | `find_all`/`capture`/`capture_all`/`split` 返回 `Vec(string)`；IR-002 已解除：`runtime/ls_regex.c` 接入 `ls.exe`+`ls_os_backend` 构建，jit.c 注册 10 个 `__ls_regex_*` 符号；`test_regex` 注册为 ctest（JIT+AOT+memcheck 三绿） |
 | 10 | std/ring.ls | 待做 |
 | 11 | std/stack.ls | 待做 |
 

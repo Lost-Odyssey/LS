@@ -184,6 +184,17 @@ int jit_init(JitEngine *engine) {
         extern int         __ls_str_skip_ws(const char *, int, int);
         extern int         __ls_str_scan_plain(const char *, int, int);
         extern int         __ls_str_scan_digits(const char *, int, int);
+        /* regex engine (runtime/ls_regex.c) — used by std.regex via std.c FFI */
+        extern int         __ls_regex_compile(const char *, int);
+        extern void        __ls_regex_free(int);
+        extern const char *__ls_regex_last_error(void);
+        extern int         __ls_regex_exec(int, const char *, int, int);
+        extern int         __ls_regex_cap_start(int);
+        extern int         __ls_regex_cap_len(int);
+        extern int         __ls_regex_group_count(int);
+        extern int         __ls_regex_named_count(int);
+        extern const char *__ls_regex_named_name(int, int);
+        extern int         __ls_regex_named_index(int, int);
 
         LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
@@ -197,7 +208,7 @@ int jit_init(JitEngine *engine) {
     pairs[i].Sym.Flags.TargetFlags = 0; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[77];
+        LLVMOrcCSymbolMapPair pairs[87];
         /* 0-5: memcheck */
         REG( 0, ls_mc_alloc);
         REG( 1, ls_mc_free);
@@ -286,9 +297,20 @@ int jit_init(JitEngine *engine) {
         REG(74, __ls_str_skip_ws);
         REG(75, __ls_str_scan_plain);
         REG(76, __ls_str_scan_digits);
+        /* 77-86: regex engine */
+        REG(77, __ls_regex_compile);
+        REG(78, __ls_regex_free);
+        REG(79, __ls_regex_last_error);
+        REG(80, __ls_regex_exec);
+        REG(81, __ls_regex_cap_start);
+        REG(82, __ls_regex_cap_len);
+        REG(83, __ls_regex_group_count);
+        REG(84, __ls_regex_named_count);
+        REG(85, __ls_regex_named_name);
+        REG(86, __ls_regex_named_index);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 77);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 87);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */

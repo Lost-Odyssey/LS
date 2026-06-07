@@ -96,6 +96,7 @@ set(LS_SOURCES
     runtime/memcheck.c
     runtime/profiler.c
     runtime/builtins.c
+    runtime/ls_regex.c
     ${LS_OS_SOURCE}
 )
 
@@ -152,7 +153,7 @@ add_dependencies(ls ls_profiler)
 # Contains os_win32.c or os_posix.c (defines ls_os_* symbols used by std.os /
 # std.time). ls.exe already links the same file via LS_SOURCES; this archive is
 # passed unconditionally by `ls compile` so any AOT binary can import std.time.
-add_library(ls_os_backend STATIC ${LS_OS_SOURCE} runtime/builtins.c)
+add_library(ls_os_backend STATIC ${LS_OS_SOURCE} runtime/builtins.c runtime/ls_regex.c)
 target_include_directories(ls_os_backend PRIVATE src/ include/)
 set_target_properties(ls_os_backend PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY            "${CMAKE_BINARY_DIR}"
@@ -1959,6 +1960,20 @@ add_test(
 )
 set_tests_properties(test_bf044_shortcircuit PROPERTIES
     DEPENDS "test_global_vec_lit"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- std.regex (Pike VM NFA engine, runtime/ls_regex.c) — JIT + AOT ----
+# Uses std.regex's migrated Vec(string) return types (find_all/capture/split).
+add_test(
+    NAME test_regex
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex.cmake
+)
+set_tests_properties(test_regex PROPERTIES
+    DEPENDS "test_bf044_shortcircuit"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
