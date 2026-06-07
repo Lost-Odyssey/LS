@@ -1,16 +1,35 @@
 # RawVec(T) vs builtin vec(T) — benchmark results (Gate M3)
 
 > AOT-compiled (`default<O2>`), Windows x64 Release. `benchmarks/rawvecbench/bench.ls`.
-> Workload: push N elements then sum (int) / push N (string).
+> 3-run medians; push benches are noise-dominated (raw ≈ vec).
 
-## Results
+## Final results (after owned-param move ABI)
 
-| workload | N | builtin vec | RawVec | ratio raw/vec |
-|----------|---|-------------|--------|---------------|
-| **int** push + sum | 3,000,000 | ~9–10 ms | ~8–9 ms | **0.80–1.0× (parity)** |
-| **string** push | 1,000,000 | ~6 ms | ~52 ms | **~7–8× slower** |
+| op | N | builtin vec | RawVec | ratio raw/vec |
+|----|---|-------------|--------|---------------|
+| **push int** | 3,000,000 | ~8–9 ms | ~7–8 ms | **~0.9–1.0× (parity)** |
+| **get int** (seq read+sum) | 3,000,000 | ~2.0 ms | ~1.0 ms | **~0.5× (RawVec 2× faster)** |
+| **push string** | 1,000,000 | ~7–8 ms | ~6–8 ms | **~0.9–1.0× (parity)** |
 
-## Analysis
+**Verdict: RawVec matches or beats builtin vec on all measured ops.**
+- push (int & string): parity — push moves the element (no clone) thanks to the
+  owned-param ABI; under O2 the generic `push`/`reserve` inline to bare GEP+store.
+- get (int): RawVec is **2× faster** because `RawVec.get(i)` is an unchecked raw
+  read, whereas builtin `vec[i]` does a runtime bounds check (warn + default on
+  OOB). This is the one *semantic* difference left vs vec — see "Bounds" below.
+
+> Historical note: before the owned-param ABI fix, RawVec string push was ~7–8×
+> slower (a malloc+memcpy clone per element). That gap is closed.
+
+## Bounds check (the remaining get/[] semantic difference)
+
+`vec[i]` is bounds-checked (prints a warning and returns a zero/empty default on
+out-of-bounds); `RawVec.get(i)` is unchecked (UB on OOB), which is why it's faster.
+This mirrors `vec.get_unsafe` rather than `vec[i]`. Adding a bounds check to
+RawVec.get would bring exact `vec[i]` parity at vec's speed; leaving it unchecked
+keeps the 2× read advantage. Choice deferred (documented).
+
+## (historical) Analysis
 
 ### int (POD): full parity ✅
 RawVec matches (and sometimes slightly beats) builtin vec for POD elements. Under
