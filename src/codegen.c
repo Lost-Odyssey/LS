@@ -14166,6 +14166,66 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 }
                 ctx->temp_string_count = temp_mark;
             }
+            /* Collection-literal init for a user container (the `__from_list`
+               protocol, checked above): zero-init the struct, then call its
+               reserved `__from_list(&!self, E)` method for each element. Matches
+               the builtin `vec(T) v = [..]`. */
+            else if (var_type->kind == TYPE_STRUCT &&
+                     node->as.var_decl.init->kind == AST_ARRAY_LIT)
+            {
+                AstNode *lit = node->as.var_decl.init;
+                LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+                char fl_name[256];
+                snprintf(fl_name, sizeof(fl_name), "%s.__from_list",
+                         struct_llvm_name(var_type));
+                LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
+                if (fl_fn)
+                {
+                    LLVMTypeRef fl_ft = LLVMGlobalGetValueType(fl_fn);
+                    for (int i = 0; i < lit->as.array_lit.count; i++)
+                    {
+                        int pm = ctx->temp_string_count;
+                        LLVMValueRef ev = codegen_expr(ctx, lit->as.array_lit.elements[i]);
+                        if (ev == NULL) continue;
+                        Type *et = lit->as.array_lit.elements[i]->resolved_type;
+                        /* string element ownership (owned-param ABI, mirror call site):
+                           rvalue → keep cap>0 (callee moves) + mark temp moved;
+                           named var → cap=-2 (callee clones, caller keeps);
+                           __move(var) → keep cap>0 + mark source moved. */
+                        if (et && et->kind == TYPE_STRING)
+                        {
+                            AstNode *raw = lit->as.array_lit.elements[i];
+                            AstNode *uw = ast_unwrap_move(raw);
+                            bool is_move = (raw != uw);
+                            if (uw->kind == AST_IDENT)
+                            {
+                                if (is_move)
+                                {
+                                    CgSymbol *as = cg_scope_resolve(ctx->current_scope,
+                                                                    uw->as.ident.name);
+                                    if (as && as->value)
+                                        mark_string_moved(ctx, as->value, "list: __move elem");
+                                }
+                                else
+                                {
+                                    LLVMValueRef capb = LLVMConstInt(
+                                        LLVMInt32TypeInContext(ctx->context),
+                                        (unsigned long long)LS_CAP_BORROWED, 0);
+                                    ev = LLVMBuildInsertValue(ctx->builder, ev, capb, 2,
+                                                              "list.borrow");
+                                }
+                            }
+                            else
+                            {
+                                cg_mark_last_temp_moved(ctx, pm, "list: rvalue string elem");
+                            }
+                        }
+                        LLVMValueRef fl_args[2] = { alloca, ev };
+                        LLVMBuildCall2(ctx->builder, fl_ft, fl_fn, fl_args, 2, "");
+                    }
+                }
+                ctx->temp_string_count = temp_mark;
+            }
             /* Special handling for array literal initialization */
             else if (var_type->kind == TYPE_ARRAY &&
                      node->as.var_decl.init->kind == AST_ARRAY_LIT)

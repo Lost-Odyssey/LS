@@ -534,6 +534,32 @@ impl(T) RawVec(T) {
 
 ---
 
+## 9.5 已知问题（待后续修，不阻塞 RawVec）
+
+> 记录于 2026-06-06。这两项是通用语言层缺口（非 RawVec 内存/性能问题），已确认对当前
+> RawVec 用例无影响，留待以后修。
+
+- **KI-A：zero-init 的 `string`（及其它 has_drop）字段是 null-data,不是有效空值。**
+  `struct M { string s }; M m = {}` 后 `m.s == ""` 或任何 string 操作会段错误（data=null）。
+  **前缀 `M {}` 与推断 `{}` 都有**，是 struct 字面量 zero-init 的预存问题。RawVec 字段是
+  `*T/int/int`,不受影响。修法方向：`AST_NEW_EXPR` 零初始化后，对未显式初始化的 `string`
+  字段填有效空串（`ls_string_from_literal("")`，cap=0），vec/map/has_drop 字段同理填空容器。
+
+- **KI-C（设计记录,非缺陷）：列表初始化 `RawVec(T) v = [..]` 走 `__from_list` 保留方法协议。**
+  LS 无泛型 trait（实测 `trait Foo(T)` 不解析），所以 Rust 式 `FromList(T)` trait 无法表达。
+  采用 LS 既有的**保留方法协议**(同 `__drop`/`__clone`):容器定义 `fn __from_list(&!self, T x)`
+  显式 opt-in,编译器据此把 `[..]` 脱糖为 `{}` + 逐元素 `__from_list`(codegen var-decl 特例)。
+  **显式、非魔法**(无该方法的 struct 用 `[..]` 仍报错)。理想形态是真正的泛型 trait `FromList(T)`,
+  待 LS 补「泛型 trait + 静态 trait 方法」后可平滑替换(语义不变,仅把保留名换成 trait 约束)。
+
+- **KI-B：parser 不支持声明位「指针到带实参泛型」`*RawVec(int) p`。**
+  `vec(int)` 等关键字起头的类型可以(`*vec(int)` 解析正常),但标识符起头的泛型实例
+  `*RawVec(int)` 在 var-decl 位报 "expected expression"。删除 `new_rawvec` 后 RawVec 已不需要
+  它(`*T` 字段中 T 是裸标识符,正常)。修法方向：var-decl 的指针类型解析支持 `*` + 带实参的
+  命名泛型类型。
+
+---
+
 ## 10. 一句话
 
 > 基础设施的种子大半已在（malloc/free/sizeof 占位/realloc 内部/memcheck 包装/指针类型/place

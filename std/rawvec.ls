@@ -48,6 +48,10 @@ impl(T) RawVec(T) {
         self.len = self.len + 1
     }
 
+    // List-literal init opt-in (reserved-method protocol, like __drop/__clone):
+    // having this method enables `RawVec(T) v = [a, b, c]` (matches vec(T) v=[..]).
+    fn __from_list(&!self, T x) { self.push(x) }
+
     // Remove and return the last element (moved out), or None when empty.
     fn pop(&!self) -> Option(T) {
         if self.len == 0 { return None }

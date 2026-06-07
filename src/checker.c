@@ -6494,6 +6494,33 @@ static void check_stmt(Checker *c, AstNode *node)
                 al->resolved_type = declared; /* signal check_expr / codegen */
             }
             else if (declared && declared->kind == TYPE_STRUCT &&
+                node->as.var_decl.init->kind == AST_ARRAY_LIT &&
+                find_method(c, impl_key_of_type(declared), "__from_list") != NULL)
+            {
+                /* Collection-literal init for a user container (matches builtin
+                   `vec(T) v = [..]`): `Type v = [e1, e2, ...]` works iff the struct
+                   explicitly opts in via the reserved method `__from_list(&!self, E)`
+                   — an LS reserved-method protocol (like __drop/__clone), since LS
+                   has no generic traits. Codegen zero-inits the struct then calls
+                   __from_list for each element. Validate elements against E
+                   (__from_list's 2nd param, after the self pointer). */
+                AstNode *al = node->as.var_decl.init;
+                Type *fl = find_method(c, impl_key_of_type(declared), "__from_list");
+                Type *E = (fl && fl->kind == TYPE_FUNCTION &&
+                           fl->as.function.param_count >= 2)
+                          ? fl->as.function.params[1] : NULL;
+                for (int i = 0; i < al->as.array_lit.count; i++)
+                {
+                    Type *et = check_expr(c, al->as.array_lit.elements[i]);
+                    if (E && et && !type_assignable(E, et))
+                        checker_error(c, al->as.array_lit.elements[i]->line,
+                                      al->as.array_lit.elements[i]->column,
+                                      "list-literal element type mismatch: expected '%s', got '%s'",
+                                      type_name(E), type_name(et));
+                }
+                al->resolved_type = declared; /* signal codegen */
+            }
+            else if (declared && declared->kind == TYPE_STRUCT &&
                 node->as.var_decl.init->kind == AST_MAP_LIT &&
                 node->as.var_decl.init->as.map_lit.pair_count == 0)
             {

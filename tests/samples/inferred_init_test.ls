@@ -54,6 +54,14 @@ fn main() {
     for (int i = 0; i < 5; i = i + 1) { vi.push(i * i) }
     check(vi.length() == 5 && vi.get(4) == 16, "RawVec(int) {} works")
 
+    // ---- list-literal init (the __from_list protocol; matches vec(T) v = [..]) ----
+    RawVec(int) li = [10, 20, 30, 40]
+    check(li.length() == 4 && li.get(0) == 10 && li.get(3) == 40, "RawVec(int) = [..]")
+    RawVec(string) ls = [f"a", f"b", f"c"]
+    check(ls.length() == 3 && ls.get(1) == "b", "RawVec(string) = [..]")
+    RawVec(int) le = []
+    check(le.length() == 0, "RawVec = [] empty")
+
     // empty map literal still resolves via declared map type (not hijacked)
     map(string, int) mp = {}
     mp.set("k", 42)
