@@ -11,7 +11,7 @@ if(STDLIB)
 endif()
 
 execute_process(COMMAND "${LS}" run "${SRC}"
-    OUTPUT_VARIABLE jo ERROR_VARIABLE je RESULT_VARIABLE jr)
+    OUTPUT_VARIABLE jo ERROR_VARIABLE je RESULT_VARIABLE jr TIMEOUT 30)
 if(NOT jr EQUAL 0)
     message(FATAL_ERROR "rawvec_api JIT failed (rc=${jr}):\n${je}\n${jo}")
 endif()
@@ -20,17 +20,17 @@ if(NOT jo MATCHES "API PASS" OR jo MATCHES "FAIL ")
 endif()
 
 execute_process(COMMAND "${LS}" run --memcheck "${SRC}"
-    OUTPUT_VARIABLE mo ERROR_VARIABLE me RESULT_VARIABLE mr)
+    OUTPUT_VARIABLE mo ERROR_VARIABLE me RESULT_VARIABLE mr TIMEOUT 30)
 if(NOT me MATCHES "SUMMARY: 0 leak\\(s\\) \\(0 bytes\\), 0 double-free, 0 invalid free")
     message(FATAL_ERROR "rawvec_api memcheck mismatch:\n${me}")
 endif()
 
 execute_process(COMMAND "${LS}" compile "${SRC}" -o "${OUT_EXE}"
-    RESULT_VARIABLE cr ERROR_VARIABLE ce)
+    RESULT_VARIABLE cr ERROR_VARIABLE ce TIMEOUT 30)
 if(NOT cr EQUAL 0)
     message(FATAL_ERROR "rawvec_api AOT compile failed:\n${ce}")
 endif()
-execute_process(COMMAND "${OUT_EXE}" OUTPUT_VARIABLE ao RESULT_VARIABLE ar)
+execute_process(COMMAND "${OUT_EXE}" OUTPUT_VARIABLE ao RESULT_VARIABLE ar TIMEOUT 30)
 if(NOT ao MATCHES "API PASS" OR ao MATCHES "FAIL ")
     message(FATAL_ERROR "rawvec_api AOT: bad output (rc=${ar}):\n${ao}")
 endif()

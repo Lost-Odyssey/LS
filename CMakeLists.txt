@@ -1508,6 +1508,18 @@ add_test(
 )
 set_tests_properties(test_rawvec_api PROPERTIES DEPENDS "test_inferred_init")
 
+# KI-D: RawVec(Pt) without Eq stays usable until an equality-search method is
+# called; calling one reports the method-level `where T: Eq` bound.
+add_test(
+    NAME test_rawvec_kid
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_kid.cmake
+)
+set_tests_properties(test_rawvec_kid PROPERTIES DEPENDS "test_rawvec_api")
+
 add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}

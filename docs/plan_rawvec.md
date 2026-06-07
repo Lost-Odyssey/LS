@@ -553,6 +553,43 @@ impl(T) RawVec(T) {
   `impl<T: PartialEq> Vec<T> { fn contains.. }` 解决。LS 需补「条件/带 trait-bound 的
   impl」或「仅单态化被调用的方法(lazy)」才能内置这类方法。
 
+  **敲定方案（2026-06-07）**：采用 **lazy 泛型方法单态化 + 方法级 `where` 约束**，不照搬
+  Rust 的 conditional impl。语法：
+
+  ```ls
+  impl(T) RawVec(T) {
+      fn contains(&self, T x) -> bool where T: Eq {
+          for (int i = 0; i < self.len; i = i + 1) {
+              if self.data[i] == x { return true }
+          }
+          return false
+      }
+  }
+  ```
+
+  语义：
+  - `RawVec(Pt) v = {}` 只实例化 `RawVec(Pt)` 的字段布局与方法签名；**不检查未调用的方法体**。
+  - 调用 `v.contains(p)` 时才检查 `where T: Eq`；不满足则报
+    `method 'RawVec(Pt).contains' requires T: Eq, but 'Pt' does not implement Eq`。
+  - 约束通过后才 clone/substitute/check 方法体，并加入 codegen 的 pending generic method 队列。
+  - 无 `where` 的泛型方法保持现有语义，只是从“struct 实例化时检查 body”改成“首次调用时检查 body”。
+
+  **实施步骤**：
+  1. AST/Parser：给 `AST_FN_DECL` 增加方法/函数级 `where_bounds`，解析位置为返回类型之后、
+     函数体 `{` 之前：`fn f(T)(T x) -> bool where T: Eq + Ord { ... }`。无 `where` 时为 NULL。
+  2. Checker：`instantiate_impl_method_types` 只注册 concrete 方法签名和 lazy 元数据；不再立即
+     `check_stmt(body)`、不立即 push pending codegen。新增 `ensure_generic_method_instantiated`
+     在 method call 处按需检查 `where`、检查 body、推入 pending。
+  3. 缓存：同一 `<StructInstance>.<method>` 只实例化一次；重复调用复用已注册 method type 和
+     pending/codegen body，避免重复 clone/check。
+  4. RawVec：恢复 `contains` / `index_of`（`where T: Eq`）。`count` 先命名为 `count_eq`，
+     避免与现有 predicate `count(Block(T)->bool)` 语义冲突；等 LS 支持方法重载后再统一。
+  5. 验收：
+     - `RawVec(Pt)`（Pt 无 Eq）只调用 `push/get/copy` → JIT/AOT/memcheck 通过。
+     - `RawVec(int).contains/index_of/count_eq` → JIT/AOT/memcheck 通过。
+     - `RawVec(Pt).contains(p)` → 清晰 checker 错误，且不触发 codegen。
+     - 全量 `ctest --repeat until-pass:2` 通过。
+
 - **KI-C（设计记录,非缺陷）：列表初始化 `RawVec(T) v = [..]` 走 `__from_list` 保留方法协议。**
   LS 无泛型 trait（实测 `trait Foo(T)` 不解析），所以 Rust 式 `FromList(T)` trait 无法表达。
   采用 LS 既有的**保留方法协议**(同 `__drop`/`__clone`):容器定义 `fn __from_list(&!self, T x)`

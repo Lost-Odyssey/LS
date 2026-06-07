@@ -135,6 +135,11 @@ impl(T) RawVec(T) {
         self.data[i] = x
     }
 
+    // Index / IndexMut protocol (reserved methods): enables `v[i]` (read, clone)
+    // and `v[i] = x` (write, drop old + move new), matching builtin vec[i].
+    fn __index(&self, int i) -> T { return self.get(i) }
+    fn __index_set(&!self, int i, T x) { self.set(i, x) }
+
     // Clone of the first / last element, or None when empty.
     fn first(&self) -> Option(T) {
         if self.len == 0 { return None }
@@ -192,14 +197,30 @@ impl(T) RawVec(T) {
     }
 
     // ---- search ----
-    //
-    // NOTE: contains / index_of / count are intentionally NOT provided as RawVec(T)
-    // methods. They need `==` on T, and LS eagerly monomorphizes ALL methods of a
-    // generic struct at instantiation — so a `==`-using method would force every
-    // RawVec(T) (incl. RawVec(Pt) for a non-Eq struct) to implement Eq, even when
-    // that method is never called. This is KI-D (no conditional impls / lazy method
-    // monomorphization; Rust handles it via `impl<T: PartialEq> Vec<T>`). Until then,
-    // callers can search inline:  for i in 0..v.length() { if v.get(i) == x {..} }.
+
+    // Search helpers require equality on T. Method-level `where` plus lazy generic
+    // method monomorphization means RawVec(Pt) remains usable when Pt has no Eq,
+    // and only `v.contains(p)` reports the missing bound.
+    fn index_of(&self, T x) -> int where T: Eq {
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            if e == x { return i }
+        }
+        return -1
+    }
+
+    fn contains(&self, T x) -> bool where T: Eq {
+        return self.index_of(x) >= 0
+    }
+
+    fn count_eq(&self, T x) -> int where T: Eq {
+        int n = 0
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            if e == x { n = n + 1 }
+        }
+        return n
+    }
 
     // ---- copy ----
 

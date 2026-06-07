@@ -13,30 +13,33 @@ fn main() {
     check(v.length() == 3, "len 3")
     check(!v.is_empty(), "not empty")
     check(v.get(1) == 20, "get(1)=20")
+    check(v[1] == 20, "index read")
+    v[1] = 25
+    check(v.get(1) == 25 && v[1] == 25, "index set")
 
     v.push(40)
     check(v.length() == 4 && v.get(3) == 40, "push 40")
 
-    v.insert(0, 5)                       // [5,10,20,30,40]
+    v.insert(0, 5)                       // [5,10,25,30,40]
     check(v.get(0) == 5 && v.get(1) == 10 && v.length() == 5, "insert front")
-    v.insert(2, 15)                      // [5,10,15,20,30,40]
-    check(v.get(2) == 15 && v.get(3) == 20 && v.length() == 6, "insert middle")
+    v.insert(2, 15)                      // [5,10,15,25,30,40]
+    check(v.get(2) == 15 && v.get(3) == 25 && v.length() == 6, "insert middle")
 
-    int rem = v.remove(0)                // -> 5, [10,15,20,30,40]
+    int rem = v.remove(0)                // -> 5, [10,15,25,30,40]
     check(rem == 5 && v.get(0) == 10 && v.length() == 5, "remove front")
-    int rem2 = v.remove(1)               // -> 15, [10,20,30,40]
-    check(rem2 == 15 && v.get(1) == 20 && v.length() == 4, "remove middle")
+    int rem2 = v.remove(1)               // -> 15, [10,25,30,40]
+    check(rem2 == 15 && v.get(1) == 25 && v.length() == 4, "remove middle")
 
-    v.swap(0, 3)                         // [40,20,30,10]
+    v.swap(0, 3)                         // [40,25,30,10]
     check(v.get(0) == 40 && v.get(3) == 10, "swap")
 
-    v.reverse()                          // [10,30,20,40]
+    v.reverse()                          // [10,30,25,40]
     check(v.get(0) == 10 && v.get(1) == 30 && v.get(3) == 40, "reverse")
 
-    // inline search (RawVec has no contains/index_of — see KI-D / std/rawvec.ls)
-    int found = -1
-    for (int i = 0; i < v.length(); i = i + 1) { if v.get(i) == 20 { found = i } }
-    check(found == 2, "inline index_of 20")
+    check(v.contains(25), "contains 25")
+    check(!v.contains(99), "not contains 99")
+    check(v.index_of(25) == 2, "index_of 25")
+    check(v.count_eq(25) == 1, "count_eq 25")
 
     match v.first() { Some(x) => { check(x == 10, "first=10") } None => { check(false, "first") } }
     match v.last()  { Some(x) => { check(x == 40, "last=40") } None => { check(false, "last") } }
@@ -61,9 +64,15 @@ fn main() {
     // ───────────────── string (has_drop) ─────────────────
     RawVec(string) s = [f"a", f"b", f"c", f"d"]
     check(s.length() == 4, "str len 4")
+    check(s[1] == "b", "str index read")
+    s[1] = f"B"
+    check(s.get(1) == "B" && s[1] == "B", "str index set")
+    check(s.contains("B"), "str contains B")
+    check(s.index_of("c") == 2, "str index_of c")
+    check(s.count_eq("missing") == 0, "str count_eq missing")
 
     s.insert(1, f"X")                    // [a,X,b,c,d]
-    check(s.get(1) == "X" && s.get(2) == "b", "str insert")
+    check(s.get(1) == "X" && s.get(2) == "B", "str insert")
 
     string r = s.remove(0)               // -> a, [X,b,c,d]
     check(r == "a" && s.get(0) == "X", "str remove (move-out)")

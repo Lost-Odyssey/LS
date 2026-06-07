@@ -15,6 +15,14 @@ typedef struct {
     int    count;        /* 0 if no bounds */
 } TypeParamBound;
 
+/* Method/function-level where clauses, e.g. `where T: Eq + Ord`.
+   The type parameter name may come from the function itself or from an
+   enclosing generic impl. */
+typedef struct {
+    char *type_param_name;   /* owned */
+    TypeParamBound bounds;   /* owned trait_names */
+} WhereBound;
+
 /* ---- TypeNode ---- */
 
 typedef enum
@@ -367,6 +375,8 @@ struct AstNode
             /* Trait bounds per type param (parallel to type_params). NULL if no bounds.
                e.g. fn f(T: Printable + Comparable, U)(T x, U y) */
             TypeParamBound *type_param_bounds;  /* NULL if no bounds on any param */
+            WhereBound *where_bounds;           /* method/function-level `where T: Trait` */
+            int where_bound_count;
             TypeNode **param_types;
             char **param_names;
             AstNode **param_defaults;     /* parallel to param_names; literal default or NULL */

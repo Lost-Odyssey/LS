@@ -131,6 +131,22 @@ typedef struct Checker {
     int pending_gm_count;
     int pending_gm_cap;
 
+    /* Lazy generic impl methods. Generic struct instantiation registers concrete
+       method signatures immediately, but ordinary method bodies are checked and
+       queued for codegen only when a call site actually uses them. */
+    struct {
+        char    *mangled_name;      /* "RawVec(int).contains", owned */
+        AstNode *template_method;   /* original AST_FN_DECL, not owned */
+        Type    *method_type;       /* concrete TYPE_FUNCTION, not owned */
+        Type    *struct_type;       /* concrete TYPE_STRUCT, not owned */
+        char   **tp_names;          /* generic impl param names, not owned */
+        Type   **type_args;         /* concrete args array, owned (Type* not owned) */
+        int      tp_count;
+        int      state;             /* 0=pending, 1=checking, 2=done */
+    } *lazy_generic_methods;
+    int lazy_gm_count;
+    int lazy_gm_cap;
+
     /* Self type context: set during check_impl_decl / check_impl_trait_decl
        so that resolve_type_node can resolve 'Self' to the implementing struct
        or enum. Only one is set at a time (mutually exclusive). */

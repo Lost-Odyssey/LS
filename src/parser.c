@@ -2308,6 +2308,65 @@ static char *operator_method_name(TokenType t) {
     return str_dup_n(s, (int)strlen(s));
 }
 
+static bool check_ident_text(Parser *p, const char *text) {
+    size_t n = strlen(text);
+    return check(p, TOKEN_IDENTIFIER) &&
+           (size_t)p->current.length == n &&
+           strncmp(p->current.start, text, n) == 0;
+}
+
+static WhereBound *parse_where_bounds(Parser *p, int *out_count) {
+    *out_count = 0;
+    if (!check_ident_text(p, "where"))
+        return NULL;
+    advance(p); /* consume where */
+
+    WhereBound *bounds = NULL;
+    int count = 0;
+    int cap = 0;
+    do {
+        if (!check(p, TOKEN_IDENTIFIER)) {
+            error_at_current(p, "expected type parameter name after 'where'");
+            break;
+        }
+        advance(p);
+        char *tpname = str_dup_n(p->previous.start, p->previous.length);
+        consume(p, TOKEN_COLON, "expected ':' in where clause");
+
+        if (count >= cap) {
+            cap = cap < 4 ? 4 : cap * 2;
+            bounds = realloc_safe(bounds, (size_t)cap * sizeof(bounds[0]));
+        }
+        bounds[count].type_param_name = tpname;
+        bounds[count].bounds.trait_names = NULL;
+        bounds[count].bounds.count = 0;
+
+        int bcap = 0;
+        do {
+            if (!check(p, TOKEN_IDENTIFIER)) {
+                error_at_current(p, "expected trait name in where clause");
+                break;
+            }
+            advance(p);
+            char *tname = str_dup_n(p->previous.start, p->previous.length);
+            int bc = bounds[count].bounds.count;
+            if (bc >= bcap) {
+                bcap = bcap < 4 ? 4 : bcap * 2;
+                bounds[count].bounds.trait_names =
+                    realloc_safe(bounds[count].bounds.trait_names,
+                                 (size_t)bcap * sizeof(char *));
+            }
+            bounds[count].bounds.trait_names[bc] = tname;
+            bounds[count].bounds.count++;
+        } while (match_tok(p, TOKEN_PLUS));
+
+        count++;
+    } while (match_tok(p, TOKEN_COMMA));
+
+    *out_count = count;
+    return bounds;
+}
+
 /* allow_operator_name: when true (only inside `impl Trait for Type` blocks),
    an operator token is accepted as the method name and canonicalized to its
    $op_* internal name. Elsewhere only TOKEN_IDENTIFIER is a valid name, so
@@ -2477,6 +2536,9 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
         p->in_return_type = save;
     }
 
+    int where_bound_count = 0;
+    WhereBound *where_bounds = parse_where_bounds(p, &where_bound_count);
+
     AstNode *body = parse_block(p);
 
     AstNode *n = new_node(AST_FN_DECL, line, col);
@@ -2484,6 +2546,8 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     n->as.fn_decl.type_params = fn_type_params;
     n->as.fn_decl.type_param_count = fn_type_param_count;
     n->as.fn_decl.type_param_bounds = fn_type_param_bounds;
+    n->as.fn_decl.where_bounds = where_bounds;
+    n->as.fn_decl.where_bound_count = where_bound_count;
     n->as.fn_decl.param_types = param_types;
     n->as.fn_decl.param_names = param_names;
     n->as.fn_decl.param_defaults = param_defaults;

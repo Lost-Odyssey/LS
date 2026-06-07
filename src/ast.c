@@ -314,6 +314,13 @@ void ast_free(AstNode *node) {
             }
             free(node->as.fn_decl.type_param_bounds);
         }
+        for (int i = 0; i < node->as.fn_decl.where_bound_count; i++) {
+            free(node->as.fn_decl.where_bounds[i].type_param_name);
+            for (int j = 0; j < node->as.fn_decl.where_bounds[i].bounds.count; j++)
+                free(node->as.fn_decl.where_bounds[i].bounds.trait_names[j]);
+            free(node->as.fn_decl.where_bounds[i].bounds.trait_names);
+        }
+        free(node->as.fn_decl.where_bounds);
         for (int i = 0; i < node->as.fn_decl.param_count; i++) {
             type_node_free(node->as.fn_decl.param_types[i]);
             free(node->as.fn_decl.param_names[i]);
@@ -810,6 +817,27 @@ AstNode *ast_clone_deep(const AstNode *src) {
             }
         } else {
             n->as.fn_decl.type_param_bounds = NULL;
+        }
+        int wbc = src->as.fn_decl.where_bound_count;
+        n->as.fn_decl.where_bound_count = wbc;
+        if (wbc > 0) {
+            n->as.fn_decl.where_bounds = (WhereBound *)
+                malloc_safe((size_t)wbc * sizeof(WhereBound));
+            for (int i = 0; i < wbc; i++) {
+                n->as.fn_decl.where_bounds[i].type_param_name =
+                    ast_strdup(src->as.fn_decl.where_bounds[i].type_param_name);
+                int bc = src->as.fn_decl.where_bounds[i].bounds.count;
+                n->as.fn_decl.where_bounds[i].bounds.count = bc;
+                if (bc > 0) {
+                    n->as.fn_decl.where_bounds[i].bounds.trait_names =
+                        (char **)malloc_safe((size_t)bc * sizeof(char *));
+                    for (int j = 0; j < bc; j++)
+                        n->as.fn_decl.where_bounds[i].bounds.trait_names[j] =
+                            ast_strdup(src->as.fn_decl.where_bounds[i].bounds.trait_names[j]);
+                } else {
+                    n->as.fn_decl.where_bounds[i].bounds.trait_names = NULL;
+                }
+            }
         }
         int pc = src->as.fn_decl.param_count;
         if (pc > 0) {
