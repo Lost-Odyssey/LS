@@ -560,19 +560,23 @@ stdlib 里由 `RawVec(T)` 接管，最后把 `RawVec` 改名/导出为 `vec`。
 | 拷贝/切片/扩展 | ✅ `copy/slice/extend` | P1：`test_rawvec_parity_p1` |
 | Eq 搜索 | ✅ `contains/index_of/count_eq where T: Eq` | KI-D 已由 lazy method + where 解决 |
 | 默认填充 resize | ⚠️ 未等价 | 内建 `resize(n)` 零/空填充；RawVec 当前 `resize(n, fill)`，缺 generic default value |
-| 排序 | ⚠️ 未等价 | `sort()` 需要 Ord/string 规则；`sort_by` 需要修 Block(T,T) has_drop ABI |
-| 函数式方法 | ⚠️ 未等价 | `any/all/count/each/filter/find/find_index/map/reduce` 依赖 Block(T)；string 路径已定位到 has_drop 按值 Block 调用问题 |
+| 排序 | ✅ `sort/sort_by` | P3 + string Ord；`sort()` 走 `where T: Ord`，string 字典序 |
+| 函数式方法 | ⚠️ 部分等价 | `any/all/count/each/filter/find/find_index` 已恢复（P3）；`map/reduce` 仍需要方法级泛型结果 |
 | 方法级泛型结果 | ⚠️ 未等价 | `map(Block(T)->U)->RawVec(U)` / `reduce(A, Block(A,T)->A)->A` 需要泛型方法自身类型参数 |
 | stdlib 全量替换 | ⏳ 未开始 | 等以上 API 和性能门槛通过后再做 |
 
 P1 已完成：`as_ptr/get_unsafe/extend/slice`，测试 `test_rawvec_parity_p1`。
+P3 已完成：修复 `Block(T)`/`Block(T,T)` 按值接收 string/has_drop 实参的所有权 ABI，恢复
+`any/all/count/each/filter/find/find_index/sort_by`，测试 `test_rawvec_functional_p3`。
+P3.1 已完成：编译器层面让 `string` 满足 `Ord`，`< > <= >=` 走 `strcmp`；RawVec 恢复
+`sort() where T: Ord`，测试 `test_string_ord`。
 
 后续建议顺序：
 
 1. **P2：generic default value**：实现 `__default(T)` 或 zero/default 初始化协议，让 `RawVec.resize(n)`
    对齐内建 vec（int→0、string→有效空串、struct/enum 走合法默认或拒绝）。
-2. **P3：Block has_drop ABI**：修纯 LS 泛型方法里 `Block(T)` 参数传 string/has_drop 时的所有权；
-   然后恢复 `any/all/count/each/filter/find/find_index/sort_by`。
+2. ~~**P3：Block has_drop ABI**~~ ✅ 已完成（2026-06-07）：修纯 LS 泛型方法里 `Block(T)`
+   参数传 string/has_drop 时的所有权；已恢复 `any/all/count/each/filter/find/find_index/sort_by`。
 3. **P4：方法级泛型**：支持 `fn map(U)(...) -> RawVec(U)`、`fn reduce(A)(...) -> A`。
 4. **P5：语法接管**：让 `vec(T)` 解析/绑定到 stdlib RawVec，批量替换 stdlib 与测试。
 5. **P6：删除内建 vec**：移除 `TYPE_VECTOR` 用户层方法和 codegen 专用路径，只保留必要低层 intrinsic

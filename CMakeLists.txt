@@ -1531,6 +1531,26 @@ add_test(
 set_tests_properties(test_rawvec_parity_p1 PROPERTIES DEPENDS "test_rawvec_kid")
 
 add_test(
+    NAME test_rawvec_functional_p3
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_functional_p3.cmake
+)
+set_tests_properties(test_rawvec_functional_p3 PROPERTIES DEPENDS "test_rawvec_parity_p1")
+
+add_test(
+    NAME test_string_ord
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_string_ord.cmake
+)
+set_tests_properties(test_string_ord PROPERTIES DEPENDS "test_rawvec_functional_p3")
+
+add_test(
     NAME test_trait_parse
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>

@@ -253,6 +253,93 @@ impl(T) RawVec(T) {
         return n
     }
 
+    // ---- functional ----
+
+    fn any(&self, Block(T) -> bool pred) -> bool {
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            if pred(e) { return true }
+        }
+        return false
+    }
+
+    fn all(&self, Block(T) -> bool pred) -> bool {
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            if !pred(e) { return false }
+        }
+        return true
+    }
+
+    fn count(&self, Block(T) -> bool pred) -> int {
+        int n = 0
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            if pred(e) { n = n + 1 }
+        }
+        return n
+    }
+
+    fn each(&self, Block(T) pred) {
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            pred(e)
+        }
+    }
+
+    fn filter(&self, Block(T) -> bool pred) -> RawVec(T) {
+        RawVec(T) out = {}
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            if pred(e) {
+                T keep = self.data[i]
+                out.push(keep)
+            }
+        }
+        return out
+    }
+
+    fn find(&self, Block(T) -> bool pred) -> Option(T) {
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            if pred(e) {
+                T out = self.data[i]
+                return Some(out)
+            }
+        }
+        return None
+    }
+
+    fn find_index(&self, Block(T) -> bool pred) -> int {
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            if pred(e) { return i }
+        }
+        return -1
+    }
+
+    fn sort(&!self) where T: Ord {
+        self.sort_by(|a, b| {
+            if a < b { return -1 }
+            if a > b { return 1 }
+            return 0
+        })
+    }
+
+    fn sort_by(&!self, Block(T, T) -> int cmp) {
+        if self.len < 2 { return }
+        for (int i = 1; i < self.len; i = i + 1) {
+            int j = i
+            while j > 0 {
+                T a = self.data[j - 1]
+                T b = self.data[j]
+                if cmp(a, b) <= 0 { break }
+                self.swap(j - 1, j)
+                j = j - 1
+            }
+        }
+    }
+
     // ---- copy ----
 
     // Independent deep copy.

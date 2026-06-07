@@ -4707,10 +4707,15 @@ static Type *check_expr(Checker *c, AstNode *node)
         case TOKEN_GT:
         case TOKEN_LEQ:
         case TOKEN_GEQ:
-            if (!type_is_numeric(left) || !type_is_numeric(right))
+            if (left && right &&
+                left->kind == TYPE_STRING && right->kind == TYPE_STRING)
+            {
+                result = type_bool();
+            }
+            else if (!type_is_numeric(left) || !type_is_numeric(right))
             {
                 checker_error(c, node->line, node->column,
-                              "comparison requires numeric types, got '%s' and '%s'",
+                              "comparison requires numeric or string types, got '%s' and '%s'",
                               type_name(left), type_name(right));
                 result = NULL;
             }
@@ -8393,7 +8398,7 @@ static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *tra
     }
     else if (strcmp(trait_name, "Ord") == 0)
     {
-        if (type_is_numeric(type))
+        if (type->kind == TYPE_STRING || type_is_numeric(type))
             return true;
     }
     const char *tname = type_name(type);

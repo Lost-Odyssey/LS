@@ -11000,24 +11000,104 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 return LLVMBuildFCmp(ctx->builder, LLVMRealONE, left, right, "fne");
             return LLVMBuildICmp(ctx->builder, LLVMIntNE, left, right, "ne");
         case TOKEN_LT:
+            if (lt && lt->kind == TYPE_STRING)
+            {
+                LLVMValueRef strcmp_fn = LLVMGetNamedFunction(ctx->module, "strcmp");
+                if (strcmp_fn == NULL)
+                {
+                    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+                    LLVMTypeRef sc_params[] = {ptr_t, ptr_t};
+                    LLVMTypeRef sc_type = LLVMFunctionType(
+                        LLVMInt32TypeInContext(ctx->context), sc_params, 2, 0);
+                    strcmp_fn = LLVMAddFunction(ctx->module, "strcmp", sc_type);
+                }
+                LLVMTypeRef sc_type = LLVMGlobalGetValueType(strcmp_fn);
+                LLVMValueRef l_data = ls_string_data(ctx, left);
+                LLVMValueRef r_data = ls_string_data(ctx, right);
+                LLVMValueRef cmp_args[] = {l_data, r_data};
+                LLVMValueRef cmp = LLVMBuildCall2(ctx->builder, sc_type, strcmp_fn,
+                                                  cmp_args, 2, "strcmp");
+                return LLVMBuildICmp(ctx->builder, LLVMIntSLT, cmp,
+                                     LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), "strlt");
+            }
             if (is_fp)
                 return LLVMBuildFCmp(ctx->builder, LLVMRealOLT, left, right, "flt");
             if (is_signed_int)
                 return LLVMBuildICmp(ctx->builder, LLVMIntSLT, left, right, "slt");
             return LLVMBuildICmp(ctx->builder, LLVMIntULT, left, right, "ult");
         case TOKEN_GT:
+            if (lt && lt->kind == TYPE_STRING)
+            {
+                LLVMValueRef strcmp_fn = LLVMGetNamedFunction(ctx->module, "strcmp");
+                if (strcmp_fn == NULL)
+                {
+                    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+                    LLVMTypeRef sc_params[] = {ptr_t, ptr_t};
+                    LLVMTypeRef sc_type = LLVMFunctionType(
+                        LLVMInt32TypeInContext(ctx->context), sc_params, 2, 0);
+                    strcmp_fn = LLVMAddFunction(ctx->module, "strcmp", sc_type);
+                }
+                LLVMTypeRef sc_type = LLVMGlobalGetValueType(strcmp_fn);
+                LLVMValueRef l_data = ls_string_data(ctx, left);
+                LLVMValueRef r_data = ls_string_data(ctx, right);
+                LLVMValueRef cmp_args[] = {l_data, r_data};
+                LLVMValueRef cmp = LLVMBuildCall2(ctx->builder, sc_type, strcmp_fn,
+                                                  cmp_args, 2, "strcmp");
+                return LLVMBuildICmp(ctx->builder, LLVMIntSGT, cmp,
+                                     LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), "strgt");
+            }
             if (is_fp)
                 return LLVMBuildFCmp(ctx->builder, LLVMRealOGT, left, right, "fgt");
             if (is_signed_int)
                 return LLVMBuildICmp(ctx->builder, LLVMIntSGT, left, right, "sgt");
             return LLVMBuildICmp(ctx->builder, LLVMIntUGT, left, right, "ugt");
         case TOKEN_LEQ:
+            if (lt && lt->kind == TYPE_STRING)
+            {
+                LLVMValueRef strcmp_fn = LLVMGetNamedFunction(ctx->module, "strcmp");
+                if (strcmp_fn == NULL)
+                {
+                    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+                    LLVMTypeRef sc_params[] = {ptr_t, ptr_t};
+                    LLVMTypeRef sc_type = LLVMFunctionType(
+                        LLVMInt32TypeInContext(ctx->context), sc_params, 2, 0);
+                    strcmp_fn = LLVMAddFunction(ctx->module, "strcmp", sc_type);
+                }
+                LLVMTypeRef sc_type = LLVMGlobalGetValueType(strcmp_fn);
+                LLVMValueRef l_data = ls_string_data(ctx, left);
+                LLVMValueRef r_data = ls_string_data(ctx, right);
+                LLVMValueRef cmp_args[] = {l_data, r_data};
+                LLVMValueRef cmp = LLVMBuildCall2(ctx->builder, sc_type, strcmp_fn,
+                                                  cmp_args, 2, "strcmp");
+                return LLVMBuildICmp(ctx->builder, LLVMIntSLE, cmp,
+                                     LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), "strle");
+            }
             if (is_fp)
                 return LLVMBuildFCmp(ctx->builder, LLVMRealOLE, left, right, "fle");
             if (is_signed_int)
                 return LLVMBuildICmp(ctx->builder, LLVMIntSLE, left, right, "sle");
             return LLVMBuildICmp(ctx->builder, LLVMIntULE, left, right, "ule");
         case TOKEN_GEQ:
+            if (lt && lt->kind == TYPE_STRING)
+            {
+                LLVMValueRef strcmp_fn = LLVMGetNamedFunction(ctx->module, "strcmp");
+                if (strcmp_fn == NULL)
+                {
+                    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+                    LLVMTypeRef sc_params[] = {ptr_t, ptr_t};
+                    LLVMTypeRef sc_type = LLVMFunctionType(
+                        LLVMInt32TypeInContext(ctx->context), sc_params, 2, 0);
+                    strcmp_fn = LLVMAddFunction(ctx->module, "strcmp", sc_type);
+                }
+                LLVMTypeRef sc_type = LLVMGlobalGetValueType(strcmp_fn);
+                LLVMValueRef l_data = ls_string_data(ctx, left);
+                LLVMValueRef r_data = ls_string_data(ctx, right);
+                LLVMValueRef cmp_args[] = {l_data, r_data};
+                LLVMValueRef cmp = LLVMBuildCall2(ctx->builder, sc_type, strcmp_fn,
+                                                  cmp_args, 2, "strcmp");
+                return LLVMBuildICmp(ctx->builder, LLVMIntSGE, cmp,
+                                     LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), "strge");
+            }
             if (is_fp)
                 return LLVMBuildFCmp(ctx->builder, LLVMRealOGE, left, right, "fge");
             if (is_signed_int)
@@ -16569,11 +16649,111 @@ static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
     args[0] = env_ptr;
     for (int i = 0; i < n; i++)
     {
+        int arg_temp_mark = ctx->temp_string_count;
         LLVMValueRef av = codegen_expr(ctx, node->as.call.args[i]);
         if (av == NULL) { free(args); return NULL; }
         Type *src_t = node->as.call.args[i]->resolved_type;
         Type *dst_t = block_t->as.function.params[i];
         av = cg_widen(ctx, av, src_t, dst_t);
+
+        /* Match regular function-call ownership for Block parameters.
+           A closure parameter is materialised as a local in the closure body:
+           string params use cap to distinguish borrowed vs owned, vec/map/Block
+           params are call-borrowed, and has_drop struct/enum params are dropped
+           by the closure. Therefore the call site must not pass a raw alias for
+           heap-owning named values. */
+        Type *arg_type = dst_t ? dst_t : src_t;
+        AstNode *raw = node->as.call.args[i];
+        AstNode *unwrapped = ast_unwrap_move(raw);
+        bool is_move_expr = (raw != unwrapped);
+
+        if (av && arg_type && arg_type->kind == TYPE_STRING)
+        {
+            if (unwrapped && unwrapped->kind == AST_IDENT)
+            {
+                if (is_move_expr)
+                {
+                    CgSymbol *argsym = cg_scope_resolve(ctx->current_scope,
+                                                        unwrapped->as.ident.name);
+                    if (argsym && argsym->value)
+                        mark_string_moved(ctx, argsym->value,
+                                          "xfer: __move string block arg");
+                }
+                else
+                {
+                    LLVMValueRef cap_borrowed = LLVMConstInt(
+                        LLVMInt32TypeInContext(ctx->context),
+                        (unsigned long long)LS_CAP_BORROWED, 0);
+                    av = LLVMBuildInsertValue(ctx->builder, av, cap_borrowed,
+                                              2, "blk.arg.borrow");
+                }
+            }
+            else
+            {
+                cg_mark_last_temp_moved(ctx, arg_temp_mark,
+                                        "xfer: rvalue string block arg");
+            }
+        }
+        else if (av && arg_type && arg_type->kind == TYPE_STRUCT &&
+                 arg_type->as.strukt.has_drop)
+        {
+            if (unwrapped && unwrapped->kind == AST_IDENT)
+            {
+                if (is_move_expr)
+                {
+                    CgSymbol *argsym = cg_scope_resolve(ctx->current_scope,
+                                                        unwrapped->as.ident.name);
+                    if (argsym && argsym->moved_flag)
+                    {
+                        LLVMBuildStore(ctx->builder,
+                            LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+                            argsym->moved_flag);
+                    }
+                }
+                else
+                {
+                    LLVMTypeRef st_llvm = type_to_llvm(ctx, arg_type);
+                    av = emit_struct_clone_val(ctx, av, st_llvm, arg_type);
+                }
+            }
+        }
+        else if (av && arg_type && arg_type->kind == TYPE_ENUM &&
+                 arg_type->as.enom.has_drop)
+        {
+            if (unwrapped && unwrapped->kind == AST_IDENT)
+            {
+                if (is_move_expr)
+                {
+                    CgSymbol *argsym = cg_scope_resolve(ctx->current_scope,
+                                                        unwrapped->as.ident.name);
+                    if (argsym && argsym->moved_flag)
+                    {
+                        LLVMBuildStore(ctx->builder,
+                            LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+                            argsym->moved_flag);
+                    }
+                }
+                else
+                {
+                    av = emit_enum_clone_val(ctx, av, arg_type);
+                }
+            }
+        }
+        else if (av && arg_type &&
+                 (arg_type->kind == TYPE_VECTOR || arg_type->kind == TYPE_MAP))
+        {
+            if (unwrapped && unwrapped->kind != AST_IDENT)
+            {
+                LLVMTypeRef store_t = arg_type->kind == TYPE_VECTOR
+                                      ? ls_vec_type(ctx)
+                                      : ls_map_type(ctx);
+                LLVMValueRef tmp = cg_entry_alloca(ctx, store_t,
+                    arg_type->kind == TYPE_VECTOR ? "blk.vecarg.tmp"
+                                                  : "blk.maparg.tmp");
+                LLVMBuildStore(ctx->builder, av, tmp);
+                cg_push_temp_drop(ctx, tmp, arg_type);
+            }
+        }
         args[i + 1] = av;
     }
 
