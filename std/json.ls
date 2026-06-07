@@ -1,6 +1,7 @@
 // std/json.ls — JSON parser and serializer for LS.
 // Pure LS implementation; recursive-descent parser + recursive serializer.
 
+import std.vec
 import io
 
 // ---- Core type ----
@@ -10,8 +11,8 @@ enum JsonValue {
     Bool(bool val)
     Number(f64 val)
     Str(string val)
-    Array(vec(JsonValue) items)
-    Object(vec(string) keys, map(string, JsonValue) entries)
+    Array(Vec(JsonValue) items)
+    Object(Vec(string) keys, map(string, JsonValue) entries)
 }
 
 // ---- JsonValue impl: methods ----
@@ -24,11 +25,11 @@ impl JsonValue {
     static fn int_val(int n) -> JsonValue { return Number(n as f64) }
     static fn str_val(string s) -> JsonValue { return Str(s) }
     static fn array_new() -> JsonValue {
-        vec(JsonValue) v = []
+        Vec(JsonValue) v = {}
         return Array(v)
     }
     static fn object_new() -> JsonValue {
-        vec(string) ks = []
+        Vec(string) ks = {}
         map(string, JsonValue) m = {}
         return Object(ks, m)
     }
@@ -64,13 +65,13 @@ impl JsonValue {
     // -- &self navigation --
     fn array_len(&self) -> int {
         match self {
-            Array(items) => { return items.length }
+            Array(items) => { return items.len() }
             _ => { return 0 - 1 }
         }
     }
     fn object_len(&self) -> int {
         match self {
-            Object(ks, _) => { return ks.length }
+            Object(ks, _) => { return ks.len() }
             _ => { return 0 - 1 }
         }
     }
@@ -87,7 +88,7 @@ impl JsonValue {
     fn push(&!self, JsonValue item) {
         match self {
             Array(items) => {
-                vec(JsonValue) nv = items.copy()
+                Vec(JsonValue) nv = items.copy()
                 nv.push(item)
                 self = Array(nv)
             }
@@ -100,7 +101,7 @@ impl JsonValue {
     fn set(&!self, string key, JsonValue val) {
         match self {
             Object(keys, entries) => {
-                vec(string) nks = keys.copy()
+                Vec(string) nks = keys.copy()
                 map(string, JsonValue) nem = entries.copy()
                 string k = key.copy()   // cap=0 param -> owned copy
                 if (!nem.contains_key(k)) {
@@ -137,12 +138,12 @@ fn str_val(string s) -> JsonValue {
 }
 
 fn array_new() -> JsonValue {
-    vec(JsonValue) items = []
+    Vec(JsonValue) items = {}
     return Array(items)
 }
 
 fn object_new() -> JsonValue {
-    vec(string) ks = []
+    Vec(string) ks = {}
     map(string, JsonValue) m = {}
     return Object(ks, m)
 }
@@ -386,7 +387,7 @@ fn _parse_array(&!JParser p) -> Result(JsonValue, string) {
     p.pos = p.pos + 1
     _skip_ws(&!p)
 
-    vec(JsonValue) items = []
+    Vec(JsonValue) items = {}
 
     // Empty array
     if _peek(&!p) == ']' {
@@ -425,7 +426,7 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
     p.pos = p.pos + 1
     _skip_ws(&!p)
 
-    vec(string) ks = []
+    Vec(string) ks = {}
     map(string, JsonValue) entries = {}
 
     // Empty object
@@ -645,12 +646,12 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
             return r
         }
         Array(items) => {
-            if items.length == 0 { return "[]" }
+            if items.len() == 0 { return "[]" }
             if indent <= 0 {
                 // Compact mode
                 string result = "["
                 int i = 0
-                while i < items.length {
+                while i < items.len() {
                     if i > 0 { result.append(",") }
                     result.append(_stringify_impl(items[i], depth, 0))
                     i = i + 1
@@ -663,7 +664,7 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
                 string child_pad = _indent_str(depth + 1, indent)
                 string close_pad = _indent_str(depth, indent)
                 int i = 0
-                while i < items.length {
+                while i < items.len() {
                     if i > 0 { result.append(",\n") }
                     result.append(child_pad)
                     result.append(_stringify_impl(items[i], depth + 1, indent))
@@ -676,12 +677,12 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
             }
         }
         Object(ks, entries) => {
-            if ks.length == 0 { return "{}" }
+            if ks.len() == 0 { return "{}" }
             if indent <= 0 {
                 // Compact mode
                 string result = "{"
                 int i = 0
-                while i < ks.length {
+                while i < ks.len() {
                     if i > 0 { result.append(",") }
                     string key = ks[i]   // cache: avoid two separate vec clones
                     result.append("\"")
@@ -698,7 +699,7 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
                 string child_pad = _indent_str(depth + 1, indent)
                 string close_pad = _indent_str(depth, indent)
                 int i = 0
-                while i < ks.length {
+                while i < ks.len() {
                     if i > 0 { result.append(",\n") }
                     string key = ks[i]   // cache: avoid two separate vec clones
                     result.append(child_pad)
@@ -732,7 +733,7 @@ fn stringify_pretty(JsonValue val, int indent) -> string {
 // Return the number of elements in an Array, or -1 if not an array.
 fn array_len(JsonValue v) -> int {
     match v {
-        Array(items) => { return items.length }
+        Array(items) => { return items.len() }
         _ => { return 0 - 1 }
     }
 }
@@ -740,7 +741,7 @@ fn array_len(JsonValue v) -> int {
 // Return the number of keys in an Object, or -1 if not an object.
 fn object_len(JsonValue v) -> int {
     match v {
-        Object(ks, entries) => { return ks.length }
+        Object(ks, entries) => { return ks.len() }
         _ => { return 0 - 1 }
     }
 }
@@ -758,19 +759,19 @@ fn object_has(JsonValue v, string key) -> bool {
 // Note: we deep-copy each key string so the returned vec owns independent data
 // (the binder `ks` shares memory with the JsonValue payload which is dropped on
 // function return — Phase H / has_drop binder copy limitation).
-fn object_keys(JsonValue v) -> vec(string) {
+fn object_keys(JsonValue v) -> Vec(string) {
     match v {
         Object(ks, entries) => {
-            vec(string) result = []
+            Vec(string) result = {}
             int i = 0
-            while i < ks.length {
+            while i < ks.len() {
                 result.push(ks[i].copy())
                 i = i + 1
             }
             return result
         }
         _ => {
-            vec(string) empty = []
+            Vec(string) empty = {}
             return empty
         }
     }

@@ -294,3 +294,4 @@ static bool is_import_path_segment(TokenType t) {
 |------|------|------|------|
 | IR-001 | `runtime/os_win32.c:311` | `ls_os_listdir_prepare` 的 Windows 搜索模式错误 | `snprintf(pattern, sizeof(pattern), "%s\*", path)` 中 `\*` 不是合法转义，C 将其解释为裸 `*`，导致生成的 pattern 是 `"std*"` 而非 `"std\*"`。`FindFirstFile("std*")` 匹配以 `std` 开头的文件/目录（包括目录自身），不列举目录内容。修复：改为 `"%s\\*"`。 |
 | IR-002 | `CMakeLists.txt` | `ls_regex.c` 未加入 `LS_SOURCES` | `runtime/ls_regex.c` 和 `runtime/ls_regex.h` 存在，但未在 `CMakeLists.txt` 的 `LS_SOURCES` 列表中。`std/regex.ls` 调用的 `__ls_regex_*` C 函数无法被 JIT/AOT 解析。修复：将 `runtime/ls_regex.c` 加入 `LS_SOURCES`。 |
+| VR-LIM-018 | enum payload match binder 上 `Vec(T)` generic 方法不可解析 | 2026-06-08 迁移 `json_e2e_test.ls` 时发现：`match val { Array(items) => items.len }`（字段）可工作，但 `items.len()`（方法）、`items.get(i)`、`items[i]`（`__index`）均报 `no field or method`。checker 不解析 `impl(T)` generic 方法 on enum payload match binders。 | 绕行：访问 `len` 字段用 `items.len`（无括号），索引用外部 map 方法如 `entries.keys()`。 |

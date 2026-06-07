@@ -148,7 +148,7 @@
 | # | 文件 | 状态 |
 |---|------|------|
 | 1 | std/strconv.ls | ✅ | 已迁移：`vec(string)`→`Vec(string)`，`args.length`→`args.len()` |
-| 2 | std/json.ls | 待做 |
+| 2 | std/json.ls | ✅ | enum payload + 内部全部 `vec`→`Vec`；match binder 方法不可调用，`json_e2e_test` 用 `entries.keys()` 绕行 |
 | 3 | std/html.ls | 待做 |
 | 4 | std/md.ls | 待做 |
 | 5 | std/plot.ls | 待做 |

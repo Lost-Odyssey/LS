@@ -3,6 +3,7 @@
 // verifies structure, writes via json.save_file() (pretty) and json.save_compact(),
 // verifies round-trip for both.
 
+import std.vec
 import std.json as json
 import io
 
@@ -111,9 +112,9 @@ fn main() {
     match r6 {
         Err(e) => { print(f"FAIL 6: load error={e}"); return }
         Ok(data) => {
-            vec(string) keys = json.object_keys(data)
-            if keys.length == 9 { print(f"PASS 6: object_keys len={keys.length}") }
-            else { print(f"FAIL 6: expected 9 got {keys.length}") }
+            Vec(string) keys = json.object_keys(data)
+            if keys.len() == 9 { print(f"PASS 6: object_keys len={keys.len()}") }
+            else { print(f"FAIL 6: expected 9 got {keys.len()}") }
         }
     }
 

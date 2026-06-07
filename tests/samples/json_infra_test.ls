@@ -1,11 +1,13 @@
-// Test: enum with vec(Self) and map(string, Self) indirect self-reference
+// Test: enum with Vec(Self) and map(string, Self) indirect self-reference
 // This is the prerequisite for JsonValue
+
+import std.vec
 
 enum JV {
     Null
     Num(f64 val)
     Str(string val)
-    Arr(vec(JV) items)
+    Arr(Vec(JV) items)
     Obj(map(string, JV) entries)
 }
 
@@ -31,14 +33,14 @@ fn main() {
         _ => print("FAIL 3")
     }
 
-    // Test 4: Arr variant with vec(JV)
-    vec(JV) items = []
+    // Test 4: Arr variant with Vec(JV)
+    Vec(JV) items = {}
     items.push(Num(1.0))
     items.push(Num(2.0))
     items.push(Str("three"))
     JV d = Arr(items)
     match d {
-        Arr(arr) => print(f"PASS 4: Arr len={arr.length}")
+        Arr(arr) => print(f"PASS 4: Arr len={arr.len()}")
         _ => print("FAIL 4")
     }
 

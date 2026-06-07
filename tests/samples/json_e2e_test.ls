@@ -17,10 +17,10 @@ fn print_value(string key, JsonValue val) {
             print(key, "=", s)
         }
         Array(items) => {
-            print(key, "= [", items.length, " items]")
+            print(key, "= [", items.len, " items]")
         }
         Object(ks, entries) => {
-            print(key, "= {", ks.length, " keys}")
+            print(key, "= {", ks.len, " keys}")
         }
     }
 }
@@ -51,13 +51,10 @@ fn main() {
     // Walk the top-level object
     match root {
         Object(keys, entries) => {
-            print("Top-level keys:", keys.length)
-            int i = 0
-            while i < keys.length {
-                string k = keys[i]
+            print("Top-level keys:", keys.len)
+            for k in entries.keys() {
                 JsonValue v = entries[k]
                 print_value(k, v)
-                i = i + 1
             }
         }
         _ => {

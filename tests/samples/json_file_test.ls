@@ -3,6 +3,7 @@
 // write to a temp file via io, read back, parse again, verify round-trip.
 // Also exercises the new navigation API (array_len / object_len / object_has / object_keys).
 
+import std.vec
 import std.json as json
 import io
 
@@ -39,9 +40,9 @@ fn main() {
             else { print("FAIL 2c: should not have 'notexist'") }
 
             // object_keys — should list 8 keys in insertion order
-            vec(string) ks = json.object_keys(root)
-            if ks.length == 8 { print(f"PASS 2d: object_keys len={ks.length}") }
-            else { print(f"FAIL 2d: keys len={ks.length} expected 8") }
+            Vec(string) ks = json.object_keys(root)
+            if ks.len() == 8 { print(f"PASS 2d: object_keys len={ks.len()}") }
+            else { print(f"FAIL 2d: keys len={ks.len()} expected 8") }
 
             if ks[0].compare("name") == 0 { print("PASS 2e: first key=name") }
             else { print(f"FAIL 2e: first key={ks[0]}") }
