@@ -10629,6 +10629,25 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
                                    struct_ptr, (unsigned)fidx, "field.addr");
     }
 
+    /* AST_CALL rvalue receiver: evaluate the call, spill to temp alloca so
+       the caller can use it as `self` pointer for a chained method call
+       (e.g. `vec.map(U)(...).reduce(U)(...)`). Register for has_drop cleanup
+       so the temporary container's buffer is freed at end-of-scope. */
+    if (node->kind == AST_CALL)
+    {
+        Type *rtype = node->resolved_type;
+        if (rtype == NULL)
+            return NULL;
+        LLVMValueRef val = codegen_expr(ctx, node);
+        if (val == NULL)
+            return NULL;
+        LLVMTypeRef rllvm = type_to_llvm(ctx, rtype);
+        LLVMValueRef tmp = cg_entry_alloca(ctx, rllvm, "tmp.rval.self");
+        LLVMBuildStore(ctx->builder, val, tmp);
+        cg_push_temp_drop(ctx, tmp, rtype);
+        return tmp;
+    }
+
     return NULL; /* Other lvalue forms not yet handled */
 }
 
@@ -11474,10 +11493,50 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             if (is_struct_method)
             {
                 const char *method_name = node->as.call.callee->as.field_access.field;
-                /* Build qualified name: StructName.method_name */
-                static char qualified_name[256];
-                snprintf(qualified_name, sizeof(qualified_name), "%s.%s",
-                         struct_name ? struct_name : "", method_name);
+                /* Build qualified name: StructName.method_name
+                   G3: when call site provides type args (method-level generics
+                   like obj.map(string)(...)), append them: StructName.method(type) */
+                static char qualified_name[512];
+                int npos = snprintf(qualified_name, sizeof(qualified_name), "%s.%s",
+                                    struct_name ? struct_name : "", method_name);
+                if (node->as.call.type_arg_count > 0)
+                {
+                    npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, "(");
+                    for (int ti = 0; ti < node->as.call.type_arg_count; ti++)
+                    {
+                        if (ti > 0)
+                            npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, ",");
+                        TypeNode *tn = node->as.call.type_args[ti];
+                        const char *tname = "?";
+                        if (tn->kind == TYPE_NODE_PRIMITIVE)
+                        {
+                            switch (tn->as.primitive)
+                            {
+                            case TOKEN_TYPE_INT:    tname = "int";    break;
+                            case TOKEN_TYPE_I8:     tname = "i8";     break;
+                            case TOKEN_TYPE_I16:    tname = "i16";    break;
+                            case TOKEN_TYPE_I32:    tname = "i32";    break;
+                            case TOKEN_TYPE_I64:    tname = "i64";    break;
+                            case TOKEN_TYPE_U8:     tname = "u8";     break;
+                            case TOKEN_TYPE_U16:    tname = "u16";    break;
+                            case TOKEN_TYPE_U32:    tname = "u32";    break;
+                            case TOKEN_TYPE_U64:    tname = "u64";    break;
+                            case TOKEN_TYPE_F32:    tname = "f32";    break;
+                            case TOKEN_TYPE_F64:    tname = "f64";    break;
+                            case TOKEN_TYPE_BOOL:   tname = "bool";   break;
+                            case TOKEN_TYPE_STRING: tname = "string"; break;
+                            case TOKEN_TYPE_CHAR:   tname = "char";   break;
+                            default:                tname = "?";      break;
+                            }
+                        }
+                        else if (tn->kind == TYPE_NODE_NAMED)
+                        {
+                            tname = tn->as.named.name;
+                        }
+                        npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, "%s", tname);
+                    }
+                    snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, ")");
+                }
                 fn_name = qualified_name;
                 callee = LLVMGetNamedFunction(ctx->module, fn_name);
                 /* Step 0 (cross-module generics): a generic struct method
@@ -16072,6 +16131,16 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     Type *saved_fn_ret = ctx->current_fn_return_type;
     CgScope *saved_scope = ctx->current_scope;
     int saved_temp_count = ctx->temp_string_count;
+    /* Isolate the body's statement-level temp stacks from the parent's. The
+       closure body is a separate function: its own rvalue temporaries (has_drop
+       struct/enum/vec drops + closure-env drops) must not be drained by — and
+       must not leak into — the outer function. Without this, a temp registered
+       in the parent before this closure literal (e.g. the rvalue receiver of a
+       chained method call `v.map(U)(...).reduce(U)(...)`) would be flushed
+       INSIDE the closure body, referencing an alloca from another function
+       (LLVM "instruction does not dominate all uses"). Mirrors temp_string. */
+    int saved_temp_drop_count  = ctx->temp_drop_count;
+    int saved_temp_block_env_count = ctx->temp_block_env_count;
 
     LLVMBasicBlockRef entry =
         LLVMAppendBasicBlockInContext(ctx->context, fn, "entry");
@@ -16079,6 +16148,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     ctx->current_fn = fn;
     ctx->current_fn_return_type = ret_lst;
     ctx->temp_string_count = 0;
+    ctx->temp_drop_count = 0;
+    ctx->temp_block_env_count = 0;
 
     /* Detach from outer scope chain — only params + captures should be
        visible inside the closure body. */
@@ -16188,6 +16259,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     ctx->current_fn = saved_fn;
     ctx->current_fn_return_type = saved_fn_ret;
     ctx->temp_string_count = saved_temp_count;
+    ctx->temp_drop_count = saved_temp_drop_count;
+    ctx->temp_block_env_count = saved_temp_block_env_count;
     if (saved_block) LLVMPositionBuilderAtEnd(ctx->builder, saved_block);
 
     /* 9a) If any capture needs heap drop (string in v1) synthesise a per-

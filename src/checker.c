@@ -1217,6 +1217,240 @@ static bool ensure_generic_method_instantiated(Checker *c,
     return true;
 }
 
+/* Try to instantiate a method-level generic impl method.
+   Called when find_method returns NULL but the call site provides
+   explicit type arguments. Looks up generic_impl_method_templates,
+   resolves the method-level type params, combines them with the
+   impl-level params, builds the concrete signature, and queues
+   the body for lazy codegen. Returns the concrete TYPE_FUNCTION
+   on success, NULL on failure (caller should issue the usual "no
+   such method" error). */
+static Type *try_instantiate_method_level_generic(Checker *c,
+    const char *impl_key, const char *method_name,
+    TypeNode **call_type_args, int call_type_arg_count,
+    int line, int col)
+{
+    /* Step 1: find matching template */
+    int tmpl_idx = -1;
+    for (int i = 0; i < c->generic_impl_mt_count; i++) {
+        if (strcmp(c->generic_impl_method_templates[i].method_name, method_name) != 0)
+            continue;
+        if (strcmp(c->generic_impl_method_templates[i].impl_key, impl_key) != 0)
+            continue;
+        tmpl_idx = i;
+        break;
+    }
+    if (tmpl_idx < 0)
+        return NULL;
+
+    AstNode *method_ast = c->generic_impl_method_templates[tmpl_idx].method_ast;
+    if (method_ast->kind != AST_FN_DECL)
+        return NULL;
+
+    int mtp_count = method_ast->as.fn_decl.type_param_count;
+    if (call_type_arg_count != mtp_count) {
+        checker_error(c, line, col,
+            "method '%s' expects %d type argument(s), got %d",
+            method_name, mtp_count, call_type_arg_count);
+        return NULL;
+    }
+
+    /* Step 2: resolve method-level type args */
+    Type **mtp_type_args = (Type **)malloc_safe((size_t)mtp_count * sizeof(Type *));
+    bool ok = true;
+    for (int ti = 0; ti < mtp_count; ti++) {
+        mtp_type_args[ti] = resolve_type_node(c, call_type_args[ti], line, col);
+        if (!mtp_type_args[ti]) { ok = false; break; }
+    }
+    if (!ok) { free(mtp_type_args); return NULL; }
+
+    /* Step 3: combine impl-level + method-level type params */
+    int impl_tp_count = c->generic_impl_method_templates[tmpl_idx].impl_tp_count;
+    char **impl_tp_names = c->generic_impl_method_templates[tmpl_idx].impl_tp_names;
+    Type **impl_tp_types = c->generic_impl_method_templates[tmpl_idx].impl_tp_types;
+    int total_tp_count = impl_tp_count + mtp_count;
+
+    char **all_tp_names = NULL;
+    Type **all_tp_types = NULL;
+    if (total_tp_count > 0) {
+        all_tp_names = (char **)malloc_safe((size_t)total_tp_count * sizeof(char *));
+        all_tp_types = (Type **)malloc_safe((size_t)total_tp_count * sizeof(Type *));
+        for (int i = 0; i < impl_tp_count; i++) {
+            all_tp_names[i] = impl_tp_names[i];
+            all_tp_types[i] = impl_tp_types[i];
+        }
+        for (int i = 0; i < mtp_count; i++) {
+            /* Method-level type param names from the AST */
+            all_tp_names[impl_tp_count + i] = method_ast->as.fn_decl.type_params[i];
+            all_tp_types[impl_tp_count + i] = mtp_type_args[i];
+        }
+    }
+
+    /* Step 4: build mangled call name: "RawVec(int).map(string)" */
+    char mangled[512];
+    int pos = snprintf(mangled, sizeof(mangled), "%s.%s(", impl_key, method_name);
+    for (int ti = 0; ti < mtp_count && pos < (int)sizeof(mangled) - 2; ti++) {
+        if (ti > 0) pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ",");
+        pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, "%s",
+            type_name(mtp_type_args[ti]));
+    }
+    snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ")");
+
+    /* Step 5: set up type aliases for combined params and build concrete signature */
+    int saved_alias_count = c->type_alias_count;
+    for (int i = 0; i < total_tp_count; i++)
+        register_type_alias(c, all_tp_names[i], all_tp_types[i]);
+
+    /* Build self + param types */
+    bool is_static = method_ast->as.fn_decl.is_static;
+    int pc = method_ast->as.fn_decl.param_count;
+    int total_param_count = is_static ? pc : pc + 1;
+    Type **params = (Type **)malloc_safe((size_t)total_param_count * sizeof(Type *));
+    int offset = 0;
+    if (!is_static) {
+        Type *self_type = find_struct_type(c, impl_key);
+        if (!self_type) {
+            checker_error(c, line, col,
+                "internal error: cannot find struct type '%s' for method-level generic",
+                impl_key);
+            c->type_alias_count = saved_alias_count;
+            free(params); free(all_tp_names); free(all_tp_types);
+            free(mtp_type_args);
+            return NULL;
+        }
+        params[0] = type_pointer(self_type);
+        offset = 1;
+    }
+
+    for (int j = 0; j < pc; j++) {
+        Type *pt = resolve_type_node_with_substitution(
+            c, method_ast->as.fn_decl.param_types[j],
+            all_tp_names, all_tp_types, total_tp_count);
+        params[offset + j] = pt ? pt : type_int();
+    }
+
+    Type *ret = method_ast->as.fn_decl.return_type
+        ? resolve_type_node_with_substitution(
+            c, method_ast->as.fn_decl.return_type,
+            all_tp_names, all_tp_types, total_tp_count)
+        : type_void();
+
+    Type *concrete_type = type_function(params, total_param_count, ret, false);
+
+    /* Step 6: check where bounds on method-level type params */
+    int wc = method_ast->as.fn_decl.where_bound_count;
+    for (int wi = 0; wi < wc; wi++) {
+        WhereBound *wb = &method_ast->as.fn_decl.where_bounds[wi];
+        /* Look up the concrete type for this bound's type param */
+        Type *bound_type = NULL;
+        for (int i = 0; i < total_tp_count; i++) {
+            if (strcmp(all_tp_names[i], wb->type_param_name) == 0) {
+                bound_type = all_tp_types[i];
+                break;
+            }
+        }
+        if (!bound_type) {
+            checker_error(c, line, col,
+                "unknown type parameter '%s' in where clause of '%s'",
+                wb->type_param_name, mangled);
+            c->type_alias_count = saved_alias_count;
+            free(params); free(all_tp_names); free(all_tp_types);
+            free(mtp_type_args);
+            return NULL;
+        }
+        for (int bi = 0; bi < wb->bounds.count; bi++) {
+            if (!checker_type_satisfies_trait(c, bound_type, wb->bounds.trait_names[bi])) {
+                checker_error(c, line, col,
+                    "type '%s' does not satisfy trait '%s' "
+                    "(required by method '%s')",
+                    type_name(bound_type), wb->bounds.trait_names[bi], mangled);
+                c->type_alias_count = saved_alias_count;
+                free(params); free(all_tp_names); free(all_tp_types);
+                free(mtp_type_args);
+                return NULL;
+            }
+        }
+    }
+
+    /* Step 7: clone AST and type-check body, queue for codegen */
+    AstNode *cloned = ast_clone_deep(method_ast);
+    cloned->as.fn_decl.type_param_count = 0; /* now concrete */
+    cloned->as.fn_decl.type_params = NULL; /* safety */
+    /* impl_struct_name drives is_instance_method in codegen_fn_decl.
+       Without it param_offset stays 0 and self/arg mapping is wrong. */
+    cloned->as.fn_decl.impl_struct_name = impl_key; /* points into template, not owned */
+
+    /* Type-check the method body in a fresh scope */
+    push_scope(c);
+
+    /* Set up the return type for body checking */
+    Type *saved_return = c->current_fn_return;
+    c->current_fn_return = ret;
+
+    /* Register combined type aliases in the new scope */
+    int scope_saved_alias = c->type_alias_count;
+    for (int i = 0; i < total_tp_count; i++)
+        register_type_alias(c, all_tp_names[i], all_tp_types[i]);
+
+    /* Register self param (if instance method) in scope.
+       sbk=0: params[0] is *Struct → register as pointer (checker sees obj_type=*Struct).
+       sbk=1/2 (&self/&!self): codegen registers sym->type=Struct (bare), so checker
+       must also see Struct — otherwise obj_node->resolved_type=*Struct triggers the
+       wrong is_ptr_deref path in codegen field access (double-load crash). */
+    int sbk_ml = method_ast->as.fn_decl.self_borrow_kind;
+    if (!is_static) {
+        Type *self_scope_type = (sbk_ml == 0)
+            ? concrete_type->as.function.params[0]          /* *Struct */
+            : concrete_type->as.function.params[0]->as.pointer_to; /* Struct */
+        Symbol *self_sym = scope_define(c->current_scope, "self", self_scope_type);
+        if (self_sym && sbk_ml == 1) self_sym->is_borrow = true;
+        if (self_sym && sbk_ml == 2) self_sym->is_mut_borrow = true;
+    }
+
+    /* Register remaining params (param_names excludes the implicit self) */
+    for (int j = 0; j < pc; j++) {
+        const char *pname = method_ast->as.fn_decl.param_names
+            ? method_ast->as.fn_decl.param_names[j]
+            : "?";
+        scope_define(c->current_scope, pname,
+                     concrete_type->as.function.params[is_static ? j : j + 1]);
+    }
+
+    /* Check the body */
+    if (cloned->as.fn_decl.body) {
+        bool old_silent = c->silent_move_errors;
+        bool old_return = c->in_return_expr;
+        c->in_return_expr = false;
+
+        check_stmt(c, cloned->as.fn_decl.body);
+
+        c->in_return_expr = old_return;
+        c->silent_move_errors = old_silent;
+    }
+
+    c->type_alias_count = scope_saved_alias;
+    c->current_fn_return = saved_return;
+    pop_scope(c);
+
+    /* Set resolved_type so codegen can find the function */
+    cloned->resolved_type = concrete_type;
+
+    /* Queue for codegen */
+    pending_generic_method_add(c, cloned, strdup(mangled),
+        /* struct_type: find from impl_key */
+        find_struct_type(c, impl_key));
+
+    /* Restore type aliases */
+    c->type_alias_count = saved_alias_count;
+
+    free(all_tp_names);
+    free(all_tp_types);
+    free(mtp_type_args);
+    /* params ownership transferred to concrete_type via type_function() — do NOT free */
+
+    return concrete_type;
+}
+
 /* G1.5: For each method in a generic impl, resolve its param/return types
    with the concrete type arguments and register the method signature. Ordinary
    method bodies are checked lazily at call sites; compiler-reserved hooks that
@@ -1233,6 +1467,19 @@ static void instantiate_impl_method_types(
     for (int i = 0; i < tp_count; i++)
         register_type_alias(c, tp_names[i], type_args[i]);
 
+    /* G1.5+: also register generic impl type params (e.g. impl(W) → W=int).
+       The impl's N-th type param maps to the N-th struct type arg because
+       the impl signature is `impl(Param) StructName(Param)`.  This ensures
+       method-level generics can resolve the impl's type param names when
+       they appear in method signatures (e.g. `fn map(U)(&self, Block(W)->U f)`). */
+    if (impl_node->as.impl_decl.type_param_count > 0) {
+        for (int i = 0; i < impl_node->as.impl_decl.type_param_count && i < tp_count; i++) {
+            if (strcmp(impl_node->as.impl_decl.type_params[i], tp_names[i]) == 0)
+                continue;  /* already registered above */
+            register_type_alias(c, impl_node->as.impl_decl.type_params[i], type_args[i]);
+        }
+    }
+
     int mc = impl_node->as.impl_decl.method_count;
     for (int m = 0; m < mc; m++) {
         AstNode *method = impl_node->as.impl_decl.methods[m];
@@ -1242,6 +1489,38 @@ static void instantiate_impl_method_types(
         bool is_static = method->as.fn_decl.is_static;
         int sbk = method->as.fn_decl.self_borrow_kind;
         int pc = method->as.fn_decl.param_count;
+
+        /* Method-level type parameters: skip eager/lazy registration.
+           Store as template for on-demand instantiation at call site.
+           Also register a placeholder in impl_registry so that
+           find_method / method_is_static / method_self_borrow_kind
+           work (they only need existence + is_static + sbk). */
+        if (method->as.fn_decl.type_param_count > 0) {
+            if (c->generic_impl_mt_count >= c->generic_impl_mt_cap) {
+                int new_cap = c->generic_impl_mt_cap ? c->generic_impl_mt_cap * 2 : 8;
+                c->generic_impl_method_templates = realloc_safe(
+                    c->generic_impl_method_templates,
+                    (size_t)new_cap * sizeof(c->generic_impl_method_templates[0]));
+                c->generic_impl_mt_cap = new_cap;
+            }
+            int idx = c->generic_impl_mt_count++;
+            c->generic_impl_method_templates[idx].method_name = mname;
+            c->generic_impl_method_templates[idx].impl_key = strdup(mangled_name);
+            c->generic_impl_method_templates[idx].method_ast = method;
+            c->generic_impl_method_templates[idx].impl_tp_names =
+                impl_node->as.impl_decl.type_param_count > 0
+                    ? impl_node->as.impl_decl.type_params
+                    : tp_names;
+            c->generic_impl_method_templates[idx].impl_tp_types =
+                (Type **)malloc_safe((size_t)tp_count * sizeof(Type *));
+            for (int ti = 0; ti < tp_count; ti++)
+                c->generic_impl_method_templates[idx].impl_tp_types[ti] = type_args[ti];
+            c->generic_impl_method_templates[idx].impl_tp_count = tp_count;
+            /* Register placeholder in impl_registry for borrow/static checks */
+            register_method(c, impl_idx, mname, type_void(), is_static, sbk,
+                            method->line, method->column);
+            continue;
+        }
 
         /* A user-defined __drop forces has_drop on this monomorphized instance
            (mirrors the non-generic path, checker ~L7670). Without this, a generic
@@ -5318,6 +5597,24 @@ static Type *check_expr(Checker *c, AstNode *node)
                 result = NULL;
                 break;
             }
+
+            /* Method-level generic: if the call site provides type args, try
+               to build the concrete signature on-the-fly.  The placeholder
+               returned by find_method has type_void() — the real type is built
+               and body-checked here. */
+            if (node->as.call.type_arg_count > 0) {
+                Type *concrete = try_instantiate_method_level_generic(
+                    c, method_struct, method_name,
+                    node->as.call.type_args, node->as.call.type_arg_count,
+                    node->line, node->column);
+                if (concrete) {
+                    callee_type = concrete;
+                    node->as.call.callee->resolved_type = callee_type;
+                    /* Body already checked+queued by try_instantiate; skip lazy path */
+                    goto after_method_check;
+                }
+            }
+
             if (!ensure_generic_method_instantiated(c, method_struct, method_name,
                                                      node->line, node->column))
             {
@@ -5326,6 +5623,8 @@ static Type *check_expr(Checker *c, AstNode *node)
             }
             /* Set resolved_type on the callee node so codegen can find it */
             node->as.call.callee->resolved_type = callee_type;
+
+            after_method_check: ;
 
             /* Check for dangerous __drop call in user-defined __drop */
             if (c->in_user_defined_drop &&

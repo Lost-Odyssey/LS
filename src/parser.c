@@ -1065,8 +1065,9 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
        or uppercase identifier followed by ',' or ')', this is a type arg list. */
     TypeNode **call_type_args = NULL;
     int call_type_arg_count = 0;
-    if (left->kind == AST_IDENT) {
-        /* G2: detect generic function call — ident(TypeArgs)(realArgs).
+    if (left->kind == AST_IDENT || left->kind == AST_FIELD) {
+        /* G2: detect generic function call — ident(TypeArgs)(realArgs)
+           or method call — obj.method(TypeArgs)(realArgs).
            Heuristic: first token is a type keyword, or uppercase ident, or *&.
            We save parser state and try parsing types; if the list ends with ')'
            followed by '(' it's a genuine generic call. Otherwise restore. */
@@ -2383,6 +2384,10 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     } else if (allow_operator_name &&
                (name = operator_method_name(p->current.type)) != NULL) {
         advance(p);  /* consume the operator token used as the method name */
+    } else if (check(p, TOKEN_MAP)) {
+        /* map is a keyword (map(K,V) type) but also a valid method name */
+        advance(p);
+        name = str_dup_n(p->previous.start, p->previous.length);
     } else {
         error_at_current(p, "expected function name after 'fn'");
         return NULL;
@@ -3077,6 +3082,16 @@ static AstNode *parse_module_decl(Parser *p) {
     return n;
 }
 
+/* A module-path segment is normally an identifier, but a few type keywords
+   (vec / map / array) are valid std module file names (std/vec.ls etc.). The
+   scanner lexes those as keyword tokens, not TOKEN_IDENTIFIER, so without this
+   `import std.vec` would truncate at the keyword. The segment's source text is
+   intact on the token, so it copies into the path the same way. */
+static bool is_import_path_segment(TokenType t) {
+    return t == TOKEN_IDENTIFIER ||
+           t == TOKEN_VEC || t == TOKEN_MAP || t == TOKEN_ARRAY;
+}
+
 static AstNode *parse_import_decl(Parser *p) {
     /* 'import' already consumed */
     int line = p->previous.line;
@@ -3086,7 +3101,7 @@ static AstNode *parse_import_decl(Parser *p) {
     char path_buf[256];
     int path_len = 0;
 
-    if (!check(p, TOKEN_IDENTIFIER)) {
+    if (!is_import_path_segment(p->current.type)) {
         error_at_current(p, "expected module path after 'import'");
         return NULL;
     }
@@ -3099,7 +3114,7 @@ static AstNode *parse_import_decl(Parser *p) {
 
     while (check(p, TOKEN_DOT)) {
         advance(p); /* consume '.' */
-        if (!check(p, TOKEN_IDENTIFIER)) break;
+        if (!is_import_path_segment(p->current.type)) break;
         advance(p);
         Token seg = p->previous;
         if (path_len + 1 + seg.length < (int)sizeof(path_buf) - 1) {

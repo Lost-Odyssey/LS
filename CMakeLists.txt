@@ -1540,6 +1540,19 @@ add_test(
 )
 set_tests_properties(test_rawvec_functional_p3 PROPERTIES DEPENDS "test_rawvec_parity_p1")
 
+# RawVec method-level generics — map(U) / reduce(U) parity with builtin vec,
+# incl. chained `v.map(U)(...).reduce(U)(...)` (rvalue-receiver self drop +
+# closure body temp-stack isolation). int/string/struct elems, JIT+AOT+memcheck.
+add_test(
+    NAME test_rawvec_map_reduce
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_rawvec_map_reduce.cmake
+)
+set_tests_properties(test_rawvec_map_reduce PROPERTIES DEPENDS "test_rawvec_functional_p3")
+
 add_test(
     NAME test_string_ord
     COMMAND ${CMAKE_COMMAND}
@@ -1548,7 +1561,7 @@ add_test(
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_string_ord.cmake
 )
-set_tests_properties(test_string_ord PROPERTIES DEPENDS "test_rawvec_functional_p3")
+set_tests_properties(test_string_ord PROPERTIES DEPENDS "test_rawvec_map_reduce")
 
 add_test(
     NAME test_trait_parse

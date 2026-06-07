@@ -318,6 +318,33 @@ impl(T) RawVec(T) {
         return -1
     }
 
+    // Transform each element with f, collecting results into a new RawVec(U).
+    // Ownership: each element is deep-cloned from the buffer and moved into f;
+    // f returns U which is moved into the output vector.
+    fn map(U)(&self, Block(T)->U f) -> RawVec(U) {
+        RawVec(U) out = {}
+        out.reserve(self.len)
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            U u = f(e)
+            out.push(u)
+        }
+        return out
+    }
+
+    // Left fold: acc = f(f(f(init, v[0]), v[1]), ..., v[n-1]).
+    // init is moved into the accumulator; each element is deep-cloned from the
+    // buffer and passed by value to f together with the current accumulator.
+    // The accumulator value is replaced by f's return value each iteration.
+    fn reduce(U)(&self, U init, Block(U, T)->U f) -> U {
+        U acc = init
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            acc = f(acc, e)
+        }
+        return acc
+    }
+
     fn sort(&!self) where T: Ord {
         self.sort_by(|a, b| {
             if a < b { return -1 }

@@ -147,6 +147,22 @@ typedef struct Checker {
     int lazy_gm_count;
     int lazy_gm_cap;
 
+    /* Method-level generic method templates. Methods inside a generic impl
+       block that have their own type params (e.g. fn map<U>(...)) are not
+       registered in impl_registry during instantiate_impl_method_types.
+       Instead, they are stored here and instantiated on demand at the call
+       site when v.map(string)(args) provides the method-level type args. */
+    struct {
+        char     *method_name;     /* "map" — points into AST (not owned) */
+        char     *impl_key;        /* "RawVec(int)" — strdup, owned */
+        AstNode  *method_ast;      /* AST_FN_DECL — points into impl_decl (not owned) */
+        char    **impl_tp_names;   /* ["T"] — points into struct template (not owned) */
+        Type    **impl_tp_types;   /* [int] — Type* from struct instantiation, not owned */
+        int       impl_tp_count;
+    } *generic_impl_method_templates;
+    int generic_impl_mt_count;
+    int generic_impl_mt_cap;
+
     /* Self type context: set during check_impl_decl / check_impl_trait_decl
        so that resolve_type_node can resolve 'Self' to the implementing struct
        or enum. Only one is set at a time (mutually exclusive). */
