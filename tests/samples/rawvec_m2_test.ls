@@ -13,7 +13,7 @@ fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}")
 
 fn main() {
     // ───────── RawVec(int): POD ─────────
-    RawVec(int) vi = new_rawvec(int)()
+    RawVec(int) vi = {}
     check(vi.is_empty(), "int: empty init")
     for (int i = 0; i < 20; i = i + 1) { vi.push(i * i) }     // grows 0->4->8->16->32
     check(vi.length() == 20, "int: len 20")
@@ -28,7 +28,7 @@ fn main() {
     check(vi.is_empty(), "int: empty after clear")
 
     // ───────── RawVec(string): has_drop scalar ─────────
-    RawVec(string) vs = new_rawvec(string)()
+    RawVec(string) vs = {}
     for (int i = 0; i < 6; i = i + 1) { vs.push(f"s{i}") }
     check(vs.get(2) == "s2", "str: get(2) clone = s2")
     match vs.pop() { Some(x) => { check(x == "s5", "str: pop move-out = s5") } None => { check(false, "str pop") } }
@@ -41,7 +41,7 @@ fn main() {
     check(vs2.length() == 5, "str: moved container len 5")
 
     // ───────── RawVec(Pt): has_drop struct (recursive element drop) ─────────
-    RawVec(Pt) vp = new_rawvec(Pt)()
+    RawVec(Pt) vp = {}
     for (int i = 0; i < 5; i = i + 1) {
         Pt e = Pt { tag: f"t{i}", v: i * 10 }
         vp.push(__move(e))

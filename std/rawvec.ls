@@ -23,12 +23,12 @@
 
 struct RawVec(T) { *T data; int len; int cap }
 
-// Empty, owned RawVec(T). The nil pointer is bound to a local *T first
-// (a nil literal cannot be written directly into a struct-literal field).
-fn new_rawvec(T)() -> RawVec(T) {
-    *T p = nil
-    return RawVec(T) { data: p, len: 0, cap: 0 }
-}
+// Construct an empty, owned RawVec(T) with the inferred zero-init literal,
+// matching the builtin `vec(T) v = []`:
+//
+//     RawVec(string) v = {}
+//
+// (There is intentionally no `new_rawvec(T)()` free function — `{}` replaces it.)
 
 impl(T) RawVec(T) {
     // Ensure capacity for at least `need` elements (geometric growth).
@@ -86,11 +86,7 @@ impl(T) RawVec(T) {
     // nested element). emit_clone_value calls this instead of the field-wise
     // auto-clone (which cannot deep-copy the raw *T buffer).
     fn __clone(&self) -> RawVec(T) {
-        // Construct inline rather than calling new_rawvec(T)(): a generic free
-        // function called from inside a generic method body does not get its type
-        // arg substituted at monomorphization (would emit `new_rawvec(T)` literally).
-        *T p = nil
-        RawVec(T) out = RawVec(T) { data: p, len: 0, cap: 0 }
+        RawVec(T) out = {}               // inferred zero-init (data=null, len=cap=0)
         out.reserve(self.len)
         for (int i = 0; i < self.len; i = i + 1) {
             T e = self.data[i]           // clone-on-read each element

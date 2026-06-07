@@ -9,7 +9,7 @@ fn bench_int(int N) {
     i64 bsum = 0
     for (int i = 0; i < N; i = i + 1) { bsum = bsum + bv[i] }
     i64 t1 = T.now_unix_ns()
-    RawVec(int) rv = new_rawvec(int)()
+    RawVec(int) rv = {}
     for (int i = 0; i < N; i = i + 1) { rv.push(i) }
     i64 rsum = 0
     for (int i = 0; i < N; i = i + 1) { rsum = rsum + rv.get(i) }
@@ -24,7 +24,7 @@ fn bench_str(int N) {
     vec(string) bv = []
     for (int i = 0; i < N; i = i + 1) { bv.push(f"item_{i}") }
     i64 t1 = T.now_unix_ns()
-    RawVec(string) rv = new_rawvec(string)()
+    RawVec(string) rv = {}
     for (int i = 0; i < N; i = i + 1) { rv.push(f"item_{i}") }
     i64 t2 = T.now_unix_ns()
     f64 vms = (t1 - t0) as f64 / 1000000.0
