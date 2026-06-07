@@ -16056,7 +16056,31 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
            concatenation, f-strings) — no need for the old expr_produces_dynamic_string
            heuristic. */
         int temp_mark = ctx->temp_string_count;
-        codegen_expr(ctx, node->as.expr_stmt.expr);
+        AstNode *estmt = node->as.expr_stmt.expr;
+        LLVMValueRef ev = codegen_expr(ctx, estmt);
+        /* F2 (VR-LIM-014): a discarded CALL returning an owned has_drop value by
+           value (e.g. `v.pop()` -> Option(string)) leaks its inner buffers —
+           nothing binds or drops the rvalue. Spill to a temp and register it for
+           drop so the flush below releases it. Restricted to AST_CALL on purpose:
+           only a call yields a fresh owned rvalue; a bare ident/field read is a
+           borrow of a live binding and must NOT be dropped here. TYPE_STRING is
+           excluded — discarded string-returning calls are already freed via the
+           temp-string mechanism (cg_push_temp_string). */
+        if (ev != NULL && estmt->kind == AST_CALL && estmt->resolved_type)
+        {
+            Type *rt = estmt->resolved_type;
+            bool needs_drop =
+                (rt->kind == TYPE_STRUCT && rt->as.strukt.has_drop) ||
+                (rt->kind == TYPE_ENUM   && rt->as.enom.has_drop)   ||
+                rt->kind == TYPE_VECTOR  || rt->kind == TYPE_MAP;
+            if (needs_drop)
+            {
+                LLVMTypeRef rllvm = type_to_llvm(ctx, rt);
+                LLVMValueRef tmp = cg_entry_alloca(ctx, rllvm, "discard.drop");
+                LLVMBuildStore(ctx->builder, ev, tmp);
+                cg_push_temp_drop(ctx, tmp, rt);
+            }
+        }
         /* Free all temps produced (none are moved/kept — this is a discarded result) */
         cg_flush_temps(ctx, temp_mark, false);
         break;

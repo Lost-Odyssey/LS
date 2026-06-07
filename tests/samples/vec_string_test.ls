@@ -1,21 +1,24 @@
-// vec_string_test.ls — vec(string) memory safety test
+// vec_string_test.ls — Vec(string) memory safety test
 // Verifies: push dynamic strings, index write (frees old), pop (frees),
 //           clear (frees all), scope exit cleanup, chained methods
 
+import std.vec
+
 fn collect_words() -> int {
-    vec(string) v
+    Vec(string) v = {}
     v.push("hello".upper())    // HELLO — heap
     v.push("world".upper())    // WORLD — heap
     v.push("foo")              // static
 
-    // pop removes "foo" (static — no free needed)
+    // pop removes "foo" (static — no free needed); discarded rvalue (F2)
     v.pop()
 
-    // pop removes "WORLD" (heap — freed)
+    // pop removes "WORLD" (heap — freed); discarded rvalue Option(string) must
+    // drop its inner string (VR-LIM-014 / F2)
     v.pop()
 
     // only "HELLO" remains
-    if (v.length != 1) { return -1 }
+    if (v.len() != 1) { return -1 }
     if (v[0] != "HELLO") { return -2 }
 
     // overwrite index 0: frees "HELLO", stores new heap string
@@ -27,16 +30,16 @@ fn collect_words() -> int {
 }
 
 fn clear_test() -> int {
-    vec(string) v
+    Vec(string) v = {}
     v.push("alpha".upper())   // ALPHA — heap
     v.push("beta".upper())    // BETA  — heap
     v.clear()                 // frees ALPHA and BETA; len = 0
 
-    if (v.length != 0) { return -1 }
+    if (v.len() != 0) { return -1 }
 
     v.push("x")               // static
     v.push("y".upper())       // Y — heap
-    if (v.length != 2) { return -2 }
+    if (v.len() != 2) { return -2 }
     if (v[0] != "x") { return -3 }
     if (v[1] != "Y") { return -4 }
     return 1
@@ -44,7 +47,7 @@ fn clear_test() -> int {
 }
 
 fn for_in_test() -> int {
-    vec(string) v
+    Vec(string) v = {}
     v.push("ab")
     v.push("cde")
     v.push("f")
@@ -59,13 +62,13 @@ fn for_in_test() -> int {
 }
 
 fn chained_push_test() -> int {
-    vec(string) v
+    Vec(string) v = {}
     string base = "hello"
     v.push(base.upper())           // HELLO
     v.push(base.upper().lower())   // hello (two temporaries, both freed)
     v.push(base + " world")        // hello world
 
-    if (v.length != 3) { return -1 }
+    if (v.len() != 3) { return -1 }
     if (v[0] != "HELLO") { return -2 }
     if (v[1] != "hello") { return -3 }
     if (v[2] != "hello world") { return -4 }

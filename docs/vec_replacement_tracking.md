@@ -165,7 +165,7 @@
 
 | 编号 | 问题 | 触发场景 | 状态 |
 |------|------|----------|------|
-| VR-LIM-014 | `Vec.pop()` 丢弃返回值时，rvalue `Option(T)` temp 未释放内部 has_drop T | `v.pop()` 不作为赋值右值直接丢弃时，Some 内的 string/vec/map 等不触发 __drop | 新发现。绕行：`Option(T) _ = v.pop()` 赋值给变量 |
+| ~~VR-LIM-014~~ | ~~`Vec.pop()` 丢弃返回值时，rvalue `Option(T)` temp 未释放内部 has_drop T~~ | ✅ 已修复（F2，2026-06-08）：`AST_EXPR_STMT` 对丢弃的 has_drop 调用结果 spill+`cg_push_temp_drop`。`vec_string_test` 还原裸 `v.pop()`，0/0/0 | 已解除 |
 | VR-LIM-015 | `Vec(T)` generic 方法的 by-value 参数不标记 named var 为 moved | `Vec(string).push(s)` 调用后 `s` 仍 live（不被标记 moved），因 checker 对 generic `T` 参数不触发 move 分析 | 新发现。内建 vec 可标记 moved；Vec(T) 一律 clone。负向测试（move-after-use 检查）不适用于 Vec(T) |
 | ~~VR-LIM-016~~ | ~~全局变量 `Vec(T) v = [literal]` 触发 `__from_list` 缺失~~ | ✅ 已修复（F1，2026-06-08）：`emit_user_from_list_value` 落空时从 pending-generic 队列前向声明 `__from_list`。`test_global_vec_lit` 还原全局字面量，JIT+AOT+memcheck 0/0/0 | 已解除 |
 | （参见 plan_vec_replacement.md §6.1 其他已知限制） | | | |
