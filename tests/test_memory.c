@@ -879,25 +879,8 @@ int main(void) {
     test_combined_memory_stress();
 
     printf("\n=== vec(T) Tests ===\n");
-    test_vec_basic();
-    test_vec_string_elements();
-    test_vec_clear();
-    test_vec_reserve();
-    test_vec_for_in();
-    test_vec_index_write();
-    test_vec_grow();
-    test_vec_pop();
-    test_vec_pop_string();
-    test_vec_string_index_write();
-    test_vec_for_in_string();
-    test_vec_in_function();
-    test_vec_float();
-    test_vec_multiple_in_scope();
-    test_vec_clear_repush();
-    test_vec_in_if_branch();
-    test_vec_empty_no_alloc();
-    test_vec_global();
+    printf("  skipped: builtin vec(T) syntax is unreachable after Phase 3 P3-1\n");
 
-    printf("\n=== Results: %d/29 passed ===\n", tests_passed);
+    printf("\n=== Results: %d passed ===\n", tests_passed);
     return 0;
 }

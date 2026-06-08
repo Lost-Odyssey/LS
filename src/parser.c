@@ -1461,9 +1461,9 @@ static AstNode *infix_index(Parser *p, AstNode *left) {
 static AstNode *infix_field(Parser *p, AstNode *left) {
     Token dot_tok = p->previous;
     /* Field names can be identifiers, 'self', or type-keywords used as method names
-       (e.g. vec/map/array are keywords for types but also valid method names). */
+       (e.g. map/array are keywords for types but also valid method names). */
     if (!check(p, TOKEN_IDENTIFIER) && !check(p, TOKEN_SELF) &&
-        !check(p, TOKEN_MAP) && !check(p, TOKEN_VEC) && !check(p, TOKEN_ARRAY))
+        !check(p, TOKEN_MAP) && !check(p, TOKEN_ARRAY))
     {
         error_at_current(p, "expected field name after '.'");
         ast_free(left);
@@ -1688,7 +1688,6 @@ static bool is_type_keyword(TokenType t) {
     case TOKEN_TYPE_STRING: case TOKEN_TYPE_VOID:
     case TOKEN_TYPE_OBJECT:
     case TOKEN_ARRAY:
-    case TOKEN_VEC:
     case TOKEN_MAP:
         return true;
     default:
@@ -1719,17 +1718,6 @@ static TypeNode *parse_type(Parser *p) {
         TypeNode *tn = new_type_node(TYPE_NODE_REFERENCE, line, col);
         tn->is_mut = is_mut;
         tn->as.pointee = pointee;
-        return tn;
-    }
-
-    /* vec(T) — dynamic array */
-    if (match_tok(p, TOKEN_VEC)) {
-        consume(p, TOKEN_LPAREN, "expected '(' after 'vec'");
-        TypeNode *elem = parse_type(p);
-        if (elem == NULL) return NULL;
-        consume(p, TOKEN_RPAREN, "expected ')' after vec element type");
-        TypeNode *tn = new_type_node(TYPE_NODE_VECTOR, line, col);
-        tn->as.vec.elem = elem;
         return tn;
     }
 
@@ -3113,13 +3101,13 @@ static AstNode *parse_module_decl(Parser *p) {
 }
 
 /* A module-path segment is normally an identifier, but a few type keywords
-   (vec / map / array) are valid std module file names (std/vec.ls etc.). The
+   (map / array) are valid std module file names. The
    scanner lexes those as keyword tokens, not TOKEN_IDENTIFIER, so without this
-   `import std.vec` would truncate at the keyword. The segment's source text is
+   `import std.map` would truncate at the keyword. The segment's source text is
    intact on the token, so it copies into the path the same way. */
 static bool is_import_path_segment(TokenType t) {
     return t == TOKEN_IDENTIFIER ||
-           t == TOKEN_VEC || t == TOKEN_MAP || t == TOKEN_ARRAY ||
+           t == TOKEN_MAP || t == TOKEN_ARRAY ||
            t == TOKEN_TYPE_STRING;  /* Phase 2.5: `import std.string` */
 }
 

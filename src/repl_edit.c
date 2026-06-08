@@ -54,7 +54,7 @@ ReplLineKind repl_classify(const char *buf) {
         case TOKEN_TYPE_ALIAS:
             return REPL_DECL;
         /* container type constructors only appear leading a declaration */
-        case TOKEN_VEC: case TOKEN_MAP: case TOKEN_ARRAY:
+        case TOKEN_MAP: case TOKEN_ARRAY:
             return REPL_VAR;
         default:
             break;
@@ -180,7 +180,7 @@ static const char *ansi_for_token(TokenType t) {
         case TOKEN_TYPE_F32: case TOKEN_TYPE_F64: case TOKEN_TYPE_BOOL:
         case TOKEN_TYPE_CHAR: case TOKEN_TYPE_STRING: case TOKEN_TYPE_VOID:
         case TOKEN_TYPE_LIB: case TOKEN_TYPE_OBJECT: case TOKEN_ARRAY:
-        case TOKEN_VEC: case TOKEN_MAP: case TOKEN_BLOCK:
+        case TOKEN_MAP: case TOKEN_BLOCK:
             return C_TYPE;
         /* literals */
         case TOKEN_STRING_LIT: case TOKEN_CHAR_LIT:

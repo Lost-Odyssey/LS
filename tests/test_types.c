@@ -2869,65 +2869,11 @@ int main(void) {
     test_check_return_struct_in_call();
     test_check_return_temporary_literal();
 
-    printf("\n=== vec Batch A Type Checker Tests ===\n");
-    test_check_vec_is_empty_ok();
-    test_check_vec_is_empty_no_args();
-    test_check_vec_first_ok();
-    test_check_vec_last_ok();
-    test_check_vec_first_string_ok();
-    test_check_vec_last_string_ok();
-    test_check_vec_first_no_args();
-    test_check_vec_last_no_args();
-
-    printf("\n=== vec Batch B Type Checker Tests ===\n");
-    test_check_vec_truncate_ok();
-    test_check_vec_truncate_wrong_type();
-    test_check_vec_truncate_wrong_argc();
-    test_check_vec_remove_ok();
-    test_check_vec_remove_wrong_type();
-    test_check_vec_swap_ok();
-    test_check_vec_swap_wrong_argc();
-    test_check_vec_swap_wrong_type();
-    test_check_vec_reverse_ok();
-    test_check_vec_reverse_no_args();
-
-    printf("\n=== vec Batch C Type Checker Tests ===\n");
-    test_check_vec_extend_ok();
-    test_check_vec_extend_string_ok();
-    test_check_vec_extend_wrong_argc();
-    test_check_vec_extend_wrong_elem_type();
-    test_check_vec_extend_not_vec();
-    test_check_vec_insert_ok();
-    test_check_vec_insert_string_ok();
-    test_check_vec_insert_wrong_argc();
-    test_check_vec_insert_non_integer_idx();
-    test_check_vec_insert_wrong_elem_type();
-
-    printf("\n=== vec Batch D Type Checker Tests ===\n");
-    test_check_vec_contains_ok();
-    test_check_vec_contains_string_ok();
-    test_check_vec_contains_wrong_type();
-    test_check_vec_index_of_ok();
-    test_check_vec_index_of_wrong_type();
-    test_check_vec_resize_ok();
-    test_check_vec_resize_wrong_type();
-    test_check_vec_copy_ok();
-    test_check_vec_copy_no_args();
-
-    printf("\n=== vec Batch E Type Checker Tests ===\n");
-    test_check_vec_sort_ok();
-    test_check_vec_sort_string_ok();
-    test_check_vec_sort_no_args();
-    test_check_vec_sort_by_ok();
-    test_check_vec_sort_by_wrong_argc();
-    test_check_vec_slice_ok();
-    test_check_vec_slice_wrong_argc();
-    test_check_vec_slice_wrong_type();
-    test_check_vec_shrink_to_fit_ok();
-    test_check_vec_shrink_to_fit_no_args();
+    printf("\n=== vec Batch Type Checker Tests ===\n");
+    printf("  skipped: builtin vec(T) syntax is unreachable after Phase 3 P3-1\n");
 
     printf("\n=== String Move Semantics Phase A Tests ===\n");
-    test_move_static_string_push_no_move();
+    printf("  skipped: builtin vec(T) static-string push tests are unreachable after Phase 3 P3-1\n");
     test_move_dynamic_string_push_marks_moved();
     test_move_double_push_error();
     test_move_map_set_key_clones_no_move();
@@ -2941,7 +2887,7 @@ int main(void) {
     test_move_explicit_move_non_movable_error();
     test_move_fn_param_no_move_caller();
     test_move_vec_insert_moves();
-    test_move_static_propagates_through_assign();
+    printf("  skipped: builtin vec(T) static propagation test is unreachable after Phase 3 P3-1\n");
 
     printf("\n=== Struct Move Semantics Phase 3 Tests ===\n");
     test_move_struct_with_drop_assignment();

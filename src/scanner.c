@@ -164,7 +164,6 @@ static const Keyword keywords[] = {
     {"u32",      3, TOKEN_TYPE_U32},
     {"u64",      3, TOKEN_TYPE_U64},
     {"u8",       2, TOKEN_TYPE_U8},
-    {"vec",      3, TOKEN_VEC},
     {"void",     4, TOKEN_TYPE_VOID},
     {"while",    5, TOKEN_WHILE},
 };
@@ -724,7 +723,6 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TYPE_LIB:      return "TYPE_LIB";
     case TOKEN_TYPE_OBJECT:   return "TYPE_OBJECT";
     case TOKEN_ARRAY:         return "ARRAY";
-    case TOKEN_VEC:           return "VEC";
     case TOKEN_MAP:           return "MAP";
     case TOKEN_IDENTIFIER:    return "IDENTIFIER";
     case TOKEN_PLUS:          return "PLUS";

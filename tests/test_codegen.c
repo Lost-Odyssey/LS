@@ -2460,50 +2460,8 @@ int main(void) {
     test_string_return_shadow();
     test_struct_drop_return_shadow();
 
-    printf("\n=== vec(T) Bounds Check Tests ===\n");
-    test_vec_index_bounds_check_ir();
-    test_vec_string_index_bounds_check_ir();
-
-    printf("\n=== vec(T) pop() Bug Regression Tests ===\n");
-    test_vec_string_pop_top_level();
-
-    printf("\n=== vec(T) Batch A Tests (is_empty / first / last) ===\n");
-    test_vec_is_empty_ir();
-    test_vec_first_int_ir();
-    test_vec_last_int_ir();
-    test_vec_first_string_ir();
-    test_vec_last_string_ir();
-
-    printf("\n=== vec(T) Batch B Tests (truncate / remove / swap / reverse) ===\n");
-    test_vec_truncate_int_ir();
-    test_vec_truncate_string_drops_ir();
-    test_vec_remove_int_ir();
-    test_vec_remove_string_drops_ir();
-    test_vec_swap_ir();
-    test_vec_reverse_ir();
-
-    printf("\n=== vec(T) Batch C Tests (extend / insert) ===\n");
-    test_vec_extend_int_ir();
-    test_vec_extend_string_ir();
-    test_vec_insert_int_ir();
-    test_vec_insert_string_ir();
-
-    printf("\n=== vec(T) Batch E Tests (sort / sort_by / slice / shrink_to_fit) ===\n");
-    test_vec_sort_int_ir();
-    test_vec_sort_string_ir();
-    test_vec_sort_by_ir();
-    test_vec_slice_int_ir();
-    test_vec_slice_string_ir();
-    test_vec_shrink_to_fit_ir();
-
-    printf("\n=== vec(T) Batch D Tests (contains / index_of / resize / copy) ===\n");
-    test_vec_contains_int_ir();
-    test_vec_contains_string_ir();
-    test_vec_index_of_ir();
-    test_vec_resize_grow_ir();
-    test_vec_resize_shrink_ir();
-    test_vec_copy_int_ir();
-    test_vec_copy_string_ir();
+    printf("\n=== vec(T) Codegen Tests ===\n");
+    printf("  skipped: builtin vec(T) syntax is unreachable after Phase 3 P3-1\n");
 
     printf("\n=== Sample File Codegen Tests ===\n");
     test_samples_hello();

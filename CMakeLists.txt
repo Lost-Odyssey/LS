@@ -258,6 +258,7 @@ add_executable(test_jit
     runtime/memcheck.c
     runtime/profiler.c
     runtime/builtins.c
+    runtime/ls_regex.c
     ${LS_OS_SOURCE}
 )
 target_include_directories(test_jit PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -294,6 +295,7 @@ add_executable(test_ffi
     runtime/memcheck.c
     runtime/profiler.c
     runtime/builtins.c
+    runtime/ls_regex.c
     ${LS_OS_SOURCE}
 )
 target_include_directories(test_ffi PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -330,6 +332,7 @@ add_executable(test_module
     runtime/memcheck.c
     runtime/profiler.c
     runtime/builtins.c
+    runtime/ls_regex.c
     ${LS_OS_SOURCE}
 )
 target_include_directories(test_module PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -367,6 +370,7 @@ add_executable(test_memory
     runtime/memcheck.c
     runtime/profiler.c
     runtime/builtins.c
+    runtime/ls_regex.c
     ${LS_OS_SOURCE}
 )
 target_include_directories(test_memory PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
@@ -956,7 +960,7 @@ add_test(
 )
 set_tests_properties(test_mem_m5_aot PROPERTIES DEPENDS "test_mem_m5_jit")
 
-# M-5 负向：move-after-use（vec.push / v[i]= / 分支 MAYBE_MOVED）必须编译期拒绝
+# M-5 负向：move-after-use（绑定 move / 分支 MAYBE_MOVED）必须编译期拒绝
 add_test(
     NAME test_mem_m5_neg
     COMMAND ${CMAKE_COMMAND}
@@ -965,6 +969,16 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_mem_m5_neg.cmake
 )
 set_tests_properties(test_mem_m5_neg PROPERTIES DEPENDS "test_mem_m5_jit")
+
+# Phase 3 P3-1: builtin vec(T) syntax is no longer accepted by the frontend.
+add_test(
+    NAME test_vec_builtin_syntax_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_builtin_syntax_reject.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_builtin_syntax_reject.cmake
+)
+set_tests_properties(test_vec_builtin_syntax_reject PROPERTIES DEPENDS "test_mem_m5_neg")
 
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(

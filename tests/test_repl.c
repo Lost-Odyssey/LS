@@ -32,7 +32,7 @@ static void test_classify(void) {
     ASSERT(repl_classify("type F = int") == REPL_DECL, "type → DECL");
     ASSERT(repl_classify("int x = 1") == REPL_VAR, "int x → VAR");
     ASSERT(repl_classify("string s = \"hi\"") == REPL_VAR, "string s → VAR");
-    ASSERT(repl_classify("vec(int) v = []") == REPL_VAR, "vec → VAR");
+    ASSERT(repl_classify("vec(int) v = []") == REPL_EXPR, "builtin vec syntax → EXPR");
     ASSERT(repl_classify("Point p = mk()") == REPL_VAR, "user type → VAR");
     ASSERT(repl_classify("print(x)") == REPL_EXPR, "call → EXPR");
     ASSERT(repl_classify("x = 5") == REPL_EXPR, "assign existing → EXPR");
