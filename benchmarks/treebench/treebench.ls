@@ -6,12 +6,13 @@
 //
 //   ls run treebench.ls [depth]
 
+import std.vec
 import perf
 import proc
 
 fn parse_n(int dflt) -> int {
-    vec(string) a = proc.args()
-    if a.length >= 1 {
+    Vec(string) a = proc.args()
+    if a.len() >= 1 {
         Result(int, string) r = a[0].to_int()
         match r { Ok(v) => { return v } Err(e) => { return dflt } }
     }

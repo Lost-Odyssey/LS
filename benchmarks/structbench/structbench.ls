@@ -7,12 +7,13 @@
 //   ls run -O structbench.ls [n]    (with O2 inlining)
 //   ls compile structbench.ls -o structbench.exe && structbench.exe [n]
 
+import std.vec
 import perf
 import proc
 
 fn parse_n(int dflt) -> int {
-    vec(string) a = proc.args()
-    if a.length >= 1 {
+    Vec(string) a = proc.args()
+    if a.len() >= 1 {
         Result(int, string) r = a[0].to_int()
         match r {
             Ok(v)  => { return v }

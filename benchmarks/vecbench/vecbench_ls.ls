@@ -1,16 +1,17 @@
 // vecbench_ls.ls — pure LS Vec(T) (std/vec.ls) throughput benchmark.
-// Same 4 operations as vecbench.ls, using Vec(T) instead of builtin vec(T):
+// Four core dynamic-array operations on Vec(T):
 // push (with growth), index read, for-in iteration, index write.
+// Compared against C++ std::vector / Rust Vec / Python list (see run.ps1).
 //
 //   ls run vecbench_ls.ls [n]
 
-import vec
+import std.vec
 import perf
 import proc
 
 fn parse_n(int dflt) -> int {
-    vec(string) a = proc.args()
-    if a.length >= 1 {
+    Vec(string) a = proc.args()
+    if a.len() >= 1 {
         Result(int, string) r = a[0].to_int()
         match r { Ok(v) => { return v } Err(e) => { return dflt } }
     }

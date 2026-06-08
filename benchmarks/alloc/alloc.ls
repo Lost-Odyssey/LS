@@ -1,6 +1,6 @@
 // alloc.ls — LS benchmark: allocation / RAII / container throughput.
 // Exercises the machinery that distinguishes LS from plain C:
-//   - vec(string) growth + per-element heap strings + scope-exit drop  (Phase A)
+//   - Vec(string) growth + per-element heap strings + scope-exit drop  (Phase A)
 //   - map(string,int) insert / lookup / rehash with string keys        (Phase B)
 // Both phases build and drop a string every iteration, stressing the
 // clone/drop/move paths (not just the LLVM backend, like fib/string do).
@@ -10,12 +10,13 @@
 //
 // N is read from argv (bug #22 fix makes this work in AOT too); default 200000.
 
+import std.vec
 import perf
 import proc
 
 fn parse_n(int dflt) -> int {
-    vec(string) a = proc.args()
-    if a.length >= 1 {
+    Vec(string) a = proc.args()
+    if a.len() >= 1 {
         Result(int, string) r = a[0].to_int()
         match r {
             Ok(v)  => { return v }
@@ -25,9 +26,9 @@ fn parse_n(int dflt) -> int {
     return dflt
 }
 
-// Phase A: build a vec of n heap strings, sum their lengths, drop everything.
+// Phase A: build a Vec of n heap strings, sum their lengths, drop everything.
 fn vec_stress(int n) -> i64 {
-    vec(string) v
+    Vec(string) v = {}
     for i in 0..n {
         v.push(f"item_{i}")
     }
@@ -36,7 +37,7 @@ fn vec_stress(int n) -> i64 {
         chk = chk + s.length as i64
     }
     return chk
-    // scope exit: all n strings + vec buffer freed
+    // scope exit: all n strings + Vec buffer freed
 }
 
 // Phase B: word-frequency map with `keyspace` distinct string keys.

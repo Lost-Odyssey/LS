@@ -5,12 +5,14 @@
 //
 //   ls run strbench.ls [n]   /   ls run -O strbench.ls [n]   /   compile
 
+import std.vec
+import std.string
 import perf
 import proc
 
 fn parse_n(int dflt) -> int {
-    vec(string) a = proc.args()
-    if a.length >= 1 {
+    Vec(string) a = proc.args()
+    if a.len() >= 1 {
         Result(int, string) r = a[0].to_int()
         match r { Ok(v) => { return v } Err(e) => { return dflt } }
     }
@@ -21,7 +23,7 @@ fn main() -> int {
     int n = parse_n(1000000)
     // needles indexed at runtime so O2 can't constant-fold contains/substr
     // (both args are runtime values). Use 5 needles, all present in base.
-    vec(string) needles
+    Vec(string) needles = {}
     needles.push("Fox")
     needles.push("Dog")
     needles.push("The")
@@ -35,7 +37,7 @@ fn main() -> int {
     for i in 0..n { string u = base.upper(); a1 = a1 + u.length as i64 }
     i64 t1 = perf.now()
 
-    // ② contains — needle from vec (runtime, not foldable)
+    // ② contains — needle from Vec (runtime, not foldable)
     i64 a2 = 0
     for i in 0..n {
         string nd = needles[i % 5]
@@ -45,7 +47,7 @@ fn main() -> int {
 
     // ③ split
     i64 a3 = 0
-    for i in 0..n { vec(string) parts = base.split(" "); a3 = a3 + parts.length as i64 }
+    for i in 0..n { Vec(string) parts = base.split(" "); a3 = a3 + parts.len() as i64 }
     i64 t3 = perf.now()
 
     // ④ replace

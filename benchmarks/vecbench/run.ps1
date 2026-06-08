@@ -19,24 +19,14 @@ function Get-Mean { param([string]$txt)
 $rows = [ordered]@{}
 
 Write-Host "  LS (JIT) ..." -ForegroundColor Yellow
-$rows["LS (JIT)"] = Get-Mean ((& $LS run $Dir\vecbench.ls $N 2>$null) -join "
+$rows["LS (JIT)"] = Get-Mean ((& $LS run $Dir\vecbench_ls.ls $N 2>$null) -join "
 ")
 Write-Host "  LS (JIT -O) ..." -ForegroundColor Yellow
-$rows["LS (JIT -O)"] = Get-Mean ((& $LS run -O $Dir\vecbench.ls $N 2>$null) -join "
+$rows["LS (JIT -O)"] = Get-Mean ((& $LS run -O $Dir\vecbench_ls.ls $N 2>$null) -join "
 ")
 Write-Host "  LS (AOT) ..." -ForegroundColor Yellow
-& $LS compile $Dir\vecbench.ls -o $Dir\vecbench_ls.exe 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) { $rows["LS (AOT)"] = Get-Mean ((& $Dir\vecbench_ls.exe $N) -join "
-") }
-Write-Host "  LS Vec (JIT) ..." -ForegroundColor Yellow
-$rows["LS Vec (JIT)"] = Get-Mean ((& $LS run $Dir\vecbench_ls.ls $N 2>$null) -join "
-")
-Write-Host "  LS Vec (JIT -O) ..." -ForegroundColor Yellow
-$rows["LS Vec (JIT -O)"] = Get-Mean ((& $LS run -O $Dir\vecbench_ls.ls $N 2>$null) -join "
-")
-Write-Host "  LS Vec (AOT) ..." -ForegroundColor Yellow
 & $LS compile $Dir\vecbench_ls.ls -o $Dir\vecbench_lsv.exe 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) { $rows["LS Vec (AOT)"] = Get-Mean ((& $Dir\vecbench_lsv.exe $N) -join "
+if ($LASTEXITCODE -eq 0) { $rows["LS (AOT)"] = Get-Mean ((& $Dir\vecbench_lsv.exe $N) -join "
 ") }
 Write-Host "  Rust ..." -ForegroundColor Yellow
 & rustc -O $Dir\vecbench.rs -o $Dir\vecbench_rs.exe 2>$null
