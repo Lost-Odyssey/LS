@@ -57,6 +57,10 @@ test_output.exe.obj
 # bugs notes — local only, not tracked
 bugs/
 
+# paper / features notes — local only, not tracked
+paper/
+features/
+
 # docs — only build-related docs are tracked; everything else is local only
 docs/*
 !docs/build.md
