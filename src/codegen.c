@@ -291,9 +291,6 @@ static LLVMValueRef emit_enum_clone_val(CodegenContext *ctx, LLVMValueRef enum_v
 /* Clone an array VALUE: deep-copy each has_drop element, returns new array value */
 static LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val,
                                          LLVMTypeRef llvm_arr_type, Type *arr_type);
-/* Clone a vec VALUE (struct {data*, len, cap}): malloc new data, copy+clone elements */
-static LLVMValueRef emit_vec_clone_val(CodegenContext *ctx, LLVMValueRef vec_val,
-                                       Type *elem_type);
 /* Clone a map VALUE (borrowed closure capture): traverse chains, re-insert via set */
 static LLVMValueRef emit_map_clone_val(CodegenContext *ctx, LLVMValueRef map_val,
                                        Type *key_type, Type *val_type);
@@ -305,9 +302,6 @@ static void mark_string_moved(CodegenContext *ctx, LLVMValueRef str_alloca,
 static void cg_mark_last_temp_moved(CodegenContext *ctx, int mark, const char *reason);
 static void emit_scope_cleanup(CodegenContext *ctx);
 static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloca);
-/* Drop a whole vec stored at `vec_ptr` (a *LsVec): free owned elements + buffer.
-   Mutually recursive with emit_vec_elem_drop_at to handle nested vec(vec(...)). */
-static void emit_vec_drop_at(CodegenContext *ctx, LLVMValueRef vec_ptr, Type *elem_type);
 /* Unified value-drop authority: free heap owned by the value stored at `place_ptr`
    (a pointer to storage of `type`). Recurses through containers; POD/non-drop is a
    no-op. The drop-side counterpart of emit_clone_value. */
@@ -414,7 +408,7 @@ static LLVMValueRef cg_ensure_user_struct_drop_decl(CodegenContext *ctx,
                    param-borrow ABI; non-zero when cloned/owned).
      TYPE_STRUCT(has_drop) — env_drop calls Struct.__drop on the slot.
    Phase E by-ref change:
-     TYPE_VECTOR / TYPE_MAP — env stores a pointer to the outer alloca
+     TYPE_MAP — env stores a pointer to the outer alloca
        (by-ref semantics); outer is NOT marked moved; the closure must
        not outlive the outer variable's scope. env_drop skips these slots
        (outer owner is responsible for release). */
@@ -422,7 +416,6 @@ static inline bool capture_type_is_by_move_cg(const Type *t) {
     if (t == NULL) return false;
     switch (t->kind) {
     case TYPE_STRING: return true;
-    case TYPE_VECTOR: return false;  /* by-ref: env stores ptr to outer alloca */
     case TYPE_MAP:    return false;  /* by-ref: env stores ptr to outer alloca */
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;  /* F.5: has_drop enum → by-move */
@@ -436,7 +429,7 @@ static inline bool capture_type_is_by_move_cg(const Type *t) {
    Constraint: closure must not outlive the enclosing scope. */
 static inline bool capture_type_is_by_ref_cg(const Type *t) {
     if (t == NULL) return false;
-    return t->kind == TYPE_VECTOR || t->kind == TYPE_MAP;
+    return t->kind == TYPE_MAP;
 }
 
 /* Whether marking the outer-as-moved is done via the cap idiom.
@@ -446,9 +439,6 @@ static inline bool capture_outer_marker_uses_cap(const Type *t) {
     if (t == NULL) return false;
     return t->kind == TYPE_STRING;
 }
-static LLVMBasicBlockRef emit_vec_elem_drop_at(CodegenContext *ctx, LLVMValueRef elem_ptr,
-                                               Type *elem_type, int idx_suffix,
-                                               const char *label);
 
 static void pop_scope(CodegenContext *ctx)
 {
@@ -590,25 +580,6 @@ static void register_enum_llvm(CodegenContext *ctx, const char *name,
 }
 
 /* ---- LsVec LLVM type: { ptr, i32, i32 } = { data, len, cap } ---- */
-
-/* Get or create the LsVec LLVM struct type (shared across all vec(T) specialisations,
-   since the layout is the same — data is an opaque ptr regardless of element type).
-   cap == 0 means empty/unallocated (data may be NULL, nothing to free).
-   cap >  0 means heap-allocated (caller must free data). */
-static LLVMTypeRef ls_vec_type(CodegenContext *ctx)
-{
-    LLVMTypeRef existing = LLVMGetTypeByName2(ctx->context, "LsVec");
-    if (existing)
-        return existing;
-    LLVMTypeRef fields[3] = {
-        LLVMPointerTypeInContext(ctx->context, 0), /* ptr  data */
-        LLVMInt32TypeInContext(ctx->context),      /* i32  len  */
-        LLVMInt32TypeInContext(ctx->context),      /* i32  cap  */
-    };
-    LLVMTypeRef st = LLVMStructCreateNamed(ctx->context, "LsVec");
-    LLVMStructSetBody(st, fields, 3, 0);
-    return st;
-}
 
 /* ---- LsMap LLVM type: { ptr, i32, i32 } = { buckets, len, cap } ---- */
 
@@ -1976,7 +1947,6 @@ static LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
            scope_drop double-free (e.g. by-value `struct { vec(int) }` arg). */
         bool field_needs_clone =
             ft->kind == TYPE_STRING ||
-            ft->kind == TYPE_VECTOR ||
             ft->kind == TYPE_MAP ||
             (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop) ||
             (ft->kind == TYPE_ENUM && ft->as.enom.has_drop);
@@ -2104,134 +2074,6 @@ static LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_v
     return result;
 }
 
-/* emit_vec_clone_val — produce an independent deep copy of a vec value.
-   The original vec is not freed or modified.
-   Algorithm:
-     new_cap  = original cap (or LS_MIN_VEC_CAP if 0)
-     new_data = malloc(new_cap * sizeof(T))
-     for i in 0..len: new_data[i] = clone(original_data[i])
-     return LsVec{ new_data, original_len, new_cap }
-   For trivial element types (no heap ownership) we just memcpy the data. */
-static LLVMValueRef emit_vec_clone_val(CodegenContext *ctx, LLVMValueRef vec_val,
-                                       Type *elem_type)
-{
-    if (elem_type == NULL)
-        return vec_val;
-
-    LLVMTypeRef vec_t = ls_vec_type(ctx);
-    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-
-    /* Extract original fields */
-    LLVMValueRef orig_data = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vc.data");
-    LLVMValueRef orig_len = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vc.len");
-    LLVMValueRef orig_cap = LLVMBuildExtractValue(ctx->builder, vec_val, 2, "vc.cap");
-
-    /* elem_size = sizeof(T) */
-    LLVMValueRef elem_size = LLVMSizeOf(elem_llvm); /* i64 */
-
-#if CG_DEBUG
-    {
-        LLVMValueRef dbg_args[2] = {orig_len, orig_cap};
-        cg_emit_debug_printf(ctx, "[cg] vec.clone  len=%d cap=%d\n", dbg_args, 2);
-    }
-#endif
-
-    /* Use cap for allocation size; if cap == 0 use LS_MIN_VEC_CAP (8) */
-    LLVMValueRef cap64 = LLVMBuildSExt(ctx->builder, orig_cap, i64_t, "vc.cap64");
-    LLVMValueRef min_cap = LLVMConstInt(i64_t, 8, 0);
-    LLVMValueRef cap_ok = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap64,
-                                        LLVMConstInt(i64_t, 0, 0), "vc.capok");
-    LLVMValueRef alloc_cap = LLVMBuildSelect(ctx->builder, cap_ok, cap64, min_cap, "vc.alcap");
-
-    /* bytes = alloc_cap * elem_size */
-    LLVMValueRef bytes = LLVMBuildMul(ctx->builder, alloc_cap, elem_size, "vc.bytes");
-
-    /* new_data = malloc(bytes) — vec clone for collection element copying */
-    LLVMValueRef new_data = cg_emit_alloc(ctx, bytes, "vec.clone",
-                                          CG_LINE(ctx), CG_COL(ctx));
-
-    bool elem_needs_clone = (elem_type->kind == TYPE_STRING) ||
-                            (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-                            (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop) ||
-                            (elem_type->kind == TYPE_VECTOR);
-
-    if (!elem_needs_clone)
-    {
-        /* Trivial elements: memcpy the whole data region */
-        LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, orig_len, i64_t, "vc.len64");
-        LLVMValueRef copy_bytes = LLVMBuildMul(ctx->builder, len64, elem_size, "vc.cpbytes");
-        LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
-        LLVMTypeRef memcpy_type = LLVMGlobalGetValueType(memcpy_fn);
-        LLVMValueRef mcargs[3] = {new_data, orig_data, copy_bytes};
-        LLVMBuildCall2(ctx->builder, memcpy_type, memcpy_fn, mcargs, 3, "");
-    }
-    else
-    {
-        /* has_drop elements: loop and clone each one */
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMBasicBlockRef loop_cond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vc.cond");
-        LLVMBasicBlockRef loop_body = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vc.body");
-        LLVMBasicBlockRef loop_end = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vc.end");
-
-        /* alloca for loop counter */
-        LLVMBuilderRef entry_builder = LLVMCreateBuilderInContext(ctx->context);
-        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMValueRef first_instr = LLVMGetFirstInstruction(entry_bb);
-        if (first_instr)
-            LLVMPositionBuilderBefore(entry_builder, first_instr);
-        else
-            LLVMPositionBuilderAtEnd(entry_builder, entry_bb);
-        LLVMValueRef idx_alloca = LLVMBuildAlloca(entry_builder, i32_t, "vc.i");
-        LLVMDisposeBuilder(entry_builder);
-
-        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), idx_alloca);
-        LLVMBuildBr(ctx->builder, loop_cond);
-
-        /* cond: i < len */
-        LLVMPositionBuilderAtEnd(ctx->builder, loop_cond);
-        LLVMValueRef i_val = LLVMBuildLoad2(ctx->builder, i32_t, idx_alloca, "vc.i");
-        LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_val, orig_len, "vc.cmp");
-        LLVMBuildCondBr(ctx->builder, cmp, loop_body, loop_end);
-
-        /* body: clone orig_data[i] → new_data[i] */
-        LLVMPositionBuilderAtEnd(ctx->builder, loop_body);
-        LLVMValueRef i64_val = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vc.i64");
-        LLVMValueRef src_gep = LLVMBuildGEP2(ctx->builder, elem_llvm, orig_data,
-                                             &i64_val, 1, "vc.srcp");
-        LLVMValueRef dst_gep = LLVMBuildGEP2(ctx->builder, elem_llvm, new_data,
-                                             &i64_val, 1, "vc.dstp");
-        LLVMValueRef src_elem = LLVMBuildLoad2(ctx->builder, elem_llvm, src_gep, "vc.se");
-        LLVMValueRef cloned;
-        if (elem_type->kind == TYPE_STRING)
-            cloned = emit_string_clone_val(ctx, src_elem);
-        else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-            cloned = emit_enum_clone_val(ctx, src_elem, elem_type);
-        else if (elem_type->kind == TYPE_VECTOR)
-            cloned = emit_vec_clone_val(ctx, src_elem, elem_type->as.vec.elem);
-        else
-            cloned = emit_struct_clone_val(ctx, src_elem, elem_llvm, elem_type);
-        LLVMBuildStore(ctx->builder, cloned, dst_gep);
-        /* i++ */
-        LLVMValueRef next = LLVMBuildAdd(ctx->builder, i_val, LLVMConstInt(i32_t, 1, 0), "vc.ni");
-        LLVMBuildStore(ctx->builder, next, idx_alloca);
-        LLVMBuildBr(ctx->builder, loop_cond);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, loop_end);
-    }
-
-    /* new_cap as i32 */
-    LLVMValueRef new_cap32 = LLVMBuildTrunc(ctx->builder, alloc_cap, i32_t, "vc.nc32");
-
-    /* Build result LsVec struct */
-    LLVMValueRef result = LLVMGetUndef(vec_t);
-    result = LLVMBuildInsertValue(ctx->builder, result, new_data, 0, "vc.r0");
-    result = LLVMBuildInsertValue(ctx->builder, result, orig_len, 1, "vc.r1");
-    result = LLVMBuildInsertValue(ctx->builder, result, new_cap32, 2, "vc.r2");
-    return result;
-}
-
 /* Unified element/value deep-clone dispatcher. Returns an independently-owned
    copy for heap-owning types (string / vec / has_drop struct / has_drop enum);
    returns the value unchanged for POD (and map/array, which keep their current
@@ -2245,7 +2087,6 @@ static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
     switch (type->kind)
     {
     case TYPE_STRING: return emit_string_clone_val(ctx, val);
-    case TYPE_VECTOR: return emit_vec_clone_val(ctx, val, type->as.vec.elem);
     case TYPE_ENUM:
         return type->as.enom.has_drop ? emit_enum_clone_val(ctx, val, type) : val;
     case TYPE_STRUCT:
@@ -2360,8 +2201,7 @@ static void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type
         return;
     bool is_drop_struct = (type->kind == TYPE_STRUCT && type->as.strukt.has_drop);
     bool is_drop_enum   = (type->kind == TYPE_ENUM   && type->as.enom.has_drop);
-    bool is_drop_vec    = (type->kind == TYPE_VECTOR);
-    if (!is_drop_struct && !is_drop_enum && !is_drop_vec)
+    if (!is_drop_struct && !is_drop_enum)
         return; /* nothing to drop — POD struct/enum or non-drop type */
 
     if (ctx->temp_drop_count >= ctx->temp_drop_cap)
@@ -2421,8 +2261,6 @@ static void cg_flush_temp_drops(CodegenContext *ctx, int mark)
             emit_struct_drop(ctx, slot, t);
         else if (t->kind == TYPE_ENUM)
             emit_enum_drop(ctx, slot, t);
-        else if (t->kind == TYPE_VECTOR)
-            emit_vec_drop_at(ctx, slot, t->as.vec.elem);
     }
     ctx->temp_drop_count = keep;
 }
@@ -2728,11 +2566,10 @@ static bool cg_block_source_is_aliased(AstNode *src)
     if (!src) return false;
     if (src->kind == AST_INDEX) {
         AstNode *obj = src->as.index_expr.object;
-        /* builtin vec[i], OR a pure-LS Vec(Block)[i] (object is the Vec struct):
+        /* A pure-LS Vec(Block)[i] (object is the Vec struct):
            the loaded Block aliases the env owned by the container. */
         return obj && obj->resolved_type &&
-               (obj->resolved_type->kind == TYPE_VECTOR ||
-                obj->resolved_type->kind == TYPE_STRUCT);
+               obj->resolved_type->kind == TYPE_STRUCT;
     }
     if (src->kind == AST_FIELD) {
         AstNode *obj = src->as.field_access.object;
@@ -2770,7 +2607,7 @@ static bool cg_block_source_is_aliased(AstNode *src)
      - string : mark_string_moved (cap = -1; runtime-guarded, no-op if static)
      - struct : set moved_flag = 1 (scope-drop is moved_flag-conditional)
      - enum   : set moved_flag = 1
-     - vec/map: zero the source's cap field (scope-drop frees only if cap > 0)
+     - map: zero the source's cap field (scope-drop frees only if cap > 0)
    `source` is the raw RHS AST node (possibly wrapped in __move()); we unwrap and
    resolve the underlying IDENT's symbol. Borrowed sources are never invalidated
    (they hold no ownership). Returns true if the source was a recognised owned
@@ -2803,15 +2640,6 @@ static bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Typ
                 LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
                 sym->moved_flag);
         return true;
-    case TYPE_VECTOR:
-    {
-        LLVMTypeRef vec_t = ls_vec_type(ctx);
-        LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, vec_t, sym->value, "mes.vcur");
-        LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
-            LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0), 2, "mes.vzc");
-        LLVMBuildStore(ctx->builder, zeroed, sym->value);
-        return true;
-    }
     case TYPE_MAP:
     {
         LLVMTypeRef map_t = ls_map_type(ctx);
@@ -3013,32 +2841,6 @@ static void cg_store_owned(CodegenContext *ctx,
     }
 
     /* ------------------------------------------------------------------ */
-    /* VEC                                                                  */
-    /* ------------------------------------------------------------------ */
-    if (type->kind == TYPE_VECTOR)
-    {
-        bool source_borrowed = src_sym && src_sym->is_borrowed;
-        if (source_borrowed)
-        {
-            /* borrowed：深克隆整个 vec */
-            val = emit_vec_clone_val(ctx, val, type->as.vec.elem);
-        }
-        LLVMBuildStore(ctx->builder, val, dst_ptr);
-        if (!source_borrowed && src_sym && src_sym->value)
-        {
-            /* owned IDENT：将 source vec 的 cap 清零，防止 scope cleanup double-free */
-            LLVMTypeRef vec_t = ls_vec_type(ctx);
-            LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, vec_t,
-                                              src_sym->value, "xfv.cur");
-            LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
-                LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
-                2, "xfv.zc");
-            LLVMBuildStore(ctx->builder, zeroed, src_sym->value);
-        }
-        return;
-    }
-
-    /* ------------------------------------------------------------------ */
     /* MAP                                                                  */
     /* ------------------------------------------------------------------ */
     if (type->kind == TYPE_MAP)
@@ -3161,22 +2963,6 @@ static void emit_string_move(CodegenContext *ctx, LLVMValueRef dst_alloca,
 
     /* Mark source as moved (cap = -1) */
     mark_string_moved(ctx, src_alloca, "assign: src moved to dst");
-}
-
-/* Returns true when `node` is a vec(string)[i] access — a candidate for auto-borrow.
-   In read-only contexts (print, string methods, comparisons, f-string, concatenation)
-   the vec retains ownership so the element can be borrowed without cloning. */
-static bool is_vec_string_index(AstNode *node)
-{
-    if (!node || node->kind != AST_INDEX)
-        return false;
-    Type *obj_t = node->as.index_expr.object
-                      ? node->as.index_expr.object->resolved_type
-                      : NULL;
-    if (!obj_t || obj_t->kind != TYPE_VECTOR)
-        return false;
-    Type *elem = obj_t->as.vec.elem;
-    return elem && elem->kind == TYPE_STRING;
 }
 
 /* Forward declaration for struct drop */
@@ -3372,10 +3158,6 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
                 {
                     count += (int)sym->type->as.array.size;
                 }
-            }
-            else if (sym->type->kind == TYPE_VECTOR)
-            {
-                count++; /* vec cleanup: drop all elements + free data (runtime conditional) */
             }
             else if (sym->type->kind == TYPE_MAP)
             {
@@ -3590,125 +3372,6 @@ static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef ski
                     emit_struct_drop(ctx, sym->value, sym->type);
                     idx++;
                 }
-            }
-            else if (sym->type->kind == TYPE_VECTOR)
-            {
-                /* vec(T) cleanup: drop all live elements then free(data) if cap > 0 */
-#if CG_DEBUG
-                {
-                    char dbg_fmt[128];
-                    snprintf(dbg_fmt, sizeof(dbg_fmt),
-                             "[cg] scope.drop  var=%s  type=vec\n",
-                             sym->name ? sym->name : "?");
-                    cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
-                }
-#endif
-                Type *elem_type = sym->type->as.vec.elem;
-                LLVMTypeRef vec_t = ls_vec_type(ctx);
-                LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-                LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-                LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-
-                LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, sym->value, "vcd.v");
-                LLVMValueRef cap_v = LLVMBuildExtractValue(ctx->builder, vec_val, 2, "vcd.cap");
-                LLVMValueRef len_v = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vcd.len");
-                LLVMValueRef data_v = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vcd.data");
-
-                LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-                LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap_v, zero32, "vcd.hasbuf");
-
-                char vfree_name[32], vdone_name[32];
-                snprintf(vfree_name, sizeof(vfree_name), "vcd.free%d", idx);
-                snprintf(vdone_name, sizeof(vdone_name), "vcd.done%d", idx);
-                LLVMBasicBlockRef vfree_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, vfree_name);
-                LLVMBasicBlockRef vdone_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, vdone_name);
-                LLVMBuildCondBr(ctx->builder, has_buf, vfree_bb, vdone_bb);
-
-                LLVMPositionBuilderAtEnd(ctx->builder, vfree_bb);
-
-                /* Drop each element if elem type needs it */
-                bool elem_needs_drop = (elem_type &&
-                                        (elem_type->kind == TYPE_STRING ||
-                                         (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-                                         (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop) ||
-                                         elem_type->kind == TYPE_BLOCK ||
-                                         elem_type->kind == TYPE_VECTOR));
-
-                if (elem_needs_drop)
-                {
-                    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-                    /* Inner loop: for ei in 0..len: drop(data[ei]) */
-                    LLVMBasicBlockRef el_cond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcd.el.cond");
-                    LLVMBasicBlockRef el_body = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcd.el.body");
-                    LLVMBasicBlockRef el_end = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcd.el.end");
-
-                    /* Allocate loop counter in entry (or use a temp) */
-                    LLVMBuilderRef tb2 = LLVMCreateBuilderInContext(ctx->context);
-                    LLVMBasicBlockRef fn_entry = LLVMGetEntryBasicBlock(cur_fn);
-                    LLVMValueRef fi2 = LLVMGetFirstInstruction(fn_entry);
-                    if (fi2)
-                        LLVMPositionBuilderBefore(tb2, fi2);
-                    else
-                        LLVMPositionBuilderAtEnd(tb2, fn_entry);
-                    LLVMValueRef ei_alloca = LLVMBuildAlloca(tb2, i32_t, "vcd.ei");
-                    LLVMDisposeBuilder(tb2);
-
-                    LLVMBuildStore(ctx->builder, zero32, ei_alloca);
-                    LLVMBuildBr(ctx->builder, el_cond);
-
-                    LLVMPositionBuilderAtEnd(ctx->builder, el_cond);
-                    LLVMValueRef cur_ei = LLVMBuildLoad2(ctx->builder, i32_t, ei_alloca, "vcd.cei");
-                    LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur_ei, len_v, "vcd.lt");
-                    LLVMBuildCondBr(ctx->builder, cmp, el_body, el_end);
-
-                    LLVMPositionBuilderAtEnd(ctx->builder, el_body);
-#if CG_DEBUG
-                    if (elem_type->kind == TYPE_STRING)
-                    {
-                        /* Print the runtime index so we can correlate each str.free/str.skip
-                           with its position inside the vec. */
-                        char dbg_fmt[128];
-                        snprintf(dbg_fmt, sizeof(dbg_fmt),
-                                 "[cg] vec.elem.drop  var=%-10s i=%%d  type=string\n",
-                                 sym->name ? sym->name : "?");
-                        LLVMValueRef dbg_args[1] = {cur_ei};
-                        cg_emit_debug_printf(ctx, dbg_fmt, dbg_args, 1);
-                    }
-#endif
-                    LLVMValueRef ei64 = LLVMBuildSExt(ctx->builder, cur_ei, i64_t, "vcd.ei64");
-                    LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_v, &ei64, 1, "vcd.ep");
-                    /* Construct a compile-time label "vecname[i]" so str.free/str.skip
-                       messages show which vec the element belongs to. */
-                    char vec_elem_label[64];
-                    snprintf(vec_elem_label, sizeof(vec_elem_label),
-                             "%s[i]", sym->name ? sym->name : "vec");
-                    emit_vec_elem_drop_at(ctx, ep, elem_type, idx, vec_elem_label);
-
-                    LLVMBasicBlockRef after = LLVMGetInsertBlock(ctx->builder);
-                    if (LLVMGetBasicBlockTerminator(after) == NULL)
-                    {
-                        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-                        LLVMValueRef ni = LLVMBuildAdd(ctx->builder, cur_ei, one32, "vcd.ni");
-                        LLVMBuildStore(ctx->builder, ni, ei_alloca);
-                        LLVMBuildBr(ctx->builder, el_cond);
-                    }
-
-                    LLVMPositionBuilderAtEnd(ctx->builder, el_end);
-                }
-
-                /* free(data) */
-#if CG_DEBUG
-                {
-                    LLVMValueRef dbg_args[1] = {data_v};
-                    cg_emit_debug_printf(ctx, "[cg] vec.free   ptr=%p\n", dbg_args, 1);
-                }
-#endif
-                cg_emit_free(ctx, data_v, "vec.scope_drop", CG_LINE(ctx), CG_COL(ctx));
-                LLVMBuildBr(ctx->builder, vdone_bb);
-
-                LLVMPositionBuilderAtEnd(ctx->builder, vdone_bb);
-                (void)ptr_t;
-                idx++;
             }
             else if (sym->type->kind == TYPE_MAP)
             {
@@ -4075,16 +3738,6 @@ static void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
             continue;
         }
 
-        /* Drop vec fields (free owned elements + buffer). Reuses the same
-           recursive vec-drop primitive as scope cleanup. */
-        if (field_type->kind == TYPE_VECTOR)
-        {
-            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, llvm_struct,
-                                                         self_ptr, (unsigned)i, "drop.vecfield");
-            emit_vec_drop_at(ctx, field_ptr, field_type->as.vec.elem);
-            continue;
-        }
-
         /* Drop map fields via the unified value-drop authority. */
         if (field_type->kind == TYPE_MAP)
         {
@@ -4261,8 +3914,7 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
         if (t->is_mut)
             return LLVMPointerTypeInContext(ctx->context, 0);
         if (t->as.pointer_to &&
-            (t->as.pointer_to->kind == TYPE_VECTOR ||
-             t->as.pointer_to->kind == TYPE_MAP ||
+            (t->as.pointer_to->kind == TYPE_MAP ||
              t->as.pointer_to->kind == TYPE_STRUCT ||
              t->as.pointer_to->kind == TYPE_ENUM))   /* Phase 9: &enum → ptr */
             return LLVMPointerTypeInContext(ctx->context, 0);
@@ -4337,8 +3989,6 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
         free(fields);
         return st;
     }
-    case TYPE_VECTOR:
-        return ls_vec_type(ctx);
     case TYPE_MAP:
         return ls_map_type(ctx);
     case TYPE_ENUM:
@@ -4379,7 +4029,6 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
 
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef codegen_expr_or_borrow(CodegenContext *ctx, AstNode *node);
-static LLVMValueRef codegen_vec_string_borrow(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef codegen_short_circuit(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef codegen_ffi_call(CodegenContext *ctx, AstNode *node);
 static void codegen_stmt(CodegenContext *ctx, AstNode *node);
@@ -4475,25 +4124,6 @@ static LLVMValueRef codegen_lvalue_ptr(CodegenContext *ctx, AstNode *node)
             LLVMValueRef zero = LLVMConstInt(i64_type, 0, 0);
             LLVMValueRef indices[2] = {zero, index};
             return LLVMBuildGEP2(ctx->builder, arr_llvm, arr_ptr, indices, 2, "arr.elem.ptr");
-        }
-
-        /* vec(T)[i] place: load data ptr from the vec's storage, GEP element.
-           Valid until the vec is grown/realloc'd (caller's responsibility). */
-        if (obj_type && obj_type->kind == TYPE_VECTOR)
-        {
-            LLVMValueRef vec_ptr = codegen_lvalue_ptr(ctx, obj);
-            if (vec_ptr == NULL)
-                return NULL;
-            LLVMTypeRef vec_t = ls_vec_type(ctx);
-            LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_ptr, "lv.vec");
-            LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "lv.data");
-            LLVMValueRef index = codegen_expr(ctx, node->as.index_expr.index);
-            if (index == NULL)
-                return NULL;
-            if (LLVMTypeOf(index) != i64_type)
-                index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_type, "lv.idx");
-            LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.vec.elem);
-            return LLVMBuildGEP2(ctx->builder, elem_llvm, data, &index, 1, "vec.elem.ptr");
         }
 
         /* p[i] place on a raw *T pointer: load the pointer value, typed-GEP the
@@ -5061,159 +4691,6 @@ static void codegen_print_struct_value(CodegenContext *ctx, LLVMValueRef val, Ty
     emit_printf(ctx, "}", NULL, 0);
 }
 
-/* Print a vec value inline (no trailing newline).
-   Output format:
-     vec(T){len=0, cap=0}                               — empty vec
-     vec(T){len=N, cap=C, [e0, e1, ..., e15, ...]}     — non-empty (max 16 elems shown)
-   String elements are printed quoted: "hello"
-   Struct elements are printed as StructName{field=val, ...}
-   If len > 16 a trailing ", ..." is appended before the closing "]". */
-#define VEC_MAX_PRINT_ELEMS 16
-static void codegen_print_vec(CodegenContext *ctx, AstNode *arg)
-{
-    Type *vec_type = arg->resolved_type;
-    if (!vec_type || vec_type->kind != TYPE_VECTOR)
-        return;
-    Type *elem_type = vec_type->as.vec.elem;
-
-    /* Resolve vec alloca (only IDENT supported, same as array/map) */
-    LLVMValueRef vec_alloca = NULL;
-    if (arg->kind == AST_IDENT)
-    {
-        CgSymbol *sym = cg_scope_resolve(ctx->current_scope, arg->as.ident.name);
-        if (sym)
-            vec_alloca = sym->value;
-    }
-    if (vec_alloca == NULL)
-        return;
-
-    LLVMTypeRef vec_t = ls_vec_type(ctx);
-    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-
-    /* Load LsVec struct and extract fields */
-    LLVMValueRef vv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "pv.v");
-    LLVMValueRef data_v = LLVMBuildExtractValue(ctx->builder, vv, 0, "pv.data");
-    LLVMValueRef len_v = LLVMBuildExtractValue(ctx->builder, vv, 1, "pv.len");
-    LLVMValueRef cap_v = LLVMBuildExtractValue(ctx->builder, vv, 2, "pv.cap");
-
-    /* Header: vec(T){len=N, cap=N */
-    const char *ename = type_name(elem_type);
-    char hdr_fmt[128];
-    snprintf(hdr_fmt, sizeof(hdr_fmt), "vec(%s){len=%%d, cap=%%d", ename);
-    LLVMValueRef hdr_args[] = {len_v, cap_v};
-    emit_printf(ctx, hdr_fmt, hdr_args, 2);
-
-    /* Branch: if len == 0, skip element section */
-    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-    LLVMValueRef len_eq0 = LLVMBuildICmp(ctx->builder, LLVMIntEQ, len_v,
-                                         LLVMConstInt(i32_t, 0, 0), "pv.eq0");
-    LLVMBasicBlockRef elems_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.elems");
-    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.done");
-    LLVMBuildCondBr(ctx->builder, len_eq0, done_bb, elems_bb);
-
-    /* ---- elems_bb: len > 0, print ", [" then loop ---- */
-    LLVMPositionBuilderAtEnd(ctx->builder, elems_bb);
-    emit_printf(ctx, ", [", NULL, 0);
-
-    /* Compute limit = min(len, VEC_MAX_PRINT_ELEMS) and remember if truncated */
-    LLVMValueRef max_v = LLVMConstInt(i32_t, VEC_MAX_PRINT_ELEMS, 0);
-    LLVMValueRef truncated = LLVMBuildICmp(ctx->builder, LLVMIntSGT, len_v, max_v, "pv.trunc");
-    LLVMValueRef limit_v = LLVMBuildSelect(ctx->builder, truncated, max_v, len_v, "pv.lim");
-
-    /* Alloca for loop counter — placed in function entry block */
-    LLVMBuilderRef tmp_b = LLVMCreateBuilderInContext(ctx->context);
-    LLVMBasicBlockRef fn_entry = LLVMGetEntryBasicBlock(cur_fn);
-    LLVMValueRef first_instr = LLVMGetFirstInstruction(fn_entry);
-    if (first_instr)
-        LLVMPositionBuilderBefore(tmp_b, first_instr);
-    else
-        LLVMPositionBuilderAtEnd(tmp_b, fn_entry);
-    LLVMValueRef i_alloca = LLVMBuildAlloca(tmp_b, i32_t, "pv.i");
-    LLVMDisposeBuilder(tmp_b);
-
-    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), i_alloca);
-
-    LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.cond");
-    LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.body");
-    LLVMBasicBlockRef sep_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.sep");
-    LLVMBasicBlockRef pelem_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.pelem");
-    LLVMBasicBlockRef lend_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.lend");
-    LLVMBasicBlockRef oflow_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.oflow");
-    LLVMBasicBlockRef close_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "pv.close");
-    LLVMBuildBr(ctx->builder, cond_bb);
-
-    /* ---- cond_bb: i < limit ---- */
-    LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-    LLVMValueRef i_v = LLVMBuildLoad2(ctx->builder, i32_t, i_alloca, "pv.iv");
-    LLVMValueRef lt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_v, limit_v, "pv.lt");
-    LLVMBuildCondBr(ctx->builder, lt, body_bb, lend_bb);
-
-    /* ---- body_bb: print ", " separator (if not first element) ---- */
-    LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-    LLVMValueRef not_first = LLVMBuildICmp(ctx->builder, LLVMIntSGT, i_v,
-                                           LLVMConstInt(i32_t, 0, 0), "pv.nf");
-    LLVMBuildCondBr(ctx->builder, not_first, sep_bb, pelem_bb);
-
-    LLVMPositionBuilderAtEnd(ctx->builder, sep_bb);
-    emit_printf(ctx, ", ", NULL, 0);
-    LLVMBuildBr(ctx->builder, pelem_bb);
-
-    /* ---- pelem_bb: GEP + load + print one element ---- */
-    LLVMPositionBuilderAtEnd(ctx->builder, pelem_bb);
-    LLVMValueRef i64 = LLVMBuildSExt(ctx->builder, i_v, i64_t, "pv.i64");
-    LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_v, &i64, 1, "pv.ep");
-    LLVMValueRef ev = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "pv.ev");
-
-    if (elem_type->kind == TYPE_STRING)
-    {
-        LLVMValueRef edata = ls_string_data(ctx, ev);
-        emit_printf(ctx, "\"%s\"", &edata, 1);
-    }
-    else if (elem_type->kind == TYPE_STRUCT)
-    {
-        codegen_print_struct_value(ctx, ev, elem_type);
-    }
-    else if (elem_type->kind == TYPE_BOOL)
-    {
-        LLVMValueRef ts = LLVMBuildGlobalStringPtr(ctx->builder, "true", "pvts");
-        LLVMValueRef fs = LLVMBuildGlobalStringPtr(ctx->builder, "false", "pvfs");
-        LLVMValueRef bv = LLVMBuildSelect(ctx->builder, ev, ts, fs, "pvbool");
-        emit_printf(ctx, "%s", &bv, 1);
-    }
-    else
-    {
-        /* Numeric types: coerce small ints before printf */
-        LLVMValueRef coerced = map_print_coerce(ctx, ev, elem_type, false);
-        const char *fmt = printf_fmt_for_type(elem_type);
-        emit_printf(ctx, fmt, &coerced, 1);
-    }
-
-    /* i++ and back to cond */
-    LLVMValueRef i_inc = LLVMBuildAdd(ctx->builder, i_v,
-                                      LLVMConstInt(i32_t, 1, 0), "pv.inc");
-    LLVMBuildStore(ctx->builder, i_inc, i_alloca);
-    LLVMBuildBr(ctx->builder, cond_bb);
-
-    /* ---- lend_bb: loop done — check if truncated ---- */
-    LLVMPositionBuilderAtEnd(ctx->builder, lend_bb);
-    LLVMBuildCondBr(ctx->builder, truncated, oflow_bb, close_bb);
-
-    /* ---- oflow_bb: print ", ..." to indicate more elements ---- */
-    LLVMPositionBuilderAtEnd(ctx->builder, oflow_bb);
-    emit_printf(ctx, ", ...", NULL, 0);
-    LLVMBuildBr(ctx->builder, close_bb);
-
-    /* ---- close_bb: close the bracket ---- */
-    LLVMPositionBuilderAtEnd(ctx->builder, close_bb);
-    emit_printf(ctx, "]", NULL, 0);
-    LLVMBuildBr(ctx->builder, done_bb);
-
-    /* ---- done_bb: close the brace ---- */
-    LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
-    emit_printf(ctx, "}", NULL, 0);
-}
 #undef VEC_MAX_PRINT_ELEMS
 
 /* Codegen for print() with any type — generates inline printf */
@@ -5258,7 +4735,6 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
                 const char *txt = arg->as.format_string.parts[j];
                 fmt_len = append_text_escaped(fmt_buf, fmt_len, 1024, txt);
 
-                /* Expression — borrow vec(string)[i] instead of cloning */
                 AstNode *expr = arg->as.format_string.exprs[j];
                 const char *uspec = arg->as.format_string.specs
                                         ? arg->as.format_string.specs[j] : NULL;
@@ -5318,22 +4794,6 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
             continue;
         }
 
-        /* Vec: print as vec(T){len=N, cap=N, [e0, e1, ..., e15, ...]} */
-        if (t && t->kind == TYPE_VECTOR)
-        {
-            if (fmt_len > 0)
-            {
-                fmt_buf[fmt_len] = '\0';
-                emit_printf(ctx, fmt_buf, printf_args, printf_argc);
-                fmt_len = 0;
-                printf_argc = 0;
-            }
-            if (i > 0)
-                emit_printf(ctx, " ", NULL, 0);
-            codegen_print_vec(ctx, arg);
-            continue;
-        }
-
         /* Struct value: print as StructName{field=val, ...} */
         if (t && t->kind == TYPE_STRUCT)
         {
@@ -5371,7 +4831,6 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
             continue;
         }
 
-        /* Use auto-borrow for vec(string)[i] — only reads .data, no clone needed */
         LLVMValueRef val = codegen_expr_or_borrow(ctx, arg);
         if (val == NULL)
         {
@@ -5951,129 +5410,8 @@ static LLVMValueRef codegen_string_take_buffer(CodegenContext *ctx, AstNode *nod
     return phi;
 }
 
-/* ---- vec[i] auto-borrow for string elements ---- */
-
-/* Borrow a string element from vec[i] WITHOUT deep-cloning it.
-   Safe only in read-only contexts: print, string method calls, comparisons,
-   f-string interpolation, and concatenation operands.
-   Returns an LsString SSA value with cap=0 so cleanup code (emit_string_free /
-   emit_scope_cleanup) treats it as a static literal and skips freeing it.
-   The original vec element's memory is NEVER modified (InsertValue creates a fresh
-   SSA value, it does NOT write back to the vec's data buffer). */
-static LLVMValueRef codegen_vec_string_borrow(CodegenContext *ctx, AstNode *node)
-{
-    AstNode *obj = node->as.index_expr.object;
-    AstNode *idx_node = node->as.index_expr.index;
-    Type *obj_type = obj->resolved_type;
-    Type *elem_type = obj_type->as.vec.elem; /* TYPE_STRING */
-
-    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-    LLVMTypeRef vec_t = ls_vec_type(ctx);
-    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-
-    /* Resolve vec alloca (only AST_IDENT supported, same as regular AST_INDEX) */
-    LLVMValueRef vec_alloca = NULL;
-    if (obj->kind == AST_IDENT)
-    {
-        CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj->as.ident.name);
-        if (sym)
-            vec_alloca = sym->value;
-    }
-    if (vec_alloca == NULL)
-    {
-        cg_error(ctx, node->line, node->column, "auto-borrow: cannot get address of vec");
-        return NULL;
-    }
-
-    /* Load vec fields */
-    LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vb.v");
-    LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vb.data");
-    LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vb.len");
-
-    /* Evaluate index expression */
-    LLVMValueRef index = codegen_expr(ctx, idx_node);
-    if (index == NULL)
-        return NULL;
-    if (LLVMTypeOf(index) != i64_t)
-        index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t, "vb.idx");
-
-    /* Bounds check: 0 <= index < len */
-    LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len_val, i64_t, "vb.len64");
-    LLVMValueRef zero64 = LLVMConstInt(i64_t, 0, 0);
-    LLVMValueRef ge_zero = LLVMBuildICmp(ctx->builder, LLVMIntSGE, index, zero64, "vb.ge0");
-    LLVMValueRef lt_len = LLVMBuildICmp(ctx->builder, LLVMIntSLT, index, len64, "vb.ltl");
-    LLVMValueRef in_bounds = LLVMBuildAnd(ctx->builder, ge_zero, lt_len, "vb.inb");
-
-    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-    int id = g_block_counter++;
-    char ok_name[32], oob_name[32], merge_name[32];
-    snprintf(ok_name, sizeof(ok_name), "vb.ok%d", id);
-    snprintf(oob_name, sizeof(oob_name), "vb.oob%d", id);
-    snprintf(merge_name, sizeof(merge_name), "vb.merge%d", id);
-    LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, ok_name);
-    LLVMBasicBlockRef oob_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, oob_name);
-    LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, merge_name);
-
-    /* Allocate result slot at function entry (avoids alloca in non-entry block) */
-    LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-    LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-    LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
-    if (fi)
-        LLVMPositionBuilderBefore(tb, fi);
-    else
-        LLVMPositionBuilderAtEnd(tb, entry_bb);
-    LLVMValueRef result_alloca = LLVMBuildAlloca(tb, elem_llvm, "vb.res");
-    LLVMDisposeBuilder(tb);
-
-    /* Default value (out-of-bounds path): empty static string */
-    LLVMBuildStore(ctx->builder, ls_string_from_literal(ctx, "", "vb.empty"), result_alloca);
-    LLVMBuildCondBr(ctx->builder, in_bounds, ok_bb, oob_bb);
-
-    /* ok_bb: GEP + load + mark cap = LS_CAP_BORROWED (borrow — no clone, no ownership transfer) */
-    LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
-    LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &index, 1, "vb.ep");
-    LLVMValueRef elem_raw = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vb.elem");
-    /* InsertValue produces a NEW SSA value — the vec's memory is untouched.
-       M-2: cap=LS_CAP_BORROWED(-2) instead of 0: emit_string_free still skips the free
-       (cap<=0), but emit_string_clone_val now properly clones borrowed strings when they
-       are stored into enum/struct fields (previously cap=0 was skipped, causing dangling). */
-    LLVMValueRef cap_borrow = LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0);
-    LLVMValueRef borrowed = LLVMBuildInsertValue(ctx->builder, elem_raw,
-                                                 cap_borrow, 2, "vb.borrow");
-
-#if CG_DEBUG
-    {
-        LLVMValueRef idx32 = LLVMBuildTrunc(ctx->builder, index, i32_t, "vb.dbg.idx");
-        LLVMValueRef bdata = ls_string_data(ctx, borrowed);
-        LLVMValueRef dbgargs[2] = {idx32, bdata};
-        cg_emit_debug_printf(ctx, "[cg] vec[i].borrow  idx=%d ptr=%p\n", dbgargs, 2);
-    }
-#endif
-
-    LLVMBuildStore(ctx->builder, borrowed, result_alloca);
-    LLVMBuildBr(ctx->builder, merge_bb);
-
-    /* oob_bb: out-of-bounds — warn, result stays as empty string */
-    LLVMPositionBuilderAtEnd(ctx->builder, oob_bb);
-    {
-        LLVMValueRef oob_idx = LLVMBuildTrunc(ctx->builder, index, i32_t, "vb.oob.idx");
-        LLVMValueRef warn_args[2] = {oob_idx, len_val};
-        emit_printf(ctx, "[warning] vec index out of bounds: index=%d, len=%d\n", warn_args, 2);
-    }
-    LLVMBuildBr(ctx->builder, merge_bb);
-
-    /* merge_bb: load result — NOT registered in temp_string_slots (non-owned borrow) */
-    LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-    return LLVMBuildLoad2(ctx->builder, elem_llvm, result_alloca, "vb.r");
-}
-
-/* Evaluate `node`, using auto-borrow when the node is a vec(string)[i] access
-   in a read-only context.  Falls back to full codegen_expr for everything else. */
 static LLVMValueRef codegen_expr_or_borrow(CodegenContext *ctx, AstNode *node)
 {
-    if (is_vec_string_index(node))
-        return codegen_vec_string_borrow(ctx, node);
     return codegen_expr(ctx, node);
 }
 
@@ -6085,8 +5423,6 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
 {
     AstNode *obj_node = node->as.call.callee->as.field_access.object;
     const char *method = node->as.call.callee->as.field_access.field;
-    /* Use auto-borrow when the object is a vec(string)[i] — avoids a deep clone
-       because string methods only read the source content. */
     LLVMValueRef str_val = codegen_expr_or_borrow(ctx, obj_node);
     if (str_val == NULL)
         return NULL;
@@ -7458,2913 +6794,6 @@ static LLVMValueRef codegen_string_method(CodegenContext *ctx, AstNode *node)
  * vec(T) built-in method codegen
  * ============================================================ */
 
-/* Drop a single vec element stored at `elem_ptr` (a *T raw pointer into data[]).
-   For string elements: conditional free(data) via emit_string_free_with_cont.
-   For struct-with-drop elements: call the drop function.
-   label: optional CG_DEBUG identifier shown in str.free/str.skip messages, e.g. "v[i]".
-   Returns the continuation basic-block (builder positioned at end). */
-static LLVMBasicBlockRef emit_vec_elem_drop_at(CodegenContext *ctx,
-                                               LLVMValueRef elem_ptr,
-                                               Type *elem_type,
-                                               int idx_suffix,
-                                               const char *label)
-{
-    if (elem_type == NULL)
-        return LLVMGetInsertBlock(ctx->builder);
-    (void)idx_suffix;
-
-    if (elem_type->kind == TYPE_STRING)
-    {
-        /* elem_ptr is a *LsString inside the vec data buffer.
-           Must use emit_string_free_with_cont so the builder ends up at a
-           continuation block (no terminator), allowing callers to emit
-           more instructions after the drop (e.g. the len-- store in pop()). */
-        emit_string_free_with_cont(ctx, elem_ptr, NULL, label ? label : "vec[i]",
-                                    "string.vec_elem_drop", CG_LINE(ctx), CG_COL(ctx));
-        return LLVMGetInsertBlock(ctx->builder);
-    }
-    if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-    {
-        LLVMValueRef drop_fn_val = (LLVMValueRef)elem_type->as.strukt.drop_fn;
-        if (drop_fn_val == NULL)
-        {
-            /* M-4 BF-037: struct 只作为 vec 元素出现时，drop_fn 可能尚未生成
-               （没有独立的 struct 变量触发 emit_auto_drop_fn）。
-               按需生成，与 has_drop enum 的处理方式对称。 */
-            emit_auto_drop_fn(ctx, elem_type);
-            drop_fn_val = (LLVMValueRef)elem_type->as.strukt.drop_fn;
-        }
-        if (drop_fn_val)
-        {
-#if CG_DEBUG
-            {
-                char dbg_fmt[128];
-                snprintf(dbg_fmt, sizeof(dbg_fmt),
-                         "[cg] vec.elem.drop   type=%s\n",
-                         elem_type->as.strukt.name ? elem_type->as.strukt.name : "?");
-                cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
-            }
-#endif
-            LLVMTypeRef fn_t = LLVMGlobalGetValueType(drop_fn_val);
-            LLVMBuildCall2(ctx->builder, fn_t, drop_fn_val, &elem_ptr, 1, "");
-        }
-    }
-    /* has_drop enum element — call the enum's __drop function. */
-    if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
-    {
-        LLVMValueRef drop_fn_val = (LLVMValueRef)elem_type->as.enom.drop_fn;
-        if (drop_fn_val == NULL) {
-            emit_auto_enum_drop_fn(ctx, elem_type);
-            drop_fn_val = (LLVMValueRef)elem_type->as.enom.drop_fn;
-        }
-        if (drop_fn_val)
-        {
-            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-            LLVMTypeRef vfn_t = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
-                                                   &ptr_t, 1, 0);
-            LLVMBuildCall2(ctx->builder, vfn_t, drop_fn_val, &elem_ptr, 1, "");
-        }
-    }
-    /* F.4: Block element — drop env_ptr if non-NULL */
-    if (elem_type->kind == TYPE_BLOCK)
-    {
-#if CG_DEBUG
-        {
-            /* Load block to get env ptr for logging */
-            LLVMTypeRef ptr_t2 = LLVMPointerTypeInContext(ctx->context, 0);
-            LLVMTypeRef blk_fields2[2] = { ptr_t2, ptr_t2 };
-            LLVMTypeRef blk_t2 = LLVMStructTypeInContext(ctx->context, blk_fields2, 2, 0);
-            LLVMValueRef blk_v2 = LLVMBuildLoad2(ctx->builder, blk_t2, elem_ptr, "dbg.blkv");
-            LLVMValueRef env_p2 = LLVMBuildExtractValue(ctx->builder, blk_v2, 1, "dbg.env");
-            cg_dbg_block_op(ctx, "elem.drop", label ? label : "vec[i]", env_p2);
-        }
-#endif
-        cg_emit_block_drop_at(ctx, elem_ptr);
-    }
-    /* Nested vec element — recursively drop the inner vec (elements + buffer). */
-    if (elem_type->kind == TYPE_VECTOR)
-    {
-        emit_vec_drop_at(ctx, elem_ptr, elem_type->as.vec.elem);
-    }
-    return LLVMGetInsertBlock(ctx->builder);
-}
-
-/* Drop a whole vec stored at `vec_ptr` (a *LsVec): if cap>0, drop each owned
-   element then free(data). Leaves the builder at a continuation block (no
-   terminator). Mirrors the inlined scope-cleanup vec drop; reused for struct
-   vec fields and nested vec(vec(...)) elements. */
-static void emit_vec_drop_at(CodegenContext *ctx, LLVMValueRef vec_ptr, Type *elem_type)
-{
-    static int vd_uid = 0;
-    int uid = vd_uid++;
-
-    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-    LLVMTypeRef vec_t = ls_vec_type(ctx);
-    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-
-    LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_ptr, "vd.v");
-    LLVMValueRef cap_v   = LLVMBuildExtractValue(ctx->builder, vec_val, 2, "vd.cap");
-    LLVMValueRef len_v   = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vd.len");
-    LLVMValueRef data_v  = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vd.data");
-
-    LLVMValueRef zero32  = LLVMConstInt(i32_t, 0, 0);
-    LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap_v, zero32, "vd.hasbuf");
-
-    char free_name[32], done_name[32];
-    snprintf(free_name, sizeof(free_name), "vd.free%d", uid);
-    snprintf(done_name, sizeof(done_name), "vd.done%d", uid);
-    LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, free_name);
-    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, done_name);
-    LLVMBuildCondBr(ctx->builder, has_buf, free_bb, done_bb);
-
-    LLVMPositionBuilderAtEnd(ctx->builder, free_bb);
-
-    bool elem_needs_drop = (elem_type &&
-        (elem_type->kind == TYPE_STRING ||
-         (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-         (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop) ||
-         elem_type->kind == TYPE_BLOCK ||
-         elem_type->kind == TYPE_VECTOR));
-
-    if (elem_needs_drop)
-    {
-        LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-        LLVMBasicBlockRef el_cond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vd.el.cond");
-        LLVMBasicBlockRef el_body = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vd.el.body");
-        LLVMBasicBlockRef el_end  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vd.el.end");
-
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMBasicBlockRef fn_entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMValueRef fi = LLVMGetFirstInstruction(fn_entry);
-        if (fi) LLVMPositionBuilderBefore(tb, fi); else LLVMPositionBuilderAtEnd(tb, fn_entry);
-        LLVMValueRef i_alloca = LLVMBuildAlloca(tb, i32_t, "vd.i");
-        LLVMDisposeBuilder(tb);
-
-        LLVMBuildStore(ctx->builder, zero32, i_alloca);
-        LLVMBuildBr(ctx->builder, el_cond);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, el_cond);
-        LLVMValueRef cur_i = LLVMBuildLoad2(ctx->builder, i32_t, i_alloca, "vd.ci");
-        LLVMValueRef cmp   = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur_i, len_v, "vd.lt");
-        LLVMBuildCondBr(ctx->builder, cmp, el_body, el_end);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, el_body);
-        LLVMValueRef i64v = LLVMBuildSExt(ctx->builder, cur_i, i64_t, "vd.i64");
-        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_v, &i64v, 1, "vd.ep");
-        emit_vec_elem_drop_at(ctx, ep, elem_type, 0, "vec.elem");
-        LLVMBasicBlockRef after = LLVMGetInsertBlock(ctx->builder);
-        if (LLVMGetBasicBlockTerminator(after) == NULL)
-        {
-            LLVMValueRef ni = LLVMBuildAdd(ctx->builder, cur_i, LLVMConstInt(i32_t, 1, 0), "vd.ni");
-            LLVMBuildStore(ctx->builder, ni, i_alloca);
-            LLVMBuildBr(ctx->builder, el_cond);
-        }
-        LLVMPositionBuilderAtEnd(ctx->builder, el_end);
-    }
-
-    cg_emit_free(ctx, data_v, "vec.scope_drop", CG_LINE(ctx), CG_COL(ctx));
-    LLVMBuildBr(ctx->builder, done_bb);
-    LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
-}
-
-/* Inline grow logic: if (len >= cap) double the buffer via realloc.
-   `vec_alloca` is the alloca holding the LsVec struct.
-   `elem_llvm`  is the LLVM type of a single element.
-   On entry the builder must be in a valid basic-block.
-   On exit the builder is at the "no-grow-needed" / "after-grow" merge block. */
-static void emit_vec_grow_inline(CodegenContext *ctx, LLVMValueRef vec_alloca,
-                                 LLVMTypeRef elem_llvm)
-{
-    LLVMTypeRef vec_t = ls_vec_type(ctx);
-    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-    /* Load current len and cap */
-    LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vg.v");
-    LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vg.len");
-    LLVMValueRef cap_val = LLVMBuildExtractValue(ctx->builder, vec_val, 2, "vg.cap");
-
-    /* if (len >= cap) branch to grow_bb, else to no_grow_bb */
-    LLVMValueRef need_grow = LLVMBuildICmp(ctx->builder, LLVMIntSGE, len_val, cap_val, "vg.need");
-    LLVMBasicBlockRef grow_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vg.grow");
-    LLVMBasicBlockRef no_grow_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vg.ok");
-    LLVMBuildCondBr(ctx->builder, need_grow, grow_bb, no_grow_bb);
-
-    /* grow_bb: new_cap = cap == 0 ? 4 : cap * 2; data = realloc(data, new_cap*sizeof(elem)) */
-    LLVMPositionBuilderAtEnd(ctx->builder, grow_bb);
-    LLVMValueRef vec_val2 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vg.v2");
-    LLVMValueRef old_data = LLVMBuildExtractValue(ctx->builder, vec_val2, 0, "vg.data");
-    LLVMValueRef old_cap = LLVMBuildExtractValue(ctx->builder, vec_val2, 2, "vg.cap2");
-
-    /* new_cap = (cap == 0) ? 4 : cap * 2 */
-    LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-    LLVMValueRef four32 = LLVMConstInt(i32_t, 4, 0);
-    LLVMValueRef two32 = LLVMConstInt(i32_t, 2, 0);
-    LLVMValueRef dbl_cap = LLVMBuildMul(ctx->builder, old_cap, two32, "vg.dbl");
-    LLVMValueRef is_zero = LLVMBuildICmp(ctx->builder, LLVMIntEQ, old_cap, zero32, "vg.iszero");
-    LLVMValueRef new_cap = LLVMBuildSelect(ctx->builder, is_zero, four32, dbl_cap, "vg.newcap");
-
-    /* bytes = (i64)new_cap * sizeof(elem) */
-    LLVMValueRef new_cap64 = LLVMBuildSExt(ctx->builder, new_cap, i64_t, "vg.cap64");
-    LLVMValueRef elem_size = LLVMSizeOf(elem_llvm); /* compile-time i64 constant */
-    LLVMValueRef bytes = LLVMBuildMul(ctx->builder, new_cap64, elem_size, "vg.bytes");
-
-#if CG_DEBUG
-    {
-        LLVMValueRef dbg_args[2] = {old_cap, new_cap};
-        cg_emit_debug_printf(ctx, "[cg] vec.grow   old_cap=%d new_cap=%d\n", dbg_args, 2);
-    }
-#endif
-    /* new_data = realloc(old_data, bytes) */
-    LLVMValueRef realloc_fn = LLVMGetNamedFunction(ctx->module, "realloc");
-    LLVMTypeRef realloc_ft = LLVMGlobalGetValueType(realloc_fn);
-    LLVMValueRef ra_args[2] = {old_data, bytes};
-    LLVMValueRef new_data = LLVMBuildCall2(ctx->builder, realloc_ft, realloc_fn,
-                                           ra_args, 2, "vg.newdata");
-
-    /* Update vec struct: store new data ptr and new cap */
-    LLVMValueRef vec_upd = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vg.upd");
-    vec_upd = LLVMBuildInsertValue(ctx->builder, vec_upd, new_data, 0, "vg.ud");
-    vec_upd = LLVMBuildInsertValue(ctx->builder, vec_upd, new_cap, 2, "vg.uc");
-    LLVMBuildStore(ctx->builder, vec_upd, vec_alloca);
-    LLVMBuildBr(ctx->builder, no_grow_bb);
-
-    /* no_grow_bb: builder continues here */
-    LLVMPositionBuilderAtEnd(ctx->builder, no_grow_bb);
-}
-
-/* Codegen for vec(T) built-in method calls:
-   v.push(x), v.pop(), v.clear(), v.reserve(n),
-   v.is_empty(), v.first(), v.last().
-   Returns the resulting LLVMValueRef (NULL for void methods). */
-static LLVMValueRef codegen_vec_method(CodegenContext *ctx, AstNode *call_node, Type *vec_type)
-{
-    const char *method = call_node->as.call.callee->as.field_access.field;
-    AstNode *obj_node = call_node->as.call.callee->as.field_access.object;
-    Type *elem_type = vec_type->as.vec.elem;
-    LLVMTypeRef vec_t = ls_vec_type(ctx);
-    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-
-    /* Resolve alloca for the vec object.
-       - vec(T) IDENT: sym->value IS the alloca of the LsVec struct.
-       - *vec(T) IDENT: sym->value is an alloca holding a pointer to a LsVec;
-         load the pointer to get the actual vec storage address. */
-    LLVMValueRef vec_alloca = NULL;
-    if (obj_node->kind == AST_IDENT)
-    {
-        CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj_node->as.ident.name);
-        if (sym)
-        {
-            Type *obj_t = obj_node->resolved_type;
-            if (obj_t && obj_t->kind == TYPE_POINTER && obj_t->as.pointer_to &&
-                obj_t->as.pointer_to->kind == TYPE_VECTOR)
-            {
-                /* *vec(T): load the pointer value to reach the caller's LsVec */
-                LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-                vec_alloca = LLVMBuildLoad2(ctx->builder, ptr_t, sym->value, "vptr.deref");
-            }
-            else
-            {
-                vec_alloca = sym->value;
-            }
-        }
-    }
-    else
-    {
-        /* Place receiver (struct field / vec element / nested): operate on the
-           real storage address so mutating methods (push/pop/set/...) write back
-           to the original — fixes the no-write-back bug (D). */
-        vec_alloca = codegen_lvalue_ptr(ctx, obj_node);
-    }
-    if (vec_alloca == NULL)
-    {
-        /* True rvalue receiver (e.g. chained call: v.map(...).filter(...)).
-           Evaluate the expression, store into a temporary alloca, and proceed.
-           Note: the intermediate vec is NOT tracked for cleanup (minor leak for
-           POD elements; has_drop elements require explicit variable assignment). */
-        LLVMValueRef vec_val = codegen_expr(ctx, obj_node);
-        if (!vec_val) return NULL;
-        LLVMValueRef cur_fn0 = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMBasicBlockRef entry0 = LLVMGetEntryBasicBlock(cur_fn0);
-        LLVMBuilderRef tb0 = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi0 = LLVMGetFirstInstruction(entry0);
-        if (fi0) LLVMPositionBuilderBefore(tb0, fi0);
-        else     LLVMPositionBuilderAtEnd(tb0, entry0);
-        vec_alloca = LLVMBuildAlloca(tb0, vec_t, "vtmp");
-        LLVMDisposeBuilder(tb0);
-        LLVMBuildStore(ctx->builder, vec_val, vec_alloca);
-    }
-
-    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-
-    /* ---- push(val) ---- */
-    if (strcmp(method, "push") == 0)
-    {
-        /* Record temp count before evaluating arg so we can transfer ownership */
-        int temp_mark_push = ctx->temp_string_count;
-        LLVMValueRef val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (val == NULL)
-            return NULL;
-
-        /* Grow if needed */
-        emit_vec_grow_inline(ctx, vec_alloca, elem_llvm);
-
-        /* data[len] = val; 所有权转移由 cg_store_owned 统一处理 */
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vp.v");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vp.data");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vp.len");
-        LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len_val, i64_t, "vp.len64");
-        LLVMValueRef elem_ptr = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr,
-                                              &len64, 1, "vp.slot");
-
-        /* M-3: 统一所有权转移（含 borrowed 深克隆、move 标记、temp 弹出） */
-        cg_store_owned(ctx, elem_ptr, val, elem_type,
-                       call_node->as.call.args[0], temp_mark_push,
-                       CG_XFER_INTO_CONTAINER);
-
-        /* len++ */
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-        LLVMValueRef new_len = LLVMBuildAdd(ctx->builder, len_val, one32, "vp.nlen");
-        LLVMValueRef vec_upd = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vp.upd");
-        vec_upd = LLVMBuildInsertValue(ctx->builder, vec_upd, new_len, 1, "vp.ul");
-        LLVMBuildStore(ctx->builder, vec_upd, vec_alloca);
-        return NULL; /* push() is void */
-    }
-
-    /* ---- pop() ---- */
-    if (strcmp(method, "pop") == 0)
-    {
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vpc.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vpc.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vpc.data");
-
-        /* len-- (no underflow guard for now — caller is responsible) */
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-        LLVMValueRef new_len = LLVMBuildSub(ctx->builder, len_val, one32, "vpc.nlen");
-
-        /* Drop the element at data[new_len] if necessary */
-        LLVMValueRef idx64 = LLVMBuildSExt(ctx->builder, new_len, i64_t, "vpc.idx64");
-        LLVMValueRef old_ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr,
-                                            &idx64, 1, "vpc.ep");
-        emit_vec_elem_drop_at(ctx, old_ep, elem_type, 0, "pop.elem");
-
-        /* Store len-- back */
-        LLVMValueRef vec_upd = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vpc.upd");
-        vec_upd = LLVMBuildInsertValue(ctx->builder, vec_upd, new_len, 1, "vpc.ul");
-        LLVMBuildStore(ctx->builder, vec_upd, vec_alloca);
-        return NULL; /* pop() is void */
-    }
-
-    /* ---- clear() ---- */
-    if (strcmp(method, "clear") == 0)
-    {
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vcl.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vcl.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vcl.data");
-
-        /* If element needs drop, loop over 0..len and drop each */
-        bool elem_needs_drop = (elem_type &&
-                                (elem_type->kind == TYPE_STRING ||
-                                 (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-                                 (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop)));
-
-        if (elem_needs_drop)
-        {
-            LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-            /* Allocate loop counter in entry block */
-            LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-            LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-            LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-            if (fi)
-                LLVMPositionBuilderBefore(tb, fi);
-            else
-                LLVMPositionBuilderAtEnd(tb, entry);
-            LLVMValueRef idx_alloca = LLVMBuildAlloca(tb, i32_t, "vcl.i");
-            LLVMDisposeBuilder(tb);
-
-            LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-            LLVMBuildStore(ctx->builder, zero32, idx_alloca);
-
-            LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcl.cond");
-            LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcl.body");
-            LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcl.end");
-
-            LLVMBuildBr(ctx->builder, cond_bb);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-            LLVMValueRef cur_i = LLVMBuildLoad2(ctx->builder, i32_t, idx_alloca, "vcl.ci");
-            /* Reload len each iteration (in case it changes, though we just set it to 0 after) */
-            LLVMValueRef cur_len = LLVMBuildLoad2(ctx->builder, i32_t,
-                                                  /* extract from alloca again for freshness */
-                                                  LLVMBuildStructGEP2(ctx->builder, vec_t, vec_alloca, 1, "vcl.lenptr"),
-                                                  "vcl.clen");
-            LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur_i, cur_len, "vcl.lt");
-            LLVMBuildCondBr(ctx->builder, cmp, body_bb, end_bb);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-            LLVMValueRef cur_data = LLVMBuildLoad2(ctx->builder, LLVMPointerTypeInContext(ctx->context, 0),
-                                                   LLVMBuildStructGEP2(ctx->builder, vec_t, vec_alloca, 0, "vcl.dp"),
-                                                   "vcl.cdata");
-            LLVMValueRef idx64 = LLVMBuildSExt(ctx->builder, cur_i, i64_t, "vcl.idx64");
-            LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, cur_data, &idx64, 1, "vcl.ep");
-            emit_vec_elem_drop_at(ctx, ep, elem_type, 0, "clear[i]");
-
-            /* Ensure we're still in a valid BB after potential branch chains from drop */
-            LLVMBasicBlockRef after_drop = LLVMGetInsertBlock(ctx->builder);
-            if (LLVMGetBasicBlockTerminator(after_drop) == NULL)
-            {
-                LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-                LLVMValueRef next_i = LLVMBuildAdd(ctx->builder, cur_i, one32, "vcl.ni");
-                LLVMBuildStore(ctx->builder, next_i, idx_alloca);
-                LLVMBuildBr(ctx->builder, cond_bb);
-            }
-
-            LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        }
-
-        /* Set len = 0 (keep buffer allocated) */
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef vec_upd = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vcl.upd");
-        vec_upd = LLVMBuildInsertValue(ctx->builder, vec_upd, zero32, 1, "vcl.ul");
-        LLVMBuildStore(ctx->builder, vec_upd, vec_alloca);
-        (void)len_val;
-        (void)data_ptr;
-        return NULL; /* clear() is void */
-    }
-
-    /* ---- reserve(n) ---- */
-    if (strcmp(method, "reserve") == 0)
-    {
-        LLVMValueRef n_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (n_val == NULL)
-            return NULL;
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vr.v");
-        LLVMValueRef cap_val = LLVMBuildExtractValue(ctx->builder, vec_val, 2, "vr.cap");
-        LLVMValueRef old_data = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vr.data");
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMBasicBlockRef need_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vr.need");
-        LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vr.ok");
-
-        LLVMValueRef needs = LLVMBuildICmp(ctx->builder, LLVMIntSGT, n_val, cap_val, "vr.needs");
-        LLVMBuildCondBr(ctx->builder, needs, need_bb, ok_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, need_bb);
-        LLVMValueRef n64 = LLVMBuildSExt(ctx->builder, n_val, i64_t, "vr.n64");
-        LLVMValueRef esz = LLVMSizeOf(elem_llvm);
-        LLVMValueRef bytes = LLVMBuildMul(ctx->builder, n64, esz, "vr.bytes");
-        LLVMValueRef rfa = LLVMGetNamedFunction(ctx->module, "realloc");
-        LLVMTypeRef rft = LLVMGlobalGetValueType(rfa);
-        LLVMValueRef ra_a[2] = {old_data, bytes};
-        LLVMValueRef nd = LLVMBuildCall2(ctx->builder, rft, rfa, ra_a, 2, "vr.nd");
-        LLVMValueRef upd = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vr.upd");
-        upd = LLVMBuildInsertValue(ctx->builder, upd, nd, 0, "vr.ud");
-        upd = LLVMBuildInsertValue(ctx->builder, upd, n_val, 2, "vr.uc");
-        LLVMBuildStore(ctx->builder, upd, vec_alloca);
-        LLVMBuildBr(ctx->builder, ok_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
-        return NULL; /* reserve() is void */
-    }
-
-    /* ---- is_empty() -> bool ---- */
-    if (strcmp(method, "is_empty") == 0)
-    {
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vie.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vie.len");
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        return LLVMBuildICmp(ctx->builder, LLVMIntEQ, len_val, zero32, "vie.res");
-    }
-
-    /* Phase E.3.3: as_ptr() -> object  — raw data pointer for FFI buffer use.
-       Returned pointer aliases the vec's heap; valid until the vec is grown
-       or freed. Caller must NOT free. Empty vec returns NULL. */
-    if (strcmp(method, "as_ptr") == 0)
-    {
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vap.v");
-        return LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vap.data");
-    }
-
-    /* ---- first() -> T  (deep clone of element[0], default if empty) ---- */
-    if (strcmp(method, "first") == 0)
-    {
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vfst.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vfst.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vfst.data");
-
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef not_empty = LLVMBuildICmp(ctx->builder, LLVMIntSGT, len_val, zero32, "vfst.ne");
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        int id = g_block_counter++;
-        char ok_name[40], emp_name[40], merge_name[40];
-        snprintf(ok_name, sizeof(ok_name), "vfst.ok%d", id);
-        snprintf(emp_name, sizeof(emp_name), "vfst.emp%d", id);
-        snprintf(merge_name, sizeof(merge_name), "vfst.merge%d", id);
-        LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, ok_name);
-        LLVMBasicBlockRef emp_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, emp_name);
-        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, merge_name);
-
-        /* Allocate result slot in function entry block */
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
-        if (fi)
-            LLVMPositionBuilderBefore(tb, fi);
-        else
-            LLVMPositionBuilderAtEnd(tb, entry_bb);
-        LLVMValueRef result_alloca = LLVMBuildAlloca(tb, elem_llvm, "vfst.res");
-        LLVMDisposeBuilder(tb);
-
-        /* Default (empty vec) value */
-        LLVMValueRef zero_val;
-        if (elem_type && elem_type->kind == TYPE_STRING)
-            zero_val = ls_string_from_literal(ctx, "", "vfst.empty");
-        else
-            zero_val = LLVMConstNull(elem_llvm);
-        LLVMBuildStore(ctx->builder, zero_val, result_alloca);
-
-        LLVMBuildCondBr(ctx->builder, not_empty, ok_bb, emp_bb);
-
-        /* ok_bb: load element[0] and deep-clone */
-        LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
-        LLVMValueRef zero64 = LLVMConstInt(i64_t, 0, 0);
-        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &zero64, 1, "vfst.ep");
-        LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vfst.elem");
-        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
-#if CG_DEBUG
-        {
-            const char *tn = (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.name)
-                                 ? elem_type->as.strukt.name
-                                 : "?";
-            char dbg_fmt[128];
-            snprintf(dbg_fmt, sizeof(dbg_fmt), "[cg] vec.first  clone  type=%s\n", tn);
-            cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
-        }
-#endif
-        LLVMBuildStore(ctx->builder, elem, result_alloca);
-        LLVMBuildBr(ctx->builder, merge_bb);
-
-        /* emp_bb: empty vec — warn, result stays zero/default */
-        LLVMPositionBuilderAtEnd(ctx->builder, emp_bb);
-        emit_printf(ctx, "[warning] vec.first() called on empty vec\n", NULL, 0);
-        LLVMBuildBr(ctx->builder, merge_bb);
-
-        /* merge_bb: return result */
-        LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-        LLVMValueRef r = LLVMBuildLoad2(ctx->builder, elem_llvm, result_alloca, "vfst.r");
-
-        /* Register string clone as temp for ownership tracking */
-        if (elem_type->kind == TYPE_STRING && ctx->current_fn != NULL)
-        {
-            if (ctx->temp_string_count >= ctx->temp_string_cap)
-            {
-                ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
-                ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
-                                                    ctx->temp_string_slots,
-                                                    ctx->temp_string_cap);
-            }
-            ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
-        }
-        return r;
-    }
-
-    /* ---- last() -> T  (deep clone of element[len-1], default if empty) ---- */
-    if (strcmp(method, "last") == 0)
-    {
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vlst.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vlst.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vlst.data");
-
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef not_empty = LLVMBuildICmp(ctx->builder, LLVMIntSGT, len_val, zero32, "vlst.ne");
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        int id = g_block_counter++;
-        char ok_name[40], emp_name[40], merge_name[40];
-        snprintf(ok_name, sizeof(ok_name), "vlst.ok%d", id);
-        snprintf(emp_name, sizeof(emp_name), "vlst.emp%d", id);
-        snprintf(merge_name, sizeof(merge_name), "vlst.merge%d", id);
-        LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, ok_name);
-        LLVMBasicBlockRef emp_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, emp_name);
-        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, merge_name);
-
-        /* Allocate result slot in function entry block */
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
-        if (fi)
-            LLVMPositionBuilderBefore(tb, fi);
-        else
-            LLVMPositionBuilderAtEnd(tb, entry_bb);
-        LLVMValueRef result_alloca = LLVMBuildAlloca(tb, elem_llvm, "vlst.res");
-        LLVMDisposeBuilder(tb);
-
-        /* Default (empty vec) value */
-        LLVMValueRef zero_val;
-        if (elem_type && elem_type->kind == TYPE_STRING)
-            zero_val = ls_string_from_literal(ctx, "", "vlst.empty");
-        else
-            zero_val = LLVMConstNull(elem_llvm);
-        LLVMBuildStore(ctx->builder, zero_val, result_alloca);
-
-        LLVMBuildCondBr(ctx->builder, not_empty, ok_bb, emp_bb);
-
-        /* ok_bb: load element[len-1] and deep-clone */
-        LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-        LLVMValueRef last_i = LLVMBuildSub(ctx->builder, len_val, one32, "vlst.li");
-        LLVMValueRef last64 = LLVMBuildSExt(ctx->builder, last_i, i64_t, "vlst.l64");
-        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &last64, 1, "vlst.ep");
-        LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vlst.elem");
-        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
-#if CG_DEBUG
-        {
-            const char *tn = (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.name)
-                                 ? elem_type->as.strukt.name
-                                 : "?";
-            char dbg_fmt[128];
-            snprintf(dbg_fmt, sizeof(dbg_fmt), "[cg] vec.last   clone  type=%s\n", tn);
-            cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
-        }
-#endif
-        LLVMBuildStore(ctx->builder, elem, result_alloca);
-        LLVMBuildBr(ctx->builder, merge_bb);
-
-        /* emp_bb: empty vec — warn, result stays zero/default */
-        LLVMPositionBuilderAtEnd(ctx->builder, emp_bb);
-        emit_printf(ctx, "[warning] vec.last() called on empty vec\n", NULL, 0);
-        LLVMBuildBr(ctx->builder, merge_bb);
-
-        /* merge_bb: return result */
-        LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-        LLVMValueRef r = LLVMBuildLoad2(ctx->builder, elem_llvm, result_alloca, "vlst.r");
-
-        /* Register string clone as temp for ownership tracking */
-        if (elem_type->kind == TYPE_STRING && ctx->current_fn != NULL)
-        {
-            if (ctx->temp_string_count >= ctx->temp_string_cap)
-            {
-                ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
-                ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
-                                                    ctx->temp_string_slots,
-                                                    ctx->temp_string_cap);
-            }
-            ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
-        }
-        return r;
-    }
-
-    /* ---- get(i) -> T  (deep clone of element[i], default if out-of-bounds) ---- */
-    if (strcmp(method, "get") == 0)
-    {
-        LLVMValueRef i_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (i_val == NULL)
-            return NULL;
-        if (LLVMTypeOf(i_val) != i32_t)
-            i_val = LLVMBuildIntCast2(ctx->builder, i_val, i32_t, 1, "vget.i32");
-
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vget.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vget.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vget.data");
-
-        /* In-bounds: i >= 0 && i < len  (signed compare both, len is non-negative) */
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef i_ge0 = LLVMBuildICmp(ctx->builder, LLVMIntSGE, i_val, zero32, "vget.ge0");
-        LLVMValueRef i_lt_len = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_val, len_val, "vget.ltl");
-        LLVMValueRef in_bounds = LLVMBuildAnd(ctx->builder, i_ge0, i_lt_len, "vget.ib");
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        int id = g_block_counter++;
-        char ok_name[40], oob_name[40], merge_name[40];
-        snprintf(ok_name, sizeof(ok_name), "vget.ok%d", id);
-        snprintf(oob_name, sizeof(oob_name), "vget.oob%d", id);
-        snprintf(merge_name, sizeof(merge_name), "vget.merge%d", id);
-        LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, ok_name);
-        LLVMBasicBlockRef oob_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, oob_name);
-        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, merge_name);
-
-        /* Allocate result slot in function entry block */
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
-        if (fi)
-            LLVMPositionBuilderBefore(tb, fi);
-        else
-            LLVMPositionBuilderAtEnd(tb, entry_bb);
-        LLVMValueRef result_alloca = LLVMBuildAlloca(tb, elem_llvm, "vget.res");
-        LLVMDisposeBuilder(tb);
-
-        /* Default (out-of-bounds) value */
-        LLVMValueRef zero_val;
-        if (elem_type && elem_type->kind == TYPE_STRING)
-            zero_val = ls_string_from_literal(ctx, "", "vget.empty");
-        else
-            zero_val = LLVMConstNull(elem_llvm);
-        LLVMBuildStore(ctx->builder, zero_val, result_alloca);
-
-        LLVMBuildCondBr(ctx->builder, in_bounds, ok_bb, oob_bb);
-
-        /* ok_bb: load element[i] and deep-clone */
-        LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
-        LLVMValueRef i64 = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vget.i64");
-        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &i64, 1, "vget.ep");
-        LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vget.elem");
-        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
-        LLVMBuildStore(ctx->builder, elem, result_alloca);
-        LLVMBuildBr(ctx->builder, merge_bb);
-
-        /* oob_bb: out-of-bounds — warn, result stays zero/default */
-        LLVMPositionBuilderAtEnd(ctx->builder, oob_bb);
-        emit_printf(ctx, "[warning] vec.get() index out of bounds\n", NULL, 0);
-        LLVMBuildBr(ctx->builder, merge_bb);
-
-        /* merge_bb: return result */
-        LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-        LLVMValueRef r = LLVMBuildLoad2(ctx->builder, elem_llvm, result_alloca, "vget.r");
-
-        /* Register string clone as temp for ownership tracking */
-        if (elem_type->kind == TYPE_STRING && ctx->current_fn != NULL)
-        {
-            if (ctx->temp_string_count >= ctx->temp_string_cap)
-            {
-                ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
-                ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
-                                                    ctx->temp_string_slots,
-                                                    ctx->temp_string_cap);
-            }
-            ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
-        }
-        return r;
-    }
-
-    /* ---- get_unsafe(i) -> T — unchecked index load (GEP + load + clone). ----
-       No bounds check, no branches: caller MUST guarantee 0 <= i < len (e.g.
-       via a `for i in 0..v.length` loop). Mirrors string.at_unsafe — for hot
-       loops where the redundant bounds check of v[i]/v.get(i) is the bottleneck.
-       Returns a deep clone for owned element types (same ownership as get). */
-    if (strcmp(method, "get_unsafe") == 0)
-    {
-        LLVMValueRef i_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (i_val == NULL)
-            return NULL;
-        if (LLVMTypeOf(i_val) != i32_t)
-            i_val = LLVMBuildIntCast2(ctx->builder, i_val, i32_t, 1, "vgu.i32");
-
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vgu.v");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vgu.data");
-        LLVMValueRef i64 = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vgu.i64");
-        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &i64, 1, "vgu.ep");
-        LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vgu.elem");
-        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
-
-        /* Track a cloned string as a temp for ownership cleanup (same as get). */
-        if (elem_type && elem_type->kind == TYPE_STRING && ctx->current_fn != NULL)
-        {
-            LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-            LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(ctx->current_fn);
-            LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
-            if (fi) LLVMPositionBuilderBefore(tb, fi);
-            else    LLVMPositionBuilderAtEnd(tb, entry_bb);
-            LLVMValueRef slot = LLVMBuildAlloca(tb, elem_llvm, "vgu.tmp");
-            LLVMDisposeBuilder(tb);
-            LLVMBuildStore(ctx->builder, elem, slot);
-            if (ctx->temp_string_count >= ctx->temp_string_cap)
-            {
-                ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
-                ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
-                                                    ctx->temp_string_slots,
-                                                    ctx->temp_string_cap);
-            }
-            ctx->temp_string_slots[ctx->temp_string_count++] = slot;
-            elem = LLVMBuildLoad2(ctx->builder, elem_llvm, slot, "vgu.r");
-        }
-        return elem;
-    }
-
-    /* ---- truncate(n) -> void  — drop [n, len), set len = n ---- */
-    if (strcmp(method, "truncate") == 0)
-    {
-        LLVMValueRef n_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (n_val == NULL)
-            return NULL;
-        if (LLVMTypeOf(n_val) != i32_t)
-            n_val = LLVMBuildIntCast2(ctx->builder, n_val, i32_t, 1, "vtr.n32");
-
-        /* Clamp n to 0 if negative */
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef is_neg = LLVMBuildICmp(ctx->builder, LLVMIntSLT, n_val, zero32, "vtr.neg");
-        n_val = LLVMBuildSelect(ctx->builder, is_neg, zero32, n_val, "vtr.nn");
-
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vtr.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vtr.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vtr.data");
-
-#if CG_DEBUG
-        {
-            LLVMValueRef dbg_args[2] = {len_val, n_val};
-            cg_emit_debug_printf(ctx,
-                                 "[cg] vec.truncate  old_len=%d new_len=%d\n", dbg_args, 2);
-        }
-#endif
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vtr.do");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vtr.end");
-
-        /* Only act when n < len */
-        LLVMValueRef needs = LLVMBuildICmp(ctx->builder, LLVMIntSLT, n_val, len_val, "vtr.need");
-        LLVMBuildCondBr(ctx->builder, needs, do_bb, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-
-        bool tr_needs_drop = elem_type &&
-                             (elem_type->kind == TYPE_STRING ||
-                              (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-                              (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop));
-        if (tr_needs_drop)
-        {
-            /* Allocate loop index in function entry block */
-            LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-            LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-            LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
-            if (fi)
-                LLVMPositionBuilderBefore(tb, fi);
-            else
-                LLVMPositionBuilderAtEnd(tb, entry_bb);
-            LLVMValueRef idx_alloca = LLVMBuildAlloca(tb, i32_t, "vtr.i");
-            LLVMDisposeBuilder(tb);
-
-            LLVMBuildStore(ctx->builder, n_val, idx_alloca);
-
-            LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vtr.cond");
-            LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vtr.body");
-            LLVMBasicBlockRef dend_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vtr.dend");
-            LLVMBuildBr(ctx->builder, cond_bb);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-            LLVMValueRef cur_i = LLVMBuildLoad2(ctx->builder, i32_t, idx_alloca, "vtr.ci");
-            LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur_i, len_val, "vtr.lt");
-            LLVMBuildCondBr(ctx->builder, cmp, body_bb, dend_bb);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-            LLVMValueRef idx64 = LLVMBuildSExt(ctx->builder, cur_i, i64_t, "vtr.idx64");
-            LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &idx64, 1, "vtr.ep");
-#if CG_DEBUG
-            {
-                cg_emit_debug_printf(ctx, "[cg] vec.truncate  elem_drop\n", NULL, 0);
-            }
-#endif
-            emit_vec_elem_drop_at(ctx, ep, elem_type, 0, "trunc[i]");
-
-            /* After drop the builder may be in a continuation block; only add
-               the increment + back-edge if the block has no terminator yet. */
-            LLVMBasicBlockRef after_drop = LLVMGetInsertBlock(ctx->builder);
-            if (LLVMGetBasicBlockTerminator(after_drop) == NULL)
-            {
-                LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-                LLVMValueRef next_i = LLVMBuildAdd(ctx->builder, cur_i, one32, "vtr.ni");
-                LLVMBuildStore(ctx->builder, next_i, idx_alloca);
-                LLVMBuildBr(ctx->builder, cond_bb);
-            }
-
-            LLVMPositionBuilderAtEnd(ctx->builder, dend_bb);
-        }
-
-        /* len = n */
-        LLVMValueRef vec_upd = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vtr.upd");
-        vec_upd = LLVMBuildInsertValue(ctx->builder, vec_upd, n_val, 1, "vtr.ul");
-        LLVMBuildStore(ctx->builder, vec_upd, vec_alloca);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        (void)data_ptr;
-        return NULL;
-    }
-
-    /* ---- remove(i) -> void  — drop element[i], memmove tail left, len-- ---- */
-    if (strcmp(method, "remove") == 0)
-    {
-        LLVMValueRef i_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (i_val == NULL)
-            return NULL;
-        if (LLVMTypeOf(i_val) != i32_t)
-            i_val = LLVMBuildIntCast2(ctx->builder, i_val, i32_t, 1, "vrm.i32");
-
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrm.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vrm.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vrm.data");
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrm.do");
-        LLVMBasicBlockRef oob_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrm.oob");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrm.end");
-
-        /* Bounds check: 0 <= i < len */
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef ge_zero = LLVMBuildICmp(ctx->builder, LLVMIntSGE, i_val, zero32, "vrm.ge0");
-        LLVMValueRef lt_len = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_val, len_val, "vrm.ltl");
-        LLVMValueRef in_range = LLVMBuildAnd(ctx->builder, ge_zero, lt_len, "vrm.inr");
-        LLVMBuildCondBr(ctx->builder, in_range, do_bb, oob_bb);
-
-        /* oob_bb: print warning, skip operation */
-        LLVMPositionBuilderAtEnd(ctx->builder, oob_bb);
-        {
-            LLVMValueRef wa[2] = {i_val, len_val};
-            emit_printf(ctx,
-                        "[warning] vec.remove() index out of bounds: index=%d, len=%d\n", wa, 2);
-        }
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        /* do_bb: valid index — drop + memmove + len-- */
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-#if CG_DEBUG
-        {
-            LLVMValueRef dbg_args[2] = {i_val, len_val};
-            cg_emit_debug_printf(ctx,
-                                 "[cg] vec.remove  idx=%d old_len=%d\n", dbg_args, 2);
-        }
-#endif
-        /* Step 1: drop element[i] */
-        LLVMValueRef i64_i = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vrm.i64");
-        LLVMValueRef elem_ptr = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &i64_i, 1, "vrm.ep");
-        emit_vec_elem_drop_at(ctx, elem_ptr, elem_type, 0, "remove[i]");
-        /* After drop the builder is in a valid (no-terminator) block. */
-
-        /* Step 2: memmove remaining elements left — only if i < len-1 */
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-        LLVMValueRef move_count = LLVMBuildSub(ctx->builder, len_val, i_val, "vrm.mc0");
-        move_count = LLVMBuildSub(ctx->builder, move_count, one32, "vrm.mc");
-        LLVMValueRef mc64 = LLVMBuildSExt(ctx->builder, move_count, i64_t, "vrm.mc64");
-        LLVMValueRef elem_size = LLVMSizeOf(elem_llvm);
-        LLVMValueRef mv_bytes = LLVMBuildMul(ctx->builder, mc64, elem_size, "vrm.bytes");
-
-        LLVMValueRef zero64 = LLVMConstInt(i64_t, 0, 0);
-        LLVMValueRef need_mv = LLVMBuildICmp(ctx->builder, LLVMIntSGT, mc64, zero64, "vrm.nm");
-        LLVMBasicBlockRef mv_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrm.mv");
-        LLVMBasicBlockRef mv_end = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrm.mvend");
-        LLVMBuildCondBr(ctx->builder, need_mv, mv_bb, mv_end);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, mv_bb);
-        {
-            /* dst = data + i,  src = data + i + 1 */
-            LLVMValueRef one64 = LLVMConstInt(i64_t, 1, 0);
-            LLVMValueRef ip1_64 = LLVMBuildAdd(ctx->builder, i64_i, one64, "vrm.ip1");
-            LLVMValueRef dst = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &i64_i, 1, "vrm.dst");
-            LLVMValueRef src = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &ip1_64, 1, "vrm.src");
-            LLVMValueRef mm_fn = LLVMGetNamedFunction(ctx->module, "memmove");
-            LLVMTypeRef mm_ft = LLVMGlobalGetValueType(mm_fn);
-            LLVMValueRef mm_a[3] = {dst, src, mv_bytes};
-            LLVMBuildCall2(ctx->builder, mm_ft, mm_fn, mm_a, 3, "");
-        }
-        LLVMBuildBr(ctx->builder, mv_end);
-
-        /* Step 3: len-- */
-        LLVMPositionBuilderAtEnd(ctx->builder, mv_end);
-        LLVMValueRef new_len = LLVMBuildSub(ctx->builder, len_val, one32, "vrm.nl");
-        LLVMValueRef vec_upd = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrm.upd");
-        vec_upd = LLVMBuildInsertValue(ctx->builder, vec_upd, new_len, 1, "vrm.ul");
-        LLVMBuildStore(ctx->builder, vec_upd, vec_alloca);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return NULL;
-    }
-
-    /* ---- swap(i, j) -> void  — raw byte swap of two elements (no drop/clone) ---- */
-    if (strcmp(method, "swap") == 0)
-    {
-        LLVMValueRef i_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        LLVMValueRef j_val = codegen_expr(ctx, call_node->as.call.args[1]);
-        if (i_val == NULL || j_val == NULL)
-            return NULL;
-        if (LLVMTypeOf(i_val) != i32_t)
-            i_val = LLVMBuildIntCast2(ctx->builder, i_val, i32_t, 1, "vsw.i32");
-        if (LLVMTypeOf(j_val) != i32_t)
-            j_val = LLVMBuildIntCast2(ctx->builder, j_val, i32_t, 1, "vsw.j32");
-
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vsw.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vsw.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vsw.data");
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-        /* Bounds check both indices */
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef i_ge0 = LLVMBuildICmp(ctx->builder, LLVMIntSGE, i_val, zero32, "vsw.ige");
-        LLVMValueRef i_ltl = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_val, len_val, "vsw.ilt");
-        LLVMValueRef j_ge0 = LLVMBuildICmp(ctx->builder, LLVMIntSGE, j_val, zero32, "vsw.jge");
-        LLVMValueRef j_ltl = LLVMBuildICmp(ctx->builder, LLVMIntSLT, j_val, len_val, "vsw.jlt");
-        LLVMValueRef i_ok = LLVMBuildAnd(ctx->builder, i_ge0, i_ltl, "vsw.iok");
-        LLVMValueRef j_ok = LLVMBuildAnd(ctx->builder, j_ge0, j_ltl, "vsw.jok");
-        LLVMValueRef both_ok = LLVMBuildAnd(ctx->builder, i_ok, j_ok, "vsw.ok");
-
-        LLVMBasicBlockRef chk_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsw.chk");
-        LLVMBasicBlockRef oob_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsw.oob");
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsw.do");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsw.end");
-
-        LLVMBuildCondBr(ctx->builder, both_ok, chk_bb, oob_bb);
-
-        /* oob_bb: warn, skip */
-        LLVMPositionBuilderAtEnd(ctx->builder, oob_bb);
-        {
-            LLVMValueRef wa[3] = {i_val, j_val, len_val};
-            emit_printf(ctx,
-                        "[warning] vec.swap() index out of bounds: i=%d, j=%d, len=%d\n", wa, 3);
-        }
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        /* chk_bb: if i == j, nop */
-        LLVMPositionBuilderAtEnd(ctx->builder, chk_bb);
-        LLVMValueRef eq_ij = LLVMBuildICmp(ctx->builder, LLVMIntEQ, i_val, j_val, "vsw.eq");
-        LLVMBuildCondBr(ctx->builder, eq_ij, end_bb, do_bb);
-
-        /* do_bb: raw byte swap via load/store (ownership moves in place, no free/clone) */
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-#if CG_DEBUG
-        {
-            LLVMValueRef dbg_args[2] = {i_val, j_val};
-            cg_emit_debug_printf(ctx, "[cg] vec.swap  i=%d j=%d\n", dbg_args, 2);
-        }
-#endif
-        LLVMValueRef i64_i = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vsw.i64i");
-        LLVMValueRef i64_j = LLVMBuildSExt(ctx->builder, j_val, i64_t, "vsw.i64j");
-        LLVMValueRef ptr_i = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &i64_i, 1, "vsw.pi");
-        LLVMValueRef ptr_j = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &i64_j, 1, "vsw.pj");
-        LLVMValueRef tmp = LLVMBuildLoad2(ctx->builder, elem_llvm, ptr_i, "vsw.tmp");
-        LLVMValueRef jv = LLVMBuildLoad2(ctx->builder, elem_llvm, ptr_j, "vsw.jv");
-        LLVMBuildStore(ctx->builder, jv, ptr_i);
-        LLVMBuildStore(ctx->builder, tmp, ptr_j);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return NULL;
-    }
-
-    /* ---- reverse() -> void  — reverse elements in-place (raw byte swap loop) ---- */
-    if (strcmp(method, "reverse") == 0)
-    {
-        LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrev.v");
-        LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vrev.len");
-        LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vrev.data");
-
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-#if CG_DEBUG
-        {
-            LLVMValueRef dbg_args[1] = {len_val};
-            cg_emit_debug_printf(ctx, "[cg] vec.reverse  len=%d\n", dbg_args, 1);
-        }
-#endif
-
-        /* Only reverse if len >= 2 */
-        LLVMValueRef two32 = LLVMConstInt(i32_t, 2, 0);
-        LLVMValueRef need_rv = LLVMBuildICmp(ctx->builder, LLVMIntSGE, len_val, two32, "vrev.nr");
-
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrev.do");
-        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrev.cond");
-        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrev.body");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrev.end");
-        LLVMBuildCondBr(ctx->builder, need_rv, do_bb, end_bb);
-
-        /* do_bb: set up loop counter k = 0, half = len / 2 */
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
-        if (fi)
-            LLVMPositionBuilderBefore(tb, fi);
-        else
-            LLVMPositionBuilderAtEnd(tb, entry_bb);
-        LLVMValueRef k_alloca = LLVMBuildAlloca(tb, i32_t, "vrev.k");
-        LLVMDisposeBuilder(tb);
-
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMBuildStore(ctx->builder, zero32, k_alloca);
-        LLVMValueRef half = LLVMBuildSDiv(ctx->builder, len_val, two32, "vrev.half");
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* cond_bb: while k < half */
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef k = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vrev.k");
-        LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, k, half, "vrev.lt");
-        LLVMBuildCondBr(ctx->builder, cmp, body_bb, end_bb);
-
-        /* body_bb: swap data[k] and data[len-1-k] via raw load/store */
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-        LLVMValueRef lm1 = LLVMBuildSub(ctx->builder, len_val, one32, "vrev.lm1");
-        LLVMValueRef j = LLVMBuildSub(ctx->builder, lm1, k, "vrev.j");
-        LLVMValueRef k64 = LLVMBuildSExt(ctx->builder, k, i64_t, "vrev.k64");
-        LLVMValueRef j64 = LLVMBuildSExt(ctx->builder, j, i64_t, "vrev.j64");
-        LLVMValueRef pk = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &k64, 1, "vrev.pk");
-        LLVMValueRef pj = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &j64, 1, "vrev.pj");
-        LLVMValueRef tmp = LLVMBuildLoad2(ctx->builder, elem_llvm, pk, "vrev.tmp");
-        LLVMValueRef jv = LLVMBuildLoad2(ctx->builder, elem_llvm, pj, "vrev.jv");
-        LLVMBuildStore(ctx->builder, jv, pk);
-        LLVMBuildStore(ctx->builder, tmp, pj);
-
-        /* k++ */
-        LLVMValueRef next_k = LLVMBuildAdd(ctx->builder, k, one32, "vrev.nk");
-        LLVMBuildStore(ctx->builder, next_k, k_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        (void)data_ptr;
-        return NULL;
-    }
-
-    /* ---- extend(src) -> void  — append all elements of src (deep-clone non-trivials) ---- */
-    if (strcmp(method, "extend") == 0)
-    {
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-        LLVMValueRef two32 = LLVMConstInt(i32_t, 2, 0);
-        LLVMValueRef esz = LLVMSizeOf(elem_llvm); /* compile-time constant */
-
-        /* Evaluate src (the source vec aggregate value) */
-        LLVMValueRef src_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!src_val)
-            return NULL;
-        LLVMValueRef src_len = LLVMBuildExtractValue(ctx->builder, src_val, 1, "vex.sl");
-        LLVMValueRef src_data = LLVMBuildExtractValue(ctx->builder, src_val, 0, "vex.sd");
-
-        /* Skip everything if src is empty */
-        LLVMValueRef src_ne = LLVMBuildICmp(ctx->builder, LLVMIntSGT, src_len, zero32, "vex.ne");
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vex.do");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vex.end");
-        LLVMBuildCondBr(ctx->builder, src_ne, do_bb, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-
-        /* Load self */
-        LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vex.sv");
-        LLVMValueRef sl = LLVMBuildExtractValue(ctx->builder, sv, 1, "vex.selflen");
-        LLVMValueRef sc = LLVMBuildExtractValue(ctx->builder, sv, 2, "vex.selfcap");
-
-        /* needed = self_len + src_len */
-        LLVMValueRef needed = LLVMBuildAdd(ctx->builder, sl, src_len, "vex.needed");
-
-        /* Inline reserve: if needed > self_cap → realloc with max(self_cap*2, needed) */
-        LLVMValueRef must_grow = LLVMBuildICmp(ctx->builder, LLVMIntSGT, needed, sc, "vex.mg");
-        LLVMBasicBlockRef grow_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vex.grow");
-        LLVMBasicBlockRef after_grow = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vex.cpy");
-        LLVMBuildCondBr(ctx->builder, must_grow, grow_bb, after_grow);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, grow_bb);
-        {
-            LLVMValueRef sv2 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vex.sv2");
-            LLVMValueRef od = LLVMBuildExtractValue(ctx->builder, sv2, 0, "vex.od");
-            LLVMValueRef oc = LLVMBuildExtractValue(ctx->builder, sv2, 2, "vex.oc");
-            LLVMValueRef dbl = LLVMBuildMul(ctx->builder, oc, two32, "vex.dbl");
-            LLVMValueRef use_dbl = LLVMBuildICmp(ctx->builder, LLVMIntSGT, dbl, needed, "vex.ud");
-            LLVMValueRef new_cap = LLVMBuildSelect(ctx->builder, use_dbl, dbl, needed, "vex.nc");
-            LLVMValueRef nc64 = LLVMBuildSExt(ctx->builder, new_cap, i64_t, "vex.nc64");
-            LLVMValueRef bytes = LLVMBuildMul(ctx->builder, nc64, esz, "vex.bytes");
-#if CG_DEBUG
-            {
-                LLVMValueRef dbg_args[2] = {oc, new_cap};
-                cg_emit_debug_printf(ctx, "[cg] vec.extend.grow  old_cap=%d new_cap=%d\n",
-                                     dbg_args, 2);
-            }
-#endif
-            LLVMValueRef realloc_fn = LLVMGetNamedFunction(ctx->module, "realloc");
-            LLVMTypeRef realloc_ft = LLVMGlobalGetValueType(realloc_fn);
-            LLVMValueRef ra_args[2] = {od, bytes};
-            LLVMValueRef new_data = LLVMBuildCall2(ctx->builder, realloc_ft, realloc_fn,
-                                                   ra_args, 2, "vex.nd");
-            LLVMValueRef sv3 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vex.sv3");
-            sv3 = LLVMBuildInsertValue(ctx->builder, sv3, new_data, 0, "vex.id");
-            sv3 = LLVMBuildInsertValue(ctx->builder, sv3, new_cap, 2, "vex.ic");
-            LLVMBuildStore(ctx->builder, sv3, vec_alloca);
-        }
-        LLVMBuildBr(ctx->builder, after_grow);
-
-        /* after_grow (vex.cpy): copy elements into self */
-        LLVMPositionBuilderAtEnd(ctx->builder, after_grow);
-        /* Reload self data + len after potential realloc */
-        LLVMValueRef sv4 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vex.sv4");
-        LLVMValueRef sl4 = LLVMBuildExtractValue(ctx->builder, sv4, 1, "vex.sl4");
-        LLVMValueRef sd4 = LLVMBuildExtractValue(ctx->builder, sv4, 0, "vex.sd4");
-
-        bool elem_needs_drop = (elem_type &&
-                                (elem_type->kind == TYPE_STRING ||
-                                 (elem_type->kind == TYPE_STRUCT &&
-                                  elem_type->as.strukt.has_drop) ||
-                                 (elem_type->kind == TYPE_ENUM &&
-                                  elem_type->as.enom.has_drop)));
-        if (!elem_needs_drop)
-        {
-            /* Trivial: single memcpy(self_data + self_len, src_data, src_len * elem_size) */
-            LLVMValueRef sl64 = LLVMBuildSExt(ctx->builder, sl4, i64_t, "vex.sl64");
-            LLVMValueRef dst = LLVMBuildGEP2(ctx->builder, elem_llvm, sd4, &sl64, 1, "vex.dst");
-            LLVMValueRef slen64 = LLVMBuildSExt(ctx->builder, src_len, i64_t, "vex.slen64");
-            LLVMValueRef copy_bytes = LLVMBuildMul(ctx->builder, slen64, esz, "vex.cpb");
-            LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
-            LLVMTypeRef memcpy_ft = LLVMGlobalGetValueType(memcpy_fn);
-            LLVMValueRef mc_args[3] = {dst, src_data, copy_bytes};
-            LLVMBuildCall2(ctx->builder, memcpy_ft, memcpy_fn, mc_args, 3, "");
-#if CG_DEBUG
-            {
-                LLVMValueRef dbg_args[1] = {src_len};
-                cg_emit_debug_printf(ctx, "[cg] vec.extend  (trivial memcpy) count=%d\n",
-                                     dbg_args, 1);
-            }
-#endif
-        }
-        else
-        {
-            /* Non-trivial: clone loop — for k in 0..src_len */
-            /* Alloca loop counter k in entry block */
-            LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-            LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-            LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-            if (fi)
-                LLVMPositionBuilderBefore(tb, fi);
-            else
-                LLVMPositionBuilderAtEnd(tb, entry);
-            LLVMValueRef k_alloca = LLVMBuildAlloca(tb, i32_t, "vex.k");
-            LLVMDisposeBuilder(tb);
-
-            LLVMBuildStore(ctx->builder, zero32, k_alloca);
-
-            LLVMBasicBlockRef lc_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vex.lcond");
-            LLVMBasicBlockRef lb_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vex.lbody");
-            LLVMBasicBlockRef le_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vex.lend");
-            LLVMBuildBr(ctx->builder, lc_bb);
-
-            /* lc_bb: while k < src_len */
-            LLVMPositionBuilderAtEnd(ctx->builder, lc_bb);
-            LLVMValueRef kv = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vex.kv");
-            LLVMValueRef klt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, kv, src_len, "vex.klt");
-            LLVMBuildCondBr(ctx->builder, klt, lb_bb, le_bb);
-
-            /* lb_bb: clone src.data[k] → self.data[self_len + k] */
-            LLVMPositionBuilderAtEnd(ctx->builder, lb_bb);
-            LLVMValueRef sv5 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vex.sv5");
-            LLVMValueRef sd5 = LLVMBuildExtractValue(ctx->builder, sv5, 0, "vex.sd5");
-            LLVMValueRef sl5 = LLVMBuildExtractValue(ctx->builder, sv5, 1, "vex.sl5");
-            LLVMValueRef kv2 = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vex.kv2");
-            LLVMValueRef k64 = LLVMBuildSExt(ctx->builder, kv2, i64_t, "vex.k64");
-
-            LLVMValueRef sep = LLVMBuildGEP2(ctx->builder, elem_llvm, src_data, &k64, 1, "vex.sep");
-            LLVMValueRef se = LLVMBuildLoad2(ctx->builder, elem_llvm, sep, "vex.se");
-
-            LLVMValueRef cloned = emit_clone_value(ctx, se, elem_llvm, elem_type);
-
-            LLVMValueRef di = LLVMBuildAdd(ctx->builder, sl5, kv2, "vex.di");
-            LLVMValueRef di64 = LLVMBuildSExt(ctx->builder, di, i64_t, "vex.di64");
-            LLVMValueRef dep = LLVMBuildGEP2(ctx->builder, elem_llvm, sd5, &di64, 1, "vex.dep");
-            LLVMBuildStore(ctx->builder, cloned, dep);
-
-            /* k++ and back to lc_bb */
-            LLVMValueRef nk = LLVMBuildAdd(ctx->builder, kv2, one32, "vex.nk");
-            LLVMBuildStore(ctx->builder, nk, k_alloca);
-            LLVMBuildBr(ctx->builder, lc_bb);
-
-            /* Position at loop exit (le_bb) for the len update below */
-            LLVMPositionBuilderAtEnd(ctx->builder, le_bb);
-        }
-
-        /* Update self.len += src_len  (builder is at after_grow for trivial, le_bb for non-trivial) */
-        LLVMValueRef sv6 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vex.sv6");
-        LLVMValueRef sl6 = LLVMBuildExtractValue(ctx->builder, sv6, 1, "vex.sl6");
-        LLVMValueRef new_len = LLVMBuildAdd(ctx->builder, sl6, src_len, "vex.nl");
-        sv6 = LLVMBuildInsertValue(ctx->builder, sv6, new_len, 1, "vex.ul");
-        LLVMBuildStore(ctx->builder, sv6, vec_alloca);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        (void)src_data;
-        (void)zero32;
-        (void)one32;
-        (void)two32;
-        (void)esz;
-        return NULL;
-    }
-
-    /* ---- insert(i, x) -> void  — insert x at position i, shift [i, len) right ---- */
-    if (strcmp(method, "insert") == 0)
-    {
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-
-        /* Record temp mark before evaluating args */
-        int temp_mark_ins = ctx->temp_string_count;
-
-        /* Evaluate index i and value x */
-        LLVMValueRef i_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!i_val)
-            return NULL;
-        LLVMValueRef x_val = codegen_expr(ctx, call_node->as.call.args[1]);
-        if (!x_val)
-            return NULL;
-
-        /* Load self len */
-        LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vins.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vins.len");
-
-        /* Bounds check: 0 <= i <= len  (i == len means append, valid) */
-        LLVMValueRef ge0 = LLVMBuildICmp(ctx->builder, LLVMIntSGE, i_val, zero32, "vins.ge0");
-        LLVMValueRef lel = LLVMBuildICmp(ctx->builder, LLVMIntSLE, i_val, len, "vins.lel");
-        LLVMValueRef ok = LLVMBuildAnd(ctx->builder, ge0, lel, "vins.ok");
-
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vins.do");
-        LLVMBasicBlockRef oob_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vins.oob");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vins.end");
-        LLVMBuildCondBr(ctx->builder, ok, do_bb, oob_bb);
-
-        /* oob_bb: warn and skip */
-        LLVMPositionBuilderAtEnd(ctx->builder, oob_bb);
-        {
-            LLVMValueRef wa[2] = {i_val, len};
-            emit_printf(ctx,
-                        "[warning] vec.insert() index out of bounds (i=%d len=%d)\n", wa, 2);
-        }
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        /* do_bb: grow, conditional memmove, store, len++ */
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-
-        /* Grow capacity by 1 if needed */
-        emit_vec_grow_inline(ctx, vec_alloca, elem_llvm);
-
-        /* Reload self after potential grow */
-        LLVMValueRef sv2 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vins.sv2");
-        LLVMValueRef len2 = LLVMBuildExtractValue(ctx->builder, sv2, 1, "vins.len2");
-        LLVMValueRef dat2 = LLVMBuildExtractValue(ctx->builder, sv2, 0, "vins.dat2");
-
-        /* If i < len, memmove data[i+1..len] = data[i..len-1]  (shift right by 1) */
-        LLVMValueRef need_shift = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_val, len2, "vins.ns");
-        LLVMBasicBlockRef shift_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vins.shift");
-        LLVMBasicBlockRef store_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vins.store");
-        LLVMBuildCondBr(ctx->builder, need_shift, shift_bb, store_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, shift_bb);
-        {
-            LLVMValueRef i64 = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vins.i64");
-            LLVMValueRef ip1 = LLVMBuildAdd(ctx->builder, i_val, one32, "vins.ip1");
-            LLVMValueRef ip1_64 = LLVMBuildSExt(ctx->builder, ip1, i64_t, "vins.ip164");
-            LLVMValueRef mv_src = LLVMBuildGEP2(ctx->builder, elem_llvm, dat2, &i64, 1, "vins.msrc");
-            LLVMValueRef mv_dst = LLVMBuildGEP2(ctx->builder, elem_llvm, dat2, &ip1_64, 1, "vins.mdst");
-            /* count = len - i elements to shift */
-            LLVMValueRef cnt = LLVMBuildSub(ctx->builder, len2, i_val, "vins.cnt");
-            LLVMValueRef cnt64 = LLVMBuildSExt(ctx->builder, cnt, i64_t, "vins.cnt64");
-            LLVMValueRef mv_bytes = LLVMBuildMul(ctx->builder, cnt64, LLVMSizeOf(elem_llvm), "vins.mvb");
-            LLVMValueRef memmove_fn = LLVMGetNamedFunction(ctx->module, "memmove");
-            LLVMTypeRef memmove_ft = LLVMGlobalGetValueType(memmove_fn);
-            LLVMValueRef mm_args[3] = {mv_dst, mv_src, mv_bytes};
-            LLVMBuildCall2(ctx->builder, memmove_ft, memmove_fn, mm_args, 3, "");
-        }
-        LLVMBuildBr(ctx->builder, store_bb);
-
-        /* store_bb: store x at data[i]，所有权转移由 cg_store_owned 统一处理 */
-        LLVMPositionBuilderAtEnd(ctx->builder, store_bb);
-        {
-            LLVMValueRef sv3 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vins.sv3");
-            LLVMValueRef dat3 = LLVMBuildExtractValue(ctx->builder, sv3, 0, "vins.dat3");
-            LLVMValueRef sti = LLVMBuildSExt(ctx->builder, i_val, i64_t, "vins.sti");
-            LLVMValueRef slot = LLVMBuildGEP2(ctx->builder, elem_llvm, dat3, &sti, 1, "vins.slot");
-            /* M-3: 统一所有权转移（arg[1] 是被插入的值） */
-            cg_store_owned(ctx, slot, x_val, elem_type,
-                           call_node->as.call.args[1], temp_mark_ins,
-                           CG_XFER_INTO_CONTAINER);
-        }
-
-        /* len++ */
-        LLVMValueRef sv4 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vins.sv4");
-        LLVMValueRef len4 = LLVMBuildExtractValue(ctx->builder, sv4, 1, "vins.len4");
-        LLVMValueRef nl = LLVMBuildAdd(ctx->builder, len4, one32, "vins.nl");
-        sv4 = LLVMBuildInsertValue(ctx->builder, sv4, nl, 1, "vins.ul");
-        LLVMBuildStore(ctx->builder, sv4, vec_alloca);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        (void)zero32;
-        return NULL;
-    }
-
-    /* ---- contains(x) -> bool  — linear search, true if any element equals x ---- */
-    if (strcmp(method, "contains") == 0 || strcmp(method, "index_of") == 0)
-    {
-        bool is_contains = (strcmp(method, "contains") == 0);
-        const char *pfx = is_contains ? "vcnt" : "vidx";
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMTypeRef i1_t = LLVMInt1TypeInContext(ctx->context);
-
-        /* Evaluate x */
-        LLVMValueRef x_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!x_val)
-            return NULL;
-
-        /* Alloca result + loop counter in entry block */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi)
-            LLVMPositionBuilderBefore(tb, fi);
-        else
-            LLVMPositionBuilderAtEnd(tb, entry);
-        LLVMValueRef res_alloca = LLVMBuildAlloca(tb, is_contains ? i1_t : i32_t, "vsi.res");
-        LLVMValueRef k_alloca = LLVMBuildAlloca(tb, i32_t, "vsi.k");
-        LLVMDisposeBuilder(tb);
-
-        /* Init: result = false / -1,  k = 0 */
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-        LLVMValueRef neg1_32 = LLVMConstInt(i32_t, (unsigned long long)-1, 1);
-        if (is_contains)
-            LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 0, 0), res_alloca);
-        else
-            LLVMBuildStore(ctx->builder, neg1_32, res_alloca);
-        LLVMBuildStore(ctx->builder, zero32, k_alloca);
-
-        /* Load vec */
-        LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vsi.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vsi.len");
-        LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, sv, 0, "vsi.data");
-
-        /* Loop blocks */
-        char cond_name[32], body_name[32], found_name[32], next_name[32], end_name[32];
-        snprintf(cond_name, sizeof(cond_name), "%s.cond", pfx);
-        snprintf(body_name, sizeof(body_name), "%s.body", pfx);
-        snprintf(found_name, sizeof(found_name), "%s.found", pfx);
-        snprintf(next_name, sizeof(next_name), "%s.next", pfx);
-        snprintf(end_name, sizeof(end_name), "%s.end", pfx);
-
-        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, cond_name);
-        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, body_name);
-        LLVMBasicBlockRef found_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, found_name);
-        LLVMBasicBlockRef next_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, next_name);
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, end_name);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* cond_bb: while k < len */
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef kv = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vsi.kv");
-        LLVMValueRef klt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, kv, len, "vsi.klt");
-        LLVMBuildCondBr(ctx->builder, klt, body_bb, end_bb);
-
-        /* body_bb: load elem[k], compare with x */
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef kv64 = LLVMBuildSExt(ctx->builder, kv, i64_t, "vsi.kv64");
-        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data, &kv64, 1, "vsi.ep");
-        LLVMValueRef ev = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vsi.ev");
-
-        /* Element comparison */
-        LLVMValueRef is_eq;
-        if (elem_type->kind == TYPE_STRING)
-        {
-            LLVMValueRef ad = LLVMBuildExtractValue(ctx->builder, ev, 0, "vsi.ad");
-            LLVMValueRef bd = LLVMBuildExtractValue(ctx->builder, x_val, 0, "vsi.bd");
-            LLVMValueRef strcmp_fn = LLVMGetNamedFunction(ctx->module, "strcmp");
-            LLVMTypeRef strcmp_ft = LLVMGlobalGetValueType(strcmp_fn);
-            LLVMValueRef sc_args[2] = {ad, bd};
-            LLVMValueRef sc = LLVMBuildCall2(ctx->builder, strcmp_ft, strcmp_fn,
-                                             sc_args, 2, "vsi.sc");
-            is_eq = LLVMBuildICmp(ctx->builder, LLVMIntEQ, sc, zero32, "vsi.eq");
-        }
-        else if (elem_type->kind == TYPE_F32 || elem_type->kind == TYPE_F64)
-        {
-            is_eq = LLVMBuildFCmp(ctx->builder, LLVMRealOEQ, ev, x_val, "vsi.eq");
-        }
-        else
-        {
-            is_eq = LLVMBuildICmp(ctx->builder, LLVMIntEQ, ev, x_val, "vsi.eq");
-        }
-        LLVMBuildCondBr(ctx->builder, is_eq, found_bb, next_bb);
-
-        /* found_bb: store result (true / k) and exit loop */
-        LLVMPositionBuilderAtEnd(ctx->builder, found_bb);
-        if (is_contains)
-            LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 1, 0), res_alloca);
-        else
-            LLVMBuildStore(ctx->builder, kv, res_alloca);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        /* next_bb: k++ */
-        LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
-        LLVMValueRef nk = LLVMBuildAdd(ctx->builder, kv, one32, "vsi.nk");
-        LLVMBuildStore(ctx->builder, nk, k_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* end_bb: return result */
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        LLVMTypeRef res_t = is_contains ? i1_t : i32_t;
-        return LLVMBuildLoad2(ctx->builder, res_t, res_alloca, "vsi.ret");
-    }
-
-    /* ---- resize(n) -> void  — grow (zero/empty fill) or shrink (drop excess) ---- */
-    if (strcmp(method, "resize") == 0)
-    {
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-
-        /* Evaluate n, clamp negative to 0 */
-        LLVMValueRef n_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!n_val)
-            return NULL;
-
-        LLVMValueRef is_neg = LLVMBuildICmp(ctx->builder, LLVMIntSLT, n_val, zero32, "vrsz.neg");
-        LLVMValueRef n_clamped = LLVMBuildSelect(ctx->builder, is_neg, zero32, n_val, "vrsz.nc");
-
-        /* Load self */
-        LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vrsz.len");
-
-        LLVMValueRef gt = LLVMBuildICmp(ctx->builder, LLVMIntSGT, n_clamped, len, "vrsz.gt");
-        LLVMValueRef lt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, n_clamped, len, "vrsz.lt");
-
-        LLVMBasicBlockRef grow_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.grow");
-        LLVMBasicBlockRef shrink_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.shrink");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.end");
-
-        /* gt → grow, lt → shrink, else → nop (end) */
-        LLVMBasicBlockRef chk_shrink = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.chk");
-        LLVMBuildCondBr(ctx->builder, gt, grow_bb, chk_shrink);
-        LLVMPositionBuilderAtEnd(ctx->builder, chk_shrink);
-        LLVMBuildCondBr(ctx->builder, lt, shrink_bb, end_bb);
-
-        /* ----- grow_bb: realloc if needed, zero-fill [len, n_clamped), update len ----- */
-        LLVMPositionBuilderAtEnd(ctx->builder, grow_bb);
-        {
-            LLVMValueRef sv2 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.sv2");
-            LLVMValueRef cap2 = LLVMBuildExtractValue(ctx->builder, sv2, 2, "vrsz.cap2");
-
-            /* Inline reserve: if n_clamped > cap → realloc with max(cap*2, n_clamped) */
-            LLVMValueRef mg = LLVMBuildICmp(ctx->builder, LLVMIntSGT, n_clamped, cap2, "vrsz.mg");
-            LLVMBasicBlockRef ra_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.ra");
-            LLVMBasicBlockRef fill_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.fill");
-            LLVMBuildCondBr(ctx->builder, mg, ra_bb, fill_bb);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, ra_bb);
-            {
-                LLVMValueRef sv3 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.sv3");
-                LLVMValueRef od = LLVMBuildExtractValue(ctx->builder, sv3, 0, "vrsz.od");
-                LLVMValueRef oc = LLVMBuildExtractValue(ctx->builder, sv3, 2, "vrsz.oc");
-                LLVMValueRef two32 = LLVMConstInt(i32_t, 2, 0);
-                LLVMValueRef dbl = LLVMBuildMul(ctx->builder, oc, two32, "vrsz.dbl");
-                LLVMValueRef use_d = LLVMBuildICmp(ctx->builder, LLVMIntSGT, dbl, n_clamped, "vrsz.ud");
-                LLVMValueRef new_cap = LLVMBuildSelect(ctx->builder, use_d, dbl, n_clamped, "vrsz.nc2");
-                LLVMValueRef nc64 = LLVMBuildSExt(ctx->builder, new_cap, i64_t, "vrsz.nc64");
-                LLVMValueRef bytes = LLVMBuildMul(ctx->builder, nc64, LLVMSizeOf(elem_llvm), "vrsz.bytes");
-                LLVMValueRef realloc_fn = LLVMGetNamedFunction(ctx->module, "realloc");
-                LLVMTypeRef realloc_ft = LLVMGlobalGetValueType(realloc_fn);
-                LLVMValueRef ra_args[2] = {od, bytes};
-                LLVMValueRef nd = LLVMBuildCall2(ctx->builder, realloc_ft, realloc_fn,
-                                                 ra_args, 2, "vrsz.nd");
-                sv3 = LLVMBuildInsertValue(ctx->builder, sv3, nd, 0, "vrsz.id");
-                sv3 = LLVMBuildInsertValue(ctx->builder, sv3, new_cap, 2, "vrsz.ic");
-                LLVMBuildStore(ctx->builder, sv3, vec_alloca);
-            }
-            LLVMBuildBr(ctx->builder, fill_bb);
-
-            /* fill_bb: loop from len to n_clamped, store zero/empty element */
-            LLVMPositionBuilderAtEnd(ctx->builder, fill_bb);
-
-            /* Alloca fill loop counter in entry block */
-            LLVMBasicBlockRef entry2 = LLVMGetEntryBasicBlock(cur_fn);
-            LLVMBuilderRef tb2 = LLVMCreateBuilderInContext(ctx->context);
-            LLVMValueRef fi2 = LLVMGetFirstInstruction(entry2);
-            if (fi2)
-                LLVMPositionBuilderBefore(tb2, fi2);
-            else
-                LLVMPositionBuilderAtEnd(tb2, entry2);
-            LLVMValueRef fk_alloca = LLVMBuildAlloca(tb2, i32_t, "vrsz.fk");
-            LLVMDisposeBuilder(tb2);
-
-            /* k_fill = self.len (before grow) */
-            LLVMValueRef sv4 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.sv4");
-            LLVMValueRef len4 = LLVMBuildExtractValue(ctx->builder, sv4, 1, "vrsz.len4");
-            LLVMBuildStore(ctx->builder, len4, fk_alloca);
-
-            /* fill value: null/zero for all types; for string use empty literal */
-            LLVMValueRef fill_val;
-            if (elem_type->kind == TYPE_STRING)
-                fill_val = ls_string_from_literal(ctx, "", "vrsz.empty");
-            else
-                fill_val = LLVMConstNull(elem_llvm);
-
-            LLVMBasicBlockRef fcond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.fcond");
-            LLVMBasicBlockRef fbody_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.fbody");
-            LLVMBasicBlockRef fend_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.fend");
-            LLVMBuildBr(ctx->builder, fcond_bb);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, fcond_bb);
-            LLVMValueRef fkv = LLVMBuildLoad2(ctx->builder, i32_t, fk_alloca, "vrsz.fkv");
-            LLVMValueRef flt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, fkv, n_clamped, "vrsz.flt");
-            LLVMBuildCondBr(ctx->builder, flt, fbody_bb, fend_bb);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, fbody_bb);
-            LLVMValueRef sv5 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.sv5");
-            LLVMValueRef dat5 = LLVMBuildExtractValue(ctx->builder, sv5, 0, "vrsz.dat5");
-            LLVMValueRef fk64 = LLVMBuildSExt(ctx->builder, fkv, i64_t, "vrsz.fk64");
-            LLVMValueRef fep = LLVMBuildGEP2(ctx->builder, elem_llvm, dat5, &fk64, 1, "vrsz.fep");
-            LLVMBuildStore(ctx->builder, fill_val, fep);
-            LLVMValueRef fnk = LLVMBuildAdd(ctx->builder, fkv, one32, "vrsz.fnk");
-            LLVMBuildStore(ctx->builder, fnk, fk_alloca);
-            LLVMBuildBr(ctx->builder, fcond_bb);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, fend_bb);
-            /* Update len = n_clamped */
-            LLVMValueRef sv6 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.sv6");
-            sv6 = LLVMBuildInsertValue(ctx->builder, sv6, n_clamped, 1, "vrsz.ul");
-            LLVMBuildStore(ctx->builder, sv6, vec_alloca);
-        }
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        /* ----- shrink_bb: drop elements [n_clamped, len), update len ----- */
-        LLVMPositionBuilderAtEnd(ctx->builder, shrink_bb);
-        {
-            bool elem_needs_drop = (elem_type &&
-                                    (elem_type->kind == TYPE_STRING ||
-                                     (elem_type->kind == TYPE_STRUCT &&
-                                      elem_type->as.strukt.has_drop) ||
-                                     (elem_type->kind == TYPE_ENUM &&
-                                      elem_type->as.enom.has_drop)));
-
-            if (elem_needs_drop)
-            {
-                /* Drop loop: for k in n_clamped..len */
-                LLVMBasicBlockRef entry3 = LLVMGetEntryBasicBlock(cur_fn);
-                LLVMBuilderRef tb3 = LLVMCreateBuilderInContext(ctx->context);
-                LLVMValueRef fi3 = LLVMGetFirstInstruction(entry3);
-                if (fi3)
-                    LLVMPositionBuilderBefore(tb3, fi3);
-                else
-                    LLVMPositionBuilderAtEnd(tb3, entry3);
-                LLVMValueRef dk_alloca = LLVMBuildAlloca(tb3, i32_t, "vrsz.dk");
-                LLVMDisposeBuilder(tb3);
-
-                LLVMBuildStore(ctx->builder, n_clamped, dk_alloca);
-
-                LLVMBasicBlockRef dcond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.dcond");
-                LLVMBasicBlockRef dbody_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.dbody");
-                LLVMBasicBlockRef dend_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrsz.dend");
-                LLVMBuildBr(ctx->builder, dcond_bb);
-
-                LLVMPositionBuilderAtEnd(ctx->builder, dcond_bb);
-                LLVMValueRef dkv = LLVMBuildLoad2(ctx->builder, i32_t, dk_alloca, "vrsz.dkv");
-                LLVMValueRef svd = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.svd");
-                LLVMValueRef lend = LLVMBuildExtractValue(ctx->builder, svd, 1, "vrsz.lend");
-                LLVMValueRef dlt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, dkv, lend, "vrsz.dlt");
-                LLVMBuildCondBr(ctx->builder, dlt, dbody_bb, dend_bb);
-
-                LLVMPositionBuilderAtEnd(ctx->builder, dbody_bb);
-                LLVMValueRef svdb = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.svdb");
-                LLVMValueRef datd = LLVMBuildExtractValue(ctx->builder, svdb, 0, "vrsz.datd");
-                LLVMValueRef dk64 = LLVMBuildSExt(ctx->builder, dkv, i64_t, "vrsz.dk64");
-                LLVMValueRef dep = LLVMBuildGEP2(ctx->builder, elem_llvm, datd, &dk64, 1, "vrsz.dep");
-                emit_vec_elem_drop_at(ctx, dep, elem_type, 0, "resize[i]");
-
-                /* k++ — check terminator safety */
-                if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)))
-                {
-                    LLVMValueRef dkv2 = LLVMBuildLoad2(ctx->builder, i32_t, dk_alloca, "vrsz.dkv2");
-                    LLVMValueRef dnk = LLVMBuildAdd(ctx->builder, dkv2, one32, "vrsz.dnk");
-                    LLVMBuildStore(ctx->builder, dnk, dk_alloca);
-                    LLVMBuildBr(ctx->builder, dcond_bb);
-                }
-
-                LLVMPositionBuilderAtEnd(ctx->builder, dend_bb);
-            }
-
-            /* Update len = n_clamped */
-            LLVMValueRef svs = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrsz.svs");
-            svs = LLVMBuildInsertValue(ctx->builder, svs, n_clamped, 1, "vrsz.uls");
-            LLVMBuildStore(ctx->builder, svs, vec_alloca);
-        }
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return NULL;
-    }
-
-    /* ---- copy() -> vec(T)  — deep clone entire vec into a new independent vec ---- */
-    if (strcmp(method, "copy") == 0)
-    {
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-
-        /* Alloca result vec in entry block (init to zeros = {null, 0, 0}) */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi)
-            LLVMPositionBuilderBefore(tb, fi);
-        else
-            LLVMPositionBuilderAtEnd(tb, entry);
-        LLVMValueRef res_alloca = LLVMBuildAlloca(tb, vec_t, "vcpy.res");
-        LLVMDisposeBuilder(tb);
-        LLVMBuildStore(ctx->builder, LLVMConstNull(vec_t), res_alloca);
-
-        /* Load self */
-        LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vcpy.sv");
-        LLVMValueRef slen = LLVMBuildExtractValue(ctx->builder, sv, 1, "vcpy.slen");
-        LLVMValueRef sdat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vcpy.sdat");
-
-        /* If self is empty, return empty vec */
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef is_empty = LLVMBuildICmp(ctx->builder, LLVMIntEQ, slen, zero32, "vcpy.emp");
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcpy.do");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcpy.end");
-        LLVMBuildCondBr(ctx->builder, is_empty, end_bb, do_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-
-        /* Allocate new data: malloc(slen * elem_size) */
-        LLVMValueRef slen64 = LLVMBuildSExt(ctx->builder, slen, i64_t, "vcpy.slen64");
-        LLVMValueRef bytes = LLVMBuildMul(ctx->builder, slen64, LLVMSizeOf(elem_llvm), "vcpy.bytes");
-        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
-        LLVMTypeRef malloc_ft = LLVMGlobalGetValueType(malloc_fn);
-        LLVMValueRef new_data = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn,
-                                               &bytes, 1, "vcpy.nd");
-
-#if CG_DEBUG
-        {
-            LLVMValueRef dbg_args[1] = {slen};
-            cg_emit_debug_printf(ctx, "[cg] vec.copy  len=%d\n", dbg_args, 1);
-        }
-#endif
-
-        bool elem_needs_drop = (elem_type &&
-                                (elem_type->kind == TYPE_STRING ||
-                                 (elem_type->kind == TYPE_STRUCT &&
-                                  elem_type->as.strukt.has_drop) ||
-                                 (elem_type->kind == TYPE_ENUM &&
-                                  elem_type->as.enom.has_drop)));
-
-        if (!elem_needs_drop)
-        {
-            /* Trivial: single memcpy */
-            LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
-            LLVMTypeRef memcpy_ft = LLVMGlobalGetValueType(memcpy_fn);
-            LLVMValueRef mc_args[3] = {new_data, sdat, bytes};
-            LLVMBuildCall2(ctx->builder, memcpy_ft, memcpy_fn, mc_args, 3, "");
-        }
-        else
-        {
-            /* Non-trivial: clone loop */
-            LLVMBasicBlockRef entry2 = LLVMGetEntryBasicBlock(cur_fn);
-            LLVMBuilderRef tb2 = LLVMCreateBuilderInContext(ctx->context);
-            LLVMValueRef fi2 = LLVMGetFirstInstruction(entry2);
-            if (fi2)
-                LLVMPositionBuilderBefore(tb2, fi2);
-            else
-                LLVMPositionBuilderAtEnd(tb2, entry2);
-            LLVMValueRef ck_alloca = LLVMBuildAlloca(tb2, i32_t, "vcpy.ck");
-            LLVMDisposeBuilder(tb2);
-
-            LLVMBuildStore(ctx->builder, zero32, ck_alloca);
-
-            LLVMBasicBlockRef lc = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcpy.lcond");
-            LLVMBasicBlockRef lb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcpy.lbody");
-            LLVMBasicBlockRef le = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vcpy.lend");
-            LLVMBuildBr(ctx->builder, lc);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, lc);
-            LLVMValueRef ckv = LLVMBuildLoad2(ctx->builder, i32_t, ck_alloca, "vcpy.ckv");
-            LLVMValueRef clt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, ckv, slen, "vcpy.clt");
-            LLVMBuildCondBr(ctx->builder, clt, lb, le);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, lb);
-            LLVMValueRef ck64 = LLVMBuildSExt(ctx->builder, ckv, i64_t, "vcpy.ck64");
-            LLVMValueRef sep = LLVMBuildGEP2(ctx->builder, elem_llvm, sdat, &ck64, 1, "vcpy.sep");
-            LLVMValueRef se = LLVMBuildLoad2(ctx->builder, elem_llvm, sep, "vcpy.se");
-
-            LLVMValueRef cloned = emit_clone_value(ctx, se, elem_llvm, elem_type);
-
-            LLVMValueRef dep = LLVMBuildGEP2(ctx->builder, elem_llvm, new_data, &ck64, 1, "vcpy.dep");
-            LLVMBuildStore(ctx->builder, cloned, dep);
-
-            LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-            LLVMValueRef nck = LLVMBuildAdd(ctx->builder, ckv, one32, "vcpy.nck");
-            LLVMBuildStore(ctx->builder, nck, ck_alloca);
-            LLVMBuildBr(ctx->builder, lc);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, le);
-        }
-
-        /* Build result: {new_data, slen, slen}  (cap == len for exact fit) */
-        LLVMValueRef res = LLVMGetUndef(vec_t);
-        res = LLVMBuildInsertValue(ctx->builder, res, new_data, 0, "vcpy.r0");
-        res = LLVMBuildInsertValue(ctx->builder, res, slen, 1, "vcpy.r1");
-        res = LLVMBuildInsertValue(ctx->builder, res, slen, 2, "vcpy.r2");
-        LLVMBuildStore(ctx->builder, res, res_alloca);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        /* end_bb: load and return result vec */
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        (void)ptr_t;
-        return LLVMBuildLoad2(ctx->builder, vec_t, res_alloca, "vcpy.ret");
-    }
-
-    /* ---- sort() -> void  — in-place ascending sort via qsort + generated comparator ---- */
-    /* ---- sort_by(cmp fn(T,T)->int) -> void  — same but user-supplied comparator ---- */
-    if (strcmp(method, "sort") == 0 || strcmp(method, "sort_by") == 0)
-    {
-        bool is_sort_by = (strcmp(method, "sort_by") == 0);
-
-        /* For sort(): generate a unique internal comparator function __ls_vcmp_N.
-           The comparator receives two const void* pointers, casts them to elem*, and
-           returns negative/zero/positive like strcmp.
-           For sort_by(): caller supplies the function pointer directly. */
-        LLVMValueRef cmp_fn_ptr = NULL;
-
-        if (!is_sort_by)
-        {
-            /* Generate comparator: int __ls_vcmp_N(void* a, void* b) */
-            int sort_id = g_block_counter++;
-            char cmp_name[64];
-            snprintf(cmp_name, sizeof(cmp_name), "__ls_vcmp_%d", sort_id);
-
-            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-            LLVMTypeRef cmp_ft = LLVMFunctionType(i32_t, (LLVMTypeRef[]){ptr_t, ptr_t}, 2, 0);
-            LLVMValueRef cmp_fn = LLVMAddFunction(ctx->module, cmp_name, cmp_ft);
-            LLVMSetFunctionCallConv(cmp_fn, LLVMCCallConv);
-
-            /* Build comparator body */
-            LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(ctx->builder);
-            LLVMBasicBlockRef cmp_entry = LLVMAppendBasicBlockInContext(ctx->context, cmp_fn, "entry");
-            LLVMPositionBuilderAtEnd(ctx->builder, cmp_entry);
-
-            LLVMValueRef pa = LLVMGetParam(cmp_fn, 0);
-            LLVMValueRef pb = LLVMGetParam(cmp_fn, 1);
-
-            if (elem_type->kind == TYPE_STRING)
-            {
-                /* Load LsString structs, extract .data, call strcmp */
-                LLVMValueRef sa = LLVMBuildLoad2(ctx->builder, elem_llvm, pa, "cmp.sa");
-                LLVMValueRef sb = LLVMBuildLoad2(ctx->builder, elem_llvm, pb, "cmp.sb");
-                LLVMValueRef da = LLVMBuildExtractValue(ctx->builder, sa, 0, "cmp.da");
-                LLVMValueRef db = LLVMBuildExtractValue(ctx->builder, sb, 0, "cmp.db");
-                LLVMValueRef strcmp_fn = LLVMGetNamedFunction(ctx->module, "strcmp");
-                LLVMTypeRef strcmp_ft = LLVMGlobalGetValueType(strcmp_fn);
-                LLVMValueRef sc_args[2] = {da, db};
-                LLVMValueRef res = LLVMBuildCall2(ctx->builder, strcmp_ft, strcmp_fn,
-                                                  sc_args, 2, "cmp.res");
-                LLVMBuildRet(ctx->builder, res);
-            }
-            else if (elem_type->kind == TYPE_F32 || elem_type->kind == TYPE_F64)
-            {
-                /* float: return (int)(a > b) - (int)(a < b) */
-                LLVMValueRef va = LLVMBuildLoad2(ctx->builder, elem_llvm, pa, "cmp.va");
-                LLVMValueRef vb = LLVMBuildLoad2(ctx->builder, elem_llvm, pb, "cmp.vb");
-                LLVMValueRef gt = LLVMBuildFCmp(ctx->builder, LLVMRealOGT, va, vb, "cmp.gt");
-                LLVMValueRef lt = LLVMBuildFCmp(ctx->builder, LLVMRealOLT, va, vb, "cmp.lt");
-                LLVMValueRef igt = LLVMBuildZExt(ctx->builder, gt, i32_t, "cmp.igt");
-                LLVMValueRef ilt = LLVMBuildZExt(ctx->builder, lt, i32_t, "cmp.ilt");
-                LLVMValueRef res = LLVMBuildSub(ctx->builder, igt, ilt, "cmp.res");
-                LLVMBuildRet(ctx->builder, res);
-            }
-            else
-            {
-                /* Integer / bool: saturating signed subtraction pattern */
-                LLVMValueRef va = LLVMBuildLoad2(ctx->builder, elem_llvm, pa, "cmp.va");
-                LLVMValueRef vb = LLVMBuildLoad2(ctx->builder, elem_llvm, pb, "cmp.vb");
-                /* Extend to i64 to avoid overflow on subtraction */
-                LLVMTypeRef i64_ext = LLVMInt64TypeInContext(ctx->context);
-                LLVMValueRef va64;
-                LLVMValueRef vb64;
-                bool is_unsigned = (elem_type->kind == TYPE_U8 || elem_type->kind == TYPE_U16 ||
-                                    elem_type->kind == TYPE_U32 || elem_type->kind == TYPE_U64);
-                if (is_unsigned)
-                {
-                    va64 = LLVMBuildZExt(ctx->builder, va, i64_ext, "cmp.va64");
-                    vb64 = LLVMBuildZExt(ctx->builder, vb, i64_ext, "cmp.vb64");
-                }
-                else
-                {
-                    va64 = LLVMBuildSExt(ctx->builder, va, i64_ext, "cmp.va64");
-                    vb64 = LLVMBuildSExt(ctx->builder, vb, i64_ext, "cmp.vb64");
-                }
-                LLVMValueRef diff = LLVMBuildSub(ctx->builder, va64, vb64, "cmp.diff");
-                /* Truncate back to i32 via select: diff>0→1, diff<0→-1, 0→0 */
-                LLVMValueRef zero64 = LLVMConstInt(i64_ext, 0, 0);
-                LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-                LLVMValueRef neg132 = LLVMConstInt(i32_t, (unsigned long long)-1, 1);
-                LLVMValueRef zero32_v = LLVMConstInt(i32_t, 0, 0);
-                LLVMValueRef is_pos = LLVMBuildICmp(ctx->builder, LLVMIntSGT, diff, zero64, "cmp.pos");
-                LLVMValueRef is_neg = LLVMBuildICmp(ctx->builder, LLVMIntSLT, diff, zero64, "cmp.neg");
-                LLVMValueRef r1 = LLVMBuildSelect(ctx->builder, is_pos, one32, zero32_v, "cmp.r1");
-                LLVMValueRef res = LLVMBuildSelect(ctx->builder, is_neg, neg132, r1, "cmp.res");
-                LLVMBuildRet(ctx->builder, res);
-            }
-
-            /* Restore builder position */
-            if (saved_bb)
-                LLVMPositionBuilderAtEnd(ctx->builder, saved_bb);
-
-            cmp_fn_ptr = cmp_fn;
-        }
-        else
-        {
-            AstNode *cmp_arg = call_node->as.call.args[0];
-            bool cmp_is_block = (cmp_arg->resolved_type &&
-                                 cmp_arg->resolved_type->kind == TYPE_BLOCK);
-
-            if (cmp_is_block)
-            {
-                /* ---- Inline insertion sort driven by Block comparator ----
-                   Cannot use qsort: its cmp signature has no slot for env_ptr.
-                   Insertion sort lets us call Block directly in the loop body.
-                   (L-001 in docs/known_limitations.md) */
-                LLVMValueRef block_val = codegen_expr(ctx, cmp_arg);
-                if (!block_val) return NULL;
-                LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-                LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, block_val, 0, "sb.fn");
-                LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, block_val, 1, "sb.env");
-
-                /* Block call type: i32(ptr env, T a, T b) */
-                LLVMTypeRef cmp_params[3] = {ptr_t, elem_llvm, elem_llvm};
-                LLVMTypeRef cmp_ft = LLVMFunctionType(i32_t, cmp_params, 3, 0);
-
-                LLVMValueRef sv    = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "sb.sv");
-                LLVMValueRef len   = LLVMBuildExtractValue(ctx->builder, sv, 1, "sb.len");
-                LLVMValueRef dat   = LLVMBuildExtractValue(ctx->builder, sv, 0, "sb.dat");
-                LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-                LLVMValueRef one32  = LLVMConstInt(i32_t, 1, 0);
-
-                /* Alloca loop counters in entry block (for mem2reg) */
-                LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-                LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-                LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-                LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-                if (fi) LLVMPositionBuilderBefore(tb, fi);
-                else    LLVMPositionBuilderAtEnd(tb, entry);
-                LLVMValueRef i_alloca = LLVMBuildAlloca(tb, i32_t, "sb.i");
-                LLVMValueRef j_alloca = LLVMBuildAlloca(tb, i32_t, "sb.j");
-                LLVMDisposeBuilder(tb);
-
-                LLVMBuildStore(ctx->builder, one32, i_alloca);
-
-                LLVMBasicBlockRef outer_cond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "sb.ocond");
-                LLVMBasicBlockRef outer_body = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "sb.obody");
-                LLVMBasicBlockRef inner_cond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "sb.icond");
-                LLVMBasicBlockRef inner_body = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "sb.ibody");
-                LLVMBasicBlockRef do_swap    = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "sb.swap");
-                LLVMBasicBlockRef inner_end  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "sb.iend");
-                LLVMBasicBlockRef outer_end  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "sb.oend");
-                LLVMBuildBr(ctx->builder, outer_cond);
-
-                /* outer_cond: while i < len */
-                LLVMPositionBuilderAtEnd(ctx->builder, outer_cond);
-                LLVMValueRef iv = LLVMBuildLoad2(ctx->builder, i32_t, i_alloca, "sb.iv");
-                LLVMBuildCondBr(ctx->builder,
-                    LLVMBuildICmp(ctx->builder, LLVMIntSLT, iv, len, "sb.olt"),
-                    outer_body, outer_end);
-
-                /* outer_body: j = i */
-                LLVMPositionBuilderAtEnd(ctx->builder, outer_body);
-                LLVMBuildStore(ctx->builder, iv, j_alloca);
-                LLVMBuildBr(ctx->builder, inner_cond);
-
-                /* inner_cond: while j > 0 */
-                LLVMPositionBuilderAtEnd(ctx->builder, inner_cond);
-                LLVMValueRef jv = LLVMBuildLoad2(ctx->builder, i32_t, j_alloca, "sb.jv");
-                LLVMBuildCondBr(ctx->builder,
-                    LLVMBuildICmp(ctx->builder, LLVMIntSGT, jv, zero32, "sb.jgt"),
-                    inner_body, inner_end);
-
-                /* inner_body: load data[j-1] and data[j], call Block */
-                LLVMPositionBuilderAtEnd(ctx->builder, inner_body);
-                LLVMValueRef jb    = LLVMBuildLoad2(ctx->builder, i32_t, j_alloca, "sb.jb");
-                LLVMValueRef jm1   = LLVMBuildSub(ctx->builder, jb, one32, "sb.jm1");
-                LLVMValueRef j64   = LLVMBuildSExt(ctx->builder, jb,  i64_t, "sb.j64");
-                LLVMValueRef jm64  = LLVMBuildSExt(ctx->builder, jm1, i64_t, "sb.jm64");
-                LLVMValueRef pa    = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &jm64, 1, "sb.pa");
-                LLVMValueRef pb    = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &j64,  1, "sb.pb");
-                LLVMValueRef av    = LLVMBuildLoad2(ctx->builder, elem_llvm, pa, "sb.av");
-                LLVMValueRef bv    = LLVMBuildLoad2(ctx->builder, elem_llvm, pb, "sb.bv");
-
-                /* For string elements: borrow (cap=LS_CAP_BORROWED) so Block won't free them */
-                LLVMValueRef a_arg = av, b_arg = bv;
-                if (elem_type->kind == TYPE_STRING)
-                {
-                    LLVMValueRef cap_b = LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0);
-                    a_arg = LLVMBuildInsertValue(ctx->builder, av, cap_b, 2, "sb.ab");
-                    b_arg = LLVMBuildInsertValue(ctx->builder, bv, cap_b, 2, "sb.bb");
-                }
-
-                LLVMValueRef cmp_args[3] = {env_ptr, a_arg, b_arg};
-                LLVMValueRef cmp_res = LLVMBuildCall2(ctx->builder, cmp_ft, fn_ptr,
-                                                       cmp_args, 3, "sb.cmp");
-                LLVMBuildCondBr(ctx->builder,
-                    LLVMBuildICmp(ctx->builder, LLVMIntSGT, cmp_res, zero32, "sb.ns"),
-                    do_swap, inner_end);
-
-                /* do_swap: swap data[j-1] and data[j], then j-- */
-                LLVMPositionBuilderAtEnd(ctx->builder, do_swap);
-                LLVMBuildStore(ctx->builder, bv, pa);   /* data[j-1] = b */
-                LLVMBuildStore(ctx->builder, av, pb);   /* data[j]   = a */
-                LLVMBuildStore(ctx->builder,
-                    LLVMBuildSub(ctx->builder, jb, one32, "sb.jdec"), j_alloca);
-                LLVMBuildBr(ctx->builder, inner_cond);
-
-                /* inner_end: i++ */
-                LLVMPositionBuilderAtEnd(ctx->builder, inner_end);
-                LLVMBuildStore(ctx->builder,
-                    LLVMBuildAdd(ctx->builder, iv, one32, "sb.iinc"), i_alloca);
-                LLVMBuildBr(ctx->builder, outer_cond);
-
-                /* outer_end: done (sort_by returns void) */
-                LLVMPositionBuilderAtEnd(ctx->builder, outer_end);
-                return NULL;
-            }
-
-            /* sort_by with plain function pointer: use existing qsort path */
-            cmp_fn_ptr = codegen_expr(ctx, cmp_arg);
-            if (!cmp_fn_ptr)
-                return NULL;
-        }
-
-        /* Call qsort(data, len, sizeof(elem), cmp) */
-        LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vst.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vst.len");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vst.dat");
-
-        LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len, i64_t, "vst.len64");
-        LLVMValueRef esz = LLVMSizeOf(elem_llvm);
-        LLVMValueRef qsort_fn = LLVMGetNamedFunction(ctx->module, "qsort");
-        LLVMTypeRef qsort_ft = LLVMGlobalGetValueType(qsort_fn);
-        LLVMValueRef qs_args[4] = {dat, len64, esz, cmp_fn_ptr};
-        LLVMBuildCall2(ctx->builder, qsort_ft, qsort_fn, qs_args, 4, "");
-
-#if CG_DEBUG
-        {
-            LLVMValueRef dbg_args[1] = {len};
-            cg_emit_debug_printf(ctx, "[cg] vec.sort  len=%d\n", dbg_args, 1);
-        }
-#endif
-        return NULL;
-    }
-
-    /* ---- slice(start, end) -> vec(T)  — deep-clone [start, end) into a new vec ---- */
-    if (strcmp(method, "slice") == 0)
-    {
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-
-        LLVMValueRef start_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!start_val)
-            return NULL;
-        LLVMValueRef end_val = codegen_expr(ctx, call_node->as.call.args[1]);
-        if (!end_val)
-            return NULL;
-
-        /* Load self */
-        LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vsl.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vsl.len");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vsl.dat");
-
-        /* Clamp start/end to [0, len] */
-        LLVMValueRef s_neg = LLVMBuildICmp(ctx->builder, LLVMIntSLT, start_val, zero32, "vsl.sneg");
-        LLVMValueRef s_cl = LLVMBuildSelect(ctx->builder, s_neg, zero32, start_val, "vsl.scl");
-        LLVMValueRef s_big = LLVMBuildICmp(ctx->builder, LLVMIntSGT, s_cl, len, "vsl.sbig");
-        LLVMValueRef s = LLVMBuildSelect(ctx->builder, s_big, len, s_cl, "vsl.s");
-
-        LLVMValueRef e_neg = LLVMBuildICmp(ctx->builder, LLVMIntSLT, end_val, zero32, "vsl.eneg");
-        LLVMValueRef e_cl = LLVMBuildSelect(ctx->builder, e_neg, zero32, end_val, "vsl.ecl");
-        LLVMValueRef e_big = LLVMBuildICmp(ctx->builder, LLVMIntSGT, e_cl, len, "vsl.ebig");
-        LLVMValueRef e = LLVMBuildSelect(ctx->builder, e_big, len, e_cl, "vsl.e");
-
-        /* count = max(0, e - s) */
-        LLVMValueRef diff = LLVMBuildSub(ctx->builder, e, s, "vsl.diff");
-        LLVMValueRef neg_diff = LLVMBuildICmp(ctx->builder, LLVMIntSLE, diff, zero32, "vsl.nd");
-        LLVMValueRef count = LLVMBuildSelect(ctx->builder, neg_diff, zero32, diff, "vsl.cnt");
-
-        /* Alloca result vec in entry block (init = zeros) */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi)
-            LLVMPositionBuilderBefore(tb, fi);
-        else
-            LLVMPositionBuilderAtEnd(tb, entry);
-        LLVMValueRef res_alloca = LLVMBuildAlloca(tb, vec_t, "vsl.res");
-        LLVMDisposeBuilder(tb);
-        LLVMBuildStore(ctx->builder, LLVMConstNull(vec_t), res_alloca);
-
-        /* Skip if count == 0 */
-        LLVMValueRef is_empty_sl = LLVMBuildICmp(ctx->builder, LLVMIntEQ, count, zero32, "vsl.emp");
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsl.do");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsl.end");
-        LLVMBuildCondBr(ctx->builder, is_empty_sl, end_bb, do_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-
-        /* Allocate new data: malloc(count * elem_size) */
-        LLVMValueRef cnt64 = LLVMBuildSExt(ctx->builder, count, i64_t, "vsl.cnt64");
-        LLVMValueRef bytes = LLVMBuildMul(ctx->builder, cnt64, LLVMSizeOf(elem_llvm), "vsl.bytes");
-        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
-        LLVMTypeRef malloc_ft = LLVMGlobalGetValueType(malloc_fn);
-        LLVMValueRef new_data = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn,
-                                               &bytes, 1, "vsl.nd");
-
-#if CG_DEBUG
-        {
-            LLVMValueRef dbg_args[3] = {s, e, count};
-            cg_emit_debug_printf(ctx, "[cg] vec.slice  start=%d end=%d count=%d\n", dbg_args, 3);
-        }
-#endif
-
-        bool elem_needs_drop = (elem_type &&
-                                (elem_type->kind == TYPE_STRING ||
-                                 (elem_type->kind == TYPE_STRUCT &&
-                                  elem_type->as.strukt.has_drop) ||
-                                 (elem_type->kind == TYPE_ENUM &&
-                                  elem_type->as.enom.has_drop)));
-
-        if (!elem_needs_drop)
-        {
-            /* Trivial: memcpy(new_data, &src[s], count * elem_size) */
-            LLVMValueRef s64 = LLVMBuildSExt(ctx->builder, s, i64_t, "vsl.s64");
-            LLVMValueRef src_p = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &s64, 1, "vsl.srcp");
-            LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
-            LLVMTypeRef memcpy_ft = LLVMGlobalGetValueType(memcpy_fn);
-            LLVMValueRef mc[3] = {new_data, src_p, bytes};
-            LLVMBuildCall2(ctx->builder, memcpy_ft, memcpy_fn, mc, 3, "");
-        }
-        else
-        {
-            /* Non-trivial: clone loop for k in 0..count */
-            LLVMBasicBlockRef entry2 = LLVMGetEntryBasicBlock(cur_fn);
-            LLVMBuilderRef tb2 = LLVMCreateBuilderInContext(ctx->context);
-            LLVMValueRef fi2 = LLVMGetFirstInstruction(entry2);
-            if (fi2)
-                LLVMPositionBuilderBefore(tb2, fi2);
-            else
-                LLVMPositionBuilderAtEnd(tb2, entry2);
-            LLVMValueRef sk_alloca = LLVMBuildAlloca(tb2, i32_t, "vsl.sk");
-            LLVMDisposeBuilder(tb2);
-
-            LLVMBuildStore(ctx->builder, zero32, sk_alloca);
-
-            LLVMBasicBlockRef lc = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsl.lcond");
-            LLVMBasicBlockRef lb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsl.lbody");
-            LLVMBasicBlockRef le = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vsl.lend");
-            LLVMBuildBr(ctx->builder, lc);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, lc);
-            LLVMValueRef skv = LLVMBuildLoad2(ctx->builder, i32_t, sk_alloca, "vsl.skv");
-            LLVMValueRef slt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, skv, count, "vsl.slt");
-            LLVMBuildCondBr(ctx->builder, slt, lb, le);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, lb);
-            LLVMValueRef si = LLVMBuildAdd(ctx->builder, s, skv, "vsl.si");
-            LLVMValueRef si64 = LLVMBuildSExt(ctx->builder, si, i64_t, "vsl.si64");
-            LLVMValueRef sep = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &si64, 1, "vsl.sep");
-            LLVMValueRef se = LLVMBuildLoad2(ctx->builder, elem_llvm, sep, "vsl.se");
-
-            LLVMValueRef cloned = emit_clone_value(ctx, se, elem_llvm, elem_type);
-
-            LLVMValueRef skv64 = LLVMBuildSExt(ctx->builder, skv, i64_t, "vsl.skv64");
-            LLVMValueRef dep = LLVMBuildGEP2(ctx->builder, elem_llvm, new_data, &skv64, 1, "vsl.dep");
-            LLVMBuildStore(ctx->builder, cloned, dep);
-
-            LLVMValueRef nsk = LLVMBuildAdd(ctx->builder, skv, one32, "vsl.nsk");
-            LLVMBuildStore(ctx->builder, nsk, sk_alloca);
-            LLVMBuildBr(ctx->builder, lc);
-
-            LLVMPositionBuilderAtEnd(ctx->builder, le);
-        }
-
-        /* Build result: {new_data, count, count} */
-        LLVMValueRef res = LLVMGetUndef(vec_t);
-        res = LLVMBuildInsertValue(ctx->builder, res, new_data, 0, "vsl.r0");
-        res = LLVMBuildInsertValue(ctx->builder, res, count, 1, "vsl.r1");
-        res = LLVMBuildInsertValue(ctx->builder, res, count, 2, "vsl.r2");
-        LLVMBuildStore(ctx->builder, res, res_alloca);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return LLVMBuildLoad2(ctx->builder, vec_t, res_alloca, "vsl.ret");
-    }
-
-    /* ---- shrink_to_fit() -> void  — realloc data to exact len; releases excess capacity ---- */
-    if (strcmp(method, "shrink_to_fit") == 0)
-    {
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-
-        LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vstf.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vstf.len");
-        LLVMValueRef cap = LLVMBuildExtractValue(ctx->builder, sv, 2, "vstf.cap");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vstf.dat");
-
-        /* Only realloc if len < cap (and len > 0 to keep data non-null) */
-        LLVMValueRef lt_cap = LLVMBuildICmp(ctx->builder, LLVMIntSLT, len, cap, "vstf.lt");
-        LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vstf.do");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vstf.end");
-        LLVMBuildCondBr(ctx->builder, lt_cap, do_bb, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-
-        /* If len == 0: free data, set data = null, cap = 0 */
-        LLVMValueRef is_zero = LLVMBuildICmp(ctx->builder, LLVMIntEQ, len, zero32, "vstf.iz");
-        LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vstf.free");
-        LLVMBasicBlockRef realloc_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vstf.ra");
-        LLVMBuildCondBr(ctx->builder, is_zero, free_bb, realloc_bb);
-
-        /* free_bb: free(data) + {null, 0, 0} */
-        LLVMPositionBuilderAtEnd(ctx->builder, free_bb);
-        {
-            cg_emit_free(ctx, dat, "vec.scope_drop", CG_LINE(ctx), CG_COL(ctx));
-            LLVMValueRef sv2 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vstf.sv2");
-            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-            sv2 = LLVMBuildInsertValue(ctx->builder, sv2, LLVMConstNull(ptr_t), 0, "vstf.np");
-            sv2 = LLVMBuildInsertValue(ctx->builder, sv2, zero32, 2, "vstf.zc");
-            LLVMBuildStore(ctx->builder, sv2, vec_alloca);
-        }
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        /* realloc_bb: realloc(data, len * elem_size) + update cap = len */
-        LLVMPositionBuilderAtEnd(ctx->builder, realloc_bb);
-        {
-            LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len, i64_t, "vstf.l64");
-            LLVMValueRef bytes = LLVMBuildMul(ctx->builder, len64, LLVMSizeOf(elem_llvm), "vstf.bytes");
-            LLVMValueRef realloc_fn = LLVMGetNamedFunction(ctx->module, "realloc");
-            LLVMTypeRef realloc_ft = LLVMGlobalGetValueType(realloc_fn);
-            LLVMValueRef ra_args[2] = {dat, bytes};
-            LLVMValueRef new_data = LLVMBuildCall2(ctx->builder, realloc_ft, realloc_fn,
-                                                   ra_args, 2, "vstf.nd");
-            LLVMValueRef sv3 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vstf.sv3");
-            sv3 = LLVMBuildInsertValue(ctx->builder, sv3, new_data, 0, "vstf.ud");
-            sv3 = LLVMBuildInsertValue(ctx->builder, sv3, len, 2, "vstf.uc");
-            LLVMBuildStore(ctx->builder, sv3, vec_alloca);
-#if CG_DEBUG
-            {
-                LLVMValueRef dbg_args[2] = {cap, len};
-                cg_emit_debug_printf(ctx, "[cg] vec.shrink_to_fit  old_cap=%d new_cap=%d\n",
-                                     dbg_args, 2);
-            }
-#endif
-        }
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return NULL;
-    }
-
-    /* v.any(Block(T)->bool) -> bool  — short-circuit on first true */
-    /* v.all(Block(T)->bool) -> bool  — short-circuit on first false */
-    /* v.count(Block(T)->bool) -> int — count elements where predicate is true */
-    /* v.each(Block(T)->void) -> void — call block for each element */
-    if (strcmp(method, "any") == 0 || strcmp(method, "all") == 0 ||
-        strcmp(method, "count") == 0 || strcmp(method, "each") == 0)
-    {
-        bool is_any   = (strcmp(method, "any") == 0);
-        bool is_all   = (strcmp(method, "all") == 0);
-        bool is_count = (strcmp(method, "count") == 0);
-        bool is_each  = (strcmp(method, "each") == 0);
-        const char *pfx = is_any ? "vany" : is_all ? "vall" : is_count ? "vcnt" : "vech";
-
-        LLVMValueRef closure_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!closure_val) return NULL;
-
-        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "vf.fn");
-        LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "vf.env");
-
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMTypeRef i1_t  = LLVMInt1TypeInContext(ctx->context);
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-        /* Build indirect call fn type: ret(ptr env, T elem) */
-        LLVMTypeRef blk_ret = is_each ? LLVMVoidTypeInContext(ctx->context) : i1_t;
-        LLVMTypeRef blk_params[2] = { ptr_t, elem_llvm };
-        LLVMTypeRef blk_fn_type = LLVMFunctionType(blk_ret, blk_params, 2, 0);
-
-        /* Alloca loop counter + result in entry block */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi) LLVMPositionBuilderBefore(tb, fi);
-        else    LLVMPositionBuilderAtEnd(tb, entry);
-
-        char nm[32];
-        snprintf(nm, sizeof(nm), "%s.k", pfx);
-        LLVMValueRef k_alloca = LLVMBuildAlloca(tb, i32_t, nm);
-        LLVMValueRef res_alloca = NULL;
-        if (is_any || is_all) {
-            snprintf(nm, sizeof(nm), "%s.res", pfx);
-            res_alloca = LLVMBuildAlloca(tb, i1_t, nm);
-        } else if (is_count) {
-            snprintf(nm, sizeof(nm), "%s.res", pfx);
-            res_alloca = LLVMBuildAlloca(tb, i32_t, nm);
-        }
-        LLVMDisposeBuilder(tb);
-
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32  = LLVMConstInt(i32_t, 1, 0);
-        LLVMBuildStore(ctx->builder, zero32, k_alloca);
-        if (is_any)        LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 0, 0), res_alloca);
-        else if (is_all)   LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 1, 0), res_alloca);
-        else if (is_count)  LLVMBuildStore(ctx->builder, zero32, res_alloca);
-
-        /* Load vec data/len */
-        LLVMValueRef sv  = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vf.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vf.len");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vf.dat");
-
-        /* Loop blocks */
-        snprintf(nm, sizeof(nm), "%s.cond", pfx);
-        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, nm);
-        snprintf(nm, sizeof(nm), "%s.body", pfx);
-        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, nm);
-        snprintf(nm, sizeof(nm), "%s.next", pfx);
-        LLVMBasicBlockRef next_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, nm);
-        snprintf(nm, sizeof(nm), "%s.end", pfx);
-        LLVMBasicBlockRef end_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, nm);
-
-        LLVMBasicBlockRef hit_bb = NULL;
-        if (is_any || is_all) {
-            snprintf(nm, sizeof(nm), "%s.hit", pfx);
-            hit_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, nm);
-        }
-
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* cond_bb: k < len ? */
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef kv  = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vf.kv");
-        LLVMValueRef klt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, kv, len, "vf.klt");
-        LLVMBuildCondBr(ctx->builder, klt, body_bb, end_bb);
-
-        /* body_bb: load elem[k], call block */
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef kv64 = LLVMBuildSExt(ctx->builder, kv, i64_t, "vf.k64");
-        LLVMValueRef ep   = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vf.ep");
-        LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vf.elem");
-
-        /* For string elements, pass as borrowed (cap=LS_CAP_BORROWED) */
-        if (elem_type->kind == TYPE_STRING) {
-            LLVMValueRef borrow = LLVMBuildInsertValue(ctx->builder, elem_val,
-                LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0), 2, "vf.borrow");
-            elem_val = borrow;
-        }
-
-        LLVMValueRef blk_args[2] = { env_ptr, elem_val };
-        if (is_each) {
-            LLVMBuildCall2(ctx->builder, blk_fn_type, fn_ptr, blk_args, 2, "");
-            LLVMBuildBr(ctx->builder, next_bb);
-        } else {
-            LLVMValueRef pred = LLVMBuildCall2(ctx->builder, blk_fn_type, fn_ptr,
-                                                blk_args, 2, "vf.pred");
-            if (is_any) {
-                LLVMBuildCondBr(ctx->builder, pred, hit_bb, next_bb);
-            } else if (is_all) {
-                LLVMValueRef not_pred = LLVMBuildNot(ctx->builder, pred, "vf.np");
-                LLVMBuildCondBr(ctx->builder, not_pred, hit_bb, next_bb);
-            } else { /* count */
-                LLVMValueRef cnt = LLVMBuildLoad2(ctx->builder, i32_t, res_alloca, "vf.cnt");
-                LLVMValueRef ext = LLVMBuildZExt(ctx->builder, pred, i32_t, "vf.ext");
-                LLVMValueRef nc  = LLVMBuildAdd(ctx->builder, cnt, ext, "vf.nc");
-                LLVMBuildStore(ctx->builder, nc, res_alloca);
-                LLVMBuildBr(ctx->builder, next_bb);
-            }
-        }
-
-        /* hit_bb (any/all only): set result and short-circuit to end */
-        if (hit_bb) {
-            LLVMPositionBuilderAtEnd(ctx->builder, hit_bb);
-            if (is_any)
-                LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 1, 0), res_alloca);
-            else
-                LLVMBuildStore(ctx->builder, LLVMConstInt(i1_t, 0, 0), res_alloca);
-            LLVMBuildBr(ctx->builder, end_bb);
-        }
-
-        /* next_bb: k++ */
-        LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
-        LLVMValueRef kv2 = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vf.kv2");
-        LLVMValueRef kn  = LLVMBuildAdd(ctx->builder, kv2, one32, "vf.kn");
-        LLVMBuildStore(ctx->builder, kn, k_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* end_bb: return result */
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        if (is_each) return NULL;
-        return LLVMBuildLoad2(ctx->builder, is_count ? i32_t : i1_t, res_alloca, "vf.result");
-    }
-
-    /* v.find_index(Block(T)->bool) -> int  — first matching index, -1 if none */
-    if (strcmp(method, "find_index") == 0)
-    {
-        LLVMValueRef closure_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!closure_val) return NULL;
-
-        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "vfi.fn");
-        LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "vfi.env");
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMTypeRef i1_t  = LLVMInt1TypeInContext(ctx->context);
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-        LLVMTypeRef blk_params[2] = { ptr_t, elem_llvm };
-        LLVMTypeRef blk_fn_type = LLVMFunctionType(i1_t, blk_params, 2, 0);
-
-        /* Alloca in entry block */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi) LLVMPositionBuilderBefore(tb, fi);
-        else    LLVMPositionBuilderAtEnd(tb, entry);
-        LLVMValueRef k_alloca   = LLVMBuildAlloca(tb, i32_t, "vfi.k");
-        LLVMValueRef res_alloca = LLVMBuildAlloca(tb, i32_t, "vfi.res");
-        LLVMDisposeBuilder(tb);
-
-        LLVMValueRef zero32  = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32   = LLVMConstInt(i32_t, 1, 0);
-        LLVMValueRef neg1_32 = LLVMConstInt(i32_t, (unsigned long long)-1, 1);
-        LLVMBuildStore(ctx->builder, zero32, k_alloca);
-        LLVMBuildStore(ctx->builder, neg1_32, res_alloca);
-
-        LLVMValueRef sv  = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vfi.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vfi.len");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vfi.dat");
-
-        LLVMBasicBlockRef cond_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfi.cond");
-        LLVMBasicBlockRef body_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfi.body");
-        LLVMBasicBlockRef found_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfi.found");
-        LLVMBasicBlockRef next_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfi.next");
-        LLVMBasicBlockRef end_bb   = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfi.end");
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef kv  = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vfi.kv");
-        LLVMValueRef klt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, kv, len, "vfi.klt");
-        LLVMBuildCondBr(ctx->builder, klt, body_bb, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef kv64 = LLVMBuildSExt(ctx->builder, kv, i64_t, "vfi.k64");
-        LLVMValueRef ep   = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vfi.ep");
-        LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vfi.elem");
-        if (elem_type->kind == TYPE_STRING) {
-            elem_val = LLVMBuildInsertValue(ctx->builder, elem_val,
-                LLVMConstInt(i32_t, 0, 0), 2, "vfi.borrow");
-        }
-        LLVMValueRef blk_args[2] = { env_ptr, elem_val };
-        LLVMValueRef pred = LLVMBuildCall2(ctx->builder, blk_fn_type, fn_ptr,
-                                            blk_args, 2, "vfi.pred");
-        LLVMBuildCondBr(ctx->builder, pred, found_bb, next_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, found_bb);
-        LLVMBuildStore(ctx->builder, kv, res_alloca);
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
-        LLVMValueRef kv2 = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vfi.kv2");
-        LLVMValueRef kn  = LLVMBuildAdd(ctx->builder, kv2, one32, "vfi.kn");
-        LLVMBuildStore(ctx->builder, kn, k_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return LLVMBuildLoad2(ctx->builder, i32_t, res_alloca, "vfi.result");
-    }
-
-    /* v.filter(Block(T)->bool) -> vec(T)  — return new vec with matching elements */
-    if (strcmp(method, "filter") == 0)
-    {
-        LLVMValueRef closure_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!closure_val) return NULL;
-
-        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "vfl.fn");
-        LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "vfl.env");
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMTypeRef i1_t  = LLVMInt1TypeInContext(ctx->context);
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-        LLVMTypeRef blk_params[2] = { ptr_t, elem_llvm };
-        LLVMTypeRef blk_fn_type = LLVMFunctionType(i1_t, blk_params, 2, 0);
-
-        /* Alloca result vec (init to {null, 0, 0}) */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi) LLVMPositionBuilderBefore(tb, fi);
-        else    LLVMPositionBuilderAtEnd(tb, entry);
-        LLVMValueRef res_alloca = LLVMBuildAlloca(tb, vec_t, "vfl.res");
-        LLVMValueRef k_alloca   = LLVMBuildAlloca(tb, i32_t, "vfl.k");
-        LLVMDisposeBuilder(tb);
-
-        LLVMBuildStore(ctx->builder, LLVMConstNull(vec_t), res_alloca);
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32  = LLVMConstInt(i32_t, 1, 0);
-        LLVMBuildStore(ctx->builder, zero32, k_alloca);
-
-        /* Load source vec */
-        LLVMValueRef sv  = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vfl.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vfl.len");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vfl.dat");
-
-        /* Pre-allocate result data buffer: malloc(len * elem_size) */
-        LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len, i64_t, "vfl.len64");
-        LLVMValueRef bytes = LLVMBuildMul(ctx->builder, len64, LLVMSizeOf(elem_llvm), "vfl.bytes");
-        LLVMValueRef is_zero_len = LLVMBuildICmp(ctx->builder, LLVMIntEQ, len, zero32, "vfl.iz");
-
-        LLVMBasicBlockRef alloc_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfl.alloc");
-        LLVMBasicBlockRef loop_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfl.cond");
-        LLVMBasicBlockRef body_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfl.body");
-        LLVMBasicBlockRef push_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfl.push");
-        LLVMBasicBlockRef next_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfl.next");
-        LLVMBasicBlockRef end_bb   = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfl.end");
-        LLVMBuildCondBr(ctx->builder, is_zero_len, end_bb, alloc_bb);
-
-        /* alloc_bb: allocate result buffer */
-        LLVMPositionBuilderAtEnd(ctx->builder, alloc_bb);
-        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
-        LLVMTypeRef  malloc_ft = LLVMGlobalGetValueType(malloc_fn);
-        LLVMValueRef new_data  = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn,
-                                                &bytes, 1, "vfl.nd");
-        /* Init result vec: {new_data, 0, len} */
-        LLVMValueRef rv = LLVMGetUndef(vec_t);
-        rv = LLVMBuildInsertValue(ctx->builder, rv, new_data, 0, "vfl.r0");
-        rv = LLVMBuildInsertValue(ctx->builder, rv, zero32, 1, "vfl.r1");
-        rv = LLVMBuildInsertValue(ctx->builder, rv, len, 2, "vfl.r2");
-        LLVMBuildStore(ctx->builder, rv, res_alloca);
-        LLVMBuildBr(ctx->builder, loop_bb);
-
-        /* loop condition: k < len */
-        LLVMPositionBuilderAtEnd(ctx->builder, loop_bb);
-        LLVMValueRef kv  = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vfl.kv");
-        LLVMValueRef klt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, kv, len, "vfl.klt");
-        LLVMBuildCondBr(ctx->builder, klt, body_bb, end_bb);
-
-        /* body_bb: load elem, call predicate */
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef kv64 = LLVMBuildSExt(ctx->builder, kv, i64_t, "vfl.k64");
-        LLVMValueRef ep   = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vfl.ep");
-        LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vfl.elem");
-        /* Pass as borrowed for Block call */
-        LLVMValueRef elem_borrow = elem_val;
-        if (elem_type->kind == TYPE_STRING) {
-            elem_borrow = LLVMBuildInsertValue(ctx->builder, elem_val,
-                LLVMConstInt(i32_t, 0, 0), 2, "vfl.borrow");
-        }
-        LLVMValueRef blk_args[2] = { env_ptr, elem_borrow };
-        LLVMValueRef pred = LLVMBuildCall2(ctx->builder, blk_fn_type, fn_ptr,
-                                            blk_args, 2, "vfl.pred");
-        LLVMBuildCondBr(ctx->builder, pred, push_bb, next_bb);
-
-        /* push_bb: clone elem into result vec */
-        LLVMPositionBuilderAtEnd(ctx->builder, push_bb);
-        {
-            LLVMValueRef to_store = emit_clone_value(ctx, elem_val, elem_llvm, elem_type);
-            /* Store into result data at result.len position */
-            LLVMValueRef rsv   = LLVMBuildLoad2(ctx->builder, vec_t, res_alloca, "vfl.rsv");
-            LLVMValueRef rdat  = LLVMBuildExtractValue(ctx->builder, rsv, 0, "vfl.rdat");
-            LLVMValueRef rlen  = LLVMBuildExtractValue(ctx->builder, rsv, 1, "vfl.rlen");
-            LLVMValueRef rlen64 = LLVMBuildSExt(ctx->builder, rlen, i64_t, "vfl.rl64");
-            LLVMValueRef dp = LLVMBuildGEP2(ctx->builder, elem_llvm, rdat, &rlen64, 1, "vfl.dp");
-            LLVMBuildStore(ctx->builder, to_store, dp);
-            LLVMValueRef nrlen = LLVMBuildAdd(ctx->builder, rlen, one32, "vfl.nrl");
-            rsv = LLVMBuildInsertValue(ctx->builder, rsv, nrlen, 1, "vfl.rsv2");
-            LLVMBuildStore(ctx->builder, rsv, res_alloca);
-        }
-        LLVMBuildBr(ctx->builder, next_bb);
-
-        /* next_bb: k++ */
-        LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
-        LLVMValueRef kv2 = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vfl.kv2");
-        LLVMValueRef kn  = LLVMBuildAdd(ctx->builder, kv2, one32, "vfl.kn");
-        LLVMBuildStore(ctx->builder, kn, k_alloca);
-        LLVMBuildBr(ctx->builder, loop_bb);
-
-        /* end_bb: return result vec */
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return LLVMBuildLoad2(ctx->builder, vec_t, res_alloca, "vfl.ret");
-    }
-
-    /* v.find(Block(T)->bool) -> Option(T)  — first matching element wrapped in Option */
-    if (strcmp(method, "find") == 0)
-    {
-        Type *option_type = call_node->resolved_type;
-        if (!option_type || option_type->kind != TYPE_ENUM) {
-            cg_error(ctx, call_node->line, call_node->column,
-                     "internal: find() resolved_type is not Option enum");
-            return NULL;
-        }
-
-        LLVMValueRef closure_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!closure_val) return NULL;
-
-        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "vfn.fn");
-        LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "vfn.env");
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMTypeRef i1_t  = LLVMInt1TypeInContext(ctx->context);
-        LLVMTypeRef i8_t  = LLVMInt8TypeInContext(ctx->context);
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-        LLVMTypeRef blk_params[2] = { ptr_t, elem_llvm };
-        LLVMTypeRef blk_fn_type = LLVMFunctionType(i1_t, blk_params, 2, 0);
-
-        LLVMTypeRef opt_llvm = type_to_llvm(ctx, option_type);
-
-        /* Alloca in entry block */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi) LLVMPositionBuilderBefore(tb, fi);
-        else    LLVMPositionBuilderAtEnd(tb, entry);
-        LLVMValueRef k_alloca   = LLVMBuildAlloca(tb, i32_t, "vfn.k");
-        LLVMValueRef opt_alloca = LLVMBuildAlloca(tb, opt_llvm, "vfn.opt");
-        LLVMDisposeBuilder(tb);
-
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32  = LLVMConstInt(i32_t, 1, 0);
-        LLVMBuildStore(ctx->builder, zero32, k_alloca);
-
-        /* Init to None: store all-zeros (disc=0 = None) */
-        LLVMBuildStore(ctx->builder, LLVMConstNull(opt_llvm), opt_alloca);
-
-        LLVMValueRef sv  = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vfn.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vfn.len");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vfn.dat");
-
-        LLVMBasicBlockRef cond_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfn.cond");
-        LLVMBasicBlockRef body_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfn.body");
-        LLVMBasicBlockRef found_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfn.found");
-        LLVMBasicBlockRef next_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfn.next");
-        LLVMBasicBlockRef end_bb   = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vfn.end");
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef kv  = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vfn.kv");
-        LLVMValueRef klt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, kv, len, "vfn.klt");
-        LLVMBuildCondBr(ctx->builder, klt, body_bb, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef kv64 = LLVMBuildSExt(ctx->builder, kv, i64_t, "vfn.k64");
-        LLVMValueRef ep   = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vfn.ep");
-        LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vfn.elem");
-        LLVMValueRef elem_borrow = elem_val;
-        if (elem_type->kind == TYPE_STRING) {
-            elem_borrow = LLVMBuildInsertValue(ctx->builder, elem_val,
-                LLVMConstInt(i32_t, 0, 0), 2, "vfn.borrow");
-        }
-        LLVMValueRef blk_args[2] = { env_ptr, elem_borrow };
-        LLVMValueRef pred = LLVMBuildCall2(ctx->builder, blk_fn_type, fn_ptr,
-                                            blk_args, 2, "vfn.pred");
-        LLVMBuildCondBr(ctx->builder, pred, found_bb, next_bb);
-
-        /* found_bb: construct Some(clone(elem)) */
-        LLVMPositionBuilderAtEnd(ctx->builder, found_bb);
-        {
-            /* Option layout: {i8 disc, [payload_bytes x i8]} */
-            /* Some variant index = 1 */
-            LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, opt_llvm,
-                                                         opt_alloca, 0, "vfn.disc");
-            LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 1, 0), disc_ptr);
-
-            /* Clone element for ownership transfer */
-            LLVMValueRef to_store = emit_clone_value(ctx, elem_val, elem_llvm, elem_type);
-
-            /* Store into payload via variant struct GEP */
-            LLVMTypeRef variant_struct = build_variant_payload_struct(ctx, option_type, 1);
-            LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, opt_llvm,
-                                                            opt_alloca, 1, "vfn.pay");
-            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, variant_struct,
-                                                          payload_ptr, 0, "vfn.f0");
-            LLVMBuildStore(ctx->builder, to_store, field_ptr);
-        }
-        LLVMBuildBr(ctx->builder, end_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
-        LLVMValueRef kv2 = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vfn.kv2");
-        LLVMValueRef kn  = LLVMBuildAdd(ctx->builder, kv2, one32, "vfn.kn");
-        LLVMBuildStore(ctx->builder, kn, k_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return LLVMBuildLoad2(ctx->builder, opt_llvm, opt_alloca, "vfn.ret");
-    }
-
-    /* v.reduce(init: A, Block(A,T)->A) -> A  — fold vec into a single value */
-    if (strcmp(method, "reduce") == 0)
-    {
-        /* Accumulator type A comes from the init expression's resolved_type */
-        Type *acc_type = call_node->as.call.args[0]->resolved_type;
-        if (!acc_type)
-        {
-            cg_error(ctx, call_node->line, call_node->column,
-                     "internal: reduce() init has no resolved_type");
-            return NULL;
-        }
-        LLVMTypeRef acc_llvm = type_to_llvm(ctx, acc_type);
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-
-        /* Evaluate init and closure */
-        LLVMValueRef init_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!init_val) return NULL;
-        LLVMValueRef closure_val = codegen_expr(ctx, call_node->as.call.args[1]);
-        if (!closure_val) return NULL;
-
-        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "vrd.fn");
-        LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "vrd.env");
-        LLVMValueRef cur_fn  = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-        /* Block call type: (ptr env, A acc, T elem) -> A */
-        LLVMTypeRef blk_params[3] = { ptr_t, acc_llvm, elem_llvm };
-        LLVMTypeRef blk_fn_type = LLVMFunctionType(acc_llvm, blk_params, 3, 0);
-
-        /* Alloca acc and loop counter in entry block */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi) LLVMPositionBuilderBefore(tb, fi);
-        else    LLVMPositionBuilderAtEnd(tb, entry);
-        LLVMValueRef acc_alloca = LLVMBuildAlloca(tb, acc_llvm, "vrd.acc");
-        LLVMValueRef k_alloca   = LLVMBuildAlloca(tb, i32_t, "vrd.k");
-        LLVMDisposeBuilder(tb);
-
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32  = LLVMConstInt(i32_t, 1, 0);
-        LLVMBuildStore(ctx->builder, init_val, acc_alloca);
-        LLVMBuildStore(ctx->builder, zero32, k_alloca);
-
-        /* Load source vec */
-        LLVMValueRef sv  = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vrd.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vrd.len");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vrd.dat");
-
-        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrd.cond");
-        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrd.body");
-        LLVMBasicBlockRef next_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrd.next");
-        LLVMBasicBlockRef end_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vrd.end");
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* cond_bb: k < len */
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef kv  = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vrd.kv");
-        LLVMValueRef klt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, kv, len, "vrd.klt");
-        LLVMBuildCondBr(ctx->builder, klt, body_bb, end_bb);
-
-        /* body_bb: load acc + elem, call block, store new acc */
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef kv64    = LLVMBuildSExt(ctx->builder, kv, i64_t, "vrd.k64");
-        LLVMValueRef ep      = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vrd.ep");
-        LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vrd.elem");
-
-        /* Pass elem as borrowed to Block (cap=LS_CAP_BORROWED for string, value for POD) */
-        LLVMValueRef elem_arg = elem_val;
-        if (elem_type->kind == TYPE_STRING)
-            elem_arg = LLVMBuildInsertValue(ctx->builder, elem_val,
-                LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0), 2, "vrd.eborrow");
-
-        /* Pass acc by full value to Block — block owns and frees it via scope cleanup.
-           For string: cap > 0 means block will free the old buffer automatically.
-           For POD: by value is trivial. */
-        LLVMValueRef acc_val = LLVMBuildLoad2(ctx->builder, acc_llvm, acc_alloca, "vrd.acc_v");
-
-        LLVMValueRef blk_args[3] = { env_ptr, acc_val, elem_arg };
-        LLVMValueRef new_acc = LLVMBuildCall2(ctx->builder, blk_fn_type, fn_ptr,
-                                               blk_args, 3, "vrd.new_acc");
-
-        /* Store new acc — for string, old acc was consumed by block */
-        LLVMBuildStore(ctx->builder, new_acc, acc_alloca);
-        LLVMBuildBr(ctx->builder, next_bb);
-
-        /* next_bb: k++ */
-        LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
-        LLVMValueRef kv2 = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vrd.kv2");
-        LLVMValueRef kn  = LLVMBuildAdd(ctx->builder, kv2, one32, "vrd.kn");
-        LLVMBuildStore(ctx->builder, kn, k_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* end_bb: return final accumulator */
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return LLVMBuildLoad2(ctx->builder, acc_llvm, acc_alloca, "vrd.ret");
-    }
-
-    /* v.map(Block(T)->U) -> vec(U)  — transform each element, return new vec */
-    if (strcmp(method, "map") == 0)
-    {
-        /* U comes from call_node->resolved_type = vec(U) */
-        Type *result_vec_type = call_node->resolved_type;
-        if (!result_vec_type || result_vec_type->kind != TYPE_VECTOR)
-        {
-            cg_error(ctx, call_node->line, call_node->column,
-                     "internal: map() resolved_type is not vec");
-            return NULL;
-        }
-        Type *u_type = result_vec_type->as.vec.elem;
-        LLVMTypeRef u_llvm = type_to_llvm(ctx, u_type);
-
-        LLVMValueRef closure_val = codegen_expr(ctx, call_node->as.call.args[0]);
-        if (!closure_val) return NULL;
-
-        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "vmp.fn");
-        LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "vmp.env");
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-
-        /* Block call type: (ptr env, T elem) -> U */
-        LLVMTypeRef blk_params[2] = { ptr_t, elem_llvm };
-        LLVMTypeRef blk_fn_type = LLVMFunctionType(u_llvm, blk_params, 2, 0);
-
-        /* Alloca result vec and loop counter in entry block */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef fi = LLVMGetFirstInstruction(entry);
-        if (fi) LLVMPositionBuilderBefore(tb, fi);
-        else    LLVMPositionBuilderAtEnd(tb, entry);
-        LLVMValueRef res_alloca = LLVMBuildAlloca(tb, vec_t, "vmp.res");
-        LLVMValueRef k_alloca   = LLVMBuildAlloca(tb, i32_t, "vmp.k");
-        LLVMDisposeBuilder(tb);
-
-        LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-        LLVMValueRef one32  = LLVMConstInt(i32_t, 1, 0);
-        LLVMBuildStore(ctx->builder, LLVMConstNull(vec_t), res_alloca);
-        LLVMBuildStore(ctx->builder, zero32, k_alloca);
-
-        /* Load source vec */
-        LLVMValueRef sv  = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vmp.sv");
-        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, sv, 1, "vmp.len");
-        LLVMValueRef dat = LLVMBuildExtractValue(ctx->builder, sv, 0, "vmp.dat");
-
-        /* Skip allocation if source is empty */
-        LLVMValueRef len64   = LLVMBuildSExt(ctx->builder, len, i64_t, "vmp.len64");
-        LLVMValueRef bytes   = LLVMBuildMul(ctx->builder, len64, LLVMSizeOf(u_llvm), "vmp.bytes");
-        LLVMValueRef is_zero = LLVMBuildICmp(ctx->builder, LLVMIntEQ, len, zero32, "vmp.iz");
-
-        LLVMBasicBlockRef alloc_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vmp.alloc");
-        LLVMBasicBlockRef cond_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vmp.cond");
-        LLVMBasicBlockRef body_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vmp.body");
-        LLVMBasicBlockRef next_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vmp.next");
-        LLVMBasicBlockRef end_bb   = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "vmp.end");
-        LLVMBuildCondBr(ctx->builder, is_zero, end_bb, alloc_bb);
-
-        /* alloc_bb: malloc result buffer, init result vec {buf, 0, len} */
-        LLVMPositionBuilderAtEnd(ctx->builder, alloc_bb);
-        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
-        LLVMTypeRef  malloc_ft = LLVMGlobalGetValueType(malloc_fn);
-        LLVMValueRef new_data  = LLVMBuildCall2(ctx->builder, malloc_ft, malloc_fn,
-                                                &bytes, 1, "vmp.nd");
-        LLVMValueRef rv = LLVMGetUndef(vec_t);
-        rv = LLVMBuildInsertValue(ctx->builder, rv, new_data, 0, "vmp.r0");
-        rv = LLVMBuildInsertValue(ctx->builder, rv, zero32, 1, "vmp.r1");
-        rv = LLVMBuildInsertValue(ctx->builder, rv, len, 2, "vmp.r2");
-        LLVMBuildStore(ctx->builder, rv, res_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* cond_bb: k < len */
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef kv  = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vmp.kv");
-        LLVMValueRef klt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, kv, len, "vmp.klt");
-        LLVMBuildCondBr(ctx->builder, klt, body_bb, end_bb);
-
-        /* body_bb: load T, call Block -> U, store U into result */
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef kv64    = LLVMBuildSExt(ctx->builder, kv, i64_t, "vmp.k64");
-        LLVMValueRef ep      = LLVMBuildGEP2(ctx->builder, elem_llvm, dat, &kv64, 1, "vmp.ep");
-        LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, ep, "vmp.elem");
-
-        /* Pass T as borrowed to Block (cap=LS_CAP_BORROWED for string) */
-        LLVMValueRef elem_arg = elem_val;
-        if (elem_type->kind == TYPE_STRING)
-            elem_arg = LLVMBuildInsertValue(ctx->builder, elem_val,
-                LLVMConstInt(i32_t, (unsigned long long)LS_CAP_BORROWED, 0), 2, "vmp.borrow");
-
-        LLVMValueRef blk_args[2] = { env_ptr, elem_arg };
-        LLVMValueRef u_val = LLVMBuildCall2(ctx->builder, blk_fn_type, fn_ptr,
-                                             blk_args, 2, "vmp.u");
-
-        /* Store U into result vec at position k (result.len starts at 0, increments) */
-        LLVMValueRef rsv   = LLVMBuildLoad2(ctx->builder, vec_t, res_alloca, "vmp.rsv");
-        LLVMValueRef rdat  = LLVMBuildExtractValue(ctx->builder, rsv, 0, "vmp.rdat");
-        LLVMValueRef rlen  = LLVMBuildExtractValue(ctx->builder, rsv, 1, "vmp.rlen");
-        LLVMValueRef rlen64 = LLVMBuildSExt(ctx->builder, rlen, i64_t, "vmp.rl64");
-        LLVMValueRef dp    = LLVMBuildGEP2(ctx->builder, u_llvm, rdat, &rlen64, 1, "vmp.dp");
-        LLVMBuildStore(ctx->builder, u_val, dp);
-        LLVMValueRef nrlen = LLVMBuildAdd(ctx->builder, rlen, one32, "vmp.nrl");
-        rsv = LLVMBuildInsertValue(ctx->builder, rsv, nrlen, 1, "vmp.rsv2");
-        LLVMBuildStore(ctx->builder, rsv, res_alloca);
-        LLVMBuildBr(ctx->builder, next_bb);
-
-        /* next_bb: k++ */
-        LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
-        LLVMValueRef kv2 = LLVMBuildLoad2(ctx->builder, i32_t, k_alloca, "vmp.kv2");
-        LLVMValueRef kn  = LLVMBuildAdd(ctx->builder, kv2, one32, "vmp.kn");
-        LLVMBuildStore(ctx->builder, kn, k_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* end_bb: return result vec */
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        return LLVMBuildLoad2(ctx->builder, vec_t, res_alloca, "vmp.ret");
-    }
-
-    cg_error(ctx, call_node->line, call_node->column,
-             "unknown vec method '%s'", method);
-    return NULL;
-}
-
 /* ---- Map method dispatch ---- */
 
 static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, Type *map_type)
@@ -10565,9 +6994,28 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
         emit_map_helpers_for(ctx, key_type, val_type);
         LLVMTypeRef node_t = ls_map_node_type(ctx, key_type, val_type);
         LLVMTypeRef map_t = ls_map_type(ctx);
-        LLVMTypeRef vec_t = ls_vec_type(ctx);
+        Type *result_vec_type = call_node->resolved_type;
+        if (!result_vec_type || result_vec_type->kind != TYPE_STRUCT)
+        {
+            cg_error(ctx, call_node->line, call_node->column,
+                     "map.%s() requires a Vec(T) result type", method);
+            return NULL;
+        }
+        LLVMTypeRef vec_t = type_to_llvm(ctx, result_vec_type);
+        char push_name[256];
+        snprintf(push_name, sizeof(push_name), "%s.push",
+                 struct_llvm_name(result_vec_type));
+        LLVMValueRef push_fn = LLVMGetNamedFunction(ctx->module, push_name);
+        if (push_fn == NULL)
+            push_fn = cg_declare_pending_generic_method(ctx, push_name);
+        if (push_fn == NULL)
+        {
+            cg_error(ctx, call_node->line, call_node->column,
+                     "map.%s() could not resolve %s", method, push_name);
+            return NULL;
+        }
+        LLVMTypeRef push_ft = LLVMGlobalGetValueType(push_fn);
         LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
         LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
         LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
 
@@ -10582,7 +7030,7 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMValueRef nd_a = LLVMBuildAlloca(eb, ptr_t,  "kv.nd");
         LLVMDisposeBuilder(eb);
 
-        /* res = empty vec {NULL, 0, 0} */
+        /* res = empty Vec(T) {NULL, 0, 0} */
         LLVMBuildStore(ctx->builder, LLVMConstNull(vec_t), res);
 
         LLVMValueRef mv = LLVMBuildLoad2(ctx->builder, map_t, map_alloca, "kv.mv");
@@ -10619,23 +7067,13 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
                                             LLVMConstNull(ptr_t), "kv.ndnull");
         LLVMBuildCondBr(ctx->builder, ndnull, onext, ibody);
 
-        /* ibody: clone elem, push into res, advance nd -> next (field 3) */
+        /* ibody: clone elem, push into res via user Vec(T).push, advance nd -> next (field 3) */
         LLVMPositionBuilderAtEnd(ctx->builder, ibody);
         LLVMValueRef elem_p = LLVMBuildStructGEP2(ctx->builder, node_t, nd_v, node_field, "kv.ep");
         LLVMValueRef elem_v = LLVMBuildLoad2(ctx->builder, elem_llvm, elem_p, "kv.ev");
         LLVMValueRef cloned = emit_clone_value(ctx, elem_v, elem_llvm, elem_type);
-        /* push cloned into res: grow, data[len] = cloned, len++ */
-        emit_vec_grow_inline(ctx, res, elem_llvm);
-        LLVMValueRef rv = LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.rv");
-        LLVMValueRef rdata = LLVMBuildExtractValue(ctx->builder, rv, 0, "kv.rdata");
-        LLVMValueRef rlen = LLVMBuildExtractValue(ctx->builder, rv, 1, "kv.rlen");
-        LLVMValueRef rlen64 = LLVMBuildSExt(ctx->builder, rlen, i64_t, "kv.rlen64");
-        LLVMValueRef rslot = LLVMBuildGEP2(ctx->builder, elem_llvm, rdata, &rlen64, 1, "kv.rslot");
-        LLVMBuildStore(ctx->builder, cloned, rslot);
-        LLVMValueRef rlen1 = LLVMBuildAdd(ctx->builder, rlen, LLVMConstInt(i32_t, 1, 0), "kv.rlen1");
-        LLVMValueRef rv2 = LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.rv2");
-        rv2 = LLVMBuildInsertValue(ctx->builder, rv2, rlen1, 1, "kv.rv2u");
-        LLVMBuildStore(ctx->builder, rv2, res);
+        LLVMValueRef push_args[2] = { res, cloned };
+        LLVMBuildCall2(ctx->builder, push_ft, push_fn, push_args, 2, "");
         /* nd = nd->next */
         LLVMValueRef nextp = LLVMBuildStructGEP2(ctx->builder, node_t, nd_v, 3u, "kv.nextp");
         LLVMValueRef nextv = LLVMBuildLoad2(ctx->builder, ptr_t, nextp, "kv.nextv");
@@ -10649,27 +7087,9 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
         LLVMBuildStore(ctx->builder, bi_n, bi_a);
         LLVMBuildBr(ctx->builder, ocond);
 
-        /* done: return the result vec value */
+        /* done: return the result Vec(T) value */
         LLVMPositionBuilderAtEnd(ctx->builder, kvdone);
-        LLVMValueRef out = LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.out");
-        /* F6a: keys()/values() now return a pure-LS std.vec Vec(T). Its layout is
-           identical to the builtin LsVec ({ptr,i32,i32}) and it uses the same
-           ls_mc heap, so rebuild the just-built bits as a Vec(T)-typed aggregate.
-           The caller binds/owns it; Vec(T).__drop releases the buffer + elements. */
-        if (call_node->resolved_type &&
-            call_node->resolved_type->kind == TYPE_STRUCT)
-        {
-            LLVMTypeRef veck_t = type_to_llvm(ctx, call_node->resolved_type);
-            LLVMValueRef d  = LLVMBuildExtractValue(ctx->builder, out, 0, "kv.d");
-            LLVMValueRef l  = LLVMBuildExtractValue(ctx->builder, out, 1, "kv.l");
-            LLVMValueRef cp = LLVMBuildExtractValue(ctx->builder, out, 2, "kv.c");
-            LLVMValueRef vk = LLVMGetUndef(veck_t);
-            vk = LLVMBuildInsertValue(ctx->builder, vk, d,  0, "kv.vk0");
-            vk = LLVMBuildInsertValue(ctx->builder, vk, l,  1, "kv.vk1");
-            vk = LLVMBuildInsertValue(ctx->builder, vk, cp, 2, "kv.vk2");
-            return vk;
-        }
-        return out;
+        return LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.out");
     }
 
     (void)val_lt;
@@ -11516,14 +7936,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         {
             AstNode *obj_node = node->as.call.callee->as.field_access.object;
             Type *obj_rt = obj_node->resolved_type;
-            /* auto-deref *vec(T) → vec(T) */
-            if (obj_rt && obj_rt->kind == TYPE_POINTER && obj_rt->as.pointer_to &&
-                obj_rt->as.pointer_to->kind == TYPE_VECTOR)
-                obj_rt = obj_rt->as.pointer_to;
-            if (obj_rt && obj_rt->kind == TYPE_VECTOR)
-            {
-                return codegen_vec_method(ctx, node, obj_rt);
-            }
             if (obj_rt && obj_rt->kind == TYPE_MAP)
             {
                 return codegen_map_method(ctx, node, obj_rt);
@@ -12047,36 +8459,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    rvalue string-arg temps as moved (prevent double-free
                    when callee owns the passed string). */
                 int arg_temp_mark = ctx->temp_string_count;
-                /* Phase B: vec[i] → &T (borrow) — skip clone, pass element address.
-                   When the callee's LLVM param is a pointer, codegen_lvalue_ptr returns
-                   the GEP address of the element in the vec's data buffer directly.
-                   This avoids the emit_clone_value inside case AST_INDEX and the
-                   resulting orphaned clone that leaks (no owner to drop it). */
-                bool use_elem_addr = false;
-                {
-                    AstNode *arg_n = node->as.call.args[i];
-                    if (arg_n->kind == AST_INDEX &&
-                        arg_n->as.index_expr.object &&
-                        arg_n->as.index_expr.object->resolved_type &&
-                        arg_n->as.index_expr.object->resolved_type->kind == TYPE_VECTOR)
-                    {
-                        unsigned llvm_slot = (unsigned)(i + arg_offset);
-                        unsigned pc2 = LLVMCountParams(callee);
-                        if (llvm_slot < pc2) {
-                            LLVMTypeRef pt = LLVMTypeOf(LLVMGetParam(callee, llvm_slot));
-                            if (LLVMGetTypeKind(pt) == LLVMPointerTypeKind)
-                                use_elem_addr = true;
-                        }
-                    }
-                }
                 LLVMValueRef arg_val;
-                if (use_elem_addr)
-                {
-                    arg_val = codegen_lvalue_ptr(ctx, node->as.call.args[i]);
-                    if (arg_val == NULL) { free(args); return NULL; }
-                    args[i + arg_offset] = arg_val;
-                    continue;
-                }
                 arg_val = codegen_expr(ctx, node->as.call.args[i]);
                 if (arg_val == NULL)
                 {
@@ -12202,31 +8585,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         }
                     }
                 }
-                /* Vec argument ownership: a vec param is value-ABI but the callee
-                   marks it is_borrowed and never frees it (caller keeps ownership).
-                   A named-var arg is freed by the caller's scope cleanup; an owned
-                   rvalue temp (vec.get() / index / call result / literal) has no
-                   owner, so register it for statement-end drop or it leaks. The
-                   passed value and this temp share the same buffer; only this temp
-                   is registered, so the buffer is freed exactly once. */
-                else if (arg_val && arg_type && arg_type->kind == TYPE_VECTOR)
-                {
-                    AstNode *raw = node->as.call.args[i];
-                    AstNode *unwrapped = ast_unwrap_move(raw);
-                    if (unwrapped && unwrapped->kind != AST_IDENT)
-                    {
-                        LLVMTypeRef vlt = ls_vec_type(ctx);
-                        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-                        LLVMBasicBlockRef fe = LLVMGetEntryBasicBlock(ctx->current_fn);
-                        LLVMValueRef fi = LLVMGetFirstInstruction(fe);
-                        if (fi) LLVMPositionBuilderBefore(tb, fi);
-                        else    LLVMPositionBuilderAtEnd(tb, fe);
-                        LLVMValueRef vtmp = LLVMBuildAlloca(tb, vlt, "vecarg.tmp");
-                        LLVMDisposeBuilder(tb);
-                        LLVMBuildStore(ctx->builder, arg_val, vtmp);
-                        cg_push_temp_drop(ctx, vtmp, arg_type);
-                    }
-                }
                 /* F5 (VR-LIM-017): a Block moved into a container-STORING method
                    (push/insert/set/__index_set/__from_list/extend) — the
                    container takes ownership of the closure env, so suppress the
@@ -12329,8 +8687,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 {
                     int user_i = i - arg_offset;
                     Type *arg_type = node->as.call.args[user_i]->resolved_type;
-                    if (!(arg_type && (arg_type->kind == TYPE_VECTOR ||
-                                       arg_type->kind == TYPE_MAP ||
+                    if (!(arg_type && (arg_type->kind == TYPE_MAP ||
                                        arg_type->kind == TYPE_STRUCT ||
                                        arg_type->kind == TYPE_ENUM))) continue;
                     if ((unsigned)i >= pc) continue;
@@ -12348,28 +8705,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             continue;
                         }
                     }
-                    /* Phase B: vec[i] rvalue — pass element address directly (zero-copy).
-                       Avoids emit_clone_value in the normal vec-index path which would
-                       produce an owned copy with no owner to drop it. */
-                    if (a->kind == AST_INDEX &&
-                        a->as.index_expr.object &&
-                        a->as.index_expr.object->resolved_type &&
-                        a->as.index_expr.object->resolved_type->kind == TYPE_VECTOR)
-                    {
-                        LLVMValueRef elem_ptr = codegen_lvalue_ptr(ctx, a);
-                        if (elem_ptr != NULL)
-                        {
-                            args[i] = elem_ptr;
-                            continue;
-                        }
-                    }
                     /* Fallback: materialise a temporary alloca to stabilise addr. */
                     LLVMTypeRef store_t;
                     const char *tmp_name;
-                    if (arg_type->kind == TYPE_VECTOR) {
-                        store_t = ls_vec_type(ctx);
-                        tmp_name = "vec.borrow.tmp";
-                    } else if (arg_type->kind == TYPE_MAP) {
+                    if (arg_type->kind == TYPE_MAP) {
                         store_t = ls_map_type(ctx);
                         tmp_name = "map.borrow.tmp";
                     } else if (arg_type->kind == TYPE_ENUM) {
@@ -12604,58 +8943,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             cg_error(ctx, node->line, node->column,
                      "array has no field '%s'", node->as.field_access.field);
             return NULL;
-        }
-
-        /* Vec .length / .capacity — extract fields 1 and 2 from LsVec struct.
-           Also handles *vec(T) with auto-deref. */
-        {
-            Type *vt_check = obj_type;
-            bool is_ptr_vec = false;
-            if (vt_check && vt_check->kind == TYPE_POINTER && vt_check->as.pointer_to &&
-                vt_check->as.pointer_to->kind == TYPE_VECTOR)
-            {
-                vt_check = vt_check->as.pointer_to;
-                is_ptr_vec = true;
-            }
-            if (vt_check && vt_check->kind == TYPE_VECTOR)
-            {
-                const char *field = node->as.field_access.field;
-                if (strcmp(field, "length") == 0 || strcmp(field, "capacity") == 0)
-                {
-                    LLVMTypeRef vec_t = ls_vec_type(ctx);
-                    LLVMValueRef vec_val = NULL;
-                    if (obj_node->kind == AST_IDENT)
-                    {
-                        CgSymbol *sym = cg_scope_resolve(ctx->current_scope,
-                                                         obj_node->as.ident.name);
-                        if (sym)
-                        {
-                            if (is_ptr_vec)
-                            {
-                                /* *vec(T): load the pointer, then load the LsVec through it */
-                                LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-                                LLVMValueRef ptr = LLVMBuildLoad2(ctx->builder, ptr_t,
-                                                                  sym->value, "vpf.ptr");
-                                vec_val = LLVMBuildLoad2(ctx->builder, vec_t, ptr, "vpf.v");
-                            }
-                            else
-                            {
-                                vec_val = LLVMBuildLoad2(ctx->builder, vec_t, sym->value, "vf.v");
-                            }
-                        }
-                    }
-                    if (vec_val == NULL)
-                        vec_val = codegen_expr(ctx, obj_node);
-                    if (vec_val == NULL)
-                        return NULL;
-                    unsigned idx = (strcmp(field, "length") == 0) ? 1 : 2;
-                    return LLVMBuildExtractValue(ctx->builder, vec_val, idx,
-                                                 strcmp(field, "length") == 0 ? "v.len" : "v.cap");
-                }
-                cg_error(ctx, node->line, node->column,
-                         "vec has no field '%s'", node->as.field_access.field);
-                return NULL;
-            }
         }
 
         /* Map .length — extract len field (index 1) from LsMap struct */
@@ -13054,8 +9341,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             /* Phase B: vec/map/struct/nested-has_drop-enum payload.
                                Use field_ptr directly as sym->value (pointer into the
                                enum payload storage) — zero-copy, same ABI as &T params. */
-                            if (pt->kind == TYPE_VECTOR ||
-                                pt->kind == TYPE_MAP ||
+                            if (pt->kind == TYPE_MAP ||
                                 pt->kind == TYPE_STRUCT ||
                                 (pt->kind == TYPE_ENUM && pt->as.enom.has_drop)) {
                                 CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
@@ -13655,7 +9941,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
     case AST_AT_TIME:
     {
-        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
         LLVMTypeRef f64_t = LLVMDoubleTypeInContext(ctx->context);
 
         LLVMValueRef now_fn = cg_get_perf_now(ctx);
@@ -13876,125 +10161,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         AstNode *idx_node = node->as.index_expr.index;
         Type *obj_type = obj->resolved_type;
 
-        /* vec(T)[index] — runtime bounds check: warn + nop if out-of-bounds */
-        if (obj_type && obj_type->kind == TYPE_VECTOR)
-        {
-            LLVMValueRef vec_alloca = NULL;
-            if (obj->kind == AST_IDENT)
-            {
-                CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj->as.ident.name);
-                if (sym)
-                    vec_alloca = sym->value;
-            }
-            else
-            {
-                /* Place receiver (struct field / nested): real storage address. */
-                vec_alloca = codegen_lvalue_ptr(ctx, obj);
-            }
-            if (vec_alloca == NULL)
-            {
-                cg_error(ctx, node->line, node->column, "cannot get address of vec");
-                return NULL;
-            }
-            LLVMTypeRef vec_t = ls_vec_type(ctx);
-            Type *elem_type = obj_type->as.vec.elem;
-            LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-            LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-            LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-
-            LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vi.v");
-            LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vi.data");
-            LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vi.len");
-
-            LLVMValueRef index = codegen_expr(ctx, idx_node);
-            if (index == NULL)
-                return NULL;
-            if (LLVMTypeOf(index) != i64_t)
-                index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t, "vi.idx");
-
-            /* Bounds check: 0 <= index < len */
-            LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len_val, i64_t, "vi.len64");
-            LLVMValueRef zero64 = LLVMConstInt(i64_t, 0, 0);
-            LLVMValueRef ge_zero = LLVMBuildICmp(ctx->builder, LLVMIntSGE, index, zero64, "vi.ge0");
-            LLVMValueRef lt_len = LLVMBuildICmp(ctx->builder, LLVMIntSLT, index, len64, "vi.ltl");
-            LLVMValueRef in_bounds = LLVMBuildAnd(ctx->builder, ge_zero, lt_len, "vi.inb");
-
-            LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-            int id = g_block_counter++;
-            char ok_name[32], oob_name[32], merge_name[32];
-            snprintf(ok_name, sizeof(ok_name), "vi.ok%d", id);
-            snprintf(oob_name, sizeof(oob_name), "vi.oob%d", id);
-            snprintf(merge_name, sizeof(merge_name), "vi.merge%d", id);
-            LLVMBasicBlockRef ok_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, ok_name);
-            LLVMBasicBlockRef oob_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, oob_name);
-            LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, merge_name);
-
-            /* Allocate result slot in function entry block */
-            LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-            LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-            LLVMValueRef fi = LLVMGetFirstInstruction(entry_bb);
-            if (fi)
-                LLVMPositionBuilderBefore(tb, fi);
-            else
-                LLVMPositionBuilderAtEnd(tb, entry_bb);
-            LLVMValueRef result_alloca = LLVMBuildAlloca(tb, elem_llvm, "vi.res");
-            LLVMDisposeBuilder(tb);
-
-            /* Default (out-of-bounds) value: empty string or zero */
-            LLVMValueRef zero_val;
-            if (elem_type && elem_type->kind == TYPE_STRING)
-                zero_val = ls_string_from_literal(ctx, "", "vi.empty");
-            else
-                zero_val = LLVMConstNull(elem_llvm);
-            LLVMBuildStore(ctx->builder, zero_val, result_alloca);
-
-            LLVMBuildCondBr(ctx->builder, in_bounds, ok_bb, oob_bb);
-
-            /* ok_bb: in-bounds — GEP + load + deep-clone if element owns heap data */
-            LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
-            LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr, &index, 1, "vi.ep");
-            LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "vi.elem");
-            /* vec[i] is a READ — the vec retains ownership.  We give the caller a deep
-               clone so both the caller's variable and the vec element can be freed
-               independently without double-free. */
-            elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
-            /* builder may have moved to a new block inside the clone helpers */
-            LLVMBuildStore(ctx->builder, elem, result_alloca);
-            LLVMBuildBr(ctx->builder, merge_bb);
-
-            /* oob_bb: out-of-bounds — print warning, result stays as zero/empty */
-            LLVMPositionBuilderAtEnd(ctx->builder, oob_bb);
-            LLVMValueRef idx32 = LLVMBuildTrunc(ctx->builder, index, i32_t, "vi.idx32");
-            LLVMValueRef warn_args[2] = {idx32, len_val};
-            emit_printf(ctx,
-                        "[warning] vec index out of bounds: index=%d, len=%d\n",
-                        warn_args, 2);
-            LLVMBuildBr(ctx->builder, merge_bb);
-
-            /* merge_bb: load and return result */
-            LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-            LLVMValueRef r = LLVMBuildLoad2(ctx->builder, elem_llvm, result_alloca, "vi.r");
-
-            /* Register the owned clone as a temp so that:
-               - AST_VAR_DECL sees temp_string_count > temp_mark and transfers
-                 ownership via cg_mark_last_temp_moved (avoids a second clone).
-               - If the result is used transiently (e.g. in print(v[0])),
-                 cg_flush_temps will free it correctly. */
-            if (elem_type->kind == TYPE_STRING && ctx->current_fn != NULL)
-            {
-                if (ctx->temp_string_count >= ctx->temp_string_cap)
-                {
-                    ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
-                    ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
-                                                        ctx->temp_string_slots,
-                                                        ctx->temp_string_cap);
-                }
-                ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
-            }
-            return r;
-        }
-
-        /* map[key] — call __ls_map_XX_YY_get(map, key) */
         if (obj_type && obj_type->kind == TYPE_MAP)
         {
             LLVMValueRef map_alloca = NULL;
@@ -14297,49 +10463,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                a vec). The field is already zero-initialized (cap=0/len=0/NULL),
                so we grow + push each element directly into field_ptr. Empty []
                leaves the valid zero vec. */
-            if (field_type && field_type->kind == TYPE_VECTOR &&
-                deflt->kind == AST_ARRAY_LIT)
-            {
-                int dcount = deflt->as.array_lit.count;
-                Type *velem = field_type->as.vec.elem;
-                LLVMTypeRef velem_llvm = type_to_llvm(ctx, velem);
-                LLVMTypeRef vec_t_llvm = ls_vec_type(ctx);
-                LLVMTypeRef i32_t_llvm = LLVMInt32TypeInContext(ctx->context);
-                LLVMTypeRef i64_t_llvm = LLVMInt64TypeInContext(ctx->context);
-                for (int k = 0; k < dcount; k++)
-                {
-                    int push_mark = ctx->temp_string_count;
-                    LLVMValueRef ev = codegen_expr(ctx, deflt->as.array_lit.elements[k]);
-                    if (ev == NULL)
-                        continue;
-                    emit_vec_grow_inline(ctx, field_ptr, velem_llvm);
-                    if (velem->kind == TYPE_STRING)
-                    {
-                        if (ctx->temp_string_count > push_mark)
-                            cg_mark_last_temp_moved(ctx, push_mark, "vec field default: temp owned by vec");
-                        else
-                        {
-                            AstNode *src = ast_unwrap_move(deflt->as.array_lit.elements[k]);
-                            if (src->kind == AST_IDENT)
-                                ev = emit_string_clone_val(ctx, ev);
-                        }
-                    }
-                    LLVMValueRef vv = LLVMBuildLoad2(ctx->builder, vec_t_llvm, field_ptr, "vfd.v");
-                    LLVMValueRef dp = LLVMBuildExtractValue(ctx->builder, vv, 0, "vfd.data");
-                    LLVMValueRef ln = LLVMBuildExtractValue(ctx->builder, vv, 1, "vfd.len");
-                    LLVMValueRef ln64 = LLVMBuildSExt(ctx->builder, ln, i64_t_llvm, "vfd.len64");
-                    LLVMValueRef sl = LLVMBuildGEP2(ctx->builder, velem_llvm, dp, &ln64, 1, "vfd.slot");
-                    LLVMBuildStore(ctx->builder, ev, sl);
-                    LLVMValueRef one = LLVMConstInt(i32_t_llvm, 1, 0);
-                    LLVMValueRef nlen = LLVMBuildAdd(ctx->builder, ln, one, "vfd.nlen");
-                    LLVMValueRef vu = LLVMBuildLoad2(ctx->builder, vec_t_llvm, field_ptr, "vfd.upd");
-                    vu = LLVMBuildInsertValue(ctx->builder, vu, nlen, 1, "vfd.ul");
-                    LLVMBuildStore(ctx->builder, vu, field_ptr);
-                }
-                ctx->temp_string_count = field_temp_mark;
-                continue;
-            }
-
             LLVMValueRef val = codegen_expr(ctx, deflt);
             if (val == NULL)
                 return NULL;
@@ -14490,12 +10613,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                            ls_string_from_literal(ctx, "", "str.empty"),
                            alloca);
         }
-        /* Zero-initialize vec variables so that cap=0, data=NULL, len=0.
-           emit_cleanup_to checks cap > 0 before freeing, so this is safe. */
-        if (var_type->kind == TYPE_VECTOR)
-        {
-            LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
-        }
         /* Zero-initialize map variables so that cap=0, buckets=NULL, len=0. */
         if (var_type->kind == TYPE_MAP)
         {
@@ -14540,69 +10657,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 /* map.set deep-copies keys/values, so temps from literal keys/values
                    (e.g. "x".upper()) are not consumed — free them here. */
                 cg_flush_temps(ctx, temp_mark, false);
-            }
-            /* Special handling for vec literal initialization:
-               vec(T) v = [e1, e2, ...] (or empty []).
-               Build the vec by pushing each element, mirroring vec.push semantics
-               (grow + slot store + ownership transfer for owned-data elements). */
-            else if (var_type->kind == TYPE_VECTOR &&
-                     node->as.var_decl.init->kind == AST_ARRAY_LIT)
-            {
-                AstNode *lit = node->as.var_decl.init;
-                int count = lit->as.array_lit.count;
-                Type *vec_elem = var_type->as.vec.elem;
-                LLVMTypeRef vec_elem_llvm = type_to_llvm(ctx, vec_elem);
-                LLVMTypeRef vec_t_llvm = ls_vec_type(ctx);
-                LLVMTypeRef i32_t_llvm = LLVMInt32TypeInContext(ctx->context);
-                LLVMTypeRef i64_t_llvm = LLVMInt64TypeInContext(ctx->context);
-
-                /* alloca was already zero-initialized by the TYPE_VECTOR branch above. */
-
-                for (int i = 0; i < count; i++)
-                {
-                    int push_temp_mark = ctx->temp_string_count;
-                    LLVMValueRef val = codegen_expr(ctx, lit->as.array_lit.elements[i]);
-                    if (val == NULL)
-                        continue;
-
-                    /* Grow if needed (cap=0 → 4, then doubling). */
-                    emit_vec_grow_inline(ctx, alloca, vec_elem_llvm);
-
-                    /* For string elements, ensure we store an owned copy:
-                       - Fresh temp (e.g. "x".upper()) → mark moved, transfer ownership.
-                       - Plain IDENT or literal returns no temp; clone if it's an IDENT
-                         so the source variable can still be freed. Static literals
-                         (cap=0) are safe to store directly. */
-                    if (vec_elem->kind == TYPE_STRING)
-                    {
-                        if (ctx->temp_string_count > push_temp_mark)
-                        {
-                            cg_mark_last_temp_moved(ctx, push_temp_mark, "vec literal: temp owned by vec");
-                        }
-                        else
-                        {
-                            AstNode *src = ast_unwrap_move(lit->as.array_lit.elements[i]);
-                            if (src->kind == AST_IDENT)
-                                val = emit_string_clone_val(ctx, val);
-                        }
-                    }
-
-                    /* data[len] = val; len++ */
-                    LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t_llvm, alloca, "vl.v");
-                    LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vl.data");
-                    LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "vl.len");
-                    LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len_val, i64_t_llvm, "vl.len64");
-                    LLVMValueRef elem_ptr = LLVMBuildGEP2(ctx->builder, vec_elem_llvm, data_ptr,
-                                                          &len64, 1, "vl.slot");
-                    LLVMBuildStore(ctx->builder, val, elem_ptr);
-
-                    LLVMValueRef one32 = LLVMConstInt(i32_t_llvm, 1, 0);
-                    LLVMValueRef new_len = LLVMBuildAdd(ctx->builder, len_val, one32, "vl.nlen");
-                    LLVMValueRef vec_upd = LLVMBuildLoad2(ctx->builder, vec_t_llvm, alloca, "vl.upd");
-                    vec_upd = LLVMBuildInsertValue(ctx->builder, vec_upd, new_len, 1, "vl.ul");
-                    LLVMBuildStore(ctx->builder, vec_upd, alloca);
-                }
-                ctx->temp_string_count = temp_mark;
             }
             /* Collection-literal init for a user container (the `__from_list`
                protocol, checked above): zero-init the struct, then call its
@@ -14819,7 +10873,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                             init = emit_enum_clone_val(ctx, init, var_type);
                         }
                     }
-                    else if ((var_type->kind == TYPE_VECTOR || var_type->kind == TYPE_MAP) &&
+                    else if (var_type->kind == TYPE_MAP &&
                              ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
                     {
                         /* Move-elision (Q4): `vec b = a` / `map b = a`. The checker
@@ -15059,7 +11113,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                        4. Clear moved_flag so scope cleanup works */
                     if (sym->moved_flag)
                     {
-                        LLVMValueRef i1_t = LLVMInt1TypeInContext(ctx->context);
+                        LLVMTypeRef i1_t = LLVMInt1TypeInContext(ctx->context);
                         LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
                             LLVMGetInsertBlock(ctx->builder));
                         LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
@@ -15291,44 +11345,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             AstNode *obj = target->as.index_expr.object;
             Type *obj_type = obj->resolved_type;
 
-            if (obj_type && obj_type->kind == TYPE_VECTOR)
-            {
-                /* vec[i] = val — load data ptr, GEP, drop old if needed, store.
-                   Use codegen_lvalue_ptr so the vec can be ANY lvalue, not just
-                   a bare local: `self.buf[i] = x` / `w.v[i] = x` (object is a
-                   field access) must write the field's real backing buffer, not
-                   a discarded clone. (Previously only AST_IDENT was handled, so
-                   index-assign through a struct field silently did nothing.) */
-                LLVMValueRef vec_alloca = codegen_lvalue_ptr(ctx, obj);
-                if (vec_alloca == NULL)
-                    return;
-
-                LLVMTypeRef vec_t = ls_vec_type(ctx);
-                LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.vec.elem);
-                LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
-
-                LLVMValueRef index = codegen_expr(ctx, target->as.index_expr.index);
-                if (index == NULL)
-                    return;
-                if (LLVMTypeOf(index) != i64_type)
-                    index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_type, "vis.idx");
-
-                LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "vis.v");
-                LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "vis.data");
-                LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr,
-                                                 &index, 1, "vis.ep");
-
-                Type *elem_type = obj_type->as.vec.elem;
-                /* M-3: 先 drop 旧元素，再统一所有权转移。
-                   emit_vec_elem_drop_at 处理 string/struct/enum/Block 的 drop；
-                   cg_store_owned 处理 move/clone/mark 语义。 */
-                emit_vec_elem_drop_at(ctx, gep, elem_type, 0, "idx.assign");
-                cg_store_owned(ctx, gep, val, elem_type,
-                               node->as.assign.value, temp_mark,
-                               CG_XFER_INTO_CONTAINER);
-                cg_flush_temps(ctx, temp_mark, true);
-            }
-            else if (obj_type && obj_type->kind == TYPE_MAP)
+            if (obj_type && obj_type->kind == TYPE_MAP)
             {
                 /* map[key] = val — call __ls_map_XX_YY_set(map, key, val).
                    codegen_lvalue_ptr so `self.m[k] = v` (field map) works too. */
@@ -15512,7 +11529,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                scope_drop + caller scope_drop 双重释放 buckets。 */
             if (ret_type->kind == TYPE_STRING ||
                 ret_type->kind == TYPE_STRUCT ||
-                ret_type->kind == TYPE_VECTOR ||
                 ret_type->kind == TYPE_MAP    ||
                 ret_type->kind == TYPE_BLOCK  ||
                 (ret_type->kind == TYPE_ENUM && ret_type->as.enom.has_drop))
@@ -15559,8 +11575,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     ctx->temp_block_env_count--;
                 }
                 cg_flush_temps(ctx, ret_temp_mark, false);
-                AstNode *ret_expr = node->as.return_stmt.value;
-
                 /* P1-3 fix: returning a GLOBAL string by name shares the global's
                    data pointer. The global is freed at exit by __ls_global_cleanup,
                    so transferring it to the caller (who also frees) double-frees.
@@ -15598,26 +11612,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         val = emit_array_clone_val(ctx, val, arr_llvm, ret_type);
                     }
                 }
-                else if (ret_type && ret_type->kind == TYPE_VECTOR &&
-                         ret_expr->kind != AST_IDENT)
-                {
-                    /* vec return from a non-IDENT expression. Two cases:
-                       (a) ALIASING expr (*ptr deref / container[i] / obj.field):
-                           the buffer is still owned by something the function will
-                           clean up, so returning it by value would share ownership
-                           → deep-clone for an independent copy.
-                       (b) OWNED-producing expr (function/method call result, vec
-                           literal): a fresh temp with no other owner. Cloning it
-                           would copy the buffer and then abandon the original temp
-                           (no scope symbol / temp_drop owns it) → leak (L-012 ③).
-                           Move it out instead (no clone).
-                       IDENT return is the move path above (return_alloca skip). */
-                    bool ret_vec_owned = (ret_expr->kind == AST_CALL ||
-                                          ret_expr->kind == AST_ARRAY_LIT);
-                    if (!ret_vec_owned)
-                        val = emit_vec_clone_val(ctx, val, ret_type->as.vec.elem);
-                }
-
                 emit_cleanup_to(ctx, NULL, return_alloca);
                 cg_emit_mc_leave(ctx);   /* D.1: pop frame */
                 cg_emit_prof_leave(ctx);
@@ -15756,17 +11750,14 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
              - Range expression (a..b): iterate var from a to b-1
              - Integer expression (n): iterate var from 0 to n-1
              - Array: iterate over elements
-             - Vec(T): iterate over elements (runtime length) */
+              - User-defined iterables are lowered by the checker before codegen. */
         push_scope(ctx);
 
         AstNode *iter_node = node->as.for_stmt.iter;
         Type *iter_type = iter_node->resolved_type;
         bool is_array_iter = (iter_type && iter_type->kind == TYPE_ARRAY);
-        bool is_vec_iter = (iter_type && iter_type->kind == TYPE_VECTOR);
         LLVMValueRef start_val = NULL, end_val = NULL;
         LLVMValueRef arr_ptr = NULL;    /* for fixed-array iter: alloca of array */
-        LLVMValueRef vec_alloca = NULL; /* for vec iter: alloca of LsVec struct */
-        LLVMValueRef for_iter_tmp = NULL; /* owned temp vec (non-IDENT iter), dropped at end_bb */
 
         if (is_array_iter)
         {
@@ -15786,51 +11777,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 pop_scope(ctx);
                 break;
             }
-        }
-        else if (is_vec_iter)
-        {
-            /* Vec iteration: index from 0..len (runtime) */
-            start_val = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, false);
-            LLVMTypeRef vec_t = ls_vec_type(ctx);
-            if (iter_node->kind == AST_IDENT)
-            {
-                CgSymbol *sym = cg_scope_resolve(ctx->current_scope, iter_node->as.ident.name);
-                if (sym)
-                    vec_alloca = sym->value;   /* iterate the variable in place (borrow) */
-            }
-            else
-            {
-                /* vec-typed expression (e.g. m.keys(), get_vec()): evaluate into a
-                   fresh alloca owned by this loop's scope. It holds an independent
-                   vec (keys()/copy() deep-clone), so register it so scope cleanup
-                   frees its buffer + elements on loop exit (no leak). */
-                LLVMValueRef iv = codegen_expr(ctx, iter_node);
-                if (iv == NULL)
-                {
-                    pop_scope(ctx);
-                    break;
-                }
-                LLVMBasicBlockRef e_bb = LLVMGetEntryBasicBlock(ctx->current_fn);
-                LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-                LLVMValueRef e_fi = LLVMGetFirstInstruction(e_bb);
-                if (e_fi) LLVMPositionBuilderBefore(tb, e_fi);
-                else      LLVMPositionBuilderAtEnd(tb, e_bb);
-                vec_alloca = LLVMBuildAlloca(tb, vec_t, "fv.iter");
-                LLVMDisposeBuilder(tb);
-                LLVMBuildStore(ctx->builder, iv, vec_alloca);
-                /* Drop this owned temp at end_bb (the single loop exit, reached
-                   by both normal completion and break). Not registered in the
-                   scope — that would let break's emit_cleanup_to double-drop it. */
-                for_iter_tmp = vec_alloca;
-            }
-            if (vec_alloca == NULL)
-            {
-                pop_scope(ctx);
-                break;
-            }
-            /* end_val = vec.len (load now, before loop — snapshot at loop start) */
-            LLVMValueRef vv = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "fv.v");
-            end_val = LLVMBuildExtractValue(ctx->builder, vv, 1, "fv.len");
         }
         else if (iter_node->kind == AST_RANGE)
         {
@@ -15854,7 +11800,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
 
         /* Allocate loop index counter and element variable */
-        LLVMValueRef idx_var = NULL;  /* internal index counter for array/vec iter */
+        LLVMValueRef idx_var = NULL;  /* internal index counter for array iter */
         LLVMValueRef loop_var = NULL; /* user-visible loop variable */
 
         {
@@ -15872,13 +11818,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
                 loop_var = LLVMBuildAlloca(tmp, elem_llvm, node->as.for_stmt.var);
             }
-            else if (is_vec_iter)
-            {
-                idx_var = LLVMBuildAlloca(tmp, i32_ty, "foreach.vidx");
-                Type *elem_type = iter_type->as.vec.elem;
-                LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-                loop_var = LLVMBuildAlloca(tmp, elem_llvm, node->as.for_stmt.var);
-            }
             else
             {
                 loop_var = LLVMBuildAlloca(tmp, i32_ty, node->as.for_stmt.var);
@@ -15892,18 +11831,10 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             {
                 CgSymbol *lvsym = cg_scope_define(ctx->current_scope, node->as.for_stmt.var,
                                                   loop_var, iter_type->as.array.elem, NULL);
-                /* Array/vec loop variable is a copy of the element — mark borrowed so scope
+                /* Array loop variable is a copy of the element; mark borrowed so scope
                    cleanup doesn't drop it (the container still owns the data). */
                 if (lvsym)
                     lvsym->is_borrowed = true;
-            }
-        }
-        else if (is_vec_iter)
-        {
-            LLVMBuildStore(ctx->builder, start_val, idx_var);
-            {
-                /* vec loop var is defined per-iteration inside body_bb — see below */
-                (void)0;
             }
         }
         else
@@ -15935,7 +11866,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
         /* Condition: idx < end */
         LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef cmp_var = (is_array_iter || is_vec_iter) ? idx_var : loop_var;
+        LLVMValueRef cmp_var = is_array_iter ? idx_var : loop_var;
         LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, i32_ty, cmp_var, "cur");
         LLVMValueRef cond = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur, end_val, "foreach.lt");
         LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
@@ -15958,87 +11889,13 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "foreach.elem");
             LLVMBuildStore(ctx->builder, elem_val, loop_var);
         }
-        else if (is_vec_iter)
-        {
-            /* Per-iteration scope for the loop variable x.
-               Lifetime model:
-               - On entry: push scope, load element.
-                   string: zero cap field so emit_string_free is a no-op at runtime
-                           (the vec still owns the original data).
-                   struct-with-drop: create a borrowed_flag (i1=1) used as moved_flag,
-                           so emit_struct_drop_cond skips the initial borrowed data.
-               - If x is assigned inside the body: emit_string_free / emit_struct_drop_cond
-                   sees cap=0 / moved_flag=1 → no-op; then stores new owned value and
-                   clears moved_flag to 0 (existing assignment path handles this).
-               - On exit: scope cleanup calls emit_string_free / emit_struct_drop_cond.
-                   If never assigned: cap=0 or moved_flag=1 → skip (correct, vec owns data).
-                   If assigned: cap>0 or moved_flag=0 → free/drop the owned copy (correct).
-               break/continue: emit_cleanup_to(loop_scope) cleans this scope too.      */
-            push_scope(ctx);
-
-            LLVMValueRef cur_idx = LLVMBuildLoad2(ctx->builder, i32_ty, idx_var, "fv.i");
-            LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
-            LLVMValueRef idx64 = LLVMBuildSExtOrBitCast(ctx->builder, cur_idx, i64_type, "fv.idx64");
-            LLVMTypeRef vec_t = ls_vec_type(ctx);
-            LLVMTypeRef elem_llvm = type_to_llvm(ctx, iter_type->as.vec.elem);
-            LLVMValueRef vv2 = LLVMBuildLoad2(ctx->builder, vec_t, vec_alloca, "fv.v2");
-            LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vv2, 0, "fv.data");
-            LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_ptr,
-                                             &idx64, 1, "fv.gep");
-            LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "fv.elem");
-            Type *elem_type = iter_type->as.vec.elem;
-
-            LLVMValueRef loop_var_moved_flag = NULL;
-
-            if (elem_type->kind == TYPE_STRING)
-            {
-                /* Zero out cap (field 2) — marks this copy as non-owning at runtime.
-                   emit_string_free checks cap > 0, so it naturally skips borrowed data. */
-                LLVMValueRef zero32 = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0);
-                elem_val = LLVMBuildInsertValue(ctx->builder, elem_val, zero32, 2, "fv.borrow");
-            }
-            else if (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop)
-            {
-                /* Create a borrowed_flag alloca (i1), initialised to 1.
-                   emit_struct_drop_cond uses this as moved_flag: 1 = skip drop.
-                   The assignment path clears it to 0 when x is first written,
-                   so subsequent cleanup correctly drops the owned copy. */
-                LLVMTypeRef i1_ty = LLVMInt1TypeInContext(ctx->context);
-                loop_var_moved_flag = cg_entry_alloca(ctx, i1_ty, "fv.borrowed");
-                LLVMBuildStore(ctx->builder, LLVMConstInt(i1_ty, 1, 0), loop_var_moved_flag);
-            }
-
-            LLVMBuildStore(ctx->builder, elem_val, loop_var);
-
-            /* Define x in the per-iteration scope (no is_borrowed flag needed —
-               runtime cap / moved_flag carries the ownership state). */
-            cg_scope_define(ctx->current_scope, node->as.for_stmt.var,
-                            loop_var, elem_type, loop_var_moved_flag);
-        }
-
         codegen_stmt(ctx, node->as.for_stmt.body);
-
-        /* Per-iteration scope teardown (vec only).
-           emit_scope_cleanup handles x: frees/drops if it owns data, skips if not.
-           Only emit if the block is not already terminated (break/continue already
-           called emit_cleanup_to which covers this scope). */
-        if (is_vec_iter)
-        {
-            if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-            {
-                emit_scope_cleanup(ctx);
-                LLVMBuildBr(ctx->builder, update_bb);
-            }
-            pop_scope(ctx);
-        }
-        else if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-        {
+        LLVMBasicBlockRef body_end = LLVMGetInsertBlock(ctx->builder);
+        if (body_end && LLVMGetBasicBlockTerminator(body_end) == NULL)
             LLVMBuildBr(ctx->builder, update_bb);
-        }
 
-        /* Update: idx/var = idx/var + 1 */
         LLVMPositionBuilderAtEnd(ctx->builder, update_bb);
-        LLVMValueRef inc_var = (is_array_iter || is_vec_iter) ? idx_var : loop_var;
+        LLVMValueRef inc_var = is_array_iter ? idx_var : loop_var;
         LLVMValueRef cur2 = LLVMBuildLoad2(ctx->builder, i32_ty, inc_var, "cur2");
         LLVMValueRef next = LLVMBuildAdd(ctx->builder, cur2,
                                          LLVMConstInt(i32_ty, 1, false), "next");
@@ -16052,12 +11909,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
         pop_scope(ctx);
         LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
-        /* Free the owned temp iterable vec (e.g. m.keys()) — its buffer and any
-           owned elements. cap==0 (empty) is guarded inside emit_vec_drop_at.
-           end_bb is the single loop exit (both normal completion and break land
-           here), so this drops exactly once per execution. */
-        if (for_iter_tmp != NULL && iter_type != NULL && iter_type->kind == TYPE_VECTOR)
-            emit_vec_drop_at(ctx, for_iter_tmp, iter_type->as.vec.elem);
         break;
     }
 
@@ -16180,7 +12031,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             bool needs_drop =
                 (rt->kind == TYPE_STRUCT && rt->as.strukt.has_drop) ||
                 (rt->kind == TYPE_ENUM   && rt->as.enom.has_drop)   ||
-                rt->kind == TYPE_VECTOR  || rt->kind == TYPE_MAP;
+                rt->kind == TYPE_MAP;
             if (needs_drop)
             {
                 LLVMTypeRef rllvm = type_to_llvm(ctx, rt);
@@ -16323,24 +12174,23 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
 
        has_drop_n counts captures whose env-side ownership requires a drop:
        string + struct(has_drop): always by-move
-       vec/map: by-move only when is_explicit_move ([move v]) */
+       map: by-move only when is_explicit_move ([move v]) */
     int has_drop_n = 0;
     for (int i = 0; i < cap_n; i++) {
         Type *ct_i = node->as.closure.captures[i].type;
         bool explicit_move = node->as.closure.captures[i].is_explicit_move;
         if (capture_type_is_by_move_cg(ct_i))
             has_drop_n++;
-        else if (explicit_move &&
-                 (ct_i->kind == TYPE_VECTOR || ct_i->kind == TYPE_MAP))
-            has_drop_n++;   /* F.1: explicit [move] on vec/map → needs env_drop */
+        else if (explicit_move && ct_i->kind == TYPE_MAP)
+            has_drop_n++;   /* F.1: explicit [move] on map → needs env_drop */
     }
 
     /* 0) Snapshot outer alloca pointers (for the post-capture cap=-1 mark
        on by-move strings) AND load each current value into a register. We
        have to do this BEFORE detaching the scope chain, since the closure
        body runs in a fresh isolated scope.
-       F.1: vec/map with is_explicit_move load the VALUE (full LsVec/LsMap
-       struct) rather than storing the outer alloca pointer (by-ref). */
+       F.1: map with is_explicit_move loads the VALUE (full LsMap struct)
+       rather than storing the outer alloca pointer (by-ref). */
     LLVMValueRef *cap_outer_vals    = NULL;
     LLVMValueRef *cap_outer_allocas = NULL;
     if (cap_n > 0) {
@@ -16364,7 +12214,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             Type *ct = node->as.closure.captures[i].type;
             bool is_default_by_ref = capture_type_is_by_ref_cg(ct) && !explicit_move;
             if (is_default_by_ref) {
-                /* By-ref (default vec/map): store outer alloca pointer.
+                /* By-ref (default map): store outer alloca pointer.
                    Mutations to the outer variable are visible inside. */
                 cap_outer_vals[i] = sym->value;
                 cg_dbg_capture(ctx, name, ct, "borrow");
@@ -16374,8 +12224,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                                                    sym->value, "cap.load");
                 /* Distinguish auto by-move vs. explicit [move] enum/string */
                 cg_dbg_capture(ctx, name, ct, explicit_move ? "move-expl" : "move");
-            } else if (explicit_move &&
-                       (ct->kind == TYPE_VECTOR || ct->kind == TYPE_MAP)) {
+            } else if (explicit_move && ct->kind == TYPE_MAP) {
                 LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
                 cap_outer_vals[i] = LLVMBuildLoad2(ctx->builder, ct_llvm,
                                                    sym->value, "cap.load");
@@ -16393,8 +12242,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     /* 1) Build env struct LLVM type. Field 0 is the drop_fn pointer slot
        (always present so the cleanup logic stays uniform); user captures
        follow at fields 1..N.
-       - by-move captures (string/struct/[move vec]/[move map]): value type
-       - by-ref captures (default vec/map without [move]): ptr to outer alloca
+       - by-move captures (string/struct/[move map]): value type
+       - by-ref captures (default map without [move]): ptr to outer alloca
        When cap_n == 0 we still skip env entirely and pass NULL. */
     /* Phase G env layout:
          field 0: ptr drop_fn   (NULL when no has_drop captures)
@@ -16483,7 +12332,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
        Two strategies depending on capture kind:
        - by-move (string/struct): load value from env slot → alloca →
          cg_scope_define with is_borrowed=true (env is sole owner of heap).
-       - by-ref (vec/map): env slot holds a pointer to the OUTER alloca.
+       - by-ref (map): env slot holds a pointer to the OUTER alloca.
          Load the pointer from env, use it directly as sym->value. Body
          reads/writes go straight to the outer variable, so mutations are
          visible bidirectionally. Mark is_borrowed=true so scope cleanup
@@ -16500,9 +12349,9 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 (unsigned)(i + 2), "cap.gep");
 
             if (is_default_by_ref) {
-                /* By-ref (default vec/map): load the outer alloca pointer.
+                /* By-ref (default map): load the outer alloca pointer.
                    sym->value = that pointer = the outer alloca itself.
-                   Body accesses the outer vec/map in-place. is_borrowed
+                   Body accesses the outer map in-place. is_borrowed
                    prevents scope cleanup from dropping what it doesn't own. */
                 LLVMValueRef outer_ptr = LLVMBuildLoad2(
                     ctx->builder, ptr_t, field_ptr, "cap.refptr");
@@ -16510,7 +12359,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                                 cap_name, outer_ptr, ct, NULL);
                 if (cs) cs->is_borrowed = true;
             } else {
-                /* By-move (or POD or explicit [move] vec/map): load value,
+                /* By-move (or POD or explicit [move] map): load value,
                    alloca, store, register. */
                 LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
                 LLVMValueRef field_val = LLVMBuildLoad2(
@@ -16521,11 +12370,10 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 CgSymbol *cs = cg_scope_define(ctx->current_scope,
                                 cap_name, alloca, ct, NULL);
                 /* Body must not drop env-owned heap.
-                   For [move] vec/map: env owns the data buffer; mark borrowed
+                   For [move] map: env owns the buckets; mark borrowed
                    so scope cleanup doesn't free it (env_drop handles it). */
                 bool needs_borrow = capture_type_is_by_move_cg(ct) ||
-                    (explicit_move &&
-                     (ct->kind == TYPE_VECTOR || ct->kind == TYPE_MAP));
+                    (explicit_move && ct->kind == TYPE_MAP);
                 if (cs && needs_borrow)
                     cs->is_borrowed = true;
             }
@@ -16534,8 +12382,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
 
     /* 5b) Define each user parameter as alloca + store. The LLVM param at
        slot (i+1) skips the env at slot 0.
-       vec/map/Block params are marked is_borrowed=true — the caller owns
-       the underlying heap (data buffer / bucket array / env block), so the
+       map/Block params are marked is_borrowed=true — the caller owns
+       the underlying heap (bucket array / env block), so the
        closure body's scope cleanup must not free it (matches the behaviour
        of regular fn params, codegen_fn_decl line ~12117). */
     for (int i = 0; i < n; i++)
@@ -16550,7 +12398,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                         node->as.closure.param_names[i],
                         alloca, pt, NULL);
         if (psym && pt &&
-            (pt->kind == TYPE_VECTOR || pt->kind == TYPE_MAP ||
+            (pt->kind == TYPE_MAP ||
              pt->kind == TYPE_BLOCK))
             psym->is_borrowed = true;
     }
@@ -16608,22 +12456,19 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         LLVMValueRef d_env = LLVMGetParam(drop_fn, 0);
 
         /* For each by-move capture, dispatch on type:
-             string : cap > 0 → free(data)                       (C.5)
-             vec(T) : cap > 0 → drop elements + free(data)        (C.7)
-             map(K,V): call __ls_map_XX_drop(slot_ptr)            (C.7)
-             struct : call Struct.__drop(slot_ptr)                (C.7)
+              string : cap > 0 → free(data)                       (C.5)
+              map(K,V): call __ls_map_XX_drop(slot_ptr)            (C.7)
+              struct : call Struct.__drop(slot_ptr)                (C.7)
            Maps/structs rely on their pre-existing helpers that take a
            pointer to the value — slot_ptr is exactly that. */
         LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
         LLVMTypeRef str_t = ls_string_type(ctx);
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
             bool explicit_move_i = node->as.closure.captures[i].is_explicit_move;
             /* Drop this slot if it's a by-move type OR explicitly [move]'d. */
             bool needs_drop = capture_type_is_by_move_cg(ct) ||
-                (explicit_move_i &&
-                 (ct->kind == TYPE_VECTOR || ct->kind == TYPE_MAP));
+                (explicit_move_i && ct->kind == TYPE_MAP);
             if (!needs_drop) continue;
             LLVMValueRef slot = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, d_env,
@@ -16646,78 +12491,6 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, strv, 0,
                                                           "cap.data");
                 cg_emit_free(ctx, data, "closure.capture.str",
-                             node->line, node->column);
-                LLVMBuildBr(ctx->builder, done_bb);
-                LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
-            }
-            else if (ct->kind == TYPE_VECTOR) {
-                /* Inline vec drop: load LsVec, if cap > 0 then drop elements
-                   (when has_drop) and free data buffer. Mirrors the scope
-                   cleanup vec branch but compressed for one slot. */
-                LLVMTypeRef vec_t  = ls_vec_type(ctx);
-                LLVMValueRef vecv  = LLVMBuildLoad2(ctx->builder, vec_t, slot,
-                                                    "cap.vec");
-                LLVMValueRef capv  = LLVMBuildExtractValue(ctx->builder, vecv, 2,
-                                                           "cap.veccap");
-                LLVMValueRef lenv  = LLVMBuildExtractValue(ctx->builder, vecv, 1,
-                                                           "cap.veclen");
-                LLVMValueRef datav = LLVMBuildExtractValue(ctx->builder, vecv, 0,
-                                                           "cap.vecdata");
-                LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT,
-                                                     capv, LLVMConstInt(i32_t, 0, 0),
-                                                     "cap.hasbuf");
-                LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, drop_fn, "drop.vfree");
-                LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, drop_fn, "drop.vcont");
-                LLVMBuildCondBr(ctx->builder, has_buf, do_bb, done_bb);
-                LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-
-                Type *elem_type = ct->as.vec.elem;
-                bool elem_needs_drop = elem_type &&
-                    (elem_type->kind == TYPE_STRING ||
-                     (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-                     (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop));
-                if (elem_needs_drop) {
-                    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-                    LLVMBasicBlockRef el_cond = LLVMAppendBasicBlockInContext(
-                        ctx->context, drop_fn, "drop.el.cond");
-                    LLVMBasicBlockRef el_body = LLVMAppendBasicBlockInContext(
-                        ctx->context, drop_fn, "drop.el.body");
-                    LLVMBasicBlockRef el_end = LLVMAppendBasicBlockInContext(
-                        ctx->context, drop_fn, "drop.el.end");
-
-                    LLVMBuilderRef tb2 = LLVMCreateBuilderInContext(ctx->context);
-                    LLVMBasicBlockRef fn_entry = LLVMGetEntryBasicBlock(drop_fn);
-                    LLVMValueRef fi2 = LLVMGetFirstInstruction(fn_entry);
-                    if (fi2) LLVMPositionBuilderBefore(tb2, fi2);
-                    else     LLVMPositionBuilderAtEnd(tb2, fn_entry);
-                    LLVMValueRef ei = LLVMBuildAlloca(tb2, i32_t, "drop.ei");
-                    LLVMDisposeBuilder(tb2);
-
-                    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), ei);
-                    LLVMBuildBr(ctx->builder, el_cond);
-
-                    LLVMPositionBuilderAtEnd(ctx->builder, el_cond);
-                    LLVMValueRef ci = LLVMBuildLoad2(ctx->builder, i32_t, ei, "drop.ci");
-                    LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, ci, lenv, "drop.lt");
-                    LLVMBuildCondBr(ctx->builder, cmp, el_body, el_end);
-
-                    LLVMPositionBuilderAtEnd(ctx->builder, el_body);
-                    LLVMValueRef ei64 = LLVMBuildSExt(ctx->builder, ci, i64_t, "drop.ei64");
-                    LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, datav,
-                                                    &ei64, 1, "drop.ep");
-                    emit_vec_elem_drop_at(ctx, ep, elem_type, i, "cap.vec[i]");
-                    LLVMBasicBlockRef after = LLVMGetInsertBlock(ctx->builder);
-                    if (LLVMGetBasicBlockTerminator(after) == NULL) {
-                        LLVMValueRef nxt = LLVMBuildAdd(ctx->builder, ci,
-                            LLVMConstInt(i32_t, 1, 0), "drop.nxt");
-                        LLVMBuildStore(ctx->builder, nxt, ei);
-                        LLVMBuildBr(ctx->builder, el_cond);
-                    }
-                    LLVMPositionBuilderAtEnd(ctx->builder, el_end);
-                }
-                cg_emit_free(ctx, datav, "closure.capture.vec",
                              node->line, node->column);
                 LLVMBuildBr(ctx->builder, done_bb);
                 LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
@@ -16777,11 +12550,11 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
        one env pointer would double-free it on scope exit.
 
        Per-capture policy:
-         by-ref vec/map (default): copy the outer-alloca pointer shallowly. The
-           env does not own it (not in has_drop set), so the clone safely shares
-           the by-ref just like the original — no double-free.
-         string/vec/map/struct/enum (by-move or [move]): deep clone via the
-           existing emit_*_clone_val helpers.
+          by-ref map (default): copy the outer-alloca pointer shallowly. The
+            env does not own it (not in has_drop set), so the clone safely shares
+            the by-ref just like the original — no double-free.
+          string/map/struct/enum (by-move or [move]): deep clone via the
+            existing emit_*_clone_val helpers.
          POD / array(POD): plain value copy (emit_clone_value default). */
     LLVMValueRef env_clone_fn = LLVMConstNull(ptr_t);
     if (cap_n > 0) {
@@ -16888,8 +12661,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 (unsigned)(i + 2), "cap.slot");
 
             /* Store capture into env:
-               - by-ref (vec/map): cap_outer_vals[i] IS the outer alloca ptr,
-                 so we're storing a pointer-to-alloca into the ptr-typed slot.
+               - by-ref (map): cap_outer_vals[i] IS the outer alloca ptr,
+                  so we're storing a pointer-to-alloca into the ptr-typed slot.
                  No ownership transfer; outer remains live.
                - by-move (string/struct/POD): cap_outer_vals[i] is a loaded
                  value; env takes ownership of the heap data. */
@@ -16898,9 +12671,8 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             /* By-move marker on the outer alloca:
                  string: cap field gets -1 when currently > 0 (skip .rodata).
                  struct: moved_flag i1 alloca set to true.
-                 [move] vec: zero out outer vec's cap field → scope cleanup skips.
-                 [move] map: zero out outer map's cap field → __drop skips.
-               Default by-ref vec/map: outer is NOT marked at all. */
+                  [move] map: zero out outer map's cap field → __drop skips.
+               Default by-ref map: outer is NOT marked at all. */
             bool explicit_move_i = node->as.closure.captures[i].is_explicit_move;
             bool is_default_by_ref_i = capture_type_is_by_ref_cg(ct) && !explicit_move_i;
             if (is_default_by_ref_i) {
@@ -16950,19 +12722,10 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                     }
                 }
             } else if (explicit_move_i && cap_outer_allocas[i]) {
-                /* F.1: [move] vec/map — zero out outer's cap field so scope
+                /* F.1: [move] map — zero out outer's cap field so scope
                    cleanup sees cap==0 and skips the free (env now owns it). */
                 LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-                if (ct->kind == TYPE_VECTOR) {
-                    /* vec layout: {ptr data, i32 len, i32 cap} — field 2 */
-                    LLVMValueRef vec_cap_ptr = LLVMBuildStructGEP2(
-                        ctx->builder, ls_vec_type(ctx), cap_outer_allocas[i],
-                        2u, "outer.vec.cap.ptr");
-                    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0),
-                                   vec_cap_ptr);
-                    cg_dbg_outer_mark(ctx, node->as.closure.captures[i].name,
-                                      "vec.cap=0 ([move])");
-                } else if (ct->kind == TYPE_MAP) {
+                if (ct->kind == TYPE_MAP) {
                     /* map layout: {ptr buckets, i32 count, i32 cap} — field 2 */
                     LLVMValueRef map_cap_ptr = LLVMBuildStructGEP2(
                         ctx->builder, ls_map_type(ctx), cap_outer_allocas[i],
@@ -17133,17 +12896,12 @@ static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
                 }
             }
         }
-        else if (av && arg_type &&
-                 (arg_type->kind == TYPE_VECTOR || arg_type->kind == TYPE_MAP))
+        else if (av && arg_type && arg_type->kind == TYPE_MAP)
         {
             if (unwrapped && unwrapped->kind != AST_IDENT)
             {
-                LLVMTypeRef store_t = arg_type->kind == TYPE_VECTOR
-                                      ? ls_vec_type(ctx)
-                                      : ls_map_type(ctx);
-                LLVMValueRef tmp = cg_entry_alloca(ctx, store_t,
-                    arg_type->kind == TYPE_VECTOR ? "blk.vecarg.tmp"
-                                                  : "blk.maparg.tmp");
+                LLVMTypeRef store_t = ls_map_type(ctx);
+                LLVMValueRef tmp = cg_entry_alloca(ctx, store_t, "blk.maparg.tmp");
                 LLVMBuildStore(ctx->builder, av, tmp);
                 cg_push_temp_drop(ctx, tmp, arg_type);
             }
@@ -17341,8 +13099,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         if (param_type && param_type->kind == TYPE_REFERENCE &&
             !param_type->is_mut &&
             param_type->as.pointer_to &&
-            (param_type->as.pointer_to->kind == TYPE_VECTOR ||
-             param_type->as.pointer_to->kind == TYPE_MAP ||
+            (param_type->as.pointer_to->kind == TYPE_MAP ||
              param_type->as.pointer_to->kind == TYPE_STRUCT ||
              param_type->as.pointer_to->kind == TYPE_ENUM))
         {
@@ -17385,13 +13142,12 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
            The call site sets cap=-2 for named variable args and leaves cap>0
            for rvalue/__move args, so the distinction is preserved through ABI. */
         CgSymbol *psym = cg_scope_define(ctx->current_scope, node->as.fn_decl.param_names[i], alloca, param_type, moved_flag);
-        /* vec / map parameters are borrowed: the caller owns the data
-           buffer / bucket array. Without this, the callee's scope cleanup
+        /* map parameters are borrowed: the caller owns the bucket array.
+           Without this, the callee's scope cleanup
            would call the type's drop helper on the param alloca, freeing
-           heap that the caller still owns. (Phase C.7 surfaced this for
-           map; vec was already correct.) */
+           heap that the caller still owns. */
         if (psym && param_type &&
-            (param_type->kind == TYPE_VECTOR || param_type->kind == TYPE_MAP))
+            param_type->kind == TYPE_MAP)
             psym->is_borrowed = true;
         /* Phase C.5: Block-typed parameters are call-borrowed — the caller
            owns the closure's env block, so the callee's scope cleanup must
@@ -17636,7 +13392,6 @@ static bool cg_type_owns_heap_for_enum(const Type *t)
     switch (t->kind)
     {
     case TYPE_STRING: return true;
-    case TYPE_VECTOR: return true;
     case TYPE_MAP:    return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;
@@ -17656,9 +13411,6 @@ static void emit_drop_value(CodegenContext *ctx, LLVMValueRef place_ptr, Type *t
     {
     case TYPE_STRING:
         emit_string_free(ctx, place_ptr);
-        return;
-    case TYPE_VECTOR:
-        emit_vec_drop_at(ctx, place_ptr, type->as.vec.elem);
         return;
     case TYPE_STRUCT:
         if (type->as.strukt.has_drop) emit_struct_drop(ctx, place_ptr, type);
@@ -17808,12 +13560,6 @@ static void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
                 }
                 emit_struct_drop(ctx, field_ptr, pt);
             }
-            else if (pt && pt->kind == TYPE_VECTOR)
-            {
-                /* Unified recursive vec drop — handles nested vec(vec(...)),
-                   which the previous inline element loop missed (F). */
-                emit_drop_value(ctx, field_ptr, pt);
-            }
             else if (pt && pt->kind == TYPE_MAP)
             {
                 /* F.5: map(K,V) payload — call the map drop helper. */
@@ -17938,7 +13684,6 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
         {
             Type *pt = enum_type->as.enom.variants[v].payload_types[fi];
             if (pt && (pt->kind == TYPE_STRING ||
-                       pt->kind == TYPE_VECTOR ||
                        pt->kind == TYPE_MAP ||
                        (pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop) ||
                        (pt->kind == TYPE_ENUM   && pt->as.enom.has_drop)))
@@ -18014,7 +13759,6 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
         {
             Type *pt = enum_type->as.enom.variants[v].payload_types[fi];
             if (pt && (pt->kind == TYPE_STRING ||
-                       pt->kind == TYPE_VECTOR ||
                        pt->kind == TYPE_MAP ||
                        (pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop) ||
                        (pt->kind == TYPE_ENUM   && pt->as.enom.has_drop)))
@@ -18066,25 +13810,6 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
                 LLVMValueRef old_s = LLVMBuildLoad2(ctx->builder, str_t, field_ptr, "ec.olds");
                 LLVMValueRef new_s = emit_string_clone_val(ctx, old_s);
                 LLVMBuildStore(ctx->builder, new_s, field_ptr);
-            }
-            else if (pt->kind == TYPE_VECTOR)
-            {
-                LLVMTypeRef  vec_t  = ls_vec_type(ctx);
-                LLVMValueRef old_v  = LLVMBuildLoad2(ctx->builder, vec_t, field_ptr, "ec.oldv");
-                LLVMValueRef new_v  = emit_vec_clone_val(ctx, old_v, pt->as.vec.elem);
-#if CG_DEBUG
-                {
-                    LLVMValueRef old_data = LLVMBuildExtractValue(ctx->builder, old_v, 0, "dbg.ovd");
-                    LLVMValueRef new_data = LLVMBuildExtractValue(ctx->builder, new_v, 0, "dbg.nvd");
-                    LLVMValueRef old_len  = LLVMBuildExtractValue(ctx->builder, old_v, 1, "dbg.ovl");
-                    LLVMValueRef new_len  = LLVMBuildExtractValue(ctx->builder, new_v, 1, "dbg.nvl");
-                    LLVMValueRef dbg_a[4] = {old_data, new_data, old_len, new_len};
-                    cg_emit_debug_printf(ctx,
-                        "[cg] ec.vec.clone  old_data=%p new_data=%p old_len=%d new_len=%d\n",
-                        dbg_a, 4);
-                }
-#endif
-                LLVMBuildStore(ctx->builder, new_v, field_ptr);
             }
             else if (pt->kind == TYPE_MAP)
             {
@@ -20051,87 +15776,6 @@ void codegen_destroy(CodegenContext *ctx)
    position.  The global variable must already exist in the LLVM module (created in
    Pass 1).  Only stores an initializer — does NOT create a new alloca or add the
    symbol to the scope (that was done in Pass 1). */
-/* BF-043: emit program-exit cleanup for a GLOBAL vec: drop each owned element
-   (string / has_drop struct/enum / Block) then free(data), guarded by cap > 0.
-   Mirrors the per-scope vec cleanup (TYPE_VECTOR branch in emit_scope_cleanup)
-   but operates on a global pointer `gv`. Leaves the builder at a non-terminated
-   continuation block so the caller (next cleanup or retVoid) terminates.
-   idx_suffix makes basic-block names unique across multiple globals. */
-static void emit_global_vec_cleanup(CodegenContext *ctx, LLVMValueRef gv,
-                                    Type *elem_type, int idx_suffix)
-{
-    LLVMTypeRef vec_t = ls_vec_type(ctx);
-    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-
-    LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t, gv, "gvc.v");
-    LLVMValueRef cap_v  = LLVMBuildExtractValue(ctx->builder, vec_val, 2, "gvc.cap");
-    LLVMValueRef len_v  = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "gvc.len");
-    LLVMValueRef data_v = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "gvc.data");
-    LLVMValueRef zero32 = LLVMConstInt(i32_t, 0, 0);
-    LLVMValueRef has_buf = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap_v, zero32, "gvc.hasbuf");
-
-    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-    char fname[40], dname[40];
-    snprintf(fname, sizeof(fname), "gvc.free%d", idx_suffix);
-    snprintf(dname, sizeof(dname), "gvc.done%d", idx_suffix);
-    LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, fname);
-    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, dname);
-    LLVMBuildCondBr(ctx->builder, has_buf, free_bb, done_bb);
-
-    LLVMPositionBuilderAtEnd(ctx->builder, free_bb);
-
-    bool elem_needs_drop = (elem_type &&
-        (elem_type->kind == TYPE_STRING ||
-         (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-         (elem_type->kind == TYPE_ENUM   && elem_type->as.enom.has_drop) ||
-         elem_type->kind == TYPE_BLOCK));
-
-    if (elem_needs_drop)
-    {
-        LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-        LLVMBasicBlockRef el_cond = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "gvc.el.cond");
-        LLVMBasicBlockRef el_body = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "gvc.el.body");
-        LLVMBasicBlockRef el_end  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "gvc.el.end");
-
-        /* loop counter alloca in the function entry block */
-        LLVMBuilderRef tb = LLVMCreateBuilderInContext(ctx->context);
-        LLVMBasicBlockRef fn_entry = LLVMGetEntryBasicBlock(cur_fn);
-        LLVMValueRef fi = LLVMGetFirstInstruction(fn_entry);
-        if (fi) LLVMPositionBuilderBefore(tb, fi);
-        else    LLVMPositionBuilderAtEnd(tb, fn_entry);
-        LLVMValueRef ei_alloca = LLVMBuildAlloca(tb, i32_t, "gvc.ei");
-        LLVMDisposeBuilder(tb);
-
-        LLVMBuildStore(ctx->builder, zero32, ei_alloca);
-        LLVMBuildBr(ctx->builder, el_cond);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, el_cond);
-        LLVMValueRef cur_ei = LLVMBuildLoad2(ctx->builder, i32_t, ei_alloca, "gvc.cei");
-        LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur_ei, len_v, "gvc.lt");
-        LLVMBuildCondBr(ctx->builder, cmp, el_body, el_end);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, el_body);
-        LLVMValueRef ei64 = LLVMBuildSExt(ctx->builder, cur_ei, i64_t, "gvc.ei64");
-        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, elem_llvm, data_v, &ei64, 1, "gvc.ep");
-        emit_vec_elem_drop_at(ctx, ep, elem_type, idx_suffix, "global_vec[i]");
-
-        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-        {
-            LLVMValueRef one32 = LLVMConstInt(i32_t, 1, 0);
-            LLVMValueRef ni = LLVMBuildAdd(ctx->builder, cur_ei, one32, "gvc.ni");
-            LLVMBuildStore(ctx->builder, ni, ei_alloca);
-            LLVMBuildBr(ctx->builder, el_cond);
-        }
-
-        LLVMPositionBuilderAtEnd(ctx->builder, el_end);
-    }
-
-    cg_emit_free(ctx, data_v, "vec.scope_drop", CG_LINE(ctx), CG_COL(ctx));
-    LLVMBuildBr(ctx->builder, done_bb);
-    LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
-}
-
 static void emit_global_var_init(CodegenContext *ctx, AstNode *decl)
 {
     if (decl == NULL || decl->kind != AST_VAR_DECL || decl->as.var_decl.init == NULL)
@@ -20179,69 +15823,6 @@ static void emit_global_var_init(CodegenContext *ctx, AstNode *decl)
                 LLVMBuildStore(ctx->builder, elem_val, gep);
             }
         }
-    }
-    else if (var_type->kind == TYPE_VECTOR &&
-             decl->as.var_decl.init->kind == AST_ARRAY_LIT &&
-             var_type->as.vec.elem)
-    {
-        /* Global vec literal: vec(int) g = [1,2,3] / vec(string) g = [...].
-           The generic else-branch below stores codegen_expr(array_lit) — but an
-           array literal lowers to an ARRAY aggregate, not a heap vec, so the
-           global vec struct {data,len,cap} ends up zeroed (runtime reads empty).
-           Build the vec in place by pushing each element into the global pointer,
-           mirroring the local var_decl vec-literal path (codegen.c ~12837),
-           including string-element ownership handling. has_drop elements are
-           dropped at program exit by emit_global_vec_cleanup. */
-        AstNode *lit = decl->as.var_decl.init;
-        int count = lit->as.array_lit.count;
-        Type *vec_elem = var_type->as.vec.elem;
-        LLVMTypeRef vec_elem_llvm = type_to_llvm(ctx, vec_elem);
-        LLVMTypeRef vec_t_llvm = ls_vec_type(ctx);
-        LLVMTypeRef i32_t_llvm = LLVMInt32TypeInContext(ctx->context);
-        LLVMTypeRef i64_t_llvm = LLVMInt64TypeInContext(ctx->context);
-
-        /* Global was ConstNull-initialised in Pass A → {null,0,0}. */
-        int temp_mark = ctx->temp_string_count;
-        for (int i = 0; i < count; i++)
-        {
-            int push_temp_mark = ctx->temp_string_count;
-            LLVMValueRef val = codegen_expr(ctx, lit->as.array_lit.elements[i]);
-            if (val == NULL)
-                continue;
-
-            /* String elements: ensure an owned copy is stored.
-               - Fresh temp (e.g. "x".upper()) → transfer ownership (mark moved).
-               - Plain IDENT → clone so the source var can still be freed.
-               - Static literal (cap=0) → store directly (safe). */
-            if (vec_elem->kind == TYPE_STRING)
-            {
-                if (ctx->temp_string_count > push_temp_mark)
-                    cg_mark_last_temp_moved(ctx, push_temp_mark,
-                        "global vec literal: temp owned by vec");
-                else
-                {
-                    AstNode *src = ast_unwrap_move(lit->as.array_lit.elements[i]);
-                    if (src->kind == AST_IDENT)
-                        val = emit_string_clone_val(ctx, val);
-                }
-            }
-
-            emit_vec_grow_inline(ctx, global, vec_elem_llvm);
-            LLVMValueRef vec_val = LLVMBuildLoad2(ctx->builder, vec_t_llvm, global, "gvl.v");
-            LLVMValueRef data_ptr = LLVMBuildExtractValue(ctx->builder, vec_val, 0, "gvl.data");
-            LLVMValueRef len_val = LLVMBuildExtractValue(ctx->builder, vec_val, 1, "gvl.len");
-            LLVMValueRef len64 = LLVMBuildSExt(ctx->builder, len_val, i64_t_llvm, "gvl.len64");
-            LLVMValueRef elem_ptr = LLVMBuildGEP2(ctx->builder, vec_elem_llvm, data_ptr,
-                                                  &len64, 1, "gvl.slot");
-            LLVMBuildStore(ctx->builder, val, elem_ptr);
-            LLVMValueRef one32 = LLVMConstInt(i32_t_llvm, 1, 0);
-            LLVMValueRef new_len = LLVMBuildAdd(ctx->builder, len_val, one32, "gvl.nlen");
-            vec_val = LLVMBuildInsertValue(ctx->builder, vec_val, new_len, 1, "gvl.v2");
-            LLVMBuildStore(ctx->builder, vec_val, global);
-        }
-        /* Discard temp tracking for the elements (owned temps were marked moved
-           and now belong to the vec; statics need no free). */
-        ctx->temp_string_count = temp_mark;
     }
     else if (var_type->kind == TYPE_STRING &&
              decl->as.var_decl.init->kind == AST_STRING_LIT)
@@ -20390,8 +15971,6 @@ static void emit_map_helpers_for(CodegenContext *ctx, Type *key_type, Type *val_
     LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
     LLVMTypeRef str_t = ls_string_type(ctx);
 
-    LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
-    LLVMTypeRef malloc_ft = LLVMGlobalGetValueType(malloc_fn);
     LLVMValueRef calloc_fn = LLVMGetNamedFunction(ctx->module, "calloc");
     LLVMTypeRef calloc_ft = LLVMGlobalGetValueType(calloc_fn);
     LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
@@ -21946,10 +17525,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
 #define DECL_NEEDS_GLOBAL_CLEANUP(d)                                      \
     ((d)->kind == AST_VAR_DECL && (d)->resolved_type &&                   \
      ((d)->resolved_type->kind == TYPE_STRING ||                          \
-      (d)->resolved_type->kind == TYPE_VECTOR ||                          \
       (d)->resolved_type->kind == TYPE_MAP ||                             \
-      ((d)->resolved_type->kind == TYPE_STRUCT &&                         \
-       (d)->resolved_type->as.strukt.has_drop) ||                         \
+      (d)->resolved_type->kind == TYPE_STRUCT ||                          \
       ((d)->resolved_type->kind == TYPE_ENUM &&                           \
        (d)->resolved_type->as.enom.has_drop)))
 
@@ -21987,10 +17564,6 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             ctx->current_fn = cleanup_fn;
             int saved_tc2 = ctx->temp_string_count;
             ctx->temp_string_count = 0;
-            /* BF-043: unique suffix per vec-global cleanup so basic-block names
-               (and emit_vec_elem_drop_at's internal blocks) don't collide. */
-            int gcleanup_idx = 0;
-
 /* Helper macro: emit cleanup for one global var decl.
    P1-3: gname is the LLVM global name (prefixed for module globals, bare for root). */
 #define EMIT_GLOBAL_CLEANUP(decl, gname)                                                                 \
@@ -22009,7 +17582,7 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             LLVMValueRef cap = LLVMBuildExtractValue(ctx->builder, str_val, 2, "gcs.cap");               \
             LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0);                \
             LLVMValueRef is_owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap, zero, "gcs.owned");     \
-            LLVMBasicBlockRef cur_fn2 = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));       \
+            LLVMValueRef cur_fn2 = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));            \
             LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn2, "gcs.free");\
             LLVMBasicBlockRef skip_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn2, "gcs.skip");\
             LLVMBuildCondBr(ctx->builder, is_owned, free_bb, skip_bb);                                   \
@@ -22020,30 +17593,23 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             LLVMPositionBuilderAtEnd(ctx->builder, skip_bb);                                             \
             /* builder now at skip_bb; caller (retVoid or next cleanup) terminates */\
         }                                                                                                \
-        else if ((decl)->resolved_type->kind == TYPE_VECTOR)                                             \
-        {                                                                                                \
-            /* BF-043: vec global — drop owned elements (string/has_drop) then     \
-               free(data) if cap > 0. POD-element vecs skip the element loop. */    \
-            emit_global_vec_cleanup(ctx, gv,                                                             \
-                (decl)->resolved_type->as.vec.elem, gcleanup_idx++);                                     \
-        }                                                                                                \
-        else if ((decl)->resolved_type->kind == TYPE_STRUCT &&                                           \
-                 (decl)->resolved_type->as.strukt.has_drop)                                             \
-        {                                                                                                \
-            if ((decl)->resolved_type->as.strukt.drop_fn == NULL)                                        \
-                emit_auto_drop_fn(ctx, (decl)->resolved_type);                                           \
-            emit_drop_value(ctx, gv, (decl)->resolved_type);                                             \
-        }                                                                                                \
-        else if ((decl)->resolved_type->kind == TYPE_ENUM &&                                             \
-                 (decl)->resolved_type->as.enom.has_drop)                                               \
-        {                                                                                                \
-            if ((decl)->resolved_type->as.enom.drop_fn == NULL)                                          \
-                emit_auto_enum_drop_fn(ctx, (decl)->resolved_type);                                      \
-            emit_drop_value(ctx, gv, (decl)->resolved_type);                                             \
-        }                                                                                                \
         else if ((decl)->resolved_type->kind == TYPE_MAP)                                                \
         {                                                                                                \
             emit_drop_value(ctx, gv, (decl)->resolved_type);                                             \
+        }                                                                                                \
+        else if ((decl)->resolved_type->kind == TYPE_STRUCT)                                             \
+        {                                                                                                \
+            Type *gst = (decl)->resolved_type;                                                           \
+            char gdrop_name[256];                                                                        \
+            snprintf(gdrop_name, sizeof(gdrop_name), "%s.__drop", struct_llvm_name(gst));                \
+            LLVMValueRef gdrop = LLVMGetNamedFunction(ctx->module, gdrop_name);                          \
+            if (gdrop == NULL)                                                                           \
+                gdrop = cg_declare_pending_generic_method(ctx, gdrop_name);                              \
+            if (gdrop != NULL)                                                                           \
+            {                                                                                            \
+                LLVMTypeRef gdft = LLVMGlobalGetValueType(gdrop);                                        \
+                LLVMBuildCall2(ctx->builder, gdft, gdrop, &gv, 1, "");                                  \
+            }                                                                                            \
         }                                                                                                \
     } while (0)
 
