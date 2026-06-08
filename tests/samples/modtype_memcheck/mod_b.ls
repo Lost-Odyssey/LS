@@ -1,5 +1,7 @@
 module mod_b
 
+import std.vec
+
 /* Same names as mod_a (Node, Box) but DIFFERENT layouts. */
 struct Node { int id; string desc }
 impl Node {
@@ -11,8 +13,8 @@ enum Box { Empty, Holds(string) }
 fn wrap() -> Box { return Holds("BX".upper()) }
 fn unwrap(Box b) -> string { match b { Empty => { return "none" } Holds(v) => { return v } } }
 
-fn nodes() -> vec(Node) {
-    vec(Node) v = []
+fn nodes() -> Vec(Node) {
+    Vec(Node) v = {}
     v.push(Node { id: 1, desc: "b1".upper() })
     return v
 }

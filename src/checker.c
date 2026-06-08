@@ -1069,13 +1069,25 @@ Type *checker_instantiate_struct(Checker *c,
         }
     }
 
-    /* Build mangled name: "Pair(int,string)" */
+    /* Build mangled name: "Pair(int,string)".
+       F6b: for struct/enum element types that come from a module, use the
+       module-prefixed `llvm_name` (e.g. "ma__Node") instead of the bare name
+       ("Node"). Two modules each defining `Node` would otherwise both mangle to
+       "Vec(Node)" and collide (the second instantiation cache-hits the first,
+       conflating distinct element types). Primitives/non-module types keep their
+       bare `type_name`. This mirrors impl_key_of_type's llvm_name?? name. */
     char buf[512];
     int pos = snprintf(buf, sizeof(buf), "%s(", base_name);
     for (int i = 0; i < type_arg_count && pos < (int)sizeof(buf) - 2; i++) {
         if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
-                        "%s", type_name(type_args[i]));
+        const char *an = NULL;
+        Type *at = type_args[i];
+        if (at && at->kind == TYPE_STRUCT && at->as.strukt.llvm_name)
+            an = at->as.strukt.llvm_name;
+        else if (at && at->kind == TYPE_ENUM && at->as.enom.llvm_name)
+            an = at->as.enom.llvm_name;
+        if (an == NULL) an = type_name(at);
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s", an);
     }
     snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
 

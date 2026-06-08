@@ -56,7 +56,7 @@
 | 28 | cmatrix/t08_match_return_call.ls | test_cmatrix_t08_match_return_call | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 29 | global_vec_lit/main.ls | test_global_vec_lit | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 30 | bf044_shortcircuit/main.ls | test_bf044_shortcircuit | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
-| 31 | modtype_memcheck/*.ls | test_modtype_memcheck | ⛔ 阻塞 | 跨模块同名类型 Vec(T) 单态化冲突 |
+| 31 | modtype_memcheck/*.ls | test_modtype_memcheck | ✅ | F6b 已修：Vec mangling 用元素 llvm_name 区分（Vec(mod_a__Node)≠Vec(mod_b__Node)）。JIT+AOT+memcheck 0/0/0 |
 
 ### 桶 D — 闭包捕获 vec（需 by-move 改写）
 
@@ -181,4 +181,4 @@
 - JIT ✅: 18
 - AOT ✅: 18
 - Memcheck 0/0/0: 18
-- ⛔ 阻塞: map_keys, modtype_memcheck (跨模块 Vec 单态化冲突)
+- ⛔ 阻塞: map_keys (F6a 待做); ~~modtype_memcheck~~ ✅ 已解除 (F6b)

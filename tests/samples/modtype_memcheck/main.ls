@@ -3,10 +3,12 @@
    cross-module returns — all under --memcheck (0 leak / 0 double-free).
    Structs are built inline (module make()/nodes()) to avoid the unrelated
    string-param-into-returned-struct AOT bug (BF-045).
-   NOTE: keeps built-in vec because Vec(T) monomorphization conflates same-named
-   types across modules (mod_a.Node vs mod_b.Node → Vec(Node) type collision). */
+   F6b (fixed): uses std.vec Vec(T). Vec instantiation names are now mangled with
+   each element type's module-qualified llvm_name (Vec(mod_a__Node) vs
+   Vec(mod_b__Node)), so the two same-named Node types are no longer conflated. */
 module main
 
+import std.vec
 import mod_a as A
 import mod_b as B
 
@@ -17,8 +19,8 @@ fn main() -> int {
     print(f"na={na.tag()} nb={nb.tag()}")
 
     /* vec of has_drop structs returned across module boundary + Phase H deep copy */
-    vec(A.Node) va = A.nodes()
-    vec(B.Node) vb = B.nodes()
+    Vec(A.Node) va = A.nodes()
+    Vec(B.Node) vb = B.nodes()
     A.Node first = va[0]
     A.Node second = va[1]
     B.Node bfirst = vb[0]
