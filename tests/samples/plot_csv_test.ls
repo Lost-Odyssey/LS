@@ -2,16 +2,17 @@
 // Prints "CSV PASS" / "CSV FAIL: ...".
 
 import plottl
+import std.vec
 
 fn main() {
     bool ok = true
 
     // header row + blank line + row missing the color column (-> auto palette)
     string csv = "start_ns,end_ns,lane,label,color\n0,5000000,main,compute,#4363d8\n3000000,8000000,worker,io\n\n6000000,12000000,main,compute2,#3cb44b\n"
-    vec(TimelineEvent) ev = plottl.parse_timeline_csv(csv)
+    Vec(TimelineEvent) ev = plottl.parse_timeline_csv(csv)
 
-    if ev.length != 3 {
-        print("CSV FAIL: count=" + f"{ev.length}" + " want=3")
+    if ev.len() != 3 {
+        print("CSV FAIL: count=" + f"{ev.len()}" + " want=3")
         ok = false
     }
 

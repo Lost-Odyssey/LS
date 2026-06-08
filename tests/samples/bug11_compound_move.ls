@@ -1,5 +1,7 @@
+import std.vec
+
 fn main() -> int {
-    vec(string) vs
+    Vec(string) vs = {}
     string str = ""
     for i in 0..4 {
         str += "a"

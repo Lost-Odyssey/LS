@@ -1,4 +1,6 @@
-enum JsonValue { Null, Bool(bool), Int(int), String(string), Array(vec(JsonValue)) }
+import std.vec
+
+enum JsonValue { Null, Bool(bool), Int(int), String(string), Array(Vec(JsonValue)) }
 
 impl JsonValue {
     fn is_null(&self) -> bool {
@@ -19,7 +21,7 @@ fn main() {
     JsonValue a = Null;
     JsonValue b = Int(42);
     JsonValue c = String("hello");
-    vec(JsonValue) items = []
+    Vec(JsonValue) items = {}
     items.push(Int(1));
     items.push(String("world"));
     JsonValue d = Array(items);

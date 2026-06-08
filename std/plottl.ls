@@ -50,8 +50,8 @@ fn _map_time(i64 t, i64 tmin, i64 tmax, int left, int width) -> f64 {
 
 // ---- SVG backend ----
 
-fn timeline_svg(vec(TimelineEvent) events, int w, int h, string title) -> string {
-    int n = events.length
+fn timeline_svg(Vec(TimelineEvent) events, int w, int h, string title) -> string {
+    int n = events.len()
 
     // 1. time range
     bool first = true
@@ -70,13 +70,13 @@ fn timeline_svg(vec(TimelineEvent) events, int w, int h, string title) -> string
     if tmax <= tmin { tmax = tmin + 1 }
 
     // 2. unique lanes (preserve first-seen order)
-    vec(string) lanes = []
+    Vec(string) lanes = {}
     i = 0
     while i < n {
         TimelineEvent e = events[i]
         bool found = false
         int j = 0
-        while j < lanes.length {
+        while j < lanes.len() {
             string ln = lanes[j]
             if ln == e.lane { found = true }
             j = j + 1
@@ -92,7 +92,7 @@ fn timeline_svg(vec(TimelineEvent) events, int w, int h, string title) -> string
     int right = w - 20
     int width = right - left
     int lane_h = 24
-    int plot_bottom = top + lanes.length * lane_h
+    int plot_bottom = top + lanes.len() * lane_h
 
     string s = ""
     // title
@@ -103,7 +103,7 @@ fn timeline_svg(vec(TimelineEvent) events, int w, int h, string title) -> string
 
     // lane labels + row separators
     int li = 0
-    while li < lanes.length {
+    while li < lanes.len() {
         string lname = lanes[li]
         int ly = top + li * lane_h
         s = s + f"<text x=\"{left - 8}\" y=\"{ly + lane_h / 2 + 4}\" font-size=\"11\" font-family=\"monospace\" text-anchor=\"end\" fill=\"#333333\">{_tl_escape(lname)}</text>"
@@ -117,7 +117,7 @@ fn timeline_svg(vec(TimelineEvent) events, int w, int h, string title) -> string
         TimelineEvent e = events[i]
         int idx = 0
         int j = 0
-        while j < lanes.length {
+        while j < lanes.len() {
             string ln = lanes[j]
             if ln == e.lane { idx = j }
             j = j + 1
@@ -154,8 +154,8 @@ fn timeline_svg(vec(TimelineEvent) events, int w, int h, string title) -> string
 
 // ---- Text backend ----
 
-fn timeline_text(vec(TimelineEvent) events, int w) -> string {
-    int n = events.length
+fn timeline_text(Vec(TimelineEvent) events, int w) -> string {
+    int n = events.len()
 
     bool first = true
     i64 tmin = 0
@@ -172,13 +172,13 @@ fn timeline_text(vec(TimelineEvent) events, int w) -> string {
     }
     if tmax <= tmin { tmax = tmin + 1 }
 
-    vec(string) lanes = []
+    Vec(string) lanes = {}
     i = 0
     while i < n {
         TimelineEvent e = events[i]
         bool found = false
         int j = 0
-        while j < lanes.length {
+        while j < lanes.len() {
             string ln = lanes[j]
             if ln == e.lane { found = true }
             j = j + 1
@@ -194,7 +194,7 @@ fn timeline_text(vec(TimelineEvent) events, int w) -> string {
 
     string out = ""
     int li = 0
-    while li < lanes.length {
+    while li < lanes.len() {
         string lname = lanes[li]
         string row = ""
         int c = 0
@@ -256,36 +256,17 @@ fn _palette(int i) -> string {
     return "#469990"
 }
 
-fn parse_timeline_csv(string text) -> vec(TimelineEvent) {
-    vec(TimelineEvent) out = []
-    vec(string) lane_seen = []
-    // Phase 2.5: string.lines/split return std.vec Vec(string); copy into the
-    // builtin vec this file still uses internally.
-    Vec(string) _rows = text.lines()
-    vec(string) rows = []
-    int _ri = 0
-    while _ri < _rows.len() {
-        rows.push(_rows.get(_ri))
-        _ri = _ri + 1
-    }
-    // VR-LIM-002: release the module-local pure-LS Vec explicitly.
-    _rows.clear()
-    _rows.shrink_to_fit()
+fn parse_timeline_csv(string text) -> Vec(TimelineEvent) {
+    Vec(TimelineEvent) out = {}
+    Vec(string) lane_seen = {}
+    Vec(string) rows = text.lines()
     int r = 0
-    while r < rows.length {
+    while r < rows.len() {
         string line = rows[r]
         string t = line.trim()
         if t.length > 0 {
-            Vec(string) _f = t.split(",")
-            vec(string) f = []
-            int _fi = 0
-            while _fi < _f.len() {
-                f.push(_f.get(_fi))
-                _fi = _fi + 1
-            }
-            _f.clear()
-            _f.shrink_to_fit()
-            if f.length >= 4 {
+            Vec(string) f = t.split(",")
+            if f.len() >= 4 {
                 string c0 = f[0].trim()
                 if _starts_num(c0) {
                     i64 s64 = _to_i64_or(c0, 0)
@@ -293,20 +274,20 @@ fn parse_timeline_csv(string text) -> vec(TimelineEvent) {
                     string lane = f[2].trim()
                     string label = f[3].trim()
                     string color = ""
-                    if f.length >= 5 {
+                    if f.len() >= 5 {
                         string c4 = f[4].trim()
                         if c4.length > 0 { color = c4 }
                     }
                     // lane index (also tracks first-seen order for auto color)
                     int idx = 0 - 1
                     int j = 0
-                    while j < lane_seen.length {
+                    while j < lane_seen.len() {
                         string sn = lane_seen[j]
                         if sn == lane { idx = j }
                         j = j + 1
                     }
                     if idx < 0 {
-                        idx = lane_seen.length
+                        idx = lane_seen.len()
                         lane_seen.push(lane.copy())
                     }
                     if color.length == 0 { color = _palette(idx) }
@@ -323,11 +304,11 @@ fn parse_timeline_csv(string text) -> vec(TimelineEvent) {
 }
 
 // Read a CSV file and parse it. Returns an empty vec if the file can't be read.
-fn load_timeline_csv(string path) -> vec(TimelineEvent) {
+fn load_timeline_csv(string path) -> Vec(TimelineEvent) {
     match io.read_file(path) {
         Ok(text) => { return parse_timeline_csv(text) }
         Err(e) => {
-            vec(TimelineEvent) empty = []
+            Vec(TimelineEvent) empty = {}
             return empty
         }
     }
@@ -468,8 +449,8 @@ fn topology2(int total_cpus, bool hyperthreading) -> CpuTopology {
 }
 
 // ---- ascending in-place sort of vec(int) (small n) ----
-fn _sort_int(&!vec(int) v) {
-    int n = v.length
+fn _sort_int(&!Vec(int) v) {
+    int n = v.len()
     int i = 0
     while i < n {
         int j = 0
@@ -487,8 +468,8 @@ fn _sort_int(&!vec(int) v) {
 
 // ---- Text backend: thread activity only (no CPU distinction) ----
 
-fn cpu_timeline_text(vec(CpuSchedEvent) events, int w) -> string {
-    int n = events.length
+fn cpu_timeline_text(Vec(CpuSchedEvent) events, int w) -> string {
+    int n = events.len()
     bool first = true
     i64 tmin = 0
     i64 tmax = 1
@@ -504,13 +485,13 @@ fn cpu_timeline_text(vec(CpuSchedEvent) events, int w) -> string {
     }
     if tmax <= tmin { tmax = tmin + 1 }
 
-    vec(string) lanes = []
+    Vec(string) lanes = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool found = false
         int j = 0
-        while j < lanes.length {
+        while j < lanes.len() {
             string ln = lanes[j]
             if ln == e.tname { found = true }
             j = j + 1
@@ -526,7 +507,7 @@ fn cpu_timeline_text(vec(CpuSchedEvent) events, int w) -> string {
 
     string out = ""
     int li = 0
-    while li < lanes.length {
+    while li < lanes.len() {
         string lname = lanes[li]
         string row = ""
         int c = 0
@@ -556,11 +537,11 @@ fn cpu_timeline_text(vec(CpuSchedEvent) events, int w) -> string {
 
 // ---- SVG backend: swimlanes per thread, HT coloring, CPU legend ----
 
-fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
+fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
     int w = opts.w
     int h = opts.h
     string theme = opts.theme
-    int n = events.length
+    int n = events.len()
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
 
@@ -581,14 +562,14 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
     if tmax <= tmin { tmax = tmin + 1 }
 
     // unique lanes by tid (parallel tid + name)
-    vec(int) lane_tids = []
-    vec(string) lane_names = []
+    Vec(int) lane_tids = {}
+    Vec(string) lane_names = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool found = false
         int j = 0
-        while j < lane_tids.length {
+        while j < lane_tids.len() {
             if lane_tids[j] == e.tid { found = true }
             j = j + 1
         }
@@ -597,13 +578,13 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
     }
 
     // unique CPUs (first-seen)
-    vec(int) cpus = []
+    Vec(int) cpus = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool found = false
         int j = 0
-        while j < cpus.length {
+        while j < cpus.len() {
             if cpus[j] == e.cpu_id { found = true }
             j = j + 1
         }
@@ -617,12 +598,12 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
     int right = w - 20
     int width = right - left
     int lane_h = 24
-    int plot_bottom = top + lane_tids.length * lane_h
+    int plot_bottom = top + lane_tids.len() * lane_h
 
     // <defs>: a diagonal-stripe pattern per HT-sibling CPU
     string defs = "<defs>"
     int ci = 0
-    while ci < cpus.length {
+    while ci < cpus.len() {
         int cpu = cpus[ci]
         if cpu >= phys {
             string dim = cpu_theme_color(cpu, phys, theme)
@@ -639,7 +620,7 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
 
     // lane labels
     int li = 0
-    while li < lane_tids.length {
+    while li < lane_tids.len() {
         string lname = lane_names[li]
         int tid = lane_tids[li]
         int ly = top + li * lane_h
@@ -654,7 +635,7 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
         CpuSchedEvent e = events[i]
         int idx = 0
         int j = 0
-        while j < lane_tids.length {
+        while j < lane_tids.len() {
             if lane_tids[j] == e.tid { idx = j }
             j = j + 1
         }
@@ -691,7 +672,7 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
     int leg_y = plot_bottom + 32
     s = s + f"<text x=\"{left}\" y=\"{leg_y}\" font-size=\"11\" font-family=\"sans-serif\" font-weight=\"bold\" fill=\"#000000\">Legend (CPU)</text>"
     ci = 0
-    while ci < cpus.length {
+    while ci < cpus.len() {
         int cpu = cpus[ci]
         int ry = leg_y + 8 + ci * 16
         string fill = cpu_theme_color(cpu, phys, theme)
@@ -703,7 +684,7 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
         ci = ci + 1
     }
 
-    int svgh = leg_y + 8 + cpus.length * 16 + 12
+    int svgh = leg_y + 8 + cpus.len() * 16 + 12
     if svgh < h { svgh = h }
     string head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
     string bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
@@ -716,10 +697,10 @@ fn cpu_timeline_svg(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
 // browser provides a native horizontal scrollbar; the thread-name column sits
 // outside the scroll area and stays fixed. Zero JS, self-contained single file.
 
-fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
+fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
     int chart_width = opts.chart_width
     string theme = opts.theme
-    int n = events.length
+    int n = events.len()
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
 
@@ -738,14 +719,14 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
     }
     if tmax <= tmin { tmax = tmin + 1 }
 
-    vec(int) lane_tids = []
-    vec(string) lane_names = []
+    Vec(int) lane_tids = {}
+    Vec(string) lane_names = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool found = false
         int j = 0
-        while j < lane_tids.length {
+        while j < lane_tids.len() {
             if lane_tids[j] == e.tid { found = true }
             j = j + 1
         }
@@ -753,13 +734,13 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
         i = i + 1
     }
 
-    vec(int) cpus = []
+    Vec(int) cpus = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool found = false
         int j = 0
-        while j < cpus.length {
+        while j < cpus.len() {
             if cpus[j] == e.cpu_id { found = true }
             j = j + 1
         }
@@ -771,13 +752,13 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
     int axis_h = 26
     int cw = chart_width
     if cw < 200 { cw = 200 }
-    int pad = 8                       // left/right inset so edge ticks/events aren't clipped
-    int svg_h = axis_h + lane_tids.length * lane_h + 4
+    int pad = 8
+    int svg_h = axis_h + lane_tids.len() * lane_h + 4
 
     // <defs> HT stripe patterns
     string defs = "<defs>"
     int ci = 0
-    while ci < cpus.length {
+    while ci < cpus.len() {
         int cpu = cpus[ci]
         if cpu >= phys {
             string dim = cpu_theme_color(cpu, phys, theme)
@@ -805,7 +786,7 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
         ti = ti + 1
     }
     int li = 0
-    while li < lane_tids.length {
+    while li < lane_tids.len() {
         int ry = axis_h + li * lane_h
         strip = strip + f"<line x1=\"0\" y1=\"{ry}\" x2=\"{cw}\" y2=\"{ry}\" stroke=\"#f0f0f0\" stroke-width=\"0.5\"/>"
         li = li + 1
@@ -815,7 +796,7 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
         CpuSchedEvent e = events[i]
         int idx = 0
         int j = 0
-        while j < lane_tids.length {
+        while j < lane_tids.len() {
             if lane_tids[j] == e.tid { idx = j }
             j = j + 1
         }
@@ -838,7 +819,7 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
     // left fixed lane column (aligned row heights)
     string lanes_html = "<div class=\"lhead\"></div>"
     li = 0
-    while li < lane_tids.length {
+    while li < lane_tids.len() {
         string lname = lane_names[li]
         int tid = lane_tids[li]
         lanes_html = lanes_html + f"<div class=\"lane\">{_tl_escape(lname)} ({tid})</div>"
@@ -849,7 +830,7 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
     _sort_int(&!cpus)
     string legend = "<div class=\"legend\"><b>Legend (CPU)</b><br>"
     ci = 0
-    while ci < cpus.length {
+    while ci < cpus.len() {
         int cpu = cpus[ci]
         string style = ""
         if cpu >= phys {
@@ -885,11 +866,11 @@ fn cpu_timeline_html(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
 // axis is redrawn by JS on each transform so labels never stretch. Self-contained
 // single file, no external deps.
 
-fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
+fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
     int w = opts.w
     int h = opts.h
     string theme = opts.theme
-    int n = events.length
+    int n = events.len()
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
 
@@ -908,14 +889,14 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     }
     if tmax <= tmin { tmax = tmin + 1 }
 
-    vec(int) lane_tids = []
-    vec(string) lane_names = []
+    Vec(int) lane_tids = {}
+    Vec(string) lane_names = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool found = false
         int j = 0
-        while j < lane_tids.length {
+        while j < lane_tids.len() {
             if lane_tids[j] == e.tid { found = true }
             j = j + 1
         }
@@ -923,13 +904,13 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
         i = i + 1
     }
 
-    vec(int) cpus = []
+    Vec(int) cpus = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool found = false
         int j = 0
-        while j < cpus.length {
+        while j < cpus.len() {
             if cpus[j] == e.cpu_id { found = true }
             j = j + 1
         }
@@ -942,7 +923,7 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     int lane_h = 28
     int plotw = w - left - 20
     if plotw < 100 { plotw = 100 }
-    int ploth = lane_tids.length * lane_h
+    int ploth = lane_tids.len() * lane_h
     int bottom = top + ploth
     int svgh = bottom + 30
     if svgh < h { svgh = h }
@@ -951,7 +932,7 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     // defs: HT patterns + clip
     string defs = "<defs>"
     int ci = 0
-    while ci < cpus.length {
+    while ci < cpus.len() {
         int cpu = cpus[ci]
         if cpu >= phys {
             string dim = cpu_theme_color(cpu, phys, theme)
@@ -968,7 +949,7 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     fixed = fixed + f"<text x=\"{cx}\" y=\"24\" font-size=\"15\" font-family=\"sans-serif\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#000000\">CPU Scheduling Timeline (drag = pan, wheel = zoom, dbl-click = reset)</text>"
     fixed = fixed + f"<rect x=\"{left}\" y=\"{top}\" width=\"{plotw}\" height=\"{ploth}\" fill=\"#fafafa\" stroke=\"#333333\" stroke-width=\"1\"/>"
     int li = 0
-    while li < lane_tids.length {
+    while li < lane_tids.len() {
         string lname = lane_names[li]
         int tid = lane_tids[li]
         int ly = top + li * lane_h
@@ -984,7 +965,7 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
         CpuSchedEvent e = events[i]
         int idx = 0
         int j = 0
-        while j < lane_tids.length {
+        while j < lane_tids.len() {
             if lane_tids[j] == e.tid { idx = j }
             j = j + 1
         }
@@ -1007,7 +988,7 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     _sort_int(&!cpus)
     string legend = "<div class=\"legend\"><b>Legend (CPU)</b><br>"
     ci = 0
-    while ci < cpus.length {
+    while ci < cpus.len() {
         int cpu = cpus[ci]
         string style = ""
         if cpu >= phys {
@@ -1049,12 +1030,12 @@ fn cpu_timeline_html_zoom(vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
 // one cell colored by that dominant CPU. Rect count = lanes x windows
 // (bounded), not event count.
 
-fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
+fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
                            i64 time_window_ns, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
     int w = opts.w
     int h = opts.h
     string theme = opts.theme
-    int n = events.length
+    int n = events.len()
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
     i64 win = time_window_ns
@@ -1082,19 +1063,19 @@ fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
     if nwin > 2000 { nwin = 2000 }
 
     // unique lanes (tid + name) and CPUs
-    vec(int) lane_tids = []
-    vec(string) lane_names = []
-    vec(int) cpus = []
+    Vec(int) lane_tids = {}
+    Vec(string) lane_names = {}
+    Vec(int) cpus = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool lf = false
         int j = 0
-        while j < lane_tids.length { if lane_tids[j] == e.tid { lf = true } j = j + 1 }
+        while j < lane_tids.len() { if lane_tids[j] == e.tid { lf = true } j = j + 1 }
         if !lf { lane_tids.push(e.tid); lane_names.push(e.tname.copy()) }
         bool cf = false
         j = 0
-        while j < cpus.length { if cpus[j] == e.cpu_id { cf = true } j = j + 1 }
+        while j < cpus.len() { if cpus[j] == e.cpu_id { cf = true } j = j + 1 }
         if !cf { cpus.push(e.cpu_id) }
         i = i + 1
     }
@@ -1105,12 +1086,12 @@ fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
     int right = w - 20
     int width = right - left
     int lane_h = 24
-    int plot_bottom = top + lane_tids.length * lane_h
+    int plot_bottom = top + lane_tids.len() * lane_h
 
     // <defs> HT stripe patterns
     string defs = "<defs>"
     int ci = 0
-    while ci < cpus.length {
+    while ci < cpus.len() {
         int cpu = cpus[ci]
         if cpu >= phys {
             string dim = cpu_theme_color(cpu, phys, theme)
@@ -1128,7 +1109,7 @@ fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
 
     // lane labels + separators
     int li = 0
-    while li < lane_tids.length {
+    while li < lane_tids.len() {
         string lname = lane_names[li]
         int tid = lane_tids[li]
         int ly = top + li * lane_h
@@ -1139,7 +1120,7 @@ fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
 
     // aggregated cells: per (lane, window) dominant CPU
     li = 0
-    while li < lane_tids.length {
+    while li < lane_tids.len() {
         int tid = lane_tids[li]
         string lname2 = lane_names[li]
         int wi = 0
@@ -1151,7 +1132,7 @@ fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
             i64 best_time = 0
             int best_cpu = 0 - 1
             int ck = 0
-            while ck < cpus.length {
+            while ck < cpus.len() {
                 int cpu = cpus[ck]
                 i64 acc = 0
                 int ei = 0
@@ -1208,7 +1189,7 @@ fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
     int leg_y = plot_bottom + 32
     s = s + f"<text x=\"{left}\" y=\"{leg_y}\" font-size=\"11\" font-family=\"sans-serif\" font-weight=\"bold\" fill=\"#000000\">Legend (CPU)</text>"
     ci = 0
-    while ci < cpus.length {
+    while ci < cpus.len() {
         int cpu = cpus[ci]
         int ry = leg_y + 8 + ci * 16
         string fill = cpu_theme_color(cpu, phys, theme)
@@ -1220,7 +1201,7 @@ fn cpu_timeline_aggregated(vec(CpuSchedEvent) events, CpuTopology topo,
         ci = ci + 1
     }
 
-    int svgh = leg_y + 8 + cpus.length * 16 + 12
+    int svgh = leg_y + 8 + cpus.len() * 16 + 12
     if svgh < h { svgh = h }
     string head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
     string bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"

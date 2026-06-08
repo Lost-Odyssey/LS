@@ -2,9 +2,10 @@
 // Prints "AGG PASS" / "AGG FAIL: ...".
 
 import plottl
+import std.vec
 
-fn make_events() -> vec(CpuSchedEvent) {
-    vec(CpuSchedEvent) ev = []
+fn make_events() -> Vec(CpuSchedEvent) {
+    Vec(CpuSchedEvent) ev = {}
     // main: window 0 [0,10ms] -> cpu0 7ms vs cpu1 2ms -> dominant cpu0
     ev.push(plottl.cpu_event(0,        7000000,  1, "main", 0, "app"))
     ev.push(plottl.cpu_event(7000000,  9000000,  1, "main", 1, "app"))

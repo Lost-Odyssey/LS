@@ -1,6 +1,7 @@
 // plot_text_test.ls — Phase 2 Text/ASCII backend: grid + DDA rasterization +
 // axes + y/x labels. Prints "TEXT PASS" / "TEXT FAIL: ...".
 
+import std.vec
 import plot
 import math
 
@@ -26,8 +27,8 @@ fn main() {
     plot.Axes ax = plot.axes()
     plot.set_title(&!ax, "ramp")
     // simple ascending line y = x
-    vec(f64) xs = [0.0, 1.0, 2.0, 3.0, 4.0]
-    vec(f64) ys = [0.0, 1.0, 2.0, 3.0, 4.0]
+    Vec(f64) xs = [0.0, 1.0, 2.0, 3.0, 4.0]
+    Vec(f64) ys = [0.0, 1.0, 2.0, 3.0, 4.0]
     plot.line(&!ax, xs, ys, plot.LineOpts{})
 
     plot.Figure fig = plot.figure(plot.FigureOpts{text_w: 50, text_h: 12})

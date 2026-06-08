@@ -2,9 +2,10 @@
 // Prints "TL PASS" / "TL FAIL: ...".
 
 import plottl
+import std.vec
 
-fn make_events() -> vec(TimelineEvent) {
-    vec(TimelineEvent) ev = []
+fn make_events() -> Vec(TimelineEvent) {
+    Vec(TimelineEvent) ev = {}
     ev.push(plottl.event(0, 5000000, "main", "compute", "#4363d8"))
     ev.push(plottl.event(3000000, 8000000, "worker", "io", "#e6194b"))
     ev.push(plottl.event(6000000, 12000000, "main", "compute2", "#3cb44b"))

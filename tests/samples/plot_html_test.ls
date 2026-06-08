@@ -2,9 +2,10 @@
 // Prints "HTML PASS" / "HTML FAIL: ...".
 
 import plottl
+import std.vec
 
-fn make_events() -> vec(CpuSchedEvent) {
-    vec(CpuSchedEvent) ev = []
+fn make_events() -> Vec(CpuSchedEvent) {
+    Vec(CpuSchedEvent) ev = {}
     ev.push(plottl.cpu_event(0, 6000000, 100, "main", 0, "app"))
     ev.push(plottl.cpu_event(2000000, 7000000, 101, "worker-a", 4, "app"))  // HT of core 0
     ev.push(plottl.cpu_event(8000000, 14000000, 100, "main", 1, "app"))

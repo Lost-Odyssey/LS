@@ -12,14 +12,15 @@
 // the whole pipeline compiles, runs, and is memcheck-clean. Phase 2 fills the
 // tick engine; Phase 3+ the real SVG / Text renderers.
 
+import std.vec
 import math
 import plotfmt
 
 // ---- Data model ----
 
 struct LineStyle {
-    vec(f64) xs
-    vec(f64) ys
+    Vec(f64) xs
+    Vec(f64) ys
     string color
     string label
     f64 linewidth
@@ -27,15 +28,15 @@ struct LineStyle {
 }
 
 struct BarSeries {
-    vec(string) labels
-    vec(f64) values
+    Vec(string) labels
+    Vec(f64) values
     string color
     string label
 }
 
 struct Axes {
-    vec(LineStyle) lines
-    vec(BarSeries) bars
+    Vec(LineStyle) lines
+    Vec(BarSeries) bars
     string title
     string xlabel
     string ylabel
@@ -44,14 +45,14 @@ struct Axes {
     f64 xmax
     f64 ymin
     f64 ymax
-    vec(f64) xticks
-    vec(f64) yticks
+    Vec(f64) xticks
+    Vec(f64) yticks
     bool legend_visible
     bool grid_visible
 }
 
 struct Figure {
-    vec(Axes) axes_list
+    Vec(Axes) axes_list
     int rows
     int cols
     int svg_width
@@ -103,7 +104,7 @@ struct BarOpts {
 // ---- Constructors ----
 
 fn figure(FigureOpts opts) -> Figure {
-    vec(Axes) al = []
+    Vec(Axes) al = {}
     return Figure {
         axes_list: al,
         rows: 1, cols: 1,
@@ -114,10 +115,10 @@ fn figure(FigureOpts opts) -> Figure {
 }
 
 fn axes() -> Axes {
-    vec(LineStyle) ls = []
-    vec(BarSeries) bs = []
-    vec(f64) xt = []
-    vec(f64) yt = []
+    Vec(LineStyle) ls = {}
+    Vec(BarSeries) bs = {}
+    Vec(f64) xt = {}
+    Vec(f64) yt = {}
     return Axes {
         lines: ls, bars: bs,
         title: "", xlabel: "", ylabel: "",
@@ -130,8 +131,8 @@ fn axes() -> Axes {
 
 // ---- Internal helpers ----
 
-fn _range(int n) -> vec(f64) {
-    vec(f64) xs = []
+fn _range(int n) -> Vec(f64) {
+    Vec(f64) xs = {}
     int i = 0
     while i < n {
         xs.push(i as f64)
@@ -168,8 +169,8 @@ fn _nice_number(f64 v, bool round) -> f64 {
     return sign * nice * math.pow(10.0, expo)
 }
 
-fn generate_ticks(f64 lo, f64 hi, int max_ticks) -> vec(f64) {
-    vec(f64) ticks = []
+fn generate_ticks(f64 lo, f64 hi, int max_ticks) -> Vec(f64) {
+    Vec(f64) ticks = {}
     if max_ticks < 2 { ticks.push(lo); return ticks }
     f64 span = _nice_number(hi - lo, false)
     f64 step = _nice_number(span / ((max_ticks - 1) as f64), true)
@@ -209,9 +210,9 @@ fn update_limits(&!Axes ax) {
     f64 ymn = 0.0
     f64 ymx = 1.0
     int li = 0
-    while li < ax.lines.length {
+    while li < ax.lines.len() {
         LineStyle ln = ax.lines[li]
-        int n = math.min(ln.xs.length, ln.ys.length)
+        int n = math.min(ln.xs.len(), ln.ys.len())
         int k = 0
         while k < n {
             f64 xv = ln.xs[k]
@@ -259,9 +260,9 @@ fn finalize(&!Axes ax) {
 
 // ---- Data-adding builders (mutable borrow &!Axes) ----
 
-fn plot(&!Axes ax, vec(f64) ys) {
-    vec(f64) xs = _range(ys.length)
-    string c = color_at(ax.lines.length)
+fn plot(&!Axes ax, Vec(f64) ys) {
+    Vec(f64) xs = _range(ys.len())
+    string c = color_at(ax.lines.len())
     ax.lines.push(LineStyle {
         xs: xs, ys: ys, color: c, label: "", linewidth: 2.0, is_scatter: false
     })
@@ -269,18 +270,18 @@ fn plot(&!Axes ax, vec(f64) ys) {
 
 // line: one series (line or scatter) with styling via LineOpts.
 // Replaces plot_xy / plot_styled / scatter. opts.color == "" -> auto palette.
-fn line(&!Axes ax, vec(f64) xs, vec(f64) ys, LineOpts opts) {
+fn line(&!Axes ax, Vec(f64) xs, Vec(f64) ys, LineOpts opts) {
     string c = opts.color
-    if c.length == 0 { c = color_at(ax.lines.length) }
+    if c.length == 0 { c = color_at(ax.lines.len()) }
     ax.lines.push(LineStyle {
         xs: xs, ys: ys, color: c, label: opts.label,
         linewidth: opts.width, is_scatter: opts.scatter
     })
 }
 
-fn bar(&!Axes ax, vec(string) labels, vec(f64) values, BarOpts opts) {
+fn bar(&!Axes ax, Vec(string) labels, Vec(f64) values, BarOpts opts) {
     string c = opts.color
-    if c.length == 0 { c = color_at(ax.bars.length) }
+    if c.length == 0 { c = color_at(ax.bars.len()) }
     ax.bars.push(BarSeries {
         labels: labels, values: values, color: c, label: opts.label
     })
@@ -317,11 +318,11 @@ fn add_axes(&!Figure fig, Axes ax) {
 //      real SVG and Text/Unicode renderers) ----
 
 fn show_text(&Figure fig) -> string {
-    string s = f"Figure {fig.svg_width}x{fig.svg_height} axes={fig.axes_list.length}\n"
+    string s = f"Figure {fig.svg_width}x{fig.svg_height} axes={fig.axes_list.len()}\n"
     int i = 0
-    while i < fig.axes_list.length {
+    while i < fig.axes_list.len() {
         Axes ax = fig.axes_list[i]
-        s = s + f"  axes[{i}] '{ax.title}': lines={ax.lines.length} bars={ax.bars.length}"
+        s = s + f"  axes[{i}] '{ax.title}': lines={ax.lines.len()} bars={ax.bars.len()}"
         if ax.grid_visible { s = s + " grid" }
         if ax.legend_visible { s = s + " legend" }
         s = s + "\n"
@@ -378,7 +379,7 @@ fn _render_axes_svg(Axes ax, Layout lo) -> string {
 
     // x ticks: optional grid + tick mark + label
     int i = 0
-    while i < ax.xticks.length {
+    while i < ax.xticks.len() {
         f64 tx = ax.xticks[i]
         f64 pxf = map_x(tx, ax.xmin, ax.xmax, lo.left, lo.width)
         if ax.grid_visible {
@@ -392,7 +393,7 @@ fn _render_axes_svg(Axes ax, Layout lo) -> string {
 
     // y ticks
     int j = 0
-    while j < ax.yticks.length {
+    while j < ax.yticks.len() {
         f64 ty = ax.yticks[j]
         f64 pyf = map_y(ty, ax.ymin, ax.ymax, lo.top, lo.height)
         if ax.grid_visible {
@@ -406,9 +407,9 @@ fn _render_axes_svg(Axes ax, Layout lo) -> string {
 
     // data series
     int li = 0
-    while li < ax.lines.length {
+    while li < ax.lines.len() {
         LineStyle ln = ax.lines[li]
-        int n = math.min(ln.xs.length, ln.ys.length)
+        int n = math.min(ln.xs.len(), ln.ys.len())
         if ln.is_scatter {
             int k = 0
             while k < n {
@@ -454,7 +455,7 @@ fn to_svg(&Figure fig) -> string {
     Layout lo = _layout(fig.svg_width, fig.svg_height)
     string body = ""
     int i = 0
-    while i < fig.axes_list.length {
+    while i < fig.axes_list.len() {
         Axes a = fig.axes_list[i]
         finalize(&!a)
         body = body + _render_axes_svg(a, lo)
@@ -467,16 +468,16 @@ fn to_svg(&Figure fig) -> string {
 
 // ---- Text / ASCII backend ----
 //
-// The grid is a vec(string), one string per row, each a run of single-byte
+// The grid is a Vec(string), one string per row, each a run of single-byte
 // ASCII chars. (Unicode block glyphs ▁▂▃█ are multi-byte UTF-8 and would
 // desync the byte-offset _put_char column math; an Unicode cell-grid is a
 // later enhancement.)
 
-fn _make_grid(int w, int h) -> vec(string) {
+fn _make_grid(int w, int h) -> Vec(string) {
     string row = ""
     int j = 0
     while j < w { row = row + " "; j = j + 1 }
-    vec(string) g = []
+    Vec(string) g = {}
     int i = 0
     while i < h { g.push(row.copy()); i = i + 1 }
     return g
@@ -485,8 +486,8 @@ fn _make_grid(int w, int h) -> vec(string) {
 // Write a single ASCII char at (col,row). NOTE: build the new row in a local
 // before assigning to the vec element — assigning a concat rvalue directly to
 // g[row] leaks a temporary string in current LS.
-fn _put(&!vec(string) g, int col, int row, string ch) {
-    if row < 0 || row >= g.length { return }
+fn _put(&!Vec(string) g, int col, int row, string ch) {
+    if row < 0 || row >= g.len() { return }
     string r = g[row]
     if col < 0 || col >= r.length { return }
     string nr = r.substr(0, col) + ch + r.substr(col + 1, r.length - col - 1)
@@ -510,9 +511,9 @@ fn _row_text(f64 y, f64 ymin, f64 ymax, int gh) -> int {
 }
 
 // DDA line rasterization, choosing a slope-appropriate ASCII glyph.
-fn _rasterize_line(&!vec(string) g, LineStyle ln,
+fn _rasterize_line(&!Vec(string) g, LineStyle ln,
                    f64 xmin, f64 xmax, f64 ymin, f64 ymax, int gw, int gh) {
-    int n = math.min(ln.xs.length, ln.ys.length)
+    int n = math.min(ln.xs.len(), ln.ys.len())
     if n == 1 {
         _put(&!g, _col_text(ln.xs[0], xmin, xmax, gw),
                   _row_text(ln.ys[0], ymin, ymax, gh), "*")
@@ -555,9 +556,9 @@ fn _render_axes_text(Axes ax, int w, int h) -> string {
     if gw < 1 { gw = 1 }
     if gh < 1 { gh = 1 }
 
-    vec(string) g = _make_grid(gw, gh)
+    Vec(string) g = _make_grid(gw, gh)
     int li = 0
-    while li < ax.lines.length {
+    while li < ax.lines.len() {
         LineStyle ln = ax.lines[li]
         _rasterize_line(&!g, ln, ax.xmin, ax.xmax, ax.ymin, ax.ymax, gw, gh)
         li = li + 1
@@ -595,7 +596,7 @@ fn _render_axes_text(Axes ax, int w, int h) -> string {
 fn to_text(&Figure fig) -> string {
     string out = ""
     int ai = 0
-    while ai < fig.axes_list.length {
+    while ai < fig.axes_list.len() {
         Axes a = fig.axes_list[ai]
         finalize(&!a)
         out = out + _render_axes_text(a, fig.text_width, fig.text_height)

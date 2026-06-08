@@ -108,22 +108,22 @@
 | 3 | vec_string_test.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 4 | vec_struct_test.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 5 | vec_struct_clone_test.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
-| 6 | bug11_compound_move.ls | 待做 | |
-| 7 | operator_overload_demo.ls | 待做 | |
-| 8 | enum_e1_minimal.ls | 待做 | |
-| 9 | enum_has_drop_vec_test.ls | 待做 | |
-| 10 | enum_method_has_drop.ls | 待做 | |
-| 11 | enum_nested_vec_test.ls | 待做 | |
-| 12 | enum_vec_payload_test.ls | test_enum_vec_map_payload | 待做 |
-| 13 | enum_borrow_b_test.ls | test_enum_borrow_b | 待做 |
-| 14 | cmatrix/b05_enum_vec.ls | test_cmatrix_b05_enum_vec | 待做 |
-| 15 | cmatrix/t03_enum_nested_vec.ls | test_cmatrix_t03_enum_nested_vec | 待做 |
-| 16 | cmatrix/t08_match_return_call.ls | test_cmatrix_t08_match_return_call | 待做 |
-| 17 | global_vec_lit/main.ls | test_global_vec_lit | 待做 |
-| 18 | modtype_memcheck/main.ls | test_modtype_memcheck | 待做 |
-| 19 | modtype_memcheck/mod_a.ls | test_modtype_memcheck | 待做 |
-| 20 | modtype_memcheck/mod_b.ls | test_modtype_memcheck | 待做 |
-| 21 | bf044_shortcircuit/main.ls | test_bf044_shortcircuit | 待做 |
+| 6 | bug11_compound_move.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
+| 7 | operator_overload_demo.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
+| 8 | enum_e1_minimal.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
+| 9 | enum_has_drop_vec_test.ls | ⚠️ | JIT ✅ AOT ✅ Memcheck: 2 double-free。Match 从 `Option(Data)` 绑定 `Some(x)` 后，Option 容器析构与提取的 x 共享 string payload → 双释放。已知类 L-012 问题，跳过。 |
+| 10 | enum_method_has_drop.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
+| 11 | enum_nested_vec_test.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
+| 12 | enum_vec_payload_test.ls | test_enum_vec_map_payload | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
+| 13 | enum_borrow_b_test.ls | test_enum_borrow_b | ✅ | 已迁移（非 ctest 表过时） |
+| 14 | cmatrix/b05_enum_vec.ls | test_cmatrix_b05_enum_vec | ✅ | 已迁移 |
+| 15 | cmatrix/t03_enum_nested_vec.ls | test_cmatrix_t03_enum_nested_vec | ✅ | 已迁移 |
+| 16 | cmatrix/t08_match_return_call.ls | test_cmatrix_t08_match_return_call | ✅ | 已迁移 |
+| 17 | global_vec_lit/main.ls | test_global_vec_lit | ✅ | 已迁移 |
+| 18 | modtype_memcheck/main.ls | test_modtype_memcheck | ✅ | 已迁移 |
+| 19 | modtype_memcheck/mod_a.ls | test_modtype_memcheck | ✅ | 已迁移 |
+| 20 | modtype_memcheck/mod_b.ls | test_modtype_memcheck | ✅ | 已迁移 |
+| 21 | bf044_shortcircuit/main.ls | test_bf044_shortcircuit | ✅ | 已迁移 |
 | 22 | fs_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 23 | io_fs_test.ls | (非 ctest) | 待做 |
 | 24 | json_infra_test.ls | (非 ctest) | 待做 |
@@ -138,9 +138,9 @@
 | 33 | re_step4.ls | (非 ctest) | ✅ | JIT 运行 OK |
 | 34 | re_step5.ls | (非 ctest) | ✅ | JIT 运行 OK，含 `Option(Vec(string))` 验证 |
 | 35 | strconv_test.ls | test_strconv | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
-| 36 | test_bug_22.ls | (非 ctest) | 待做 |
-| 37 | rawvec_m1_test.ls | test_vec_m1 | 待做 |
-| 38 | stack_test.ls | test_stack | 待做 |
+| 36 | test_bug_22.ls | (非 ctest) | ✅ | 仅注释含 vec，无需迁移 |
+| 37 | rawvec_m1_test.ls | test_vec_m1 | ✅ | 用 RawVec（手写 C 风格），非 builtin vec |
+| 38 | stack_test.ls | test_stack | ⛔ | 阻塞：VR-LIM-019（AOT 泛型方法链返回 Option(string) 损坏）|
 | 39 | ring_test.ls | test_ring | ✅ | F4 修复后迁移，JIT+AOT+memcheck 0/0/0 |
 
 ### std 库文件（需优先迁移）
@@ -151,8 +151,8 @@
 | 2 | std/json.ls | ✅ | enum payload + 内部全部 `vec`→`Vec`。VR-LIM-018（跨模块 match binder 方法）已于 F6 修复，`json_e2e_test` 已还原真 `.len()` 方法调用 |
 | 3 | std/html.ls | ✅ | 全 vec→Vec；Element(Vec(Attr),Vec(HtmlNode)) 双 Vec + 自递归 enum 持 Vec(Self) 验证通过。test_std_html_parse/write JIT+AOT+memcheck 0/0/0 |
 | 4 | std/md.ls | ✅ | 全 vec→Vec，移除 Vec→内建 vec 脚手架；Vec(Vec(MdInline))/Vec(Vec(string)) 嵌套 + Blockquote(Vec(MdBlock)) 递归验证通过。test_std_md_*/test_md_to_html JIT+AOT+memcheck 0/0/0。ctest 167/167 |
-| 5 | std/plot.ls | 待做 |
-| 6 | std/plottl.ls | 待做 |
+| 5 | std/plot.ls | ✅ | 全 vec→Vec：605 行含 ~40 处 vec 类型/`.length`/`=[]`/`&!vec` 全部迁移。plot 测试 9 个同步迁移。JIT ✅ |
+| 6 | std/plottl.ls | ✅ | 全 vec→Vec：含 `vec(enum)`/`&!vec(int)` 借用参数/~100 处改动。JIT ✅ |
 | 7 | std/fs.ls | ✅ | `list_dir` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
 | 8 | std/proc.ls | ✅ | `args` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
 | 9 | std/regex.ls | ✅ | `find_all`/`capture`/`capture_all`/`split` 返回 `Vec(string)`；IR-002 已解除：`runtime/ls_regex.c` 接入 `ls.exe`+`ls_os_backend` 构建，jit.c 注册 10 个 `__ls_regex_*` 符号；`test_regex` 注册为 ctest（JIT+AOT+memcheck 三绿） |
@@ -170,15 +170,19 @@
 | ~~VR-LIM-016~~ | ~~全局变量 `Vec(T) v = [literal]` 触发 `__from_list` 缺失~~ | ✅ 已修复（F1，2026-06-08）：`emit_user_from_list_value` 落空时从 pending-generic 队列前向声明 `__from_list`。`test_global_vec_lit` 还原全局字面量，JIT+AOT+memcheck 0/0/0 | 已解除 |
 | （参见 plan_vec_replacement.md §6.1 其他已知限制） | | | |
 | ~~VR-LIM-017~~ | ~~`Vec(Block(...))` 不兼容~~ | ✅ 已修复（F5，2026-06-08）：checker 泛型 T=Block 参数不标 is_borrow + codegen 三处（bind 点 copy-out 克隆 env / move-into-container 消费 temp env / emit_drop_value 加 Block 释放）。closure_g 迁移到 Vec(Block)，test_phase_g_closure JIT+AOT+memcheck 0/0/0 | 已解除 |
+| VR-LIM-019 | AOT: 泛型方法链返回 `Option(T)`（T=has_drop string）值损坏 | `Stack(string).peek()`（内部调 `self.data.last()` 并转发返回 `Option(string)`）。JIT 正常，AOT 仅读出首字符（"m" 而非 "gamma"）；`Vec(string).last()` 直调在 AOT 下正常。根因推测：AOT sret ABI 对跨泛型方法链传递 has_drop enum 有 bug。 | 2026-06-08 发现，阻塞 `std/stack.ls` + `stack_test.ls` 迁移 |
+| VR-LIM-020 | `Option(T)` match 绑定的 has_drop T 与 Option 容器析构双释放 | `enum_has_drop_vec_test.ls`：`Data x = match v.first() { Some(x) => { x } None => { Empty } }`，提取的 `x` 被析构一次，Option 容器析构时又释放一次 string payload。类 L-012 问题。 | 2026-06-08 发现，阻塞 has_drop enum 的 `first()`/`last()` 迁移
 
----
+| ~~F-101~~ | ~~`resolve_type_node_with_substitution` 用 `find_struct_template_idx` 而非 `_pull`~~ | ✅ 已修复（2026-06-08）：栈泛型类 `Stack(E) { Vec(E) data }` 字段类型 `Vec(E)` 来自 `import std.vec`（跨模块），字段解析时 `find_struct_template_idx("Vec")` 只在当前 checker 查找 → 找不到。修法：改为 `find_struct_template_idx_pull`。 | 已解除，同时解除所有「模块定义泛型含导入 Vec 字段」阻塞 |
 
 ## 累计结果
 
 - 基线: 166/166
-- 当前: 167/167
-- 迁移完成: 32 文件（14 ctest + 12 非 ctest + 4 std 库 + 2 pre-existing issues）
-- JIT ✅: 18
-- AOT ✅: 18
-- Memcheck 0/0/0: 18
+- 当前: 168/168（ctest 数量不变：plot 测试非 cmake 驱动）
+- 迁移完成: 45 文件（14 ctest + 22 非 ctest + 6 std 库 + 3 pre-existing）
+- JIT ✅: 31
+- AOT ✅: 22（9 plot 测试未全部 AOT 验证）
+- Memcheck 0/0/0: 22
 - ~~⛔ 阻塞~~ 全部解除: ~~map_keys~~ ✅ (F6a); ~~modtype_memcheck~~ ✅ (F6b)
+- 新增阻塞: VR-LIM-019 (AOT 泛型方法链返回 Option(string) 损坏) → 阻塞 stack.ls 迁移
+- 新增基础设施修复: F-101 (`find_struct_template_idx`→`_pull`) → 解除跨模块 Vec 泛型字段阻塞

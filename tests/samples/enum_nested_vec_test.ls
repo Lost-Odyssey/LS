@@ -3,29 +3,31 @@
 // Verifies deep drop/clone chains work correctly end-to-end
 // Expected: 0 leaks, 0 double-frees with --memcheck
 
+import std.vec
+
 enum JVal {
     JNull
     JStr(string s)
-    JArr(vec(JVal) items)
+    JArr(Vec(JVal) items)
 }
 
 fn make_arr() -> JVal {
-    vec(JVal) items = [JStr("a".copy()), JStr("b".copy())]
+    Vec(JVal) items = [JStr("a".copy()), JStr("b".copy())]
     return JArr(items)
 }
 
 fn main() {
     // A: nested construction + scope drop
-    vec(JVal) inner = [JStr("x".copy()), JStr("y".copy())]
+    Vec(JVal) inner = [JStr("x".copy()), JStr("y".copy())]
     JVal arr = JArr(inner)
-    vec(JVal) outer = []
+    Vec(JVal) outer = {}
     outer.push(arr)
-    print("PASS 1: outer len =", outer.length)
+    print("PASS 1: outer len =", outer.len())
     // outer → JArr → vec → JStr → string: full chain drop
 
     // B: copy nested structure (deep clone of enum containing vec)
-    vec(JVal) outer2 = outer.copy()
-    print("PASS 2: copy len =", outer2.length)
+    Vec(JVal) outer2 = outer.copy()
+    print("PASS 2: copy len =", outer2.len())
     // outer and outer2 fully independent
 
     // C: index read (deep clone via AST_INDEX)
@@ -46,9 +48,9 @@ fn main() {
     // "old" string dropped before reassign
 
     // F: vec of nested enum copy
-    vec(JVal) nested_vec = [make_arr(), make_arr()]
-    vec(JVal) nested_copy = nested_vec.copy()
-    print("PASS 6: nested vec copy len =", nested_copy.length)
+    Vec(JVal) nested_vec = [make_arr(), make_arr()]
+    Vec(JVal) nested_copy = nested_vec.copy()
+    print("PASS 6: nested vec copy len =", nested_copy.len())
 
     print("all done")
 }

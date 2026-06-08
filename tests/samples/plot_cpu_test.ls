@@ -2,9 +2,10 @@
 // Prints "TL2 PASS" / "TL2 FAIL: ...".
 
 import plottl
+import std.vec
 
-fn make_cpu_events() -> vec(CpuSchedEvent) {
-    vec(CpuSchedEvent) ev = []
+fn make_cpu_events() -> Vec(CpuSchedEvent) {
+    Vec(CpuSchedEvent) ev = {}
     ev.push(plottl.cpu_event(0, 5000000, 1234, "main", 0, "app"))        // core 0 primary
     ev.push(plottl.cpu_event(3000000, 8000000, 5678, "worker-1", 32, "app"))   // core 0 HT sibling
     ev.push(plottl.cpu_event(6000000, 12000000, 1234, "main", 1, "app"))        // core 1 primary

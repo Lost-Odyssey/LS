@@ -3,6 +3,7 @@
 
 import plot
 import math
+import std.vec
 
 fn has(string hay, string needle, string name) -> bool {
     if hay.contains(needle) { return true }
@@ -20,8 +21,8 @@ fn main() {
     plot.set_ylabel(&!ax, "y")
     plot.grid(&!ax)
 
-    vec(f64) xs = []
-    vec(f64) ys = []
+    Vec(f64) xs = {}
+    Vec(f64) ys = {}
     int i = 0
     while i < 8 {
         f64 t = (i as f64) / 8.0 * math.TAU
@@ -31,8 +32,8 @@ fn main() {
     }
     plot.line(&!ax, xs, ys, plot.LineOpts{color: "#e6194b", label: "sin"})
 
-    vec(f64) sx = [0.0, 1.0, 2.0, 3.0]
-    vec(f64) sy = [0.5, -0.5, 0.25, -0.25]
+    Vec(f64) sx = [0.0, 1.0, 2.0, 3.0]
+    Vec(f64) sy = [0.5, -0.5, 0.25, -0.25]
     plot.line(&!ax, sx, sy, plot.LineOpts{color: "#4363d8", label: "pts", scatter: true})
 
     plot.Figure fig = plot.figure(plot.FigureOpts{})

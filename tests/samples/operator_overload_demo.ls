@@ -1,5 +1,7 @@
 // operator_overload_demo.ls — operator overloading end-to-end test
 
+import std.vec
+
 struct Vec2 { f64 x; f64 y }
 
 impl Add for Vec2 { fn +(&self, &Vec2 rhs) -> Vec2 { return Vec2{ x: self.x + rhs.x, y: self.y + rhs.y } } }
@@ -19,7 +21,7 @@ impl Ord for Vec2 {
 }
 
 // Generic function constrained on Add — operator usable in generic body.
-fn sum_all(T: Add)(vec(T) xs, T zero) -> T {
+fn sum_all(T: Add)(Vec(T) xs, T zero) -> T {
     T acc = zero
     for x in xs {
         acc = acc + x
@@ -51,7 +53,7 @@ fn main() {
     print(a >= b)   // 0 (false) derived
 
     // generic sum over vec(Vec2)
-    vec(Vec2) vs = [a, b, c]
+    Vec(Vec2) vs = [a, b, c]
     Vec2 total = sum_all(Vec2)(vs, Vec2{ x: 0.0, y: 0.0 })
     print(total.x)  // 8
     print(total.y)  // 12

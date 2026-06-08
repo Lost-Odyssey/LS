@@ -4,11 +4,12 @@
 import plot
 import plotfmt
 import math
+import std.vec
 
-fn ticks_str(vec(f64) t) -> string {
+fn ticks_str(Vec(f64) t) -> string {
     string s = ""
     int i = 0
-    while i < t.length {
+    while i < t.len() {
         if i > 0 { s = s + "," }
         s = s + plotfmt.fmt_fixed(t[i], 3)
         i = i + 1
@@ -40,8 +41,8 @@ fn main() {
 
     // ---- auto-scale: finalize computes limits + margins + ticks ----
     plot.Axes ax = plot.axes()
-    vec(f64) xs = [0.0, 1.0, 2.0, 3.0]
-    vec(f64) ys = [0.0, 10.0, 5.0, 20.0]
+    Vec(f64) xs = [0.0, 1.0, 2.0, 3.0]
+    Vec(f64) ys = [0.0, 10.0, 5.0, 20.0]
     plot.line(&!ax, xs, ys, plot.LineOpts{})
     plot.finalize(&!ax)
 

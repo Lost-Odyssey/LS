@@ -940,8 +940,8 @@ static Type *resolve_type_node_with_substitution(
 
             Type *result = NULL;
 
-            /* Try user generic struct first */
-            if (find_struct_template_idx(c, name) >= 0) {
+            /* Try user generic struct first (including imported modules) */
+            if (find_struct_template_idx_pull(c, name) >= 0) {
                 result = checker_instantiate_struct(c, name,
                     resolved_args, nargs, line, col);
             }

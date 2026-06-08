@@ -4,6 +4,7 @@
 
 import plot
 import math
+import std.vec
 
 fn check(string got, string want, string name) -> bool {
     if got == want { return true }
@@ -21,9 +22,9 @@ fn main() {
     plot.grid(&!ax1)
     plot.legend(&!ax1)
 
-    vec(f64) xs = []
-    vec(f64) ys_sin = []
-    vec(f64) ys_cos = []
+    Vec(f64) xs = {}
+    Vec(f64) ys_sin = {}
+    Vec(f64) ys_cos = {}
     int i = 0
     while i < 16 {
         f64 t = (i as f64) / 16.0 * math.TAU
@@ -39,8 +40,8 @@ fn main() {
     // ---- a bar chart on a second axes ----
     plot.Axes ax2 = plot.axes()
     plot.set_title(&!ax2, "counts")
-    vec(string) labels = ["a", "b", "c"]
-    vec(f64) vals = [3.0, 7.0, 5.0]
+    Vec(string) labels = ["a", "b", "c"]
+    Vec(f64) vals = [3.0, 7.0, 5.0]
     plot.bar(&!ax2, labels, vals, plot.BarOpts{color: "#4363d8", label: "n"})
 
     // ---- assemble figure (MOVE axes in) ----
