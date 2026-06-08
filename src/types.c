@@ -91,14 +91,6 @@ Type *type_array(Type *elem, int size) {
     return t;
 }
 
-Type *type_vector(Type *elem) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
-    memset(t, 0, sizeof(Type));
-    t->kind = TYPE_VECTOR;
-    t->as.vec.elem = elem;
-    return t;
-}
-
 Type *type_map(Type *key, Type *val) {
     Type *t = (Type *)malloc_safe(sizeof(Type));
     memset(t, 0, sizeof(Type));
@@ -217,9 +209,6 @@ Type *type_clone(const Type *t) {
         c->as.array.elem = type_clone(t->as.array.elem);
         c->as.array.size = t->as.array.size;
         break;
-    case TYPE_VECTOR:
-        c->as.vec.elem = type_clone(t->as.vec.elem);
-        break;
     case TYPE_MAP:
         c->as.map.key = type_clone(t->as.map.key);
         c->as.map.val = type_clone(t->as.map.val);
@@ -333,9 +322,6 @@ void type_free(Type *t) {
     case TYPE_ARRAY:
         type_free(t->as.array.elem);
         break;
-    case TYPE_VECTOR:
-        type_free(t->as.vec.elem);
-        break;
     case TYPE_MAP:
         type_free(t->as.map.key);
         type_free(t->as.map.val);
@@ -394,8 +380,6 @@ bool type_equals(const Type *a, const Type *b) {
     case TYPE_ARRAY:
         return a->as.array.size == b->as.array.size &&
                type_equals(a->as.array.elem, b->as.array.elem);
-    case TYPE_VECTOR:
-        return type_equals(a->as.vec.elem, b->as.vec.elem);
     case TYPE_MAP:
         return type_equals(a->as.map.key, b->as.map.key) &&
                type_equals(a->as.map.val, b->as.map.val);
@@ -583,9 +567,6 @@ const char *type_name(const Type *t) {
         return buf;
     case TYPE_ARRAY:
         snprintf(buf, 256, "array(%s, %d)", type_name(t->as.array.elem), t->as.array.size);
-        return buf;
-    case TYPE_VECTOR:
-        snprintf(buf, 256, "vec(%s)", type_name(t->as.vec.elem));
         return buf;
     case TYPE_MAP:
         snprintf(buf, 256, "map(%s, %s)",

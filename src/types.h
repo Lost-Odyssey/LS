@@ -15,7 +15,6 @@ typedef enum {
     TYPE_POINTER,       /* *T */
     TYPE_REFERENCE,     /* &T (is_mut=false) / &!T (is_mut=true) — function parameters only */
     TYPE_ARRAY,         /* array(T, N) — fixed-size */
-    TYPE_VECTOR,        /* vec(T)      — dynamic array */
     TYPE_MAP,           /* map(K, V)   — chained hash map */
     TYPE_FUNCTION,      /* fn(A, B) -> R */
     TYPE_BLOCK,         /* Block(A, B) -> R — heap closure fat pointer (Phase A: type only) */
@@ -33,7 +32,6 @@ struct Type {
     union {
         Type *pointer_to;                               /* TYPE_POINTER */
         struct { Type *elem; int size; } array;           /* TYPE_ARRAY — size > 0 for fixed */
-        struct { Type *elem; } vec;                       /* TYPE_VECTOR */
         struct { Type *key; Type *val; } map;             /* TYPE_MAP */
         struct {                                        /* TYPE_FUNCTION */
             Type **params;
@@ -117,7 +115,6 @@ Type *type_pointer(Type *pointee);
 Type *type_reference(Type *pointee);           /* &T  — read-only borrow */
 Type *type_mut_reference(Type *pointee);       /* &!T — writable borrow (no move) */
 Type *type_array(Type *elem, int size);
-Type *type_vector(Type *elem);  /* vec(T) — dynamic array */
 Type *type_map(Type *key, Type *val); /* map(K, V) — chained hash map */
 Type *type_function(Type **params, int param_count, Type *return_type, bool is_vararg);
 Type *type_block(Type **params, int param_count, Type *return_type);
