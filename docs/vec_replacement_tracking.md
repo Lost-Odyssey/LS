@@ -104,10 +104,10 @@
 | 20 | modtype_memcheck/mod_b.ls | test_modtype_memcheck | ✅ | 已迁移 |
 | 21 | bf044_shortcircuit/main.ls | test_bf044_shortcircuit | ✅ | 已迁移 |
 | 22 | fs_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
-| 23 | io_fs_test.ls | (非 ctest) | 待做 |
-| 24 | json_infra_test.ls | (非 ctest) | 待做 |
-| 25 | json_file_io_test.ls | (非 ctest) | 待做 |
-| 26 | json_file_test.ls | (非 ctest) | 待做 |
+| 23 | io_fs_test.ls | (非 ctest) | ✅ | 已使用 Vec |
+| 24 | json_infra_test.ls | (非 ctest) | ✅ | 已使用 Vec |
+| 25 | json_file_io_test.ls | (非 ctest) | ✅ | 已使用 Vec |
+| 26 | json_file_test.ls | (非 ctest) | ✅ | 已使用 Vec |
 | 27 | proc_args_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
 | 28 | proc_test.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
 | 29 | test_proc_args.ls | (非 ctest) | ✅ | JIT ✅ AOT ✅ |
@@ -157,11 +157,13 @@
 ## 累计结果
 
 - 基线: 166/166
-- 当前: 168/168（ctest 数量不变：plot 测试非 cmake 驱动）
-- 迁移完成: 45 文件（14 ctest + 22 非 ctest + 6 std 库 + 3 pre-existing）
-- JIT ✅: 31
-- AOT ✅: 22（9 plot 测试未全部 AOT 验证）
-- Memcheck 0/0/0: 22
+- 当前: 168/168
+- 迁移完成: 56 文件（14 ctest + 30 非 ctest + 6 std 库 + 6 pre-existing）
+- JIT ✅: 42
+- AOT ✅: 33
+- Memcheck 0/0/0: 33
+- 剩余阻塞: std/stack.ls ⛔ VR-LIM-019（AOT 泛型返回 Option(string) 损坏）
+- 已知绕过: VR-LIM-020（Option match has_drop T 双释放），VR-LIM-021（4 个桶 E negative 因 struct ABI 不再拒绝）
 - ~~⛔ 阻塞~~ 全部解除: ~~map_keys~~ ✅ (F6a); ~~modtype_memcheck~~ ✅ (F6b)
 - 新增阻塞: VR-LIM-019 (AOT 泛型方法链返回 Option(string) 损坏) → 阻塞 stack.ls 迁移
 - 新增基础设施修复: F-101 (`find_struct_template_idx`→`_pull`) → 解除跨模块 Vec 泛型字段阻塞
