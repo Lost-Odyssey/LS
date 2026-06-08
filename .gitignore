@@ -61,6 +61,10 @@ bugs/
 paper/
 features/
 
+# agent instructions + root scratch script — local only, not tracked
+AGENTS.md
+/test.ls
+
 # docs — only build-related docs are tracked; everything else is local only
 docs/*
 !docs/build.md
