@@ -1797,6 +1797,17 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_enum_user_vec_payload.cmake
 )
+# ---- VR-LIM-020: Vec(has_drop_enum) full ownership matrix + match move-out ----
+add_test(
+    NAME test_enum_has_drop_vec
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_has_drop_vec.cmake
+)
+set_tests_properties(test_enum_has_drop_vec PROPERTIES DEPENDS "test_enum_vec_map_payload")
+
 set_tests_properties(test_enum_user_vec_payload PROPERTIES
     DEPENDS "test_enum_vec_map_payload"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

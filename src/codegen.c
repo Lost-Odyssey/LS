@@ -13146,34 +13146,50 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 }
 
                 LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                /* BF-026 / BF-029: emit cleanup for string binders (is_borrowed=false,
-                   independently cloned in match-arm binder setup) before leaving the
-                   arm scope.  A cloned binder must be freed on arm exit to avoid leaks.
-                   EXCEPTION: if the arm body is exactly the binder IDENT being used as
-                   the expression result (i.e. body_val == load from binder alloca), the
-                   binder is being "moved out" — freeing it here would give the caller a
-                   dangling pointer.  Detect this case and zero the binder's cap so that
-                   emit_scope_cleanup skips the free (the caller now owns the clone). */
-                if (body_val &&
-                    arm->body && arm->body->kind == AST_IDENT &&
-                    arm->body->resolved_type &&
-                    arm->body->resolved_type->kind == TYPE_STRING)
+                /* BF-026 / BF-029 / VR-LIM-020: a match arm clones every owned
+                   has_drop payload binder (binder_owns above), so the arm scope
+                   normally frees that clone on exit to avoid leaks.
+                   EXCEPTION — "move out": when the arm's RESULT value is exactly one
+                   of those binders, the value is transferred to the match result (and
+                   on to whoever owns it), so freeing it here would double-free. The
+                   tail value is the binder both for `=> binder` and for the block form
+                   `=> { ...; binder }`. Suppress the binder's scope-cleanup drop by
+                   marking it borrowed — uniform across string / has_drop struct·enum /
+                   map (body_val, the already-loaded SSA, is what the caller receives). */
+                if (body_val)
                 {
-                    /* Check if the ident refers to an owned (cloned) string binder */
-                    CgSymbol *body_sym = cg_scope_resolve(ctx->current_scope,
-                                                          arm->body->as.ident.name);
-                    if (body_sym && !body_sym->is_borrowed && body_sym->value)
+                    /* Unwrap the arm body to its tail expression (block last-expr). */
+                    AstNode *tail = arm->body;
+                    if (tail && tail->kind == AST_BLOCK &&
+                        tail->as.block.stmt_count > 0)
                     {
-                        /* Mark binder as moved: zero cap in its alloca so cleanup
-                           skips the free.  body_val (the loaded LsString SSA value)
-                           still carries the original cap and is returned to caller. */
-                        LLVMTypeRef str_t = ls_string_type(ctx);
-                        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-                        LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, str_t,
-                                                          body_sym->value, "bmove.cur");
-                        LLVMValueRef zeroed = LLVMBuildInsertValue(ctx->builder, cur,
-                                                  LLVMConstInt(i32_t, 0, 0), 2, "bmove.zc");
-                        LLVMBuildStore(ctx->builder, zeroed, body_sym->value);
+                        AstNode *last_s =
+                            tail->as.block.stmts[tail->as.block.stmt_count - 1];
+                        tail = (last_s && last_s->kind == AST_EXPR_STMT)
+                                   ? last_s->as.expr_stmt.expr
+                                   : NULL;
+                    }
+                    if (tail && tail->kind == AST_IDENT)
+                    {
+                        /* Resolve ONLY in the arm scope (the payload binders), not in
+                           outer scopes — we must not silently move out outer locals. */
+                        for (int si = ctx->current_scope->count - 1; si >= 0; si--)
+                        {
+                            CgSymbol *bs = &ctx->current_scope->symbols[si];
+                            if (!bs->name ||
+                                strcmp(bs->name, tail->as.ident.name) != 0)
+                                continue;
+                            Type *bt = bs->type;
+                            bool owns_heap =
+                                bt && !bs->is_borrowed && bs->value &&
+                                (bt->kind == TYPE_STRING ||
+                                 bt->kind == TYPE_MAP ||
+                                 (bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
+                                 (bt->kind == TYPE_ENUM && bt->as.enom.has_drop));
+                            if (owns_heap)
+                                bs->is_borrowed = true; /* skip drop: moved out */
+                            break;
+                        }
                     }
                 }
                 emit_scope_cleanup(ctx);

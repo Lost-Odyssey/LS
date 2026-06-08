@@ -45,7 +45,7 @@
 | 17 | plot_ticks_test.ls | test_plot_ticks | ✅ | 同上 |
 | 18 | plot_timeline_test.ls | test_plot_timeline | ✅ | 同上 |
 | 19 | ring_test.ls | test_ring | ✅ | F4 修复后迁移（Vec(Option(T)) 嵌套泛型）。JIT+AOT+memcheck 0/0/0 |
-| 20 | stack_test.ls | test_stack | 待做 | 需先迁移 std/stack.ls |
+| 20 | stack_test.ls | test_stack | ✅ | std/stack.ls 迁移后通过；VR-LIM-019 不复现。JIT+AOT+memcheck 0/0/0 |
 | 21 | test_mem_m3_xfer_unified.ls | test_mem_m3_jit | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 22 | test_mem_m4_5_drop_temp.ls | test_mem_m4_5_jit/aot | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 23 | test_mem_m4_matrix.ls | test_mem_m4_jit | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
@@ -90,7 +90,7 @@
 | 6 | bug11_compound_move.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 7 | operator_overload_demo.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 8 | enum_e1_minimal.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
-| 9 | enum_has_drop_vec_test.ls | ⚠️ | JIT ✅ AOT ✅ Memcheck: 2 double-free。Match 从 `Option(Data)` 绑定 `Some(x)` 后，Option 容器析构与提取的 x 共享 string payload → 双释放。已知类 L-012 问题，跳过。 |
+| 9 | enum_has_drop_vec_test.ls | **test_enum_has_drop_vec**（新注册 ctest） | ✅ | VR-LIM-020 已修复（codegen match-arm move-out 泛化）：`Some(x) => { x }` 块表达式 yield owned has_drop binder 不再与赋值目标双释放。JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 10 | enum_method_has_drop.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 11 | enum_nested_vec_test.ls | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 12 | enum_vec_payload_test.ls | test_enum_vec_map_payload | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
@@ -119,7 +119,7 @@
 | 35 | strconv_test.ls | test_strconv | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 36 | test_bug_22.ls | (非 ctest) | ✅ | 仅注释含 vec，无需迁移 |
 | 37 | rawvec_m1_test.ls | test_vec_m1 | ✅ | 用 RawVec（手写 C 风格），非 builtin vec |
-| 38 | stack_test.ls | test_stack | ⛔ | 阻塞：VR-LIM-019（AOT 泛型方法链返回 Option(string) 损坏）|
+| 38 | stack_test.ls | test_stack | ✅ | VR-LIM-019 不复现，std/stack.ls 迁移落地。JIT+AOT+memcheck 0/0/0 |
 | 39 | ring_test.ls | test_ring | ✅ | F4 修复后迁移，JIT+AOT+memcheck 0/0/0 |
 
 ### std 库文件（需优先迁移）
@@ -136,7 +136,7 @@
 | 8 | std/proc.ls | ✅ | `args` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
 | 9 | std/regex.ls | ✅ | `find_all`/`capture`/`capture_all`/`split` 返回 `Vec(string)`；IR-002 已解除：`runtime/ls_regex.c` 接入 `ls.exe`+`ls_os_backend` 构建，jit.c 注册 10 个 `__ls_regex_*` 符号；`test_regex` 注册为 ctest（JIT+AOT+memcheck 三绿） |
 | 10 | std/ring.ls | ✅ | F4 修复（type-alias 栈式解析）后迁移；Vec(Option(T)) backing buffer |
-| 11 | std/stack.ls | 待做 |
+| 11 | std/stack.ls | ✅ | 全 `vec(T)`→`Vec(T)`；`peek`/`pop` 内部 `match self.data.last()/pop()` 取出 `T`（`return x` 走 return-move，干净）。`test_stack`/`test_stack_xmod`/`test_stack_qual` 三组消费者 JIT+AOT+memcheck 0/0/0。VR-LIM-019 不复现 |
 
 ---
 
@@ -149,21 +149,20 @@
 | ~~VR-LIM-016~~ | ~~全局变量 `Vec(T) v = [literal]` 触发 `__from_list` 缺失~~ | ✅ 已修复（F1，2026-06-08）：`emit_user_from_list_value` 落空时从 pending-generic 队列前向声明 `__from_list`。`test_global_vec_lit` 还原全局字面量，JIT+AOT+memcheck 0/0/0 | 已解除 |
 | （参见 plan_vec_replacement.md §6.1 其他已知限制） | | | |
 | ~~VR-LIM-017~~ | ~~`Vec(Block(...))` 不兼容~~ | ✅ 已修复（F5，2026-06-08）：checker 泛型 T=Block 参数不标 is_borrow + codegen 三处（bind 点 copy-out 克隆 env / move-into-container 消费 temp env / emit_drop_value 加 Block 释放）。closure_g 迁移到 Vec(Block)，test_phase_g_closure JIT+AOT+memcheck 0/0/0 | 已解除 |
-| VR-LIM-019 | AOT: 泛型方法链返回 `Option(T)`（T=has_drop string）值损坏 | `Stack(string).peek()`（内部调 `self.data.last()` 并转发返回 `Option(string)`）。JIT 正常，AOT 仅读出首字符（"m" 而非 "gamma"）；`Vec(string).last()` 直调在 AOT 下正常。根因推测：AOT sret ABI 对跨泛型方法链传递 has_drop enum 有 bug。 | 2026-06-08 发现，阻塞 `std/stack.ls` + `stack_test.ls` 迁移 |
-| VR-LIM-020 | `Option(T)` match 绑定的 has_drop T 与 Option 容器析构双释放 | `enum_has_drop_vec_test.ls`：`Data x = match v.first() { Some(x) => { x } None => { Empty } }`，提取的 `x` 被析构一次，Option 容器析构时又释放一次 string payload。类 L-012 问题。 | 2026-06-08 发现，阻塞 has_drop enum 的 `first()`/`last()` 迁移
+| ~~VR-LIM-019~~ | ~~AOT: 泛型方法链返回 `Option(T)`（T=has_drop string）值损坏~~ | ✅ **不复现 / 已解除**（2026-06-08）：在当前 main（含 agent 全部提交）的 Release 构建上做忠实复现——迁移版 `std/stack.ls`（`Vec(T)` 替换 `vec(T)`，`peek`/`pop` 内部 `match self.data.last()/pop()` 取出 `T`）跑真正的 `stack_test.ls`/`stack_qual.ls`/`stack_xmod`，JIT+AOT+memcheck **三绿 0/0/0**，`gamma` 正确无 "m" 损坏。多变体（直接转发 `Option(T)` / 内部 match 返回 `T` / `Stack(int)` 先实例化触发单态化顺序 / `import std.stack` 走 std 模块发射路径）AOT 全部正确。疑为 agent 当时未提交中间代码的瞬态问题或被后续提交顺带修掉。**std/stack.ls 已迁移落地（见 std 库表）** | 已解除 |
+| ~~VR-LIM-020~~ | ~~`Option(T)` match 绑定的 has_drop T 与 Option 容器析构双释放~~ | ✅ **已修复**（2026-06-08，`codegen.c` match-arm move-out 泛化）：根因是 match 臂 binder move-out 抑制只覆盖「臂体直接是裸 `AST_IDENT` + `TYPE_STRING`」两种情况；而 `Some(x) => { x }`（块表达式尾值是 binder）+ has_drop enum payload 不命中 → 已克隆的 owned binder 既被 j_first 拥有又被 arm scope cleanup drop → 双释放。修法：解开臂体到尾表达式（覆盖 `=> binder` 与 `=> { …; binder }` 两形态），对 string/has_drop struct·enum/map binder 统一标 `is_borrowed=true` 跳过 cleanup drop（仅在 arm 自身作用域解析，不误伤外层局部）。对比为何 stack 干净：stack 臂用 `return x` 走 return_alloca skip-list。`test_enum_has_drop_vec`（JIT+AOT+memcheck 0/0/0，新注册 ctest） | 已解除 |
 
 | ~~F-101~~ | ~~`resolve_type_node_with_substitution` 用 `find_struct_template_idx` 而非 `_pull`~~ | ✅ 已修复（2026-06-08）：栈泛型类 `Stack(E) { Vec(E) data }` 字段类型 `Vec(E)` 来自 `import std.vec`（跨模块），字段解析时 `find_struct_template_idx("Vec")` 只在当前 checker 查找 → 找不到。修法：改为 `find_struct_template_idx_pull`。 | 已解除，同时解除所有「模块定义泛型含导入 Vec 字段」阻塞 |
 
 ## 累计结果
 
 - 基线: 166/166
-- 当前: 168/168
-- 迁移完成: 56 文件（14 ctest + 30 非 ctest + 6 std 库 + 6 pre-existing）
-- JIT ✅: 42
-- AOT ✅: 33
-- Memcheck 0/0/0: 33
-- 剩余阻塞: std/stack.ls ⛔ VR-LIM-019（AOT 泛型返回 Option(string) 损坏）
-- 已知绕过: VR-LIM-020（Option match has_drop T 双释放），VR-LIM-021（4 个桶 E negative 因 struct ABI 不再拒绝）
-- ~~⛔ 阻塞~~ 全部解除: ~~map_keys~~ ✅ (F6a); ~~modtype_memcheck~~ ✅ (F6b)
-- 新增阻塞: VR-LIM-019 (AOT 泛型方法链返回 Option(string) 损坏) → 阻塞 stack.ls 迁移
-- 新增基础设施修复: F-101 (`find_struct_template_idx`→`_pull`) → 解除跨模块 Vec 泛型字段阻塞
+- 当前: 169/169（新增 `test_enum_has_drop_vec`）
+- 迁移完成: 57 文件（16 ctest + 29 非 ctest + 6 std 库 + 6 pre-existing）——**std/stack.ls 收尾，全量迁移完成**
+- **剩余阻塞: 无** 🎉
+- 已知绕过: VR-LIM-021（4 个桶 E negative 因 struct ABI 不再拒绝）
+- ~~⛔ 阻塞~~ 全部解除: ~~map_keys~~ ✅ (F6a); ~~modtype_memcheck~~ ✅ (F6b); ~~VR-LIM-019~~ ✅（不复现，stack.ls 迁移落地）
+- 新增修复:
+  - **VR-LIM-020** (`codegen.c` match-arm move-out 泛化)：`Some(x) => { x }` 块表达式 yield owned has_drop binder 不再与赋值目标双释放。`test_enum_has_drop_vec` 三绿
+  - **VR-LIM-019 不复现**：std/stack.ls 用 `Vec(T)` 迁移落地，三组消费者 JIT+AOT+memcheck 0/0/0
+- 既有基础设施修复: F-101 (`find_struct_template_idx`→`_pull`) → 解除跨模块 Vec 泛型字段阻塞
