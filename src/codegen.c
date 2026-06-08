@@ -10651,7 +10651,25 @@ static LLVMValueRef codegen_map_method(CodegenContext *ctx, AstNode *call_node, 
 
         /* done: return the result vec value */
         LLVMPositionBuilderAtEnd(ctx->builder, kvdone);
-        return LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.out");
+        LLVMValueRef out = LLVMBuildLoad2(ctx->builder, vec_t, res, "kv.out");
+        /* F6a: keys()/values() now return a pure-LS std.vec Vec(T). Its layout is
+           identical to the builtin LsVec ({ptr,i32,i32}) and it uses the same
+           ls_mc heap, so rebuild the just-built bits as a Vec(T)-typed aggregate.
+           The caller binds/owns it; Vec(T).__drop releases the buffer + elements. */
+        if (call_node->resolved_type &&
+            call_node->resolved_type->kind == TYPE_STRUCT)
+        {
+            LLVMTypeRef veck_t = type_to_llvm(ctx, call_node->resolved_type);
+            LLVMValueRef d  = LLVMBuildExtractValue(ctx->builder, out, 0, "kv.d");
+            LLVMValueRef l  = LLVMBuildExtractValue(ctx->builder, out, 1, "kv.l");
+            LLVMValueRef cp = LLVMBuildExtractValue(ctx->builder, out, 2, "kv.c");
+            LLVMValueRef vk = LLVMGetUndef(veck_t);
+            vk = LLVMBuildInsertValue(ctx->builder, vk, d,  0, "kv.vk0");
+            vk = LLVMBuildInsertValue(ctx->builder, vk, l,  1, "kv.vk1");
+            vk = LLVMBuildInsertValue(ctx->builder, vk, cp, 2, "kv.vk2");
+            return vk;
+        }
+        return out;
     }
 
     (void)val_lt;

@@ -3,6 +3,8 @@
 // `vec(K) ks = m.keys()` errored "unknown map method 'keys'".
 // Self-verifying: prints "MK PASS" only if every check holds.
 
+import std.vec
+
 fn check(bool cond, int id) -> bool {
     if !cond { print(id); print("MK FAIL") }
     return cond
@@ -26,8 +28,8 @@ fn main() {
     if !check(kv == 4, 2) { ok = false }
 
     // --- keys() as a bound vec expression ---
-    vec(string) ks = a.keys()
-    if !check(ks.length == 2, 3) { ok = false }
+    Vec(string) ks = a.keys()
+    if !check(ks.len() == 2, 3) { ok = false }
 
     // --- int keys + values sums (order-independent) ---
     map(int, int) m = {}

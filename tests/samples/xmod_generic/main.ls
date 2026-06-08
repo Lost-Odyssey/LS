@@ -1,5 +1,16 @@
 import tree
 
+// Calls a Vec(string) method on an imported-enum payload binder. Defining this
+// triggers consumer-side instantiation of Vec(string) (VR-LIM-018 path). The
+// F6 has_drop-propagation fix ensures that does NOT leave a *separately*
+// instantiated Vec(string) (e.g. `local` in main) without has_drop → leak.
+fn label_count(Tree t) -> int {
+    match t {
+        Labels(names) => { return names.len() }
+        _ => { return 0 }
+    }
+}
+
 fn main() -> int {
     Tree t = tree.make()
     match t {
@@ -17,7 +28,22 @@ fn main() -> int {
                 print("XMOD_GENERIC PASS")
             }
         }
-        Leaf(_) => { print("leaf") }
+        _ => { print("other") }
+    }
+
+    // has_drop Vec(string) across the module boundary: build via the module,
+    // count via a binder method, then own a local Vec(string) that MUST be
+    // dropped (its string elements freed) at scope exit. Regression for the F6
+    // has_drop-propagation bug (cross-module method call left the local
+    // instance unmarked has_drop → leaked).
+    Tree lt = tree.make_labels()
+    int lc = label_count(lt)
+    Vec(string) local = {}
+    local.push("gamma".upper())
+    local.push("delta".upper())
+    print(f"labels={lc} local={local.len()} first={local.get(0)}")
+    if lc == 2 && local.len() == 2 {
+        print("XMOD_GENERIC_DROP PASS")
     }
     return 0
 }

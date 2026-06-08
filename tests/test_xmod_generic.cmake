@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/xmod_generic/main.ls")
-set(_expected "n=3 a=10 b=30 sum=60" "XMOD_GENERIC PASS")
+set(_expected "n=3 a=10 b=30 sum=60" "XMOD_GENERIC PASS" "XMOD_GENERIC_DROP PASS")
 
 # ---- JIT ----
 execute_process(

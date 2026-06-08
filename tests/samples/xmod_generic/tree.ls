@@ -5,10 +5,18 @@ import std.vec
 
 enum Tree {
     Node(Vec(int) kids)
+    Labels(Vec(string) names)   // has_drop element type (string)
     Leaf(int value)
 }
 
 fn make() -> Tree {
     Vec(int) v = [10, 20, 30]
     return Node(v)
+}
+
+fn make_labels() -> Tree {
+    Vec(string) v = {}
+    v.push("alpha".upper())
+    v.push("beta".upper())
+    return Labels(v)
 }

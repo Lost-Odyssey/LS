@@ -26,7 +26,7 @@
 
 | # | 文件 | 测试名 | 状态 |
 |---|------|--------|------|
-| 1 | map_keys.ls | test_map_keys | ⛔ 阻塞 | `m.keys()` 返回内建 vec，无法直接赋值给 Vec。需等 map 改造 |
+| 1 | map_keys.ls | test_map_keys | ✅ | F6a：`map.keys()`/`values()` 改返回 `Vec(K)`/`Vec(V)`（布局/堆与内建 vec 相同，codegen 重解释）。JIT+AOT+memcheck 0/0/0 |
 | 2 | struct_field_defaults_v2_test.ls | test_struct_field_defaults_v2 | ✅ |
 | 3 | closure_g.ls | test_phase_g_closure | ✅ | F5 修复（Block 容器生命周期四处协同）。JIT+AOT+memcheck 0/0/0 |
 | 4 | html_parse.ls | test_std_html_parse | 待做 |
@@ -181,4 +181,4 @@
 - JIT ✅: 18
 - AOT ✅: 18
 - Memcheck 0/0/0: 18
-- ⛔ 阻塞: map_keys (F6a 待做); ~~modtype_memcheck~~ ✅ 已解除 (F6b)
+- ~~⛔ 阻塞~~ 全部解除: ~~map_keys~~ ✅ (F6a); ~~modtype_memcheck~~ ✅ (F6b)

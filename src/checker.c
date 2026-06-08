@@ -1633,11 +1633,32 @@ static void instantiate_impl_method_types(
 {
     int impl_idx = find_or_create_impl(c, mangled_name);
     /* Idempotent per-checker: if this checker already registered this
-       instantiation's methods, don't re-run (would trip register_method's
-       duplicate rejection). VR-LIM-018's ensure_* path plus the normal
-       instantiation can otherwise both fire for the same type. */
+       instantiation's methods (by mangled name), don't re-run the method loop
+       (would trip register_method's duplicate rejection). VR-LIM-018's ensure_*
+       path plus the normal instantiation can both fire for the same generic
+       instantiation — possibly via DIFFERENT Type* instances (a sibling instance
+       from an imported module's payload vs the local one). */
     if (c->impl_registry[impl_idx].method_count > 0)
+    {
+        /* …but `has_drop`/`has_user_drop` are set INSIDE the (now-skipped) method
+           loop's __drop case, and they live on this *struct_type instance*. A
+           fresh instance (e.g. the consumer's own Vec(string), distinct from the
+           imported-module one whose method registration we're reusing) would miss
+           them → its values silently never drop (memory leak). Propagate them
+           from the impl template here so every instance is marked correctly. */
+        for (int m = 0; m < impl_node->as.impl_decl.method_count; m++)
+        {
+            AstNode *mm = impl_node->as.impl_decl.methods[m];
+            if (mm->kind == AST_FN_DECL && mm->as.fn_decl.name &&
+                strcmp(mm->as.fn_decl.name, "__drop") == 0)
+            {
+                struct_type->as.strukt.has_drop = true;
+                struct_type->as.strukt.has_user_drop = true;
+                break;
+            }
+        }
         return;
+    }
 
     /* Temporarily register type aliases so resolve_type_node("T") → concrete type */
     int saved_alias_count = c->type_alias_count;
@@ -3974,28 +3995,30 @@ static Type *check_map_method(Checker *c, AstNode *call_node, Type *map_type)
         return type_bool();
     }
 
-    /* m.keys() -> vec(K) */
-    if (strcmp(method, "keys") == 0)
+    /* m.keys() -> Vec(K) / m.values() -> Vec(V).
+       F6a: return the pure-LS std.vec Vec(T) (not the builtin vec). Vec(T) has an
+       identical {data,len,cap} layout and uses the same ls_mc heap, so codegen
+       reinterprets the built buffer as a Vec(T). Requires std.vec to be loaded
+       (directly or transitively — checker_instantiate_struct pulls the template). */
+    if (strcmp(method, "keys") == 0 || strcmp(method, "values") == 0)
     {
         if (argc != 0)
         {
             checker_error(c, call_node->line, call_node->column,
-                          "map.keys() takes no arguments, got %d", argc);
+                          "map.%s() takes no arguments, got %d", method, argc);
             return NULL;
         }
-        return type_vector(K);
-    }
-
-    /* m.values() -> vec(V) */
-    if (strcmp(method, "values") == 0)
-    {
-        if (argc != 0)
+        Type *elem = (method[0] == 'k') ? K : V;
+        Type *args[1] = { elem };
+        Type *vt = checker_instantiate_struct(c, "Vec", args, 1,
+                                              call_node->line, call_node->column);
+        if (vt == NULL)
         {
             checker_error(c, call_node->line, call_node->column,
-                          "map.values() takes no arguments, got %d", argc);
+                          "map.%s() returns Vec(T) — add `import std.vec`", method);
             return NULL;
         }
-        return type_vector(V);
+        return vt;
     }
 
     /* m.copy() -> map(K,V) — deep-clone entire map */
