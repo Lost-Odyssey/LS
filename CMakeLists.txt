@@ -1977,6 +1977,22 @@ set_tests_properties(test_regex PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- VR-LIM-018 / F6: cross-module generic method resolution ----
+# Consumer matches an imported enum's Vec(T) payload and calls Vec methods on
+# the binder, without importing std.vec directly (transitive template pull).
+add_test(
+    NAME test_xmod_generic
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_xmod_generic.cmake
+)
+set_tests_properties(test_xmod_generic PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- B-2 + B-3: module struct/enum type namespace (llvm_name prefixing + impl methods) ----
 add_test(
     NAME test_modtype_ns

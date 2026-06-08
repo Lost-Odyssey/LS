@@ -210,12 +210,73 @@ static const char *type_impl_name(Type *t)
 
 /* ---- G1: Generic struct template registry ---- */
 
+static int register_imported_struct_template(Checker *c, const char *base_name,
+                                             char **type_params, int type_param_count,
+                                             AstNode *decl_node, const char *module_path);
+
 static int find_struct_template_idx(Checker *c, const char *base_name)
 {
     for (int i = 0; i < c->struct_template_count; i++)
     {
         if (strcmp(c->struct_templates[i].base_name, base_name) == 0)
             return i;
+    }
+    return -1;
+}
+
+/* F6 (transitive generics): like find_struct_template_idx, but on a local miss
+   it PULLS the template from any fully-checked loaded module that defines it —
+   e.g. the consumer imports std.json (which imports std.vec) but never imported
+   std.vec directly, so its checker lacks the "Vec"/"VecIter" templates needed to
+   instantiate Vec(JsonValue)'s methods. ONLY for instantiation sites — never for
+   registration/duplicate/ambiguity checks (those must stay local so a module's
+   own same-name generic isn't shadowed by an imported one). Idempotent. */
+static int find_struct_template_idx_pull(Checker *c, const char *base_name)
+{
+    int local = find_struct_template_idx(c, base_name);
+    if (local >= 0) return local;
+    if (c->registry != NULL)
+    {
+        ModuleRegistry *reg = c->registry;
+        for (int m = 0; m < reg->count; m++)
+        {
+            /* Only pull from FULLY-CHECKED modules. A not-yet-checked module
+               (including the one currently being checked) will register its own
+               templates through the normal same-file path; pulling early would
+               trip register_struct_template's duplicate rejection. */
+            if (!reg->modules[m].checked) continue;
+            AstNode *mast = reg->modules[m].ast;
+            if (mast == NULL || mast->kind != AST_PROGRAM) continue;
+            for (int d = 0; d < mast->as.program.decl_count; d++)
+            {
+                AstNode *decl = mast->as.program.decls[d];
+                if (decl->kind != AST_STRUCT_DECL ||
+                    decl->as.struct_decl.type_param_count <= 0 ||
+                    decl->as.struct_decl.name == NULL ||
+                    strcmp(decl->as.struct_decl.name, base_name) != 0)
+                    continue;
+                int tidx = register_imported_struct_template(c, base_name,
+                    decl->as.struct_decl.type_params,
+                    decl->as.struct_decl.type_param_count, decl,
+                    reg->modules[m].name);
+                if (tidx >= 0 && c->struct_templates[tidx].impl_node == NULL)
+                {
+                    for (int k = 0; k < mast->as.program.decl_count; k++)
+                    {
+                        AstNode *id = mast->as.program.decls[k];
+                        if (id->kind == AST_IMPL_DECL &&
+                            id->as.impl_decl.type_param_count > 0 &&
+                            id->as.impl_decl.name &&
+                            strcmp(id->as.impl_decl.name, base_name) == 0)
+                        {
+                            c->struct_templates[tidx].impl_node = id;
+                            break;
+                        }
+                    }
+                }
+                return tidx;
+            }
+        }
     }
     return -1;
 }
@@ -971,7 +1032,7 @@ Type *checker_instantiate_struct(Checker *c,
                                  Type **type_args, int type_arg_count,
                                  int line, int col)
 {
-    int tmpl_idx = find_struct_template_idx(c, base_name);
+    int tmpl_idx = find_struct_template_idx_pull(c, base_name);
     if (tmpl_idx < 0) return NULL;
 
     int expected_tpc = c->struct_templates[tmpl_idx].type_param_count;
@@ -1034,6 +1095,29 @@ Type *checker_instantiate_struct(Checker *c,
 
     /* Pre-register empty shell to handle self-recursive generics */
     Type *st = type_struct(mangled, fc);
+    /* VR-LIM-018/F6: stamp generic-instantiation metadata so a consumer
+       module's checker (which never ran this instantiation locally) can
+       re-register impl methods on demand when it meets `st` via an imported
+       enum payload / function signature. */
+    {
+        size_t bl = strlen(base_name);
+        char *gb = (char *)malloc_safe(bl + 1);
+        memcpy(gb, base_name, bl + 1);
+        st->as.strukt.generic_base = gb;
+        st->as.strukt.generic_arg_count = type_arg_count;
+        if (type_arg_count > 0) {
+            st->as.strukt.generic_args =
+                (Type **)malloc_safe((size_t)type_arg_count * sizeof(Type *));
+            for (int gi = 0; gi < type_arg_count; gi++)
+                st->as.strukt.generic_args[gi] = type_args[gi];
+        }
+        /* Stamp the impl template + tp names so a consumer checker without the
+           local template (didn't import the defining module directly) can still
+           re-register methods. impl_node/tp_names point into persistent module
+           ASTs (not owned). */
+        st->as.strukt.generic_impl_node = c->struct_templates[tmpl_idx].impl_node;
+        st->as.strukt.generic_tp_names  = tp_names;
+    }
     register_struct_type(c, st->as.strukt.name, st);
 
     /* Fill fields with type substitution */
@@ -1509,6 +1593,12 @@ static void instantiate_impl_method_types(
     char **tp_names, Type **type_args, int tp_count)
 {
     int impl_idx = find_or_create_impl(c, mangled_name);
+    /* Idempotent per-checker: if this checker already registered this
+       instantiation's methods, don't re-run (would trip register_method's
+       duplicate rejection). VR-LIM-018's ensure_* path plus the normal
+       instantiation can otherwise both fire for the same type. */
+    if (c->impl_registry[impl_idx].method_count > 0)
+        return;
 
     /* Temporarily register type aliases so resolve_type_node("T") → concrete type */
     int saved_alias_count = c->type_alias_count;
@@ -1623,6 +1713,40 @@ static void instantiate_impl_method_types(
 
     /* Remove temporary type aliases */
     c->type_alias_count = saved_alias_count;
+}
+
+/* VR-LIM-018/F6: a CONSUMER module's checker can meet a generic struct
+   instantiation (e.g. Vec(int)) via an imported enum payload binder or function
+   signature WITHOUT ever instantiating it through its own checker — so its
+   impl_registry holds no methods for that type and method calls fail with
+   "no field or method". Imported modules are checked by separate Checker
+   instances, so the defining module's registrations don't carry over.
+   This re-runs impl-method registration locally using the generic metadata
+   stamped on the type by checker_instantiate_struct. Idempotent. */
+static void ensure_generic_struct_impls_local(Checker *c, Type *st)
+{
+    if (st == NULL || st->kind != TYPE_STRUCT ||
+        st->as.strukt.name == NULL || st->as.strukt.generic_base == NULL)
+        return;
+    const char *name = st->as.strukt.name;
+    for (int i = 0; i < c->impl_count; i++)
+        if (strcmp(c->impl_registry[i].struct_name, name) == 0 &&
+            c->impl_registry[i].method_count > 0)
+            return; /* already registered locally */
+    /* Prefer the impl template stamped on the type (works even when this
+       consumer checker never imported the defining module). Fall back to a
+       local template lookup. */
+    AstNode *impl_node = (AstNode *)st->as.strukt.generic_impl_node;
+    char **tp_names = st->as.strukt.generic_tp_names;
+    if (impl_node == NULL) {
+        int tmpl_idx = find_struct_template_idx_pull(c, st->as.strukt.generic_base);
+        if (tmpl_idx < 0) return;
+        impl_node = c->struct_templates[tmpl_idx].impl_node;
+        tp_names  = c->struct_templates[tmpl_idx].type_params;
+    }
+    if (impl_node == NULL || tp_names == NULL) return;
+    instantiate_impl_method_types(c, st, name, impl_node,
+        tp_names, st->as.strukt.generic_args, st->as.strukt.generic_arg_count);
 }
 
 /* ---- Resolve TypeNode -> Type ---- */
@@ -1897,8 +2021,13 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
             return NULL;
         }
 
-        /* G1: Try user generic struct instantiation */
-        if (find_struct_template_idx(c, base) >= 0)
+        /* G1: Try user generic struct instantiation. Use the transitive _pull
+           gate so a consumer that meets Vec(T)/VecIter(T) only via a deep import
+           (never imported the defining module directly) can still instantiate.
+           _pull only fires on a LOCAL miss, so same-name cross-module ambiguity
+           (handled by the import handler registering the name locally) is
+           unaffected. */
+        if (find_struct_template_idx_pull(c, base) >= 0)
         {
             int n = tn->as.named.arg_count;
             Type **ta = (Type **)malloc_safe((size_t)n * sizeof(Type *));
@@ -5474,6 +5603,13 @@ static Type *check_expr(Checker *c, AstNode *node)
                     {
                         const char *ds_key = impl_key_of_type(deref);  /* B-4.1 */
                         int si = method_is_static(c, ds_key, method_name);
+                        /* VR-LIM-018: consumer met an imported generic
+                           instantiation never registered locally — register its
+                           impl methods on demand from the stamped metadata. */
+                        if (si < 0 && deref->as.strukt.generic_base) {
+                            ensure_generic_struct_impls_local(c, deref);
+                            si = method_is_static(c, ds_key, method_name);
+                        }
                         if (si == 0)
                         {
                             /* Phase A1: gate method calls on struct borrows by the

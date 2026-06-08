@@ -51,6 +51,21 @@ struct Type {
             bool has_user_drop;      /* true if __drop was user-defined (not auto-generated) */
             void *drop_fn;           /* LLVMValueRef: complete __drop function (codegen use) */
             bool is_extern_c;        /* true = declared via 'extern struct', C-ABI layout, no drop */
+            /* VR-LIM-018 / F6: generic-instantiation metadata (set by
+               checker_instantiate_struct). Lets a *consumer* module's checker
+               re-run impl-method registration locally when it meets this type
+               via an imported enum payload / function signature. NULL/0 for
+               non-generic structs. generic_args is an owned Type* array. */
+            const char *generic_base;   /* base template name, e.g. "Vec" */
+            Type **generic_args;        /* concrete type args, e.g. [int] */
+            int generic_arg_count;
+            /* The impl template AST + its type-param names, stamped so a
+               consumer checker that did NOT directly import the defining module
+               (e.g. uses Vec(JsonValue) via std.json without importing std.vec)
+               can still re-register impl methods — the metadata travels with the
+               shared Type, no local template lookup needed. */
+            void *generic_impl_node;    /* AstNode* — the impl(T) Base(T) decl */
+            char **generic_tp_names;    /* template type-param names ["T"] */
         } strukt;
         struct {                                        /* TYPE_ENUM */
             const char *name;        /* mangled when instantiated, e.g. "Option(int)" */

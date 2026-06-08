@@ -14535,6 +14535,17 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 snprintf(fl_name, sizeof(fl_name), "%s.__from_list",
                          struct_llvm_name(var_type));
                 LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
+                if (fl_fn == NULL)
+                {
+                    /* F6 (sibling of VR-LIM-016/F1): a local `Vec(T) v = [..]`
+                       inside an IMPORTED-module function is emitted before the
+                       G1.5 pending-generic pass, so Vec(T).__from_list may not
+                       exist yet. Silently skipping the loop left the Vec
+                       zero-initialized (len=0, data=null → reads/crashes in the
+                       consumer). Forward-declare from the pending queue; the body
+                       lands in G1.5. Mirrors emit_user_from_list_value (F1). */
+                    fl_fn = cg_declare_pending_generic_method(ctx, fl_name);
+                }
                 if (fl_fn)
                 {
                     LLVMTypeRef fl_ft = LLVMGlobalGetValueType(fl_fn);
