@@ -4,17 +4,18 @@
 //
 // Design: docs/plan_std_html.md
 //  - HtmlNode is a self-recursive enum whose Element variant holds a
-//    vec(Attr) of attributes and a vec(HtmlNode) of children.
-//  - Attributes use vec(Attr), NOT map(string,string): map key-iteration does
-//    not work in LS (see json.ls, which keeps a parallel vec(string) keys for
-//    the same reason). vec(Attr) iterates correctly AND preserves insertion
+//    Vec(Attr) of attributes and a Vec(HtmlNode) of children.
+//  - Attributes use Vec(Attr), NOT map(string,string): map key-iteration does
+//    not work in LS (see json.ls, which keeps a parallel Vec(string) keys for
+//    the same reason). Vec(Attr) iterates correctly AND preserves insertion
 //    order, so render/parse round-trip is byte-stable.
 //  - Construction is bottom-up (build children first, then compose) — LS has
 //    value semantics, so there is no "insert then mutate" the way a reference
 //    language would do it.
-//  - HtmlDoc is a forest: vec(HtmlNode) roots (handles DOCTYPE + <html>, and
+//  - HtmlDoc is a forest: Vec(HtmlNode) roots (handles DOCTYPE + <html>, and
 //    bare fragments).
 
+import std.vec
 import io
 
 // ---- Core types ----
@@ -25,14 +26,14 @@ struct Attr {
 }
 
 enum HtmlNode {
-    Element(string tag, vec(Attr) attrs, vec(HtmlNode) children)
+    Element(string tag, Vec(Attr) attrs, Vec(HtmlNode) children)
     Text(string content)        // text between tags (escaped on render)
     Comment(string content)     // <!-- ... -->; "DOCTYPE html" renders as <!DOCTYPE html>
     RawText(string content)     // <script>/<style> body: not escaped, not parsed
 }
 
 struct HtmlDoc {
-    vec(HtmlNode) roots
+    Vec(HtmlNode) roots
 }
 
 // ---- Constructors (bottom-up, functional) ----
@@ -45,14 +46,14 @@ fn raw(string s) -> HtmlNode { return RawText(s.copy()) }
 fn attr(string k, string v) -> Attr { return Attr { key: k.copy(), val: v.copy() } }
 
 // Build an attribute list from [[key, value], ...] pairs (LS has no named args).
-fn attrs(vec(vec(string)) pairs) -> vec(Attr) {
-    vec(Attr) out = []
+fn attrs(Vec(Vec(string)) pairs) -> Vec(Attr) {
+    Vec(Attr) out = {}
     int i = 0
-    while i < pairs.length {
-        vec(string) p = pairs.get(i)
-        if p.length >= 2 {
+    while i < pairs.len {
+        Vec(string) p = pairs.get(i)
+        if p.len >= 2 {
             out.push(Attr { key: p.get(0).copy(), val: p.get(1).copy() })
-        } else if p.length == 1 {
+        } else if p.len == 1 {
             out.push(Attr { key: p.get(0).copy(), val: "" })   // boolean attribute
         }
         i = i + 1
@@ -61,23 +62,23 @@ fn attrs(vec(vec(string)) pairs) -> vec(Attr) {
 }
 
 // Element with no attributes. `children` is moved into the node.
-fn elem(string tag, vec(HtmlNode) children) -> HtmlNode {
-    vec(Attr) a = []
+fn elem(string tag, Vec(HtmlNode) children) -> HtmlNode {
+    Vec(Attr) a = {}
     return Element(tag.copy(), a, children)
 }
 
 // Element with attributes. Both `a` and `children` are moved into the node.
-fn elem_attr(string tag, vec(Attr) a, vec(HtmlNode) children) -> HtmlNode {
+fn elem_attr(string tag, Vec(Attr) a, Vec(HtmlNode) children) -> HtmlNode {
     return Element(tag.copy(), a, children)
 }
 
 // ---- Convenience constructors ----
 
-fn div(vec(HtmlNode) children) -> HtmlNode { return elem("div", children) }
-fn span(vec(HtmlNode) children) -> HtmlNode { return elem("span", children) }
-fn ul(vec(HtmlNode) children) -> HtmlNode { return elem("ul", children) }
-fn ol(vec(HtmlNode) children) -> HtmlNode { return elem("ol", children) }
-fn li(vec(HtmlNode) children) -> HtmlNode { return elem("li", children) }
+fn div(Vec(HtmlNode) children) -> HtmlNode { return elem("div", children) }
+fn span(Vec(HtmlNode) children) -> HtmlNode { return elem("span", children) }
+fn ul(Vec(HtmlNode) children) -> HtmlNode { return elem("ul", children) }
+fn ol(Vec(HtmlNode) children) -> HtmlNode { return elem("ol", children) }
+fn li(Vec(HtmlNode) children) -> HtmlNode { return elem("li", children) }
 
 // <hN>text</hN>
 fn h(int level, string s) -> HtmlNode {
@@ -85,54 +86,54 @@ fn h(int level, string s) -> HtmlNode {
     if lv < 1 { lv = 1 }
     if lv > 6 { lv = 6 }
     string tag = f"h{lv}"
-    vec(Attr) a = []
-    vec(HtmlNode) c = []
+    Vec(Attr) a = {}
+    Vec(HtmlNode) c = {}
     c.push(Text(s.copy()))
     return Element(tag, a, c)
 }
 
 // <p>text</p>
 fn p(string s) -> HtmlNode {
-    vec(Attr) a = []
-    vec(HtmlNode) c = []
+    Vec(Attr) a = {}
+    Vec(HtmlNode) c = {}
     c.push(Text(s.copy()))
     return Element("p", a, c)
 }
 
 // <a href="url">text</a>
 fn a(string anchor_text, string url) -> HtmlNode {
-    vec(Attr) at = []
+    Vec(Attr) at = {}
     at.push(Attr { key: "href", val: url.copy() })
-    vec(HtmlNode) c = []
+    Vec(HtmlNode) c = {}
     c.push(Text(anchor_text.copy()))
     return Element("a", at, c)
 }
 
 // <img src="src" alt="alt"> (void)
 fn img(string src, string alt) -> HtmlNode {
-    vec(Attr) at = []
+    Vec(Attr) at = {}
     at.push(Attr { key: "src", val: src.copy() })
     at.push(Attr { key: "alt", val: alt.copy() })
-    vec(HtmlNode) c = []
+    Vec(HtmlNode) c = {}
     return Element("img", at, c)
 }
 
 fn br() -> HtmlNode {
-    vec(Attr) a = []
-    vec(HtmlNode) c = []
+    Vec(Attr) a = {}
+    Vec(HtmlNode) c = {}
     return Element("br", a, c)
 }
 
 fn hr() -> HtmlNode {
-    vec(Attr) a = []
-    vec(HtmlNode) c = []
+    Vec(Attr) a = {}
+    Vec(HtmlNode) c = {}
     return Element("hr", a, c)
 }
 
 // ---- Document wrappers ----
 
-fn document(vec(HtmlNode) roots) -> HtmlDoc { return HtmlDoc { roots: roots } }
-fn fragment(vec(HtmlNode) nodes) -> HtmlDoc { return HtmlDoc { roots: nodes } }
+fn document(Vec(HtmlNode) roots) -> HtmlDoc { return HtmlDoc { roots: roots } }
+fn fragment(Vec(HtmlNode) nodes) -> HtmlDoc { return HtmlDoc { roots: nodes } }
 
 // ---- Escaping ----
 
@@ -185,7 +186,7 @@ fn _render_node(HtmlNode n) -> string {
             string r = "<"
             r.append(tag)
             int j = 0
-            while j < attrs.length {
+            while j < attrs.len {
                 Attr at = attrs.get(j)
                 r.append(" ")
                 r.append(at.key)
@@ -202,7 +203,7 @@ fn _render_node(HtmlNode n) -> string {
             }
             r.append(">")
             int i = 0
-            while i < children.length {
+            while i < children.len {
                 r.append(_render_node(children.get(i)))
                 i = i + 1
             }
@@ -226,7 +227,7 @@ fn _render_node(HtmlNode n) -> string {
 fn render(&HtmlDoc d) -> string {
     string out = ""
     int i = 0
-    while i < d.roots.length {
+    while i < d.roots.len {
         out.append(_render_node(d.roots.get(i)))
         i = i + 1
     }
@@ -255,7 +256,7 @@ fn _render_node_pretty(HtmlNode n, int depth, int step) -> string {
             r.append("<")
             r.append(tag)
             int j = 0
-            while j < attrs.length {
+            while j < attrs.len {
                 Attr at = attrs.get(j)
                 r.append(" ")
                 r.append(at.key)
@@ -272,7 +273,7 @@ fn _render_node_pretty(HtmlNode n, int depth, int step) -> string {
             }
             r.append(">\n")
             int i = 0
-            while i < children.length {
+            while i < children.len {
                 r.append(_render_node_pretty(children.get(i), depth + 1, step))
                 i = i + 1
             }
@@ -311,7 +312,7 @@ fn _render_node_pretty(HtmlNode n, int depth, int step) -> string {
 fn render_pretty(&HtmlDoc d, int step) -> string {
     string out = ""
     int i = 0
-    while i < d.roots.length {
+    while i < d.roots.len {
         out.append(_render_node_pretty(d.roots.get(i), 0, step))
         i = i + 1
     }
@@ -321,16 +322,16 @@ fn render_pretty(&HtmlDoc d, int step) -> string {
 // ---- Pure-string helper (no tree) ----
 
 // fmt_tag("a", [["href","u"]], "txt") -> <a href="u">txt</a>
-fn fmt_tag(string tag, vec(vec(string)) attr_pairs, string inner) -> string {
+fn fmt_tag(string tag, Vec(Vec(string)) attr_pairs, string inner) -> string {
     string r = "<"
     r.append(tag)
     int i = 0
-    while i < attr_pairs.length {
-        vec(string) pr = attr_pairs.get(i)
-        if pr.length >= 1 {
+    while i < attr_pairs.len {
+        Vec(string) pr = attr_pairs.get(i)
+        if pr.len >= 1 {
             r.append(" ")
             r.append(pr.get(0))
-            if pr.length >= 2 {
+            if pr.len >= 2 {
                 r.append("=\"")
                 r.append(_escape_attr(pr.get(1)))
                 r.append("\"")
@@ -564,8 +565,8 @@ fn _hp_scan_attr_value(&!HtmlParser p) -> string {
     return _decode_entities(raw)
 }
 
-fn _parse_attrs(&!HtmlParser p) -> vec(Attr) {
-    vec(Attr) out = []
+fn _parse_attrs(&!HtmlParser p) -> Vec(Attr) {
+    Vec(Attr) out = {}
     while p.pos < p.len {
         _hp_skip_ws(&!p)
         int c = _hp_peek(&!p)
@@ -644,7 +645,7 @@ fn _hp_scan_raw_until_close(&!HtmlParser p, string tag) -> string {
 fn _parse_element(&!HtmlParser p) -> HtmlNode {
     p.pos = p.pos + 1                    // consume '<'
     string tag = _hp_lower(_hp_scan_tag_name(&!p))
-    vec(Attr) attrs = _parse_attrs(&!p)  // stops at '/' or '>' or EOF
+    Vec(Attr) attrs = _parse_attrs(&!p)  // stops at '/' or '>' or EOF
 
     bool self_closed = false
     if _hp_peek(&!p) == '/' {
@@ -654,23 +655,23 @@ fn _parse_element(&!HtmlParser p) -> HtmlNode {
     if _hp_peek(&!p) == '>' { p.pos = p.pos + 1 }   // consume '>'
 
     if self_closed || _is_void(tag) {
-        vec(HtmlNode) empty = []
+        Vec(HtmlNode) empty = {}
         return Element(tag, attrs, empty)
     }
     if tag == "script" || tag == "style" {
         string raw = _hp_scan_raw_until_close(&!p, tag)
-        vec(HtmlNode) rc = []
+        Vec(HtmlNode) rc = {}
         rc.push(RawText(raw))
         return Element(tag, attrs, rc)
     }
-    vec(HtmlNode) children = _parse_nodes(&!p, tag)
+    Vec(HtmlNode) children = _parse_nodes(&!p, tag)
     return Element(tag, attrs, children)
 }
 
 // Parse a run of sibling nodes until the matching `</close_tag>` (consumed) or
 // EOF. `close_tag == ""` means top level: a stray close tag is skipped.
-fn _parse_nodes(&!HtmlParser p, string close_tag) -> vec(HtmlNode) {
-    vec(HtmlNode) nodes = []
+fn _parse_nodes(&!HtmlParser p, string close_tag) -> Vec(HtmlNode) {
+    Vec(HtmlNode) nodes = {}
     while p.pos < p.len {
         int c = p.input.at(p.pos)
         if c == '<' {
@@ -706,7 +707,7 @@ fn _parse_nodes(&!HtmlParser p, string close_tag) -> vec(HtmlNode) {
 
 fn parse(string input) -> HtmlDoc {
     HtmlParser p = _hp_new(input)
-    vec(HtmlNode) roots = _parse_nodes(&!p, "")
+    Vec(HtmlNode) roots = _parse_nodes(&!p, "")
     return HtmlDoc { roots: roots }
 }
 
@@ -717,7 +718,7 @@ fn get_attr(HtmlNode n, string key) -> string {
     match n {
         Element(tag, attrs, children) => {
             int i = 0
-            while i < attrs.length {
+            while i < attrs.len {
                 Attr at = attrs.get(i)
                 if at.key == key { return at.val.copy() }
                 i = i + 1
@@ -734,7 +735,7 @@ fn _node_text(HtmlNode n) -> string {
         Element(tag, attrs, children) => {
             string r = ""
             int i = 0
-            while i < children.length {
+            while i < children.len {
                 r.append(_node_text(children.get(i)))
                 i = i + 1
             }
@@ -749,7 +750,7 @@ fn _node_text(HtmlNode n) -> string {
 fn to_text(&HtmlDoc d) -> string {
     string r = ""
     int i = 0
-    while i < d.roots.length {
+    while i < d.roots.len {
         r.append(_node_text(d.roots.get(i)))
         i = i + 1
     }
@@ -757,23 +758,23 @@ fn to_text(&HtmlDoc d) -> string {
 }
 
 // Collect every href value from <a> elements in the subtree.
-fn _collect_links(HtmlNode n) -> vec(string) {
-    vec(string) acc = []
+fn _collect_links(HtmlNode n) -> Vec(string) {
+    Vec(string) acc = {}
     match n {
         Element(tag, attrs, children) => {
             if tag == "a" {
                 int j = 0
-                while j < attrs.length {
+                while j < attrs.len {
                     Attr at = attrs.get(j)
                     if at.key == "href" { acc.push(at.val.copy()) }
                     j = j + 1
                 }
             }
             int i = 0
-            while i < children.length {
-                vec(string) sub = _collect_links(children.get(i))
+            while i < children.len {
+                Vec(string) sub = _collect_links(children.get(i))
                 int k = 0
-                while k < sub.length { acc.push(sub.get(k)); k = k + 1 }
+                while k < sub.len { acc.push(sub.get(k)); k = k + 1 }
                 i = i + 1
             }
             return acc
@@ -782,13 +783,13 @@ fn _collect_links(HtmlNode n) -> vec(string) {
     }
 }
 
-fn extract_links(&HtmlDoc d) -> vec(string) {
-    vec(string) acc = []
+fn extract_links(&HtmlDoc d) -> Vec(string) {
+    Vec(string) acc = {}
     int i = 0
-    while i < d.roots.length {
-        vec(string) sub = _collect_links(d.roots.get(i))
+    while i < d.roots.len {
+        Vec(string) sub = _collect_links(d.roots.get(i))
         int k = 0
-        while k < sub.length { acc.push(sub.get(k)); k = k + 1 }
+        while k < sub.len { acc.push(sub.get(k)); k = k + 1 }
         i = i + 1
     }
     return acc
@@ -796,33 +797,33 @@ fn extract_links(&HtmlDoc d) -> vec(string) {
 
 // Recursively collect (pre-order) every element with the given tag, as
 // independent deep copies.
-fn _collect_by_tag(HtmlNode n, string tag) -> vec(HtmlNode) {
-    vec(HtmlNode) acc = []
+fn _collect_by_tag(HtmlNode n, string tag) -> Vec(HtmlNode) {
+    Vec(HtmlNode) acc = {}
     match n {
         Element(t, attrs, children) => {
             if t == tag {
                 // vec.get already returns an owned deep clone, so push it
                 // directly — no intermediate named local (which, being
                 // loop-body-scoped, was not dropped per iteration → leak).
-                vec(Attr) acopy = []
+                Vec(Attr) acopy = {}
                 int a = 0
-                while a < attrs.length {
+                while a < attrs.len {
                     acopy.push(attrs.get(a))
                     a = a + 1
                 }
-                vec(HtmlNode) ccopy = []
+                Vec(HtmlNode) ccopy = {}
                 int cc = 0
-                while cc < children.length {
+                while cc < children.len {
                     ccopy.push(children.get(cc))
                     cc = cc + 1
                 }
                 acc.push(Element(t.copy(), acopy, ccopy))
             }
             int i = 0
-            while i < children.length {
-                vec(HtmlNode) sub = _collect_by_tag(children.get(i), tag)
+            while i < children.len {
+                Vec(HtmlNode) sub = _collect_by_tag(children.get(i), tag)
                 int k = 0
-                while k < sub.length { acc.push(sub.get(k)); k = k + 1 }
+                while k < sub.len { acc.push(sub.get(k)); k = k + 1 }
                 i = i + 1
             }
             return acc
@@ -831,13 +832,13 @@ fn _collect_by_tag(HtmlNode n, string tag) -> vec(HtmlNode) {
     }
 }
 
-fn find_by_tag(&HtmlDoc d, string tag) -> vec(HtmlNode) {
-    vec(HtmlNode) acc = []
+fn find_by_tag(&HtmlDoc d, string tag) -> Vec(HtmlNode) {
+    Vec(HtmlNode) acc = {}
     int i = 0
-    while i < d.roots.length {
-        vec(HtmlNode) sub = _collect_by_tag(d.roots.get(i), tag)
+    while i < d.roots.len {
+        Vec(HtmlNode) sub = _collect_by_tag(d.roots.get(i), tag)
         int k = 0
-        while k < sub.length { acc.push(sub.get(k)); k = k + 1 }
+        while k < sub.len { acc.push(sub.get(k)); k = k + 1 }
         i = i + 1
     }
     return acc

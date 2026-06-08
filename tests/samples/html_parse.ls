@@ -1,6 +1,7 @@
 // Phase H2: HTML parsing (recursive-descent, tolerant) + round-trip + queries.
 // Self-verifying: prints "HTML PASS" only if every check holds.
 
+import std.vec
 import std.html as html
 import io
 
@@ -53,21 +54,21 @@ fn main() {
 
     // --- attribute value entity decode ---
     html.HtmlDoc d10 = html.parse("<a href=\"a&amp;b\">t</a>")
-    vec(html.HtmlNode) a10 = html.find_by_tag(d10, "a")
-    if !check(a10.length == 1, 10) { ok = false }
+    Vec(html.HtmlNode) a10 = html.find_by_tag(d10, "a")
+    if !check(a10.len == 1, 10) { ok = false }
     if !check(html.get_attr(a10.get(0), "href") == "a&b", 11) { ok = false }
 
     // --- extract_links across nesting ---
     html.HtmlDoc d12 = html.parse("<a href=\"u1\">x</a><div><a href=\"u2\">y</a></div>")
-    vec(string) links = html.extract_links(d12)
-    if !check(links.length == 2, 12) { ok = false }
+    Vec(string) links = html.extract_links(d12)
+    if !check(links.len == 2, 12) { ok = false }
     if !check(links.get(0) == "u1", 13) { ok = false }
     if !check(links.get(1) == "u2", 14) { ok = false }
 
     // --- find_by_tag collects all matches (pre-order) ---
     html.HtmlDoc d15 = html.parse("<ul><li>a</li><li>b</li><li>c</li></ul>")
-    vec(html.HtmlNode) lis = html.find_by_tag(d15, "li")
-    if !check(lis.length == 3, 15) { ok = false }
+    Vec(html.HtmlNode) lis = html.find_by_tag(d15, "li")
+    if !check(lis.len == 3, 15) { ok = false }
 
     // --- tolerant: mismatched close tag auto-closes inner element ---
     html.HtmlDoc d16 = html.parse("<div><b>bold</div>")
@@ -75,8 +76,8 @@ fn main() {
 
     // --- tolerant: unclosed elements at EOF ---
     html.HtmlDoc d17 = html.parse("<ul><li>a<li>b")
-    vec(html.HtmlNode) lis2 = html.find_by_tag(d17, "li")
-    if !check(lis2.length == 2, 17) { ok = false }
+    Vec(html.HtmlNode) lis2 = html.find_by_tag(d17, "li")
+    if !check(lis2.len == 2, 17) { ok = false }
 
     // --- round-trip: parse -> render -> parse renders identically ---
     string src = "<div id=\"main\"><p>one</p><p>two</p></div>"

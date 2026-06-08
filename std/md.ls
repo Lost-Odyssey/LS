@@ -21,31 +21,31 @@ enum MdInline {
 }
 
 enum MdBlock {
-    Heading(int level, vec(MdInline) content)          // # .. ######
-    Paragraph(vec(MdInline) content)
+    Heading(int level, Vec(MdInline) content)          // # .. ######
+    Paragraph(Vec(MdInline) content)
     CodeBlock(string lang, string code)                // ```lang ... ```
-    UnorderedList(vec(vec(MdInline)) items)            // - item
-    OrderedList(vec(vec(MdInline)) items)              // 1. item
-    Blockquote(vec(MdBlock) children)                  // > quote (recursive)
-    Table(vec(string) headers, vec(vec(string)) rows)  // GFM table
+    UnorderedList(Vec(Vec(MdInline)) items)            // - item
+    OrderedList(Vec(Vec(MdInline)) items)              // 1. item
+    Blockquote(Vec(MdBlock) children)                  // > quote (recursive)
+    Table(Vec(string) headers, Vec(Vec(string)) rows)  // GFM table
     HorizontalRule
 }
 
 struct MdDoc {
-    vec(MdBlock) blocks
+    Vec(MdBlock) blocks
 }
 
 // ---- Document constructor ----
 
 fn document() -> MdDoc {
-    vec(MdBlock) v = []
+    Vec(MdBlock) v = {}
     return MdDoc { blocks: v }
 }
 
 // ---- Internal helpers ----
 
-fn _inline_text(string s) -> vec(MdInline) {
-    vec(MdInline) v = []
+fn _inline_text(string s) -> Vec(MdInline) {
+    Vec(MdInline) v = {}
     v.push(Text(s.copy()))
     return v
 }
@@ -94,20 +94,20 @@ fn code_block(&!MdDoc d, string lang, string code) {
     d.blocks.push(CodeBlock(lang.copy(), code.copy()))
 }
 
-fn ul(&!MdDoc d, vec(string) items) {
-    vec(vec(MdInline)) its = []
+fn ul(&!MdDoc d, Vec(string) items) {
+    Vec(Vec(MdInline)) its = {}
     int i = 0
-    while i < items.length {
+    while i < items.len {
         its.push(_inline_text(items.get(i)))
         i = i + 1
     }
     d.blocks.push(UnorderedList(its))
 }
 
-fn ol(&!MdDoc d, vec(string) items) {
-    vec(vec(MdInline)) its = []
+fn ol(&!MdDoc d, Vec(string) items) {
+    Vec(Vec(MdInline)) its = {}
     int i = 0
-    while i < items.length {
+    while i < items.len {
         its.push(_inline_text(items.get(i)))
         i = i + 1
     }
@@ -115,12 +115,12 @@ fn ol(&!MdDoc d, vec(string) items) {
 }
 
 fn blockquote(&!MdDoc d, string text) {
-    vec(MdBlock) children = []
+    Vec(MdBlock) children = {}
     children.push(Paragraph(_inline_text(text)))
     d.blocks.push(Blockquote(children))
 }
 
-fn table(&!MdDoc d, vec(string) headers, vec(vec(string)) rows) {
+fn table(&!MdDoc d, Vec(string) headers, Vec(Vec(string)) rows) {
     d.blocks.push(Table(headers, rows))
 }
 
@@ -148,10 +148,10 @@ fn _render_inline(MdInline x) -> string {
     }
 }
 
-fn _render_inlines(vec(MdInline) inls) -> string {
+fn _render_inlines(Vec(MdInline) inls) -> string {
     string out = ""
     int i = 0
-    while i < inls.length {
+    while i < inls.len {
         out.append(_render_inline(inls.get(i)))
         i = i + 1
     }
@@ -160,19 +160,19 @@ fn _render_inlines(vec(MdInline) inls) -> string {
 
 // ---- Table render (GFM, column-aligned) ----
 
-fn _render_table(vec(string) headers, vec(vec(string)) rows) -> string {
-    int cols = headers.length
+fn _render_table(Vec(string) headers, Vec(Vec(string)) rows) -> string {
+    int cols = headers.len
     if cols <= 0 { return "" }
 
-    vec(int) widths = []
+    Vec(int) widths = {}
     int c = 0
     while c < cols {
         int w = headers.get(c).length
         if w < 3 { w = 3 }
         int r = 0
-        while r < rows.length {
-            vec(string) row = rows.get(r)
-            if c < row.length {
+        while r < rows.len {
+            Vec(string) row = rows.get(r)
+            if c < row.len {
                 int cw = row.get(c).length
                 if cw > w { w = cw }
             }
@@ -202,13 +202,13 @@ fn _render_table(vec(string) headers, vec(vec(string)) rows) -> string {
     }
     out.append("\n")
     int r = 0
-    while r < rows.length {
-        vec(string) row = rows.get(r)
+    while r < rows.len {
+        Vec(string) row = rows.get(r)
         out.append("|")
         c = 0
         while c < cols {
             string cell = ""
-            if c < row.length { cell = row.get(c) }
+            if c < row.len { cell = row.get(c) }
             out.append(" ")
             out.append(_pad_right(cell, widths.get(c)))
             out.append(" |")
@@ -247,7 +247,7 @@ fn _render_block(MdBlock b) -> string {
         UnorderedList(items) => {
             string r = ""
             int i = 0
-            while i < items.length {
+            while i < items.len {
                 r.append("- ")
                 r.append(_render_inlines(items.get(i)))
                 r.append("\n")
@@ -259,7 +259,7 @@ fn _render_block(MdBlock b) -> string {
         OrderedList(items) => {
             string r = ""
             int i = 0
-            while i < items.length {
+            while i < items.len {
                 r.append(f"{i + 1}. ")
                 r.append(_render_inlines(items.get(i)))
                 r.append("\n")
@@ -271,7 +271,7 @@ fn _render_block(MdBlock b) -> string {
         Blockquote(children) => {
             string inner = ""
             int i = 0
-            while i < children.length {
+            while i < children.len {
                 inner.append(_render_block(children.get(i)))
                 i = i + 1
             }
@@ -312,7 +312,7 @@ fn _render_block(MdBlock b) -> string {
 fn render(&MdDoc d) -> string {
     string out = ""
     int i = 0
-    while i < d.blocks.length {
+    while i < d.blocks.len {
         out.append(_render_block(d.blocks.get(i)))
         i = i + 1
     }
@@ -375,22 +375,10 @@ fn _is_table_sep(string line) -> bool {
     return has_dash && has_pipe
 }
 
-fn _split_table_row(string line) -> vec(string) {
-    // Phase 2.5: string.split now returns std.vec Vec(string); copy into the
-    // builtin vec this file still uses internally.
-    Vec(string) _raw = line.split("|")
-    vec(string) raw = []
-    int _ri = 0
-    while _ri < _raw.len() {
-        raw.push(_raw.get(_ri))
-        _ri = _ri + 1
-    }
-    // VR-LIM-002: a pure-LS Vec local in an imported-module function is not
-    // auto-dropped; release it explicitly.
-    _raw.clear()
-    _raw.shrink_to_fit()
-    vec(string) cells = []
-    int rn = raw.length
+fn _split_table_row(string line) -> Vec(string) {
+    Vec(string) raw = line.split("|")
+    Vec(string) cells = {}
+    int rn = raw.len()
     int i = 0
     while i < rn {
         string cell = raw.get(i).trim()
@@ -440,8 +428,8 @@ fn _find_triple(string s, int start, int ch) -> int {
 
 // Hand-written inline scanner: split `text` into MdInline runs. Unclosed markers
 // are treated as literal text. Marker priority: image, link, code, ***, **, *, _.
-fn _parse_inlines(string text) -> vec(MdInline) {
-    vec(MdInline) out = []
+fn _parse_inlines(string text) -> Vec(MdInline) {
+    Vec(MdInline) out = {}
     int n = text.length
     int i = 0
     string buf = ""
@@ -549,19 +537,10 @@ fn _parse_inlines(string text) -> vec(MdInline) {
 }
 
 // Parse `input` into a list of blocks (internal; `parse` wraps it in MdDoc).
-fn _parse_blocks(string input) -> vec(MdBlock) {
-    vec(MdBlock) blocks = []
-    Vec(string) _lines = input.lines()
-    vec(string) lines = []
-    int _li = 0
-    while _li < _lines.len() {
-        lines.push(_lines.get(_li))
-        _li = _li + 1
-    }
-    // VR-LIM-002: release the module-local pure-LS Vec explicitly.
-    _lines.clear()
-    _lines.shrink_to_fit()
-    int nl = lines.length
+fn _parse_blocks(string input) -> Vec(MdBlock) {
+    Vec(MdBlock) blocks = {}
+    Vec(string) lines = input.lines()
+    int nl = lines.len()
     int i = 0
 
     while i < nl {
@@ -605,7 +584,7 @@ fn _parse_blocks(string input) -> vec(MdBlock) {
         }
 
         if line.starts_with("- ") || line.starts_with("* ") {
-            vec(vec(MdInline)) items = []
+            Vec(Vec(MdInline)) items = {}
             while i < nl {
                 string li = lines.get(i)
                 if li.starts_with("- ") || li.starts_with("* ") {
@@ -620,7 +599,7 @@ fn _parse_blocks(string input) -> vec(MdBlock) {
         }
 
         if _ordered_prefix_len(line) > 0 {
-            vec(vec(MdInline)) items = []
+            Vec(Vec(MdInline)) items = {}
             while i < nl {
                 string li = lines.get(i)
                 int p = _ordered_prefix_len(li)
@@ -659,18 +638,18 @@ fn _parse_blocks(string input) -> vec(MdBlock) {
         }
 
         if t.starts_with("|") && i + 1 < nl && _is_table_sep(lines.get(i + 1)) {
-            vec(string) headers = _split_table_row(line)
-            int ncols = headers.length
+            Vec(string) headers = _split_table_row(line)
+            int ncols = headers.len
             i = i + 2
-            vec(vec(string)) rows = []
+            Vec(Vec(string)) rows = {}
             while i < nl {
                 string rl = lines.get(i)
                 if !rl.trim().starts_with("|") { break }
-                vec(string) rc = _split_table_row(rl)
-                vec(string) row = []
+                Vec(string) rc = _split_table_row(rl)
+                Vec(string) row = {}
                 int k = 0
                 while k < ncols {
-                    if k < rc.length { row.push(rc.get(k)) }
+                    if k < rc.len { row.push(rc.get(k)) }
                     else { row.push("") }
                     k = k + 1
                 }
@@ -729,10 +708,10 @@ fn _inline_plain(MdInline x) -> string {
     }
 }
 
-fn _inlines_plain(vec(MdInline) inls) -> string {
+fn _inlines_plain(Vec(MdInline) inls) -> string {
     string out = ""
     int i = 0
-    while i < inls.length {
+    while i < inls.len {
         out.append(_inline_plain(inls.get(i)))
         i = i + 1
     }
@@ -753,10 +732,10 @@ fn _inline_link_of(MdInline x) -> string {
     }
 }
 
-fn _inline_links(vec(MdInline) inls) -> vec(string) {
-    vec(string) out = []
+fn _inline_links(Vec(MdInline) inls) -> Vec(string) {
+    Vec(string) out = {}
     int i = 0
-    while i < inls.length {
+    while i < inls.len {
         string u = _inline_link_of(inls.get(i))
         if u.length > 0 { out.push(u) }
         i = i + 1
@@ -764,48 +743,48 @@ fn _inline_links(vec(MdInline) inls) -> vec(string) {
     return out
 }
 
-fn _block_links(MdBlock b) -> vec(string) {
+fn _block_links(MdBlock b) -> Vec(string) {
     match b {
         // L-012 ③ fixed: returning a heap-value call result directly from a
         // match arm now moves the temp out (no spurious clone+leak).
         Heading(_, c)    => { return _inline_links(c) }
         Paragraph(c)     => { return _inline_links(c) }
         UnorderedList(items) => {
-            vec(string) out = []
+            Vec(string) out = {}
             int i = 0
-            while i < items.length {
-                vec(string) ls = _inline_links(items.get(i))
+            while i < items.len {
+                Vec(string) ls = _inline_links(items.get(i))
                 int j = 0
-                while j < ls.length { out.push(ls.get(j)); j = j + 1 }
+                while j < ls.len { out.push(ls.get(j)); j = j + 1 }
                 i = i + 1
             }
             return out
         }
         OrderedList(items) => {
-            vec(string) out = []
+            Vec(string) out = {}
             int i = 0
-            while i < items.length {
-                vec(string) ls = _inline_links(items.get(i))
+            while i < items.len {
+                Vec(string) ls = _inline_links(items.get(i))
                 int j = 0
-                while j < ls.length { out.push(ls.get(j)); j = j + 1 }
+                while j < ls.len { out.push(ls.get(j)); j = j + 1 }
                 i = i + 1
             }
             return out
         }
         Blockquote(ch) => {
-            vec(string) out = []
+            Vec(string) out = {}
             int i = 0
-            while i < ch.length {
-                vec(string) ls = _block_links(ch.get(i))
+            while i < ch.len {
+                Vec(string) ls = _block_links(ch.get(i))
                 int j = 0
-                while j < ls.length { out.push(ls.get(j)); j = j + 1 }
+                while j < ls.len { out.push(ls.get(j)); j = j + 1 }
                 i = i + 1
             }
             return out
         }
-        CodeBlock(_, _) => { vec(string) e = []; return e }
-        Table(_, _)     => { vec(string) e = []; return e }
-        HorizontalRule  => { vec(string) e = []; return e }
+        CodeBlock(_, _) => { Vec(string) e = {}; return e }
+        Table(_, _)     => { Vec(string) e = {}; return e }
+        HorizontalRule  => { Vec(string) e = {}; return e }
     }
 }
 
@@ -817,7 +796,7 @@ fn _block_plain(MdBlock b) -> string {
         UnorderedList(items)  => {
             string s = ""
             int i = 0
-            while i < items.length {
+            while i < items.len {
                 s.append(_inlines_plain(items.get(i)))
                 s.append("\n")
                 i = i + 1
@@ -827,7 +806,7 @@ fn _block_plain(MdBlock b) -> string {
         OrderedList(items) => {
             string s = ""
             int i = 0
-            while i < items.length {
+            while i < items.len {
                 s.append(_inlines_plain(items.get(i)))
                 s.append("\n")
                 i = i + 1
@@ -837,7 +816,7 @@ fn _block_plain(MdBlock b) -> string {
         Blockquote(ch) => {
             string s = ""
             int i = 0
-            while i < ch.length {
+            while i < ch.len {
                 s.append(_block_plain(ch.get(i)))
                 s.append("\n")
                 i = i + 1
@@ -847,10 +826,10 @@ fn _block_plain(MdBlock b) -> string {
         Table(_, rows) => {
             string s = ""
             int r = 0
-            while r < rows.length {
-                vec(string) row = rows.get(r)
+            while r < rows.len {
+                Vec(string) row = rows.get(r)
                 int c = 0
-                while c < row.length {
+                while c < row.len {
                     s.append(row.get(c))
                     s.append(" ")
                     c = c + 1
@@ -879,10 +858,10 @@ fn _heading_text(MdBlock b) -> string {
 }
 
 // Collect each heading's plain text, in document order. (Empty headings skipped.)
-fn extract_headings(&MdDoc d) -> vec(string) {
-    vec(string) out = []
+fn extract_headings(&MdDoc d) -> Vec(string) {
+    Vec(string) out = {}
     int i = 0
-    while i < d.blocks.length {
+    while i < d.blocks.len {
         string h = _heading_text(d.blocks.get(i))
         if h.length > 0 { out.push(h) }
         i = i + 1
@@ -891,13 +870,13 @@ fn extract_headings(&MdDoc d) -> vec(string) {
 }
 
 // Collect every link/image URL (recurses into blockquotes).
-fn extract_links(&MdDoc d) -> vec(string) {
-    vec(string) out = []
+fn extract_links(&MdDoc d) -> Vec(string) {
+    Vec(string) out = {}
     int i = 0
-    while i < d.blocks.length {
-        vec(string) ls = _block_links(d.blocks.get(i))
+    while i < d.blocks.len {
+        Vec(string) ls = _block_links(d.blocks.get(i))
         int j = 0
-        while j < ls.length { out.push(ls.get(j)); j = j + 1 }
+        while j < ls.len { out.push(ls.get(j)); j = j + 1 }
         i = i + 1
     }
     return out
@@ -907,7 +886,7 @@ fn extract_links(&MdDoc d) -> vec(string) {
 fn to_plain_text(&MdDoc d) -> string {
     string out = ""
     int i = 0
-    while i < d.blocks.length {
+    while i < d.blocks.len {
         out.append(_block_plain(d.blocks.get(i)))
         out.append("\n")
         i = i + 1
@@ -1015,20 +994,20 @@ fn _html_inline(MdInline x) -> string {
     }
 }
 
-fn _html_inlines(vec(MdInline) inls) -> string {
+fn _html_inlines(Vec(MdInline) inls) -> string {
     string out = ""
     int i = 0
-    while i < inls.length {
+    while i < inls.len {
         out.append(_html_inline(inls.get(i)))
         i = i + 1
     }
     return out
 }
 
-fn _html_table(vec(string) headers, vec(vec(string)) rows) -> string {
+fn _html_table(Vec(string) headers, Vec(Vec(string)) rows) -> string {
     string r = "<table>\n<thead>\n<tr>"
     int c = 0
-    while c < headers.length {
+    while c < headers.len {
         r.append("<th>")
         r.append(_html_escape(headers.get(c)))
         r.append("</th>")
@@ -1036,13 +1015,13 @@ fn _html_table(vec(string) headers, vec(vec(string)) rows) -> string {
     }
     r.append("</tr>\n</thead>\n<tbody>\n")
     int rr = 0
-    while rr < rows.length {
-        vec(string) row = rows.get(rr)
+    while rr < rows.len {
+        Vec(string) row = rows.get(rr)
         r.append("<tr>")
         int cc = 0
-        while cc < headers.length {
+        while cc < headers.len {
             string cell = ""
-            if cc < row.length { cell = row.get(cc) }
+            if cc < row.len { cell = row.get(cc) }
             r.append("<td>")
             r.append(_html_escape(cell))
             r.append("</td>")
@@ -1085,7 +1064,7 @@ fn _html_block(MdBlock b) -> string {
         UnorderedList(items) => {
             string r = "<ul>\n"
             int i = 0
-            while i < items.length {
+            while i < items.len {
                 r.append("<li>")
                 r.append(_html_inlines(items.get(i)))
                 r.append("</li>\n")
@@ -1097,7 +1076,7 @@ fn _html_block(MdBlock b) -> string {
         OrderedList(items) => {
             string r = "<ol>\n"
             int i = 0
-            while i < items.length {
+            while i < items.len {
                 r.append("<li>")
                 r.append(_html_inlines(items.get(i)))
                 r.append("</li>\n")
@@ -1109,7 +1088,7 @@ fn _html_block(MdBlock b) -> string {
         Blockquote(children) => {
             string r = "<blockquote>\n"
             int i = 0
-            while i < children.length {
+            while i < children.len {
                 r.append(_html_block(children.get(i)))
                 i = i + 1
             }
@@ -1130,7 +1109,7 @@ fn _html_block(MdBlock b) -> string {
 fn render_html(&MdDoc d) -> string {
     string out = ""
     int i = 0
-    while i < d.blocks.length {
+    while i < d.blocks.len {
         out.append(_html_block(d.blocks.get(i)))
         i = i + 1
     }

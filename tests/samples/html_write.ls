@@ -1,6 +1,7 @@
 // Phase H1: HTML generation (functional bottom-up construction) + render.
 // Self-verifying: prints "HTML PASS" only if every check holds.
 
+import std.vec
 import std.html as html
 import io
 
@@ -13,7 +14,7 @@ fn check(bool cond, int id) -> bool {
 }
 
 fn frag1(html.HtmlNode n) -> html.HtmlDoc {
-    vec(html.HtmlNode) v = []
+    Vec(html.HtmlNode) v = {}
     v.push(n)
     return html.fragment(v)
 }
@@ -34,18 +35,18 @@ fn main() {
     if !check(html.render(d3) == "<p>hello</p>", 3) { ok = false }
 
     // --- nested element bottom-up + attribute ---
-    vec(html.HtmlNode) span_kids = []
+    Vec(html.HtmlNode) span_kids = {}
     span_kids.push(html.text("hi"))
     html.HtmlNode sp = html.elem("span", span_kids)
 
-    vec(vec(string)) ap = []
-    vec(string) ap0 = []
+    Vec(Vec(string)) ap = {}
+    Vec(string) ap0 = {}
     ap0.push("class")
     ap0.push("box")
     ap.push(ap0)
-    vec(html.Attr) divAttrs = html.attrs(ap)
+    Vec(html.Attr) divAttrs = html.attrs(ap)
 
-    vec(html.HtmlNode) div_kids = []
+    Vec(html.HtmlNode) div_kids = {}
     div_kids.push(sp)
     div_kids.push(html.comment(" note "))
     html.HtmlNode dv = html.elem_attr("div", divAttrs, div_kids)
@@ -67,20 +68,20 @@ fn main() {
     if !check(html.render(d8) == "<!DOCTYPE html>", 8) { ok = false }
 
     // --- attribute value escaping ---
-    vec(vec(string)) qap = []
-    vec(string) qap0 = []
+    Vec(Vec(string)) qap = {}
+    Vec(string) qap0 = {}
     qap0.push("title")
     qap0.push("a\"b<c")
     qap.push(qap0)
-    vec(html.Attr) qa = html.attrs(qap)
-    vec(html.HtmlNode) qkids = []
+    Vec(html.Attr) qa = html.attrs(qap)
+    Vec(html.HtmlNode) qkids = {}
     html.HtmlNode qn = html.elem_attr("p", qa, qkids)
     html.HtmlDoc d9 = frag1(qn)
     if !check(html.render(d9) == "<p title=\"a&quot;b&lt;c\"></p>", 9) { ok = false }
 
     // --- fmt_tag pure-string helper ---
-    vec(vec(string)) ftp = []
-    vec(string) ftp0 = []
+    Vec(Vec(string)) ftp = {}
+    Vec(string) ftp0 = {}
     ftp0.push("href")
     ftp0.push("u")
     ftp.push(ftp0)
@@ -88,13 +89,13 @@ fn main() {
     if !check(ft == "<a href=\"u\">x&lt;y</a>", 10) { ok = false }
 
     // --- document with nested tree + render ---
-    vec(html.HtmlNode) body_kids = []
+    Vec(html.HtmlNode) body_kids = {}
     body_kids.push(html.h(1, "T"))
     body_kids.push(html.p("para"))
     html.HtmlNode body = html.elem("body", body_kids)
-    vec(html.HtmlNode) htmlkids = []
+    Vec(html.HtmlNode) htmlkids = {}
     htmlkids.push(body)
-    vec(html.HtmlNode) roots = []
+    Vec(html.HtmlNode) roots = {}
     roots.push(html.comment("DOCTYPE html"))
     roots.push(html.elem("html", htmlkids))
     html.HtmlDoc doc = html.document(roots)
