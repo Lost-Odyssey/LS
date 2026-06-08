@@ -1,8 +1,0 @@
-对于 临时 产生的 匿名 string 变量, 如果直接作为函数参数, 比如下面程序的"tat".upper() 没有看到 drop的过程
-
-fn main() -> int {
-    string s = "static"
-    bool found = s.contains("tat".upper())
-    print(found)
-    return 0
-}

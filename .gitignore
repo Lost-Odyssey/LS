@@ -54,6 +54,14 @@ test_output.exe.obj
 .deepseek/
 .opencode/
 
+# bugs notes — local only, not tracked
+bugs/
+
+# docs — only build-related docs are tracked; everything else is local only
+docs/*
+!docs/build.md
+!docs/linux_deployment.md
+
 # scratch outputs at repo root
 cpu_timeline_demo.png
 cpu_timeline_demo.svg
