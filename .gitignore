@@ -78,6 +78,9 @@ cpu_timeline_zoom.html
 json_e2e_out.json
 string.cod
 
+# benchmarks: untracked, kept local only (temporarily)
+benchmarks/
+
 # benchmark build artifacts
 benchmarks/**/target/
 benchmarks/json/rust/Cargo.lock
