@@ -2023,9 +2023,16 @@ static bool starts_var_decl(Parser *p) {
                         if (p->current.type == TOKEN_IDENTIFIER &&
                             p->current.line == saved_cur.line) {
                             Token after = scanner_peek(&p->scanner);
+                            /* M-DEF: a no-init decl `mod.Type(args) v` is terminated
+                               by a newline (after-token on a different line), a '}'
+                               (last stmt in block) or EOF — accept those alongside
+                               the explicit '='/';' forms. The same-line guard above
+                               keeps adjacent statements (`a.f(x) b.g(y)`) as exprs. */
                             if (after.type == TOKEN_ASSIGN ||
                                 after.type == TOKEN_SEMICOLON ||
-                                after.type == TOKEN_EOF)
+                                after.type == TOKEN_EOF ||
+                                after.type == TOKEN_RBRACE ||
+                                after.line != p->current.line)
                                 result = true;
                         }
                     }
@@ -2068,9 +2075,18 @@ static bool starts_var_decl(Parser *p) {
                     p->current.line == saved_cur.line)
                 {
                     Token after = scanner_peek(&p->scanner);
+                    /* M-DEF: `Foo(args) v` with no initializer is a valid decl
+                       (`T v` ≡ `T v = {}`). It is terminated by a newline
+                       (after-token on a different line than the var name), a '}'
+                       (last stmt of a block) or EOF, in addition to the explicit
+                       '='/';' forms. The same-line var-name guard above keeps
+                       adjacent expr statements like `print(a1) print(a2)` (the
+                       second name is followed by '(' on the SAME line) as exprs. */
                     if (after.type == TOKEN_ASSIGN ||
                         after.type == TOKEN_SEMICOLON ||
-                        after.type == TOKEN_EOF)
+                        after.type == TOKEN_EOF ||
+                        after.type == TOKEN_RBRACE ||
+                        after.line != p->current.line)
                     {
                         result = true;
                     }

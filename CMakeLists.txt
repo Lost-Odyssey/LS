@@ -1644,6 +1644,18 @@ add_test(
 )
 set_tests_properties(test_iter_protocol PROPERTIES DEPENDS "test_vec_owndrop")
 
+# M-DEF (std.map prereq): implicit empty/default init — `T v` ≡ `T v = {}` for
+# any type whose `= {}` is already legal (docs/plan_std_map.md §F2). JIT+AOT+memcheck.
+add_test(
+    NAME test_implicit_empty_init
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_implicit_empty_init.cmake
+)
+set_tests_properties(test_implicit_empty_init PROPERTIES DEPENDS "test_iter_protocol")
+
 # Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
 # (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
 add_test(

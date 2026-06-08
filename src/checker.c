@@ -6453,6 +6453,22 @@ static void check_stmt(Checker *c, AstNode *node)
         if (declared == NULL)
             break;
 
+        /* M-DEF: implicit empty/default init — `T v` ≡ `T v = {}` for any type
+           where `= {}` is already a legal initializer (user containers like
+           Vec/Map and struct zero-init via the empty-brace branch below; the
+           built-in map via the TYPE_MAP branch). Synthesize an empty brace
+           literal so the existing `= {}` paths run unchanged. POD/string/enum
+           keep their current no-init behavior (their `{}` is not a legal init). */
+        if (node->as.var_decl.init == NULL &&
+            (declared->kind == TYPE_STRUCT || declared->kind == TYPE_MAP))
+        {
+            AstNode *empty = ast_new(AST_MAP_LIT, node->line, node->column);
+            empty->as.map_lit.keys = NULL;
+            empty->as.map_lit.vals = NULL;
+            empty->as.map_lit.pair_count = 0;
+            node->as.var_decl.init = empty;
+        }
+
         if (node->as.var_decl.init)
         {
             /* Special case: map(K,V) m = { key -> val, ... }
