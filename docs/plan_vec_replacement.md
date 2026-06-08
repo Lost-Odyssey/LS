@@ -11,7 +11,7 @@
 2. **Phase 1.5 API 精简（替换前先做）**：定稿 `Vec` 方法名 + 引入 `?`/`!` 后缀语言特性，
    使后续迁移直接对准最终 API（避免测试改两遍）。
 3. **Phase 2 迁移**：所有依赖内建 `vec` 的测试 → `import std.vec` 后用 `Vec`。
-4. **Phase 3 拆除**：删除编译器里内建 `vec` 的全部特殊实现。
+4. **Phase 3 拆除** ✅（2026-06-08）：删除编译器里内建 `vec` 的全部特殊实现。`Vec(T)` 为唯一动态数组。
 
 ## 已敲定的决策（不再讨论）
 | 决策 | 选择 | 影响 |
@@ -201,17 +201,21 @@ static bool is_import_path_segment(TokenType t) {
 - **硬约束**：必须在 Phase 3 之前完成——否则删 `TYPE_VECTOR` 后这些方法返回类型悬空。
 - 验收：`impl_string_test` + 迁移文件全绿 + memcheck 0/0/0 + 输出与内建逐字一致。
 
-### Phase 3：拆除内建 vec（**最后做，不可逆，分 3A~3F 小步**）
-- **3A** scanner：删 `TOKEN_VEC`（`scanner.c:167`）；Phase 0 谓词回退为只认 IDENTIFIER。
-- **3B** parser：删 `vec(T)` 类型语法 + vec 字面量特殊路径（**保留**通用 `[..]`→`__from_list`）。
-- **3C** types：删 `TYPE_VECTOR`/`type_vector`/相关谓词（`types.h:2`、`types.c:5`）。
-- **3D** checker：删 27 处 vec 特例（`checker.c`：方法表、借用 vec 分支、move vec 分支、
-  字面量类型推断）。
-- **3E** codegen：删 69 处（`codegen.c`：`ls_vec_type`、`emit_vec_*`、scope cleanup vec 分支、
-  `capture_type_is_*_cg` vec 分支、`cg_push_temp_drop` vec 分支、`AST_INDEX`/字面量 vec 路径…）。
-- **3F** docs：CLAUDE.md §1 特性表/§8 捕获表、`plan_vec_functional.md` 等标注「vec 已降级为
-  std.vec」。
-- 每删一类**立即全量 `--memcheck`**；全部完成后全样本 memcheck 0/0/0 + 抽样 AOT。
+### Phase 3：拆除内建 vec（**最后做，不可逆，分 3A~3F 小步**）✅ 已完成（2026-06-08）
+> 实际施工蓝图与依赖排序见 [plan_phase3_remove_builtin_vec.md](plan_phase3_remove_builtin_vec.md)
+> （拆为 P3-0a/0b 前置清理 → P3-1 前端停收 → P3-2 checker → P3-3 codegen → P3-4 types → P3-5 docs）。
+> 顺序与下表略有调整：先停前端语法（P3-1，对应 3A/3B）使内部机制不可达，再自后向前删死代码
+> （checker→codegen→types），最后才删 `TYPE_VECTOR` 定义（P3-4，对应 3C）。
+- **3A** ✅ scanner：删 `TOKEN_VEC`（`scanner.c:167`）；Phase 0 谓词回退为只认 IDENTIFIER。→ P3-1
+- **3B** ✅ parser：删 `vec(T)` 类型语法 + vec 字面量特殊路径（**保留**通用 `[..]`→`__from_list`）。→ P3-1
+- **3C** ✅ types：删 `TYPE_VECTOR`/`type_vector`/相关谓词（`types.h:2`、`types.c:5`）。→ P3-4
+- **3D** ✅ checker：删 26 处 vec 特例（`checker.c`：方法表、借用 vec 分支、move vec 分支、
+  字面量类型推断）。→ P3-2
+- **3E** ✅ codegen：删内建 vec 发射（`codegen.c`：`codegen_vec_method`、`ls_vec_type`、`emit_vec_*`、
+  scope cleanup vec 分支、`capture_type_is_*_cg` vec 分支、`cg_push_temp_drop` vec 分支、
+  `AST_INDEX`/字面量 vec 路径、`emit_global_vec_cleanup`…）。→ P3-3（子步 3E-1/2/3 + 全量 memcheck）
+- **3F** ✅ docs：CLAUDE.md §1 特性表/§7 Move/§8 捕获表标注「vec 已降级为 std.vec `Vec(T)`」。→ P3-5
+- 每删一类**立即全量 `--memcheck`**；全部完成后全样本 memcheck 0/0/0 + 抽样 AOT。✅ ctest 170/170。
 
 ---
 

@@ -4,6 +4,11 @@
 > 基线：166 ctest 全绿（2026-06-08）
 > 参考：[plan_vec_replacement.md](plan_vec_replacement.md)
 
+> ✅ **Phase 3 完成（2026-06-08）**：源码层迁移 100% 完成后，内建 `vec(T)`（`TYPE_VECTOR`）
+> 已从编译器彻底拆除（scanner/parser/checker/codegen/types 全清），`Vec(T)` 为唯一动态数组。
+> 施工蓝图与验收见 [plan_phase3_remove_builtin_vec.md](plan_phase3_remove_builtin_vec.md)（P3-0a~P3-5）。
+> ctest 170/170。
+
 ## 迁移配方
 
 1. 加 `import std.vec`

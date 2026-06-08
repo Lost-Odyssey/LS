@@ -4,6 +4,45 @@
 
 ---
 
+## Phase 3：拆除内建 `vec(T)` — 2026-06-08
+
+- **目标**：从编译器删除内建 `vec`（`TYPE_VECTOR`）的全部特殊实现，使 `std.vec` 的纯 LS
+  `Vec(T)`（has_drop struct）成为唯一动态数组。不可逆，分小步保持「构建通过 + ctest 全绿」可二分。
+- **施工蓝图**：[plan_phase3_remove_builtin_vec.md](plan_phase3_remove_builtin_vec.md)。前置：源码层（`std/*.ls`
+  + 57 个测试样本）已 100% 迁移到 `Vec(T)`（[vec_replacement_tracking.md](vec_replacement_tracking.md)）。
+- **排序原则**：先迁测试消除源码用法 → 前端停收 `vec(` 语法（使内部机制不可达）→ 自后向前删死代码
+  （checker→codegen→types）→ 文档。每步删的都是**已不可达**的代码，故每步构建+ctest 绿、可二分。
+- **P3-0a**（commit `1323c22`）：迁 `enum_borrow_b_test.ls` 末处真实内建 vec 用法（`vec(Jv)` enum
+  payload + `= []`）→ `Vec(Jv)` + `= {}`；清理 `vec_literal_test.ls`/`closure_f7_stress_test.ls`/
+  `std/plottl.ls`/`std/vec.ls` 的陈旧 `vec(` 注释。
+- **P3-0b**（commit `025dff3`）：重写 `test_mem_m5_neg` 3 个负向样本。**关键定性**：`Vec(T)` by-value
+  参数 = **CLONE**，已与所有用户 struct（含泛型）一致，Vec 不是特例；真正的不一致是内建 `vec.push`
+  的 **MOVE 特例**。故否决「给 `Vec.push` 加 move 标记」（会破坏泛型 struct 一致性），改把 3 个样本的
+  move 载体从「内建容器 move」换成**变量绑定 move**（`string b = s; print(s)` 等，语言里真实且与容器无关
+  的 move 路径），断言文案不变。**不改语言语义**。
+- **P3-1**（commit `26af24e`）：前端停收 `vec(` 语法。scanner 删 `{"vec",3,TOKEN_VEC}` 关键字 +
+  调试名；token.h 删 `TOKEN_VEC`；parser 删 `vec(T)` 类型解析分支、字段名/import 路径段谓词回退
+  （`vec` 现走 `TOKEN_IDENTIFIER` → `import std.vec` 仍合法）。新增 `vec(` 报错负向 smoke。写
+  `vec(int) v = []` 现报「unknown type」。
+- **P3-2**（commit `e5f20be`）：删 checker 26 处 `TYPE_VECTOR` 死分支（方法表、借用白名单、闭包捕获
+  谓词、move 分支、字面量推断、for-in）。**保留** `__from_list` 用户容器路径 + 用户 `Vec` 的
+  `Iterator(T)` 协议路径（与 vec 共用代码，只删内建 vec 专属分支）。
+- **P3-3**（commit `fce7fd0`）：删 codegen 内建 vec 发射（最大块）。删函数体：`codegen_vec_method`
+  （~2668 行）、`ls_vec_type`、`emit_vec_clone_val`、`emit_vec_drop_at`、`emit_vec_elem_drop_at`、
+  `emit_vec_grow_inline`、`codegen_vec_string_borrow`、`is_vec_string_index`、`emit_global_vec_cleanup`；
+  删调用点：`AST_INDEX`/字面量/借用/drop/clone/cleanup/capture/global 的 `TYPE_VECTOR` case。**保留**
+  用户 `Vec(T)`（`TYPE_STRUCT`+泛型）/`__from_list`/`Iterator` 脱糖/`emit_struct_*`/map 路径。分
+  3E-1/2/3 子步 + 每子步全量 memcheck。
+- **P3-4**（commit `9ab2ef0`）：删 types 层 `TYPE_VECTOR` 定义本体——`types.h` 枚举值 + union 的
+  `as.vec` 字段 + `type_vector` 声明；`types.c` 的 `type_vector` 构造函数 + `type_clone`/`type_free`/
+  `type_equals`/`type_name` 的 `TYPE_VECTOR` 分支（共 5 处）。`grep TYPE_VECTOR/type_vector/TOKEN_VEC
+  src/` 零命中。
+- **P3-5**：文档收尾（CLAUDE.md §1.2/§7/§8 + 本文件 + tracking + plan_vec_replacement）。
+- **结果**：内建 `vec(T)` 从语言彻底移除，`Vec(T)` 为唯一动态数组；字面量 `[..]` 仍走通用
+  `AST_ARRAY_LIT`→`checker_tag_user_from_list_literal`→`Vec.__from_list`。ctest 170/170（含 P3-1 负向 smoke）。
+
+---
+
 ## match OR-pattern + 整数 switch（bugs/18 修复）— 2026-05-24
 
 - **问题**：`match c { 98 | 102 => {} }` 中 `98 | 102` 被解析为按位 OR（= 110），而非"98 或 102"模式

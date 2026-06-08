@@ -35,7 +35,7 @@
 - `try` 早返操作符（Zig 风格）
 - `for (init; cond; update)` / `for i in 0..10` range 迭代
 - `string`（RAII）：20+ 方法；借用 `&string` / `&!string`
-- `array(T,N)`、`vec(T)`（含字面量 `[..]`）、`map(K,V)`
+- `array(T,N)`、`map(K,V)`；动态数组 `Vec(T)`（纯 LS `std.vec`，含字面量 `[..]`→`__from_list`；内建 `vec(T)` 已于 Phase 3 拆除，不再是语言内建类型）
 - `Block(...)->R` 闭包类型；`|x| body` 字面量；trailing closure 糖；完整捕获语义（POD/string/struct/vec/map/enum/Block）
 - `print()`、`f"text {expr}"` 格式化字符串
 - `module` / `import` / `import X as Y` 模块系统
@@ -149,7 +149,9 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 | — | **for-in 迭代协议（用户容器）**（2026-06-07，[docs/plan_userdef_for_in.md](docs/plan_userdef_for_in.md)）：`for x in v`（v 为纯 LS `Vec(T)` 等 struct）走 `Iterator(T)` 协议——checker 检测 iter 类型为 struct 且其 impl 含 `iter()`/`next()` → `build_foreach_desugar` 在 AST 层合成 `{ Iter __it=v.iter(); while true { match __it.next(){ Some(x)=>{BODY} None=>break } } }`（lvalue 源借址迭代、rvalue 源物化到 `__src` 活过循环），存于 `for_stmt.desugared`，codegen 见之即直发；复用既有 while/match + L-012 成熟 drop 路径。配套 checker 支持 `var_type==NULL` 类型推断局部（仅脱糖器合成 `__it`/`__src` 用）。std/vec.ls 加 `struct VecIter(T)`（裸指针游标，非 has_drop）+ `next(&!self)->Option(T)` + `Vec.iter(&self)->VecIter(T)`。内建 int/array/vec(T) 三段专属 for-in 不变。`test_iter_protocol`（JIT+AOT+memcheck 0/0/0）| ✅ |
 | — | **Vec(T) 元素值语义 §008/§009**（2026-06-07，[docs/plan_vec_ownership_drop.md](docs/plan_vec_ownership_drop.md)）：纯 LS `std.vec` Vec(T) 替换内建 vec 的所有权/clone/drop 基础设施。§008 修两处 codegen：① 嵌套 struct 字段 drop——`Vec(Person)` 方法惰性单态化使 `Person.__drop` 可能早于主文件 Pass 2.5 的 `Inner.__drop` 发射，成员 `__drop` 缺失时改为按需 `emit_auto_drop_fn` 惰性生成（原静默跳过 → `Inner.tag` 泄漏）；② 链式读穿透 `v[i].inner.tag` 的中间 owned-clone（`emit_struct_clone_val`）——field-access spill-temp-drop 注册条件加 `AST_FIELD`（进 else 分支即 owned rvalue，注册安全；命名变量链经借址不进此分支）。§009 验证既有 owned-param/move-into-container ABI 对用户方法 `push/insert/set(rvalue)` 已生效，无需改动。`test_vec_owndrop`（JIT+AOT+memcheck 0/0/0）| ✅ |
 
-**当前测试**：ctest 162/162（分支 `feat/rawvec`：纯 LS 自管裸内存容器 `std.vec` Vec(T)，M0~M2 + owned-param/move-into-container ABI（string push 追平 vec）+ realloc/sizeof/ptr-index 基础设施 + 方法级泛型 `map(U)`/`reduce(U)` 全量对齐内建 vec，含链式 `v.map(U)(...).reduce(U)(...)`；元素值语义 §008/§009 所有权/drop 已修，见下）
+**当前测试**：ctest 170/170（分支 `main`：**Phase 3 完成——内建 `vec(T)` 已从编译器彻底拆除**，纯 LS `std.vec` `Vec(T)` 为唯一动态数组；见下「Phase 3」记录）
+
+> **Phase 3：拆除内建 `vec(T)`**（2026-06-08，[docs/plan_phase3_remove_builtin_vec.md](docs/plan_phase3_remove_builtin_vec.md)）：从编译器删除内建 `vec`（`TYPE_VECTOR`）全部特殊实现，`std.vec` 的纯 LS `Vec(T)` 成为唯一动态数组（不可逆，分小步保持「构建+ctest 绿」可二分）。**P3-0a** 迁 `enum_borrow_b_test.ls` 末处真实 `vec(Jv)`→`Vec(Jv)` + 清陈旧注释；**P3-0b** 重写 `test_mem_m5_neg`（move 载体从「内建 vec push-move 特例」换成「变量绑定 move」，不改语言语义——否决「给 `Vec.push` 加 move 标记」以保泛型 struct 一致性）；**P3-1** 前端停收 `vec(` 语法（scanner 删 `TOKEN_VEC` 关键字、parser 删类型解析分支，`vec` 现为 IDENTIFIER 故 `import std.vec` 仍合法，新增 `vec(` 报错负向 smoke）；**P3-2** 删 checker 26 处 `TYPE_VECTOR` 死分支（保留 `__from_list`/`Iterator` 用户容器路径）；**P3-3** 删 codegen 内建 vec 发射（`codegen_vec_method` ~2668 行 + `emit_vec_*`/`ls_vec_type`/`codegen_vec_string_borrow`/`is_vec_string_index`/`emit_global_vec_cleanup`，分 3E-1/2/3 子步 + 全量 memcheck）；**P3-4** 删 types 层 `TYPE_VECTOR` 定义本体（枚举 + union 字段 + `type_vector` + 4 处 switch 分支）；**P3-5** 文档收尾。字面量 `[..]` 仍走通用 `AST_ARRAY_LIT`→`checker_tag_user_from_list_literal`→`Vec.__from_list`。`grep TYPE_VECTOR/type_vector/TOKEN_VEC src/` 零命中。ctest 170/170（含 P3-1 负向 smoke）。
 
 > **Phase 2.5：`impl` 内建类型（扩展方法）+ string 方法下沉**（2026-06-07，[docs/plan_impl_builtin_types.md](docs/plan_impl_builtin_types.md)）：新增语言特性「`impl string { ... }`」——parser 接受 `TOKEN_TYPE_STRING` 为 impl 目标（拒绝 `impl(T) string`）；checker `check_impl_decl` 用 `resolve_builtin_type_by_name` 注册 `self_type=string`，`impl_key_of_type(TYPE_STRING)="string"`（裸名全局，不模块前缀），存 `impl_registry["string"]`；调用解析「内建优先→回退用户 impl」（`check_string_method` 未命中置 `string_no_builtin_match` 标志，调用点回退 Step 11 复用 struct 方法校验，无 import 时清晰报错「did you forget `import std.string`」）；codegen 复用既有 Step 11 builtin-impl dispatch + `&string` by-value self ABI。三处通用修复：① import 路径段接受 `TOKEN_TYPE_STRING`（`import std.string`）；② pointer-self 方法的 rvalue 接收者（`"a,b".split(",")` 字面量）在 `codegen_addr_of` 失败时求值 spill 到 alloca（仅 `&self` 只读安全）；③ builtin-impl 方法符号跨模块前向声明（`std.string` 可能晚于调用方模块发射，按 `callee->resolved_type` 前向声明、body 后续复用）。`split`/`lines`/`chars`/`join` 迁出编译器到纯 LS `std/string.ls` 的 `impl string`（返回 `Vec(T)`），删除 checker + codegen 内建分支。迁移 `string_loop`/`string_utils`/`str_split_*`/`string_batch3`/`vec_get_test` + `std.md`/`std.plottl`（后两者用 boundary 拷贝进内建 vec + 显式 `clear()`/`shrink_to_fit()` 绕行 VR-LIM-002：导入模块函数内纯 LS Vec 局部不自动 drop）。`test_impl_string`（JIT+AOT+memcheck 0/0/0，24 项）。Phase 3（拆除内建 vec）前置完成。
 
@@ -236,9 +238,10 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 **借用（ABI 要点）**：
 - `&string` by-value（cap=0 标记）；其他 `&T` / `&!T` 全部 pointer
 - 只读借用支持 auto-borrow；可写借用必须显式 `f(&!x)`
-- 支持类型：`string / vec(T) / map(K,V) / struct`；仅用于函数参数位置
+- 支持类型：`string / map(K,V) / struct`（含纯 LS `Vec(T)`，按 struct 走 `&Vec`/`&!Vec` pointer ABI）；仅用于函数参数位置
 
-**Move 类型**：`string` / `struct(has_drop)` / `vec(T)` / `map(K,V)` / `Block(...)`
+**Move 类型**：`string` / `struct(has_drop)`（含 `Vec(T)`）/ `map(K,V)` / `Block(...)`
+> ⚠️ `Vec(T)` 是 has_drop struct：**变量绑定 `b = a` 移动**，但 **by-value 参数 = clone**（与所有用户 struct 一致，非内建 vec 的 push-move 特例）。
 
 > 完整借用规则表、运行时保护、实现计划见 [docs/ownership.md](docs/ownership.md)
 
@@ -251,12 +254,11 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 | `int / f64 / bool / char / *T / object` | **by-copy** | 保持 live |
 | `array(POD, N)` | **by-copy** | 保持 live（snapshot） |
 | `string` | **by-move** | 标 MOVED（cap = −1） |
-| `struct(has_drop)` | **by-move** | 标 MOVED（moved_flag） |
-| `vec(T)` | **by-ref** | 保持 live，可继续 push |
+| `struct(has_drop)`（含 `Vec(T)`） | **by-move** | 标 MOVED（moved_flag） |
 | `map(K,V)` | **by-ref** | 保持 live，可继续 set |
 | `has_drop enum` | **by-move** | 标 MOVED（moved_flag） |
-| `[move v]` 显式 | **by-move** | 标 MOVED（vec/map 专用） |
+| `[move v]` 显式 | **by-move** | 标 MOVED（map 专用） |
 
-⚠️ **by-ref 捕获的 vec/map 闭包不能 outlive 外层变量**（编译器不检查，用户自行保证）。工厂函数返回 vec/map 捕获的闭包会产生悬垂指针。string/struct 使用 by-move 正是为了避免这个问题。
+⚠️ **by-ref 捕获的 map 闭包不能 outlive 外层变量**（编译器不检查，用户自行保证）。工厂函数返回 map 捕获的闭包会产生悬垂指针。string/struct（含 `Vec(T)`）使用 by-move 正是为了避免这个问题。
 
 > 详细设计、悬垂风险示例、未来演进路径见 [docs/closures_plan.md](docs/closures_plan.md)
