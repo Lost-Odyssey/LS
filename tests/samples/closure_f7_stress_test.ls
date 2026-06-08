@@ -5,9 +5,9 @@ import std.vec
      S1. POD capture (int by-copy)
      S2. string by-move capture + factory
      S3. struct(has_drop) with Block field
-     S4. vec(Block) push + call + drop
+     S4. Vec(Block) push + call + drop
      S5. enum(has_drop) by-move capture (Option(string)) — exercises emit_enum_clone_val
-     S6. [move] inline vec capture (explicit by-move on local variable)
+     S6. [move] inline Vec capture (explicit by-move on local variable)
    Expected output:
      stress ok
 */

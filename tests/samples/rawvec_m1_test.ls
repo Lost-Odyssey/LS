@@ -12,10 +12,10 @@
 //   * __drop             : for i in 0..len { __drop_at(self.data[i]) }; free(data)
 //   * __drop_at recurses via emit_drop_value -> string free / struct.__drop / nested.
 //
-// Reads match vec[i] exactly: p[i] DEEP-CLONES owned element data (string/struct/
+// Reads match Vec[i] exactly: p[i] DEEP-CLONES owned element data (string/struct/
 // has_drop), so struct element reads and field read-throughs (self.data[i].name)
 // are memory-safe — see RawVecP below.
-// Nested container reads ALSO match vec(vec(T)): a struct with a user `__clone(&self)
+// Nested container reads ALSO match Vec(Vec(T)): a struct with a user `__clone(&self)
 // -> Self` is deep-copied via that hook when read by value (emit_clone_value calls
 // it instead of the field-wise auto-clone, which can't clone a raw *T buffer). So
 // RawVecV reads its inner RawVecS elements safely — see RawVecV below.
@@ -54,7 +54,7 @@ impl RawVecS {
     }
     fn length(&self) -> int { return self.len }
     // User __clone: deep-copies the buffer so this container can be cloned (e.g.
-    // when read by value as a nested element). Matches vec(vec(T)) deep-clone.
+// when read by value as a nested element). Matches Vec(Vec(T)) deep-clone.
     fn __clone(&self) -> RawVecS {
         RawVecS out = new_rvs()
         for (int i = 0; i < self.len; i = i + 1) {
@@ -113,7 +113,7 @@ impl RawVecV {
         self.len = self.len + 1
     }
     fn count(&self) -> int { return self.len }
-    // Nested element reads are now safe & match vec(vec(T)): reading an inner
+    // Nested element reads are now safe & match Vec(Vec(T)): reading an inner
     // RawVecS by value invokes RawVecS.__clone (deep copy of its buffer), so the
     // returned local and the slot are independent.
     fn row_len(&self, int i) -> int {
@@ -173,7 +173,7 @@ fn main() {
         vv.push(__move(inner))          // move the inner container in
     }
     check(vv.count() == 3, "nested outer count 3")
-    // nested element reads via RawVecS.__clone (matches vec(vec(T)))
+    // nested element reads via RawVecS.__clone (matches Vec(Vec(T)))
     check(vv.row_len(0) == 2, "nested row 0 len 2")
     check(vv.row_get(1, 0) == "row1-a", "nested row_get(1,0) = row1-a")
     check(vv.row_get(2, 1) == "row2-b", "nested row_get(2,1) = row2-b")

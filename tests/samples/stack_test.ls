@@ -53,7 +53,7 @@ fn main() {
     check(ss.len() == 2, "str len 2 after pop")
 
     // ss still owns "alpha" and "beta": when it goes out of scope the stack
-    // drops its vec(string), which must free both remaining strings exactly
-    // once (the memcheck probe for generic struct + vec(T) field drop).
+    // drops its Vec(string), which must free both remaining strings exactly
+    // once (the memcheck probe for generic struct + Vec(T) field drop).
     print("STACK PASS")
 }

@@ -52,7 +52,7 @@ fn main() {
     print(a <= a)   // 1 (true)  derived
     print(a >= b)   // 0 (false) derived
 
-    // generic sum over vec(Vec2)
+    // generic sum over Vec(Vec2)
     Vec(Vec2) vs = [a, b, c]
     Vec2 total = sum_all(Vec2)(vs, Vec2{ x: 0.0, y: 0.0 })
     print(total.x)  // 8

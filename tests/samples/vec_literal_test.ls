@@ -1,4 +1,4 @@
-/* Test: vec(T) v = [..] literal coercion */
+/* Test: Vec(T) v = [..] literal coercion */
 import std.vec
 
 fn main() -> int {

@@ -1,4 +1,4 @@
-// vec_global_test.ls — global vec(T) test
+// vec_global_test.ls — global Vec(T) test
 import std.vec
 
 Vec(int) g_nums = {}

@@ -1,4 +1,4 @@
-// struct{vec(string)} build + scope drop (A)
+// struct{Vec(string)} build + scope drop (A)
 import std.vec
 
 struct Doc { Vec(string) items }

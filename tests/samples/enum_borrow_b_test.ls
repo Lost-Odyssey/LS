@@ -1,4 +1,4 @@
-// enum_borrow_b_test.ls — Phase B: owned payload (string/vec/map/struct/nested enum)
+// enum_borrow_b_test.ls — Phase B: owned payload (string/Vec/map/struct/nested enum)
 // borrow bindings in &Enum match.
 //
 // Tests:
@@ -10,6 +10,8 @@
 //   6. Multiple borrows of same value (non-consuming)
 //   7. Recursive JSON-like stringify via &Jv borrow
 //   8. Checker: mutation of string binder rejected (string.append blocked)
+
+import std.vec
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -34,7 +36,7 @@ enum Jv {
     JBool(bool b)
     JNum(f64 n)
     JStr(string s)
-    JArr(vec(Jv) items)
+    JArr(Vec(Jv) items)
     JPoint(Point p)
     JInner(Inner inner)
 }
@@ -50,8 +52,8 @@ fn jv_str(&Jv v) -> string {
             return f"\"{s}\""
         }
         JArr(items) => {
-            // Phase B: items is a vec binder — sym->value = field_ptr
-            int n = items.length
+            // Phase B: items is a Vec binder — sym->value = field_ptr
+            int n = items.len()
             if n == 0 { return "[]" }
             string r = "["
             for (int i = 0; i < n; i = i + 1) {
@@ -78,7 +80,7 @@ fn jv_str(&Jv v) -> string {
 
 fn jv_len(&Jv v) -> int {
     match v {
-        JArr(items) => { return items.length }
+        JArr(items) => { return items.len() }
         _ => { return 0 }
     }
 }
@@ -98,8 +100,8 @@ fn main() -> int {
         fail = fail + 1
     }
 
-    // T02: JArr binder — vec length + indexed read
-    vec(Jv) arr = []
+    // T02: JArr binder — Vec length + indexed read
+    Vec(Jv) arr = {}
     arr.push(JNum(1.0))
     arr.push(JNum(2.0))
     arr.push(JStr("x"))
@@ -180,10 +182,10 @@ fn main() -> int {
     }
 
     // T09: nested JArr stringify (depth 2)
-    vec(Jv) inner_arr = []
+    Vec(Jv) inner_arr = {}
     inner_arr.push(JNum(10.0))
     inner_arr.push(JStr("y"))
-    vec(Jv) outer_arr = []
+    Vec(Jv) outer_arr = {}
     outer_arr.push(JArr(inner_arr))
     outer_arr.push(JBool(false))
     Jv jnested = JArr(outer_arr)

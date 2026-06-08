@@ -448,7 +448,7 @@ fn topology2(int total_cpus, bool hyperthreading) -> CpuTopology {
     return topology(total_cpus, physical)
 }
 
-// ---- ascending in-place sort of vec(int) (small n) ----
+// ---- ascending in-place sort of Vec(int) (small n) ----
 fn _sort_int(&!Vec(int) v) {
     int n = v.len()
     int i = 0

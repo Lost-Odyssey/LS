@@ -1,6 +1,6 @@
-// Regression: map.keys() / map.values() iteration + bound vec result.
+// Regression: map.keys() / map.values() iteration + bound Vec result.
 // Previously `for k in m.keys()` iterated zero times (silent), and
-// `vec(K) ks = m.keys()` errored "unknown map method 'keys'".
+// `Vec(K) ks = m.keys()` errored "unknown map method 'keys'".
 // Self-verifying: prints "MK PASS" only if every check holds.
 
 import std.vec

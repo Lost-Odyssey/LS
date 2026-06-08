@@ -1,4 +1,4 @@
-// vec(vec(string)) build + .get + drop (B)
+// Vec(Vec(string)) build + .get + drop (B)
 import std.vec
 
 fn main() {

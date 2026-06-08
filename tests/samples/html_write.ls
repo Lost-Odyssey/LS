@@ -53,7 +53,7 @@ fn main() {
     html.HtmlDoc d4 = frag1(dv)
     if !check(html.render(d4) == "<div class=\"box\"><span>hi</span><!-- note --></div>", 4) { ok = false }
 
-    // --- void element (img); attr order is insertion order (vec(Attr)) ---
+    // --- void element (img); attr order is insertion order (Vec(Attr)) ---
     html.HtmlDoc d5 = frag1(html.img("p.jpg", "alt"))
     if !check(html.render(d5) == "<img src=\"p.jpg\" alt=\"alt\">", 5) { ok = false }
 

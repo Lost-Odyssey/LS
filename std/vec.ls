@@ -1,11 +1,11 @@
 // std/vec.ls — generic dynamic array over RAW malloc/realloc/free.
 //
-// A pure-LS container that manages its OWN heap buffer (unlike std.stack, which
-// wraps the builtin vec(T)). Goal: be memory-identical and behave identically to
-// the builtin vec(T). Construction matches vec:
+// A pure-LS container that manages its OWN heap buffer. Goal: be
+// memory-identical to the old builtin dynamic array and preserve its behavior.
+// Construction matches Vec:
 //
-//     Vec(string) v = {}            // empty   (= vec(string) v = [])
-//     Vec(int)    v = [1, 2, 3]     // literal (= vec(int) v = [1,2,3])
+//     Vec(string) v = {}            // empty
+//     Vec(int)    v = [1, 2, 3]     // literal
 //
 // Ownership primitives used:
 //   * sizeof(T)         — element byte size (compile-time, per monomorphization)
@@ -18,7 +18,7 @@
 //   * fn __clone(&self) — user deep-copy hook (Vec(Vec(T)) reads deep-clone)
 //   * fn __from_list    — list-literal init opt-in (the `[..]` protocol)
 //
-// Ownership contract (identical to vec(T)):
+// Ownership contract:
 //   push/insert  move T into the buffer.   pop/remove  move T out (no clone).
 //   get/first/last  return a deep CLONE.   set  drops old, moves new in.
 //   clear / scope-drop  drop every live element, then free the buffer.
@@ -92,7 +92,7 @@ impl(T) Vec(T) {
     }
 
     // List-literal init opt-in (reserved-method protocol, like __drop/__clone):
-    // having this method enables `Vec(T) v = [a, b, c]` (matches vec(T) v=[..]).
+    // having this method enables `Vec(T) v = [a, b, c]`.
     fn __from_list(&!self, T x) { self.push(x) }
 
     // ---- remove ----

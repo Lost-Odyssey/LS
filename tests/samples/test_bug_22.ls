@@ -1,5 +1,5 @@
 // test_bug_22.ls
-// Tests: global struct with all-empty string fields, vec(struct) field access,
+// Tests: global struct with all-empty string fields, Vec(struct) field access,
 // f-string formatting in multi-branch logic, string length checks.
 
 fn main() -> int {

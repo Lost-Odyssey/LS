@@ -1,4 +1,4 @@
-// vec(string) build + scope drop
+// Vec(string) build + scope drop
 import std.vec
 
 fn main() {

@@ -42,7 +42,7 @@ fn main() {
     check(m.n == 0, "Mixed {} int zero")
     check(m.flag == false, "Mixed {} bool false")
 
-    // Vec(string) v = {} replaces new_rawvec(string)() — matches vec(T) v = []
+    // Vec(string) v = {} replaces new_rawvec(string)()
     Vec(string) v = {}
     check(v.len() == 0, "Vec {} empty")
     v.push(f"a"); v.push(f"b")
@@ -54,7 +54,7 @@ fn main() {
     for (int i = 0; i < 5; i = i + 1) { vi.push(i * i) }
     check(vi.len() == 5 && vi.get(4) == 16, "Vec(int) {} works")
 
-    // ---- list-literal init (the __from_list protocol; matches vec(T) v = [..]) ----
+    // ---- list-literal init (the __from_list protocol; Vec(T) v = [..]) ----
     Vec(int) li = [10, 20, 30, 40]
     check(li.len() == 4 && li.get(0) == 10 && li.get(3) == 40, "Vec(int) = [..]")
     Vec(string) ls = [f"a", f"b", f"c"]
