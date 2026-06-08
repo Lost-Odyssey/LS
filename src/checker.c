@@ -966,12 +966,6 @@ static Type *resolve_type_node_with_substitution(
         return resolve_type_node(c, node, line, col);
     }
 
-    case TYPE_NODE_VECTOR: {
-        Type *elem = resolve_type_node_with_substitution(
-            c, node->as.vec.elem, tp_names, type_args, tp_count);
-        return type_vector(elem);
-    }
-
     case TYPE_NODE_MAP: {
         Type *key = resolve_type_node_with_substitution(
             c, node->as.map.key, tp_names, type_args, tp_count);
@@ -1865,10 +1859,9 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     {
         Type *pointee = resolve_type_node(c, tn->as.pointee, line, col);
         if (pointee == NULL) return NULL;
-        /* Phase 5/5.5/5.6/5.7/5.8/9: supported borrow pointees are
-           string / vec / map / struct / enum. */
+        /* Phase 5/5.5/5.7/5.8/9: supported borrow pointees are
+           string / map / struct / enum. */
         bool ok_kind = (pointee->kind == TYPE_STRING ||
-                        pointee->kind == TYPE_VECTOR ||
                         pointee->kind == TYPE_MAP ||
                         pointee->kind == TYPE_STRUCT ||
                         pointee->kind == TYPE_ENUM);   /* Phase 9: enum borrow */
@@ -1876,7 +1869,7 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
         {
             checker_error(c, line, col,
                           "&%s%s is not supported yet; only &string / &!string / "
-                          "&vec(T) / &!vec(T) / &map(K,V) / &!map(K,V) / "
+                          "&map(K,V) / &!map(K,V) / "
                           "&struct / &!struct / &enum are implemented",
                           tn->is_mut ? "!" : "",
                           type_name(pointee));
@@ -1888,8 +1881,6 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     case TYPE_NODE_ARRAY:
         return type_array(resolve_type_node(c, tn->as.array.elem, line, col),
                           tn->as.array.size);
-    case TYPE_NODE_VECTOR:
-        return type_vector(resolve_type_node(c, tn->as.vec.elem, line, col));
     case TYPE_NODE_MAP:
     {
         Type *kt = resolve_type_node(c, tn->as.map.key, line, col);
@@ -2248,7 +2239,6 @@ static bool type_is_movable(Type *t)
     switch (t->kind)
     {
     case TYPE_STRING: return true;
-    case TYPE_VECTOR: return true;
     case TYPE_MAP:    return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_BLOCK:  return true;  /* F.2: Block owns its env heap */
@@ -2397,24 +2387,6 @@ static bool checker_reject_block_param_move(Checker *c, AstNode *src, const char
    field / vec element / map value) have been removed — codegen now deep-clones
    the closure env at the copy-out site (cg_emit_block_env_clone in codegen.c),
    so the destination owns an independent env with no shared-env double-free. */
-
-/* Phase 5.6: reject copy-out of a vec borrow (both &vec and &!vec).
-   Unlike string (whose by-value ABI lets `string t = s` produce a harmless
-   cap==0 alias), vec copy-out would create two independent vecs sharing the
-   same data buffer — free-on-scope would be a double-free. */
-static bool checker_reject_vec_borrow_copy_source(Checker *c, AstNode *src, const char *what)
-{
-    if (!src || src->kind != AST_IDENT) return false;
-    Symbol *sym = scope_resolve(c->current_scope, src->as.ident.name);
-    if (!sym) return false;
-    if (!sym->type || sym->type->kind != TYPE_VECTOR) return false;
-    if (!sym->is_borrow && !sym->is_mut_borrow) return false;
-    checker_move_error(c, src->line, src->column,
-                       "cannot %s: '%s' is a %sborrow of vec — data cannot be copied out",
-                       what, src->as.ident.name,
-                       sym->is_mut_borrow ? "writable " : "read-only ");
-    return true;
-}
 
 static bool checker_reject_borrow_move(Checker *c, AstNode *arg, const char *what)
 {
@@ -3036,841 +3008,6 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
     return NULL;
 }
 
-/* Phase 5.6: mutating vec methods are forbidden on a read-only borrow (&vec(T)).
-   Writable borrows (&!vec(T)) are fine — mutations propagate through the pointer. */
-static bool vec_method_is_mutating(const char *m)
-{
-    return strcmp(m, "push") == 0 || strcmp(m, "pop") == 0 ||
-           strcmp(m, "clear") == 0 || strcmp(m, "reserve") == 0 ||
-           strcmp(m, "remove") == 0 || strcmp(m, "truncate") == 0 ||
-           strcmp(m, "swap") == 0 || strcmp(m, "reverse") == 0 ||
-           strcmp(m, "extend") == 0 || strcmp(m, "insert") == 0 ||
-           strcmp(m, "resize") == 0 || strcmp(m, "sort") == 0 ||
-           strcmp(m, "sort_by") == 0 || strcmp(m, "shrink_to_fit") == 0 ||
-           strcmp(m, "set") == 0;
-}
-
-static bool checker_reject_vec_mut_on_readonly_borrow(Checker *c, AstNode *call_node,
-                                                     const char *method)
-{
-    if (!vec_method_is_mutating(method)) return false;
-    AstNode *recv = call_node->as.call.callee->as.field_access.object;
-    if (!recv || recv->kind != AST_IDENT) return false;
-    Symbol *sym = scope_resolve(c->current_scope, recv->as.ident.name);
-    if (!sym || !sym->is_borrow) return false;
-    checker_move_error(c, recv->line, recv->column,
-                       "cannot call vec.%s() on '%s': it is a read-only borrow",
-                       method, recv->as.ident.name);
-    return true;
-}
-
-/* Type-check method calls on vec(T) objects */
-static Type *check_vector_method(Checker *c, AstNode *call_node, Type *vec_type)
-{
-    const char *method = call_node->as.call.callee->as.field_access.field;
-    int argc = call_node->as.call.arg_count;
-    Type *elem = vec_type->as.vec.elem;
-
-    /* Phase 5.6: gate mutating methods on read-only borrow receivers. */
-    if (checker_reject_vec_mut_on_readonly_borrow(c, call_node, method))
-        return NULL;
-
-    /* v.push(x) -> void  — append one element */
-    if (strcmp(method, "push") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.push() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        /* Propagate expected_type = elem so the argument can infer against the
-           element type: Block elems for closure literals (F.4), AND bare variant
-           ctors like `push(None)` / `push(Some(x))` so they disambiguate when
-           several enum instantiations (e.g. Option(int) + Option(string)) share
-           the variant name. */
-        Type *saved_exp_push = c->expected_type;
-        if (elem)
-            c->expected_type = elem;
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp_push;
-        if (arg && !type_equals(arg, elem))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.push() expects '%s', got '%s'",
-                          type_name(elem), type_name(arg));
-            return NULL;
-        }
-        /* Move tracking: dynamic string (and future movable) arguments are moved into the vec.
-           Static strings (is_static_string==true) are shared freely — not moved. */
-        checker_reject_borrow_move(c, call_node->as.call.args[0], "move into vec");
-        checker_try_mark_moved(c, call_node->as.call.args[0]);
-        return type_void();
-    }
-
-    /* v.pop() -> void  — remove last element (drop if needed) */
-    if (strcmp(method, "pop") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.pop() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.clear() -> void  — drop all elements, set len=0 */
-    if (strcmp(method, "clear") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.clear() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.reserve(n) -> void  — ensure capacity >= n */
-    if (strcmp(method, "reserve") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.reserve() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && !type_is_integer(arg))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.reserve() expects integer, got '%s'", type_name(arg));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.is_empty() -> bool  — true when len == 0 */
-    if (strcmp(method, "is_empty") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.is_empty() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* Phase E.3.3: v.as_ptr() -> object  — raw data pointer for FFI buffers.
-       Aliases the vec's heap; valid until the vec is grown/freed. */
-    if (strcmp(method, "as_ptr") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.as_ptr() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_object();
-    }
-
-    /* v.first() -> T  — deep clone of first element; zero/empty default on empty vec */
-    if (strcmp(method, "first") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.first() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return elem;
-    }
-
-    /* v.get(i) -> T  — deep clone of element at index i (alias of v[i]).
-       Out-of-bounds yields zero/empty default value. */
-    if (strcmp(method, "get") == 0 || strcmp(method, "get_unsafe") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.%s() takes 1 argument, got %d", method, argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && !type_is_integer(arg))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.%s() index must be integer, got '%s'",
-                          method, type_name(arg));
-            return NULL;
-        }
-        return elem;
-    }
-
-    /* v.last() -> T  — deep clone of last element; zero/empty default on empty vec */
-    if (strcmp(method, "last") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.last() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return elem;
-    }
-
-    /* v.truncate(n) -> void  — drop elements [n, len), set len = n */
-    if (strcmp(method, "truncate") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.truncate() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && !type_is_integer(arg))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.truncate() expects integer, got '%s'", type_name(arg));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.remove(i) -> void  — drop element at i, shift tail left */
-    if (strcmp(method, "remove") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.remove() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && !type_is_integer(arg))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.remove() expects integer index, got '%s'", type_name(arg));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.swap(i, j) -> void  — swap elements at indices i and j (raw byte swap) */
-    if (strcmp(method, "swap") == 0)
-    {
-        if (argc != 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.swap() takes 2 arguments, got %d", argc);
-            return NULL;
-        }
-        Type *ai = check_expr(c, call_node->as.call.args[0]);
-        Type *aj = check_expr(c, call_node->as.call.args[1]);
-        if (ai && !type_is_integer(ai))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.swap() expects integer index, got '%s'", type_name(ai));
-            return NULL;
-        }
-        if (aj && !type_is_integer(aj))
-        {
-            checker_error(c, call_node->as.call.args[1]->line,
-                          call_node->as.call.args[1]->column,
-                          "vec.swap() expects integer index, got '%s'", type_name(aj));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.reverse() -> void  — reverse elements in-place (raw byte swap) */
-    if (strcmp(method, "reverse") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.reverse() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.extend(src) -> void — deep-clone all elements of src and append */
-    if (strcmp(method, "extend") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.extend() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg == NULL)
-            return NULL;
-        if (arg->kind != TYPE_VECTOR)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.extend() expects vec(%s), got '%s'",
-                          type_name(elem), type_name(arg));
-            return NULL;
-        }
-        if (!type_equals(arg->as.vec.elem, elem))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.extend() element type mismatch: expected vec(%s), got vec(%s)",
-                          type_name(elem), type_name(arg->as.vec.elem));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.insert(i, x) -> void — insert x at index i, shift tail right */
-    if (strcmp(method, "insert") == 0)
-    {
-        if (argc != 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.insert() takes 2 arguments, got %d", argc);
-            return NULL;
-        }
-        Type *ai = check_expr(c, call_node->as.call.args[0]);
-        if (ai && !type_is_integer(ai))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.insert() index must be integer, got '%s'", type_name(ai));
-            return NULL;
-        }
-        Type *ax = check_expr(c, call_node->as.call.args[1]);
-        if (ax && !type_equals(ax, elem))
-        {
-            checker_error(c, call_node->as.call.args[1]->line,
-                          call_node->as.call.args[1]->column,
-                          "vec.insert() expects '%s', got '%s'",
-                          type_name(elem), type_name(ax));
-            return NULL;
-        }
-        /* Move tracking: same semantics as push — dynamic string element is moved */
-        checker_reject_borrow_move(c, call_node->as.call.args[1], "move into vec");
-        checker_try_mark_moved(c, call_node->as.call.args[1]);
-        return type_void();
-    }
-
-    /* v.contains(x) -> bool  — linear search for x; supported for numeric, bool, string */
-    if (strcmp(method, "contains") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.contains() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        if (elem->kind == TYPE_STRUCT)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.contains() is not supported for struct elements "
-                          "(implement __eq and use index_of instead)");
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && !type_equals(arg, elem))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.contains() expects '%s', got '%s'",
-                          type_name(elem), type_name(arg));
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* v.index_of(x) -> int  — first index of x, -1 if not found */
-    if (strcmp(method, "index_of") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.index_of() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        if (elem->kind == TYPE_STRUCT)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.index_of() is not supported for struct elements");
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && !type_equals(arg, elem))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.index_of() expects '%s', got '%s'",
-                          type_name(elem), type_name(arg));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* v.resize(n) -> void  — grow (zero/empty fill) or shrink (drop excess) to n */
-    if (strcmp(method, "resize") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.resize() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && !type_is_integer(arg))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.resize() expects integer, got '%s'", type_name(arg));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.copy() -> vec(T)  — deep clone entire vec into a new independent vec */
-    if (strcmp(method, "copy") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.copy() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return vec_type; /* return same vec(T) type */
-    }
-
-    /* v.sort() -> void  — in-place ascending sort (numeric/string elements only) */
-    if (strcmp(method, "sort") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.sort() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        if (elem->kind == TYPE_STRUCT)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.sort() is not supported for struct elements "
-                          "(use vec.sort_by(cmp) with a custom comparator)");
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.sort_by(fn(T,T)->int or Block(T,T)->int) -> void */
-    if (strcmp(method, "sort_by") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.sort_by() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        /* Propagate expected Block type so |a,b| lambda infers T */
-        Type **blk_params = (Type **)malloc_safe(2 * sizeof(Type *));
-        blk_params[0] = type_clone(elem);
-        blk_params[1] = type_clone(elem);
-        Type *expected_blk = type_block(blk_params, 2, type_int());
-        Type *saved_et = c->expected_type;
-        c->expected_type = expected_blk;
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_et;
-        type_free(expected_blk);
-        if (arg == NULL)
-            return NULL;
-        if (arg->kind != TYPE_FUNCTION && arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.sort_by() expects a comparator (fn or Block(T,T)->int), got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.slice(start, end) -> vec(T)  — deep-clone [start, end) sub-range */
-    if (strcmp(method, "slice") == 0)
-    {
-        if (argc != 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.slice() takes 2 arguments (start, end), got %d", argc);
-            return NULL;
-        }
-        Type *as = check_expr(c, call_node->as.call.args[0]);
-        if (as && !type_is_integer(as))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.slice() start must be integer, got '%s'", type_name(as));
-            return NULL;
-        }
-        Type *ae = check_expr(c, call_node->as.call.args[1]);
-        if (ae && !type_is_integer(ae))
-        {
-            checker_error(c, call_node->as.call.args[1]->line,
-                          call_node->as.call.args[1]->column,
-                          "vec.slice() end must be integer, got '%s'", type_name(ae));
-            return NULL;
-        }
-        return vec_type; /* returns same vec(T) */
-    }
-
-    /* v.shrink_to_fit() -> void  — release excess capacity */
-    if (strcmp(method, "shrink_to_fit") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.shrink_to_fit() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.any(Block(T)->bool) -> bool */
-    if (strcmp(method, "any") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.any() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *saved_exp = c->expected_type;
-        {
-            Type **pp = (Type **)malloc_safe(sizeof(Type *));
-            pp[0] = type_clone(elem);
-            c->expected_type = type_block(pp, 1, type_bool());
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp;
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.any() expects a Block, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* v.all(Block(T)->bool) -> bool */
-    if (strcmp(method, "all") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.all() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *saved_exp = c->expected_type;
-        {
-            Type **pp = (Type **)malloc_safe(sizeof(Type *));
-            pp[0] = type_clone(elem);
-            c->expected_type = type_block(pp, 1, type_bool());
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp;
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.all() expects a Block, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* v.count(Block(T)->bool) -> int */
-    if (strcmp(method, "count") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.count() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *saved_exp = c->expected_type;
-        {
-            Type **pp = (Type **)malloc_safe(sizeof(Type *));
-            pp[0] = type_clone(elem);
-            c->expected_type = type_block(pp, 1, type_bool());
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp;
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.count() expects a Block, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* v.each(Block(T)->void) -> void */
-    if (strcmp(method, "each") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.each() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *saved_exp = c->expected_type;
-        {
-            Type **pp = (Type **)malloc_safe(sizeof(Type *));
-            pp[0] = type_clone(elem);
-            c->expected_type = type_block(pp, 1, type_void());
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp;
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.each() expects a Block, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* v.filter(Block(T)->bool) -> vec(T) */
-    if (strcmp(method, "filter") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.filter() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *saved_exp = c->expected_type;
-        {
-            Type **pp = (Type **)malloc_safe(sizeof(Type *));
-            pp[0] = type_clone(elem);
-            c->expected_type = type_block(pp, 1, type_bool());
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp;
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.filter() expects a Block, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return vec_type;
-    }
-
-    /* v.find(Block(T)->bool) -> Option(T) */
-    if (strcmp(method, "find") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.find() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *saved_exp = c->expected_type;
-        {
-            Type **pp = (Type **)malloc_safe(sizeof(Type *));
-            pp[0] = type_clone(elem);
-            c->expected_type = type_block(pp, 1, type_bool());
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp;
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.find() expects a Block, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return checker_instantiate_option(c, elem);
-    }
-
-    /* v.find_index(Block(T)->bool) -> int */
-    if (strcmp(method, "find_index") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.find_index() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *saved_exp = c->expected_type;
-        {
-            Type **pp = (Type **)malloc_safe(sizeof(Type *));
-            pp[0] = type_clone(elem);
-            c->expected_type = type_block(pp, 1, type_bool());
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp;
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.find_index() expects a Block, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* v.reduce(init: A, Block(A,T)->A) -> A */
-    if (strcmp(method, "reduce") == 0)
-    {
-        if (argc != 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.reduce() takes 2 arguments (init, block), got %d", argc);
-            return NULL;
-        }
-
-        /* Check init expression to determine accumulator type A */
-        Type *saved_exp0 = c->expected_type;
-        c->expected_type = NULL;
-        Type *acc_type = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp0;
-        if (acc_type == NULL) return NULL;
-
-        /* Build expected Block type: Block(A, T) -> A */
-        Type **pp = (Type **)malloc_safe(2 * sizeof(Type *));
-        pp[0] = type_clone(acc_type);
-        pp[1] = type_clone(elem);
-        Type *expected_block = type_block(pp, 2, type_clone(acc_type));
-
-        Type *saved_exp = c->expected_type;
-        c->expected_type = expected_block;
-        Type *arg = check_expr(c, call_node->as.call.args[1]);
-        c->expected_type = saved_exp;
-        type_free(expected_block);
-
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[1]->line,
-                          call_node->as.call.args[1]->column,
-                          "vec.reduce() second argument must be a Block(A,T)->A, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        if (arg->as.function.param_count != 2)
-        {
-            checker_error(c, call_node->as.call.args[1]->line,
-                          call_node->as.call.args[1]->column,
-                          "vec.reduce() closure must take exactly 2 arguments (accumulator, element)");
-            return NULL;
-        }
-
-        return acc_type; /* result type = accumulator type */
-    }
-
-    /* v.map(Block(T)->U) -> vec(U) */
-    if (strcmp(method, "map") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.map() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-
-        /* Try to get U from outer expected_type (e.g. vec(U) result = v.map(...)) */
-        Type *u_type = NULL;
-        if (c->expected_type && c->expected_type->kind == TYPE_VECTOR)
-            u_type = c->expected_type->as.vec.elem;
-
-        /* Build expected Block type: Block(T)->U (U may be NULL → infer from body) */
-        Type **pp = (Type **)malloc_safe(sizeof(Type *));
-        pp[0] = type_clone(elem);
-        Type *expected_block = type_block(pp, 1, u_type ? type_clone(u_type) : NULL);
-
-        /* Enable inference slot when U is unknown */
-        Type *inferred_u = NULL;
-        Type **saved_infer_slot = c->closure_infer_return_slot;
-        if (!u_type)
-            c->closure_infer_return_slot = &inferred_u;
-
-        Type *saved_exp = c->expected_type;
-        c->expected_type = expected_block;
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        c->expected_type = saved_exp;
-        c->closure_infer_return_slot = saved_infer_slot;
-        type_free(expected_block);
-
-        if (arg == NULL) return NULL;
-        if (arg->kind != TYPE_BLOCK)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.map() expects a Block(T)->U, got '%s'", type_name(arg));
-            return NULL;
-        }
-        if (arg->as.function.param_count != 1)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "vec.map() closure must take exactly 1 argument");
-            return NULL;
-        }
-
-        /* Resolve U: from explicit context, from body inference, or from Block ret type */
-        if (!u_type)
-            u_type = inferred_u ? inferred_u : arg->as.function.return_type;
-
-        if (!u_type)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "vec.map() cannot infer result element type; "
-                          "assign to a typed variable: vec(T) result = v.map(...)");
-            return NULL;
-        }
-
-        return type_vector(u_type);
-    }
-
-    checker_error(c, call_node->line, call_node->column,
-                  "vec has no method '%s' (available: push, pop, clear, reserve, "
-                  "is_empty, get, first, last, truncate, remove, swap, reverse, "
-                  "extend, insert, contains, index_of, resize, copy, "
-                  "sort, sort_by, slice, shrink_to_fit, "
-                  "any, all, count, each, filter, find, find_index, map, reduce)",
-                  method);
-    return NULL;
-}
-
 /* Type-check method calls on map(K,V) objects */
 static Type *check_map_method(Checker *c, AstNode *call_node, Type *map_type)
 {
@@ -4400,7 +3537,7 @@ static bool capture_type_is_pod(const Type *t) {
    marked moved.
      C.5: TYPE_STRING
      C.7: TYPE_STRUCT(has_drop)
-   Note: TYPE_VECTOR and TYPE_MAP use by-ref semantics (env stores a pointer
+   Note: TYPE_MAP uses by-ref semantics (env stores a pointer
    to the outer alloca; outer remains live and usable after capture).
    Enum captures remain unsupported (Phase C.8 — needs box / payload
    walk inside env_drop). */
@@ -4408,7 +3545,6 @@ static bool capture_type_is_by_move(const Type *t) {
     if (t == NULL) return false;
     switch (t->kind) {
     case TYPE_STRING: return true;
-    case TYPE_VECTOR: return false;   /* by-ref: env borrows outer alloca */
     case TYPE_MAP:    return false;   /* by-ref: env borrows outer alloca */
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;   /* F.5: has_drop enum → by-move */
@@ -4416,13 +3552,13 @@ static bool capture_type_is_by_move(const Type *t) {
     }
 }
 
-/* Phase E (by-ref capture): vec(T) and map(K,V) are captured by reference.
+/* Phase E (by-ref capture): map(K,V) is captured by reference.
    The env stores a pointer to the outer alloca; the outer variable remains
    live and its mutations are visible inside the closure body.
    Constraint: the closure must not outlive the scope that defines the outer. */
 static bool capture_type_is_by_ref(const Type *t) {
     if (t == NULL) return false;
-    return t->kind == TYPE_VECTOR || t->kind == TYPE_MAP;
+    return t->kind == TYPE_MAP;
 }
 
 /* array(T, N) with POD element type is captured by value (full copy into env).
@@ -4910,11 +4046,11 @@ static Type *check_expr(Checker *c, AstNode *node)
             break;
         }
         if (sym->type == NULL ||
-            (sym->type->kind != TYPE_STRING && sym->type->kind != TYPE_VECTOR &&
+            (sym->type->kind != TYPE_STRING &&
              sym->type->kind != TYPE_MAP && sym->type->kind != TYPE_STRUCT))
         {
             checker_error(c, node->line, node->column,
-                          "&!: only &!string, &!vec(T), &!map(K,V) and &!struct are supported, got &!%s",
+                          "&!: only &!string, &!map(K,V) and &!struct are supported, got &!%s",
                           sym->type ? type_name(sym->type) : "?");
             result = NULL;
             break;
@@ -5632,19 +4768,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                        skipped, Step 11 resolves the user method). */
                 }
 
-                /* Intercept vec builtin method calls: v.method(args...) or (*vec).method() */
-                {
-                    Type *vec_t = obj_type;
-                    if (vec_t && vec_t->kind == TYPE_POINTER && vec_t->as.pointer_to &&
-                        vec_t->as.pointer_to->kind == TYPE_VECTOR)
-                        vec_t = vec_t->as.pointer_to; /* auto-deref *vec(T) */
-                    if (vec_t && vec_t->kind == TYPE_VECTOR)
-                    {
-                        result = check_vector_method(c, node, vec_t);
-                        break;
-                    }
-                }
-
                 /* Intercept map builtin method calls: m.method(args...) */
                 if (obj_type && obj_type->kind == TYPE_MAP)
                 {
@@ -6032,13 +5155,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                 AstNode *pd = (AstNode *)callee_type->as.function.param_defaults[i + param_offset];
                 AstNode *clone = ast_clone_deep(pd);
                 Type *pt = callee_type->as.function.params[i + param_offset];
-                if (pt && pt->kind == TYPE_VECTOR && clone->kind == AST_ARRAY_LIT &&
-                    clone->resolved_type == NULL)
-                {
-                    for (int k = 0; k < clone->as.array_lit.count; k++)
-                        check_expr(c, clone->as.array_lit.elements[k]);
-                    clone->resolved_type = pt;
-                }
                 Type *se = c->expected_type;
                 if (pt && (pt->kind == TYPE_STRUCT || pt->kind == TYPE_BLOCK))
                     c->expected_type = pt;
@@ -6137,19 +5253,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                 result = obj->as.array.elem;
             }
         }
-        else if (obj->kind == TYPE_VECTOR)
-        {
-            if (!type_is_integer(idx))
-            {
-                checker_error(c, node->line, node->column,
-                              "vec index must be integer, got '%s'", type_name(idx));
-                result = NULL;
-            }
-            else
-            {
-                result = obj->as.vec.elem;
-            }
-        }
         else if (obj->kind == TYPE_MAP)
         {
             if (!type_equals(idx, obj->as.map.key))
@@ -6202,7 +5305,7 @@ static Type *check_expr(Checker *c, AstNode *node)
         else
         {
             checker_error(c, node->line, node->column,
-                          "cannot index non-array/non-vec type '%s'", type_name(obj));
+                          "cannot index non-array type '%s'", type_name(obj));
             result = NULL;
         }
         break;
@@ -6254,30 +5357,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                 result = NULL;
             }
             break;
-        }
-
-        /* vec .length / .capacity — also accept *vec(T) (auto-deref) */
-        {
-            Type *vt = obj;
-            if (vt && vt->kind == TYPE_POINTER && vt->as.pointer_to &&
-                vt->as.pointer_to->kind == TYPE_VECTOR)
-                vt = vt->as.pointer_to;
-            if (vt && vt->kind == TYPE_VECTOR)
-            {
-                if (strcmp(field_name, "length") == 0 ||
-                    strcmp(field_name, "capacity") == 0)
-                {
-                    result = type_int();
-                }
-                else
-                {
-                    checker_error(c, node->line, node->column,
-                                  "vec has no field '%s' (available: length, capacity)",
-                                  field_name);
-                    result = NULL;
-                }
-                break;
-            }
         }
 
         /* map .length */
@@ -6442,8 +5521,8 @@ static Type *check_expr(Checker *c, AstNode *node)
                For each name in move_names:
                - Find the matching capture and set is_explicit_move=true.
                - If not found in captures, report an error.
-               For explicitly-moved vec/map: apply by-move outer-symbol checks
-               (these were skipped in cap_record, which treats vec/map as by-ref). */
+               For explicitly-moved map: apply by-move outer-symbol checks
+               (these were skipped in cap_record, which treats map as by-ref). */
             for (int mi = 0; mi < node->as.closure.move_count; mi++) {
                 const char *mname = node->as.closure.move_names[mi];
                 bool found = false;
@@ -6451,11 +5530,11 @@ static Type *check_expr(Checker *c, AstNode *node)
                     if (strcmp(node->as.closure.captures[ci].name, mname) == 0) {
                         node->as.closure.captures[ci].is_explicit_move = true;
                         found = true;
-                        /* For vec/map: apply by-move semantics (outer marking).
+                        /* For map: apply by-move semantics (outer marking).
                            string/struct: already handled in cap_record (by-move).
                            POD/array: harmless no-op (warn about redundancy). */
                         Type *ct = node->as.closure.captures[ci].type;
-                        if (ct && (ct->kind == TYPE_VECTOR || ct->kind == TYPE_MAP)) {
+                        if (ct && ct->kind == TYPE_MAP) {
                             Symbol *outer = scope_resolve(outer_scope_for_caps, mname);
                             if (outer) {
                                 if (outer->is_borrow || outer->is_mut_borrow) {
@@ -6630,7 +5709,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                        as read-only borrows — prevents moves and mutating methods. */
                     if (bsym && subj_is_enum_borrow && bt &&
                         (bt->kind == TYPE_STRING ||
-                         bt->kind == TYPE_VECTOR ||
                          bt->kind == TYPE_MAP ||
                          (bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
                          (bt->kind == TYPE_ENUM   && bt->as.enom.has_drop)))
@@ -7125,24 +6203,10 @@ static Type *check_expr(Checker *c, AstNode *node)
                 continue; /* omitted, no default -> zero-init (existing semantics) */
             Type *fexp = st->as.strukt.fields[j].type;
             const char *jfn = st->as.strukt.fields[j].name;
-            /* v2: pre-tag container defaults so empty [] / {} resolve against the
-               field type (mirrors the vec/map var-decl special case). Shared node,
+            /* v2: pre-tag map defaults so empty {} resolves against the
+               field type (mirrors the map var-decl special case). Shared node,
                tagged once. */
-            if (fexp && fexp->kind == TYPE_VECTOR &&
-                deflt->kind == AST_ARRAY_LIT && deflt->resolved_type == NULL)
-            {
-                Type *E = fexp->as.vec.elem;
-                for (int k = 0; k < deflt->as.array_lit.count; k++)
-                {
-                    Type *et = check_expr(c, deflt->as.array_lit.elements[k]);
-                    if (et && !type_assignable(E, et))
-                        checker_error(c, deflt->line, deflt->column,
-                            "default for field '%s': vec element expected '%s', got '%s'",
-                            jfn, type_name(E), type_name(et));
-                }
-                deflt->resolved_type = fexp;
-            }
-            else if (fexp && fexp->kind == TYPE_MAP &&
+            if (fexp && fexp->kind == TYPE_MAP &&
                      deflt->kind == AST_MAP_LIT && deflt->resolved_type == NULL)
             {
                 Type *K = fexp->as.map.key;
@@ -7394,28 +6458,7 @@ static void check_stmt(Checker *c, AstNode *node)
             /* Special case: map(K,V) m = { key -> val, ... }
                Check each pair against the declared K,V types directly and set resolved_type
                so that check_expr(AST_MAP_LIT) can early-return without re-checking. */
-            /* Special case: vec(T) v = [e1, e2, ...] (or empty []).
-               Type-check each element against the declared element type and tag
-               the literal's resolved_type as the vec type so check_expr(AST_ARRAY_LIT)
-               returns vec rather than array. Codegen has a parallel branch that
-               builds the vec via repeated push. */
-            if (declared && declared->kind == TYPE_VECTOR &&
-                node->as.var_decl.init->kind == AST_ARRAY_LIT)
-            {
-                AstNode *al = node->as.var_decl.init;
-                Type *E = declared->as.vec.elem;
-                for (int i = 0; i < al->as.array_lit.count; i++)
-                {
-                    Type *et = check_expr(c, al->as.array_lit.elements[i]);
-                    if (et && !type_assignable(E, et))
-                        checker_error(c, al->as.array_lit.elements[i]->line,
-                                      al->as.array_lit.elements[i]->column,
-                                      "vec literal element type mismatch: expected '%s', got '%s'",
-                                      type_name(E), type_name(et));
-                }
-                al->resolved_type = declared; /* signal check_expr / codegen */
-            }
-            else if (declared && declared->kind == TYPE_STRUCT &&
+            if (declared && declared->kind == TYPE_STRUCT &&
                 node->as.var_decl.init->kind == AST_ARRAY_LIT &&
                 find_method(c, impl_key_of_type(declared), "__from_list") != NULL)
             {
@@ -7516,9 +6559,6 @@ static void check_stmt(Checker *c, AstNode *node)
                caller still holds. Reject before move-tracking runs. */
             checker_reject_mut_borrow_copy_source(c, node->as.var_decl.init,
                                                  "initialize new variable from writable borrow");
-            /* Phase 5.6: copy-out from a vec borrow (either & or &!) is rejected. */
-            checker_reject_vec_borrow_copy_source(c, node->as.var_decl.init,
-                                                 "initialize new variable from vec borrow");
             /* Phase 5.7: same for map borrows. */
             checker_reject_map_borrow_copy_source(c, node->as.var_decl.init,
                                                  "initialize new variable from map borrow");
@@ -7614,8 +6654,8 @@ static void check_stmt(Checker *c, AstNode *node)
                 }
             }
         }
-        /* Phase 5.6/5.7: subscript assign `v[i] = x` / `m[k] = v` is forbidden
-           when the base is a read-only borrow (&vec(T) / &map(K,V)). Writable
+        /* Phase 5.7: subscript assign `m[k] = v` is forbidden
+           when the base is a read-only borrow (&map(K,V)). Writable
            borrows pass through. */
         if (node->as.assign.target->kind == AST_INDEX)
         {
@@ -7624,8 +6664,7 @@ static void check_stmt(Checker *c, AstNode *node)
             {
                 Symbol *bsym = scope_resolve(c->current_scope, base->as.ident.name);
                 if (bsym && bsym->is_borrow && bsym->type &&
-                    (bsym->type->kind == TYPE_VECTOR ||
-                     bsym->type->kind == TYPE_MAP))
+                    bsym->type->kind == TYPE_MAP)
                 {
                     checker_move_error(c, node->line, node->column,
                                        "cannot assign to '%s[..]': '%s' is a read-only borrow",
@@ -7680,9 +6719,6 @@ static void check_stmt(Checker *c, AstNode *node)
                var_decl — content cannot leave the borrow). */
             checker_reject_mut_borrow_copy_source(c, node->as.assign.value,
                                                   "assign writable borrow contents to another variable");
-            /* Phase 5.6: copy-out from a vec borrow (either & or &!) on the RHS. */
-            checker_reject_vec_borrow_copy_source(c, node->as.assign.value,
-                                                 "assign vec borrow contents to another variable");
             /* Phase 5.7: same for map borrows. */
             checker_reject_map_borrow_copy_source(c, node->as.assign.value,
                                                  "assign map borrow contents to another variable");
@@ -7900,11 +6936,6 @@ static void check_stmt(Checker *c, AstNode *node)
                 /* Array iteration: loop variable is element type */
                 scope_define(c->current_scope, node->as.for_stmt.var, iter->as.array.elem);
             }
-            else if (iter->kind == TYPE_VECTOR)
-            {
-                /* Vec iteration: loop variable is element type */
-                scope_define(c->current_scope, node->as.for_stmt.var, iter->as.vec.elem);
-            }
             else if (type_is_integer(iter))
             {
                 /* Single integer: iterate 0..n */
@@ -7914,7 +6945,7 @@ static void check_stmt(Checker *c, AstNode *node)
             {
                 checker_error(c, node->as.for_stmt.iter->line,
                               node->as.for_stmt.iter->column,
-                              "cannot iterate over '%s'; expected range (a..b), array, vec, "
+                              "cannot iterate over '%s'; expected range (a..b), array, "
                               "integer, or a type with an iter()->Iterator(T) / next()->Option(T) method",
                               type_name(iter));
             }
@@ -8071,20 +7102,6 @@ static void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type
         if (pd != NULL && params && params[i])
         {
             Type *fpt = params[i];
-            if (fpt->kind == TYPE_VECTOR && pd->kind == AST_ARRAY_LIT &&
-                pd->resolved_type == NULL)
-            {
-                Type *E = fpt->as.vec.elem;
-                for (int k = 0; k < pd->as.array_lit.count; k++)
-                {
-                    Type *et = check_expr(c, pd->as.array_lit.elements[k]);
-                    if (et && !type_assignable(E, et))
-                        checker_error(c, pd->line, pd->column,
-                            "default for parameter '%s': vec element expected '%s', got '%s'",
-                            node->as.fn_decl.param_names[i], type_name(E), type_name(et));
-                }
-                pd->resolved_type = fpt;
-            }
             Type *saved_pexp = c->expected_type;
             if (fpt->kind == TYPE_STRUCT || fpt->kind == TYPE_BLOCK)
                 c->expected_type = fpt;
@@ -8124,17 +7141,10 @@ static void check_fn_decl(Checker *c, AstNode *node)
         {
             params[i] = resolve_type_node(c, node->as.fn_decl.param_types[i],
                                           node->line, node->column);
-            /* vec(T) and array(T,N) must be passed by pointer */
+            /* array(T,N) must be passed by pointer */
             if (params[i])
             {
-                if (params[i]->kind == TYPE_VECTOR)
-                {
-                    checker_error(c, node->line, node->column,
-                                  "parameter '%s': vec must be passed by pointer (*vec(%s))",
-                                  node->as.fn_decl.param_names[i],
-                                  type_name(params[i]->as.vec.elem));
-                }
-                else if (params[i]->kind == TYPE_ARRAY)
+                if (params[i]->kind == TYPE_ARRAY)
                 {
                     checker_error(c, node->line, node->column,
                                   "parameter '%s': array must be passed by pointer",
@@ -8251,17 +7261,13 @@ static void check_struct_decl(Checker *c, AstNode *node)
         }
     }
 
-    /* Auto-set has_drop if a field owns heap: string / vec / map /
+    /* Auto-set has_drop if a field owns heap: string / map /
        has_drop-struct / has_drop-enum / Block. */
     bool needs_drop = false;
     for (int i = 0; i < n && !needs_drop; i++)
     {
         Type *ft = st->as.strukt.fields[i].type;
         if (ft->kind == TYPE_STRING)
-        {
-            needs_drop = true;
-        }
-        else if (ft->kind == TYPE_VECTOR)
         {
             needs_drop = true;
         }
@@ -8310,7 +7316,6 @@ static bool type_owns_heap_for_enum(const Type *t)
     switch (t->kind)
     {
     case TYPE_STRING: return true;
-    case TYPE_VECTOR: return true;
     case TYPE_MAP:    return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;
@@ -8570,16 +7575,10 @@ static void check_impl_decl(Checker *c, AstNode *node)
             {
                 user_params[j] = resolve_type_node(c, method->as.fn_decl.param_types[j],
                                                    method->line, method->column);
-                /* vec(T) and array(T,N) must be passed by pointer */
+                /* array(T,N) must be passed by pointer */
                 if (user_params[j])
                 {
-                    if (user_params[j]->kind == TYPE_VECTOR)
-                    {
-                        checker_error(c, method->line, method->column,
-                                      "parameter '%s': vec must be passed by pointer",
-                                      method->as.fn_decl.param_names[j]);
-                    }
-                    else if (user_params[j]->kind == TYPE_ARRAY)
+                    if (user_params[j]->kind == TYPE_ARRAY)
                     {
                         checker_error(c, method->line, method->column,
                                       "parameter '%s': array must be passed by pointer",
