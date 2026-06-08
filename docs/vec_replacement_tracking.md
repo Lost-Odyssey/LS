@@ -149,8 +149,8 @@
 |---|------|------|
 | 1 | std/strconv.ls | ✅ | 已迁移：`vec(string)`→`Vec(string)`，`args.length`→`args.len()` |
 | 2 | std/json.ls | ✅ | enum payload + 内部全部 `vec`→`Vec`；match binder 方法不可调用，`json_e2e_test` 用 `entries.keys()` 绕行 |
-| 3 | std/html.ls | 待做 |
-| 4 | std/md.ls | 待做 |
+| 3 | std/html.ls | ✅ | 全 vec→Vec；Element(Vec(Attr),Vec(HtmlNode)) 双 Vec + 自递归 enum 持 Vec(Self) 验证通过。test_std_html_parse/write JIT+AOT+memcheck 0/0/0 |
+| 4 | std/md.ls | ✅ | 全 vec→Vec，移除 Vec→内建 vec 脚手架；Vec(Vec(MdInline))/Vec(Vec(string)) 嵌套 + Blockquote(Vec(MdBlock)) 递归验证通过。test_std_md_*/test_md_to_html JIT+AOT+memcheck 0/0/0。ctest 167/167 |
 | 5 | std/plot.ls | 待做 |
 | 6 | std/plottl.ls | 待做 |
 | 7 | std/fs.ls | ✅ | `list_dir` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
