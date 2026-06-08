@@ -28,7 +28,7 @@
 |---|------|--------|------|
 | 1 | map_keys.ls | test_map_keys | ⛔ 阻塞 | `m.keys()` 返回内建 vec，无法直接赋值给 Vec。需等 map 改造 |
 | 2 | struct_field_defaults_v2_test.ls | test_struct_field_defaults_v2 | ✅ |
-| 3 | closure_g.ls | test_phase_g_closure | ⛔ 阻塞 | `Vec(Block)` 不兼容 (VR-LIM-017) |
+| 3 | closure_g.ls | test_phase_g_closure | ✅ | F5 修复（Block 容器生命周期四处协同）。JIT+AOT+memcheck 0/0/0 |
 | 4 | html_parse.ls | test_std_html_parse | 待做 |
 | 5 | html_write.ls | test_std_html_write | 待做 |
 | 6 | md_build.ls | test_std_md_jit | 待做 |
@@ -68,7 +68,7 @@
 | 4 | closure_f4_test.ls | test_phase_f4_closure | 待做 | |
 | 5 | closure_f5_test.ls | test_phase_f5_closure | 待做 | |
 | 6 | closure_f7_stress_test.ls | test_phase_f7_stress | 待做 | |
-| 7 | closure_g.ls | test_phase_g_closure | 待做 | |
+| 7 | closure_g.ls | test_phase_g_closure | ✅ | F5 修复后迁移到 Vec(Block) |
 | 8 | closure_phase_c7_test.ls | test_phase_c7_closure | 待做 | |
 
 ### 桶 E — vec 借用/move 语义（按 struct 重写）
@@ -169,7 +169,7 @@
 | VR-LIM-015 | `Vec(T)` generic 方法的 by-value 参数不标记 named var 为 moved | `Vec(string).push(s)` 调用后 `s` 仍 live（不被标记 moved），因 checker 对 generic `T` 参数不触发 move 分析 | 新发现。内建 vec 可标记 moved；Vec(T) 一律 clone。负向测试（move-after-use 检查）不适用于 Vec(T) |
 | ~~VR-LIM-016~~ | ~~全局变量 `Vec(T) v = [literal]` 触发 `__from_list` 缺失~~ | ✅ 已修复（F1，2026-06-08）：`emit_user_from_list_value` 落空时从 pending-generic 队列前向声明 `__from_list`。`test_global_vec_lit` 还原全局字面量，JIT+AOT+memcheck 0/0/0 | 已解除 |
 | （参见 plan_vec_replacement.md §6.1 其他已知限制） | | | |
-| VR-LIM-017 | `Vec(Block(...))` 不兼容——`push` 内部赋值 Block 参数被 checker 拒绝 | 2026-06-08 迁移 `closure_g.ls` 时发现：`Vec(Fn).push(|x| x + base)` 触发 `cannot assign Block parameter`。Vec.push 的方法体 `self.data[self.len] = x` 中 `x` 是 `T` 类型参数，当 `T=Block` 时 checker 拒绝赋值 Block 参数。 | 本轮不迁移含有 `Vec(Block)` 的文件。保留内建 vec。待编译器允许 Block 参数赋值后再迁。 |
+| ~~VR-LIM-017~~ | ~~`Vec(Block(...))` 不兼容~~ | ✅ 已修复（F5，2026-06-08）：checker 泛型 T=Block 参数不标 is_borrow + codegen 三处（bind 点 copy-out 克隆 env / move-into-container 消费 temp env / emit_drop_value 加 Block 释放）。closure_g 迁移到 Vec(Block)，test_phase_g_closure JIT+AOT+memcheck 0/0/0 | 已解除 |
 
 ---
 

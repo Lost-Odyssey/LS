@@ -3,8 +3,11 @@
 // the closure env, so the destination owns an independent env (no shared-env
 // double-free). Self-verifying: prints "G PASS" only if every check holds.
 //
-// NOTE: uses built-in vec because Vec(Block) is incompatible — Vec.push assigns
-// Block parameters internally, which the checker rejects (VR-LIM-017).
+// F5 (VR-LIM-017 resolved): now uses std.vec Vec(Block). The full Block
+// lifecycle through a pure-LS container works — push moves the closure env in,
+// get/[i] deep-clones it out at the bind site, and Vec drop frees element envs.
+
+import std.vec
 
 type Fn = Block(int) -> int
 
@@ -29,7 +32,7 @@ fn main() {
 
     // --- 1) POD capture extracted from a vec, called repeatedly ---
     int base = 100
-    vec(Fn) fns = []
+    Vec(Fn) fns = {}
     fns.push(|x| x + base)
     fns.push(|x| x * 2)
     Fn g = fns[0]
@@ -48,7 +51,7 @@ fn main() {
 
     // --- 3) has_drop struct capture extracted from a vec ---
     Tag t = Tag { name: "kg" }               // length 2
-    vec(Fn) sfns = []
+    Vec(Fn) sfns = {}
     sfns.push(|x| x + t.name.length as int)
     Fn a = sfns[0]
     Fn b = sfns[0]                           // two independent clones, same element

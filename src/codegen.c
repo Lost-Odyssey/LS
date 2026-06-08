@@ -2728,7 +2728,11 @@ static bool cg_block_source_is_aliased(AstNode *src)
     if (!src) return false;
     if (src->kind == AST_INDEX) {
         AstNode *obj = src->as.index_expr.object;
-        return obj && obj->resolved_type && obj->resolved_type->kind == TYPE_VECTOR;
+        /* builtin vec[i], OR a pure-LS Vec(Block)[i] (object is the Vec struct):
+           the loaded Block aliases the env owned by the container. */
+        return obj && obj->resolved_type &&
+               (obj->resolved_type->kind == TYPE_VECTOR ||
+                obj->resolved_type->kind == TYPE_STRUCT);
     }
     if (src->kind == AST_FIELD) {
         AstNode *obj = src->as.field_access.object;
@@ -2737,9 +2741,20 @@ static bool cg_block_source_is_aliased(AstNode *src)
     if (src->kind == AST_CALL) {
         AstNode *callee = src->as.call.callee;
         if (!callee || callee->kind != AST_FIELD) return false;
-        if (strcmp(callee->as.field_access.field, "get") != 0) return false;
+        const char *m = callee->as.field_access.field;
+        /* F5: a copy-out reader on a container — map.get, or a pure-LS
+           Vec(Block)'s get/get!/__index/first/last (the returned Block aliases
+           the container's env, so the BIND site clones; a discarded rvalue like
+           `v[i](arg)` borrows and is not cloned → no leak). Cloning here rather
+           than inside the method keeps discarded copy-out rvalues leak-free. */
+        bool reader = strcmp(m, "get") == 0 || strcmp(m, "get!") == 0 ||
+                      strcmp(m, "__index") == 0 || strcmp(m, "first") == 0 ||
+                      strcmp(m, "last") == 0;
+        if (!reader) return false;
         AstNode *mo = callee->as.field_access.object;
-        return mo && mo->resolved_type && mo->resolved_type->kind == TYPE_MAP;
+        return mo && mo->resolved_type &&
+               (mo->resolved_type->kind == TYPE_MAP ||
+                mo->resolved_type->kind == TYPE_STRUCT);
     }
     return false;
 }
@@ -12194,6 +12209,39 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         cg_push_temp_drop(ctx, vtmp, arg_type);
                     }
                 }
+                /* F5 (VR-LIM-017): a Block moved into a container-STORING method
+                   (push/insert/set/__index_set/__from_list/extend) — the
+                   container takes ownership of the closure env, so suppress the
+                   caller-side free: a closure-literal temp → consume its temp env;
+                   a named Block var → null its env_ptr (move). Non-storing methods
+                   (each/map/filter that only CALL the block) keep the borrow — the
+                   caller still owns and frees its temp. Mirrors map.set's Block
+                   handling. Without this the caller frees an env the container now
+                   owns → dangling element (UAF on later get; AOT crash). */
+                else if (arg_val && arg_type && arg_type->kind == TYPE_BLOCK)
+                {
+                    const char *mname =
+                        (node->as.call.callee->kind == AST_FIELD)
+                            ? node->as.call.callee->as.field_access.field : NULL;
+                    bool stores = mname &&
+                        (strcmp(mname, "push") == 0 || strcmp(mname, "insert") == 0 ||
+                         strcmp(mname, "set") == 0 || strcmp(mname, "__index_set") == 0 ||
+                         strcmp(mname, "__from_list") == 0 || strcmp(mname, "extend") == 0);
+                    if (stores)
+                    {
+                        AstNode *raw = node->as.call.args[i];
+                        AstNode *uw = ast_unwrap_move(raw);
+                        if (uw && uw->kind == AST_IDENT)
+                        {
+                            CgSymbol *bsym = cg_scope_resolve(ctx->current_scope,
+                                                              uw->as.ident.name);
+                            if (bsym && !bsym->is_borrowed)
+                                cg_null_block_env(ctx, bsym->value);
+                        }
+                        else if (ctx->temp_block_env_count > 0)
+                            ctx->temp_block_env_count--;
+                    }
+                }
                 /* String arg ownership: distinguish owned (rvalue/__move) from
                    borrowed (named variable). Owned strings keep real cap > 0 so the
                    callee can move into containers; borrowed strings get cap = -2 so
@@ -17583,6 +17631,12 @@ static void emit_drop_value(CodegenContext *ctx, LLVMValueRef place_ptr, Type *t
         return;
     case TYPE_ENUM:
         if (type->as.enom.has_drop) emit_enum_drop(ctx, place_ptr, type);
+        return;
+    case TYPE_BLOCK:
+        /* F5: a Block slot owns its closure env — free it (running the env's
+           drop_fn first for any captured has_drop values). Needed so a pure-LS
+           Vec(Block) drops its element envs via __drop_at(self.data[i]). */
+        cg_emit_block_drop_at(ctx, place_ptr);
         return;
     case TYPE_MAP:
     {

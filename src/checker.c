@@ -1284,7 +1284,26 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
                 psym->is_borrow = is_borrow;
                 psym->is_mut_borrow = is_mut_borrow;
                 if (sym_type->kind == TYPE_STRING) psym->is_static_string = false;
-                if (sym_type->kind == TYPE_BLOCK)  psym->is_borrow = true;
+                /* F5 (VR-LIM-017): an explicit `Block(..) f` param is a shallow
+                   shared-env borrow (F.2: can't be moved). But a generic type
+                   parameter `T x` that happens to monomorphize to Block (e.g.
+                   `Vec(Block).push(T x)`) is an OWNED value the method moves into
+                   storage — don't mark it is_borrow, or the body's
+                   `self.data[i] = x` is wrongly rejected. Distinguish by the
+                   ORIGINAL param type node: a bare type-param name → owned. */
+                if (sym_type->kind == TYPE_BLOCK) {
+                    bool is_tparam = false;
+                    TypeNode *ptn = cloned->as.fn_decl.param_types
+                                    ? cloned->as.fn_decl.param_types[j] : NULL;
+                    if (ptn && ptn->kind == TYPE_NODE_NAMED &&
+                        ptn->as.named.arg_count == 0) {
+                        for (int t = 0; t < tp_count; t++)
+                            if (strcmp(ptn->as.named.name, tp_names[t]) == 0) {
+                                is_tparam = true; break;
+                            }
+                    }
+                    if (!is_tparam) psym->is_borrow = true;
+                }
             }
         }
     }
