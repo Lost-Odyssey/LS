@@ -8,7 +8,7 @@ fn grow(&!Vec(int) v, int n) {
 }
 
 fn main() -> int {
-    Vec(int) v
+    Vec(int) v = {}
     v.push(1)
     grow(&!v, 3)
     print(v.len())  /* expect: 4 */

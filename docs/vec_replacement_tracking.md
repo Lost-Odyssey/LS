@@ -76,7 +76,7 @@
 | # | 文件 | 测试名 | 状态 | 说明 |
 |---|------|--------|------|------|
 | 1 | vecref_neg_alias.ls | (检查器负向) | ✅ | checker 依旧拒绝混用 `&!v` + auto-borrow `v` |
-| 2–23 | vecref_*/borrow_*/move_*/mutref_* (22 文件) | — | ✅ | 全部机械迁移：`vec`→`Vec`, `&!vec`→`&!Vec`, `.length`→`.len()` |
+| 2–23 | vecref_*/borrow_*/move_*/mutref_* (22 文件) | — | ⚠️ positive 11/11 ✅; negative 8/12 仍被 checker 拒绝，4 个因 Vec 借用规则变更（struct ABI）不再触发。记录不修。 |
 
 ### 非 ctest 文件
 

@@ -11,7 +11,7 @@ fn sum_all(&Vec(int) v) -> int {
 }
 
 fn main() -> int {
-    Vec(int) v
+    Vec(int) v = {}
     v.push(10)
     v.push(20)
     v.push(30)

@@ -7,7 +7,7 @@ fn add_words(&!Vec(string) v) {
 }
 
 fn main() -> int {
-    Vec(string) v
+    Vec(string) v = {}
     v.push("start".upper())
     add_words(&!v)
     print(v.len())  /* expect: 3 */

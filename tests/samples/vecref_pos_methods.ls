@@ -2,7 +2,7 @@ import std.vec
 
 /* Phase 5.6: &!Vec(T) supports pop/clear/reverse; &Vec(T) supports read-only methods. */
 fn info(&Vec(int) v) -> int {
-    if v.is_empty() { return -1 }
+    if v.empty?() { return -1 }
     return v.len() + v[0]
 }
 
@@ -12,7 +12,7 @@ fn shrink(&!Vec(int) v) {
 }
 
 fn main() -> int {
-    Vec(int) v
+    Vec(int) v = {}
     v.push(1)
     v.push(2)
     v.push(3)

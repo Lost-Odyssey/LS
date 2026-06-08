@@ -3,7 +3,7 @@ import std.vec
 // Expected to fail: loop 2-pass analysis must flag use/move of a variable
 // that gets moved inside the body on any iteration.
 fn main() -> int {
-    Vec(string) v
+    Vec(string) v = {}
     string s = "world".upper()
     int i = 0
     while i < 3 {

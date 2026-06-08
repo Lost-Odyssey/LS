@@ -10,7 +10,7 @@ fn outer(&Vec(int) v) {
 }
 
 fn main() -> int {
-    Vec(int) v
+    Vec(int) v = {}
     outer(v)
     return 0
 }

@@ -8,7 +8,7 @@ fn peek(&string s) -> int {
 }
 
 fn main() -> int {
-    Vec(string) names
+    Vec(string) names = {}
 
     string alice = "Alice".upper()
     int n1 = peek(alice)     /* borrow */

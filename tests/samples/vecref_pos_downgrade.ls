@@ -12,7 +12,7 @@ fn mut_caller(&!Vec(int) v) -> int {
 }
 
 fn main() -> int {
-    Vec(int) v
+    Vec(int) v = {}
     v.push(4)
     v.push(6)
     int r = mut_caller(&!v)

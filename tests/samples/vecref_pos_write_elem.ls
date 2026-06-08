@@ -8,7 +8,7 @@ fn double_each(&!Vec(int) v) {
 }
 
 fn main() -> int {
-    Vec(int) v
+    Vec(int) v = {}
     v.push(3)
     v.push(5)
     v.push(7)

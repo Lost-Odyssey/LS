@@ -3,7 +3,7 @@ import std.vec
 // Expected to fail type checking: Phase B should reject use of a MAYBE_MOVED
 // variable on ANY path after an if-without-else that moves it.
 fn main() -> int {
-    Vec(string) v
+    Vec(string) v = {}
     string s = "hello".upper()
     bool c = true
     if c {

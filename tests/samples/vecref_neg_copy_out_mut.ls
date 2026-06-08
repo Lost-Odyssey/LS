@@ -6,7 +6,7 @@ fn f(&!Vec(int) v) {
 }
 
 fn main() -> int {
-    Vec(int) v
+    Vec(int) v = {}
     f(&!v)
     return 0
 }

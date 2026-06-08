@@ -12,7 +12,7 @@ fn outer(&!Vec(int) v) {
 }
 
 fn main() -> int {
-    Vec(int) v
+    Vec(int) v = {}
     outer(&!v)
     print(v.len())  /* expect: 3 */
     print(v[0])      /* expect: 10 */
