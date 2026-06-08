@@ -75,29 +75,8 @@
 
 | # | 文件 | 测试名 | 状态 | 说明 |
 |---|------|--------|------|------|
-| 1 | vecref_neg_alias.ls | (检查器负向) | 待做 | |
-| 2 | vecref_neg_copy_out_mut.ls | | 待做 | |
-| 3 | vecref_neg_copy_out_readonly.ls | | 待做 | |
-| 4 | vecref_neg_elem_assign_readonly.ls | | 待做 | |
-| 5 | vecref_neg_implicit_mut.ls | | 待做 | |
-| 6 | vecref_neg_push_readonly.ls | | 待做 | |
-| 7 | vecref_neg_readonly_upgrade.ls | | 待做 | |
-| 8 | vecref_pos_downgrade.ls | | 待做 | |
-| 9 | vecref_pos_forward.ls | | 待做 | |
-| 10 | vecref_pos_methods.ls | | 待做 | |
-| 11 | vecref_pos_push.ls | | 待做 | |
-| 12 | vecref_pos_read.ls | | 待做 | |
-| 13 | vecref_pos_string_elem.ls | | 待做 | |
-| 14 | vecref_pos_write_elem.ls | | 待做 | |
-| 15 | borrow_caller_live_test.ls | | 待做 | |
-| 16 | borrow_neg_move.ls | | 待做 | |
-| 17 | borrow_neg_move_explicit.ls | | 待做 | |
-| 18 | move_explicit_test.ls | test_vec_move | 待做 | |
-| 19 | move_phase_b_loop_neg.ls | | 待做 | |
-| 20 | move_phase_b_neg.ls | | 待做 | |
-| 21 | move_phase_b_test.ls | | 待做 | |
-| 22 | move_struct_test.ls | | 待做 | |
-| 23 | mutref_step2_neg_move.ls | | 待做 | |
+| 1 | vecref_neg_alias.ls | (检查器负向) | ✅ | checker 依旧拒绝混用 `&!v` + auto-borrow `v` |
+| 2–23 | vecref_*/borrow_*/move_*/mutref_* (22 文件) | — | ✅ | 全部机械迁移：`vec`→`Vec`, `&!vec`→`&!Vec`, `.length`→`.len()` |
 
 ### 非 ctest 文件
 

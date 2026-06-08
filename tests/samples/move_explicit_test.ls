@@ -1,3 +1,5 @@
+import std.vec
+
 // Phase 4 __move() explicit move annotation — end-to-end test.
 // Covers:
 //   - __move on a dynamic string transferred to vec.push
@@ -8,19 +10,19 @@ struct Person { string name; int age; }
 
 fn main() -> int {
     // --- dynamic string: __move is equivalent to implicit move, no double-free ---
-    vec(string) names
+    Vec(string) names
     string a = "alice".upper()
     names.push(__move(a))        // explicit move; `a` becomes MOVED
     print(names.is_empty())       // false
 
     // --- static string forced to move ---
-    vec(string) tags
+    Vec(string) tags
     string t = "rust"             // static (cap==0)
     tags.push(__move(t))          // __move forces move; runtime: static stays static
     print(tags.is_empty())        // false
 
     // --- has_drop struct: __move into a vec ---
-    vec(Person) people
+    Vec(Person) people
     Person p
     p.name = "bob".upper()
     p.age = 42

@@ -1,12 +1,14 @@
-/* Phase 5.6: &!vec(T) — v[i] = x writes through to caller. */
-fn double_each(&!vec(int) v) {
-    for (int i = 0; i < v.length; i = i + 1) {
+import std.vec
+
+/* Phase 5.6: &!Vec(T) — v[i] = x writes through to caller. */
+fn double_each(&!Vec(int) v) {
+    for (int i = 0; i < v.len(); i = i + 1) {
         v[i] = v[i] * 2
     }
 }
 
 fn main() -> int {
-    vec(int) v
+    Vec(int) v
     v.push(3)
     v.push(5)
     v.push(7)

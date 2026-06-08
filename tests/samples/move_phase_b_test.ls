@@ -1,9 +1,11 @@
+import std.vec
+
 // Phase B move-semantics: if/else branch merging and loop 2-pass.
 // This test exercises valid control flow that Phase B must ACCEPT.
 // Violations are covered by dedicated .expect_error samples / test_types.c.
 
 fn main() -> int {
-    vec(string) v
+    Vec(string) v
     v.push("a".upper())
     v.push("b".upper())
 
@@ -35,7 +37,7 @@ fn main() -> int {
 
     // --- for-in without move inside: loop variable used read-only. ---
     string label = "item: ".upper()
-    vec(int) ns
+    Vec(int) ns
     ns.push(1)
     ns.push(2)
     for n in ns {

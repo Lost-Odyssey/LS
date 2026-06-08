@@ -1,3 +1,5 @@
+import std.vec
+
 // Phase 3 struct move semantics — valid program that exercises:
 //   - field-level assignment does not move the struct
 //   - POD struct (no has_drop) follows clone semantics
@@ -21,7 +23,7 @@ fn main() -> int {
     print(p.age)
 
     // --- vec.push transfers ownership of the struct. ---
-    vec(Person) people
+    Vec(Person) people
     Person q
     q.name = "Carol".upper()
     q.age = 40

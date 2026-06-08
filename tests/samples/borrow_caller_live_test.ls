@@ -1,3 +1,5 @@
+import std.vec
+
 /* Phase 5: borrow does NOT move the caller's variable — later use
    (including an actual move) still works. */
 
@@ -6,7 +8,7 @@ fn peek(&string s) -> int {
 }
 
 fn main() -> int {
-    vec(string) names
+    Vec(string) names
 
     string alice = "Alice".upper()
     int n1 = peek(alice)     /* borrow */
@@ -18,7 +20,7 @@ fn main() -> int {
 
     /* Now the REAL move — after this, alice is moved. */
     names.push(alice)
-    print(names.length)
+    print(names.len())
     print("\n")
     return 0
 }

@@ -1,10 +1,12 @@
-/* Neg: cannot copy out of &vec(T) into a new owned vec. */
-fn f(&vec(int) v) {
-    vec(int) t = v
+import std.vec
+
+/* Neg: cannot copy out of &Vec(T) into a new owned vec. */
+fn f(&Vec(int) v) {
+    Vec(int) t = v
 }
 
 fn main() -> int {
-    vec(int) v
+    Vec(int) v
     f(v)
     return 0
 }
