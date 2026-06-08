@@ -1,3 +1,5 @@
+import std.vec
+
 /* Phase F.7 stress test: 1000-iteration loop over all closure capture patterns.
    Each iteration exercises:
      S1. POD capture (int by-copy)
@@ -64,8 +66,8 @@ fn run_iteration(int i) {
     int tv = transform_run(t)
     if tv != i * 2 { print("S3 fail") }
 
-    /* S4: vec(Block) */
-    vec(Counter) ops = []
+    /* S4: Vec(Block) */
+    Vec(Counter) ops = {}
     int j = 0
     while j < 3 {
         int captured = j

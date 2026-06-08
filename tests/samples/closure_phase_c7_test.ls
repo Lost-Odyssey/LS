@@ -1,14 +1,7 @@
-// Phase C.7 (revised): vec(T)/map(K,V) captures are by-ref (env stores a
-// pointer to the outer alloca); struct(has_drop) remains by-move.
-//
-// Key differences from by-move semantics:
-//   - The outer vec/map is NOT moved; it remains usable after capture.
-//   - Mutations made to the outer vec/map after capture are visible inside
-//     the closure body (live reference).
-//   - Closure must not outlive the scope of the outer variable.
-//
-// struct(has_drop) still uses by-move (factory pattern works because the
-// struct is fully transferred into the env).
+// Phase C.7 (revised): Vec(T) captures are by-move (env owns the value);
+// map(K,V) remains by-ref. struct(has_drop) also by-move.
+
+import std.vec
 
 type IntGetter  = Block(int) -> int
 type StrBuilder = Block(string) -> string
@@ -25,20 +18,20 @@ fn make_stamper(Tag t) -> Stamper {
 }
 
 fn main() {
-    // 1) vec(int) by-ref capture — outer remains live; push visible in closure
-    vec(int) nums = [10, 20, 30]
+    // 1) Vec(int) by-move capture — outer is moved into closure
+    Vec(int) nums = [10, 20, 30]
     IntGetter pick = |i| nums[i]
     print(pick(0))          // 10
     print(pick(2))          // 30
-    nums.push(99)
-    print(pick(3))          // 99  ← mutation made after capture is visible
+    // nums was moved into the closure; post-capture mutations not possible.
+    // The closure owns its own copy.
 
-    // 2) vec(string) by-ref capture — inline closure
-    vec(string) words = ["hello", "world"]
+    // 2) Vec(string) by-move capture — inline closure
+    Vec(string) words = ["hello", "world"]
     StrBuilder joiner = |sep| {
         string out = ""
         int i = 0
-        while i < words.length {
+        while i < words.len() {
             if i > 0 { out = out + sep }
             out = out + words[i]
             i = i + 1

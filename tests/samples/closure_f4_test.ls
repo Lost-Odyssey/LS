@@ -1,4 +1,4 @@
-/* Phase F.4 tests: vec(Block) / map(K, Block)
+/* Phase F.4 tests: Vec(Block) / map(K, Block)
    Expected output (one per line):
      11
      20
@@ -8,33 +8,35 @@
      100
 */
 
+import std.vec
+
 type H = Block(int) -> int
 type Namer = Block() -> string
 
-/* F.4.1: vec(H) — push lambdas, iterate and call each */
+/* F.4.1: Vec(H) — push lambdas, iterate and call each */
 fn test_vec_block() {
-    vec(H) handlers = []
+    Vec(H) handlers = {}
     handlers.push(|x| { return x + 1 })
     handlers.push(|x| { return x * 2 })
     handlers.push(|x| { return x - 3 })
 
     int i = 0
-    while i < handlers.length {
+    while i < handlers.len() {
         print(handlers[i](10))
         i = i + 1
     }
 }   /* handlers drops: 3 envs freed */
 
-/* F.4.2: vec(Namer) — push closures with string capture */
+/* F.4.2: Vec(Namer) — push closures with string capture */
 fn test_vec_namer() {
     string s1 = "add3"
     string s2 = "sub2"
-    vec(Namer) ns = []
+    Vec(Namer) ns = {}
     ns.push([move s1] || { return s1 })
     ns.push([move s2] || { return s2 })
 
     int i = 0
-    while i < ns.length {
+    while i < ns.len() {
         print(ns[i]())
         i = i + 1
     }

@@ -10,6 +10,8 @@
      10
 */
 
+import std.vec
+
 enum Direction { North South East West }
 enum Color     { Red Green Blue RGB(int r, int g, int b) }
 
@@ -17,7 +19,7 @@ type IntGetter    = Block() -> int
 type StringGetter = Block() -> string
 type OptGetter    = Block() -> int
 
-/* F.5.1: 捕获非 has_drop enum (disc-only) — by-copy */
+/* F.5.1: capture non-has_drop enum (disc-only) — by-copy */
 fn test_pod_enum_capture() {
     Direction d = North
     IntGetter f = || {
@@ -34,7 +36,7 @@ fn test_pod_enum_capture() {
     }
 }
 
-/* F.5.2: 捕获 Option(int) (has_drop enum, by-move) */
+/* F.5.2: capture Option(int) (has_drop enum, by-move) */
 fn test_option_capture() {
     Option(int) o = Some(42)
     IntGetter f = || {
@@ -46,7 +48,7 @@ fn test_option_capture() {
     print(f())   /* 42 */
 }
 
-/* F.5.3: 捕获 Result(int, string) (has_drop enum, by-move) */
+/* F.5.3: capture Result(int, string) (has_drop enum, by-move) */
 fn test_result_capture() {
     Result(int, string) r = Err("not found")
     StringGetter f = || {
@@ -58,7 +60,7 @@ fn test_result_capture() {
     print(f())   /* error: not found */
 }
 
-/* F.5.4: 工厂函数 — 返回捕获了 has_drop enum 的 Block */
+/* F.5.4: factory — return Block capturing has_drop enum */
 fn make_ok_getter(Result(string, string) res) -> StringGetter {
     return || {
         match res {
@@ -73,7 +75,7 @@ fn test_factory() {
     print(f())   /* hello */
 }
 
-/* F.5.5: 捕获非 has_drop enum + POD capture 混合 */
+/* F.5.5: capture non-has_drop enum + POD capture mixed */
 fn test_color_mul_capture() {
     Direction d = East
     int factor = 100
@@ -90,7 +92,7 @@ fn test_color_mul_capture() {
     print(f())   /* East→2, 2*100=200 */
 }
 
-/* F.5.6: 捕获非 has_drop enum (Color with POD payload) */
+/* F.5.6: capture non-has_drop enum (Color with POD payload) */
 fn test_color_capture() {
     Color c = Red
     StringGetter f = || {
@@ -104,9 +106,9 @@ fn test_color_capture() {
     print(f())   /* Red */
 }
 
-/* F.5.7: vec 内捕获了 has_drop enum 的 Block */
+/* F.5.7: Vec of Block capturing has_drop enum */
 fn test_vec_block_option() {
-    vec(OptGetter) funcs = []
+    Vec(OptGetter) funcs = {}
 
     Option(int) a = Some(1)
     funcs.push(|| {
@@ -119,7 +121,7 @@ fn test_vec_block_option() {
     print(funcs[0]())   /* 1 */
 }
 
-/* F.5.8: 多次调用捕获了 enum 的 closure */
+/* F.5.8: repeated call of closure capturing enum */
 fn test_repeated_call() {
     Option(int) seed = Some(5)
     IntGetter f = || {

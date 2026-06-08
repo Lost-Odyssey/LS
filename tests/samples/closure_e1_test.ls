@@ -1,25 +1,27 @@
-// Phase E.1: closure body captured vec/map/struct passed to fn — clone fallback.
-// Verifies that double-free is prevented when a borrowed closure capture is
-// passed to a value-ABI function parameter.
+// Phase E.1: closure body captured Vec passed to fn — clone fallback.
+// Vec is by-move capture (unlike builtin vec by-ref). The closure's env
+// owns its copy; the outer variable is moved after capture.
 //
-// With by-ref capture semantics (Phase E), the outer vec/map is NOT moved.
-// After the closure is defined, the outer variable remains fully usable.
+// When the closure body passes the captured vec to a by-value function,
+// it must .copy() to avoid moving the closure's internal storage.
+
+import std.vec
 
 type Adder      = Block() -> int
 type MapCounter = Block() -> int
 
-fn sum_int_vec(vec(int) v) -> int {
+fn sum_int_vec(Vec(int) v) -> int {
     int s = 0
     int i = 0
-    while i < v.length {
+    while i < v.len() {
         s = s + v[i]
         i = i + 1
     }
     return s
 }
 
-fn vec_len(vec(int) v) -> int {
-    return v.length
+fn vec_len(Vec(int) v) -> int {
+    return v.len()
 }
 
 fn count_keys(map(string, int) m) -> int {
@@ -27,35 +29,33 @@ fn count_keys(map(string, int) m) -> int {
 }
 
 fn main() {
-    // E.1.1: closure captures vec(int), body passes to fn; verify correct value
-    vec(int) nums = [10, 20, 30]
+    // E.1.1: closure captures Vec(int) by-move, body clones before passing.
+    Vec(int) nums = [10, 20, 30]
     Adder adder = || {
-        return sum_int_vec(nums)
+        return sum_int_vec(nums.copy())
     }
     int r1 = adder()
     print(r1)               // 60
-    // Outer nums is still live (by-ref capture), push and call again
-    nums.push(40)
-    int r1b = adder()
-    print(r1b)              // 100
+    // With by-move capture, `nums` is moved into the closure.
+    // The closure holds its own copy and clones it on each call.
 
-    // E.1.2: closure captures vec(int), body passes to fn returning length
-    vec(int) items = [1, 2, 3, 4, 5]
+    // E.1.2: closure captures Vec(int), body returns length via clone
+    Vec(int) items = [1, 2, 3, 4, 5]
     Adder counter = || {
-        return vec_len(items)
+        return vec_len(items.copy())
     }
     int r2 = counter()
     print(r2)               // 5
 
-    // E.1.3: multiple calls with same closure — original capture stays intact
-    vec(int) data = [7, 8, 9]
+    // E.1.3: multiple calls — closure clones its internal copy each time
+    Vec(int) data = [7, 8, 9]
     Adder summer = || {
-        return sum_int_vec(data)
+        return sum_int_vec(data.copy())
     }
     print(summer())         // 24
     print(summer())         // 24
 
-    // E.1.4: closure captures map(string,int), body passes to fn
+    // E.1.4: closure captures map(string,int) (still by-ref), body passes to fn
     map(string, int) scores = {}
     scores["alice"] = 42
     scores["bob"] = 99

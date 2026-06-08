@@ -29,21 +29,21 @@
 | 1 | map_keys.ls | test_map_keys | ✅ | F6a：`map.keys()`/`values()` 改返回 `Vec(K)`/`Vec(V)`（布局/堆与内建 vec 相同，codegen 重解释）。JIT+AOT+memcheck 0/0/0 |
 | 2 | struct_field_defaults_v2_test.ls | test_struct_field_defaults_v2 | ✅ |
 | 3 | closure_g.ls | test_phase_g_closure | ✅ | F5 修复（Block 容器生命周期四处协同）。JIT+AOT+memcheck 0/0/0 |
-| 4 | html_parse.ls | test_std_html_parse | 待做 |
-| 5 | html_write.ls | test_std_html_write | 待做 |
-| 6 | md_build.ls | test_std_md_jit | 待做 |
-| 7 | md_inline.ls | test_std_md_inline_jit | 待做 |
+| 4 | html_parse.ls | test_std_html_parse | ✅ | 实际已迁移（std/html.ls 迁移时一并完成）|
+| 5 | html_write.ls | test_std_html_write | ✅ | 同上 |
+| 6 | md_build.ls | test_std_md_jit | ✅ | 实际已迁移（std/md.ls 迁移时一并完成）|
+| 7 | md_inline.ls | test_std_md_inline_jit | ✅ | 同上 |
 | 8 | memcheck_edge.ls | test_memcheck_edge_jit | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 9 | memcheck_overhaul.ls | test_mem_overhaul_jit/aot | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
-| 10 | plot_agg_test.ls | test_plot_agg | 待做 | 需先迁移 std/plot.ls/plottl.ls |
-| 11 | plot_cpu_test.ls | test_plot_cpu | 待做 | 同上 |
-| 12 | plot_csv_test.ls | test_plot_csv | 待做 | 同上 |
-| 13 | plot_html_test.ls | test_plot_html | 待做 | 同上 |
-| 14 | plot_skeleton_test.ls | test_plot_skeleton | 待做 | 同上 |
-| 15 | plot_svg_test.ls | test_plot_svg | 待做 | 同上 |
-| 16 | plot_text_test.ls | test_plot_text | 待做 | 同上 |
-| 17 | plot_ticks_test.ls | test_plot_ticks | 待做 | 同上 |
-| 18 | plot_timeline_test.ls | test_plot_timeline | 待做 | 同上 |
+| 10 | plot_agg_test.ls | test_plot_agg | ✅ | std/plot.ls+plottl.ls 已迁移，9 个 plot 测试同步迁移。JIT ✅ |
+| 11 | plot_cpu_test.ls | test_plot_cpu | ✅ | 同上 |
+| 12 | plot_csv_test.ls | test_plot_csv | ✅ | 同上 |
+| 13 | plot_html_test.ls | test_plot_html | ✅ | 同上 |
+| 14 | plot_skeleton_test.ls | test_plot_skeleton | ✅ | 同上 |
+| 15 | plot_svg_test.ls | test_plot_svg | ✅ | 同上 |
+| 16 | plot_text_test.ls | test_plot_text | ✅ | 同上 |
+| 17 | plot_ticks_test.ls | test_plot_ticks | ✅ | 同上 |
+| 18 | plot_timeline_test.ls | test_plot_timeline | ✅ | 同上 |
 | 19 | ring_test.ls | test_ring | ✅ | F4 修复后迁移（Vec(Option(T)) 嵌套泛型）。JIT+AOT+memcheck 0/0/0 |
 | 20 | stack_test.ls | test_stack | 待做 | 需先迁移 std/stack.ls |
 | 21 | test_mem_m3_xfer_unified.ls | test_mem_m3_jit | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
@@ -62,14 +62,14 @@
 
 | # | 文件 | 测试名 | 状态 | 说明 |
 |---|------|--------|------|------|
-| 1 | closure_e1_test.ls | test_phase_e1_closure | 待做 | 闭包捕获 vec |
-| 2 | closure_e2_e4_test.ls | test_phase_e2_e4_closure | 待做 | |
-| 3 | closure_f1_test.ls | test_phase_f1_closure | 待做 | |
-| 4 | closure_f4_test.ls | test_phase_f4_closure | 待做 | |
-| 5 | closure_f5_test.ls | test_phase_f5_closure | 待做 | |
-| 6 | closure_f7_stress_test.ls | test_phase_f7_stress | 待做 | |
+| 1 | closure_e1_test.ls | test_phase_e1_closure | ✅ | 重写：Vec by-move + `.copy()` 防 move，JIT+AOT+memcheck 0/0/0 |
+| 2 | closure_e2_e4_test.ls | test_phase_e2_e4_closure | ✅ | `&Vec(int)` 借用参数 + `apply_reducer` clone 确保多次调用。JIT+AOT+memcheck 0/0/0 |
+| 3 | closure_f1_test.ls | test_phase_f1_closure | ✅ | `[move v]` + Vec，JIT+AOT+memcheck 0/0/0 |
+| 4 | closure_f4_test.ls | test_phase_f4_closure | ✅ | Vec(Block) + Vec(Namer)，JIT+AOT+memcheck 0/0/0 |
+| 5 | closure_f5_test.ls | test_phase_f5_closure | ✅ | Vec(Block) + enum capture，JIT+AOT+memcheck 0/0/0 |
+| 6 | closure_f7_stress_test.ls | test_phase_f7_stress | ✅ | Vec(Block) stress，JIT+AOT+memcheck 0/0/0 |
 | 7 | closure_g.ls | test_phase_g_closure | ✅ | F5 修复后迁移到 Vec(Block) |
-| 8 | closure_phase_c7_test.ls | test_phase_c7_closure | 待做 | |
+| 8 | closure_phase_c7_test.ls | test_phase_c7_closure | ✅ | Vec by-move 重写，JIT+AOT+memcheck 0/0/0 |
 
 ### 桶 E — vec 借用/move 语义（按 struct 重写）
 

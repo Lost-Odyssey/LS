@@ -1,14 +1,14 @@
-# test_phase_e1_closure.cmake — Phase E.1: by-ref capture of vec/map passed to fn.
-# Verifies that vec(int)/map(string,int) captures store a pointer to the outer alloca;
-# mutations after capture are visible inside closure; no clone / no double-free.
-# Expected output: 60, 100, 5, 24, 24, 2, 2
+# test_phase_e1_closure.cmake — Phase E.1: by-move capture of Vec passed to fn.
+# Vec(T) is by-move capture (struct ABI). The closure body clones via .copy()
+# to avoid moving the closure's internal value. map(string,int) remains by-ref.
+# Expected output: 60, 5, 24, 24, 2, 2
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
 set(SAMPLE "${SAMPLE_DIR}/closure_e1_test.ls")
 
-set(_expected "60" "100" "5" "24" "2")
+set(_expected "60" "5" "24" "2")
 
 # ---- JIT ----
 execute_process(

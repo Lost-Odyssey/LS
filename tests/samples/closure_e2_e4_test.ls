@@ -1,24 +1,25 @@
 // Phase E.2 + E.4 closure parameter / array-capture correctness.
 //
-// E.2: Closure parameters of type vec(int)/map(K,V) must be treated as
-//      borrowed (caller owns the heap).  Without is_borrowed=true the
-//      closure body's scope-cleanup would free the data buffer that the
-//      caller still holds → double-free.
+// E.2: Vec(T) closure parameters follow struct ABI: by-value moves the
+//      Vec into the closure. Callers must clone to keep the original alive.
+//      map(K,V) closure params remain borrowed (builtin map).
 //
-// E.4: array(POD, N) can be captured by value (full copy into env).
+// E.4: array(POD, N) captured by value (full copy into env).
 //      The outer array remains live; no heap allocation / drop needed.
 
-type Reducer    = Block(vec(int)) -> int
+import std.vec
+
+type Reducer    = Block(Vec(int)) -> int
 type MapQuery   = Block(map(string, int)) -> int
 type ArrGetter  = Block(int) -> int
 type ArrSummer  = Block() -> int
 
 // ── helper functions ─────────────────────────────────────────────────────────
 
-fn sum_vec(vec(int) v) -> int {
+fn sum_vec(Vec(int) v) -> int {
     int s = 0
     int i = 0
-    while i < v.length { s = s + v[i]; i = i + 1 }
+    while i < v.len() { s = s + v[i]; i = i + 1 }
     return s
 }
 
@@ -26,26 +27,28 @@ fn map_size(map(string, int) m) -> int {
     return m.length
 }
 
-fn apply_reducer(vec(int) data, Reducer r) -> int {
-    return r(data)
+// apply_reducer clones the input Vec so the caller retains ownership.
+fn apply_reducer(&Vec(int) data, Reducer r) -> int {
+    Vec(int) copy = data.copy()
+    return r(copy)
 }
 
 fn apply_query(map(string, int) m, MapQuery q) -> int {
     return q(m)
 }
 
-// ── E.2.1: vec(int) closure parameter — no double-free ───────────────────────
+// ── E.2.1: Vec(int) closure parameter — by-value, clone for multiple calls ──
 fn test_e2_vec() {
-    vec(int) nums = [1, 2, 3, 4, 5]
+    Vec(int) nums = [1, 2, 3, 4, 5]
     Reducer r = |v| { return sum_vec(v) }
     int result = apply_reducer(nums, r)
-    print(result)           // 15  (nums still alive — outer not freed)
-    // call again: data buffer must still be valid
+    print(result)           // 15
+    // apply_reducer clones before passing to r, so nums stays alive
     int result2 = apply_reducer(nums, r)
     print(result2)          // 15
 }
 
-// ── E.2.2: map(string,int) closure parameter — no double-free ────────────────
+// ── E.2.2: map(string,int) closure parameter — borrowed ─────────────────────
 fn test_e2_map() {
     map(string, int) scores = {}
     scores["a"] = 10
