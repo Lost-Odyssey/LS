@@ -15,8 +15,10 @@
 // count == 0. NOTE: dequeue deep-copies the slot out (vec has no move-out
 // primitive yet) — for POD/pointer T that is a trivial memcpy.
 
+import std.vec
+
 struct Ring(T) {
-    vec(Option(T)) buf
+    Vec(Option(T)) buf
     int            cap     // usable capacity = size (power of 2)
     int            mask    // size - 1, for idx & mask
     int            prod    // write cursor (free-running) — rte_ring prod_tail
@@ -37,7 +39,7 @@ fn new_ring(T)(int capacity) -> Ring(T) {
     while size < capacity {
         size = size * 2
     }
-    vec(Option(T)) b = []
+    Vec(Option(T)) b = {}
     for (int i = 0; i < size; i = i + 1) {
         b.push(None)
     }
@@ -95,8 +97,8 @@ impl(T) Ring(T) {
 
     // Dequeue up to n elements into a fresh vec (FIFO order). Returns fewer than
     // n if the ring drains first.
-    fn dequeue_burst(&!self, int n) -> vec(T) {
-        vec(T) out = []
+    fn dequeue_burst(&!self, int n) -> Vec(T) {
+        Vec(T) out = {}
         int k = 0
         while k < n && self.prod != self.cons {
             int i = self.cons & self.mask

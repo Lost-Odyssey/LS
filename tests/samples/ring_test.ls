@@ -1,6 +1,7 @@
 // ring_test.ls — std.ring (rte_ring-style fixed ring) correctness + memcheck.
 // Prints "ok <label>" / "FAIL <label>" then "RING PASS".
 
+import std.vec
 import std.ring
 
 fn check(bool c, string l) {
@@ -33,8 +34,8 @@ fn main() {
     check(r.enqueue(6), "enq 6 wraps")
     check(r.is_full(), "full again")
     // remaining order should be 3,4,5,6
-    vec(int) drained = r.dequeue_burst(10)
-    check(drained.length == 4, "burst drained 4")
+    Vec(int) drained = r.dequeue_burst(10)
+    check(drained.len() == 4, "burst drained 4")
     check(drained[0] == 3, "wrap order [0]=3")
     check(drained[1] == 4, "wrap order [1]=4")
     check(drained[2] == 5, "wrap order [2]=5")

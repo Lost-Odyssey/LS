@@ -44,7 +44,7 @@
 | 16 | plot_text_test.ls | test_plot_text | 待做 | 同上 |
 | 17 | plot_ticks_test.ls | test_plot_ticks | 待做 | 同上 |
 | 18 | plot_timeline_test.ls | test_plot_timeline | 待做 | 同上 |
-| 19 | ring_test.ls | test_ring | 待做 | 需先迁移 std/ring.ls |
+| 19 | ring_test.ls | test_ring | ✅ | F4 修复后迁移（Vec(Option(T)) 嵌套泛型）。JIT+AOT+memcheck 0/0/0 |
 | 20 | stack_test.ls | test_stack | 待做 | 需先迁移 std/stack.ls |
 | 21 | test_mem_m3_xfer_unified.ls | test_mem_m3_jit | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
 | 22 | test_mem_m4_5_drop_temp.ls | test_mem_m4_5_jit/aot | ✅ | JIT ✅ AOT ✅ Memcheck 0/0/0 |
@@ -141,14 +141,14 @@
 | 36 | test_bug_22.ls | (非 ctest) | 待做 |
 | 37 | rawvec_m1_test.ls | test_vec_m1 | 待做 |
 | 38 | stack_test.ls | test_stack | 待做 |
-| 39 | ring_test.ls | test_ring | 待做 |
+| 39 | ring_test.ls | test_ring | ✅ | F4 修复后迁移，JIT+AOT+memcheck 0/0/0 |
 
 ### std 库文件（需优先迁移）
 
 | # | 文件 | 状态 |
 |---|------|------|
 | 1 | std/strconv.ls | ✅ | 已迁移：`vec(string)`→`Vec(string)`，`args.length`→`args.len()` |
-| 2 | std/json.ls | ✅ | enum payload + 内部全部 `vec`→`Vec`；match binder 方法不可调用，`json_e2e_test` 用 `entries.keys()` 绕行 |
+| 2 | std/json.ls | ✅ | enum payload + 内部全部 `vec`→`Vec`。VR-LIM-018（跨模块 match binder 方法）已于 F6 修复，`json_e2e_test` 已还原真 `.len()` 方法调用 |
 | 3 | std/html.ls | ✅ | 全 vec→Vec；Element(Vec(Attr),Vec(HtmlNode)) 双 Vec + 自递归 enum 持 Vec(Self) 验证通过。test_std_html_parse/write JIT+AOT+memcheck 0/0/0 |
 | 4 | std/md.ls | ✅ | 全 vec→Vec，移除 Vec→内建 vec 脚手架；Vec(Vec(MdInline))/Vec(Vec(string)) 嵌套 + Blockquote(Vec(MdBlock)) 递归验证通过。test_std_md_*/test_md_to_html JIT+AOT+memcheck 0/0/0。ctest 167/167 |
 | 5 | std/plot.ls | 待做 |
@@ -156,7 +156,7 @@
 | 7 | std/fs.ls | ✅ | `list_dir` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
 | 8 | std/proc.ls | ✅ | `args` 返回 `Vec(string)`，内部 `vec`→`Vec`，`[]`→`{}` |
 | 9 | std/regex.ls | ✅ | `find_all`/`capture`/`capture_all`/`split` 返回 `Vec(string)`；IR-002 已解除：`runtime/ls_regex.c` 接入 `ls.exe`+`ls_os_backend` 构建，jit.c 注册 10 个 `__ls_regex_*` 符号；`test_regex` 注册为 ctest（JIT+AOT+memcheck 三绿） |
-| 10 | std/ring.ls | 待做 |
+| 10 | std/ring.ls | ✅ | F4 修复（type-alias 栈式解析）后迁移；Vec(Option(T)) backing buffer |
 | 11 | std/stack.ls | 待做 |
 
 ---

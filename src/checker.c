@@ -380,7 +380,15 @@ static void register_type_alias(Checker *c, const char *name, Type *type)
 
 static Type *find_type_alias(Checker *c, const char *name)
 {
-    for (int i = 0; i < c->type_alias_count; i++)
+    /* VR-LIM-013: type aliases form a stack — generic instantiations push their
+       type-param bindings and pop (restore count) on exit. Nested generics that
+       reuse the same param name (e.g. struct Slots(T) with a `Vec(Option(T))`
+       field: Slots's `T→int` is pushed, then Vec/impl(T)'s `T→Option(int)` is
+       pushed while instantiating Vec's methods) must resolve to the INNERMOST
+       (last-registered) binding. Iterate backwards so the inner `T` shadows the
+       outer one; forward iteration returned the outer `T→int` → wrong element
+       type inside Vec's method bodies. */
+    for (int i = c->type_alias_count - 1; i >= 0; i--)
     {
         if (strcmp(c->type_aliases[i].name, name) == 0)
             return c->type_aliases[i].type;
