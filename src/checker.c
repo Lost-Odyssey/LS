@@ -8595,6 +8595,20 @@ static void register_one_imported_trait_decl(Checker *c, AstNode *d, Type *mod_t
 
     const char *tr_name = d->as.impl_trait_decl.trait_name;
     const char *ty_name = d->as.impl_trait_decl.struct_name;
+
+    /* Idempotency (B-MAP-M5-003): if this (trait, type) pair was already
+       registered — e.g. a diamond import where both `import std.map` and another
+       module that transitively imports it propagate `impl Hash for int` — skip
+       the whole thing. Crucially this guards register_method() below, which is
+       NOT idempotent and would otherwise error "conflicting method 'hash'". The
+       methods were already registered when the pair was first recorded. */
+    for (int ii = 0; ii < c->trait_impl_count; ii++)
+    {
+        if (strcmp(c->trait_impls[ii].trait_name, tr_name) == 0 &&
+            strcmp(c->trait_impls[ii].struct_name, ty_name) == 0)
+            return;
+    }
+
     const char *impl_key = ty_name;
     Type *impl_st = mod_type ? type_module_find_export(mod_type, ty_name) : NULL;
     if (impl_st == NULL) impl_st = find_struct_type(c, ty_name);
@@ -8618,13 +8632,7 @@ static void register_one_imported_trait_decl(Checker *c, AstNode *d, Type *mod_t
                         method->as.fn_decl.self_borrow_kind,
                         method->line, method->column);
     }
-    /* Record the trait-impl pair (idempotent on re-import). */
-    for (int ii = 0; ii < c->trait_impl_count; ii++)
-    {
-        if (strcmp(c->trait_impls[ii].trait_name, tr_name) == 0 &&
-            strcmp(c->trait_impls[ii].struct_name, ty_name) == 0)
-            return;
-    }
+    /* Record the trait-impl pair (so the dedup above fires on re-import). */
     if (c->trait_impl_count >= c->trait_impl_cap)
     {
         c->trait_impl_cap = GROW_CAPACITY(c->trait_impl_cap);
