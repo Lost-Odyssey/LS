@@ -13718,6 +13718,15 @@ static void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enu
     if (drop_fn == NULL) return;
     LLVMTypeRef fn_type = LLVMGlobalGetValueType(drop_fn);
     LLVMBuildCall2(ctx->builder, fn_type, drop_fn, &enum_ptr, 1, "");
+    /* Idempotency: zero the slot after dropping, so a redundant drop of the SAME
+       storage is a safe no-op (the discriminant becomes variant 0 with a zeroed
+       payload → its drop frees nothing). Mirrors string free zeroing cap.
+       This is what makes an OWNED rvalue match subject safe when both an arm-
+       internal temp-drop flush AND the merge-block drop run on the same path
+       (B-MAP-OPT-001: `match f() { Some(m) => for e in m {...} }`). The dropped
+       value is logically dead, so overwriting it is always sound. */
+    LLVMTypeRef enum_llvm = type_to_llvm(ctx, enum_type);
+    LLVMBuildStore(ctx->builder, LLVMConstNull(enum_llvm), enum_ptr);
 }
 
 /* F.5: Conditional enum drop — skip if moved_flag == 1 (by-move captured).
