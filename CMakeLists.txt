@@ -1717,6 +1717,18 @@ add_test(
 )
 set_tests_properties(test_map_literal PROPERTIES DEPENDS "test_map_iter")
 
+# std.map M-4: composition verification (Map as struct field/global/enum payload
+# and nested Map values). JIT+AOT+memcheck.
+add_test(
+    NAME test_map_compose
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_map_compose.cmake
+)
+set_tests_properties(test_map_compose PROPERTIES DEPENDS "test_map_literal")
+
 # Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
 # (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
 add_test(
