@@ -53,8 +53,10 @@ fn main() {
         Object(keys, entries) => {
             print("Top-level keys:", keys.len())
             for k in entries.keys() {
-                JsonValue v = entries[k]
-                print_value(k, v)
+                match entries.get(k) {
+                    Some(v) => { print_value(k, v) }
+                    None => {}
+                }
             }
         }
         _ => {

@@ -28,7 +28,7 @@ Rules:
 | DONE | `test_phase_g_closure` | `tests/samples/closure_g.ls` | migrated map of closure values to `Map`; ctest passed |
 | DONE | `test_enum_vec_map_payload` | `tests/samples/enum_vec_payload_test.ls` | migrated enum map payload to `Map`; ctest passed |
 | DONE | `test_std_json` | `tests/samples/json_infra_test.ls` | migrated recursive enum payload to `Map(string, JV)`; `ctest -R '^test_std_json$'` passed |
-| BLOCKED | `test_std_json` | `std/json.ls` | B-MAP-M5-004: `Map(string, JsonValue).get -> Option(JsonValue)` leaks under stringify memcheck; std module kept on builtin map |
+| DONE | `test_std_json` | `std/json.ls` | B-MAP-M5-004 root cause fixed (has_drop fixpoint); `JsonValue.Object` now uses `Map(string, JsonValue)`; consumers (`json_e2e_test`, `phase_h_repro`) migrated `entries[k]`→`match entries.get(k)`; json_infra/basic/e2e memcheck 0/0/0; ctest passed |
 | DONE | `test_regex` | `tests/samples/regex_test.ls` and `std/regex.ls` | `capture_named` returns `Map`; ctest passed |
 | DONE | `test_proc_args` | `tests/samples/env_test.ls` and `std/env.ls` | `env.all()` returns `Map`; ctest passed |
 | DONE | `test_implicit_empty_init` | `tests/samples/implicit_empty_init_test.ls` | migrated builtin map segment to `Map`; ctest passed |

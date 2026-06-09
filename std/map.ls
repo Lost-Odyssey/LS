@@ -247,6 +247,9 @@ impl(K, V) Map(K, V) {
         return self._find(k, h) >= 0
     }
 
+    // Independent deep copy (public alias of the __clone hook, mirrors Vec.copy).
+    fn copy(&self) -> Map(K, V) { return self.__clone() }
+
     // ---- remove ----
 
     // Remove key k and return its value (moved out), or None if absent.

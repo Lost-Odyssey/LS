@@ -13,9 +13,11 @@ fn main() {
     // Extract the map and access a value — this triggers a deep-clone via map subscript
     match root {
         Object(keys, entries) => {
-            string k = keys[0]          // "x"
-            JsonValue v = entries[k]    // map subscript returns clone of "hello" Str
-            print("v is a string")
+            string k = keys.get(0)      // "x"
+            match entries.get(k) {      // Map.get returns Option(V) (clone of "hello" Str)
+                Some(v) => { print("v is a string") }
+                None => {}
+            }
         }
         _ => { print("not an object") }
     }

@@ -2,6 +2,7 @@
 // Pure LS implementation; recursive-descent parser + recursive serializer.
 
 import std.vec
+import std.map
 import io
 
 // ---- Core type ----
@@ -12,7 +13,7 @@ enum JsonValue {
     Number(f64 val)
     Str(string val)
     Array(Vec(JsonValue) items)
-    Object(Vec(string) keys, map(string, JsonValue) entries)
+    Object(Vec(string) keys, Map(string, JsonValue) entries)
 }
 
 // ---- JsonValue impl: methods ----
@@ -30,7 +31,7 @@ impl JsonValue {
     }
     static fn object_new() -> JsonValue {
         Vec(string) ks = {}
-        map(string, JsonValue) m = {}
+        Map(string, JsonValue) m = {}
         return Object(ks, m)
     }
 
@@ -77,7 +78,7 @@ impl JsonValue {
     }
     fn object_has(&self, string key) -> bool {
         match self {
-            Object(_, entries) => { return entries.contains_key(key) }
+            Object(_, entries) => { return entries.has?(key) }
             _ => { return false }
         }
     }
@@ -102,9 +103,9 @@ impl JsonValue {
         match self {
             Object(keys, entries) => {
                 Vec(string) nks = keys.copy()
-                map(string, JsonValue) nem = entries.copy()
+                Map(string, JsonValue) nem = entries.copy()
                 string k = key.copy()   // cap=0 param -> owned copy
-                if (!nem.contains_key(k)) {
+                if (!nem.has?(k)) {
                     nks.push(k.copy())  // k still valid after push (push takes .copy() result)
                 }
                 nem.set(k, val)         // map clones key+val internally
@@ -144,7 +145,7 @@ fn array_new() -> JsonValue {
 
 fn object_new() -> JsonValue {
     Vec(string) ks = {}
-    map(string, JsonValue) m = {}
+    Map(string, JsonValue) m = {}
     return Object(ks, m)
 }
 
@@ -427,7 +428,7 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
     _skip_ws(&!p)
 
     Vec(string) ks = {}
-    map(string, JsonValue) entries = {}
+    Map(string, JsonValue) entries = {}
 
     // Empty object
     if _peek(&!p) == '}' {
@@ -688,7 +689,10 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
                     result.append("\"")
                     result.append(_escape_string(key))
                     result.append("\":")
-                    result.append(_stringify_impl(entries.get(key), depth, 0))
+                    match entries.get(key) {
+                        Some(cv) => { result.append(_stringify_impl(cv, depth, 0)) }
+                        None => {}
+                    }
                     i = i + 1
                 }
                 result.append("}")
@@ -706,7 +710,10 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
                     result.append("\"")
                     result.append(_escape_string(key))
                     result.append("\": ")
-                    result.append(_stringify_impl(entries.get(key), depth + 1, indent))
+                    match entries.get(key) {
+                        Some(cv) => { result.append(_stringify_impl(cv, depth + 1, indent)) }
+                        None => {}
+                    }
                     i = i + 1
                 }
                 result.append("\n")
@@ -749,7 +756,7 @@ fn object_len(JsonValue v) -> int {
 // Return true if v is an Object that contains the given key.
 fn object_has(JsonValue v, string key) -> bool {
     match v {
-        Object(ks, entries) => { return entries.contains_key(key) }
+        Object(ks, entries) => { return entries.has?(key) }
         _ => { return false }
     }
 }
