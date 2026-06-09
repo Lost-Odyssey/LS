@@ -19,6 +19,7 @@
 //   get    returns a CLONE of the value (Option(V)); buffer keeps its own.
 
 import std.hash
+import std.vec
 
 struct Map(K, V) { *u8 ctrl; *K keys; *V vals; int len; int cap; int shift }
 
@@ -28,6 +29,57 @@ impl(K, V) Map(K, V) {
     fn len(&self) -> int { return self.len }
     fn cap(&self) -> int { return self.cap }
     fn empty?(&self) -> bool { return self.len == 0 }
+
+    // ---- iteration (M-3) ----
+
+    // Borrowing iterator over (key, value) pairs, in physical slot order (NOT
+    // insertion order — see D-G). Holds RAW pointers into this map's buffers, so
+    // it must NOT outlive the map, and the map must NOT be mutated during
+    // iteration (rehash/backward-shift relocate slots). `for e in m` desugars to
+    // driving this via the Iterator protocol; each `e` is an Entry(K, V).
+    fn iter(&self) -> MapIter(K, V) {
+        return MapIter(K, V){ ctrl: self.ctrl, keys: self.keys, vals: self.vals,
+                              cap: self.cap, i: 0 }
+    }
+
+    // Collect clones of all keys / values into a Vec (slot order).
+    fn keys(&self) -> Vec(K) {
+        Vec(K) out = {}
+        out.reserve(self.len)
+        for (int i = 0; i < self.cap; i = i + 1) {
+            int c = self.ctrl[i] as int
+            if c != 255 {
+                K k = self.keys[i]
+                out.push(k)
+            }
+        }
+        return out
+    }
+
+    fn values(&self) -> Vec(V) {
+        Vec(V) out = {}
+        out.reserve(self.len)
+        for (int i = 0; i < self.cap; i = i + 1) {
+            int c = self.ctrl[i] as int
+            if c != 255 {
+                V v = self.vals[i]
+                out.push(v)
+            }
+        }
+        return out
+    }
+
+    // Call f(key, value) for every entry (clones passed by value).
+    fn each(&self, Block(K, V) f) {
+        for (int i = 0; i < self.cap; i = i + 1) {
+            int c = self.ctrl[i] as int
+            if c != 255 {
+                K k = self.keys[i]
+                V v = self.vals[i]
+                f(k, v)
+            }
+        }
+    }
 
     // Fibonacci scatter: map a 64-bit hash to a home bucket in [0, cap) using the
     // HIGH bits of (h * 2^64/phi). FxHash's good entropy lives in the high bits,
@@ -285,5 +337,34 @@ impl(K, V) Map(K, V) {
             free(self.keys as *u8)
             free(self.vals as *u8)
         }
+    }
+}
+
+// A (key, value) pair yielded by MapIter / `for e in m`. has_drop iff K/V is;
+// the compiler auto-derives its drop/clone from the field types.
+struct Entry(K, V) { K key; V val }
+
+// Borrowing iterator over a Map(K, V). Holds RAW pointers into the map's buffers
+// (it does NOT own them), so it is non-has_drop and must not outlive the map.
+// Produced by Map.iter(); driven by the `for e in m` desugaring (Iterator(T)
+// protocol, T = Entry(K, V)). Mirrors VecIter: a single int cursor that skips
+// empty slots.
+struct MapIter(K, V) { *u8 ctrl; *K keys; *V vals; int cap; int i }
+
+impl(K, V) MapIter(K, V) {
+    // Iterator protocol: yield the next live entry (key/value clone-on-read,
+    // matching Map.get), or None when exhausted.
+    fn next(&!self) -> Option(Entry(K, V)) {
+        while self.i < self.cap {
+            int j = self.i
+            self.i = self.i + 1
+            int c = self.ctrl[j] as int
+            if c != 255 {
+                K k = self.keys[j]
+                V v = self.vals[j]
+                return Some(Entry(K, V){ key: k, val: v })
+            }
+        }
+        return None
     }
 }

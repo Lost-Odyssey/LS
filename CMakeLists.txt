@@ -1693,6 +1693,18 @@ add_test(
 )
 set_tests_properties(test_map_owndrop PROPERTIES DEPENDS "test_map_basic")
 
+# std.map M-3: MapIter + keys/values/each + `for e in m` (Iterator protocol,
+# yields Entry(K,V)), POD + has_drop keys/values (docs/plan_std_map.md §7). JIT+AOT+memcheck.
+add_test(
+    NAME test_map_iter
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_map_iter.cmake
+)
+set_tests_properties(test_map_iter PROPERTIES DEPENDS "test_map_owndrop")
+
 # Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
 # (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
 add_test(
