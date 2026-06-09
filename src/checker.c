@@ -3542,6 +3542,9 @@ static void capture_walk(CaptureScan *s, AstNode *node) {
     case AST_TRY:
         capture_walk(s, node->as.try_expr.expr);
         return;
+    case AST_FORCE_UNWRAP:
+        capture_walk(s, node->as.force_unwrap.expr);
+        return;
     case AST_AT_TIME:
         capture_walk(s, node->as.at_time.expr);
         return;
@@ -5731,6 +5734,60 @@ static Type *check_expr(Checker *c, AstNode *node)
         }
 
         node->as.try_expr.fn_return_type = fn_ret;
+        result = success_t;
+        break;
+    }
+
+    case AST_FORCE_UNWRAP:
+    {
+        Type *inner = check_expr(c, node->as.force_unwrap.expr);
+        if (inner == NULL) { result = NULL; break; }
+
+        bool is_result = (inner->kind == TYPE_ENUM &&
+                          strncmp(inner->as.enom.name, "Result(", 7) == 0);
+        bool is_option = (inner->kind == TYPE_ENUM &&
+                          strncmp(inner->as.enom.name, "Option(", 7) == 0);
+        if (!is_result && !is_option)
+        {
+            checker_error(c, node->line, node->column,
+                          "force-unwrap '!' requires Option(T) or Result(T,E), got '%s'",
+                          type_name(inner));
+            result = NULL;
+            break;
+        }
+
+        /* Extract success type T */
+        Type *success_t = NULL;
+        for (int i = 0; i < inner->as.enom.variant_count; i++)
+        {
+            const char *vn = inner->as.enom.variants[i].name;
+            int pc = inner->as.enom.variants[i].payload_count;
+            if (is_result && strcmp(vn, "Ok") == 0 && pc > 0)
+                success_t = inner->as.enom.variants[i].payload_types[0];
+            else if (is_option && strcmp(vn, "Some") == 0 && pc > 0)
+                success_t = inner->as.enom.variants[i].payload_types[0];
+        }
+
+        /* Move-elision (Q4): force-unwrapping consumes the operand's payload.
+           For an owned-payload enum (has_drop, e.g. Option(string)/Result(_,str)/
+           Option(Vec)/...) mark the source IDENT moved so (a) re-use is rejected
+           and (b) codegen invalidates the source enum's scope-drop (no
+           double-free). type_is_movable/checker_try_mark_moved don't cover enums
+           (their move is tracked via moved_flag elsewhere), so mark inline here,
+           mirroring those guards. POD Option(int)/borrows/rvalues are left live. */
+        if (inner->as.enom.has_drop &&
+            node->as.force_unwrap.expr->kind == AST_IDENT)
+        {
+            Symbol *osym = scope_resolve(
+                c->current_scope, node->as.force_unwrap.expr->as.ident.name);
+            if (osym && !osym->is_borrow && !osym->is_mut_borrow &&
+                !osym->is_moved && !osym->is_maybe_moved)
+            {
+                osym->is_moved = true;
+                node->as.force_unwrap.expr->moved_out = true;
+            }
+        }
+
         result = success_t;
         break;
     }

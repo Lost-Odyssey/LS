@@ -2612,6 +2612,7 @@ static void cg_store_owned(CodegenContext *ctx,
        注意：AST_IDENT 不在此列（命名变量，有自己的 alloca） */
     bool is_rvalue = src && (src->kind == AST_CALL         ||
                              src->kind == AST_TRY           ||
+                             src->kind == AST_FORCE_UNWRAP  ||
                              src->kind == AST_FORMAT_STRING);
 
     /* ------------------------------------------------------------------ */
@@ -9236,6 +9237,128 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return NULL;
     }
 
+    case AST_FORCE_UNWRAP:
+    {
+        /* expr! — force-unwrap Option/Result, abort on None/Err.
+           Lowered to a match-like branch:
+             - Ok/Some => extract payload, yield T
+             - Err/None => call abort() (does not return) */
+        AstNode *inner_expr = node->as.force_unwrap.expr;
+        Type *inner_type = inner_expr->resolved_type;
+        if (inner_type == NULL || inner_type->kind != TYPE_ENUM)
+            return NULL;
+
+        bool is_result = (strncmp(inner_type->as.enom.name, "Result(", 7) == 0);
+        /* Discriminant order is fixed by the builtin Option/Result templates
+           (None=0/Some=1, Ok=0/Err=1) — same convention the AST_TRY handler
+           above relies on. Reordering those templates would break both sites
+           and is caught immediately by the test suite. */
+        int success_idx = is_result ? 0 : 1;   /* Ok=0 / Some=1 */
+
+        LLVMValueRef inner_val = codegen_expr(ctx, inner_expr);
+        if (inner_val == NULL) return NULL;
+
+        LLVMTypeRef inner_llvm = type_to_llvm(ctx, inner_type);
+        LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
+
+        /* Hoist alloca to entry block */
+        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
+        LLVMBuilderRef tmp_b = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
+        if (first_inst) LLVMPositionBuilderBefore(tmp_b, first_inst);
+        else            LLVMPositionBuilderAtEnd(tmp_b, entry);
+        LLVMValueRef inner_alloca = LLVMBuildAlloca(tmp_b, inner_llvm, "fuw.inner");
+        Type *success_t = node->resolved_type;
+        LLVMValueRef result_alloca = NULL;
+        LLVMTypeRef success_llvm = NULL;
+        if (success_t != NULL && success_t->kind != TYPE_VOID) {
+            success_llvm = type_to_llvm(ctx, success_t);
+            result_alloca = LLVMBuildAlloca(tmp_b, success_llvm, "fuw.val");
+        }
+        LLVMDisposeBuilder(tmp_b);
+
+        LLVMBuildStore(ctx->builder, inner_val, inner_alloca);
+
+        /* Load discriminant and branch */
+        LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, inner_llvm,
+                                                    inner_alloca, 0, "fuw.disc.p");
+        LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "fuw.disc");
+        LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntEQ, disc,
+                                         LLVMConstInt(i8, (unsigned long long)success_idx, 0),
+                                         "fuw.is_ok");
+
+        LLVMBasicBlockRef ok_bb  = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "fuw.ok");
+        LLVMBasicBlockRef err_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "fuw.err");
+        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "fuw.merge");
+        LLVMBuildCondBr(ctx->builder, cmp, ok_bb, err_bb);
+
+        /* ---- Success path: extract payload ---- */
+        LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
+        if (result_alloca && success_llvm) {
+            LLVMTypeRef variant_struct = build_variant_payload_struct(
+                ctx, inner_type, success_idx);
+            LLVMValueRef in_payload = LLVMBuildStructGEP2(
+                ctx->builder, inner_llvm, inner_alloca, 1, "fuw.in.payload");
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(
+                ctx->builder, variant_struct, in_payload, 0, "fuw.ok.field");
+            LLVMValueRef ok_val = LLVMBuildLoad2(
+                ctx->builder, success_llvm, field_ptr, "fuw.ok.val");
+            LLVMBuildStore(ctx->builder, ok_val, result_alloca);
+            /* Move-elision (Q4): the success payload's ownership is transferred
+               to `result_alloca`. When the operand is a named owned variable the
+               checker tagged moved_out — invalidate the SOURCE enum so its scope
+               cleanup skips dropping the now-moved payload (else double-free).
+               Covers string / Vec / Map / struct / has_drop-enum uniformly via
+               the source enum's moved_flag; POD payloads are no-ops. rvalue
+               operands (calls) have no named source and are left untouched. */
+            if (inner_expr->moved_out)
+                cg_invalidate_moved_source(ctx, inner_expr, inner_type);
+        }
+        LLVMBuildBr(ctx->builder, merge_bb);
+
+        /* ---- Failure path: print diagnostic + abort ---- */
+        LLVMPositionBuilderAtEnd(ctx->builder, err_bb);
+        {
+            LLVMValueRef printf_fn = LLVMGetNamedFunction(ctx->module, "printf");
+            if (printf_fn) {
+                LLVMTypeRef printf_ty = LLVMGlobalGetValueType(printf_fn);
+                const char *fail_variant = is_result ? "Err" : "None";
+                const char *ok_variant   = is_result ? "Ok" : "Some";
+                const char *type_str = inner_type->as.enom.name;
+                /* Use a short fixed format to avoid dynamic string building */
+                char fmt_buf[256];
+                snprintf(fmt_buf, sizeof(fmt_buf),
+                    "[unwrap] %%d:%%d: unwrap failed: expected %s, got %s (type: %s)\n",
+                    ok_variant, fail_variant, type_str);
+                LLVMValueRef fmt = LLVMBuildGlobalStringPtr(ctx->builder, fmt_buf, "fuw.fmt");
+                LLVMValueRef line_val = LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
+                                                     (unsigned long long)node->line, 0);
+                LLVMValueRef col_val  = LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
+                                                     (unsigned long long)node->column, 0);
+                LLVMValueRef pargs[3] = { fmt, line_val, col_val };
+                LLVMBuildCall2(ctx->builder, printf_ty, printf_fn, pargs, 3, "");
+            }
+            LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
+            LLVMTypeRef exit_ty = LLVMFunctionType(
+                LLVMVoidTypeInContext(ctx->context),
+                (LLVMTypeRef[]){ LLVMInt32TypeInContext(ctx->context) }, 1, 0);
+            if (exit_fn == NULL)
+                exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
+            LLVMValueRef code = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 1, 0);
+            LLVMBuildCall2(ctx->builder, exit_ty, exit_fn, &code, 1, "");
+            LLVMBuildUnreachable(ctx->builder);
+        }
+
+        /* ---- Merge: yield unwrapped value ---- */
+        LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
+        if (result_alloca && success_llvm)
+            return LLVMBuildLoad2(ctx->builder, success_llvm, result_alloca, "fuw.val");
+        return NULL;
+    }
+
     case AST_AT_TIME:
     {
         LLVMTypeRef f64_t = LLVMDoubleTypeInContext(ctx->context);
@@ -10063,7 +10186,8 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                             bool is_rvalue_transfer =
                                 init_node &&
                                 (init_node->kind == AST_CALL ||
-                                 init_node->kind == AST_TRY);
+                                 init_node->kind == AST_TRY ||
+                                 init_node->kind == AST_FORCE_UNWRAP);
                             if (is_rvalue_transfer)
                             {
                                 /* Transfer: rvalue from a call / try expression

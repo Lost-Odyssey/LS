@@ -1467,6 +1467,14 @@ static AstNode *infix_index(Parser *p, AstNode *left) {
     return n;
 }
 
+/* Postfix ! force-unwrap: expr! — panic on None/Err */
+static AstNode *infix_force_unwrap(Parser *p, AstNode *left) {
+    Token tok = p->previous;
+    AstNode *n = new_node(AST_FORCE_UNWRAP, tok.line, tok.column);
+    n->as.force_unwrap.expr = left;
+    return n;
+}
+
 /* Field access: left.field or lib.call(:fn, ...) */
 static AstNode *infix_field(Parser *p, AstNode *left) {
     Token dot_tok = p->previous;
@@ -1589,7 +1597,7 @@ static void init_parse_rules(void) {
     rules[TOKEN_PERCENT]    = (ParseRule){ NULL,             infix_binary_real, PREC_FACTOR };
 
     /* Unary-only */
-    rules[TOKEN_BANG]       = (ParseRule){ prefix_unary,     NULL,              PREC_NONE };
+    rules[TOKEN_BANG]       = (ParseRule){ prefix_unary,     infix_force_unwrap, PREC_CALL };
     rules[TOKEN_TILDE]      = (ParseRule){ prefix_unary,     NULL,              PREC_NONE };
     rules[TOKEN_AMP]        = (ParseRule){ prefix_addr,      infix_binary_real, PREC_BITAND };
 
