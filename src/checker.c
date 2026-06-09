@@ -9253,6 +9253,59 @@ static void register_builtins(Checker *c)
     }
 }
 
+/* B-MAP-M5-004: has_drop fixpoint. Generic struct/enum instantiations cache
+   has_drop at instantiation time, which can be a stale `false` for a type that
+   only BECOMES has_drop through a recursive container payload — e.g. JsonValue
+   owns heap via Vec(JsonValue)/Map(string,JsonValue), and Option(JsonValue)
+   (from Map.get) is instantiated before that propagates, so it caches
+   has_drop=false → no __drop emitted → leak. After all decls + impl
+   instantiations are processed, re-propagate has_drop across every registered
+   struct/enum type until stable. Monotonic (only ever sets true, never clears —
+   so user-__drop structs with POD fields keep their has_drop), so it converges. */
+static void checker_propagate_has_drop_fixpoint(Checker *c)
+{
+    bool changed = true;
+    int guard = 0;
+    while (changed && guard++ < 4096)
+    {
+        changed = false;
+        for (int i = 0; i < c->struct_type_count; i++)
+        {
+            Type *st = c->struct_types[i].type;
+            if (st == NULL || st->kind != TYPE_STRUCT || st->as.strukt.has_drop)
+                continue;
+            for (int f = 0; f < st->as.strukt.field_count; f++)
+            {
+                if (type_owns_heap_for_enum(st->as.strukt.fields[f].type))
+                {
+                    st->as.strukt.has_drop = true;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        for (int i = 0; i < c->enum_type_count; i++)
+        {
+            Type *et = c->enum_types[i].type;
+            if (et == NULL || et->kind != TYPE_ENUM || et->as.enom.has_drop)
+                continue;
+            for (int v = 0; v < et->as.enom.variant_count && !et->as.enom.has_drop; v++)
+            {
+                for (int p = 0; p < et->as.enom.variants[v].payload_count; p++)
+                {
+                    Type *pt = et->as.enom.variants[v].payload_types[p];
+                    if (pt == et || type_owns_heap_for_enum(pt))
+                    {
+                        et->as.enom.has_drop = true;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* ---- Public entry point ---- */
 
 bool checker_check(AstNode *program, const char *source_path,
@@ -9275,6 +9328,9 @@ bool checker_check(AstNode *program, const char *source_path,
     register_builtin_operator_traits(&c);
     forward_pass(&c, program);
     check_pass(&c, program);
+    /* B-MAP-M5-004: settle has_drop across recursive-via-container types so that
+       e.g. Option(JsonValue) is correctly has_drop and gets a __drop emitted. */
+    checker_propagate_has_drop_fixpoint(&c);
 
     /* G1.5: transfer pending generic methods to caller if requested */
     if (out_gm && !c.had_error && c.pending_gm_count > 0) {

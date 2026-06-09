@@ -66,5 +66,18 @@ fn main() {
     JV root = Obj(o)
     check(jv_total(root) == 12, "recursive Map-in-enum consume")
 
+    // B-MAP-M5-004 regression: the value retrieved from the Map is itself an
+    // Obj(Map) — i.e. m.get(k) returns Option(JV) whose payload owns a container.
+    // Before the has_drop fixpoint, Option(JV) was wrongly non-has_drop (JV is
+    // has_drop only through its recursive Map payload), so no __drop was emitted
+    // and the inner Map's buffers leaked.
+    Map(string, JV) di = {}
+    di.set("x", Num(3))
+    di.set("y", Num(4))
+    Map(string, JV) doo = {}
+    doo.set("g", Obj(di))
+    JV deep = Obj(doo)
+    check(jv_total(deep) == 7, "container-payload value via get (M5-004)")
+
     print("OPTPAY PASS")
 }
