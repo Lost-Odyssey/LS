@@ -873,6 +873,62 @@ static bool checker_tag_user_from_list_literal(Checker *c, Type *expected,
     return true;
 }
 
+/* M-LIT: tag `{ k: v, ... }` (AST_MAP_LIT) as a user key-value literal when the
+   expected type is a struct opting into the reserved __from_pairs(&!self, K, V)
+   protocol (e.g. std.map Map(K,V)). Type-checks each pair against K/V and routes
+   nested container literals (a Vec `[..]` value, a nested `{..}` map value) to
+   their own from_list/from_pairs taggers. Mirrors checker_tag_user_from_list_literal. */
+static bool checker_tag_user_from_pairs_literal(Checker *c, Type *expected,
+                                                AstNode *lit, const char *what)
+{
+    if (c == NULL || expected == NULL || lit == NULL)
+        return false;
+    if (expected->kind != TYPE_STRUCT || lit->kind != AST_MAP_LIT)
+        return false;
+
+    Type *fp = find_method(c, impl_key_of_type(expected), "__from_pairs");
+    if (fp == NULL)
+        return false;
+
+    Type *kexp = (fp->kind == TYPE_FUNCTION && fp->as.function.param_count >= 3)
+                 ? fp->as.function.params[1] : NULL;   /* params: [*Self, K, V] */
+    Type *vexp = (fp->kind == TYPE_FUNCTION && fp->as.function.param_count >= 3)
+                 ? fp->as.function.params[2] : NULL;
+
+    for (int i = 0; i < lit->as.map_lit.pair_count; i++)
+    {
+        AstNode *kn = lit->as.map_lit.keys[i];
+        AstNode *vn = lit->as.map_lit.vals[i];
+
+        if (kexp) {
+            checker_tag_user_from_pairs_literal(c, kexp, kn, what);
+            checker_tag_user_from_list_literal(c, kexp, kn, what);
+        }
+        if (vexp) {
+            checker_tag_user_from_pairs_literal(c, vexp, vn, what);
+            checker_tag_user_from_list_literal(c, vexp, vn, what);
+        }
+
+        Type *saved = c->expected_type;
+        c->expected_type = kexp;
+        Type *kt = check_expr(c, kn);
+        c->expected_type = vexp;
+        Type *vt = check_expr(c, vn);
+        c->expected_type = saved;
+
+        if (kexp && kt && !type_assignable(kexp, kt))
+            checker_error(c, kn->line, kn->column,
+                          "%s key type mismatch: expected '%s', got '%s'",
+                          what ? what : "map-literal", type_name(kexp), type_name(kt));
+        if (vexp && vt && !type_assignable(vexp, vt))
+            checker_error(c, vn->line, vn->column,
+                          "%s value type mismatch: expected '%s', got '%s'",
+                          what ? what : "map-literal", type_name(vexp), type_name(vt));
+    }
+    lit->resolved_type = expected;
+    return true;
+}
+
 /* Check if a registered method is static. Returns -1 if not found, 0 if instance, 1 if static */
 static int method_is_static(Checker *c, const char *struct_name, const char *method_name)
 {
@@ -1169,7 +1225,8 @@ static bool generic_method_is_eager(const char *name)
 {
     return strcmp(name, "__drop") == 0 ||
            strcmp(name, "__clone") == 0 ||
-           strcmp(name, "__from_list") == 0;
+           strcmp(name, "__from_list") == 0 ||
+           strcmp(name, "__from_pairs") == 0;  /* M-LIT: `{k:v}` literal protocol */
 }
 
 static void pending_generic_method_add(Checker *c, AstNode *cloned,
@@ -6480,6 +6537,16 @@ static void check_stmt(Checker *c, AstNode *node)
             {
                 checker_tag_user_from_list_literal(c, declared,
                     node->as.var_decl.init, "list-literal");
+            }
+            /* M-LIT: `Map(K,V) m = { k: v, ... }` (non-empty) → user key-value
+               literal via the __from_pairs protocol. */
+            else if (declared && declared->kind == TYPE_STRUCT &&
+                node->as.var_decl.init->kind == AST_MAP_LIT &&
+                node->as.var_decl.init->as.map_lit.pair_count > 0 &&
+                find_method(c, impl_key_of_type(declared), "__from_pairs") != NULL)
+            {
+                checker_tag_user_from_pairs_literal(c, declared,
+                    node->as.var_decl.init, "map-literal");
             }
             else if (declared && declared->kind == TYPE_STRUCT &&
                 node->as.var_decl.init->kind == AST_MAP_LIT &&

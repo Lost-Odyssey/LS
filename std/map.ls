@@ -206,6 +206,12 @@ impl(K, V) Map(K, V) {
         self._insert_no_grow(k, v, h)
     }
 
+    // Map-literal `{ k: v, ... }` opt-in (reserved-method protocol, like
+    // Vec.__from_list): the presence of this method lets the checker construct a
+    // Map from a `{ key: val, ... }` literal — lowered to `Map m = {}` plus one
+    // __from_pairs call per pair (keys/values moved in). Mirrors set().
+    fn __from_pairs(&!self, K k, V v) where K: Hash + Eq { self.set(k, v) }
+
     // ---- lookup ----
 
     // Slot index of key k (hash h precomputed), or -1 if absent. Early-terminates

@@ -1329,7 +1329,17 @@ static AstNode *prefix_map_lit(Parser *p) {
 
             AstNode *key = parse_expr_prec(p, PREC_NONE);
             if (key == NULL) break;
-            consume(p, TOKEN_ARROW, "expected '->' between key and value in map literal");
+            /* Accept either `key -> val` (builtin map literal) or `key : val`
+               (M-LIT key-value literal, e.g. std.map `Map(K,V) m = {"a": 1}`).
+               Both build AST_MAP_LIT; the checker routes by the LHS type (TYPE_MAP
+               → builtin; TYPE_STRUCT with __from_pairs → user map). A bare-IDENT
+               key with `:` was already consumed above as an anonymous struct
+               literal, so map keys here are non-identifier exprs (string/int/...). */
+            if (!match_tok(p, TOKEN_ARROW) && !match_tok(p, TOKEN_COLON)) {
+                error_at_current(p, "expected '->' or ':' between key and value in map literal");
+                ast_free(key);
+                break;
+            }
             AstNode *val = parse_expr_prec(p, PREC_NONE);
             if (val == NULL) { ast_free(key); break; }
 

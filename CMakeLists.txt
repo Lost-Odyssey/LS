@@ -1705,6 +1705,18 @@ add_test(
 )
 set_tests_properties(test_map_iter PROPERTIES DEPENDS "test_map_owndrop")
 
+# std.map M-LIT: `{ k: v, ... }` key-value literals (frontend §F1) routed via the
+# __from_pairs protocol (docs/plan_std_map.md §F1). JIT+AOT+memcheck.
+add_test(
+    NAME test_map_literal
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_map_literal.cmake
+)
+set_tests_properties(test_map_literal PROPERTIES DEPENDS "test_map_iter")
+
 # Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
 # (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
 add_test(

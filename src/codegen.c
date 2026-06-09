@@ -2248,6 +2248,44 @@ static void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot)
     ctx->temp_drop_count = keep;
 }
 
+/* M-LIT: apply the owned-param ABI to a key/value expression being moved into a
+   user container literal (Map `__from_pairs`). Only TYPE_STRING needs a runtime
+   cap fixup: a named-var source is borrowed (cap=-2 → callee clones, caller keeps
+   ownership), an `__move(var)` source marks the variable moved, and a plain rvalue
+   temp is marked moved so the statement flush won't free it (the callee owns it).
+   Other has_drop rvalues flow in as moved temps with no fixup. `pm` = the
+   temp_string mark taken just before evaluating `elem`. Mirrors the __from_list
+   element-ownership block. */
+static LLVMValueRef cg_litelem_string_own(CodegenContext *ctx, AstNode *elem,
+                                          LLVMValueRef ev, int pm)
+{
+    Type *et = elem ? elem->resolved_type : NULL;
+    if (et == NULL || et->kind != TYPE_STRING)
+        return ev;
+    AstNode *uw = ast_unwrap_move(elem);
+    bool is_move = (elem != uw);
+    if (uw->kind == AST_IDENT)
+    {
+        if (is_move)
+        {
+            CgSymbol *as = cg_scope_resolve(ctx->current_scope, uw->as.ident.name);
+            if (as && as->value)
+                mark_string_moved(ctx, as->value, "litpair: __move source");
+        }
+        else
+        {
+            LLVMValueRef capb = LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
+                                             (unsigned long long)LS_CAP_BORROWED, 0);
+            ev = LLVMBuildInsertValue(ctx->builder, ev, capb, 2, "litpair.borrow");
+        }
+    }
+    else
+    {
+        cg_mark_last_temp_moved(ctx, pm, "litpair: rvalue string");
+    }
+    return ev;
+}
+
 /* M-4.5: drop and release all temp_drop slots whose assoc mark >= `mark`.
    Compacts surviving (mark < flush-mark) entries to the front. */
 static void cg_flush_temp_drops(CodegenContext *ctx, int mark)
@@ -10754,6 +10792,41 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         }
                         LLVMValueRef fl_args[2] = { alloca, ev };
                         LLVMBuildCall2(ctx->builder, fl_ft, fl_fn, fl_args, 2, "");
+                    }
+                }
+                ctx->temp_string_count = temp_mark;
+            }
+            /* M-LIT: key-value literal init for a user container (the
+               `__from_pairs` protocol, checked above): zero-init the struct, then
+               call `__from_pairs(&!self, K, V)` per pair, moving each key/value in
+               (owned-param ABI, mirror __from_list). e.g. `Map(K,V) m = {k: v}`. */
+            else if (var_type->kind == TYPE_STRUCT &&
+                     node->as.var_decl.init->kind == AST_MAP_LIT &&
+                     node->as.var_decl.init->as.map_lit.pair_count > 0)
+            {
+                AstNode *ml = node->as.var_decl.init;
+                LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+                char fp_name[256];
+                snprintf(fp_name, sizeof(fp_name), "%s.__from_pairs",
+                         struct_llvm_name(var_type));
+                LLVMValueRef fp_fn = LLVMGetNamedFunction(ctx->module, fp_name);
+                if (fp_fn == NULL)
+                    fp_fn = cg_declare_pending_generic_method(ctx, fp_name);
+                if (fp_fn)
+                {
+                    LLVMTypeRef fp_ft = LLVMGlobalGetValueType(fp_fn);
+                    for (int i = 0; i < ml->as.map_lit.pair_count; i++)
+                    {
+                        int pmk = ctx->temp_string_count;
+                        LLVMValueRef kv = codegen_expr(ctx, ml->as.map_lit.keys[i]);
+                        if (kv == NULL) continue;
+                        kv = cg_litelem_string_own(ctx, ml->as.map_lit.keys[i], kv, pmk);
+                        int pmv = ctx->temp_string_count;
+                        LLVMValueRef vv = codegen_expr(ctx, ml->as.map_lit.vals[i]);
+                        if (vv == NULL) continue;
+                        vv = cg_litelem_string_own(ctx, ml->as.map_lit.vals[i], vv, pmv);
+                        LLVMValueRef fp_args[3] = { alloca, kv, vv };
+                        LLVMBuildCall2(ctx->builder, fp_ft, fp_fn, fp_args, 3, "");
                     }
                 }
                 ctx->temp_string_count = temp_mark;
