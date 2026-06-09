@@ -5,9 +5,8 @@
 // Design: docs/plan_std_html.md
 //  - HtmlNode is a self-recursive enum whose Element variant holds a
 //    Vec(Attr) of attributes and a Vec(HtmlNode) of children.
-//  - Attributes use Vec(Attr), NOT map(string,string): map key-iteration does
-//    not work in LS (see json.ls, which keeps a parallel Vec(string) keys for
-//    the same reason). Vec(Attr) iterates correctly AND preserves insertion
+//  - Attributes use Vec(Attr) rather than a hash table: Vec(Attr) iterates
+//    correctly AND preserves insertion
 //    order, so render/parse round-trip is byte-stable.
 //  - Construction is bottom-up (build children first, then compose) — LS has
 //    value semantics, so there is no "insert then mutate" the way a reference

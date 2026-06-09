@@ -1,6 +1,6 @@
 # test_phase_e1_closure.cmake — Phase E.1: by-move capture of Vec passed to fn.
 # Vec(T) is by-move capture (struct ABI). The closure body clones via .copy()
-# to avoid moving the closure's internal value. map(string,int) remains by-ref.
+# to avoid moving the closure's internal value.
 # Expected output: 60, 5, 24, 24, 2, 2
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

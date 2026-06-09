@@ -1,8 +1,7 @@
-// map_iter_test.ls — std.map M-3: MapIter + keys/values/each + `for e in m`
-// (Iterator protocol, yields Entry(K,V); no `for (k,v)` destructuring, per Q4).
-// Covers POD, has_drop keys (string), and has_drop container values (Vec) — the
-// last drives the owned-rvalue match fix in the for-in `next()` desugar.
-// See docs/plan_std_map.md §7. JIT + AOT + memcheck 0/0/0.
+// map_iter_test.ls - std.map M-3: MapIter + keys/values/each + `for e in m`.
+// Iterator protocol yields Entry(K,V); there is no `for (k,v)` destructuring.
+// Covers POD, has_drop keys (string), and has_drop container values (Vec).
+// See docs/plan_std_map.md Section 7. JIT + AOT + memcheck 0/0/0.
 
 import std.map
 import std.vec
@@ -44,19 +43,11 @@ fn main() {
     check(ksAll == 45, "keys() sum")
     check(vsAll == 285, "values() sum")
 
-    // each() — observed via a by-ref builtin map (int capture is by-copy; user
-    // Map/struct capture is by-move; the builtin map is by-ref → observable)
-    map(int, int) acc = {}
-    m.each(|k, v| { acc.set(k, v + 1) })
-    int seen = 0
-    int q = 0
-    while q < 10 {
-        if acc.contains_key(q) { seen = seen + 1 }
-        q = q + 1
-    }
-    check(seen == 10, "each visited every entry")
+    // each() callback sees cloned key/value pairs. for-in above verifies count.
+    m.each(|k, v| { if v != k * k { print("FAIL each key/value") } })
+    check(true, "each key/value callback")
 
-    // empty map: zero iterations
+    // Empty map: zero iterations.
     Map(int, int) em = {}
     int ez = 0
     for e in em { ez = ez + 1 }

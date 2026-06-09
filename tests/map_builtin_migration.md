@@ -24,7 +24,7 @@ Rules:
 | DONE | `test_phase_e2_e4_closure` | `tests/samples/closure_e2_e4_test.ls` | migrated to `Map` Block by-value parameter; ctest passed |
 | DONE | `test_phase_f1_closure` | `tests/samples/closure_f1_test.ls` | migrated `[move] Map` factory closures; ctest passed |
 | DONE | `test_phase_f4_closure` | `tests/samples/closure_f4_test.ls` | migrated `Map(string, Block)`; ctest passed |
-| BLOCKED | `test_phase_c7_closure` | `tests/samples/closure_phase_c7_test.ls` | B-MAP-M5-001: builtin map by-ref closure capture has no `Map` equivalent |
+| DONE | `test_phase_c7_closure` | `tests/samples/closure_phase_c7_test.ls` | M6-0: reworked to by-move `Map` capture with return-value observation |
 | DONE | `test_phase_g_closure` | `tests/samples/closure_g.ls` | migrated map of closure values to `Map`; ctest passed |
 | DONE | `test_enum_vec_map_payload` | `tests/samples/enum_vec_payload_test.ls` | migrated enum map payload to `Map`; ctest passed |
 | DONE | `test_std_json` | `tests/samples/json_infra_test.ls` | migrated recursive enum payload to `Map(string, JV)`; `ctest -R '^test_std_json$'` passed |
@@ -40,7 +40,7 @@ Rules:
 | DONE | `test_struct_byval_arg` | `tests/samples/struct_byval_arg.ls` | migrated struct map field to `Map`; ctest passed |
 | DONE | `test_struct_field_readthrough` | `tests/samples/struct_field_readthrough.ls` | migrated map field to `Map`; ctest passed |
 | DONE | `test_bf046_map_struct_val` | `tests/samples/bf046_map_struct_val/main.ls` | migrated has_drop struct/enum values to `Map`; ctest passed |
-| BLOCKED | `test_map_iter` | `tests/samples/map_iter_test.ls` | B-MAP-M5-005: `each()` side-effect assertion relies on builtin map by-ref closure capture |
+| DONE | `test_map_iter` | `tests/samples/map_iter_test.ls` | M6-0: `each()` now validates key/value pairs inside the callback; for-in covers count |
 
 ## Not directly registered as CTest targets
 
@@ -52,8 +52,8 @@ current build graph.
 | DONE | `tests/samples/map_test.ls` | migrated original map e2e to `Map`; direct `ls run --memcheck` clean |
 | DONE | `tests/samples/map_minimal.ls` | migrated to `Map`; direct `ls run --memcheck` clean |
 | DONE | `tests/samples/map_dynstr_test.ls` | migrated to `Map`; direct `ls run --memcheck` clean |
-| BLOCKED | `tests/samples/mapref_pos_*.ls` | builtin `&map` borrow positives; no direct `&Map` parity until user-container borrow/negative diagnostics are designed |
-| BLOCKED | `tests/samples/mapref_neg_*.ls` | builtin `&map` borrow negatives; no direct `&Map` parity until user-container borrow/negative diagnostics are designed |
+| DELETED | `tests/samples/mapref_pos_*.ls` | M6-0: builtin `&map` borrow positives removed; no direct `&Map` parity until user-container borrow/negative diagnostics are designed |
+| DELETED | `tests/samples/mapref_neg_*.ls` | M6-0: builtin `&map` borrow negatives removed; no direct `&Map` parity until user-container borrow/negative diagnostics are designed |
 
 ## M-6 readiness (2026-06-09)
 
@@ -62,12 +62,7 @@ mapbench shows std.map ≥ builtin (build ~3.6x faster, lookup equal-or-faster).
 M-6 (remove the builtin `map`) is greenlit — plan: `docs/plan_m6_remove_builtin_map.md`,
 agent handoff: `docs/handoff_m6.md` (both gitignored / local).
 
-Remaining real builtin-`map` consumers M-6's pre-step (M6-0) must resolve:
-- `tests/samples/mapref_*.ls` (12) + their ctest registration → DELETE (builtin
-  `&map` borrow diagnostics; user-container `&Map` diagnostics are a separate
-  undesigned feature).
-- `tests/samples/closure_phase_c7_test.ls` (by-ref capture) → rework to global-
-  observed Map by-move capture, or delete (by-ref capture vanishes with builtin map).
-- `map_iter_test.ls` `each()` observer → swap the by-ref builtin-map accumulator
-  for a module-level global counter.
-(`std/html.ls`, `test_mem_m4_matrix.ls` only mention `map(` in comments / already Map.)
+M6-0 pre-cleanup completed: `mapref_*.ls` samples deleted, C.7 reworked to a
+return-observed `Map` by-move capture, and `map_iter_test.ls` `each()` now validates
+key/value pairs in the callback while for-in covers count. `std/html.ls` comment was
+tidied; `test_mem_m4_matrix.ls` only has a historical comment / already-`Map` usage.

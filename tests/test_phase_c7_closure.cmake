@@ -1,13 +1,12 @@
-# test_phase_c7_closure.cmake — Phase C.7 (revised): Vec by-move + map by-ref + struct by-move.
-# Vec(T) is by-move capture; map(K,V) remains by-ref; struct(has_drop) by-move.
-# Expected output: 10, 30, hello-world, 90, 75, 0, LVL:7
+# test_phase_c7_closure.cmake - Phase C.7 (revised): Vec/Map/struct by-move.
+# Expected output: 10, 30, hello-world, 90, 0, LVL:7
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
 set(SAMPLE "${SAMPLE_DIR}/closure_phase_c7_test.ls")
 
-set(_expected "10" "30" "hello-world" "90" "75" "0" "LVL:7")
+set(_expected "10" "30" "hello-world" "90" "0" "LVL:7")
 
 # ---- JIT ----
 execute_process(
@@ -63,4 +62,4 @@ if(NOT "${mc_err}" MATCHES "0 double-free")
 endif()
 message(STATUS "phase_c7 memcheck: 0 leaks / 0 double-free OK")
 
-message(STATUS "Phase C.7 vec/map/struct captures: ALL OK")
+message(STATUS "Phase C.7 Vec/Map/struct captures: ALL OK")

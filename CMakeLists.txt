@@ -1159,9 +1159,8 @@ add_test(
 )
 set_tests_properties(test_phase_c5_closure PROPERTIES DEPENDS "test_phase_c_closure")
 
-# Phase C.7 (vec/map/struct(drop) captures): borrow semantics for vec/map
-# (env doesn't free), ownership transfer for struct(drop) (env owns,
-# caller marked moved via i1 flag). Memcheck verifies 0 leaks / 0 dfree.
+# Phase C.7 (Vec/Map/struct(drop) captures): by-move closure env ownership.
+# Memcheck verifies 0 leaks / 0 dfree.
 add_test(
     NAME test_phase_c7_closure
     COMMAND ${CMAKE_COMMAND}
