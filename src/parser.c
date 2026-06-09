@@ -1278,15 +1278,16 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
     return n;
 }
 
-/* Map literal: { key -> val, key -> val, ... }
-   An empty map literal {} is also allowed (type must be declared). */
+/* Key-value literal: { key: val, key: val, ... }
+   An empty literal {} is also allowed (type must be declared). */
 static AstNode *prefix_map_lit(Parser *p) {
     Token tok = p->previous; /* the '{' token */
 
     /* Anonymous struct literal `{ field: val, ... }` — the struct type is inferred
        from the expected type at the use site (checker uses c->expected_type).
-       Unambiguous vs a map literal: maps use `key -> val`, so `IDENT :` can only
-       be a struct field. Mirrors the prefixed StructName{field: val} parser. */
+       A bare IDENT followed by `:` is a struct field. Non-identifier keys below
+       route to the key-value literal path. Mirrors the prefixed
+       StructName{field: val} parser. */
     if (check(p, TOKEN_IDENTIFIER) &&
         scanner_peek(&p->scanner).type == TOKEN_COLON) {
         AstNode *n = new_node(AST_NEW_EXPR, tok.line, tok.column);
@@ -1329,14 +1330,13 @@ static AstNode *prefix_map_lit(Parser *p) {
 
             AstNode *key = parse_expr_prec(p, PREC_NONE);
             if (key == NULL) break;
-            /* Accept either `key -> val` (builtin map literal) or `key : val`
-               (M-LIT key-value literal, e.g. std.map `Map(K,V) m = {"a": 1}`).
-               Both build AST_MAP_LIT; the checker routes by the LHS type (TYPE_MAP
-               → builtin; TYPE_STRUCT with __from_pairs → user map). A bare-IDENT
-               key with `:` was already consumed above as an anonymous struct
-               literal, so map keys here are non-identifier exprs (string/int/...). */
-            if (!match_tok(p, TOKEN_ARROW) && !match_tok(p, TOKEN_COLON)) {
-                error_at_current(p, "expected '->' or ':' between key and value in map literal");
+            /* M-LIT key-value literal, e.g. std.map `Map(K,V) m = {"a": 1}`.
+               The checker routes TYPE_STRUCT with __from_pairs to user containers.
+               A bare-IDENT key with `:` was already consumed above as an anonymous
+               struct literal, so keys here are non-identifier exprs
+               (string/int/...). */
+            if (!match_tok(p, TOKEN_COLON)) {
+                error_at_current(p, "expected ':' between key and value in key-value literal");
                 ast_free(key);
                 break;
             }
@@ -1355,7 +1355,7 @@ static AstNode *prefix_map_lit(Parser *p) {
             count++;
         } while (match_tok(p, TOKEN_COMMA));
     }
-    consume(p, TOKEN_RBRACE, "expected '}' to close map literal");
+    consume(p, TOKEN_RBRACE, "expected '}' to close key-value literal");
 
     AstNode *n = new_node(AST_MAP_LIT, tok.line, tok.column);
     n->as.map_lit.keys       = keys;
@@ -1471,9 +1471,9 @@ static AstNode *infix_index(Parser *p, AstNode *left) {
 static AstNode *infix_field(Parser *p, AstNode *left) {
     Token dot_tok = p->previous;
     /* Field names can be identifiers, 'self', or type-keywords used as method names
-       (e.g. map/array are keywords for types but also valid method names). */
+       (e.g. array is a keyword for types but also a valid method name). */
     if (!check(p, TOKEN_IDENTIFIER) && !check(p, TOKEN_SELF) &&
-        !check(p, TOKEN_MAP) && !check(p, TOKEN_ARRAY))
+        !check(p, TOKEN_ARRAY))
     {
         error_at_current(p, "expected field name after '.'");
         ast_free(left);
@@ -1698,7 +1698,6 @@ static bool is_type_keyword(TokenType t) {
     case TOKEN_TYPE_STRING: case TOKEN_TYPE_VOID:
     case TOKEN_TYPE_OBJECT:
     case TOKEN_ARRAY:
-    case TOKEN_MAP:
         return true;
     default:
         return false;
@@ -1728,21 +1727,6 @@ static TypeNode *parse_type(Parser *p) {
         TypeNode *tn = new_type_node(TYPE_NODE_REFERENCE, line, col);
         tn->is_mut = is_mut;
         tn->as.pointee = pointee;
-        return tn;
-    }
-
-    /* map(K, V) — chained hash map */
-    if (match_tok(p, TOKEN_MAP)) {
-        consume(p, TOKEN_LPAREN, "expected '(' after 'map'");
-        TypeNode *key_tn = parse_type(p);
-        if (key_tn == NULL) return NULL;
-        consume(p, TOKEN_COMMA, "expected ',' between map key and value types");
-        TypeNode *val_tn = parse_type(p);
-        if (val_tn == NULL) { type_node_free(key_tn); return NULL; }
-        consume(p, TOKEN_RPAREN, "expected ')' after map value type");
-        TypeNode *tn = new_type_node(TYPE_NODE_MAP, line, col);
-        tn->as.map.key = key_tn;
-        tn->as.map.val = val_tn;
         return tn;
     }
 
@@ -2420,10 +2404,6 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     } else if (allow_operator_name &&
                (name = operator_method_name(p->current.type)) != NULL) {
         advance(p);  /* consume the operator token used as the method name */
-    } else if (check(p, TOKEN_MAP)) {
-        /* map is a keyword (map(K,V) type) but also a valid method name */
-        advance(p);
-        name = str_dup_n(p->previous.start, p->previous.length);
     } else {
         error_at_current(p, "expected function name after 'fn'");
         return NULL;
@@ -3126,14 +3106,11 @@ static AstNode *parse_module_decl(Parser *p) {
     return n;
 }
 
-/* A module-path segment is normally an identifier, but a few type keywords
-   (map / array) are valid std module file names. The
-   scanner lexes those as keyword tokens, not TOKEN_IDENTIFIER, so without this
-   `import std.map` would truncate at the keyword. The segment's source text is
-   intact on the token, so it copies into the path the same way. */
+/* A module-path segment is normally an identifier, but a few type keywords are
+   valid std module file names. */
 static bool is_import_path_segment(TokenType t) {
     return t == TOKEN_IDENTIFIER ||
-           t == TOKEN_MAP || t == TOKEN_ARRAY ||
+           t == TOKEN_ARRAY ||
            t == TOKEN_TYPE_STRING;  /* Phase 2.5: `import std.string` */
 }
 

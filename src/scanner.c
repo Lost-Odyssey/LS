@@ -144,7 +144,6 @@ static const Keyword keywords[] = {
     {"int",      3, TOKEN_TYPE_INT},
     {"lib",      3, TOKEN_TYPE_LIB},
     {"load",     4, TOKEN_LOAD},
-    {"map",      3, TOKEN_MAP},
     {"match",    5, TOKEN_MATCH},
     {"module",   6, TOKEN_MODULE},
     {"new",      3, TOKEN_NEW},
@@ -723,7 +722,6 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TYPE_LIB:      return "TYPE_LIB";
     case TOKEN_TYPE_OBJECT:   return "TYPE_OBJECT";
     case TOKEN_ARRAY:         return "ARRAY";
-    case TOKEN_MAP:           return "MAP";
     case TOKEN_IDENTIFIER:    return "IDENTIFIER";
     case TOKEN_PLUS:          return "PLUS";
     case TOKEN_MINUS:         return "MINUS";

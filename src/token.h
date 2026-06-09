@@ -66,7 +66,6 @@ typedef enum {
     TOKEN_TYPE_LIB,         /* lib */
     TOKEN_TYPE_OBJECT,      /* object (type-erased pointer, like void*) */
     TOKEN_ARRAY,            /* array (fixed-size array type) */
-    TOKEN_MAP,              /* map   (hash map type) */
 
     /* Identifier */
     TOKEN_IDENTIFIER,       /* foo, bar_baz */

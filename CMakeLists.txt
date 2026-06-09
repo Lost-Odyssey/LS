@@ -980,6 +980,16 @@ add_test(
 )
 set_tests_properties(test_vec_builtin_syntax_reject PROPERTIES DEPENDS "test_mem_m5_neg")
 
+# M6-1: builtin map(K,V) syntax is no longer accepted by the frontend.
+add_test(
+    NAME test_map_builtin_syntax_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/map_builtin_syntax_reject.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_map_builtin_syntax_reject.cmake
+)
+set_tests_properties(test_map_builtin_syntax_reject PROPERTIES DEPENDS "test_vec_builtin_syntax_reject")
+
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(
     NAME test_mem_overhaul_jit
