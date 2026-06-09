@@ -14187,10 +14187,19 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
 static void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
 {
     const char *bare_name = node->as.impl_trait_decl.struct_name;
+    /* Phase 2.5 / M-H: `impl Trait for <builtin>` (e.g. `impl Hash for int`).
+       Builtin types are global, not owned by any module — their methods use the
+       bare name `int.hash` so callers in any importing file resolve the same
+       symbol (mirrors codegen_impl_decl's is_builtin_impl). Skip B-3 prefixing. */
+    bool is_builtin_impl =
+        strcmp(bare_name, "string") == 0 || strcmp(bare_name, "int") == 0 ||
+        strcmp(bare_name, "i64") == 0    || strcmp(bare_name, "f64") == 0 ||
+        strcmp(bare_name, "bool") == 0   || strcmp(bare_name, "char") == 0;
     /* B-3: prefix trait impl method names for module-defined types */
     char prefixed_name_buf[512];
     const char *struct_name = bare_name;
-    if (ctx->current_emit_module != NULL && ctx->current_emit_module[0] != '\0')
+    if (!is_builtin_impl &&
+        ctx->current_emit_module != NULL && ctx->current_emit_module[0] != '\0')
     {
         cg_module_fn_symbol(prefixed_name_buf, sizeof(prefixed_name_buf),
                             ctx->current_emit_module, bare_name);

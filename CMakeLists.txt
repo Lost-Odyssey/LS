@@ -1656,6 +1656,18 @@ add_test(
 )
 set_tests_properties(test_implicit_empty_init PROPERTIES DEPENDS "test_iter_protocol")
 
+# M-H (std.map prereq): Hash trait + FxHash + impl Hash for int/string/...
+# (docs/plan_std_map.md §3). JIT+AOT+memcheck + negative where-bound rejection.
+add_test(
+    NAME test_hash
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_hash.cmake
+)
+set_tests_properties(test_hash PROPERTIES DEPENDS "test_implicit_empty_init")
+
 # Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
 # (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
 add_test(
