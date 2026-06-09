@@ -8865,6 +8865,14 @@ static void register_builtins(Checker *c)
         Type *ft = type_function(params, 1, type_f64(), false);
         scope_define(c->current_scope, "sqrt", ft);
     }
+    /* abort() -> void — terminate the process (exit code 1). Used by stdlib
+       bounds checks (std.vec / std.map). Callable unqualified from anywhere,
+       including generic method bodies (no module import needed). Lowered in
+       codegen to a call to the runtime helper __ls_proc_exit(1). */
+    {
+        Type *ft = type_function(NULL, 0, type_void(), false);
+        scope_define(c->current_scope, "abort", ft);
+    }
 }
 
 /* B-MAP-M5-004: has_drop fixpoint. Generic struct/enum instantiations cache

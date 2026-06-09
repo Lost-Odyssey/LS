@@ -22,6 +22,12 @@
 //   push/insert  move T into the buffer.   pop/remove  move T out (no clone).
 //   get/first/last  return a deep CLONE.   set  drops old, moves new in.
 //   clear / scope-drop  drop every live element, then free the buffer.
+//
+// Bounds checking:
+//   * v[i] / get(i) / set(i,x)   bounds-checked; out-of-range aborts the process
+//                                with a diagnostic (the safe default).
+//   * get!(i) / set!(i,x)        UNCHECKED raw read/store (the `!` = unsafe escape
+//                                hatch for hot paths; out-of-range is UB).
 
 struct Vec(T) { *T data; int len; int cap }
 
@@ -133,23 +139,42 @@ impl(T) Vec(T) {
 
     // ---- access ----
 
-    // Deep clone of the element at i (the buffer keeps its own). Caller must keep
-    // i in [0, len) — the raw read is unchecked (matches vec[i] at the API edge).
-    fn get(&self, int i) -> T {
+    // UNCHECKED raw read of slot i — deep clone of the element (the buffer keeps
+    // its own). Caller MUST keep i in [0, len): out-of-range is undefined behavior
+    // (reads garbage / segfaults). The `!` marks this as the unsafe escape hatch.
+    fn get!(&self, int i) -> T {
         T tmp = self.data[i]
         return tmp
     }
 
-    fn get!(&self, int i) -> T { return self.get(i) }
+    // Bounds-checked read: deep clone of element i, aborting on out-of-range.
+    fn get(&self, int i) -> T {
+        if i < 0 || i >= self.len {
+            print(f"Vec index out of bounds: len={self.len} index={i}")
+            abort()
+        }
+        return self.get!(i)
+    }
 
-    // Overwrite element i: drop the old, move the new in.
-    fn set(&!self, int i, T x) {
+    // UNCHECKED raw overwrite of slot i: drop the old, move the new in. Caller MUST
+    // keep i in [0, len); out-of-range drops/stores at a bogus address (UB).
+    fn set!(&!self, int i, T x) {
         __drop_at(self.data[i])
         self.data[i] = x
     }
 
+    // Bounds-checked overwrite, aborting on out-of-range.
+    fn set(&!self, int i, T x) {
+        if i < 0 || i >= self.len {
+            print(f"Vec index out of bounds: len={self.len} index={i}")
+            abort()
+        }
+        self.set!(i, x)
+    }
+
     // Index / IndexMut protocol (reserved methods): enables `v[i]` (read, clone)
-    // and `v[i] = x` (write, drop old + move new), matching builtin vec[i].
+    // and `v[i] = x` (write, drop old + move new). These delegate to the checked
+    // get/set, so `v[i]` / `v[i] = x` are bounds-checked (abort on out-of-range).
     fn __index(&self, int i) -> T { return self.get(i) }
     fn __index_set(&!self, int i, T x) { self.set(i, x) }
 

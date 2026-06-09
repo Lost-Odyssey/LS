@@ -7174,6 +7174,25 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             }
         }
 
+        /* Intercept abort() — terminate the process via the runtime helper
+           __ls_proc_exit(1). Registered as a global builtin in the checker, so it
+           is callable unqualified from anywhere (incl. generic method bodies like
+           std.vec's bounds checks) without importing std.c. Returns void. */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "abort") == 0 &&
+            node->as.call.arg_count == 0)
+        {
+            LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
+            LLVMTypeRef exit_ty = LLVMFunctionType(
+                LLVMVoidTypeInContext(ctx->context),
+                (LLVMTypeRef[]){ LLVMInt32TypeInContext(ctx->context) }, 1, 0);
+            if (exit_fn == NULL)
+                exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
+            LLVMValueRef code = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 1, 0);
+            LLVMBuildCall2(ctx->builder, exit_ty, exit_fn, &code, 1, "");
+            return NULL; /* void */
+        }
+
         /* Intercept __drop_at(place) — run the recursive destructor on the value
            stored at an lvalue place (raw pointer slot p[i], field, *p) WITHOUT
            freeing any backing buffer. No-op for POD. Returns void. The nested

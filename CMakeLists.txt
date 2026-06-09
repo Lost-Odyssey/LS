@@ -2304,6 +2304,20 @@ set_tests_properties(test_vec_get_unsafe PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- Vec(T) bounds checking: v[i]/get/set checked (abort on OOB), get!/set! raw ----
+add_test(
+    NAME test_vec_oob
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_oob.cmake
+)
+set_tests_properties(test_vec_oob PROPERTIES
+    DEPENDS "test_vec_get_unsafe"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- Bug #26: loop-body temp allocas → JIT stack overflow (entry-block fix) ----
 add_test(
     NAME test_string_loop
