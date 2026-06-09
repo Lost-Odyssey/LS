@@ -112,6 +112,7 @@ typedef enum
     AST_MATCH,
     AST_MATCH_OR_PATTERN, /* A | B | C inside a match arm — OR-pattern */
     AST_TRY,          /* try expr — Zig-style early return for Result/Option */
+    AST_FORCE_UNWRAP,  /* expr! — force-unwrap Option/Result, panic on None/Err */
     AST_CAST,
     AST_SIZEOF,       /* sizeof(Type) — compile-time byte size as i64 */
     AST_RANGE,
@@ -318,6 +319,13 @@ struct AstNode
                propagated enum value, since it may differ from inner expr's type. */
             Type *fn_return_type;
         } try_expr;
+        struct
+        {
+            AstNode *expr;     /* Option/Result expression to force-unwrap.
+                                  Result type T is on node->resolved_type; the
+                                  operand enum is read via expr->resolved_type,
+                                  so no extra field is needed here. */
+        } force_unwrap;
         struct
         {
             AstNode *start;

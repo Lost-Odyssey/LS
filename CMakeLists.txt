@@ -517,6 +517,17 @@ add_test(
         -DMARKER=IDENTSUF
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
+
+add_test(
+    NAME test_force_unwrap
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/force_unwrap_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=force_unwrap
+        -DMARKER=FORCEUNWRAP
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
 set_tests_properties(test_ident_suffix PROPERTIES DEPENDS "test_fstring_spec")
 
 # std/plot.ls (plot Phase 1 skeleton): data model + builder API + summary output.

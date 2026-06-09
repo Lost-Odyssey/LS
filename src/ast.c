@@ -254,6 +254,9 @@ void ast_free(AstNode *node) {
     case AST_TRY:
         ast_free(node->as.try_expr.expr);
         break;
+    case AST_FORCE_UNWRAP:
+        ast_free(node->as.force_unwrap.expr);
+        break;
     case AST_RANGE:
         ast_free(node->as.range.start);
         ast_free(node->as.range.end);
@@ -501,6 +504,7 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_CLOSURE:      return "CLOSURE";
     case AST_MATCH:        return "MATCH";
     case AST_TRY:          return "TRY";
+    case AST_FORCE_UNWRAP: return "FORCE_UNWRAP";
     case AST_CAST:         return "CAST";
     case AST_SIZEOF:       return "SIZEOF";
     case AST_RANGE:        return "RANGE";
@@ -722,6 +726,9 @@ AstNode *ast_clone_deep(const AstNode *src) {
         break;
     case AST_TRY:
         n->as.try_expr.expr = ast_clone_deep(src->as.try_expr.expr);
+        break;
+    case AST_FORCE_UNWRAP:
+        n->as.force_unwrap.expr = ast_clone_deep(src->as.force_unwrap.expr);
         break;
     case AST_RANGE:
         n->as.range.start = ast_clone_deep(src->as.range.start);
@@ -1030,6 +1037,10 @@ void ast_print(AstNode *node, int indent) {
     case AST_TRY:
         printf("TRY\n");
         ast_print(node->as.try_expr.expr, indent + 1);
+        break;
+    case AST_FORCE_UNWRAP:
+        printf("FORCE_UNWRAP(!)\n");
+        ast_print(node->as.force_unwrap.expr, indent + 1);
         break;
     case AST_RANGE:
         printf("RANGE(..)\n");
