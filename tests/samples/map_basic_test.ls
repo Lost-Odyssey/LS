@@ -75,5 +75,61 @@ fn main() {
     check(big.len() == 500, "len stable after re-setting all keys")
     check(gv(big, 250) == 250 * 7 + 1, "values updated in place")
 
+    // ---- remove (backward-shift) ----
+    Map(int, int) rm = {}
+    rm.set(10, 1)
+    rm.set(20, 2)
+    rm.set(30, 3)
+    match rm.remove(20) {
+        Some(v) => { check(v == 2, "remove returns the value") }
+        None => { check(false, "remove returns the value") }
+    }
+    check(rm.len() == 2, "len drops after remove")
+    check(!rm.has?(20), "removed key is gone")
+    check(gv(rm, 10) == 1, "neighbor 10 still readable after remove")
+    check(gv(rm, 30) == 3, "neighbor 30 still readable after remove")
+    match rm.remove(999) {
+        Some(v2) => { check(false, "remove missing returns None") }
+        None => { check(true, "remove missing returns None") }
+    }
+    check(rm.len() == 2, "len unchanged on missing remove")
+    rm.set(20, 22)
+    check(gv(rm, 20) == 22, "re-insert after remove")
+    check(rm.len() == 3, "len back to 3 after re-insert")
+
+    // ---- backward-shift stress: remove all evens, odds must survive ----
+    Map(int, int) s = {}
+    int a = 0
+    while a < 300 {
+        s.set(a, a + 1000)
+        a = a + 1
+    }
+    int e = 0
+    while e < 300 {
+        s.remove(e)
+        e = e + 2
+    }
+    check(s.len() == 150, "150 entries remain after removing 150 evens")
+    bool shift_ok = true
+    int t = 0
+    while t < 300 {
+        if t % 2 == 0 {
+            if s.has?(t) { shift_ok = false }            // evens gone
+        } else {
+            if gv(s, t) != t + 1000 { shift_ok = false } // odds intact
+        }
+        t = t + 1
+    }
+    check(shift_ok, "backward-shift preserves all surviving keys")
+
+    // ---- clear ----
+    s.clear()
+    check(s.len() == 0, "len 0 after clear")
+    check(s.empty?(), "empty? true after clear")
+    check(!s.has?(101), "no keys after clear")
+    s.set(7, 77)
+    check(gv(s, 7) == 77, "usable again after clear")
+    check(s.len() == 1, "len 1 after clear + insert")
+
     print("MAP PASS")
 }

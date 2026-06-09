@@ -175,6 +175,59 @@ impl(K, V) Map(K, V) {
         return self._find(k, h) >= 0
     }
 
+    // ---- remove ----
+
+    // Remove key k and return its value (moved out), or None if absent.
+    // Backward-shift deletion (no tombstones): after vacating the slot, pull each
+    // following entry back one position and decrement its PSL, until the next slot
+    // is empty or already at its home (PSL 0). This keeps the Robin Hood invariant
+    // intact so the table never degrades under churn. See docs/plan_std_map.md §5.4.
+    fn remove(&!self, K k) -> Option(V) where K: Hash + Eq {
+        u64 h = k.hash()
+        int i = self._find(k, h)
+        if i < 0 { return None }
+        // Take the value out (to return), drop the key in place.
+        V out = __take(self.vals[i])
+        __drop_at(self.keys[i])
+        // Backward-shift the run that follows.
+        int mask = self.cap - 1
+        int j = i
+        while true {
+            int nk = (j + 1) & mask
+            int c = self.ctrl[nk] as int
+            if c == 255 {
+                self.ctrl[j] = 255 as u8        // next is empty → done
+                break
+            }
+            if c == 0 {
+                self.ctrl[j] = 255 as u8        // next is at home → must not move it
+                break
+            }
+            K mk = __take(self.keys[nk])
+            V mv = __take(self.vals[nk])
+            self.keys[j] = mk
+            self.vals[j] = mv
+            self.ctrl[j] = (c - 1) as u8        // moved one closer to its home
+            j = nk
+        }
+        self.len = self.len - 1
+        return Some(out)
+    }
+
+    // Drop every live entry, keep the buffer (len -> 0). Cheap reuse without
+    // reallocating. Needs no Hash/Eq (no home recompute).
+    fn clear(&!self) {
+        for (int i = 0; i < self.cap; i = i + 1) {
+            int c = self.ctrl[i] as int
+            if c != 255 {
+                __drop_at(self.keys[i])
+                __drop_at(self.vals[i])
+                self.ctrl[i] = 255 as u8
+            }
+        }
+        self.len = 0
+    }
+
     // ---- copy / drop hooks ----
 
     // Deep copy preserving the exact table layout (no rehash): clone each live
