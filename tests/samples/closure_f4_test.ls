@@ -1,4 +1,4 @@
-/* Phase F.4 tests: Vec(Block) / map(K, Block)
+/* Phase F.4 tests: Vec(Block) / Map(K, Block)
    Expected output (one per line):
      11
      20
@@ -9,6 +9,7 @@
 */
 
 import std.vec
+import std.map
 
 type H = Block(int) -> int
 type Namer = Block() -> string
@@ -42,11 +43,14 @@ fn test_vec_namer() {
     }
 }   /* ns drops: 2 envs freed (each holds a moved string) */
 
-/* F.4.3: map(string, H) — set lambdas, call by key */
+/* F.4.3: Map(string, H) — set lambdas, call by key */
 fn test_map_block() {
-    map(string, H) ops = {}
+    Map(string, H) ops = {}
     ops.set("mul", |x| { return x * 10 })
-    print(ops.get("mul")(10))   /* 100 */
+    match ops.get("mul") {
+        Some(f) => { print(f(10)) }
+        None => { print(0) }
+    }   /* 100 */
 }
 
 fn main() {

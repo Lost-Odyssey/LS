@@ -4,6 +4,7 @@
 // Self-verifying: prints "MK PASS" only if every check holds.
 
 import std.vec
+import std.map
 
 fn check(bool cond, int id) -> bool {
     if !cond { print(id); print("MK FAIL") }
@@ -16,7 +17,7 @@ fn main() {
     bool ok = true
 
     // --- string keys: count + get(k) round-trip ---
-    map(string, string) a = {}
+    Map(string, string) a = {}
     a.set("class", "box")
     a.set("id", "x")
     int c = 0
@@ -24,7 +25,12 @@ fn main() {
     if !check(c == 2, 1) { ok = false }
 
     int kv = 0
-    for k in a.keys() { kv = kv + a.get(k).length }   // "box"=3 + "x"=1 = 4
+    for k in a.keys() {
+        match a.get(k) {
+            Some(v) => { kv = kv + v.length }
+            None => {}
+        }
+    }   // "box"=3 + "x"=1 = 4
     if !check(kv == 4, 2) { ok = false }
 
     // --- keys() as a bound vec expression ---
@@ -32,7 +38,7 @@ fn main() {
     if !check(ks.len() == 2, 3) { ok = false }
 
     // --- int keys + values sums (order-independent) ---
-    map(int, int) m = {}
+    Map(int, int) m = {}
     m.set(10, 100)
     m.set(20, 200)
     m.set(30, 300)
@@ -52,13 +58,13 @@ fn main() {
     if !check(cont == 40, 7) { ok = false }
 
     // --- empty map: zero iterations ---
-    map(string, int) e = {}
+    Map(string, int) e = {}
     int ec = 0
     for k in e.keys() { ec = ec + 1 }
     if !check(ec == 0, 8) { ok = false }
 
     // --- values() of has_drop struct: deep-cloned, dropped cleanly ---
-    map(string, P) ps = {}
+    Map(string, P) ps = {}
     ps.set("a", P { name: "alice", age: 30 })
     ps.set("b", P { name: "bob", age: 25 })
     int tot = 0

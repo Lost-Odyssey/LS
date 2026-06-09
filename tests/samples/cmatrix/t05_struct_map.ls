@@ -1,8 +1,10 @@
 // struct{map} drop
-struct Doc { map(string,string) tags }
+import std.map
+
+struct Doc { Map(string,string) tags }
 fn main() {
-    map(string,string) m = {}
+    Map(string,string) m = {}
     m.set("k".copy(),"v".copy())
     Doc d = Doc { tags: m }
-    print(d.tags.contains_key("k"))
+    print(d.tags.has?("k"))
 }

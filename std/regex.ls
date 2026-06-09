@@ -11,10 +11,11 @@
 // All vec-returning functions now use Vec(string) (std.vec replacement).
 //   capture()     -> Vec(string)        — empty = no match
 //   capture_all() -> Vec(string)        — flat: all groups from all matches
-//   capture_named() -> map(string,str)  — empty = no match
+//   capture_named() -> Map(string,string)  — empty = no match
 // Use group_count(pattern) to get the per-match stride for capture_all.
 
 import std.vec
+import std.map
 import std.c as c
 
 // ---- internal helpers ----
@@ -147,8 +148,8 @@ fn capture_all(string text, string pattern) -> Vec(string) {
 
 // Returns a map {name -> value} for named groups in the first match.
 // Returns an empty map if no match or no named groups.
-fn capture_named(string text, string pattern) -> map(string, string) {
-    map(string, string) m = {}
+fn capture_named(string text, string pattern) -> Map(string, string) {
+    Map(string, string) m = {}
     int h = _compile(pattern, 0)
     if h < 0 { return m }
     int n = _exec(h, text)

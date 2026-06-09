@@ -5,6 +5,7 @@
 // Prints "ok <label>" / "FAIL <label>" then "INIT PASS".
 
 import std.vec
+import std.map
 
 struct Point { int x; int y; int z }
 struct Mixed { int n; bool flag; *int ptr }
@@ -62,10 +63,14 @@ fn main() {
     Vec(int) le = []
     check(le.len() == 0, "Vec = [] empty")
 
-    // empty map literal still resolves via declared map type (not hijacked)
-    map(string, int) mp = {}
+    // empty map literal still resolves via declared Map type (not hijacked)
+    Map(string, int) mp = {}
     mp.set("k", 42)
-    int got = mp.get("k")
+    int got = -1
+    match mp.get("k") {
+        Some(v) => { got = v }
+        None => {}
+    }
     check(got == 42, "map {} still works")
 
     print("INIT PASS")

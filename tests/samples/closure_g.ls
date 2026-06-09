@@ -1,5 +1,5 @@
 // Phase G — Block env deep-clone (resolves L-007).
-// Copying a Block out of a vec element / struct field / map value deep-clones
+// Copying a Block out of a vec element / struct field / Map value deep-clones
 // the closure env, so the destination owns an independent env (no shared-env
 // double-free). Self-verifying: prints "G PASS" only if every check holds.
 //
@@ -8,6 +8,7 @@
 // get/[i] deep-clones it out at the bind site, and Vec drop frees element envs.
 
 import std.vec
+import std.map
 
 type Fn = Block(int) -> int
 
@@ -59,13 +60,19 @@ fn main() {
     ok = check(b(100) == 102, 8) && ok
     ok = check(sfns[0](3) == 5, 9) && ok
 
-    // --- 4) capture extracted from a map value ---
+    // --- 4) capture extracted from a Map value ---
     int k = 3
-    map(string, Fn) tbl = {}
+    Map(string, Fn) tbl = {}
     tbl.set("add_k", |x| x + k)
-    Fn mf = tbl.get("add_k")
-    ok = check(mf(1) == 4, 10) && ok
-    ok = check(mf(2) == 5, 11) && ok
+    match tbl.get("add_k") {
+        Some(mf) => {
+            ok = check(mf(1) == 4, 10) && ok
+            ok = check(mf(2) == 5, 11) && ok
+        }
+        None => {
+            ok = check(false, 10) && ok
+        }
+    }
 
     // --- 5) reassignment path (AST_ASSIGN clones too) ---
     Fn cur = |x| x

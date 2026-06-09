@@ -1,12 +1,13 @@
 // Move-elision (Q4): owned movable sources are moved (not cloned) into a new
 // var / assignment when the checker confirms ownership transfer. The source is
 // invalidated at runtime so scope-drop never double-frees. This sample exercises
-// every elided clone site (string/struct/enum/Vec/map, var_decl + assign +
+// every elided clone site (string/struct/enum/Vec/Map, var_decl + assign +
 // field-assign + explicit __move + conditional move) and self-checks that the
 // moved data survived intact (a corrupted move would garble the printed values).
 // Registered under JIT memcheck: must be 0 leak / 0 double-free / 0 invalid free.
 
 import std.vec
+import std.map
 
 struct Box { string label }
 enum Tag { A(string), B }
@@ -53,10 +54,15 @@ fn main() {
     Vec(string) v2 = v1
     check(v2.get(0) == "ETA", "vec-var")
 
-    // --- map var_decl move ---
-    map(string,int) p1 = { "k" -> 7 }
-    map(string,int) p2 = p1
-    check(p2.get("k") == 7, "map-var")
+    // --- Map var_decl move ---
+    Map(string,int) p1 = { "k": 7 }
+    Map(string,int) p2 = p1
+    bool map_ok = false
+    match p2.get("k") {
+        Some(v) => { map_ok = v == 7 }
+        None => {}
+    }
+    check(map_ok, "map-var")
 
     // --- conditional move: source moved only on one branch ---
     string g1 = "iota".upper()

@@ -3,6 +3,7 @@
 // 目标：JIT + AOT 下 memcheck OK clean（0 leak / 0 dfree / 0 ifree）。
 
 import std.vec
+import std.map
 
 struct Item {
     string name
@@ -118,13 +119,23 @@ fn main() -> int {
         print(names[i])
     }
 
-    // ===== 7. map(string,string) set + get + read (M-4/BF-039) =====
-    map(string, string) m = {}
+    // ===== 7. Map(string,string) set + get + read (M-4/BF-039) =====
+    Map(string, string) m = {}
     m.set("k1".upper(), "v1".upper())
     m.set("k2".upper(), "v2".upper())
-    print(m["k1".upper()])                  // index 临时读取
-    print(m.get("k2".upper()))              // get 临时读取
-    string mv = m["k1".upper()]             // 转移给命名变量
+    match m.get("k1".upper()) {             // get 临时读取
+        Some(v1) => { print(v1) }
+        None => { print("missing") }
+    }
+    match m.get("k2".upper()) {             // get 临时读取
+        Some(v2) => { print(v2) }
+        None => { print("missing") }
+    }
+    string mv = ""
+    match m.get("k1".upper()) {             // 转移给命名变量
+        Some(v3) => { mv = v3 }
+        None => {}
+    }
     print(mv)
 
     // ===== 8. match binder return (BF-029) =====

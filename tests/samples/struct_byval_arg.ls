@@ -11,16 +11,17 @@
 // Convention: print "<label> PASS"/"<label> FAIL"; the cmake driver asserts the
 // sample emits "BYVAL PASS" and never "FAIL", under JIT + AOT + memcheck.
 import std.vec
+import std.map
 
 struct Box { Vec(int) items }
-struct Bag { string name; map(string,int) counts }
+struct Bag { string name; Map(string,int) counts }
 struct Inner { Vec(int) data }
 struct Wrap  { Inner inner }
 
 // by-value struct-with-vec param, read a field
 fn peek(Box b) -> int { return b.items.len() }
 // by-value struct-with-{string,map} param, read both fields
-fn name_len(Bag g) -> int { return g.name.length + g.counts.length }
+fn name_len(Bag g) -> int { return g.name.length + g.counts.len() }
 // by-value nested struct param: consume the nested field, then read it
 fn use_wrap(Wrap w) -> int {
     Inner local = w.inner          // owns an independent deep copy of w.inner
@@ -43,14 +44,14 @@ fn main() {
     check(bx.items.len() == 3, "vec_field_after")   // caller still owns bx
 
     // --- struct{string, map} by value, multiple passes ---
-    map(string,int) m = {}
+    Map(string,int) m = {}
     m.set("x", 10)
     m.set("y", 20)
     Bag g = Bag { name: "hello", counts: m }
     int nl1 = name_len(g)
     int nl2 = name_len(g)
     check(nl1 == 7 && nl2 == 7, "string_map_field")   // 5 + 2
-    check(g.counts.length == 2, "string_map_after")
+    check(g.counts.len() == 2, "string_map_after")
 
     // --- nested struct by value, multiple passes ---
     Vec(int) iv = {}

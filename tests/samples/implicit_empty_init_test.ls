@@ -4,10 +4,18 @@
 // assigned). See docs/plan_std_map.md §F2 / M-DEF. JIT + AOT + memcheck 0/0/0.
 
 import std.vec
+import std.map
 
 struct Point { int x; int y }
 
 fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+
+fn get_int(&Map(string, int) m, string k) -> int {
+    match m.get(k) {
+        Some(v) => { return v }
+        None => { return -1 }
+    }
+}
 
 // no-init Vec returned from a function (has_drop, scope-drop on caller side)
 fn make() -> Vec(int) {
@@ -27,11 +35,11 @@ fn main() {
     check(v.get(0) + v.get(1) + v.get(2) == 6, "Vec(int) values")
 
     // ---- built-in map, no init ≡ {} ----
-    map(string, int) m
+    Map(string, int) m
     m.set("a", 10)
     m.set("b", 20)
-    check(m.get("a") == 10, "map a")
-    check(m.get("b") == 20, "map b")
+    check(get_int(m, "a") == 10, "map a")
+    check(get_int(m, "b") == 20, "map b")
 
     // ---- all-default-field struct zero-init ----
     Point p

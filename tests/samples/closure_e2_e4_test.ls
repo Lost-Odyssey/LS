@@ -2,15 +2,16 @@
 //
 // E.2: Vec(T) closure parameters follow struct ABI: by-value moves the
 //      Vec into the closure. Callers must clone to keep the original alive.
-//      map(K,V) closure params remain borrowed (builtin map).
+//      Map(K,V) closure params are passed by value for this migration.
 //
 // E.4: array(POD, N) captured by value (full copy into env).
 //      The outer array remains live; no heap allocation / drop needed.
 
 import std.vec
+import std.map
 
 type Reducer    = Block(Vec(int)) -> int
-type MapQuery   = Block(map(string, int)) -> int
+type MapQuery   = Block(Map(string, int)) -> int
 type ArrGetter  = Block(int) -> int
 type ArrSummer  = Block() -> int
 
@@ -23,8 +24,8 @@ fn sum_vec(Vec(int) v) -> int {
     return s
 }
 
-fn map_size(map(string, int) m) -> int {
-    return m.length
+fn map_size(&Map(string, int) m) -> int {
+    return m.len()
 }
 
 // apply_reducer clones the input Vec so the caller retains ownership.
@@ -33,7 +34,7 @@ fn apply_reducer(&Vec(int) data, Reducer r) -> int {
     return r(copy)
 }
 
-fn apply_query(map(string, int) m, MapQuery q) -> int {
+fn apply_query(Map(string, int) m, MapQuery q) -> int {
     return q(m)
 }
 
@@ -48,15 +49,15 @@ fn test_e2_vec() {
     print(result2)          // 15
 }
 
-// ── E.2.2: map(string,int) closure parameter — borrowed ─────────────────────
+// ── E.2.2: Map(string,int) closure parameter — by-value ─────────────────────
 fn test_e2_map() {
-    map(string, int) scores = {}
-    scores["a"] = 10
-    scores["b"] = 20
+    Map(string, int) scores = {}
+    scores.set("a", 10)
+    scores.set("b", 20)
     MapQuery q = |m| { return map_size(m) }
     int n1 = apply_query(scores, q)
     print(n1)               // 2
-    scores["c"] = 30
+    scores.set("c", 30)
     int n2 = apply_query(scores, q)
     print(n2)               // 3
 }

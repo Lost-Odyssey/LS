@@ -64,8 +64,8 @@ fn main() -> int {
 
     // Test 8: env.all — returns non-empty map containing PATH
     env.set("__LS_ALL_TEST__", "all_works")
-    map(string, string) all = env.all()
-    if all.contains_key("__LS_ALL_TEST__") {
+    Map(string, string) all = env.all()
+    if all.has?("__LS_ALL_TEST__") {
         print("PASS: env.all contains set var")
     } else {
         print("FAIL: env.all missing expected var")

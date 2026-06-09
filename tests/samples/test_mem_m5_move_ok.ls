@@ -4,6 +4,7 @@
 // 负向（move-after-use 编译期拒绝）见 test_mem_m5_neg_*.ls。
 
 import std.vec
+import std.map
 
 struct P { string name }
 enum E { V(string) N }
@@ -28,9 +29,12 @@ fn main() -> int {
 
     // map.set value 是 move
     string c = "ccc".upper()
-    map(string, string) m = {}
+    Map(string, string) m = {}
     m.set("k".upper(), c)           // c 被 move 进 m
-    print(m["k".upper()])
+    match m.get("k".upper()) {
+        Some(mc) => { print(mc) }
+        None => { print("missing") }
+    }
 
     // 函数实参 by-value 是 move
     string d = "ddd".upper()

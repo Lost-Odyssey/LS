@@ -9,6 +9,7 @@
 */
 
 import std.vec
+import std.map
 
 type Summer = Block() -> int
 type ScoreFn = Block() -> int
@@ -37,10 +38,13 @@ fn pollute() -> int {
 
 /* F.1.2: map [move] — factory pattern */
 fn make_score_fn() -> ScoreFn {
-    map(string, int) scores = {}
+    Map(string, int) scores = {}
     scores.set("alice", 99)
     return [move scores] || {
-        return scores.get("alice")
+        match scores.get("alice") {
+            Some(v) => { return v }
+            None => { return 0 }
+        }
     }
 }
 
@@ -54,10 +58,13 @@ fn make_counter() -> Counter {
 
 /* F.1.4: map [move] with string value */
 fn make_msg_fn() -> MsgFn {
-    map(string, string) msgs = {}
+    Map(string, string) msgs = {}
     msgs.set("greeting", "hello world")
     return [move msgs] || {
-        return msgs.get("greeting")
+        match msgs.get("greeting") {
+            Some(v) => { return v }
+            None => { return "" }
+        }
     }
 }
 

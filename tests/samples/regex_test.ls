@@ -93,18 +93,21 @@ fn test_capture() {
 }
 
 fn test_named_capture() {
-    // capture_named returns map(string,string); empty map = no match
-    map(string, string) mp = re.capture_named(
+    // capture_named returns Map(string,string); empty map = no match
+    Map(string, string) mp = re.capture_named(
         "2024-01-15",
         "(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})"
     )
-    if mp.length == 0 { print("FAIL: capture_named none"); return }
-    if !mp.contains_key("year")  { print("FAIL: named year missing"); return }
-    if !mp.contains_key("month") { print("FAIL: named month missing"); return }
-    if !mp.contains_key("day")   { print("FAIL: named day missing"); return }
-    string y = mp.get("year")
-    string mo = mp.get("month")
-    string d = mp.get("day")
+    if mp.len() == 0 { print("FAIL: capture_named none"); return }
+    if !mp.has?("year")  { print("FAIL: named year missing"); return }
+    if !mp.has?("month") { print("FAIL: named month missing"); return }
+    if !mp.has?("day")   { print("FAIL: named day missing"); return }
+    string y = ""
+    string mo = ""
+    string d = ""
+    match mp.get("year") { Some(vy) => { y = vy } None => {} }
+    match mp.get("month") { Some(vm) => { mo = vm } None => {} }
+    match mp.get("day") { Some(vd) => { d = vd } None => {} }
     if y != "2024" { print("FAIL: named year=" + y); return }
     if mo != "01"  { print("FAIL: named month=" + mo); return }
     if d != "15"   { print("FAIL: named day=" + d); return }

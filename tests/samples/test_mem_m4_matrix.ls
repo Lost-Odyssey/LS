@@ -14,6 +14,7 @@
 //   7. match arm binder × {string, struct, enum}
 
 import std.vec
+import std.map
 
 struct Item {
     string name
@@ -38,8 +39,8 @@ fn mk_vec() -> Vec(string) {
     Vec(string) v = ["a".upper(), "b".upper()]
     return v
 }
-fn mk_map() -> map(string, int) {
-    map(string, int) m = {}
+fn mk_map() -> Map(string, int) {
+    Map(string, int) m = {}
     m.set("k".upper(), 1)
     return m
 }
@@ -74,7 +75,7 @@ fn main() -> int {
     Vec(string) v_var = mk_vec()
     print(v_var[0])
 
-    map(string, int) m_var = mk_map()
+    Map(string, int) m_var = mk_map()
     print("m_var ok")
 
     // ========== 2. AST_ASSIGN var (=) ==========
@@ -97,16 +98,16 @@ fn main() -> int {
     Vec(string) v_lit = ["x".upper(), "y".upper(), "z".upper()]
     print(v_lit[2])
 
-    map(string, int) m_lit = {"hello".upper() -> 100, "world".upper() -> 200}
+    Map(string, int) m_lit = { "hello": 100, "world": 200 }
     print("m_lit ok")
 
-    map(string, int) m2 = {}
+    Map(string, int) m2 = {}
     m2.set("alpha".upper(), 1)         // map.set with string rvalue key
     string mk = "beta".upper()
     m2.set(mk, 2)                       // map.set with string IDENT key (move)
     print("m2 ok")
 
-    map(string, string) m3 = {}
+    Map(string, string) m3 = {}
     m3.set("k1".copy(), "v1".upper())   // string rvalue value
     string mv = "v2".upper()
     m3.set("k2".copy(), mv)             // string IDENT value (move)

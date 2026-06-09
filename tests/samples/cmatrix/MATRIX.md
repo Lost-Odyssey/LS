@@ -16,8 +16,8 @@ Status captured: 2026-05-31 (branch `feat/vec-first-class`, before refactor).
 | b03_vec_rvalue_arg | `f(v.get(i))` nested-vec rvalue arg (E) |
 | b04_struct_vec_drop | struct{Vec(string)} build + scope drop (A) |
 | b05_enum_vec | enum Vec(string) payload build + drop |
-| b06_map_scope | map(string,string) build + drop |
-| t04_map_vec_value | map(string, Vec(int)) set + contains + drop |
+| b06_map_scope | Map(string,string) build + drop |
+| t04_map_vec_value | Map(string, Vec(int)) set + contains + drop |
 | t03_enum_nested_vec | **F fixed (Phase 1)**: enum payload nested Vec(Vec) clone + drop |
 | t01_struct_field_push | **D fixed (Phase 2)**: `&!struct` field vec `.push()` persists + clean |
 | t02_struct_field_index | **D fixed (Phase 2)**: `doc.items[i]` read via place |

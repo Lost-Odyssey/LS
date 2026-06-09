@@ -2,11 +2,12 @@
 // This verifies L-006 (enum containing vec/map payload) is actually working
 
 import std.vec
+import std.map
 
 enum Data {
     Empty
     Numbers(Vec(int) nums)
-    Lookup(map(string, int) table)
+    Lookup(Map(string, int) table)
     Mixed(string label, Vec(string) items)
 }
 
@@ -16,7 +17,7 @@ fn make_numbers() -> Data {
 }
 
 fn make_lookup() -> Data {
-    map(string, int) m = {}
+    Map(string, int) m = {}
     m.set("a", 1)
     m.set("b", 2)
     return Lookup(m)
@@ -33,7 +34,10 @@ fn process(Data d) {
     match d {
         Empty => { print("empty") }
         Numbers(nums) => { print(f"numbers: len={nums.len()}") }
-        Lookup(table) => { print(f"lookup: has_a={table.contains_key("a")}") }
+        Lookup(table) => {
+            bool has_a = table.has?("a")
+            print(f"lookup: has_a={has_a}")
+        }
         Mixed(label, items) => { print(f"mixed: {label} len={items.len()}") }
     }
 }

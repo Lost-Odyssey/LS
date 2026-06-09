@@ -1,4 +1,6 @@
+import std.map
+
 fn main() {
-    map(int, int) m
-    print(m.length)
+    Map(int, int) m = {}
+    print(m.len())
 }

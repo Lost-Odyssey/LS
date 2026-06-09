@@ -6,6 +6,7 @@
 // it must .copy() to avoid moving the closure's internal storage.
 
 import std.vec
+import std.map
 
 type Adder      = Block() -> int
 type MapCounter = Block() -> int
@@ -24,8 +25,8 @@ fn vec_len(Vec(int) v) -> int {
     return v.len()
 }
 
-fn count_keys(map(string, int) m) -> int {
-    return m.length
+fn count_keys(&Map(string, int) m) -> int {
+    return m.len()
 }
 
 fn main() {
@@ -55,10 +56,10 @@ fn main() {
     print(summer())         // 24
     print(summer())         // 24
 
-    // E.1.4: closure captures map(string,int) (still by-ref), body passes to fn
-    map(string, int) scores = {}
-    scores["alice"] = 42
-    scores["bob"] = 99
+    // E.1.4: closure captures Map(string,int) by-move, body borrows for read
+    Map(string, int) scores = {}
+    scores.set("alice", 42)
+    scores.set("bob", 99)
     MapCounter key_counter = || {
         return count_keys(scores)
     }

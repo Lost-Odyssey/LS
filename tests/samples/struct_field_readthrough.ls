@@ -15,13 +15,14 @@
 // Convention: print "<label> PASS"/"<label> FAIL"; the cmake driver asserts the
 // sample emits "READTHROUGH PASS" and never "FAIL", under JIT + AOT + memcheck.
 import std.vec
+import std.map
 
 struct Box   { Vec(int) items }
 struct Outer { Box inner }
 struct A { Vec(int) v }
 struct B { A a }
 struct C { B b }
-struct Bag  { string name; map(string,int) m }
+struct Bag  { string name; Map(string,int) m }
 struct Wrap { Bag bag }
 
 fn check(bool cond, string label) {
@@ -55,13 +56,13 @@ fn main() {
     check(mid.v.len() == 1, "chain3_consume")
 
     // --- string + map fields read through a chain, then consume ---
-    map(string,int) mm = {}
+    Map(string,int) mm = {}
     mm.set("k", 5)
     Wrap w = Wrap { bag: Bag { name: "hello", m: mm } }
     check(w.bag.name.length == 5, "chain_string")
-    check(w.bag.m.length == 1, "chain_map")
+    check(w.bag.m.len() == 1, "chain_map")
     Bag bag2 = w.bag
-    check(bag2.name.length == 5 && bag2.m.length == 1, "chain_consume")
+    check(bag2.name.length == 5 && bag2.m.len() == 1, "chain_consume")
 
     print("READTHROUGH PASS")
 }

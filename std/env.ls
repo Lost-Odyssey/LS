@@ -5,6 +5,7 @@
 
 import std.os as _os
 import std.c as c
+import std.map
 
 // ---- Public API ----
 
@@ -53,10 +54,10 @@ fn delete(string name) {
 }
 
 // Returns a snapshot of all environment variables as a map.
-fn all() -> map(string, string) {
+fn all() -> Map(string, string) {
     _os.raw_env_prepare()
     int n = _os.raw_env_count()
-    map(string, string) m = {}
+    Map(string, string) m = {}
     int i = 0
     while i < n {
         string entry = from_cstr(_os.raw_env_entry(i))

@@ -2,6 +2,7 @@
 // 期望：跑 `ls run --memcheck` 输出 OK clean。任何 LEAK / DOUBLE FREE 都是真实 bug。
 
 import std.vec
+import std.map
 
 struct Person {
     string name
@@ -54,13 +55,16 @@ fn main() -> int {
     for i in 0..20 { nums.push(i * i) }   // triggers Vec.grow (realloc)
     print(nums.len())
 
-    // ---- map(string, int) ----
-    map(string, int) ages = {}
+    // ---- Map(string, int) ----
+    Map(string, int) ages = {}
     ages.set("alice", 30)
     ages.set("bob",   25)
     ages.set("charlie", 40)
-    print(ages.length)
-    print(ages.get("alice"))
+    print(ages.len())
+    match ages.get("alice") {
+        Some(age) => { print(age) }
+        None => { print(-1) }
+    }
 
     // ---- struct with string field (has_drop) ----
     Person p = Person { name: "diana".upper(), age: 28 }
