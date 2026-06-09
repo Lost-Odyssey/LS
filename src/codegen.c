@@ -12491,6 +12491,25 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     for (int i = 0; i < n; i++)
     {
         Type *pt = block_t->as.function.params[i];
+        /* M5-002: a `&T` closure param uses pointer ABI (borrow), exactly like a
+           regular function's &T param (codegen_fn_decl ~13201). The LLVM param IS
+           the pointer; register the symbol with that pointer as its value and the
+           UNWRAPPED pointee type, is_borrowed so the body GEPs through it and
+           scope cleanup leaves ownership with the caller. (The call site passes a
+           pointer for &T params — see codegen_block_call.) */
+        if (pt && pt->kind == TYPE_REFERENCE)
+        {
+            Type *pointee = pt->as.pointer_to;
+            LLVMValueRef ptr = LLVMGetParam(fn, (unsigned)(i + 1));
+            CgSymbol *psym = cg_scope_define(ctx->current_scope,
+                            node->as.closure.param_names[i], ptr, pointee, NULL);
+            if (psym)
+            {
+                psym->is_borrowed = true;
+                if (pt->is_mut) psym->is_mut_borrow = true;
+            }
+            continue;
+        }
         LLVMTypeRef pt_llvm = type_to_llvm(ctx, pt);
         LLVMValueRef param_val = LLVMGetParam(fn, (unsigned)(i + 1));
         LLVMValueRef alloca = cg_entry_alloca(ctx, pt_llvm,
@@ -12913,6 +12932,39 @@ static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
         if (av == NULL) { free(args); return NULL; }
         Type *src_t = node->as.call.args[i]->resolved_type;
         Type *dst_t = block_t->as.function.params[i];
+
+        /* M5-002: a Block parameter of reference type `&T` expects a POINTER
+           (borrow ABI), exactly like a regular function's &T param. codegen_expr
+           loaded the value above; pass the address instead. IDENT → its slot
+           pointer (alloca, or the incoming borrow pointer); rvalue/other →
+           materialise a temp alloca (registered for drop if it owns heap, since
+           the callee only borrows). */
+        if (dst_t && dst_t->kind == TYPE_REFERENCE)
+        {
+            Type *pointee = dst_t->as.pointer_to;
+            AstNode *a = node->as.call.args[i];
+            LLVMValueRef ptr = NULL;
+            if (a->kind == AST_IDENT)
+            {
+                CgSymbol *sym = cg_scope_resolve(ctx->current_scope,
+                                                 a->as.ident.name);
+                if (sym) ptr = sym->value;
+            }
+            if (ptr == NULL)
+            {
+                LLVMTypeRef store_t = type_to_llvm(ctx, pointee ? pointee : src_t);
+                LLVMValueRef tmp = cg_entry_alloca(ctx, store_t, "blk.borrow.tmp");
+                LLVMBuildStore(ctx->builder, av, tmp);
+                ptr = tmp;
+                if (pointee &&
+                    ((pointee->kind == TYPE_STRUCT && pointee->as.strukt.has_drop) ||
+                     (pointee->kind == TYPE_ENUM   && pointee->as.enom.has_drop)))
+                    cg_push_temp_drop(ctx, tmp, pointee);
+            }
+            args[i + 1] = ptr;
+            continue;
+        }
+
         av = cg_widen(ctx, av, src_t, dst_t);
 
         /* Match regular function-call ownership for Block parameters.

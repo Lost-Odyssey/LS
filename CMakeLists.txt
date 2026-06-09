@@ -1741,6 +1741,18 @@ add_test(
 )
 set_tests_properties(test_map_option_payload PROPERTIES DEPENDS "test_map_compose")
 
+# Regression for B-MAP-M5-002: Block/closure params of reference type `&T`
+# (Block(&Map)/Block(&struct)) use the pointer borrow ABI end-to-end.
+add_test(
+    NAME test_block_ref_param
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_block_ref_param.cmake
+)
+set_tests_properties(test_block_ref_param PROPERTIES DEPENDS "test_map_option_payload")
+
 # Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
 # (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
 add_test(

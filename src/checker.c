@@ -5625,10 +5625,30 @@ static Type *check_expr(Checker *c, AstNode *node)
         {
             if (params[i])
             {
-                Symbol *psym = scope_define(c->current_scope, node->as.closure.param_names[i], params[i]);
-                /* F.2: Block closure params share env_ptr with caller — treat as borrow */
-                if (psym && params[i]->kind == TYPE_BLOCK)
-                    psym->is_borrow = true;
+                /* M5-002: a closure param declared with a reference type (e.g.
+                   `Block(&P)` → param `&P`) must be unwrapped to the pointee `P`
+                   with is_borrow set, exactly like normal function params — else
+                   `pp.x` / `pp.method()` in the body fails with "field access on
+                   non-struct type '&P'". Keep params[i] (the &P) for the Block
+                   signature; only the body-local symbol uses the unwrapped type. */
+                Type *pt = params[i];
+                bool is_borrow = false, is_mut_borrow = false;
+                if (pt->kind == TYPE_REFERENCE)
+                {
+                    if (pt->is_mut) is_mut_borrow = true;
+                    else            is_borrow     = true;
+                    pt = pt->as.pointer_to;
+                }
+                Symbol *psym = scope_define(c->current_scope,
+                                            node->as.closure.param_names[i], pt);
+                if (psym)
+                {
+                    psym->is_borrow = is_borrow;
+                    psym->is_mut_borrow = is_mut_borrow;
+                    /* F.2: Block closure params share env_ptr with caller — borrow */
+                    if (pt->kind == TYPE_BLOCK)
+                        psym->is_borrow = true;
+                }
             }
         }
         /* Define captures inside the closure scope so the body type-checker
