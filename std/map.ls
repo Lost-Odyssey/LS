@@ -1,0 +1,222 @@
+// std/map.ls — pure-LS hash map (open addressing + Robin Hood + Fibonacci
+// scatter), the replacement for the builtin `map`. See docs/plan_std_map.md.
+//
+// M-0: struct + construct + set / get / has? / len (+ grow/rehash) for POD K/V
+// (e.g. Map(int,int)). has_drop K/V ownership (M-2), remove/backward-shift (M-1),
+// and MapIter/literals (M-3/M-LIT) land in later phases.
+//
+// Layout (SoA): three parallel buffers of `cap` slots —
+//   ctrl[i]  : 1 byte per slot. 255 (0xFF) = EMPTY; otherwise the slot's probe
+//              sequence length (PSL = distance from its Fibonacci home bucket).
+//   keys[i]  : the key   (live only where ctrl[i] != EMPTY)
+//   vals[i]  : the value (live only where ctrl[i] != EMPTY)
+// cap is always a power of two; `shift = 64 - log2(cap)` drives the Fibonacci
+// scatter. No tombstones (backward-shift delete, M-1, keeps the invariant).
+//
+// Ownership (M-0 is POD-only, so these are all bit-copies; M-2 wires up the
+// __take/__move/__drop_at paths for has_drop K/V):
+//   set    moves K,V into the table (overwrite drops the old value).
+//   get    returns a CLONE of the value (Option(V)); buffer keeps its own.
+
+import std.hash
+
+struct Map(K, V) { *u8 ctrl; *K keys; *V vals; int len; int cap; int shift }
+
+impl(K, V) Map(K, V) {
+    // ---- queries ----
+
+    fn len(&self) -> int { return self.len }
+    fn cap(&self) -> int { return self.cap }
+    fn empty?(&self) -> bool { return self.len == 0 }
+
+    // Fibonacci scatter: map a 64-bit hash to a home bucket in [0, cap) using the
+    // HIGH bits of (h * 2^64/phi). FxHash's good entropy lives in the high bits,
+    // so this beats `h % cap` (low bits, weak) — see docs/plan_std_map.md §3/§5.1.
+    fn _home(&self, u64 h) -> int {
+        u64 fib = 11400714819323198485 as u64    // 0x9E3779B97F4A7C15
+        u64 sh = self.shift as u64
+        u64 scattered = (h * fib) >> sh
+        return scattered as int
+    }
+
+    // ---- capacity ----
+
+    // Allocate the next power-of-two table (8 first, else 2x), fill ctrl with
+    // EMPTY, and reinsert every live entry (moved, not cloned). Frees the old
+    // buffers. shift tracks 64 - log2(cap) incrementally across doublings.
+    fn _grow(&!self) where K: Hash + Eq {
+        int newcap = 8
+        int newshift = 61                         // 64 - log2(8)
+        if self.cap > 0 {
+            newcap = self.cap * 2
+            newshift = self.shift - 1
+        }
+        // Save the old buffers (these `*`-leading decls need ';' so the next line
+        // is not glued on as `* <next>`; the preceding `}` makes the first safe).
+        *u8 oldctrl = self.ctrl;
+        *K oldkeys = self.keys;
+        *V oldvals = self.vals;
+        int oldcap = self.cap;
+        // Fresh buffers (realloc(nil, n) == malloc(n); reuse one *u8 nil).
+        *u8 z = nil
+        self.ctrl = realloc(z, newcap) as *u8
+        self.keys = realloc(z, newcap * sizeof(K)) as *K
+        self.vals = realloc(z, newcap * sizeof(V)) as *V
+        self.cap = newcap
+        self.shift = newshift
+        self.len = 0
+        for (int i = 0; i < newcap; i = i + 1) { self.ctrl[i] = 255 as u8 }
+        // Rehash: move each live entry into the new table.
+        for (int i = 0; i < oldcap; i = i + 1) {
+            int c = oldctrl[i] as int
+            if c != 255 {
+                K k = __take(oldkeys[i])
+                V v = __take(oldvals[i])
+                u64 h = k.hash()
+                self._insert_no_grow(k, v, h)
+            }
+        }
+        if oldcap > 0 {
+            free(oldctrl)
+            free(oldkeys as *u8)
+            free(oldvals as *u8)
+        }
+    }
+
+    // ---- insert / update ----
+
+    // Place (k, v, h) into the table without checking load factor (caller grows
+    // first). Robin Hood: carry the entry forward, evicting any resident closer
+    // to its home (smaller PSL) and continuing with the evictee. On a key match,
+    // overwrite the value (dropping the old one). h is the precomputed hash of k.
+    fn _insert_no_grow(&!self, K k, V v, u64 h) where K: Eq {
+        int mask = self.cap - 1
+        int idx = self._home(h)
+        int psl = 0
+        while true {
+            int c = self.ctrl[idx] as int
+            if c == 255 {
+                self.keys[idx] = k
+                self.vals[idx] = v
+                self.ctrl[idx] = psl as u8
+                self.len = self.len + 1
+                return
+            }
+            K existing = self.keys[idx]
+            if existing == k {
+                // Update in place: drop the old value, move the new one in.
+                __drop_at(self.vals[idx])
+                self.vals[idx] = v
+                return
+            }
+            if c < psl {
+                // Robin Hood swap: evict the richer resident and carry it onward.
+                K rk = __take(self.keys[idx])
+                V rv = __take(self.vals[idx])
+                int rpsl = c
+                self.keys[idx] = k
+                self.vals[idx] = v
+                self.ctrl[idx] = psl as u8
+                k = rk
+                v = rv
+                psl = rpsl
+            }
+            psl = psl + 1
+            idx = (idx + 1) & mask
+        }
+    }
+
+    // Insert or update: move k,v into the table.
+    fn set(&!self, K k, V v) where K: Hash + Eq {
+        // Grow when empty, or when load factor would exceed 7/8.
+        if self.cap == 0 {
+            self._grow()
+        } else {
+            int need = (self.len + 1) * 8
+            int lim = self.cap * 7
+            if need > lim { self._grow() }
+        }
+        u64 h = k.hash()
+        self._insert_no_grow(k, v, h)
+    }
+
+    // ---- lookup ----
+
+    // Slot index of key k (hash h precomputed), or -1 if absent. Early-terminates
+    // on the Robin Hood invariant: once our PSL exceeds the resident's, k cannot
+    // be further along.
+    fn _find(&self, K k, u64 h) -> int where K: Eq {
+        if self.cap == 0 { return -1 }
+        int mask = self.cap - 1
+        int idx = self._home(h)
+        int psl = 0
+        while true {
+            int c = self.ctrl[idx] as int
+            if c == 255 { return -1 }
+            if c < psl { return -1 }
+            K existing = self.keys[idx]
+            if existing == k { return idx }
+            psl = psl + 1
+            idx = (idx + 1) & mask
+        }
+    }
+
+    // Clone of the value for k, or None when absent.
+    fn get(&self, K k) -> Option(V) where K: Hash + Eq {
+        u64 h = k.hash()
+        int idx = self._find(k, h)
+        if idx < 0 { return None }
+        V v = self.vals[idx]
+        return Some(v)
+    }
+
+    fn has?(&self, K k) -> bool where K: Hash + Eq {
+        u64 h = k.hash()
+        return self._find(k, h) >= 0
+    }
+
+    // ---- copy / drop hooks ----
+
+    // Deep copy preserving the exact table layout (no rehash): clone each live
+    // entry into the same slot, copy ctrl bytes verbatim. Empty slots' key/val
+    // memory is never read (ctrl marks them EMPTY), so leaving it uninitialized
+    // is safe. Needs no Hash/Eq since it never recomputes a home bucket.
+    fn __clone(&self) -> Map(K, V) {
+        Map(K, V) out = {}
+        if self.cap == 0 { return out }
+        *u8 z = nil
+        out.ctrl = realloc(z, self.cap) as *u8
+        out.keys = realloc(z, self.cap * sizeof(K)) as *K
+        out.vals = realloc(z, self.cap * sizeof(V)) as *V
+        out.cap = self.cap
+        out.shift = self.shift
+        out.len = self.len
+        for (int i = 0; i < self.cap; i = i + 1) {
+            int c = self.ctrl[i] as int
+            out.ctrl[i] = c as u8
+            if c != 255 {
+                K k = self.keys[i]
+                V v = self.vals[i]
+                out.keys[i] = k
+                out.vals[i] = v
+            }
+        }
+        return out
+    }
+
+    // Drop every live entry, then free the buffers.
+    fn __drop() {
+        for (int i = 0; i < self.cap; i = i + 1) {
+            int c = self.ctrl[i] as int
+            if c != 255 {
+                __drop_at(self.keys[i])
+                __drop_at(self.vals[i])
+            }
+        }
+        if self.cap > 0 {
+            free(self.ctrl)
+            free(self.keys as *u8)
+            free(self.vals as *u8)
+        }
+    }
+}

@@ -8509,6 +8509,109 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
     c->current_impl_struct_type = saved_impl_st;
 }
 
+/* M-H: register a single imported `trait`/`impl Trait for T` decl into importer
+   `c`. For traits → trait_registry (deduped by find_trait). For trait-impls →
+   methods into impl_registry (so `x.foo()` dispatches) + the (trait,type) pair
+   into trait_impls (so `where K: Foo` is satisfied). Builtin targets (int/string)
+   key on the bare name; user structs/enums on their module-unique llvm_name.
+   `mod_type` supplies the source module's export table for user-type keying. */
+static void register_one_imported_trait_decl(Checker *c, AstNode *d, Type *mod_type)
+{
+    if (d->kind == AST_TRAIT_DECL)
+    {
+        if (find_trait(c, d->as.trait_decl.name) < 0)
+            check_trait_decl(c, d);
+        return;
+    }
+    if (d->kind != AST_IMPL_TRAIT_DECL)
+        return;
+
+    const char *tr_name = d->as.impl_trait_decl.trait_name;
+    const char *ty_name = d->as.impl_trait_decl.struct_name;
+    const char *impl_key = ty_name;
+    Type *impl_st = mod_type ? type_module_find_export(mod_type, ty_name) : NULL;
+    if (impl_st == NULL) impl_st = find_struct_type(c, ty_name);
+    if (impl_st == NULL) impl_st = resolve_builtin_type_by_name(ty_name);
+    if (impl_st)
+    {
+        const char *k = impl_key_of_type(impl_st);
+        if (k) impl_key = k;
+    }
+    int it_impl_idx = find_or_create_impl(c, impl_key);
+    for (int mi = 0; mi < d->as.impl_trait_decl.method_count; mi++)
+    {
+        AstNode *method = d->as.impl_trait_decl.methods[mi];
+        if (method == NULL || method->kind != AST_FN_DECL)
+            continue;
+        if (method->resolved_type == NULL)
+            continue;
+        register_method(c, it_impl_idx, method->as.fn_decl.name,
+                        method->resolved_type,
+                        method->as.fn_decl.is_static,
+                        method->as.fn_decl.self_borrow_kind,
+                        method->line, method->column);
+    }
+    /* Record the trait-impl pair (idempotent on re-import). */
+    for (int ii = 0; ii < c->trait_impl_count; ii++)
+    {
+        if (strcmp(c->trait_impls[ii].trait_name, tr_name) == 0 &&
+            strcmp(c->trait_impls[ii].struct_name, ty_name) == 0)
+            return;
+    }
+    if (c->trait_impl_count >= c->trait_impl_cap)
+    {
+        c->trait_impl_cap = GROW_CAPACITY(c->trait_impl_cap);
+        c->trait_impls = realloc_safe(c->trait_impls,
+            (size_t)c->trait_impl_cap * sizeof(c->trait_impls[0]));
+    }
+    int ti2 = c->trait_impl_count++;
+    c->trait_impls[ti2].trait_name = tr_name;
+    c->trait_impls[ti2].struct_name = ty_name;
+}
+
+/* M-H: recursively register the traits/trait-impls of an imported module AND its
+   own transitive imports. Needed because user-defined trait bounds (e.g. Hash)
+   used inside a stdlib generic must be satisfiable at the call site even when the
+   user imported only the outer module (user → std.map → std.hash). Builtin
+   operator traits (Eq/Ord) bypass this. `visited`/`vcount` guard diamonds/cycles. */
+static void propagate_imported_traits(Checker *c, const char *import_path,
+                                      const char **visited, int *vcount)
+{
+    if (import_path == NULL || c->registry == NULL) return;
+    for (int i = 0; i < *vcount; i++)
+        if (visited[i] && strcmp(visited[i], import_path) == 0) return;
+    if (*vcount < 64) visited[(*vcount)++] = import_path;
+
+    /* Builtin modules expose no user-defined traits. */
+    if (builtin_module_exists(import_path) &&
+        !module_user_file_exists(import_path, c->source_path))
+        return;
+
+    ModuleInfo *mod = module_load(c->registry, import_path, c->source_path);
+    if (mod == NULL || mod->ast == NULL) return;
+    AstNode *mod_ast = mod->ast;
+
+    /* Export table for user-type impl-trait keying (builtins bypass it). */
+    Type *mod_type = type_module_new(import_path);
+    for (int j = 0; j < mod_ast->as.program.decl_count; j++)
+    {
+        AstNode *d = mod_ast->as.program.decls[j];
+        if (d->kind == AST_STRUCT_DECL && d->resolved_type)
+            type_module_add_export(mod_type, d->as.struct_decl.name, d->resolved_type);
+        else if (d->kind == AST_ENUM_DECL && d->resolved_type)
+            type_module_add_export(mod_type, d->as.enum_decl.name, d->resolved_type);
+    }
+
+    for (int j = 0; j < mod_ast->as.program.decl_count; j++)
+    {
+        AstNode *d = mod_ast->as.program.decls[j];
+        if (d->kind == AST_TRAIT_DECL || d->kind == AST_IMPL_TRAIT_DECL)
+            register_one_imported_trait_decl(c, d, mod_type);
+        else if (d->kind == AST_IMPORT_DECL)
+            propagate_imported_traits(c, d->as.import_decl.path, visited, vcount);
+    }
+}
+
 static void check_decl(Checker *c, AstNode *node)
 {
     if (node == NULL)
@@ -8911,69 +9014,24 @@ static void forward_pass(Checker *c, AstNode *program)
                                      method->resolved_type);
                     }
                 }
-                /* An imported `trait Foo { ... }` — register it in THIS importer's
-                   trait_registry so `where T: Foo` bounds resolve and impl-trait
-                   matching works. Guarded against transitive re-import. */
-                else if (d->kind == AST_TRAIT_DECL)
+                /* An imported `trait Foo`/`impl Trait for Type` (incl. builtin
+                   targets like `impl Hash for int`): register it so `where T:Foo`
+                   bounds and `x.foo()` dispatch work in THIS importer. */
+                else if (d->kind == AST_TRAIT_DECL ||
+                         d->kind == AST_IMPL_TRAIT_DECL)
                 {
-                    if (find_trait(c, d->as.trait_decl.name) < 0)
-                        check_trait_decl(c, d);
+                    register_one_imported_trait_decl(c, d, mod_type);
                 }
-                /* An imported `impl Trait for Type` block (incl. builtin targets
-                   like `impl Hash for int/string`): register its methods into the
-                   importer's impl_registry (so `x.hash()` dispatches) and record
-                   the (trait, type) pair in trait_impls (so `where K: Hash` is
-                   satisfied). Mirrors the inherent-impl import path above; method
-                   resolved_type was set by the recursive sub-checker. */
-                else if (d->kind == AST_IMPL_TRAIT_DECL)
+                /* A transitive import inside the imported module (user → std.map →
+                   std.hash): propagate that sub-module's traits/impls too, so a
+                   `where K: Hash` bound inside std.map's monomorphized methods is
+                   satisfiable here even though the user never imported std.hash. */
+                else if (d->kind == AST_IMPORT_DECL)
                 {
-                    const char *tr_name = d->as.impl_trait_decl.trait_name;
-                    const char *ty_name = d->as.impl_trait_decl.struct_name;
-                    /* impl_registry key: module-prefixed for user structs/enums,
-                       bare name for builtins (int/string/...). */
-                    const char *impl_key = ty_name;
-                    Type *impl_st = type_module_find_export(mod_type, ty_name);
-                    if (impl_st == NULL) impl_st = find_struct_type(c, ty_name);
-                    if (impl_st == NULL) impl_st = resolve_builtin_type_by_name(ty_name);
-                    if (impl_st)
-                    {
-                        const char *k = impl_key_of_type(impl_st);
-                        if (k) impl_key = k;
-                    }
-                    int it_impl_idx = find_or_create_impl(c, impl_key);
-                    for (int mi = 0; mi < d->as.impl_trait_decl.method_count; mi++)
-                    {
-                        AstNode *method = d->as.impl_trait_decl.methods[mi];
-                        if (method == NULL || method->kind != AST_FN_DECL)
-                            continue;
-                        if (method->resolved_type == NULL)
-                            continue;
-                        register_method(c, it_impl_idx, method->as.fn_decl.name,
-                                        method->resolved_type,
-                                        method->as.fn_decl.is_static,
-                                        method->as.fn_decl.self_borrow_kind,
-                                        method->line, method->column);
-                    }
-                    /* Record the trait-impl pair (idempotent on re-import). */
-                    bool already = false;
-                    for (int ii = 0; ii < c->trait_impl_count; ii++)
-                    {
-                        if (strcmp(c->trait_impls[ii].trait_name, tr_name) == 0 &&
-                            strcmp(c->trait_impls[ii].struct_name, ty_name) == 0)
-                        { already = true; break; }
-                    }
-                    if (!already)
-                    {
-                        if (c->trait_impl_count >= c->trait_impl_cap)
-                        {
-                            c->trait_impl_cap = GROW_CAPACITY(c->trait_impl_cap);
-                            c->trait_impls = realloc_safe(c->trait_impls,
-                                (size_t)c->trait_impl_cap * sizeof(c->trait_impls[0]));
-                        }
-                        int ti2 = c->trait_impl_count++;
-                        c->trait_impls[ti2].trait_name = tr_name;
-                        c->trait_impls[ti2].struct_name = ty_name;
-                    }
+                    const char *visited[64];
+                    int vcount = 0;
+                    propagate_imported_traits(c, d->as.import_decl.path,
+                                              visited, &vcount);
                 }
             }
 

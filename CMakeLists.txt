@@ -1668,6 +1668,18 @@ add_test(
 )
 set_tests_properties(test_hash PROPERTIES DEPENDS "test_implicit_empty_init")
 
+# std.map M-0: pure-LS Map(K,V) (Robin Hood open addressing) — construct +
+# set/get/has?/len + grow/rehash for POD K/V (docs/plan_std_map.md). JIT+AOT+memcheck.
+add_test(
+    NAME test_map_basic
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_map_basic.cmake
+)
+set_tests_properties(test_map_basic PROPERTIES DEPENDS "test_hash")
+
 # Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
 # (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
 add_test(
