@@ -1022,14 +1022,6 @@ static Type *resolve_type_node_with_substitution(
         return resolve_type_node(c, node, line, col);
     }
 
-    case TYPE_NODE_MAP: {
-        Type *key = resolve_type_node_with_substitution(
-            c, node->as.map.key, tp_names, type_args, tp_count);
-        Type *val = resolve_type_node_with_substitution(
-            c, node->as.map.val, tp_names, type_args, tp_count);
-        return type_map(key, val);
-    }
-
     case TYPE_NODE_ARRAY: {
         Type *elem = resolve_type_node_with_substitution(
             c, node->as.array.elem, tp_names, type_args, tp_count);
@@ -1916,17 +1908,15 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     {
         Type *pointee = resolve_type_node(c, tn->as.pointee, line, col);
         if (pointee == NULL) return NULL;
-        /* Phase 5/5.5/5.7/5.8/9: supported borrow pointees are
-           string / map / struct / enum. */
+        /* Phase 5/5.5/5.8/9: supported borrow pointees are
+           string / struct / enum. */
         bool ok_kind = (pointee->kind == TYPE_STRING ||
-                        pointee->kind == TYPE_MAP ||
                         pointee->kind == TYPE_STRUCT ||
                         pointee->kind == TYPE_ENUM);   /* Phase 9: enum borrow */
         if (!ok_kind)
         {
             checker_error(c, line, col,
                           "&%s%s is not supported yet; only &string / &!string / "
-                          "&map(K,V) / &!map(K,V) / "
                           "&struct / &!struct / &enum are implemented",
                           tn->is_mut ? "!" : "",
                           type_name(pointee));
@@ -1938,20 +1928,6 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     case TYPE_NODE_ARRAY:
         return type_array(resolve_type_node(c, tn->as.array.elem, line, col),
                           tn->as.array.size);
-    case TYPE_NODE_MAP:
-    {
-        Type *kt = resolve_type_node(c, tn->as.map.key, line, col);
-        Type *vt = resolve_type_node(c, tn->as.map.val, line, col);
-        if (kt == NULL || vt == NULL)
-            return NULL;
-        if (!type_is_integer(kt) && kt->kind != TYPE_STRING)
-        {
-            checker_error(c, line, col,
-                          "map key type must be int or string, got '%s'", type_name(kt));
-            return NULL;
-        }
-        return type_map(kt, vt);
-    }
     case TYPE_NODE_FN:
     {
         int n = tn->as.fn.param_count;
@@ -2296,7 +2272,6 @@ static bool type_is_movable(Type *t)
     switch (t->kind)
     {
     case TYPE_STRING: return true;
-    case TYPE_MAP:    return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_BLOCK:  return true;  /* F.2: Block owns its env heap */
     default:          return false;
@@ -2364,44 +2339,6 @@ static bool checker_reject_mut_borrow_copy_source(Checker *c, AstNode *src, cons
     checker_move_error(c, src->line, src->column,
                        "cannot %s: '%s' is a writable borrow — content cannot leave",
                        what, src->as.ident.name);
-    return true;
-}
-
-/* Phase 5.7: reject mutating map methods on read-only borrow (&map(K,V)). */
-static bool map_method_is_mutating(const char *m)
-{
-    return strcmp(m, "set") == 0 || strcmp(m, "remove") == 0 ||
-           strcmp(m, "clear") == 0;
-}
-
-static bool checker_reject_map_mut_on_readonly_borrow(Checker *c, AstNode *call_node,
-                                                     const char *method)
-{
-    if (!map_method_is_mutating(method)) return false;
-    AstNode *recv = call_node->as.call.callee->as.field_access.object;
-    if (!recv || recv->kind != AST_IDENT) return false;
-    Symbol *sym = scope_resolve(c->current_scope, recv->as.ident.name);
-    if (!sym || !sym->is_borrow) return false;
-    checker_move_error(c, recv->line, recv->column,
-                       "cannot call map.%s() on '%s': it is a read-only borrow",
-                       method, recv->as.ident.name);
-    return true;
-}
-
-/* Phase 5.7: reject copy-out of a map borrow (both &map and &!map).
-   Same rationale as vec — copying the bucket array pointer would cause
-   double-free on scope exit. */
-static bool checker_reject_map_borrow_copy_source(Checker *c, AstNode *src, const char *what)
-{
-    if (!src || src->kind != AST_IDENT) return false;
-    Symbol *sym = scope_resolve(c->current_scope, src->as.ident.name);
-    if (!sym) return false;
-    if (!sym->type || sym->type->kind != TYPE_MAP) return false;
-    if (!sym->is_borrow && !sym->is_mut_borrow) return false;
-    checker_move_error(c, src->line, src->column,
-                       "cannot %s: '%s' is a %sborrow of map — data cannot be copied out",
-                       what, src->as.ident.name,
-                       sym->is_mut_borrow ? "writable " : "read-only ");
     return true;
 }
 
@@ -3065,175 +3002,6 @@ static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
     return NULL;
 }
 
-/* Type-check method calls on map(K,V) objects */
-static Type *check_map_method(Checker *c, AstNode *call_node, Type *map_type)
-{
-    const char *method = call_node->as.call.callee->as.field_access.field;
-    int argc = call_node->as.call.arg_count;
-    Type *K = map_type->as.map.key;
-    Type *V = map_type->as.map.val;
-
-    /* Phase 5.7: gate mutating methods on read-only borrow receivers. */
-    if (checker_reject_map_mut_on_readonly_borrow(c, call_node, method))
-        return NULL;
-
-    /* m.set(key, val) -> void */
-    if (strcmp(method, "set") == 0)
-    {
-        if (argc != 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.set() takes 2 arguments, got %d", argc);
-            return NULL;
-        }
-        Type *k = check_expr(c, call_node->as.call.args[0]);
-        if (k && !type_equals(k, K))
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "map.set() key expects '%s', got '%s'", type_name(K), type_name(k));
-        /* F.4: propagate expected_type for Block value so closure literals can infer types */
-        Type *saved_exp_set = c->expected_type;
-        if (V && V->kind == TYPE_BLOCK)
-            c->expected_type = V;
-        Type *v = check_expr(c, call_node->as.call.args[1]);
-        c->expected_type = saved_exp_set;
-        if (v && !type_equals(v, V))
-            checker_error(c, call_node->as.call.args[1]->line,
-                          call_node->as.call.args[1]->column,
-                          "map.set() value expects '%s', got '%s'", type_name(V), type_name(v));
-        /* BF-039: map.set CLONES key and value into the map (the map owns
-           independent copies — see emit_map_helpers_for). The source variables
-           therefore stay LIVE. Marking them moved here would (a) cause codegen
-           to skip their scope drop → leak the source's own heap copy, and
-           (b) falsely reject later use of the source. So do NOT mark moved —
-           unlike vec.push, which is a true move. Borrows still cannot be stored
-           (the map would clone a pointer into a buffer it does not own). */
-        checker_reject_borrow_move(c, call_node->as.call.args[0], "store into map");
-        checker_reject_borrow_move(c, call_node->as.call.args[1], "store into map");
-        return type_void();
-    }
-
-    /* m.get(key) -> V  (returns zero value if key absent) */
-    if (strcmp(method, "get") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.get() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *k = check_expr(c, call_node->as.call.args[0]);
-        if (k && !type_equals(k, K))
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "map.get() key expects '%s', got '%s'", type_name(K), type_name(k));
-        return V;
-    }
-
-    /* m.contains_key(key) -> bool */
-    if (strcmp(method, "contains_key") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.contains_key() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *k = check_expr(c, call_node->as.call.args[0]);
-        if (k && !type_equals(k, K))
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "map.contains_key() key expects '%s', got '%s'",
-                          type_name(K), type_name(k));
-        return type_bool();
-    }
-
-    /* m.remove(key) -> void */
-    if (strcmp(method, "remove") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.remove() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *k = check_expr(c, call_node->as.call.args[0]);
-        if (k && !type_equals(k, K))
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "map.remove() key expects '%s', got '%s'", type_name(K), type_name(k));
-        return type_void();
-    }
-
-    /* m.clear() -> void */
-    if (strcmp(method, "clear") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.clear() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* m.is_empty() -> bool */
-    if (strcmp(method, "is_empty") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.is_empty() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* m.keys() -> Vec(K) / m.values() -> Vec(V).
-       F6a: return the pure-LS std.vec Vec(T) (not the builtin vec). Vec(T) has an
-       identical {data,len,cap} layout and uses the same ls_mc heap, so codegen
-       reinterprets the built buffer as a Vec(T). Requires std.vec to be loaded
-       (directly or transitively — checker_instantiate_struct pulls the template). */
-    if (strcmp(method, "keys") == 0 || strcmp(method, "values") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.%s() takes no arguments, got %d", method, argc);
-            return NULL;
-        }
-        Type *elem = (method[0] == 'k') ? K : V;
-        Type *args[1] = { elem };
-        Type *vt = checker_instantiate_struct(c, "Vec", args, 1,
-                                              call_node->line, call_node->column);
-        if (vt == NULL)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.%s() returns Vec(T) — add `import std.vec`", method);
-            return NULL;
-        }
-        return vt;
-    }
-
-    /* m.copy() -> map(K,V) — deep-clone entire map */
-    if (strcmp(method, "copy") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "map.copy() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return map_type;
-    }
-
-    checker_error(c, call_node->line, call_node->column,
-                  "map has no method '%s' (available: set, get, contains_key, remove, "
-                  "clear, is_empty, keys, values, copy)",
-                  method);
-    return NULL;
-}
-
 /* Check builtin function calls that don't belong to a type */
 static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node)
 {
@@ -3594,28 +3362,16 @@ static bool capture_type_is_pod(const Type *t) {
    marked moved.
      C.5: TYPE_STRING
      C.7: TYPE_STRUCT(has_drop)
-   Note: TYPE_MAP uses by-ref semantics (env stores a pointer
-   to the outer alloca; outer remains live and usable after capture).
    Enum captures remain unsupported (Phase C.8 — needs box / payload
    walk inside env_drop). */
 static bool capture_type_is_by_move(const Type *t) {
     if (t == NULL) return false;
     switch (t->kind) {
     case TYPE_STRING: return true;
-    case TYPE_MAP:    return false;   /* by-ref: env borrows outer alloca */
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;   /* F.5: has_drop enum → by-move */
     default:          return false;
     }
-}
-
-/* Phase E (by-ref capture): map(K,V) is captured by reference.
-   The env stores a pointer to the outer alloca; the outer variable remains
-   live and its mutations are visible inside the closure body.
-   Constraint: the closure must not outlive the scope that defines the outer. */
-static bool capture_type_is_by_ref(const Type *t) {
-    if (t == NULL) return false;
-    return t->kind == TYPE_MAP;
 }
 
 /* array(T, N) with POD element type is captured by value (full copy into env).
@@ -3631,8 +3387,7 @@ static bool capture_type_supported(const Type *t) {
     if (t->kind == TYPE_ENUM && !t->as.enom.has_drop) return true;
     return capture_type_is_pod(t) ||
            capture_type_is_pod_array(t) ||
-           capture_type_is_by_move(t) ||
-           capture_type_is_by_ref(t);
+           capture_type_is_by_move(t);
 }
 
 static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t) {
@@ -3940,29 +3695,9 @@ static Type *check_expr(Checker *c, AstNode *node)
             result = NULL;
             break;
         }
-        Type *K = check_expr(c, node->as.map_lit.keys[0]);
-        Type *V = check_expr(c, node->as.map_lit.vals[0]);
-        if (!K || !V)
-        {
-            result = NULL;
-            break;
-        }
-        for (int i = 1; i < count; i++)
-        {
-            Type *kt = check_expr(c, node->as.map_lit.keys[i]);
-            Type *vt = check_expr(c, node->as.map_lit.vals[i]);
-            if (kt && !type_equals(K, kt))
-                checker_error(c, node->as.map_lit.keys[i]->line,
-                              node->as.map_lit.keys[i]->column,
-                              "map literal key type mismatch: expected '%s', got '%s'",
-                              type_name(K), type_name(kt));
-            if (vt && !type_equals(V, vt))
-                checker_error(c, node->as.map_lit.vals[i]->line,
-                              node->as.map_lit.vals[i]->column,
-                              "map literal value type mismatch: expected '%s', got '%s'",
-                              type_name(V), type_name(vt));
-        }
-        result = type_map(K, V);
+        checker_error(c, node->line, node->column,
+                      "key-value literal requires an expected type with __from_pairs");
+        result = NULL;
         break;
     }
 
@@ -4104,10 +3839,10 @@ static Type *check_expr(Checker *c, AstNode *node)
         }
         if (sym->type == NULL ||
             (sym->type->kind != TYPE_STRING &&
-             sym->type->kind != TYPE_MAP && sym->type->kind != TYPE_STRUCT))
+             sym->type->kind != TYPE_STRUCT))
         {
             checker_error(c, node->line, node->column,
-                          "&!: only &!string, &!map(K,V) and &!struct are supported, got &!%s",
+                          "&!: only &!string and &!struct are supported, got &!%s",
                           sym->type ? type_name(sym->type) : "?");
             result = NULL;
             break;
@@ -4825,13 +4560,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                        skipped, Step 11 resolves the user method). */
                 }
 
-                /* Intercept map builtin method calls: m.method(args...) */
-                if (obj_type && obj_type->kind == TYPE_MAP)
-                {
-                    result = check_map_method(c, node, obj_type);
-                    break;
-                }
-
                 /* Check if obj is an instance of a struct */
                 if (obj_type)
                 {
@@ -5310,20 +5038,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                 result = obj->as.array.elem;
             }
         }
-        else if (obj->kind == TYPE_MAP)
-        {
-            if (!type_equals(idx, obj->as.map.key))
-            {
-                checker_error(c, node->line, node->column,
-                              "map key type mismatch: expected '%s', got '%s'",
-                              type_name(obj->as.map.key), type_name(idx));
-                result = NULL;
-            }
-            else
-            {
-                result = obj->as.map.val;
-            }
-        }
         else if (obj->kind == TYPE_POINTER)
         {
             /* p[i] on a raw *T pointer — element access, no bounds check (unsafe
@@ -5411,22 +5125,6 @@ static Type *check_expr(Checker *c, AstNode *node)
             {
                 checker_error(c, node->line, node->column,
                               "array has no field '%s' (only 'length')", field_name);
-                result = NULL;
-            }
-            break;
-        }
-
-        /* map .length */
-        if (obj->kind == TYPE_MAP)
-        {
-            if (strcmp(field_name, "length") == 0)
-            {
-                result = type_int();
-            }
-            else
-            {
-                checker_error(c, node->line, node->column,
-                              "map has no field '%s' (use .length)", field_name);
                 result = NULL;
             }
             break;
@@ -5577,9 +5275,7 @@ static Type *check_expr(Checker *c, AstNode *node)
             /* F.1: Process [move v1, v2] capture spec.
                For each name in move_names:
                - Find the matching capture and set is_explicit_move=true.
-               - If not found in captures, report an error.
-               For explicitly-moved map: apply by-move outer-symbol checks
-               (these were skipped in cap_record, which treats map as by-ref). */
+               - If not found in captures, report an error. */
             for (int mi = 0; mi < node->as.closure.move_count; mi++) {
                 const char *mname = node->as.closure.move_names[mi];
                 bool found = false;
@@ -5587,27 +5283,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                     if (strcmp(node->as.closure.captures[ci].name, mname) == 0) {
                         node->as.closure.captures[ci].is_explicit_move = true;
                         found = true;
-                        /* For map: apply by-move semantics (outer marking).
-                           string/struct: already handled in cap_record (by-move).
-                           POD/array: harmless no-op (warn about redundancy). */
-                        Type *ct = node->as.closure.captures[ci].type;
-                        if (ct && ct->kind == TYPE_MAP) {
-                            Symbol *outer = scope_resolve(outer_scope_for_caps, mname);
-                            if (outer) {
-                                if (outer->is_borrow || outer->is_mut_borrow) {
-                                    checker_move_error(c, node->line, node->column,
-                                        "cannot [move] capture '%s' into closure: "
-                                        "it is a borrow parameter (no ownership to transfer)",
-                                        mname);
-                                } else if (outer->is_moved || outer->is_maybe_moved) {
-                                    checker_move_error(c, node->line, node->column,
-                                        "cannot [move] capture '%s' into closure: "
-                                        "already moved on a prior path", mname);
-                                } else {
-                                    outer->is_moved = true;
-                                }
-                            }
-                        }
                         break;
                     }
                 }
@@ -5786,7 +5461,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                        as read-only borrows — prevents moves and mutating methods. */
                     if (bsym && subj_is_enum_borrow && bt &&
                         (bt->kind == TYPE_STRING ||
-                         bt->kind == TYPE_MAP ||
                          (bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
                          (bt->kind == TYPE_ENUM   && bt->as.enom.has_drop)))
                     {
@@ -6280,30 +5954,7 @@ static Type *check_expr(Checker *c, AstNode *node)
                 continue; /* omitted, no default -> zero-init (existing semantics) */
             Type *fexp = st->as.strukt.fields[j].type;
             const char *jfn = st->as.strukt.fields[j].name;
-            /* v2: pre-tag map defaults so empty {} resolves against the
-               field type (mirrors the map var-decl special case). Shared node,
-               tagged once. */
-            if (fexp && fexp->kind == TYPE_MAP &&
-                     deflt->kind == AST_MAP_LIT && deflt->resolved_type == NULL)
-            {
-                Type *K = fexp->as.map.key;
-                Type *V = fexp->as.map.val;
-                for (int k = 0; k < deflt->as.map_lit.pair_count; k++)
-                {
-                    Type *kt = check_expr(c, deflt->as.map_lit.keys[k]);
-                    Type *vt = check_expr(c, deflt->as.map_lit.vals[k]);
-                    if (kt && !type_assignable(K, kt))
-                        checker_error(c, deflt->line, deflt->column,
-                            "default for field '%s': map key expected '%s', got '%s'",
-                            jfn, type_name(K), type_name(kt));
-                    if (vt && !type_assignable(V, vt))
-                        checker_error(c, deflt->line, deflt->column,
-                            "default for field '%s': map value expected '%s', got '%s'",
-                            jfn, type_name(V), type_name(vt));
-                }
-                deflt->resolved_type = fexp;
-            }
-            else if (fexp && fexp->kind == TYPE_STRUCT &&
+            if (fexp && fexp->kind == TYPE_STRUCT &&
                      deflt->kind == AST_ARRAY_LIT &&
                      deflt->resolved_type == NULL)
             {
@@ -6532,12 +6183,12 @@ static void check_stmt(Checker *c, AstNode *node)
 
         /* M-DEF: implicit empty/default init — `T v` ≡ `T v = {}` for any type
            where `= {}` is already a legal initializer (user containers like
-           Vec/Map and struct zero-init via the empty-brace branch below; the
-           built-in map via the TYPE_MAP branch). Synthesize an empty brace
+           Vec/Map and struct zero-init via the empty-brace branch below).
+           Synthesize an empty brace
            literal so the existing `= {}` paths run unchanged. POD/string/enum
            keep their current no-init behavior (their `{}` is not a legal init). */
         if (node->as.var_decl.init == NULL &&
-            (declared->kind == TYPE_STRUCT || declared->kind == TYPE_MAP))
+            declared->kind == TYPE_STRUCT)
         {
             AstNode *empty = ast_new(AST_MAP_LIT, node->line, node->column);
             empty->as.map_lit.keys = NULL;
@@ -6548,9 +6199,6 @@ static void check_stmt(Checker *c, AstNode *node)
 
         if (node->as.var_decl.init)
         {
-            /* Special case: map(K,V) m = { key -> val, ... }
-               Check each pair against the declared K,V types directly and set resolved_type
-               so that check_expr(AST_MAP_LIT) can early-return without re-checking. */
             if (declared && declared->kind == TYPE_STRUCT &&
                 node->as.var_decl.init->kind == AST_ARRAY_LIT &&
                 find_method(c, impl_key_of_type(declared), "__from_list") != NULL)
@@ -6596,29 +6244,6 @@ static void check_stmt(Checker *c, AstNode *node)
                 ml->as.new_expr.type_arg_count = 0;
                 ml->resolved_type = declared;
             }
-            else if (declared && declared->kind == TYPE_MAP &&
-                node->as.var_decl.init->kind == AST_MAP_LIT)
-            {
-                AstNode *ml = node->as.var_decl.init;
-                Type *K = declared->as.map.key;
-                Type *V = declared->as.map.val;
-                for (int i = 0; i < ml->as.map_lit.pair_count; i++)
-                {
-                    Type *kt = check_expr(c, ml->as.map_lit.keys[i]);
-                    Type *vt = check_expr(c, ml->as.map_lit.vals[i]);
-                    if (kt && !type_assignable(K, kt))
-                        checker_error(c, ml->as.map_lit.keys[i]->line,
-                                      ml->as.map_lit.keys[i]->column,
-                                      "map literal key type mismatch: expected '%s', got '%s'",
-                                      type_name(K), type_name(kt));
-                    if (vt && !type_assignable(V, vt))
-                        checker_error(c, ml->as.map_lit.vals[i]->line,
-                                      ml->as.map_lit.vals[i]->column,
-                                      "map literal value type mismatch: expected '%s', got '%s'",
-                                      type_name(V), type_name(vt));
-                }
-                ml->resolved_type = declared; /* signal check_expr to skip re-check */
-            }
             else
             {
                 /* Plumb expected_type so variant-ctor disambiguation can pick the
@@ -6662,9 +6287,6 @@ static void check_stmt(Checker *c, AstNode *node)
                caller still holds. Reject before move-tracking runs. */
             checker_reject_mut_borrow_copy_source(c, node->as.var_decl.init,
                                                  "initialize new variable from writable borrow");
-            /* Phase 5.7: same for map borrows. */
-            checker_reject_map_borrow_copy_source(c, node->as.var_decl.init,
-                                                 "initialize new variable from map borrow");
             /* Phase 5.8: same for struct borrows. */
             checker_reject_struct_borrow_copy_source(c, node->as.var_decl.init,
                                                  "initialize new variable from struct borrow");
@@ -6757,26 +6379,6 @@ static void check_stmt(Checker *c, AstNode *node)
                 }
             }
         }
-        /* Phase 5.7: subscript assign `m[k] = v` is forbidden
-           when the base is a read-only borrow (&map(K,V)). Writable
-           borrows pass through. */
-        if (node->as.assign.target->kind == AST_INDEX)
-        {
-            AstNode *base = node->as.assign.target->as.index_expr.object;
-            if (base && base->kind == AST_IDENT)
-            {
-                Symbol *bsym = scope_resolve(c->current_scope, base->as.ident.name);
-                if (bsym && bsym->is_borrow && bsym->type &&
-                    bsym->type->kind == TYPE_MAP)
-                {
-                    checker_move_error(c, node->line, node->column,
-                                       "cannot assign to '%s[..]': '%s' is a read-only borrow",
-                                       base->as.ident.name, base->as.ident.name);
-                    break;
-                }
-            }
-        }
-
         /* For compound assignments (+=, -=, etc.), check operand types */
         if (node->as.assign.op != TOKEN_ASSIGN)
         {
@@ -6822,9 +6424,6 @@ static void check_stmt(Checker *c, AstNode *node)
                var_decl — content cannot leave the borrow). */
             checker_reject_mut_borrow_copy_source(c, node->as.assign.value,
                                                   "assign writable borrow contents to another variable");
-            /* Phase 5.7: same for map borrows. */
-            checker_reject_map_borrow_copy_source(c, node->as.assign.value,
-                                                 "assign map borrow contents to another variable");
             /* Phase 5.8: same for struct borrows. */
             checker_reject_struct_borrow_copy_source(c, node->as.assign.value,
                                                  "assign struct borrow contents to another variable");
@@ -7364,17 +6963,13 @@ static void check_struct_decl(Checker *c, AstNode *node)
         }
     }
 
-    /* Auto-set has_drop if a field owns heap: string / map /
+    /* Auto-set has_drop if a field owns heap: string /
        has_drop-struct / has_drop-enum / Block. */
     bool needs_drop = false;
     for (int i = 0; i < n && !needs_drop; i++)
     {
         Type *ft = st->as.strukt.fields[i].type;
         if (ft->kind == TYPE_STRING)
-        {
-            needs_drop = true;
-        }
-        else if (ft->kind == TYPE_MAP)
         {
             needs_drop = true;
         }
@@ -7419,7 +7014,6 @@ static bool type_owns_heap_for_enum(const Type *t)
     switch (t->kind)
     {
     case TYPE_STRING: return true;
-    case TYPE_MAP:    return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;
     default:          return false;
