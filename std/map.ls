@@ -86,44 +86,58 @@ impl(K, V) Map(K, V) {
     // ---- insert / update ----
 
     // Place (k, v, h) into the table without checking load factor (caller grows
-    // first). Robin Hood: carry the entry forward, evicting any resident closer
-    // to its home (smaller PSL) and continuing with the evictee. On a key match,
-    // overwrite the value (dropping the old one). h is the precomputed hash of k.
+    // first). Robin Hood by FORWARD-shift: scan (read-only) for the target slot —
+    // a key match (update), an empty slot, or the first resident closer to its
+    // home than us (the swap point). Then move k/v in exactly ONCE at that slot;
+    // if it was occupied, first shift the contiguous run forward by one (PSL+1) to
+    // open it. Moving only slot entries (via __take) — never reassigning k inside
+    // the loop — keeps the move checker happy with has_drop K/V. h = hash(k).
     fn _insert_no_grow(&!self, K k, V v, u64 h) where K: Eq {
         int mask = self.cap - 1
         int idx = self._home(h)
         int psl = 0
+        // Phase 1 — classify (no moves of k/v). On exit: idx/psl = insertion slot.
         while true {
             int c = self.ctrl[idx] as int
-            if c == 255 {
-                self.keys[idx] = k
-                self.vals[idx] = v
-                self.ctrl[idx] = psl as u8
-                self.len = self.len + 1
-                return
-            }
+            if c == 255 { break }            // empty → place here
             K existing = self.keys[idx]
             if existing == k {
                 // Update in place: drop the old value, move the new one in.
+                // k is unused here and is dropped at scope exit (RAII).
                 __drop_at(self.vals[idx])
                 self.vals[idx] = v
                 return
             }
-            if c < psl {
-                // Robin Hood swap: evict the richer resident and carry it onward.
-                K rk = __take(self.keys[idx])
-                V rv = __take(self.vals[idx])
-                int rpsl = c
-                self.keys[idx] = k
-                self.vals[idx] = v
-                self.ctrl[idx] = psl as u8
-                k = rk
-                v = rv
-                psl = rpsl
-            }
+            if c < psl { break }             // swap point → open here, shift run fwd
             psl = psl + 1
             idx = (idx + 1) & mask
         }
+        // Phase 2 — if the insertion slot is occupied, shift the run [idx..end)
+        // forward by one (end = first empty slot), bumping each PSL by 1.
+        int here = self.ctrl[idx] as int
+        if here != 255 {
+            int tail = idx
+            int tc = self.ctrl[tail] as int
+            while tc != 255 {
+                tail = (tail + 1) & mask
+                tc = self.ctrl[tail] as int
+            }
+            int p = tail
+            while p != idx {
+                int prev = (p - 1) & mask
+                K mk = __take(self.keys[prev])
+                V mv = __take(self.vals[prev])
+                self.keys[p] = mk
+                self.vals[p] = mv
+                self.ctrl[p] = ((self.ctrl[prev] as int) + 1) as u8
+                p = prev
+            }
+        }
+        // Place the new entry (k/v moved exactly once).
+        self.keys[idx] = k
+        self.vals[idx] = v
+        self.ctrl[idx] = psl as u8
+        self.len = self.len + 1
     }
 
     // Insert or update: move k,v into the table.

@@ -1680,6 +1680,19 @@ add_test(
 )
 set_tests_properties(test_map_basic PROPERTIES DEPENDS "test_hash")
 
+# std.map M-2: has_drop K/V ownership (string/Vec/nested-map keys+values) —
+# set/overwrite/get/remove/clear/grow/auto-drop all memcheck 0/0/0
+# (docs/plan_std_map.md §8). Also covers the owned-rvalue-enum match double-drop fix.
+add_test(
+    NAME test_map_owndrop
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_map_owndrop.cmake
+)
+set_tests_properties(test_map_owndrop PROPERTIES DEPENDS "test_map_basic")
+
 # Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
 # (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
 add_test(

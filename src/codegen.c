@@ -2228,6 +2228,26 @@ static void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type
 #endif
 }
 
+/* Remove a slot from the pending temp-drop list WITHOUT emitting its drop.
+   Used when the slot has already been dropped explicitly on the current path
+   (e.g. the match merge-block subject drop) so the statement-end flush won't
+   drop it a second time. Removes every matching entry; order is irrelevant. */
+static void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot)
+{
+    if (slot == NULL) return;
+    int keep = 0;
+    for (int i = 0; i < ctx->temp_drop_count; i++)
+    {
+        if (ctx->temp_drop_slots[i] == slot)
+            continue; /* drop the entry (already handled) */
+        ctx->temp_drop_slots[keep] = ctx->temp_drop_slots[i];
+        ctx->temp_drop_types[keep] = ctx->temp_drop_types[i];
+        ctx->temp_drop_marks[keep] = ctx->temp_drop_marks[i];
+        keep++;
+    }
+    ctx->temp_drop_count = keep;
+}
+
 /* M-4.5: drop and release all temp_drop slots whose assoc mark >= `mark`.
    Compacts surviving (mark < flush-mark) entries to the front. */
 static void cg_flush_temp_drops(CodegenContext *ctx, int mark)
@@ -9534,8 +9554,17 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         { is_self_recursive = true; break; }
                     }
                 }
-                if (!subject_owned_by_scope && !is_self_recursive)
+                if (!subject_owned_by_scope && !is_self_recursive) {
                     emit_enum_drop(ctx, subj_alloca, subj_type);
+                    /* The owned-temp subject is ALSO on the temp-drop list (L-012,
+                       which covers early-return arms this merge-block drop misses).
+                       Having just dropped it here on the fall-through path, remove
+                       it from that list so the statement-end flush does not drop it
+                       a SECOND time. Without this, the double drop is masked for
+                       idempotent string free (cap zeroed) but double-frees user
+                       structs/containers whose __drop doesn't zero cap (Vec/Map). */
+                    cg_remove_temp_drop(ctx, subj_alloca);
+                }
             }
 
             if (result_alloca)
