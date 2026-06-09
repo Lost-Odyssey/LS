@@ -54,3 +54,20 @@ current build graph.
 | DONE | `tests/samples/map_dynstr_test.ls` | migrated to `Map`; direct `ls run --memcheck` clean |
 | BLOCKED | `tests/samples/mapref_pos_*.ls` | builtin `&map` borrow positives; no direct `&Map` parity until user-container borrow/negative diagnostics are designed |
 | BLOCKED | `tests/samples/mapref_neg_*.ls` | builtin `&map` borrow negatives; no direct `&Map` parity until user-container borrow/negative diagnostics are designed |
+
+## M-6 readiness (2026-06-09)
+
+Cleanup phase done: ctest 179/179; M5-002/003/004 + OPT-001 fixed; std.json on Map;
+mapbench shows std.map ≥ builtin (build ~3.6x faster, lookup equal-or-faster).
+M-6 (remove the builtin `map`) is greenlit — plan: `docs/plan_m6_remove_builtin_map.md`,
+agent handoff: `docs/handoff_m6.md` (both gitignored / local).
+
+Remaining real builtin-`map` consumers M-6's pre-step (M6-0) must resolve:
+- `tests/samples/mapref_*.ls` (12) + their ctest registration → DELETE (builtin
+  `&map` borrow diagnostics; user-container `&Map` diagnostics are a separate
+  undesigned feature).
+- `tests/samples/closure_phase_c7_test.ls` (by-ref capture) → rework to global-
+  observed Map by-move capture, or delete (by-ref capture vanishes with builtin map).
+- `map_iter_test.ls` `each()` observer → swap the by-ref builtin-map accumulator
+  for a module-level global counter.
+(`std/html.ls`, `test_mem_m4_matrix.ls` only mention `map(` in comments / already Map.)
