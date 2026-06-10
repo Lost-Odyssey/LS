@@ -1798,6 +1798,22 @@ add_test(
 )
 set_tests_properties(test_map_option_payload PROPERTIES DEPENDS "test_map_compose")
 
+# std.map index protocol: m[k] (read, panic-on-miss) + m[k]=v (insert/update),
+# aligning Map with Vec's `v[i]` three-tier model. Positive JIT+AOT+memcheck +
+# negative missing-key abort (docs/plan_container_access_safety.md §6).
+add_test(
+    NAME test_map_index
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_map_index.cmake
+)
+set_tests_properties(test_map_index PROPERTIES
+    DEPENDS "test_map_basic"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Regression for B-MAP-M5-002: Block/closure params of reference type `&T`
 # (Block(&Map)/Block(&struct)) use the pointer borrow ABI end-to-end.
 add_test(

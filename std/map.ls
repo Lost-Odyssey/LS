@@ -247,6 +247,29 @@ impl(K, V) Map(K, V) {
         return self._find(k, h) >= 0
     }
 
+    // ---- index protocol (m[k] / m[k] = v) ----
+
+    // `m[k]` (read): a CLONE of the value for k, ABORTING if k is absent. This is
+    // the convenient panic-on-miss accessor that aligns Map with Vec's `v[i]`
+    // (safe·loud); use `get(k) -> Option(V)` when the key may legitimately be
+    // missing. Mirrors get() but unwrapped (`__index` must be `-> V`, never
+    // `-> Option`, so `m[k].foo()` chains). On the abort path the trailing
+    // statements never execute (the process has exited), but still type-check.
+    fn __index(&self, K k) -> V where K: Hash + Eq {
+        u64 h = k.hash()
+        int idx = self._find(k, h)
+        if idx < 0 {
+            print("Map key not found")
+            std.c.abort()
+        }
+        V v = self.vals[idx]
+        return v
+    }
+
+    // `m[k] = v` (write): insert or update — moves k, v into the table. Same as
+    // set(); unlike the read path it never aborts (a missing key is just inserted).
+    fn __index_set(&!self, K k, V v) where K: Hash + Eq { self.set(k, v) }
+
     // Independent deep copy (public alias of the __clone hook, mirrors Vec.copy).
     fn copy(&self) -> Map(K, V) { return self.__clone() }
 
