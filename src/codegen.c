@@ -1278,6 +1278,13 @@ LLVMValueRef ls_string_from_literal(CodegenContext *ctx,
     return ls_string_make(ctx, data, len, cap);
 }
 
+/* True iff `t` is the pure-LS `Str` struct (recognized by name, like Vec/Map). */
+static bool cg_type_is_str(Type *t)
+{
+    return t != NULL && t->kind == TYPE_STRUCT && t->as.strukt.name != NULL &&
+           strcmp(t->as.strukt.name, "Str") == 0;
+}
+
 /* Build a static `Str` struct value {data, len, cap:0} for a string literal
    (docs/plan_string_to_stdlib.md §5.1, P1). `Str { *u8, int, int }` is layout-
    identical to LsString {i8*, i32, i32}; the bytes live in .rodata, so cap 0
@@ -4529,7 +4536,7 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
     {
         AstNode *arg = node->as.call.args[i];
         if (arg->kind == AST_FORMAT_STRING)
-            max_printf_args += arg->as.format_string.expr_count;
+            max_printf_args += arg->as.format_string.expr_count * 2; /* Str -> 2 slots */
         else
             max_printf_args += 2; /* +1 margin for bool select */
     }
@@ -4556,6 +4563,30 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
                 AstNode *expr = arg->as.format_string.exprs[j];
                 const char *uspec = arg->as.format_string.specs
                                         ? arg->as.format_string.specs[j] : NULL;
+                /* Str interpolation: "%.*s" with (len, data). Use the VALUE form
+                   (not _or_borrow, which could hand back a pointer). */
+                if (cg_type_is_str(expr->resolved_type) && uspec == NULL)
+                {
+                    LLVMValueRef sval = codegen_expr(ctx, expr);
+                    if (sval == NULL) { free(printf_args); return NULL; }
+                    if (fmt_len + 4 < 1024)
+                    {
+                        memcpy(fmt_buf + fmt_len, "%.*s", 4);
+                        fmt_len += 4;
+                    }
+                    printf_args[printf_argc++] =
+                        LLVMBuildExtractValue(ctx->builder, sval, 1, "Str.l");
+                    printf_args[printf_argc++] =
+                        LLVMBuildExtractValue(ctx->builder, sval, 0, "Str.d");
+                    if (expr->kind == AST_CALL || expr->kind == AST_INDEX)
+                    {
+                        LLVMValueRef stmp = cg_entry_alloca(
+                            ctx, type_to_llvm(ctx, expr->resolved_type), "fstr.str.drop");
+                        LLVMBuildStore(ctx->builder, sval, stmp);
+                        cg_push_temp_drop(ctx, stmp, expr->resolved_type);
+                    }
+                    continue;
+                }
                 LLVMValueRef val = codegen_expr_or_borrow(ctx, expr);
                 if (val == NULL)
                 {
@@ -4735,8 +4766,10 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
     char fmt_buf[1024];
     int fmt_len = 0;
 
+    /* A `Str` interpolation needs TWO varargs ("%.*s" -> len, data), so size for
+       up to 2 slots per expr. */
     LLVMValueRef *vals = (LLVMValueRef *)malloc_safe(
-        (size_t)(expr_count + 1) * sizeof(LLVMValueRef));
+        (size_t)(expr_count * 2 + 1) * sizeof(LLVMValueRef));
     int val_count = 0;
 
     for (int i = 0; i < expr_count; i++)
@@ -4754,6 +4787,29 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
         {
             free(vals);
             return NULL;
+        }
+        /* Str interpolation: "%.*s" with (len, data) — length-bounded since a Str
+           buffer is not guaranteed NUL-terminated. (Format specs on Str unsupported.) */
+        if (cg_type_is_str(expr->resolved_type) && uspec == NULL)
+        {
+            if (fmt_len + 4 < 1024)
+            {
+                memcpy(fmt_buf + fmt_len, "%.*s", 4);
+                fmt_len += 4;
+            }
+            vals[val_count++] = LLVMBuildExtractValue(ctx->builder, val, 1, "Str.l");
+            vals[val_count++] = LLVMBuildExtractValue(ctx->builder, val, 0, "Str.d");
+            /* Owned Str rvalue (call/index clone) interpolated → drop after the
+               result is built (statement-end flush runs after the snprintf below).
+               Bare ident/field is a borrow: leave it alone. */
+            if (expr->kind == AST_CALL || expr->kind == AST_INDEX)
+            {
+                LLVMValueRef stmp = cg_entry_alloca(
+                    ctx, type_to_llvm(ctx, expr->resolved_type), "fstr.str.drop");
+                LLVMBuildStore(ctx->builder, val, stmp);
+                cg_push_temp_drop(ctx, stmp, expr->resolved_type);
+            }
+            continue;
         }
         val = cg_fstring_emit_arg(ctx, expr, val, uspec, fmt_buf, &fmt_len, 1024);
         if (val == NULL)

@@ -662,6 +662,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib: f-string interpolation of `Str` values — `f"...{str}..."`
+# formats via "%.*s" (length-bounded). Borrowed interps not dropped; owned Str
+# rvalue interps dropped after the result is built. Both the f-string-producing
+# path and the inline print() path. JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_str_fstring_interp
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_fstring_interp.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_fstring_interp
+        -DMARKER=STRFI
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject

@@ -4043,8 +4043,9 @@ static Type *check_expr(Checker *c, AstNode *node)
             Type *et = check_expr(c, node->as.format_string.exprs[i]);
             if (et == NULL)
                 continue;
-            /* Ensure the expression is a printable type */
-            if (!type_is_numeric(et) && et->kind != TYPE_BOOL && et->kind != TYPE_STRING && et->kind != TYPE_POINTER && et->kind != TYPE_OBJECT)
+            /* Ensure the expression is a printable type. The pure-LS `Str` is
+               printable too (interpolated via "%.*s" by codegen). */
+            if (!type_is_numeric(et) && et->kind != TYPE_BOOL && et->kind != TYPE_STRING && et->kind != TYPE_POINTER && et->kind != TYPE_OBJECT && !type_is_str_struct(et))
             {
                 checker_error(c, node->as.format_string.exprs[i]->line,
                               node->as.format_string.exprs[i]->column,
