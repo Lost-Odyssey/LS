@@ -92,15 +92,20 @@ ls.exe run input.ls                     # JIT 执行
 ls.exe run --memcheck input.ls          # JIT + 内存检查
 ls.exe repl                             # REPL
 
-# 测试（推荐：--repeat until-pass:2 自动重试 flaky 测试）
-cd build && ctest --output-on-failure -C Release --repeat until-pass:2
+# 测试
+cd build && ctest --output-on-failure -C Release
 ```
 
-> ⚠️ **测试 flake 说明**：AOT 测试会 `compile` 出 `.exe` 后立刻运行/删除；Windows
-> Defender 实时扫描会瞬时锁住刚落盘的 `.exe`，导致**间歇性**编译/运行/删除失败
-> （现象：全量跑随机某个 AOT 测试 fail，单独重跑即过）。**与代码逻辑无关、ctest
-> 默认串行（非并行导致）**。对策：全量跑统一加 `--repeat until-pass:2`，flake 自愈
-> 而真回归（连续失败）仍会暴露。治本可把 `build/` 加入 Defender 排除项。
+> ✅ **AOT flake 已根治**（2026-06-10）：曾经「全量跑随机某个 AOT 测试 fail、单独
+> 重跑即过」的间歇失败，**真因不是 Defender**（实测关闭实时监控 + build/ 入排除项
+> 仍复现），而是 **AOT exe 输出缓冲未 flush 的 CRT 竞态**：AOT exe 混链 msvcrt +
+> ucrt（见 [docs/crt_mismatch_bug.md](docs/crt_mismatch_bug.md)），stdout 重定向
+> （管道/文件）时全缓冲，进程退出期负责 flush 的 CRT 可能与持有 printf/puts 缓冲的
+> CRT 不同 → **约 15% 的运行整段 stdout 丢失（rc=0、空输出）**。隔离复现：同一 exe
+> 连跑 200 次约 30 次空输出。修复：runtime `__ls_flush_out()`（与 print 同 TU 同 CRT，
+> 调 `fflush(NULL)`），codegen 在 AOT entry main 每个 ret 前注入调用。修后同样 200×→
+> 0 失败、全量 ctest 一次过、无需 `--repeat`。**影响真实用户**（任何 AOT 程序输出被
+> 管道/重定向都会 ~15% 丢全部输出），非仅测试。`--repeat until-pass:2` 仍可作冗余兜底。
 
 > 完整 CMakeLists.txt 配置见 [docs/build.md](docs/build.md)
 

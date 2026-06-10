@@ -167,6 +167,18 @@ int __ls_str_scan_digits(const char *data, int len, int start) {
     return i;
 }
 
+/* Flush all CRT output streams. Codegen injects a call to this before every
+   `ret` in main so buffered stdout/stderr is written WHILE this translation unit's
+   CRT is still live — not left to the process-teardown path. On Windows the AOT
+   exe links both msvcrt.dll and ucrtbase.dll (see docs/crt_mismatch_bug.md); when
+   stdout is redirected to a file/pipe it is fully buffered, and the CRT that runs
+   the exit-time flush can differ from the one holding printf/puts' buffer, so ~15%
+   of runs lost ALL output (rc=0, empty stdout) intermittently. fflush lives in the
+   same TU as ls_print/printf, so it always targets the buffer those writes filled. */
+void __ls_flush_out(void) {
+    fflush(NULL);
+}
+
 /* print(string) — print a string followed by newline */
 void ls_print(const char *s) {
     if (s) {

@@ -16282,6 +16282,39 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         }
     }
 
+    /* Flush CRT output streams before every ret in the AOT entry main, AFTER
+       global cleanup. The AOT exe links msvcrt + ucrt (docs/crt_mismatch_bug.md);
+       with redirected (fully buffered) stdout the exit-time flush could run on a
+       different CRT than printf/puts' buffer → ~15% of runs lost ALL output
+       (rc=0, empty stdout) intermittently. __ls_flush_out (runtime/builtins.c, same
+       CRT as the prints) calls fflush(NULL) so output is written while this CRT is
+       live. AOT-only: JIT resolves runtime symbols via a fixed AbsoluteSymbols list
+       and ls.exe uses a single /MD CRT that flushes correctly, so JIT never flaked. */
+    if (ctx->aot_entry)
+    {
+        LLVMValueRef main_fn = LLVMGetNamedFunction(ctx->module, "main");
+        if (main_fn && LLVMCountBasicBlocks(main_fn) > 0)
+        {
+            LLVMTypeRef flush_type = LLVMFunctionType(
+                LLVMVoidTypeInContext(ctx->context), NULL, 0, 0);
+            LLVMValueRef flush_fn = LLVMGetNamedFunction(ctx->module, "__ls_flush_out");
+            if (!flush_fn)
+                flush_fn = LLVMAddFunction(ctx->module, "__ls_flush_out", flush_type);
+            for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(main_fn);
+                 bb != NULL; bb = LLVMGetNextBasicBlock(bb))
+            {
+                LLVMValueRef term = LLVMGetBasicBlockTerminator(bb);
+                if (term && LLVMGetInstructionOpcode(term) == LLVMRet)
+                {
+                    LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx->context);
+                    LLVMPositionBuilderBefore(tmp, term);
+                    LLVMBuildCall2(tmp, flush_type, flush_fn, NULL, 0, "");
+                    LLVMDisposeBuilder(tmp);
+                }
+            }
+        }
+    }
+
     /* Verify module */
     char *error = NULL;
     if (LLVMVerifyModule(ctx->module, LLVMReturnStatusAction, &error))
