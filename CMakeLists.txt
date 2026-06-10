@@ -528,6 +528,20 @@ add_test(
         -DMARKER=FORCEUNWRAP
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
+
+# A-1 (docs/plan_runtime_primitives.md): std.c.{malloc,realloc,free,abort}
+# reachable by canonical path, incl. from generic method bodies instantiated
+# at the consumer site. JIT + AOT + memcheck.
+add_test(
+    NAME test_stdc_prim
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdc_prim_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=stdc_prim
+        -DMARKER=STDCPRIM
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
 set_tests_properties(test_ident_suffix PROPERTIES DEPENDS "test_fstring_spec")
 
 # std/plot.ls (plot Phase 1 skeleton): data model + builder API + summary output.

@@ -6586,6 +6586,32 @@ static int match_collect_int_vals(AstNode *pat, long long *out, int max)
 
 /* ---- Expression codegen ---- */
 
+/* A-1 (docs/plan_runtime_primitives.md): structural match of a canonical-path
+   call to a std.c primitive — `std.c.malloc/realloc/free/abort`. Mirrors the
+   checker's match_stdc_prim. Returns 0=malloc 1=realloc 2=free 3=abort, else -1.
+   These lower to exactly the same CRT/runtime calls the bare builtins emitted. */
+static int cg_match_stdc_prim(AstNode *callee)
+{
+    if (callee == NULL || callee->kind != AST_FIELD)
+        return -1;
+    AstNode *mid = callee->as.field_access.object;
+    if (mid == NULL || mid->kind != AST_FIELD)
+        return -1;
+    AstNode *head = mid->as.field_access.object;
+    if (head == NULL || head->kind != AST_IDENT)
+        return -1;
+    if (strcmp(head->as.ident.name, "std") != 0)
+        return -1;
+    if (strcmp(mid->as.field_access.field, "c") != 0)
+        return -1;
+    const char *f = callee->as.field_access.field;
+    if (strcmp(f, "malloc") == 0)  return 0;
+    if (strcmp(f, "realloc") == 0) return 1;
+    if (strcmp(f, "free") == 0)    return 2;
+    if (strcmp(f, "abort") == 0)   return 3;
+    return -1;
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -7043,6 +7069,89 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
     case AST_CALL:
     {
+        /* A-1: canonical-path call to a std.c primitive (std.c.malloc/realloc/
+           free/abort). Lower identically to the bare-name builtins. Must come
+           before the generic field/method dispatch, which can't resolve the
+           `std.c` qualifier. See docs/plan_runtime_primitives.md §5.3. */
+        {
+            int prim = cg_match_stdc_prim(node->as.call.callee);
+            if (prim == 0 || prim == 1) /* malloc(sz) / realloc(p, sz) */
+            {
+                const char *fn = (prim == 0) ? "malloc" : "realloc";
+                int n = node->as.call.arg_count;
+                LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx->context);
+                /* size arg index: malloc → 0, realloc → 1. Coerce it to i64
+                   (LS `int` is i32; old builtin widened at the call site). */
+                int size_idx = (prim == 0) ? 0 : 1;
+                LLVMValueRef args[2];
+                for (int i = 0; i < n && i < 2; i++)
+                {
+                    LLVMValueRef a = codegen_expr(ctx, node->as.call.args[i]);
+                    if (i == size_idx && a != NULL &&
+                        LLVMGetTypeKind(LLVMTypeOf(a)) == LLVMIntegerTypeKind &&
+                        LLVMGetIntTypeWidth(LLVMTypeOf(a)) < 64)
+                        a = LLVMBuildSExt(ctx->builder, a, i64t, "sz.i64");
+                    args[i] = a;
+                }
+                LLVMValueRef f = LLVMGetNamedFunction(ctx->module, fn);
+                if (f == NULL)
+                {
+                    /* Declare on demand: (i64)->i8* / (i8*,i64)->i8* */
+                    LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
+                    LLVMTypeRef ps0[2];
+                    LLVMTypeRef ft;
+                    if (prim == 0) { ps0[0] = LLVMInt64TypeInContext(ctx->context);
+                                     ft = LLVMFunctionType(i8p, ps0, 1, 0); }
+                    else { ps0[0] = i8p; ps0[1] = LLVMInt64TypeInContext(ctx->context);
+                           ft = LLVMFunctionType(i8p, ps0, 2, 0); }
+                    f = LLVMAddFunction(ctx->module, fn, ft);
+                }
+                LLVMTypeRef ft = LLVMGlobalGetValueType(f);
+                return LLVMBuildCall2(ctx->builder, ft, f, args, n, "");
+            }
+            if (prim == 2) /* free(p) — drop struct payload first, then free */
+            {
+                if (node->as.call.arg_count == 1)
+                {
+                    LLVMValueRef ptr = codegen_expr(ctx, node->as.call.args[0]);
+                    if (ptr == NULL) return NULL;
+                    Type *arg_type = node->as.call.args[0]->resolved_type;
+                    if (arg_type && arg_type->kind == TYPE_POINTER &&
+                        arg_type->as.pointer_to &&
+                        arg_type->as.pointer_to->kind == TYPE_STRUCT &&
+                        arg_type->as.pointer_to->as.strukt.has_drop)
+                    {
+                        LLVMTypeRef pt = LLVMTypeOf(ptr);
+                        LLVMValueRef isn = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                                                         ptr, LLVMConstNull(pt), "free.is_null");
+                        LLVMValueRef cur = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+                        LLVMBasicBlockRef skip = LLVMAppendBasicBlockInContext(ctx->context, cur, "free.skip_drop");
+                        LLVMBasicBlockRef dod = LLVMAppendBasicBlockInContext(ctx->context, cur, "free.do_drop");
+                        LLVMBuildCondBr(ctx->builder, isn, skip, dod);
+                        LLVMPositionBuilderAtEnd(ctx->builder, dod);
+                        emit_struct_drop(ctx, ptr, arg_type->as.pointer_to);
+                        LLVMBuildBr(ctx->builder, skip);
+                        LLVMPositionBuilderAtEnd(ctx->builder, skip);
+                    }
+                    LLVMValueRef free_fn = LLVMGetNamedFunction(ctx->module, "free");
+                    LLVMTypeRef free_type = LLVMGlobalGetValueType(free_fn);
+                    return LLVMBuildCall2(ctx->builder, free_type, free_fn, &ptr, 1, "");
+                }
+            }
+            if (prim == 3 && node->as.call.arg_count == 0) /* abort() */
+            {
+                LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
+                LLVMTypeRef exit_ty = LLVMFunctionType(
+                    LLVMVoidTypeInContext(ctx->context),
+                    (LLVMTypeRef[]){ LLVMInt32TypeInContext(ctx->context) }, 1, 0);
+                if (exit_fn == NULL)
+                    exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
+                LLVMValueRef code = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 1, 0);
+                LLVMBuildCall2(ctx->builder, exit_ty, exit_fn, &code, 1, "");
+                return NULL;
+            }
+        }
+
         /* Phase B closures: callee is a Block-typed expression (local var or
            an inline `|x| body` literal). Lower as indirect call through the
            {fn_ptr, env_ptr} fat pointer. Must come before the user-fn lookup
