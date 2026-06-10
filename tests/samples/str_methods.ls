@@ -9,9 +9,10 @@ fn check(bool ok, string what) {
 }
 
 fn main() {
-    // NOTE (pre-P5): a bare string-literal receiver (`"x".trim()`) and a literal
-    // passed straight to a `&Str` param do NOT yet coerce — the literal default is
-    // still builtin string. So we bind literals to Str vars first, then call/pass.
+    // NOTE (pre-P5): a literal passed to a `&Str` param now DOES coerce (see
+    // str_lit_borrow.ls). Still pending: a bare string-literal *receiver*
+    // (`"x".trim()`) — no expected type at the receiver, so the literal stays
+    // builtin string until P5 flips the default. We bind literals to Str vars here.
     Str s = "Hello, World"
     Str comma = ", "
     Str lo = "hello"

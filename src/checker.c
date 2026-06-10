@@ -200,6 +200,19 @@ static bool type_is_str_struct(const Type *t)
            t->as.strukt.name != NULL && strcmp(t->as.strukt.name, "Str") == 0;
 }
 
+/* If `t` is `Str` or a read-only borrow `&Str`, return the underlying Str struct
+   type; else NULL. A string literal coerces to a (static) Str in either slot —
+   a direct `Str` position or an auto-borrowed `&Str` parameter (the resulting Str
+   value is then auto-borrowed via `&Str ← Str`). */
+static Type *str_target_of_expected(const Type *t)
+{
+    if (type_is_str_struct(t)) return (Type *)t;
+    if (t != NULL && t->kind == TYPE_REFERENCE && !t->is_mut &&
+        type_is_str_struct(t->as.pointer_to))
+        return t->as.pointer_to;
+    return NULL;
+}
+
 /* Step 11: Get the impl_registry key name for a type.
    For structs returns the struct name; for builtins returns "int", "f64" etc. */
 static const char *type_impl_name(Type *t)
@@ -4007,10 +4020,13 @@ static Type *check_expr(Checker *c, AstNode *node)
            expecting the pure-LS `Str` adopts the Str type — a static Str pointing
            at the same .rodata bytes (cap 0). Lets `Str s = "..."` work while the
            builtin string is still the default literal type. */
-        if (type_is_str_struct(c->expected_type))
         {
-            node->coerce_str_lit_to_str = true;
-            result = c->expected_type;
+            Type *strt = str_target_of_expected(c->expected_type);
+            if (strt)
+            {
+                node->coerce_str_lit_to_str = true;
+                result = strt;
+            }
         }
         break;
 
