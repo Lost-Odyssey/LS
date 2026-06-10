@@ -40,7 +40,7 @@ impl(T) Vec(T) {
         int n = self.cap
         if n < 4 { n = 4 }
         while n < need { n = n * 2 }
-        self.data = realloc(self.data as *u8, n * sizeof(T)) as *T
+        self.data = std.c.realloc(self.data as *u8, n * sizeof(T)) as *T
         self.cap = n
     }
 
@@ -48,13 +48,13 @@ impl(T) Vec(T) {
     fn shrink_to_fit(&!self) {
         if self.cap == self.len { return }
         if self.len == 0 {
-            if self.cap > 0 { free(self.data as *u8) }
+            if self.cap > 0 { std.c.free(self.data as *u8) }
             *T p = nil
             self.data = p
             self.cap = 0
             return
         }
-        self.data = realloc(self.data as *u8, self.len * sizeof(T)) as *T
+        self.data = std.c.realloc(self.data as *u8, self.len * sizeof(T)) as *T
         self.cap = self.len
     }
 
@@ -151,7 +151,7 @@ impl(T) Vec(T) {
     fn get(&self, int i) -> T {
         if i < 0 || i >= self.len {
             print(f"Vec index out of bounds: len={self.len} index={i}")
-            abort()
+            std.c.abort()
         }
         return self.get!(i)
     }
@@ -167,7 +167,7 @@ impl(T) Vec(T) {
     fn set(&!self, int i, T x) {
         if i < 0 || i >= self.len {
             print(f"Vec index out of bounds: len={self.len} index={i}")
-            abort()
+            std.c.abort()
         }
         self.set!(i, x)
     }
@@ -423,7 +423,7 @@ impl(T) Vec(T) {
     // Drop every live element (recursively), then free the buffer.
     fn __drop() {
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
-        if self.cap > 0 { free(self.data as *u8) }
+        if self.cap > 0 { std.c.free(self.data as *u8) }
     }
 }
 
