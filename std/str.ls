@@ -134,6 +134,144 @@ impl Str {
         return true
     }
 
+    // ---- search (byte layer; needle borrowed) ----
+
+    // Index of the first occurrence of `needle`, or -1. Empty needle -> 0.
+    fn find(&self, &Str needle) -> int {
+        int n = self.len
+        int m = needle.len
+        if m == 0 { return 0 }
+        if m > n { return -1 }
+        int last = n - m
+        for (int i = 0; i <= last; i = i + 1) {
+            bool hit = true
+            for (int j = 0; j < m; j = j + 1) {
+                if self.data[i + j] != needle.data[j] { hit = false  break }
+            }
+            if hit { return i }
+        }
+        return -1
+    }
+
+    fn contains?(&self, &Str needle) -> bool { return self.find(needle) >= 0 }
+
+    fn starts_with?(&self, &Str prefix) -> bool {
+        int m = prefix.len
+        if m > self.len { return false }
+        for (int j = 0; j < m; j = j + 1) {
+            if self.data[j] != prefix.data[j] { return false }
+        }
+        return true
+    }
+
+    fn ends_with?(&self, &Str suffix) -> bool {
+        int m = suffix.len
+        int n = self.len
+        if m > n { return false }
+        int off = n - m
+        for (int j = 0; j < m; j = j + 1) {
+            if self.data[off + j] != suffix.data[j] { return false }
+        }
+        return true
+    }
+
+    // ---- slice / transform (owned Str results) ----
+
+    // Substring of `len` bytes starting at `start`. Lenient clamping (matches the
+    // old builtin): out-of-range start/len are clipped, never abort.
+    fn substr(&self, int start, int len) -> Str {
+        int n = self.len
+        int s = start
+        if s < 0 { s = 0 }
+        if s > n { s = n }
+        int l = len
+        if l < 0 { l = 0 }
+        if s + l > n { l = n - s }
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(l)
+        for (int i = 0; i < l; i = i + 1) { out.data[i] = self.data[s + i] }
+        out.len = l
+        return out
+    }
+
+    // ASCII upper/lower (byte layer; non-ASCII bytes pass through unchanged —
+    // Unicode case folding is out of scope, §6.5).
+    fn upper(&self) -> Str {
+        int n = self.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(n)
+        for (int i = 0; i < n; i = i + 1) {
+            int b = self.data[i]
+            if b >= 97 && b <= 122 { b = b - 32 }
+            out.data[i] = b as u8
+        }
+        out.len = n
+        return out
+    }
+
+    fn lower(&self) -> Str {
+        int n = self.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(n)
+        for (int i = 0; i < n; i = i + 1) {
+            int b = self.data[i]
+            if b >= 65 && b <= 90 { b = b + 32 }
+            out.data[i] = b as u8
+        }
+        out.len = n
+        return out
+    }
+
+    // Trim leading/trailing ASCII whitespace (space, tab, LF, CR).
+    fn trim(&self) -> Str {
+        int n = self.len
+        int s = 0
+        while s < n {
+            int b = self.data[s]
+            if b == 32 || b == 9 || b == 10 || b == 13 { s = s + 1 } else { break }
+        }
+        int e = n
+        while e > s {
+            int b = self.data[e - 1]
+            if b == 32 || b == 9 || b == 10 || b == 13 { e = e - 1 } else { break }
+        }
+        return self.substr(s, e - s)
+    }
+
+    // Concatenate self ++ other into a fresh owned Str.
+    fn concat(&self, &Str other) -> Str {
+        int a = self.len
+        int b = other.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(a + b)
+        for (int i = 0; i < a; i = i + 1) { out.data[i] = self.data[i] }
+        for (int i = 0; i < b; i = i + 1) { out.data[a + i] = other.data[i] }
+        out.len = a + b
+        return out
+    }
+
+    // Repeat self `times` times (times <= 0 -> empty).
+    fn repeat(&self, int times) -> Str {
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        if times <= 0 { return out }
+        int n = self.len
+        out.reserve(n * times)
+        int k = 0
+        for (int t = 0; t < times; t = t + 1) {
+            for (int i = 0; i < n; i = i + 1) {
+                out.data[k] = self.data[i]
+                k = k + 1
+            }
+        }
+        out.len = n * times
+        return out
+    }
+
     // ---- ownership hooks (unified has_drop path) ----
 
     // Deep-copy hook: emit_clone_value calls this when a Str is cloned (by-value

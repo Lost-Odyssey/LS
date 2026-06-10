@@ -605,6 +605,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib: common builtin-string methods reimplemented as pure-LS
+# `impl Str` over the byte buffer (find/contains?/starts_with?/ends_with?/substr/
+# upper/lower/trim/concat/repeat). Prerequisite to P5 (removing builtin string).
+# Pure LS, no compiler change. JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_str_methods
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_methods
+        -DMARKER=STRM
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject
