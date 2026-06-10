@@ -9432,7 +9432,29 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         LLVMPositionBuilderAtEnd(ctx->builder, err_bb);
         {
             LLVMValueRef printf_fn = LLVMGetNamedFunction(ctx->module, "printf");
-            if (printf_fn) {
+            /* C1: `.expect(msg)` lowers to a force-unwrap carrying a message expr.
+               On the failure path print the user's message; bare `!` / `.unwrap()`
+               (message == NULL) print the default diagnostic. The message string is
+               evaluated only here (panic path) — any owned temp leaks are moot since
+               the process is exiting. */
+            AstNode *msg_node = node->as.force_unwrap.message;
+            if (printf_fn && msg_node) {
+                LLVMTypeRef printf_ty = LLVMGlobalGetValueType(printf_fn);
+                LLVMValueRef msg_val = codegen_expr(ctx, msg_node);
+                LLVMValueRef msg_data = msg_val
+                    ? ls_string_data(ctx, msg_val) : NULL;
+                LLVMValueRef fmt = LLVMBuildGlobalStringPtr(
+                    ctx->builder, "[expect] %d:%d: %s\n", "fuw.efmt");
+                LLVMValueRef line_val = LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
+                                                     (unsigned long long)node->line, 0);
+                LLVMValueRef col_val  = LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
+                                                     (unsigned long long)node->column, 0);
+                if (msg_data == NULL)
+                    msg_data = LLVMBuildGlobalStringPtr(ctx->builder, "(expect)", "fuw.emsg0");
+                LLVMValueRef pargs4[4] = { fmt, line_val, col_val, msg_data };
+                LLVMBuildCall2(ctx->builder, printf_ty, printf_fn, pargs4, 4, "");
+            }
+            else if (printf_fn) {
                 LLVMTypeRef printf_ty = LLVMGlobalGetValueType(printf_fn);
                 const char *fail_variant = is_result ? "Err" : "None";
                 const char *ok_variant   = is_result ? "Ok" : "Some";

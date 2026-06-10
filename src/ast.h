@@ -325,6 +325,10 @@ struct AstNode
                                   Result type T is on node->resolved_type; the
                                   operand enum is read via expr->resolved_type,
                                   so no extra field is needed here. */
+            AstNode *message;  /* C1: optional panic message (string expr) for the
+                                  `.expect(msg)` combinator, which the checker
+                                  rewrites to a force-unwrap. NULL for bare `!` and
+                                  `.unwrap()` (default diagnostic). */
         } force_unwrap;
         struct
         {

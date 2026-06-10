@@ -256,6 +256,7 @@ void ast_free(AstNode *node) {
         break;
     case AST_FORCE_UNWRAP:
         ast_free(node->as.force_unwrap.expr);
+        ast_free(node->as.force_unwrap.message);  /* C1: NULL for bare `!`/unwrap */
         break;
     case AST_RANGE:
         ast_free(node->as.range.start);
@@ -729,6 +730,7 @@ AstNode *ast_clone_deep(const AstNode *src) {
         break;
     case AST_FORCE_UNWRAP:
         n->as.force_unwrap.expr = ast_clone_deep(src->as.force_unwrap.expr);
+        n->as.force_unwrap.message = ast_clone_deep(src->as.force_unwrap.message);
         break;
     case AST_RANGE:
         n->as.range.start = ast_clone_deep(src->as.range.start);

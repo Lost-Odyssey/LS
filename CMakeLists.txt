@@ -529,6 +529,23 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
+# is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
+# memcheck + negative unwrap-None-abort + use-after-move compile reject
+# (docs/plan_container_access_safety.md §5.3).
+add_test(
+    NAME test_opt_combinator
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_opt_combinator.cmake
+)
+set_tests_properties(test_opt_combinator PROPERTIES
+    DEPENDS "test_force_unwrap"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Vec(T).sort / sort_by — O(n log n) stable merge sort (bugs/27_vec.txt #2):
 # larger n, explicit stability, has_drop elements, degenerate sizes.
 add_test(
