@@ -620,6 +620,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib: Str method-port batch 2 — rfind/count/compare/replace/
+# pad_left/pad_right + collection returners bytes/split/lines (Vec(Str)/Vec(int)).
+# Pure LS, no compiler change. JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_str_methods2
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods2.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_methods2
+        -DMARKER=STRM2
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject

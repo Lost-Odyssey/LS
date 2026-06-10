@@ -23,6 +23,7 @@
 //   * __clone / __drop         the generic has_drop deep-copy / destructor hooks.
 
 import std.c
+import std.vec
 
 struct Str { *u8 data; int len; int cap }
 
@@ -269,6 +270,182 @@ impl Str {
             }
         }
         out.len = n * times
+        return out
+    }
+
+    // ---- more search (byte layer) ----
+
+    // Index of the LAST occurrence of `needle`, or -1. Empty needle -> len.
+    fn rfind(&self, &Str needle) -> int {
+        int n = self.len
+        int m = needle.len
+        if m == 0 { return n }
+        if m > n { return -1 }
+        for (int i = n - m; i >= 0; i = i - 1) {
+            bool hit = true
+            for (int j = 0; j < m; j = j + 1) {
+                if self.data[i + j] != needle.data[j] { hit = false  break }
+            }
+            if hit { return i }
+        }
+        return -1
+    }
+
+    // Number of non-overlapping occurrences of `needle`.
+    fn count(&self, &Str needle) -> int {
+        int m = needle.len
+        if m == 0 { return 0 }
+        int n = self.len
+        int total = 0
+        int i = 0
+        while i + m <= n {
+            bool hit = true
+            for (int j = 0; j < m; j = j + 1) {
+                if self.data[i + j] != needle.data[j] { hit = false  break }
+            }
+            if hit { total = total + 1  i = i + m } else { i = i + 1 }
+        }
+        return total
+    }
+
+    // Lexicographic byte comparison: -1 if self < other, 1 if >, 0 if equal.
+    fn compare(&self, &Str other) -> int {
+        int a = self.len
+        int b = other.len
+        int n = a
+        if b < n { n = b }
+        for (int i = 0; i < n; i = i + 1) {
+            int x = self.data[i]
+            int y = other.data[i]
+            if x < y { return -1 }
+            if x > y { return 1 }
+        }
+        if a < b { return -1 }
+        if a > b { return 1 }
+        return 0
+    }
+
+    // ---- replace / pad (owned Str results) ----
+
+    // Replace every non-overlapping occurrence of `old` with `rep`. Empty `old`
+    // copies self unchanged.
+    fn replace(&self, &Str old, &Str rep) -> Str {
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        int m = old.len
+        int n = self.len
+        if m == 0 {
+            out.reserve(n)
+            for (int i = 0; i < n; i = i + 1) { out.data[i] = self.data[i] }
+            out.len = n
+            return out
+        }
+        int i = 0
+        while i < n {
+            bool hit = false
+            if i + m <= n {
+                hit = true
+                for (int j = 0; j < m; j = j + 1) {
+                    if self.data[i + j] != old.data[j] { hit = false  break }
+                }
+            }
+            if hit {
+                for (int j = 0; j < rep.len; j = j + 1) { out.push_byte(rep.data[j]) }
+                i = i + m
+            } else {
+                out.push_byte(self.data[i])
+                i = i + 1
+            }
+        }
+        return out
+    }
+
+    // Left/right pad with `fill` byte until at least `width` bytes wide.
+    fn pad_left(&self, int width, int fill) -> Str {
+        int n = self.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        if width > n {
+            int pad = width - n
+            for (int i = 0; i < pad; i = i + 1) { out.push_byte(fill) }
+        }
+        for (int i = 0; i < n; i = i + 1) { out.push_byte(self.data[i]) }
+        return out
+    }
+
+    fn pad_right(&self, int width, int fill) -> Str {
+        int n = self.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        for (int i = 0; i < n; i = i + 1) { out.push_byte(self.data[i]) }
+        if width > n {
+            int pad = width - n
+            for (int i = 0; i < pad; i = i + 1) { out.push_byte(fill) }
+        }
+        return out
+    }
+
+    // ---- collections (byte/substring layer; return Vec) ----
+
+    // Every byte as an int (0..255). §6.3: byte layer — the name `chars()` is
+    // reserved for a future codepoint-layer iterator (Unicode).
+    fn bytes(&self) -> Vec(int) {
+        Vec(int) out = {}
+        for (int i = 0; i < self.len; i = i + 1) { out.push(self.data[i]) }
+        return out
+    }
+
+    // Split on every non-overlapping `sep`. Empty sep yields one element (the
+    // whole string). A trailing sep yields a trailing empty element.
+    fn split(&self, &Str sep) -> Vec(Str) {
+        Vec(Str) out = {}
+        int sn = sep.len
+        int n = self.len
+        if sn == 0 {
+            out.push(self.substr(0, n))
+            return out
+        }
+        int start = 0
+        int i = 0
+        while i + sn <= n {
+            bool hit = true
+            for (int j = 0; j < sn; j = j + 1) {
+                if self.data[i + j] != sep.data[j] { hit = false  break }
+            }
+            if hit {
+                out.push(self.substr(start, i - start))
+                i = i + sn
+                start = i
+            } else {
+                i = i + 1
+            }
+        }
+        out.push(self.substr(start, n - start))
+        return out
+    }
+
+    // Split into lines on '\n', stripping a preceding '\r' (CRLF). A trailing
+    // newline does NOT yield a final empty element.
+    fn lines(&self) -> Vec(Str) {
+        Vec(Str) out = {}
+        int n = self.len
+        if n == 0 { return out }
+        int start = 0
+        int i = 0
+        while i < n {
+            int ch = self.data[i]
+            if ch == 10 {
+                int cut = i
+                if cut > start {
+                    int prev = self.data[cut - 1]
+                    if prev == 13 { cut = cut - 1 }
+                }
+                out.push(self.substr(start, cut - start))
+                start = i + 1
+            }
+            i = i + 1
+        }
+        if start < n { out.push(self.substr(start, n - start)) }
         return out
     }
 
