@@ -3678,7 +3678,11 @@ typedef enum {
     OPTC_UNWRAP, OPTC_EXPECT,    /* panic → force-unwrap (expect carries a message) */
     OPTC_UNWRAP_OR,             /* match desugar, 1 fallback arg */
     OPTC_IS_SOME, OPTC_IS_NONE, /* match desugar, Option only, → bool */
-    OPTC_IS_OK,   OPTC_IS_ERR   /* match desugar, Result only, → bool */
+    OPTC_IS_OK,   OPTC_IS_ERR,  /* match desugar, Result only, → bool */
+    /* C2a: Option↔Result conversions (match desugar; result type is built so the
+       bare variant ctors in the arm bodies resolve regardless of call context). */
+    OPTC_OK,      OPTC_ERR,     /* Result → Option(T) / Option(E) */
+    OPTC_OK_OR                  /* Option → Result(T, E), 1 error-value arg */
 } OptCombinator;
 
 static OptCombinator opt_combinator_id(const char *name)
@@ -3690,6 +3694,9 @@ static OptCombinator opt_combinator_id(const char *name)
     if (strcmp(name, "is_none?")  == 0) return OPTC_IS_NONE;
     if (strcmp(name, "is_ok?")    == 0) return OPTC_IS_OK;
     if (strcmp(name, "is_err?")   == 0) return OPTC_IS_ERR;
+    if (strcmp(name, "ok")        == 0) return OPTC_OK;
+    if (strcmp(name, "err")       == 0) return OPTC_ERR;
+    if (strcmp(name, "ok_or")     == 0) return OPTC_OK_OR;
     return OPTC_NONE;
 }
 
@@ -3707,7 +3714,8 @@ static AstNode *optc_mk_bool(bool v, int line, int col)
     n->as.bool_lit.value = v;
     return n;
 }
-/* variant pattern `Variant(binding)` — binding "_" yields a wildcard payload. */
+/* variant pattern `Variant(binding)` — binding "_" yields a wildcard payload.
+   The same AST_CALL shape doubles as a variant constructor expression. */
 static AstNode *optc_mk_variant_pat(const char *variant, const char *binding,
                                     int line, int col)
 {
@@ -3719,6 +3727,60 @@ static AstNode *optc_mk_variant_pat(const char *variant, const char *binding,
     call->as.call.type_args = NULL;
     call->as.call.type_arg_count = 0;
     return call;
+}
+/* variant constructor `Variant(arg)` where arg is an arbitrary expression node. */
+static AstNode *optc_mk_variant_call(const char *variant, AstNode *arg,
+                                     int line, int col)
+{
+    AstNode *call = ast_new(AST_CALL, line, col);
+    call->as.call.callee = optc_mk_ident(variant, line, col);
+    call->as.call.args = (AstNode **)malloc_safe(sizeof(AstNode *));
+    call->as.call.args[0] = arg;
+    call->as.call.arg_count = 1;
+    call->as.call.type_args = NULL;
+    call->as.call.type_arg_count = 0;
+    return call;
+}
+/* First payload type of variant `vname` in enum type `enom`, or NULL. */
+static Type *optc_variant_payload(Type *enom, const char *vname)
+{
+    for (int i = 0; i < enom->as.enom.variant_count; i++)
+        if (strcmp(enom->as.enom.variants[i].name, vname) == 0 &&
+            enom->as.enom.variants[i].payload_count > 0)
+            return enom->as.enom.variants[i].payload_types[0];
+    return NULL;
+}
+
+/* If enum type `t` carries variant `vname`, return 1 with *out_idx set. */
+static int enum_type_has_variant(Type *t, const char *vname, int *out_idx)
+{
+    if (t == NULL || t->kind != TYPE_ENUM) return 0;
+    for (int i = 0; i < t->as.enom.variant_count; i++)
+        if (strcmp(t->as.enom.variants[i].name, vname) == 0) {
+            *out_idx = i;
+            return 1;
+        }
+    return 0;
+}
+
+/* Disambiguate an otherwise-ambiguous bare variant ctor (e.g. `Some`/`None`/`Err`
+   matching several Option/Result instantiations) by a type hint: the node's own
+   already-resolved enum (idempotent re-check — the same ctor may be visited twice
+   when an outer rewrite re-checks it as a match subject), else the expected type.
+   Returns 1 with *out_enum/*out_idx set. Only consulted at the ambiguity sites,
+   so it never overrides a unique match. */
+static int disambig_variant_by_hint(Checker *c, AstNode *node, const char *vname,
+                                    Type **out_enum, int *out_idx)
+{
+    if (node->resolved_type && enum_type_has_variant(node->resolved_type, vname, out_idx)) {
+        *out_enum = node->resolved_type;
+        return 1;
+    }
+    if (enum_type_has_variant(c->expected_type, vname, out_idx)) {
+        *out_enum = c->expected_type;
+        return 1;
+    }
+    return 0;
 }
 static AstNode *optc_mk_match2(AstNode *subject,
                                AstNode *pat0, AstNode *body0,
@@ -3735,11 +3797,13 @@ static AstNode *optc_mk_match2(AstNode *subject,
     return m;
 }
 
-/* Rewrite `recv.METHOD(args)` (an AST_CALL `node`) in place into the lowered form.
-   Returns 1 = rewrote (caller re-checks node), -1 = error reported, 0 = METHOD is
-   not a combinator (caller falls through to normal enum dispatch). */
+/* Rewrite `recv.METHOD(args)` (an AST_CALL `node`) in place into the lowered form
+   and re-check it. Returns 1 = rewrote (result type in *out_ty), -1 = error
+   reported, 0 = METHOD is not a combinator (caller falls through to normal enum
+   dispatch). */
 static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
-                                Type *recv_type, const char *method_name)
+                                Type *recv_type, const char *method_name,
+                                Type **out_ty)
 {
     OptCombinator id = opt_combinator_id(method_name);
     if (id == OPTC_NONE) return 0;
@@ -3753,19 +3817,21 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
     AstNode **args = node->as.call.args;
     AstNode *callee = node->as.call.callee;   /* AST_FIELD shell, discarded below */
 
-    int want_args = (id == OPTC_EXPECT || id == OPTC_UNWRAP_OR) ? 1 : 0;
+    int want_args = (id == OPTC_EXPECT || id == OPTC_UNWRAP_OR ||
+                     id == OPTC_OK_OR) ? 1 : 0;
     if (argc != want_args) {
         checker_error(c, line, col, "'%s' expects %d argument(s), got %d",
                       method_name, want_args, argc);
         return -1;
     }
-    if ((id == OPTC_IS_SOME || id == OPTC_IS_NONE) && !is_option) {
+    if ((id == OPTC_IS_SOME || id == OPTC_IS_NONE || id == OPTC_OK_OR) && !is_option) {
         checker_error(c, line, col,
                       "'%s' is an Option combinator, but got '%s'",
                       method_name, type_name(recv_type));
         return -1;
     }
-    if ((id == OPTC_IS_OK || id == OPTC_IS_ERR) && !is_result) {
+    if ((id == OPTC_IS_OK || id == OPTC_IS_ERR ||
+         id == OPTC_OK || id == OPTC_ERR) && !is_result) {
         checker_error(c, line, col,
                       "'%s' is a Result combinator, but got '%s'",
                       method_name, type_name(recv_type));
@@ -3780,6 +3846,12 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
     snprintf(vb, sizeof vb, "__ocv$%d", g_optc_uid++);
     const char *succ = is_result ? "Ok" : "Some";
     const char *fail = is_result ? "Err" : "None";
+
+    /* C2a conversion combinators build a fresh Option/Result result type and push
+       it as the expected type during re-check, so the bare variant constructors in
+       the arm bodies (`Some(x)` / `None` / `Err(e)`) resolve in any call context
+       (chained, argument position, …) — not just where a typed LHS supplies it. */
+    Type *result_ctx = NULL;
 
     AstNode *repl = NULL;
     switch (id) {
@@ -3823,6 +3895,50 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
                               optc_mk_bool(!ok_true, line, col), line, col);
         break;
     }
+    case OPTC_OK: {
+        /* Result(T,E).ok() -> Option(T): match recv { Ok(x)=>Some(x) Err(_)=>None } */
+        Type *t = optc_variant_payload(recv_type, "Ok");
+        result_ctx = t ? instantiate_template(c, find_template_idx(c, "Option"),
+                                              &t, 1, line, col) : NULL;
+        repl = optc_mk_match2(recv,
+                              optc_mk_variant_pat("Ok", vb, line, col),
+                              optc_mk_variant_call("Some", optc_mk_ident(vb, line, col), line, col),
+                              optc_mk_variant_pat("Err", "_", line, col),
+                              optc_mk_ident("None", line, col), line, col);
+        break;
+    }
+    case OPTC_ERR: {
+        /* Result(T,E).err() -> Option(E): match recv { Ok(_)=>None Err(e)=>Some(e) } */
+        Type *e = optc_variant_payload(recv_type, "Err");
+        result_ctx = e ? instantiate_template(c, find_template_idx(c, "Option"),
+                                              &e, 1, line, col) : NULL;
+        repl = optc_mk_match2(recv,
+                              optc_mk_variant_pat("Ok", "_", line, col),
+                              optc_mk_ident("None", line, col),
+                              optc_mk_variant_pat("Err", vb, line, col),
+                              optc_mk_variant_call("Some", optc_mk_ident(vb, line, col), line, col),
+                              line, col);
+        break;
+    }
+    case OPTC_OK_OR: {
+        /* Option(T).ok_or(e) -> Result(T, typeof(e)):
+             match recv { Some(x)=>Ok(x)  None=>Err(e) }
+           E is the error argument's type; build Result(T, E) for the arm ctors. */
+        Type *t = optc_variant_payload(recv_type, "Some");
+        Type *e_ty = arg0 ? check_expr(c, arg0) : NULL;
+        if (t && e_ty) {
+            Type *targs[2] = { t, e_ty };
+            result_ctx = instantiate_template(c, find_template_idx(c, "Result"),
+                                              targs, 2, line, col);
+        }
+        repl = optc_mk_match2(recv,
+                              optc_mk_variant_pat("Some", vb, line, col),
+                              optc_mk_variant_call("Ok", optc_mk_ident(vb, line, col), line, col),
+                              optc_mk_ident("None", line, col),
+                              optc_mk_variant_call("Err", arg0, line, col), line, col);
+        arg0 = NULL;
+        break;
+    }
     default: return 0;
     }
 
@@ -3833,6 +3949,13 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
     free(repl);
     ast_free(callee);          /* recv detached above; frees the field name + shell */
     if (args) free(args);      /* the args array only; arg0 (if any) moved into repl */
+
+    /* Re-check the rewritten node. Conversion combinators push their freshly-built
+       result type as the expected type so bare ctors in the arm bodies resolve. */
+    Type *saved_exp = c->expected_type;
+    if (result_ctx) c->expected_type = result_ctx;
+    *out_ty = check_expr(c, node);
+    c->expected_type = saved_exp;
     return 1;
 }
 
@@ -3984,6 +4107,17 @@ static Type *check_expr(Checker *c, AstNode *node)
             }
             if (matches > 1)
             {
+                /* Disambiguate by a type hint when available (the node's own prior
+                   resolution, or the expected type — e.g. a typed LHS or a
+                   combinator's pushed result type). */
+                Type *eet = NULL; int evi = -1;
+                if (disambig_variant_by_hint(c, node, node->as.ident.name, &eet, &evi) &&
+                    eet->as.enom.variants[evi].payload_count == 0)
+                {
+                    node->resolved_type = eet;
+                    result = eet;
+                    break;
+                }
                 checker_error(c, node->line, node->column,
                               "ambiguous variant name '%s' (matches multiple enums; "
                               "explicit construction or type annotation required)",
@@ -4800,8 +4934,10 @@ static Type *check_expr(Checker *c, AstNode *node)
                     (strncmp(obj_type->as.enom.name, "Option(", 7) == 0 ||
                      strncmp(obj_type->as.enom.name, "Result(", 7) == 0))
                 {
-                    int lo = lower_opt_combinator(c, node, obj_node, obj_type, method_name);
-                    if (lo == 1) { result = check_expr(c, node); break; }
+                    Type *oc_ty = NULL;
+                    int lo = lower_opt_combinator(c, node, obj_node, obj_type,
+                                                  method_name, &oc_ty);
+                    if (lo == 1) { result = oc_ty; break; }
                     if (lo < 0)  { result = NULL; break; }
                     /* lo == 0: not a combinator → fall through to normal dispatch. */
                 }
@@ -5071,6 +5207,17 @@ static Type *check_expr(Checker *c, AstNode *node)
                 }
                 if (matches > 1)
                 {
+                    /* Disambiguate a payload variant ctor (e.g. `Some(x)`/`Ok(x)`/
+                       `Err(e)`) by a type hint (prior resolution, then expected). */
+                    Type *eet = NULL; int evi = -1;
+                    if (disambig_variant_by_hint(c, node,
+                            node->as.call.callee->as.ident.name, &eet, &evi))
+                    {
+                        result = check_variant_ctor(c, node, eet, evi,
+                                                    node->as.call.args,
+                                                    node->as.call.arg_count);
+                        break;
+                    }
                     checker_error(c, node->line, node->column,
                                   "ambiguous variant name '%s' (matches multiple enums)",
                                   node->as.call.callee->as.ident.name);

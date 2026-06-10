@@ -62,6 +62,46 @@ fn main() -> int {
     // ---- chaining on an rvalue receiver ----
     check(mk(3).unwrap_or(0) + 1 == 4, "rvalue chain unwrap_or + arithmetic")
 
+    // ---- C2a: Option<->Result conversions (ok / err / ok_or) ----
+    // ok_or: Option(T) -> Result(T, E), attaching an error value.
+    Option(int) sv = Some(7)
+    Result(int, string) ro = sv.ok_or("missing")
+    check(ro.is_ok?() && ro.unwrap_or(-1) == 7, "ok_or: Some -> Ok")
+    Option(int) nv = None
+    Result(int, string) re = nv.ok_or("missing")
+    check(re.is_err?() && re.unwrap_or(-1) == -1, "ok_or: None -> Err")
+
+    // ok(): Result(T,E) -> Option(T), dropping the error. Chained with no expected
+    // type (a second Option instantiation exists above), exercising the
+    // hint-directed bare-ctor disambiguation.
+    Result(int, string) cok = Ok(42)
+    Result(int, string) cer = Err("boom")
+    check(cok.ok().unwrap_or(0) == 42, "ok(): Ok -> Some, chained unwrap_or")
+    check(cer.ok().unwrap_or(-9) == -9, "ok(): Err -> None (payload dropped)")
+
+    // err(): Result(T,E) -> Option(E), keeping the error.
+    Result(int, string) cer2 = Err("bang")
+    check(cer2.err().unwrap_or("clean") == "bang", "err(): Err -> Some(error)")
+    Result(int, string) cok2 = Ok(1)
+    check(cok2.err().unwrap_or("none") == "none", "err(): Ok -> None")
+
+    // ok_or + try interop: an Option flows into Result-propagation in one line.
+    check(read_first(true) == 5, "try ok_or interop (present)")
+    check(read_first(false) == -1, "try ok_or interop (absent -> Err propagated)")
+
     print("OPTCOMB PASS")
     return 0
+}
+
+// `ok_or` adapts an Option into a Result so `try` can propagate it from a
+// Result-returning function — the headline C2a use case.
+fn read_first(bool present) -> int {
+    Result(int, string) r = read_val(present)
+    return match r { Ok(v) => v  Err(e) => -1 }
+}
+fn read_val(bool present) -> Result(int, string) {
+    Option(int) o = None
+    if present { o = Some(5) }
+    int v = try o.ok_or("absent")
+    return Ok(v)
 }
