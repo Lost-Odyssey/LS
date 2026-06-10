@@ -84,8 +84,13 @@ impl(T) Vec(T) {
         self.len = self.len + 1
     }
 
-    // Insert x at index i, shifting [i, len) right by one.
+    // Insert x at index i, shifting [i, len) right by one. Valid i is [0, len]
+    // (i == len appends); out-of-range aborts (matches get/set).
     fn insert(&!self, int i, T x) {
+        if i < 0 || i > self.len {
+            print(f"Vec.insert index out of bounds: len={self.len} index={i}")
+            std.c.abort()
+        }
         self.reserve(self.len + 1)
         int j = self.len
         while j > i {
@@ -112,7 +117,12 @@ impl(T) Vec(T) {
     }
 
     // Remove and return the element at i, shifting [i+1, len) left by one.
+    // Valid i is [0, len); out-of-range aborts.
     fn remove(&!self, int i) -> T {
+        if i < 0 || i >= self.len {
+            print(f"Vec.remove index out of bounds: len={self.len} index={i}")
+            std.c.abort()
+        }
         T out = __take(self.data[i])
         int j = i
         while j < self.len - 1 {
@@ -124,8 +134,13 @@ impl(T) Vec(T) {
         return out
     }
 
-    // Drop elements [n, len); keep the first n.
+    // Drop elements [n, len); keep the first n. n >= len is a no-op; n < 0 is an
+    // invalid length and aborts (would otherwise __drop_at a negative slot).
     fn truncate(&!self, int n) {
+        if n < 0 {
+            print(f"Vec.truncate negative length: n={n}")
+            std.c.abort()
+        }
         if n >= self.len { return }
         for (int i = n; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
         self.len = n
@@ -220,8 +235,12 @@ impl(T) Vec(T) {
 
     // ---- reorder ----
 
-    // Exchange elements i and j (bit-swap, no clone).
+    // Exchange elements i and j (bit-swap, no clone). Both must be in [0, len).
     fn swap(&!self, int i, int j) {
+        if i < 0 || i >= self.len || j < 0 || j >= self.len {
+            print(f"Vec.swap index out of bounds: len={self.len} i={i} j={j}")
+            std.c.abort()
+        }
         if i == j { return }
         T a = __take(self.data[i])
         T b = __take(self.data[j])
@@ -243,8 +262,13 @@ impl(T) Vec(T) {
         }
     }
 
-    // Grow to n (filling new slots with copies of `fill`) or shrink (dropping tail).
+    // Grow to n (filling new slots with copies of `fill`) or shrink (dropping
+    // tail). n < 0 is an invalid length and aborts.
     fn resize(&!self, int n, T fill) {
+        if n < 0 {
+            print(f"Vec.resize negative length: n={n}")
+            std.c.abort()
+        }
         if n <= self.len {
             for (int i = n; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
             self.len = n

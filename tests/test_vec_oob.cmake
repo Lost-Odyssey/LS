@@ -49,15 +49,19 @@ if(NOT "${mc_err}" MATCHES "OK clean")
 endif()
 message(STATUS "vec_oob positive memcheck: OK clean")
 
-# ---- negative: out-of-range read and write must abort ----
-foreach(neg "vec_oob_panic_read" "vec_oob_panic_write")
+# ---- negative: out-of-range read/write AND mutators must abort ----
+#   read/write/index/insert/remove/swap -> "... out of bounds ..."
+#   truncate/resize (negative length)    -> "... negative length ..."
+foreach(neg "vec_oob_panic_read" "vec_oob_panic_write"
+            "vec_oob_panic_insert" "vec_oob_panic_remove" "vec_oob_panic_swap"
+            "vec_oob_panic_truncate" "vec_oob_panic_resize")
     execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${neg}.ls"
         OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
     if(n_rc EQUAL 0)
         message(FATAL_ERROR "vec_oob ${neg}: expected non-zero exit (abort)\n${n_out}")
     endif()
-    if(NOT "${n_out}" MATCHES "out of bounds")
-        message(FATAL_ERROR "vec_oob ${neg}: missing 'out of bounds' diagnostic\n${n_out}")
+    if(NOT "${n_out}" MATCHES "out of bounds|negative length")
+        message(FATAL_ERROR "vec_oob ${neg}: missing bounds diagnostic\n${n_out}")
     endif()
     if("${n_out}" MATCHES "AFTER")
         message(FATAL_ERROR "vec_oob ${neg}: ran past the out-of-range access\n${n_out}")
