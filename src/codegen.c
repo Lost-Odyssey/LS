@@ -297,6 +297,8 @@ static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
 static void mark_string_moved(CodegenContext *ctx, LLVMValueRef str_alloca,
                               const char *reason);
 static void cg_mark_last_temp_moved(CodegenContext *ctx, int mark, const char *reason);
+static void cg_register_result_temp(CodegenContext *ctx, LLVMValueRef result_alloca,
+                                    Type *result_type);
 static void emit_scope_cleanup(CodegenContext *ctx);
 static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloca);
 /* Unified value-drop authority: free heap owned by the value stored at `place_ptr`
@@ -2121,6 +2123,48 @@ static void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot)
         keep++;
     }
     ctx->temp_drop_count = keep;
+}
+
+/* L-013 (match-result-ownership, step 1): register an EXISTING alloca that holds an
+   owned heap result value as the statement-level result temp. Unlike
+   cg_push_temp_string — which builds a fresh entry-block slot from an SSA value and
+   stores into it — this takes a pre-existing alloca (e.g. a match's result_alloca,
+   already populated by the taken arm) and registers it so the statement-end
+   cg_flush_temps drops it exactly once. That turns a value-producing match into an
+   owned-rvalue the consumer can claim via the existing "last temp moved" protocol.
+     - TYPE_STRING          → append to temp_string_slots (freed by emit_string_free)
+     - has_drop struct/enum → cg_push_temp_drop (dropped by cg_flush_temp_drops)
+     - otherwise            → no-op (static / borrow / POD result owns no heap)
+   The caller must ensure the alloca is zero-initialized on un-taken paths so a free
+   on a path that never populated it is safely skipped (cap=0 for string; moved/zero
+   for has_drop). */
+static void cg_register_result_temp(CodegenContext *ctx, LLVMValueRef result_alloca,
+                                    Type *result_type)
+{
+    if (result_alloca == NULL || result_type == NULL || ctx->current_fn == NULL)
+        return;
+    if (result_type->kind == TYPE_STRING)
+    {
+        if (ctx->temp_string_count >= ctx->temp_string_cap)
+        {
+            ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
+            ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
+                                                ctx->temp_string_slots, ctx->temp_string_cap);
+        }
+        ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
+#if CG_DEBUG
+        {
+            char dbg_fmt[64];
+            snprintf(dbg_fmt, sizeof(dbg_fmt),
+                     "[cg] tmp.result slot=%d (alloca)\n",
+                     ctx->temp_string_count - 1);
+            cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
+        }
+#endif
+        return;
+    }
+    /* has_drop struct/enum → temp-drop list (cg_push_temp_drop filters non-drop). */
+    cg_push_temp_drop(ctx, result_alloca, result_type);
 }
 
 /* M-LIT: apply the owned-param ABI to a key/value expression being moved into a
