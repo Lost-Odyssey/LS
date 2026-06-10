@@ -5384,7 +5384,18 @@ static Type *check_expr(Checker *c, AstNode *node)
                 args_ok = false;
                 continue;
             }
-            if (!type_assignable(param_type, arg_type))
+            /* Migration bridge (B-2): a builtin-string VARIABLE passed to a
+               by-value `Str` parameter is deep-copied into an owned Str by codegen.
+               Restricted to IDENT args: an owned string temp (e.g. sv.upper())
+               tangles with string-temp-moved bookkeeping → require `Str t = ...`
+               first. Literals already coerced zero-copy above. */
+            if (arg_type->kind == TYPE_STRING && type_is_str_struct(param_type) &&
+                node->as.call.args[i]->kind == AST_IDENT &&
+                !node->as.call.args[i]->coerce_str_lit_to_str)
+            {
+                node->as.call.args[i]->coerce_string_to_str = true;
+            }
+            else if (!type_assignable(param_type, arg_type))
             {
                 checker_error(c, node->as.call.args[i]->line, node->as.call.args[i]->column,
                               "argument %d: expected '%s', got '%s'",

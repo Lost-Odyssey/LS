@@ -8226,6 +8226,21 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         {
                             arg_val = cg_widen(ctx, arg_val, arg_t, param_t);
                         }
+                        /* Migration bridge (B-2): a builtin-string VARIABLE passed
+                           to a by-value `Str` parameter is deep-copied into an owned
+                           Str (callee owns + drops it; the source var is retained).
+                           Restricted by the checker to IDENT args — an owned string
+                           temp (sv.upper()) would tangle with the string-temp-moved
+                           bookkeeping, so those still need an explicit `Str t = ...`. */
+                        if (node->as.call.args[i]->coerce_string_to_str &&
+                            cg_type_is_str(param_t))
+                        {
+                            arg_val = cg_string_to_str(ctx, arg_val, param_t);
+                            LLVMValueRef s2s_tmp = cg_entry_alloca(
+                                ctx, type_to_llvm(ctx, param_t), "argstr.drop");
+                            LLVMBuildStore(ctx->builder, arg_val, s2s_tmp);
+                            cg_push_temp_drop(ctx, s2s_tmp, param_t);
+                        }
                     }
                 }
                 /* Phase E.1 note: with by-ref vec/map capture semantics, the
