@@ -299,13 +299,17 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
         if (clang) {
             snprintf(link_cmd, sizeof(link_cmd),
                      "cmd.exe /c \"\"%s\" -o \"%s\" \"%s\" %s %s %s"
-                     " -llegacy_stdio_definitions -lmsvcrt -lucrt\"",
+                     " -llegacy_stdio_definitions -lucrt"
+                     " -Xlinker /NODEFAULTLIB:libucrt.lib"
+                     " -Xlinker /NODEFAULTLIB:libcmt.lib\"",
                      clang, exe_path, obj_path, mc_lib, prof_lib, os_lib);
         } else {
             /* Fallback: assume clang is in PATH */
             snprintf(link_cmd, sizeof(link_cmd),
                      "clang -o \"%s\" \"%s\" %s %s %s"
-                     " -llegacy_stdio_definitions -lmsvcrt -lucrt",
+                     " -llegacy_stdio_definitions -lucrt"
+                     " -Xlinker /NODEFAULTLIB:libucrt.lib"
+                     " -Xlinker /NODEFAULTLIB:libcmt.lib",
                      exe_path, obj_path, mc_lib, prof_lib, os_lib);
         }
     }
