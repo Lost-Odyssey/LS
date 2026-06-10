@@ -590,6 +590,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib P3: `print` accepts a `Str` and writes its raw text (printf
+# "%.*s", length-bounded). Owned Str rvalues passed to print are dropped clean.
+# v1; the @print sigil + Printable trait are deferred (v2). JIT+AOT+memcheck
+# 0/0/0 (docs/plan_string_to_stdlib.md §5.3).
+add_test(
+    NAME test_str_p3
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p3_print.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_p3
+        -DMARKER=STRP3
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject

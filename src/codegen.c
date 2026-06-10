@@ -4441,6 +4441,19 @@ static void codegen_print_array(CodegenContext *ctx, AstNode *arg)
 }
 
 /* Helper: print a struct aggregate value as StructName{field=val, ...} (no trailing newline) */
+/* P3 (docs/plan_string_to_stdlib.md §5.3): print a `Str` value as its raw text.
+   Uses printf("%.*s", len, data) — length-bounded because a general Str buffer is
+   NOT guaranteed NUL-terminated (from_string/__clone allocate exactly len bytes);
+   only static-literal and f-string Strs happen to carry a NUL. `val` is the Str
+   struct VALUE; field 0 = *u8 data, field 1 = int len. */
+static void cg_print_str_value(CodegenContext *ctx, LLVMValueRef val)
+{
+    LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, val, 0, "Str.d");
+    LLVMValueRef len  = LLVMBuildExtractValue(ctx->builder, val, 1, "Str.l");
+    LLVMValueRef args[2] = { len, data };
+    emit_printf(ctx, "%.*s", args, 2);
+}
+
 static void codegen_print_struct_value(CodegenContext *ctx, LLVMValueRef val, Type *t)
 {
     char open_buf[256];
@@ -4580,6 +4593,34 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
                 printf_argc = 0;
             }
             codegen_print_array(ctx, arg);
+            continue;
+        }
+
+        /* Str value: print its raw text (not the StructName{...} dump). P3. */
+        if (t && t->kind == TYPE_STRUCT && t->as.strukt.name &&
+            strcmp(t->as.strukt.name, "Str") == 0)
+        {
+            if (fmt_len > 0)
+            {
+                fmt_buf[fmt_len] = '\0';
+                emit_printf(ctx, fmt_buf, printf_args, printf_argc);
+                fmt_len = 0;
+                printf_argc = 0;
+            }
+            if (i > 0)
+                emit_printf(ctx, " ", NULL, 0);
+            LLVMValueRef sval = codegen_expr(ctx, arg);
+            if (sval == NULL) { free(printf_args); return NULL; }
+            cg_print_str_value(ctx, sval);
+            /* Owned Str rvalue (index/call clone) consumed by print → drop it
+               (F3 analog). Bare ident/field of a live binding is a borrow: skip. */
+            if (arg->kind == AST_INDEX || arg->kind == AST_CALL)
+            {
+                LLVMValueRef stmp = cg_entry_alloca(ctx, type_to_llvm(ctx, t),
+                                                    "print.str.drop");
+                LLVMBuildStore(ctx->builder, sval, stmp);
+                emit_drop_value(ctx, stmp, t);
+            }
             continue;
         }
 
