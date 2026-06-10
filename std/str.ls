@@ -37,6 +37,17 @@ impl Str {
         int n = self.cap
         if n < 8 { n = 8 }
         while n < need { n = n * 2 }
+        if self.cap == 0 {
+            // cap == 0 is STATIC (data points at .rodata / a shared buffer) or
+            // empty (data == nil). Either way the pointer is NOT ours to realloc —
+            // malloc a fresh buffer and copy the existing bytes (copy-on-grow).
+            // This makes a static Str safely mutable without touching .rodata.
+            *u8 nd = std.c.malloc(n) as *u8
+            for (int i = 0; i < self.len; i = i + 1) { nd[i] = self.data[i] }
+            self.data = nd
+            self.cap = n
+            return
+        }
         self.data = std.c.realloc(self.data as *u8, n) as *u8
         self.cap = n
     }

@@ -6779,7 +6779,17 @@ static void check_stmt(Checker *c, AstNode *node)
                 c->expected_type = declared;
                 Type *init_type = check_expr(c, node->as.var_decl.init);
                 c->expected_type = saved_expected;
-                if (init_type != NULL && !type_assignable(declared, init_type))
+                /* Migration bridge (B-step): a builtin-string value initializing a
+                   `Str` is deep-copied into an owned Str. The literal case already
+                   coerced (zero-copy) above; this catches string variables / string-
+                   returning calls. */
+                if (init_type != NULL && init_type->kind == TYPE_STRING &&
+                    type_is_str_struct(declared) &&
+                    !node->as.var_decl.init->coerce_str_lit_to_str)
+                {
+                    node->as.var_decl.init->coerce_string_to_str = true;
+                }
+                else if (init_type != NULL && !type_assignable(declared, init_type))
                 {
                     checker_error(c, node->line, node->column,
                                   "cannot initialize '%s' (type '%s') with value of type '%s'",

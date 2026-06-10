@@ -180,6 +180,13 @@ struct AstNode
        {data, len, cap:0} (layout-identical to LsString) instead of a builtin
        LsString. resolved_type carries the concrete Str struct type. */
     bool coerce_str_lit_to_str;
+    /* builtin-string VALUE -> Str coercion (docs/plan_string_to_stdlib.md, B-step
+       migration bridge): set by the checker when a non-literal string expression
+       flows into a `Str` slot (var-decl init / return). Codegen deep-copies the
+       LsString into an owned Str (reusing emit_string_clone_val + reinterpret).
+       Localized (not opened globally in type_assignable) so only flagged nodes
+       convert. resolved_type stays `string`; the target type is known at the site. */
+    bool coerce_string_to_str;
     union
     {
         struct

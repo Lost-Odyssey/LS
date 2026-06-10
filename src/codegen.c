@@ -1305,6 +1305,26 @@ static LLVMValueRef cg_str_struct_from_literal(CodegenContext *ctx,
     return v;
 }
 
+/* Coerce a builtin-string VALUE into an owned `Str` (migration bridge, B-step).
+   Reuses emit_string_clone_val — which correctly handles static(cap 0, shared) /
+   owned(cap>0, deep copy) / borrowed(cap -2, deep copy) — then reinterprets the
+   resulting LsString {ptr,i32,i32} into the layout-identical Str struct type.
+   cap semantics carry over (Str.__drop frees iff cap>0), so ownership is correct. */
+static LLVMValueRef cg_string_to_str(CodegenContext *ctx, LLVMValueRef sval,
+                                     Type *str_type)
+{
+    LLVMValueRef owned = emit_string_clone_val(ctx, sval);
+    LLVMValueRef d = LLVMBuildExtractValue(ctx->builder, owned, 0, "s2s.d");
+    LLVMValueRef l = LLVMBuildExtractValue(ctx->builder, owned, 1, "s2s.l");
+    LLVMValueRef cp = LLVMBuildExtractValue(ctx->builder, owned, 2, "s2s.c");
+    LLVMTypeRef st = type_to_llvm(ctx, str_type);
+    LLVMValueRef v = LLVMGetUndef(st);
+    v = LLVMBuildInsertValue(ctx->builder, v, d, 0, "Str.d");
+    v = LLVMBuildInsertValue(ctx->builder, v, l, 1, "Str.l");
+    v = LLVMBuildInsertValue(ctx->builder, v, cp, 2, "Str.c");
+    return v;
+}
+
 /* Build a constant (compile-time) LsString struct for global initializers */
 static LLVMValueRef ls_string_const(CodegenContext *ctx, LLVMValueRef data,
                                     int slen, int scap)
@@ -10647,6 +10667,12 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef init = codegen_expr(ctx, node->as.var_decl.init);
                 if (init)
                 {
+                    /* Migration bridge (B-step): a builtin-string value initializing
+                       a `Str` var is deep-copied into an owned Str. After this, init
+                       is a Str struct value and var_type (Str) drives the has_drop
+                       store/drop path below. */
+                    if (node->as.var_decl.init->coerce_string_to_str)
+                        init = cg_string_to_str(ctx, init, var_type);
                     /* Implicit numeric widening: var_decl init expr's type may
                        differ from var_type (e.g. f64 x = 5_int). The checker
                        allowed this iff type_widens_to(init_t, var_type). */
