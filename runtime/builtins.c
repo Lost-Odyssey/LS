@@ -223,6 +223,12 @@ void *__ls_get_argv(int i) {
 }
 
 void __ls_proc_exit(int code) {
+    /* Flush BEFORE exit: the panic/abort path (vec OOB, unwrap None, abort())
+       diverges and never reaches main's ret, so the codegen-injected
+       __ls_flush_out there is bypassed. exit()'s own atexit stdio flush proved
+       unreliable here (~10% of runs lost buffered stdout — including the panic
+       diagnostic itself), so flush explicitly while this TU's CRT is live. */
+    fflush(NULL);
     exit(code);
 }
 

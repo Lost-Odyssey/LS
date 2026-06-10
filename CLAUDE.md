@@ -103,15 +103,24 @@ cd build && ctest --output-on-failure -C Release
 > 重定向（管道/文件）时全缓冲，进程退出期负责 flush 的 CRT 可能与持有 printf/puts
 > 缓冲的 CRT 不同 → **约 15% 的运行整段 stdout 丢失（rc=0、空输出）**。隔离复现：同一
 > exe 连跑 200 次约 30 次空输出。
-> **两层修复**：① **根治·去混链**——AOT 链接命令（`src/main.c`）删 `-lmsvcrt`、加
-> `/NODEFAULTLIB:libucrt.lib /NODEFAULTLIB:libcmt.lib`（排除**静态** CRT，强制单一
-> **动态** UCRT）。原 `-lmsvcrt -lucrt` 是当年为凑 LLVM 生成 obj 的静态 CRT defaultlib
-> 而拼出的混链；去掉直接报 LNK2005（静态 libucrt vs 动态 ucrt 重复符号），故须 NODEFAULTLIB
-> 排静态。修后 AOT exe 仅依赖 `VCRUNTIME140.dll`+`api-ms-win-crt-*`（→ ucrtbase.dll），
-> **不再依赖 msvcrt.dll**。② **兜底·退出 flush**——runtime `__ls_flush_out()`（与 print
-> 同 TU 同 CRT，调 `fflush(NULL)`），codegen 在 AOT entry main 每个 ret 前注入。
-> 修后同一 exe 300×→0 失败、全量 ctest 188/188 一次过、无需 `--repeat`。**曾影响真实
-> 用户**（任何 AOT 程序输出被管道/重定向都 ~15% 丢全部输出），非仅测试。
+> **真正的修复 = 显式 fflush（exit() 自带的 flush 在此环境对 AOT exe 不可靠，实测同一
+> exe 连跑约 10–15% 丢失，单一 CRT 下仍如此）**。两个退出口各补一次 `fflush(NULL)`
+> （runtime `__ls_flush_out`，与 print 同 TU 同 CRT）：
+> - **正常退出**：codegen 在 AOT entry main 每个 ret 前注入 `__ls_flush_out()`。
+> - **panic/abort**：`__ls_proc_exit` 在 `exit(code)` 前 `fflush(NULL)`（vec 越界 / unwrap
+>   None / abort 发散，不回 main，绕过上面的注入；此路径也曾 ~10% 丢失）。
+>
+> 另做一处**正确性清理（非 flake 修复）**：AOT 链接（`src/main.c`）删 `-lmsvcrt`、加
+> `/NODEFAULTLIB:libucrt.lib /NODEFAULTLIB:libcmt.lib`，消除 msvcrt+ucrt 混链 → AOT exe
+> 仅依赖 `VCRUNTIME140.dll`+`api-ms-win-crt-*`（→ ucrtbase.dll），不再依赖 msvcrt.dll。
+> 注意：**去混链本身并不修复输出丢失**（panic 路径在去混链后仍 ~10% 丢，靠 fflush 才归零），
+> 它只是消除一个 [docs/crt_mismatch_bug.md](docs/crt_mismatch_bug.md) 记录的潜在风险。
+>
+> **JIT（`ls run`）从不受影响**（ls.exe 单一 /MD CRT，实测 0/200），故 fflush 注入用
+> `ctx->aot_entry` 守 AOT-only。验证：AOT 正常/​panic 各 300×/200× → 0 丢失，全量 ctest
+> 188/188。**曾影响真实用户**（任何 AOT 程序输出被管道/重定向都 ~10–15% 丢全部输出）。
+> （残留极罕见 flake 另有其因——真正的 Defender 锁刚落盘 .exe 致 compile/delete 偶发失败，
+> 与输出无关，`--repeat until-pass:2` 可兜。）
 
 > 完整 CMakeLists.txt 配置见 [docs/build.md](docs/build.md)
 
