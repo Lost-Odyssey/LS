@@ -505,8 +505,15 @@ static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int 
     }
     for (int i = 0; i < expected; i++)
     {
-        Type *got = check_expr(c, args[i]);
         Type *want = enum_type->as.enom.variants[variant_idx].payload_types[i];
+        /* Plumb the payload type as expected_type so context-driven coercions
+           fire in this position too — notably a string literal -> `Str`
+           (docs/plan_string_to_stdlib.md §5.1), e.g. `Err("msg")` where the
+           payload is Str. */
+        Type *saved_exp = c->expected_type;
+        c->expected_type = want;
+        Type *got = check_expr(c, args[i]);
+        c->expected_type = saved_exp;
         if (got && want && !type_equals(got, want))
         {
             checker_error(c, args[i]->line, args[i]->column,

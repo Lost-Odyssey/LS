@@ -449,6 +449,96 @@ impl Str {
         return out
     }
 
+    // ---- parsing (Result(T, Str); Err payload is a diagnostic Str) ----
+
+    // Parse a signed decimal integer. Lenient: no overflow check (matches the
+    // old builtin). Err on empty / sign-only / non-digit.
+    fn to_int(&self) -> Result(int, Str) {
+        int n = self.len
+        if n == 0 { return Err("empty string") }
+        int i = 0
+        bool neg = false
+        int first = self.data[0]
+        if first == 45 { neg = true  i = 1 }
+        else if first == 43 { i = 1 }
+        if i >= n { return Err("no digits") }
+        int val = 0
+        while i < n {
+            int d = self.data[i]
+            if d < 48 || d > 57 { return Err("invalid digit") }
+            val = val * 10 + (d - 48)
+            i = i + 1
+        }
+        if neg { val = 0 - val }
+        return Ok(val)
+    }
+
+    fn to_i64(&self) -> Result(i64, Str) {
+        int n = self.len
+        if n == 0 { return Err("empty string") }
+        int i = 0
+        bool neg = false
+        int first = self.data[0]
+        if first == 45 { neg = true  i = 1 }
+        else if first == 43 { i = 1 }
+        if i >= n { return Err("no digits") }
+        i64 val = 0
+        while i < n {
+            int d = self.data[i]
+            if d < 48 || d > 57 { return Err("invalid digit") }
+            val = val * 10 + ((d - 48) as i64)
+            i = i + 1
+        }
+        if neg { val = 0 - val }
+        return Ok(val)
+    }
+
+    // Parse a decimal float (sign, integer part, optional '.fraction'; no
+    // exponent — keep it simple, §6.5 defers full numeric parsing).
+    fn to_float(&self) -> Result(f64, Str) {
+        int n = self.len
+        if n == 0 { return Err("empty string") }
+        int i = 0
+        bool neg = false
+        int first = self.data[0]
+        if first == 45 { neg = true  i = 1 }
+        else if first == 43 { i = 1 }
+        f64 val = 0.0
+        bool any = false
+        while i < n {
+            int d = self.data[i]
+            if d == 46 { break }
+            if d < 48 || d > 57 { return Err("invalid digit") }
+            val = val * 10.0 + ((d - 48) as f64)
+            any = true
+            i = i + 1
+        }
+        if i < n {
+            i = i + 1
+            f64 scale = 0.1
+            while i < n {
+                int d = self.data[i]
+                if d < 48 || d > 57 { return Err("invalid digit") }
+                val = val + ((d - 48) as f64) * scale
+                scale = scale * 0.1
+                any = true
+                i = i + 1
+            }
+        }
+        if !any { return Err("no digits") }
+        if neg { val = 0.0 - val }
+        return Ok(val)
+    }
+
+    // Parse "true"/"false". Err otherwise.
+    fn to_bool(&self) -> Result(bool, Str) {
+        Str t = "true"
+        Str f = "false"
+        if self.eq?(t) { return Ok(true) }
+        if self.eq?(f) { return Ok(false) }
+        return Err("invalid bool")
+    }
+
     // ---- ownership hooks (unified has_drop path) ----
 
     // Deep-copy hook: emit_clone_value calls this when a Str is cloned (by-value

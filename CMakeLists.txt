@@ -634,6 +634,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib: Str method-port batch 3 — parsing to_int/to_i64/to_float/
+# to_bool returning Result(T, Str). Also exercises string-literal -> Str coercion
+# in enum-payload position (Err("msg")). JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_str_methods3
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods3.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_methods3
+        -DMARKER=STRM3
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject
