@@ -283,6 +283,8 @@ cd build && ctest --output-on-failure -C Release --repeat until-pass:2
 
 > 完整借用规则表、运行时保护、实现计划见 [docs/ownership.md](docs/ownership.md)
 
+> ⚠️ **改 `match` codegen（含脱糖到 match 的特性）前必读** [docs/match_codegen_guide.md](docs/match_codegen_guide.md)——6 个臂体存储点 / 三 helper（own_tail·encapsulate·register_result_temp）/ 坑位目录（has_drop 不可登记 temp_drop、subject drop 误删、多臂污染、binder 孤儿、borrow-match 零拷贝）。`match` 是历史上反复出 drop bug 的路径（L-012/OPT-001/BF-026/029/L-013）。
+
 ---
 
 ## 8. 闭包捕获策略（摘要）
