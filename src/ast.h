@@ -187,6 +187,12 @@ struct AstNode
        Localized (not opened globally in type_assignable) so only flagged nodes
        convert. resolved_type stays `string`; the target type is known at the site. */
     bool coerce_string_to_str;
+    /* Reverse migration bridge (B-3): set by the checker when a `Str` value flows
+       into a builtin-string slot (var-decl init / call-arg / return). Codegen
+       reinterprets the layout-identical Str into an LsString; ownership per site:
+       IDENT source → clone (source keeps ownership), rvalue → raw transfer,
+       call-arg → cap=-2 borrow (zero-copy). resolved_type stays `Str`. */
+    bool coerce_str_to_string;
     union
     {
         struct

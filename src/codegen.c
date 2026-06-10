@@ -1325,6 +1325,99 @@ static LLVMValueRef cg_string_to_str(CodegenContext *ctx, LLVMValueRef sval,
     return v;
 }
 
+/* Reverse migration bridge (B-3): reinterpret a `Str` struct value into the
+   layout-identical builtin LsString {i8*, i32, i32}. NO clone here — ownership
+   semantics are decided at each call site: IDENT sources clone afterwards
+   (source keeps ownership), rvalues transfer raw (nobody else drops a call /
+   match result), call args overwrite cap with -2 (borrowed). */
+static LLVMValueRef cg_str_to_string(CodegenContext *ctx, LLVMValueRef strv)
+{
+    LLVMValueRef d = LLVMBuildExtractValue(ctx->builder, strv, 0, "str2s.d");
+    LLVMValueRef l = LLVMBuildExtractValue(ctx->builder, strv, 1, "str2s.l");
+    LLVMValueRef cp = LLVMBuildExtractValue(ctx->builder, strv, 2, "str2s.c");
+    LLVMValueRef v = LLVMGetUndef(ls_string_type(ctx));
+    v = LLVMBuildInsertValue(ctx->builder, v, d, 0, "ls.d");
+    v = LLVMBuildInsertValue(ctx->builder, v, l, 1, "ls.l");
+    v = LLVMBuildInsertValue(ctx->builder, v, cp, 2, "ls.c");
+    return v;
+}
+
+/* Reverse migration bridge (B-3): produce a PROPER builtin LsString from a Str
+   struct value. Key invariant repair: builtin string ops (==, print, f-string)
+   walk NUL-terminated C strings, but Str buffers do NOT maintain a NUL at
+   data[len] (push_str leaves garbage there) — and emit_string_clone_val copies
+   len+1 bytes, propagating that garbage. So: clone (static cap==0 passes
+   through — literal Str data lives in NUL-terminated .rodata; owned/borrowed
+   deep-copy), then explicitly store '\0' at the owned copy's data[len].
+   free_src additionally frees the ORIGINAL Str heap — for rvalue Str results
+   (call/match) that nobody else drops; IDENT sources pass false (their own
+   scope cleanup drops them). */
+static LLVMValueRef cg_str_to_owned_string(CodegenContext *ctx, LLVMValueRef strv,
+                                           bool free_src)
+{
+    LLVMTypeRef str_type = ls_string_type(ctx);
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMTypeRef i8_t = LLVMInt8TypeInContext(ctx->context);
+    LLVMValueRef raw = cg_str_to_string(ctx, strv);
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+
+    /* Default: pass through (static cap==0). */
+    LLVMValueRef res_alloca = cg_entry_alloca(ctx, str_type, "s2o.res");
+    LLVMBuildStore(ctx->builder, raw, res_alloca);
+
+    LLVMValueRef cap = LLVMBuildExtractValue(ctx->builder, raw, 2, "s2o.cap");
+    LLVMValueRef owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap,
+                                       LLVMConstInt(i32_t, 0, 0), "s2o.own");
+    LLVMBasicBlockRef copy_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn,
+                                                              "s2o.copy");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn,
+                                                              "s2o.cont");
+    LLVMBuildCondBr(ctx->builder, owned, copy_bb, cont_bb);
+
+    /* copy_bb: malloc(max(len+1, LS_MIN_STR_CAP)), memcpy len bytes (NOT len+1
+       — a full Str buffer can have cap == len with no NUL slot to read), then
+       explicitly store data[len] = 0. */
+    LLVMPositionBuilderAtEnd(ctx->builder, copy_bb);
+    {
+        LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, raw, 0, "s2o.d");
+        LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, raw, 1, "s2o.l");
+        LLVMValueRef need = LLVMBuildAdd(ctx->builder, len,
+                                         LLVMConstInt(i32_t, 1, 0), "s2o.need");
+        LLVMValueRef min_cap = LLVMConstInt(i32_t, LS_MIN_STR_CAP, 0);
+        LLVMValueRef use_min = LLVMBuildICmp(ctx->builder, LLVMIntULT, need,
+                                             min_cap, "s2o.usem");
+        LLVMValueRef new_cap = LLVMBuildSelect(ctx->builder, use_min, min_cap,
+                                               need, "s2o.nc");
+        LLVMValueRef bytes = LLVMBuildZExt(ctx->builder, new_cap, i64_t, "s2o.bytes");
+        LLVMValueRef new_data = cg_emit_alloc(ctx, bytes, "string.clone",
+                                              CG_LINE(ctx), CG_COL(ctx));
+        LLVMValueRef copy_len = LLVMBuildZExt(ctx->builder, len, i64_t, "s2o.clen");
+        LLVMValueRef memcpy_fn = LLVMGetNamedFunction(ctx->module, "memcpy");
+        LLVMTypeRef memcpy_ft = LLVMGlobalGetValueType(memcpy_fn);
+        LLVMValueRef mc_args[3] = {new_data, data, copy_len};
+        LLVMBuildCall2(ctx->builder, memcpy_ft, memcpy_fn, mc_args, 3, "");
+        LLVMValueRef end = LLVMBuildGEP2(ctx->builder, i8_t, new_data, &len, 1,
+                                         "s2o.end");
+        LLVMBuildStore(ctx->builder, LLVMConstInt(i8_t, 0, 0), end);
+        LLVMValueRef ns = LLVMGetUndef(str_type);
+        ns = LLVMBuildInsertValue(ctx->builder, ns, new_data, 0, "s2o.ns0");
+        ns = LLVMBuildInsertValue(ctx->builder, ns, len, 1, "s2o.ns1");
+        ns = LLVMBuildInsertValue(ctx->builder, ns, new_cap, 2, "s2o.ns2");
+        LLVMBuildStore(ctx->builder, ns, res_alloca);
+    }
+    LLVMBuildBr(ctx->builder, cont_bb);
+    LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+
+    if (free_src)
+    {
+        LLVMValueRef src_slot = cg_entry_alloca(ctx, str_type, "s2o.src");
+        LLVMBuildStore(ctx->builder, raw, src_slot);
+        emit_string_free(ctx, src_slot); /* frees iff cap > 0 */
+    }
+    return LLVMBuildLoad2(ctx->builder, str_type, res_alloca, "s2o.r");
+}
+
 /* Build a constant (compile-time) LsString struct for global initializers */
 static LLVMValueRef ls_string_const(CodegenContext *ctx, LLVMValueRef data,
                                     int slen, int scap)
@@ -8241,6 +8334,25 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             LLVMBuildStore(ctx->builder, arg_val, s2s_tmp);
                             cg_push_temp_drop(ctx, s2s_tmp, param_t);
                         }
+                        /* Reverse bridge (B-3): a `Str` VARIABLE passed to a
+                           by-value builtin-string parameter. Copy into a proper
+                           NUL-terminated LsString temp (Str buffers don't keep
+                           the NUL invariant builtin ==/print rely on), register
+                           it as a caller statement-lifetime temp string, and
+                           pass a cap=-2 borrowed view — the callee clones when
+                           storing and never frees (same convention as a named
+                           string variable arg); the Str var keeps ownership. */
+                        else if (node->as.call.args[i]->coerce_str_to_string &&
+                                 param_t && param_t->kind == TYPE_STRING)
+                        {
+                            arg_val = cg_str_to_owned_string(ctx, arg_val, false);
+                            cg_push_temp_string(ctx, arg_val);
+                            LLVMValueRef cap_borrowed = LLVMConstInt(
+                                LLVMInt32TypeInContext(ctx->context),
+                                (unsigned long long)LS_CAP_BORROWED, 0);
+                            arg_val = LLVMBuildInsertValue(ctx->builder,
+                                arg_val, cap_borrowed, 2, "str2s.borrow");
+                        }
                     }
                 }
                 /* Phase E.1 note: with by-ref vec/map capture semantics, the
@@ -8258,7 +8370,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    and never reach the move path. */
                 Type *arg_type = node->as.call.args[i]->resolved_type;
                 if (arg_val && arg_type && arg_type->kind == TYPE_STRUCT &&
-                    arg_type->as.strukt.has_drop)
+                    arg_type->as.strukt.has_drop &&
+                    /* B-3: a coerced Str→string arg is already an LsString with
+                       cap=-2 (borrowed) — the struct clone path must not fire. */
+                    !node->as.call.args[i]->coerce_str_to_string)
                 {
                     /* Phase B: if callee param is pointer ABI (&Struct / &!Struct),
                        skip clone — fixup pass below replaces with sym->value. */
@@ -10688,6 +10803,18 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                        store/drop path below. */
                     if (node->as.var_decl.init->coerce_string_to_str)
                         init = cg_string_to_str(ctx, init, var_type);
+                    /* Reverse bridge (B-3): a `Str` value initializing a builtin-
+                       string var. Copy into a proper NUL-terminated LsString;
+                       IDENT source keeps ownership (dropped by its own scope),
+                       rvalue (call/match result) heap is freed here (nobody else
+                       drops it). The TYPE_STRING decision tree below is bypassed
+                       via the coerce flag — the value is already owned/static. */
+                    else if (node->as.var_decl.init->coerce_str_to_string)
+                    {
+                        bool src_is_ident =
+                            ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT;
+                        init = cg_str_to_owned_string(ctx, init, !src_is_ident);
+                    }
                     /* Implicit numeric widening: var_decl init expr's type may
                        differ from var_type (e.g. f64 x = 5_int). The checker
                        allowed this iff type_widens_to(init_t, var_type). */
@@ -10723,7 +10850,11 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                 init_node &&
                                 (init_node->kind == AST_CALL ||
                                  init_node->kind == AST_TRY ||
-                                 init_node->kind == AST_FORCE_UNWRAP);
+                                 init_node->kind == AST_FORCE_UNWRAP ||
+                                 /* B-3: coerced Str→string init is already
+                                    owned (cloned/transferred above) — don't
+                                    clone again. */
+                                 node->as.var_decl.init->coerce_str_to_string);
                             if (is_rvalue_transfer)
                             {
                                 /* Transfer: rvalue from a call / try expression
@@ -11401,10 +11532,12 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         if (node->as.return_stmt.value &&
             node->as.return_stmt.value->kind == AST_IDENT &&
             node->as.return_stmt.value->resolved_type &&
-            /* Migration bridge (B-2b): string→Str return coercion CLONES the
-               source string (cg_string_to_str below) — the local keeps ownership
-               and must be cleaned up normally, so don't take the transfer path. */
-            !node->as.return_stmt.value->coerce_string_to_str)
+            /* Migration bridge (B-2b/B-3): a coerced return CLONES the source
+               (cg_string_to_str / cg_str_to_string below) — the local keeps
+               ownership and must be cleaned up normally, so don't take the
+               transfer path. */
+            !node->as.return_stmt.value->coerce_string_to_str &&
+            !node->as.return_stmt.value->coerce_str_to_string)
         {
             Type *ret_type = node->as.return_stmt.value->resolved_type;
             /* For string/struct/vec/Block/has_drop-enum IDENT returns:
@@ -11459,6 +11592,17 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     cg_type_is_str(ctx->current_fn_return_type))
                 {
                     val = cg_string_to_str(ctx, val, ctx->current_fn_return_type);
+                    ret_type = ctx->current_fn_return_type;
+                }
+                /* Reverse bridge (B-3): a `Str` value returned from a `-> string`
+                   function. Copy into a proper NUL-terminated LsString; IDENT
+                   source keeps ownership (the local/global Str is cleaned up
+                   normally), rvalue (call/match result) heap is freed here. */
+                else if (node->as.return_stmt.value->coerce_str_to_string)
+                {
+                    bool src_is_ident =
+                        ast_unwrap_move(node->as.return_stmt.value)->kind == AST_IDENT;
+                    val = cg_str_to_owned_string(ctx, val, !src_is_ident);
                     ret_type = ctx->current_fn_return_type;
                 }
                 /* Phase C.5: Block return transfers env ownership to the

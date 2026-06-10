@@ -5395,6 +5395,16 @@ static Type *check_expr(Checker *c, AstNode *node)
             {
                 node->as.call.args[i]->coerce_string_to_str = true;
             }
+            /* Reverse bridge (B-3): a `Str` VARIABLE passed to a by-value
+               builtin-string parameter — codegen reinterprets + marks cap=-2
+               (borrowed, zero-copy; same convention as a named string var arg).
+               IDENT only: rvalue Str temps have no caller-side drop slot here. */
+            else if (type_is_str_struct(arg_type) &&
+                     param_type->kind == TYPE_STRING &&
+                     node->as.call.args[i]->kind == AST_IDENT)
+            {
+                node->as.call.args[i]->coerce_str_to_string = true;
+            }
             else if (!type_assignable(param_type, arg_type))
             {
                 checker_error(c, node->as.call.args[i]->line, node->as.call.args[i]->column,
@@ -6800,6 +6810,14 @@ static void check_stmt(Checker *c, AstNode *node)
                 {
                     node->as.var_decl.init->coerce_string_to_str = true;
                 }
+                /* Reverse bridge (B-3): a `Str` value initializing a builtin-string
+                   var. IDENT source → codegen clones (source stays live); rvalue
+                   (call/match result) → raw transfer. */
+                else if (init_type != NULL && type_is_str_struct(init_type) &&
+                         declared->kind == TYPE_STRING)
+                {
+                    node->as.var_decl.init->coerce_str_to_string = true;
+                }
                 else if (init_type != NULL && !type_assignable(declared, init_type))
                 {
                     checker_error(c, node->line, node->column,
@@ -6847,8 +6865,12 @@ static void check_stmt(Checker *c, AstNode *node)
             /* Move tracking: if the initializer is a dynamic string IDENT, the source is moved.
                Static strings, borrow params, and non-string types are left untouched
                (checker_try_mark_moved skips them). Reading a borrow into a new local
-               yields a shallow copy with cap==0 at codegen — safe, no move. */
-            checker_try_mark_moved(c, node->as.var_decl.init);
+               yields a shallow copy with cap==0 at codegen — safe, no move.
+               Reverse bridge (B-3): a coerced Str→string init CLONES the Str source
+               (it stays live and is dropped by its own scope) — don't mark it moved. */
+            if (node->as.var_decl.init == NULL ||
+                !node->as.var_decl.init->coerce_str_to_string)
+                checker_try_mark_moved(c, node->as.var_decl.init);
         }
         node->resolved_type = declared;
         break;
@@ -7043,6 +7065,14 @@ static void check_stmt(Checker *c, AstNode *node)
                 !node->as.return_stmt.value->coerce_str_lit_to_str)
             {
                 node->as.return_stmt.value->coerce_string_to_str = true;
+            }
+            /* Reverse bridge (B-3): a `Str` value returned from a `-> string`
+               function. IDENT source → codegen clones (the local Str keeps
+               ownership, cleaned up normally); rvalue → raw transfer. */
+            else if (val != NULL && type_is_str_struct(val) &&
+                     c->current_fn_return->kind == TYPE_STRING)
+            {
+                node->as.return_stmt.value->coerce_str_to_string = true;
             }
             else if (val != NULL && !type_assignable(c->current_fn_return, val))
             {

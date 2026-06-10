@@ -720,6 +720,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib migration bridge B-3 (reverse): a `Str` value flowing into a
+# builtin-string slot — var-decl (IDENT clone / rvalue transfer), call-arg
+# (IDENT, cap=-2 borrow), return (IDENT clone / rvalue transfer). 0/0/0.
+add_test(
+    NAME test_str_bridge_rev
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_bridge_rev.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_bridge_rev
+        -DMARKER=STRBV
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject
