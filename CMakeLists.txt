@@ -529,6 +529,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# L-013 match-result-ownership: a match yielding an owned heap payload (string /
+# Vec / has_drop struct·enum) has exactly one owner across every consumer
+# (var-decl / call-arg / return / nested / discard). JIT+AOT correctness +
+# memcheck 0/0/0 (docs/plan_match_result_ownership.md §8).
+add_test(
+    NAME test_match_result_own
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/match_result_own_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=match_result_own
+        -DMARKER=MATCHOWN
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject
