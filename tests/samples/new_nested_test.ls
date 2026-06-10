@@ -22,7 +22,7 @@ fn main() -> int {
     print(px.x, px.y)                           // 10.000000 20.000000
     print(px.color.r, px.color.g, px.color.b)   // 255 0 0
 
-    free(px)
+    std.c.free(px)
     print("done")                               // done
     return 0
 }

@@ -5,7 +5,7 @@ impl RawVecS {
         if self.len >= self.cap {
             int n = 4
             if self.cap > 0 { n = self.cap * 2 }
-            self.data = realloc(self.data as *u8, n * sizeof(string)) as *string
+            self.data = std.c.realloc(self.data as *u8, n * sizeof(string)) as *string
             self.cap = n
         }
         self.data[self.len] = x
@@ -14,7 +14,7 @@ impl RawVecS {
     fn get(&self, int i) -> string { string t = self.data[i]; return t }
     fn __drop() {
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
-        if self.cap > 0 { free(self.data as *u8) }
+        if self.cap > 0 { std.c.free(self.data as *u8) }
     }
 }
 

@@ -24,7 +24,7 @@ impl RawVecI {
             int ncap = 4
             if self.cap > 0 { ncap = self.cap * 2 }
             // grow: realloc old buffer to ncap elements (NULL data -> malloc)
-            self.data = realloc(self.data as *u8, ncap * sizeof(int)) as *int
+            self.data = std.c.realloc(self.data as *u8, ncap * sizeof(int)) as *int
             self.cap = ncap
         }
         self.data[self.len] = x      // raw typed store
@@ -37,7 +37,7 @@ impl RawVecI {
 
     fn __drop() {
         // POD elements: nothing to drop per-element; just free the buffer once.
-        if self.cap > 0 { free(self.data as *u8) }
+        if self.cap > 0 { std.c.free(self.data as *u8) }
     }
 }
 

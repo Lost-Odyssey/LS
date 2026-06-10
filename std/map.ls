@@ -111,9 +111,9 @@ impl(K, V) Map(K, V) {
         int oldcap = self.cap;
         // Fresh buffers (realloc(nil, n) == malloc(n); reuse one *u8 nil).
         *u8 z = nil
-        self.ctrl = realloc(z, newcap) as *u8
-        self.keys = realloc(z, newcap * sizeof(K)) as *K
-        self.vals = realloc(z, newcap * sizeof(V)) as *V
+        self.ctrl = std.c.realloc(z, newcap) as *u8
+        self.keys = std.c.realloc(z, newcap * sizeof(K)) as *K
+        self.vals = std.c.realloc(z, newcap * sizeof(V)) as *V
         self.cap = newcap
         self.shift = newshift
         self.len = 0
@@ -129,9 +129,9 @@ impl(K, V) Map(K, V) {
             }
         }
         if oldcap > 0 {
-            free(oldctrl)
-            free(oldkeys as *u8)
-            free(oldvals as *u8)
+            std.c.free(oldctrl)
+            std.c.free(oldkeys as *u8)
+            std.c.free(oldvals as *u8)
         }
     }
 
@@ -313,9 +313,9 @@ impl(K, V) Map(K, V) {
         Map(K, V) out = {}
         if self.cap == 0 { return out }
         *u8 z = nil
-        out.ctrl = realloc(z, self.cap) as *u8
-        out.keys = realloc(z, self.cap * sizeof(K)) as *K
-        out.vals = realloc(z, self.cap * sizeof(V)) as *V
+        out.ctrl = std.c.realloc(z, self.cap) as *u8
+        out.keys = std.c.realloc(z, self.cap * sizeof(K)) as *K
+        out.vals = std.c.realloc(z, self.cap * sizeof(V)) as *V
         out.cap = self.cap
         out.shift = self.shift
         out.len = self.len
@@ -342,9 +342,9 @@ impl(K, V) Map(K, V) {
             }
         }
         if self.cap > 0 {
-            free(self.ctrl)
-            free(self.keys as *u8)
-            free(self.vals as *u8)
+            std.c.free(self.ctrl)
+            std.c.free(self.keys as *u8)
+            std.c.free(self.vals as *u8)
         }
     }
 }

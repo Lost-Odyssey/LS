@@ -32,7 +32,7 @@ impl RawVecS {
         if self.len >= self.cap {
             int n = 4
             if self.cap > 0 { n = self.cap * 2 }
-            self.data = realloc(self.data as *u8, n * sizeof(string)) as *string
+            self.data = std.c.realloc(self.data as *u8, n * sizeof(string)) as *string
             self.cap = n
         }
         self.data[self.len] = x          // move-in (raw store, no drop old)
@@ -65,7 +65,7 @@ impl RawVecS {
     }
     fn __drop() {
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
-        if self.cap > 0 { free(self.data as *u8) }
+        if self.cap > 0 { std.c.free(self.data as *u8) }
     }
 }
 
@@ -78,7 +78,7 @@ impl RawVecP {
         if self.len >= self.cap {
             int n = 4
             if self.cap > 0 { n = self.cap * 2 }
-            self.data = realloc(self.data as *u8, n * sizeof(Person)) as *Person
+            self.data = std.c.realloc(self.data as *u8, n * sizeof(Person)) as *Person
             self.cap = n
         }
         self.data[self.len] = x
@@ -94,7 +94,7 @@ impl RawVecP {
         // __drop_at on each struct slot recurses into Person's auto __drop, which
         // frees the `name` string field — proving recursive (nested) struct drop.
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
-        if self.cap > 0 { free(self.data as *u8) }
+        if self.cap > 0 { std.c.free(self.data as *u8) }
     }
 }
 
@@ -106,7 +106,7 @@ impl RawVecV {
         if self.len >= self.cap {
             int n = 2
             if self.cap > 0 { n = self.cap * 2 }
-            self.data = realloc(self.data as *u8, n * sizeof(RawVecS)) as *RawVecS
+            self.data = std.c.realloc(self.data as *u8, n * sizeof(RawVecS)) as *RawVecS
             self.cap = n
         }
         self.data[self.len] = x
@@ -129,7 +129,7 @@ impl RawVecV {
         // recurses two levels: __drop_at -> RawVecS.__drop -> inner string frees
         // + inner buffer free, then this outer buffer free.
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
-        if self.cap > 0 { free(self.data as *u8) }
+        if self.cap > 0 { std.c.free(self.data as *u8) }
     }
 }
 

@@ -19,7 +19,19 @@ extern {
     fn strlen(string s) -> i64
     fn system(string cmd) -> int
     fn strerror(int e) -> object
+    // Raw heap management (CRT). size_t is 64-bit on x64 → i64. These bind to the
+    // real CRT symbols (no __ls_ prefix — that's reserved for runtime-owned
+    // symbols). Reached as std.c.malloc / std.c.realloc / std.c.free, or via an
+    // import alias (c.malloc). See docs/plan_runtime_primitives.md.
+    fn malloc(i64 sz) -> *u8
+    fn realloc(*u8 p, i64 sz) -> *u8
+    fn free(*u8 p)
 }
+
+// Abort the process with exit code 1 — the controlled-exit semantics the stdlib
+// bounds checks rely on (NOT the CRT abort()'s SIGABRT). A real LS fn (symbol
+// std_c__abort), reached as std.c.abort().
+fn abort() { __ls_proc_exit(1) }
 
 // ---- LS runtime helpers (runtime/builtins.c) ----
 // These are cross-platform, no #ifdef needed — builtins.c is the sole owner.

@@ -26,10 +26,10 @@ fn main() -> int {
 
     // 6. object in a struct field
     // (use *u8 via malloc for a more realistic example)
-    *u8 buf = malloc(64 as i64)
+    *u8 buf = std.c.malloc(64 as i64)
     object data = buf
     *u8 buf2 = data as *u8
-    free(buf2)
+    std.c.free(buf2)
     print("malloc -> object -> free: ok")
 
     // 7. Multiple pointer types -> object

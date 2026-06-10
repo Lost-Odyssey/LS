@@ -6,16 +6,16 @@
 
 fn main() {
     // allocate, then grow twice, then shrink — all through realloc
-    *u8 p = malloc(16)
-    p = realloc(p, 64)
-    p = realloc(p, 256)
-    p = realloc(p, 8)
-    free(p)
+    *u8 p = std.c.malloc(16)
+    p = std.c.realloc(p, 64)
+    p = std.c.realloc(p, 256)
+    p = std.c.realloc(p, 8)
+    std.c.free(p)
 
     // realloc(NULL, n) must behave like malloc(n)
     *u8 q = nil
-    q = realloc(q, 32)
-    free(q)
+    q = std.c.realloc(q, 32)
+    std.c.free(q)
 
     print("RAW1 PASS")
 }

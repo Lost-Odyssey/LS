@@ -528,6 +528,33 @@ add_test(
         -DMARKER=FORCEUNWRAP
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
+
+# Vec(T).sort / sort_by — O(n log n) stable merge sort (bugs/27_vec.txt #2):
+# larger n, explicit stability, has_drop elements, degenerate sizes.
+add_test(
+    NAME test_vec_sort
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_sort_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=vec_sort
+        -DMARKER=VECSORT
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
+# A-1 (docs/plan_runtime_primitives.md): std.c.{malloc,realloc,free,abort}
+# reachable by canonical path, incl. from generic method bodies instantiated
+# at the consumer site. JIT + AOT + memcheck.
+add_test(
+    NAME test_stdc_prim
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdc_prim_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=stdc_prim
+        -DMARKER=STDCPRIM
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
 set_tests_properties(test_ident_suffix PROPERTIES DEPENDS "test_fstring_spec")
 
 # std/plot.ls (plot Phase 1 skeleton): data model + builder API + summary output.
@@ -1000,6 +1027,16 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_map_builtin_syntax_reject.cmake
 )
 set_tests_properties(test_map_builtin_syntax_reject PROPERTIES DEPENDS "test_vec_builtin_syntax_reject")
+
+# A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
+# longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
+add_test(
+    NAME test_malloc_builtin_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/malloc_builtin_reject.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_malloc_builtin_reject.cmake
+)
 
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(

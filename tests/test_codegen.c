@@ -1495,7 +1495,7 @@ static void test_new_free_ir(void) {
         "struct Point { f64 x; f64 y; }\n"
         "fn main() -> int {\n"
         "    *Point p = new Point\n"
-        "    free(p)\n"
+        "    std.c.free(p)\n"
         "    return 0\n"
         "}\n"
     );
@@ -1516,7 +1516,7 @@ static void test_new_method_call_ir(void) {
         "fn main() -> int {\n"
         "    *Point p = new Point { x: 3.0, y: 4.0 }\n"
         "    f64 x = p.get_x()\n"
-        "    free(p)\n"
+        "    std.c.free(p)\n"
         "    return 0\n"
         "}\n"
     );
@@ -1558,7 +1558,7 @@ static void test_struct_drop_free_call(void) {
         "}\n"
         "fn main() -> int {\n"
         "    *Foo p = new Foo { x: 1 }\n"
-        "    free(p)\n"
+        "    std.c.free(p)\n"
         "    return 0\n"
         "}\n"
     );

@@ -34,6 +34,21 @@ fn main() -> int {
     sv.set(0, "ALPHA")
     if sv[0] == "ALPHA" { pass = pass + 1 } else { fail = fail + 1; print("FAIL str set") }
 
+    // in-range mutators (insert/remove/swap/truncate/resize) must behave
+    Vec(int) m = {}
+    for i in 0..5 { m.push(i * 10) }      // [0,10,20,30,40]
+    m.insert(0, 100)                       // boundary low: [100,0,10,20,30,40]
+    m.insert(m.len(), 200)                 // boundary high (i==len, append)
+    if m[0] == 100 && m[m.len() - 1] == 200 { pass = pass + 1 } else { fail = fail + 1; print("FAIL insert") }
+    int r = m.remove(0)                    // boundary low
+    if r == 100 && m[0] == 0 { pass = pass + 1 } else { fail = fail + 1; print("FAIL remove") }
+    m.swap(0, m.len() - 1)                 // boundary both ends
+    if m[0] == 200 { pass = pass + 1 } else { fail = fail + 1; print("FAIL swap") }
+    m.truncate(2)
+    if m.len() == 2 { pass = pass + 1 } else { fail = fail + 1; print("FAIL truncate") }
+    m.resize(4, 7)
+    if m.len() == 4 && m[3] == 7 { pass = pass + 1 } else { fail = fail + 1; print("FAIL resize") }
+
     print(f"pass={pass} fail={fail}")
     if fail == 0 { print("VEC_OOB PASS") } else { print("VEC_OOB FAIL") }
     return 0

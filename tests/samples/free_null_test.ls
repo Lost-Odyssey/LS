@@ -8,6 +8,6 @@ impl Point {
 
 fn main() {
     *Point p = nil
-    free(p)
+    std.c.free(p)
     print("free(nil) should not crash")
 }

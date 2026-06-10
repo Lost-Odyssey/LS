@@ -86,7 +86,7 @@ fn read_file(string path) -> Result(string, string) {
         c.fclose(fp)
         return Err(_err("read_file: tell failed"))
     }
-    *u8 buf = malloc(sz + 1)
+    *u8 buf = c.malloc(sz + 1)
     i64 nread = c.fread(buf, 1, sz, fp)
     c.fclose(fp)
     string s = __string_take_buffer(buf, nread)
@@ -165,7 +165,7 @@ fn read_all(File f) -> Result(string, string) {
         string empty = ""
         return Ok(empty)
     }
-    *u8 buf = malloc(sz + 1)
+    *u8 buf = c.malloc(sz + 1)
     i64 nread = c.fread(buf, 1, sz, f.handle)
     string s = __string_take_buffer(buf, nread)
     if nread != sz {
