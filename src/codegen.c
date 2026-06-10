@@ -4739,9 +4739,14 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
     if (expr_count == 0)
     {
         const char *lit = (part_count > 0) ? node->as.format_string.parts[0] : "";
-        LLVMValueRef result = ls_string_from_literal(ctx, lit, "fstr");
         free(vals);
-        return result;
+        /* P2: a no-interpolation f-string expected as Str is just a static literal
+           Str (cap 0) — same as the §5.1 literal coercion. */
+        if (node->resolved_type && node->resolved_type->kind == TYPE_STRUCT &&
+            node->resolved_type->as.strukt.name &&
+            strcmp(node->resolved_type->as.strukt.name, "Str") == 0)
+            return cg_str_struct_from_literal(ctx, lit, node->resolved_type);
+        return ls_string_from_literal(ctx, lit, "fstr");
     }
 
     /* Format into a small reused entry-block stack scratch buffer, then copy out
@@ -4832,6 +4837,23 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
     free(vals);
 
     LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+    /* P2 (docs/plan_string_to_stdlib.md §5.2): if a `Str` is expected, wrap the
+       same heap buffer as an OWNED Str struct {data=buf, len=n, cap=n+1} (cap>0
+       → Str.__drop frees it). Zero-copy — reuses the f-string's buffer. Returned
+       as a has_drop struct rvalue VALUE; the consumer (var-decl move / discard
+       spill+drop / call-arg) routes it through the unified ownership path, exactly
+       like a call returning a has_drop struct. */
+    if (node->resolved_type && node->resolved_type->kind == TYPE_STRUCT &&
+        node->resolved_type->as.strukt.name &&
+        strcmp(node->resolved_type->as.strukt.name, "Str") == 0)
+    {
+        LLVMTypeRef st = type_to_llvm(ctx, node->resolved_type);
+        LLVMValueRef sv = LLVMGetUndef(st);
+        sv = LLVMBuildInsertValue(ctx->builder, sv, buf, 0, "Str.d");
+        sv = LLVMBuildInsertValue(ctx->builder, sv, n, 1, "Str.l");
+        sv = LLVMBuildInsertValue(ctx->builder, sv, cap, 2, "Str.c");
+        return sv;
+    }
     /* LsString{ data=buf, len=n, cap=n+1 } (cap>0 = heap-owned → freed on drop). */
     return cg_push_temp_string(ctx, ls_string_make(ctx, buf, n, cap));
 }

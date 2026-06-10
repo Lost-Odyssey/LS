@@ -575,6 +575,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib P2: an f-string in a `Str`-expecting position produces an
+# OWNED Str rvalue (cap>0, the formatted heap buffer wrapped as Str, zero-copy),
+# routed through the unified has_drop temp/drop path. Default (no Str expected)
+# stays builtin string. JIT+AOT+memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.2).
+add_test(
+    NAME test_str_p2
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p2_fstring.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_p2
+        -DMARKER=STRP2
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject

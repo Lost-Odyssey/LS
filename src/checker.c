@@ -4009,6 +4009,11 @@ static Type *check_expr(Checker *c, AstNode *node)
 
     case AST_FORMAT_STRING:
     {
+        /* The outer f-string's expected type (e.g. Str) must NOT leak into the
+           interpolated exprs — an inner literal would otherwise coerce to Str and
+           fail the printable check below. Clear it for the loop, consult it after. */
+        Type *fstr_expected = c->expected_type;
+        c->expected_type = NULL;
         /* Type-check each interpolated expression */
         for (int i = 0; i < node->as.format_string.expr_count; i++)
         {
@@ -4024,7 +4029,15 @@ static Type *check_expr(Checker *c, AstNode *node)
                               type_name(et));
             }
         }
+        c->expected_type = fstr_expected;
         result = type_string();
+        /* P2 (docs/plan_string_to_stdlib.md §5.2): an f-string where a `Str` is
+           expected produces an OWNED Str rvalue (the formatted heap buffer wrapped
+           as Str, cap>0) — routed through the unified has_drop temp/drop path.
+           v1 keeps the existing per-type formatting; only the output type changes.
+           Default (no Str expected) stays builtin string. */
+        if (type_is_str_struct(fstr_expected))
+            result = fstr_expected;
         break;
     }
 
