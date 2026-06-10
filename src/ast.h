@@ -174,6 +174,12 @@ struct AstNode
        env-ignoring thunk and returns the usual {fn, env} Block value. */
     bool coerce_fn_to_block;
     Type *coerce_block_type; /* owned clone of the expected Block type */
+    /* string-literal -> Str coercion (docs/plan_string_to_stdlib.md §5.1, P1):
+       set by the checker on an AST_STRING_LIT when it appears where a `Str`
+       struct is expected. Codegen then emits a static Str struct value
+       {data, len, cap:0} (layout-identical to LsString) instead of a builtin
+       LsString. resolved_type carries the concrete Str struct type. */
+    bool coerce_str_lit_to_str;
     union
     {
         struct

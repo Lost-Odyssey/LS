@@ -559,6 +559,22 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib P1: a string LITERAL in a `Str`-expecting position lowers to a
+# static Str {data:.rodata, len, cap:0} (no malloc; layout-identical to LsString).
+# The builtin string stays the default literal type; this only fires where Str is
+# expected (var-decl / param / return / struct field / Vec element). JIT+AOT+
+# memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.1).
+add_test(
+    NAME test_str_p1
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p1_litcoerce.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_p1
+        -DMARKER=STRP1
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject

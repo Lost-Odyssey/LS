@@ -191,6 +191,15 @@ static Type *resolve_builtin_type_by_name(const char *name)
     return NULL;
 }
 
+/* True iff `t` is the pure-LS `Str` struct (std/str.ls). Recognized by name,
+   like Vec/Map — the string-to-stdlib lowerings (docs/plan_string_to_stdlib.md)
+   key off this. Str is non-generic, so a plain name match suffices. */
+static bool type_is_str_struct(const Type *t)
+{
+    return t != NULL && t->kind == TYPE_STRUCT &&
+           t->as.strukt.name != NULL && strcmp(t->as.strukt.name, "Str") == 0;
+}
+
 /* Step 11: Get the impl_registry key name for a type.
    For structs returns the struct name; for builtins returns "int", "f64" etc. */
 static const char *type_impl_name(Type *t)
@@ -3987,6 +3996,15 @@ static Type *check_expr(Checker *c, AstNode *node)
 
     case AST_STRING_LIT:
         result = type_string();
+        /* P1 (docs/plan_string_to_stdlib.md §5.1): a string literal in a context
+           expecting the pure-LS `Str` adopts the Str type — a static Str pointing
+           at the same .rodata bytes (cap 0). Lets `Str s = "..."` work while the
+           builtin string is still the default literal type. */
+        if (type_is_str_struct(c->expected_type))
+        {
+            node->coerce_str_lit_to_str = true;
+            result = c->expected_type;
+        }
         break;
 
     case AST_FORMAT_STRING:

@@ -1278,6 +1278,26 @@ LLVMValueRef ls_string_from_literal(CodegenContext *ctx,
     return ls_string_make(ctx, data, len, cap);
 }
 
+/* Build a static `Str` struct value {data, len, cap:0} for a string literal
+   (docs/plan_string_to_stdlib.md §5.1, P1). `Str { *u8, int, int }` is layout-
+   identical to LsString {i8*, i32, i32}; the bytes live in .rodata, so cap 0
+   means Str.__drop skips free and Str.__clone shallow-copies. `str_type` is the
+   concrete Str struct type the checker resolved (used for the LLVM struct type). */
+static LLVMValueRef cg_str_struct_from_literal(CodegenContext *ctx,
+                                               const char *text, Type *str_type)
+{
+    LLVMTypeRef st = type_to_llvm(ctx, str_type);
+    LLVMValueRef data = LLVMBuildGlobalStringPtr(ctx->builder, text, "Strlit");
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+    LLVMValueRef len = LLVMConstInt(i32, (unsigned long long)strlen(text), 0);
+    LLVMValueRef cap = LLVMConstInt(i32, 0, 0);
+    LLVMValueRef v = LLVMGetUndef(st);
+    v = LLVMBuildInsertValue(ctx->builder, v, data, 0, "Str.d");
+    v = LLVMBuildInsertValue(ctx->builder, v, len, 1, "Str.l");
+    v = LLVMBuildInsertValue(ctx->builder, v, cap, 2, "Str.c");
+    return v;
+}
+
 /* Build a constant (compile-time) LsString struct for global initializers */
 static LLVMValueRef ls_string_const(CodegenContext *ctx, LLVMValueRef data,
                                     int slen, int scap)
@@ -6806,6 +6826,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             node->as.bool_lit.value ? 1 : 0, 0);
 
     case AST_STRING_LIT:
+        /* P1: literal in a `Str`-expecting position -> static Str struct value. */
+        if (node->coerce_str_lit_to_str && node->resolved_type)
+            return cg_str_struct_from_literal(ctx, node->as.string_lit.value,
+                                              node->resolved_type);
         return ls_string_from_literal(ctx, node->as.string_lit.value, "str");
 
     case AST_NIL_LIT:
