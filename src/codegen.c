@@ -11400,7 +11400,11 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
         if (node->as.return_stmt.value &&
             node->as.return_stmt.value->kind == AST_IDENT &&
-            node->as.return_stmt.value->resolved_type)
+            node->as.return_stmt.value->resolved_type &&
+            /* Migration bridge (B-2b): string→Str return coercion CLONES the
+               source string (cg_string_to_str below) — the local keeps ownership
+               and must be cleaned up normally, so don't take the transfer path. */
+            !node->as.return_stmt.value->coerce_string_to_str)
         {
             Type *ret_type = node->as.return_stmt.value->resolved_type;
             /* For string/struct/vec/Block/has_drop-enum IDENT returns:
@@ -11440,9 +11444,22 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                    For non-string returns: flush all temps (the enum constructor
                    already cloned any string args). */
                 if (ret_type && ret_type->kind == TYPE_STRING &&
+                    !node->as.return_stmt.value->coerce_string_to_str &&
                     ctx->temp_string_count > ret_temp_mark) {
                     cg_mark_last_temp_moved(ctx, ret_temp_mark,
                         "return: ownership transferred to caller");
+                }
+                /* Migration bridge (B-2b): builtin-string value returned from a
+                   `-> Str` function — deep-copy into an owned Str BEFORE flushing
+                   temps (the source may be a temp string about to be freed). The
+                   source string (local/temp/global/borrowed) keeps its normal
+                   cleanup; the caller receives an independent owned Str. */
+                if (node->as.return_stmt.value->coerce_string_to_str &&
+                    ctx->current_fn_return_type &&
+                    cg_type_is_str(ctx->current_fn_return_type))
+                {
+                    val = cg_string_to_str(ctx, val, ctx->current_fn_return_type);
+                    ret_type = ctx->current_fn_return_type;
                 }
                 /* Phase C.5: Block return transfers env ownership to the
                    caller — pop the trailing temp env so flush doesn't free

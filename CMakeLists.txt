@@ -706,6 +706,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib migration bridge B-2b: a builtin-string value returned from a
+# `-> Str` function is deep-copied into an owned Str (source keeps its normal
+# cleanup; covers locals, temps, &string params, globals). JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_str_bridge_ret
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_bridge_ret.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_bridge_ret
+        -DMARKER=STRBR
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject

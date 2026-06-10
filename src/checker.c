@@ -7034,7 +7034,17 @@ static void check_stmt(Checker *c, AstNode *node)
             c->expected_type = c->current_fn_return;
             Type *val = check_expr(c, node->as.return_stmt.value);
             c->expected_type = saved_expected;
-            if (val != NULL && !type_assignable(c->current_fn_return, val))
+            /* Migration bridge (B-2b): a builtin-string value returned from a
+               function declared `-> Str` is deep-copied into an owned Str by
+               codegen (the source string is dropped normally, not transferred).
+               Literals already coerced zero-copy via expected_type above. */
+            if (val != NULL && val->kind == TYPE_STRING &&
+                type_is_str_struct(c->current_fn_return) &&
+                !node->as.return_stmt.value->coerce_str_lit_to_str)
+            {
+                node->as.return_stmt.value->coerce_string_to_str = true;
+            }
+            else if (val != NULL && !type_assignable(c->current_fn_return, val))
             {
                 checker_error(c, node->line, node->column,
                               "return type mismatch: expected '%s', got '%s'",
