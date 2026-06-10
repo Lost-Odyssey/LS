@@ -52,10 +52,10 @@ fn main() -> int {
     print(p4.length())                // 13.000000
 
     // 8. Manual free
-    free(p)
-    free(p2)
-    free(p3)
-    free(p4)
+    std.c.free(p)
+    std.c.free(p2)
+    std.c.free(p3)
+    std.c.free(p4)
     print("done")                     // done
 
     return 0

@@ -8971,28 +8971,11 @@ static void register_builtins(Checker *c)
         Type *ft = type_function(NULL, 0, type_void(), true);
         scope_define(c->current_scope, "print", ft);
     }
-    /* malloc(i64) -> *u8  (size_t is 64-bit on x64) */
-    {
-        Type **params = (Type **)malloc_safe(sizeof(Type *));
-        params[0] = type_i64();
-        Type *ft = type_function(params, 1, type_pointer(type_u8()), false);
-        scope_define(c->current_scope, "malloc", ft);
-    }
-    /* realloc(*u8, i64) -> *u8 — grow/shrink a heap buffer (NULL ptr == malloc) */
-    {
-        Type **params = (Type **)malloc_safe(2 * sizeof(Type *));
-        params[0] = type_pointer(type_u8());
-        params[1] = type_i64();
-        Type *ft = type_function(params, 2, type_pointer(type_u8()), false);
-        scope_define(c->current_scope, "realloc", ft);
-    }
-    /* free(*u8) -> void */
-    {
-        Type **params = (Type **)malloc_safe(sizeof(Type *));
-        params[0] = type_pointer(type_u8());
-        Type *ft = type_function(params, 1, type_void(), false);
-        scope_define(c->current_scope, "free", ft);
-    }
+    /* A-FLIP (docs/plan_runtime_primitives.md): malloc/realloc/free/abort are no
+       longer global builtins. They live in std.c (extern fn malloc/realloc/free
+       + `fn abort`) and are reached either by canonical path std.c.malloc (which
+       the checker/codegen recognise by spelling — works inside generic bodies) or
+       via an import alias (c.malloc). A bare `malloc(...)` is now "undefined". */
     /* sizeof(Type) is handled as a compile-time AST_SIZEOF node (see parser
        infix_call + check_expr), not a runtime function — nothing to register. */
     /* sqrt(f64) -> f64 */
@@ -9002,14 +8985,7 @@ static void register_builtins(Checker *c)
         Type *ft = type_function(params, 1, type_f64(), false);
         scope_define(c->current_scope, "sqrt", ft);
     }
-    /* abort() -> void — terminate the process (exit code 1). Used by stdlib
-       bounds checks (std.vec / std.map). Callable unqualified from anywhere,
-       including generic method bodies (no module import needed). Lowered in
-       codegen to a call to the runtime helper __ls_proc_exit(1). */
-    {
-        Type *ft = type_function(NULL, 0, type_void(), false);
-        scope_define(c->current_scope, "abort", ft);
-    }
+    /* abort: see the A-FLIP note above — now std.c.abort() / std_c__abort. */
 }
 
 /* B-MAP-M5-004: has_drop fixpoint. Generic struct/enum instantiations cache

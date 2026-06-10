@@ -1015,6 +1015,16 @@ add_test(
 )
 set_tests_properties(test_map_builtin_syntax_reject PROPERTIES DEPENDS "test_vec_builtin_syntax_reject")
 
+# A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
+# longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
+add_test(
+    NAME test_malloc_builtin_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/malloc_builtin_reject.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_malloc_builtin_reject.cmake
+)
+
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(
     NAME test_mem_overhaul_jit

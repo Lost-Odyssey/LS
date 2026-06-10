@@ -8,5 +8,5 @@ impl Point {
 
 fn main() {
     *Point p = new Point { x: 1.0, y: 2.0 }
-    free(p)
+    std.c.free(p)
 }

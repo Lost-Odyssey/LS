@@ -60,7 +60,7 @@ fn exec(string cmd) -> Result(string, string) {
         return Err("proc: exec: failed to start process")
     }
     i64 maxsz = 4194304
-    *u8 buf = malloc(maxsz)
+    *u8 buf = c.malloc(maxsz)
     i64 nread = _os.raw_pread(fp, buf as object, maxsz)
     string out = __string_take_buffer(buf, nread)
     int code = _os.raw_pclose(fp)
