@@ -3544,6 +3544,7 @@ static void capture_walk(CaptureScan *s, AstNode *node) {
         return;
     case AST_FORCE_UNWRAP:
         capture_walk(s, node->as.force_unwrap.expr);
+        capture_walk(s, node->as.force_unwrap.message);  /* C1: expect(msg) */
         return;
     case AST_AT_TIME:
         capture_walk(s, node->as.at_time.expr);
@@ -3661,6 +3662,178 @@ static int match_stdc_prim(Checker *c, AstNode *callee)
     if (strcmp(f, "free") == 0)    return 2;
     if (strcmp(f, "abort") == 0)   return 3;
     return -1;
+}
+
+/* ---- C1: Option/Result combinators (docs/plan_container_access_safety.md §5.3) ----
+   unwrap / expect / unwrap_or / is_some? / is_none? / is_ok? / is_err? are lowered
+   by the compiler, mirroring `try` and force-unwrap `!` (which are also not library
+   methods). `impl` on the builtin Option/Result enum templates is unsupported, and
+   generic free functions would need explicit type args at each call site — so the
+   checker intercepts `opt.METHOD(args)` and rewrites the AST_CALL in place to either
+   a force-unwrap (the two panic combinators) or a 2-arm match expression (the rest),
+   then re-checks. This reuses the mature match drop/move machinery and the
+   force-unwrap discriminant lowering, introducing NO new ownership code. */
+typedef enum {
+    OPTC_NONE = 0,
+    OPTC_UNWRAP, OPTC_EXPECT,    /* panic → force-unwrap (expect carries a message) */
+    OPTC_UNWRAP_OR,             /* match desugar, 1 fallback arg */
+    OPTC_IS_SOME, OPTC_IS_NONE, /* match desugar, Option only, → bool */
+    OPTC_IS_OK,   OPTC_IS_ERR   /* match desugar, Result only, → bool */
+} OptCombinator;
+
+static OptCombinator opt_combinator_id(const char *name)
+{
+    if (strcmp(name, "unwrap")    == 0) return OPTC_UNWRAP;
+    if (strcmp(name, "expect")    == 0) return OPTC_EXPECT;
+    if (strcmp(name, "unwrap_or") == 0) return OPTC_UNWRAP_OR;
+    if (strcmp(name, "is_some?")  == 0) return OPTC_IS_SOME;
+    if (strcmp(name, "is_none?")  == 0) return OPTC_IS_NONE;
+    if (strcmp(name, "is_ok?")    == 0) return OPTC_IS_OK;
+    if (strcmp(name, "is_err?")   == 0) return OPTC_IS_ERR;
+    return OPTC_NONE;
+}
+
+static int g_optc_uid = 0;
+
+static AstNode *optc_mk_ident(const char *name, int line, int col)
+{
+    AstNode *n = ast_new(AST_IDENT, line, col);
+    n->as.ident.name = chk_strdup(name);
+    return n;
+}
+static AstNode *optc_mk_bool(bool v, int line, int col)
+{
+    AstNode *n = ast_new(AST_BOOL_LIT, line, col);
+    n->as.bool_lit.value = v;
+    return n;
+}
+/* variant pattern `Variant(binding)` — binding "_" yields a wildcard payload. */
+static AstNode *optc_mk_variant_pat(const char *variant, const char *binding,
+                                    int line, int col)
+{
+    AstNode *call = ast_new(AST_CALL, line, col);
+    call->as.call.callee = optc_mk_ident(variant, line, col);
+    call->as.call.args = (AstNode **)malloc_safe(sizeof(AstNode *));
+    call->as.call.args[0] = optc_mk_ident(binding, line, col);
+    call->as.call.arg_count = 1;
+    call->as.call.type_args = NULL;
+    call->as.call.type_arg_count = 0;
+    return call;
+}
+static AstNode *optc_mk_match2(AstNode *subject,
+                               AstNode *pat0, AstNode *body0,
+                               AstNode *pat1, AstNode *body1, int line, int col)
+{
+    AstNode *m = ast_new(AST_MATCH, line, col);
+    m->as.match.subject = subject;
+    m->as.match.arms = (MatchArm *)malloc_safe(2 * sizeof(MatchArm));
+    m->as.match.arms[0].pattern = pat0;
+    m->as.match.arms[0].body = body0;
+    m->as.match.arms[1].pattern = pat1;
+    m->as.match.arms[1].body = body1;
+    m->as.match.arm_count = 2;
+    return m;
+}
+
+/* Rewrite `recv.METHOD(args)` (an AST_CALL `node`) in place into the lowered form.
+   Returns 1 = rewrote (caller re-checks node), -1 = error reported, 0 = METHOD is
+   not a combinator (caller falls through to normal enum dispatch). */
+static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
+                                Type *recv_type, const char *method_name)
+{
+    OptCombinator id = opt_combinator_id(method_name);
+    if (id == OPTC_NONE) return 0;
+
+    bool is_result = (strncmp(recv_type->as.enom.name, "Result(", 7) == 0);
+    bool is_option = (strncmp(recv_type->as.enom.name, "Option(", 7) == 0);
+    if (!is_result && !is_option) return 0;   /* defensive: caller guarantees this */
+
+    int line = node->line, col = node->column;
+    int argc = node->as.call.arg_count;
+    AstNode **args = node->as.call.args;
+    AstNode *callee = node->as.call.callee;   /* AST_FIELD shell, discarded below */
+
+    int want_args = (id == OPTC_EXPECT || id == OPTC_UNWRAP_OR) ? 1 : 0;
+    if (argc != want_args) {
+        checker_error(c, line, col, "'%s' expects %d argument(s), got %d",
+                      method_name, want_args, argc);
+        return -1;
+    }
+    if ((id == OPTC_IS_SOME || id == OPTC_IS_NONE) && !is_option) {
+        checker_error(c, line, col,
+                      "'%s' is an Option combinator, but got '%s'",
+                      method_name, type_name(recv_type));
+        return -1;
+    }
+    if ((id == OPTC_IS_OK || id == OPTC_IS_ERR) && !is_result) {
+        checker_error(c, line, col,
+                      "'%s' is a Result combinator, but got '%s'",
+                      method_name, type_name(recv_type));
+        return -1;
+    }
+
+    AstNode *arg0 = (argc >= 1) ? args[0] : NULL;
+    /* Detach recv from the callee shell so freeing the shell won't free recv. */
+    callee->as.field_access.object = NULL;
+
+    char vb[32];
+    snprintf(vb, sizeof vb, "__ocv$%d", g_optc_uid++);
+    const char *succ = is_result ? "Ok" : "Some";
+    const char *fail = is_result ? "Err" : "None";
+
+    AstNode *repl = NULL;
+    switch (id) {
+    case OPTC_UNWRAP:
+        repl = ast_new(AST_FORCE_UNWRAP, line, col);
+        repl->as.force_unwrap.expr = recv;
+        repl->as.force_unwrap.message = NULL;
+        break;
+    case OPTC_EXPECT:
+        repl = ast_new(AST_FORCE_UNWRAP, line, col);
+        repl->as.force_unwrap.expr = recv;
+        repl->as.force_unwrap.message = arg0;   /* user message expr (moved in) */
+        arg0 = NULL;
+        break;
+    case OPTC_UNWRAP_OR: {
+        /* match recv { succ(x) => x   fail(_) => arg0 } — fail payload (Result Err)
+           is bound to `_` and dropped by the match arm; arg0 is the fallback. */
+        AstNode *succ_pat = optc_mk_variant_pat(succ, vb, line, col);
+        AstNode *succ_body = optc_mk_ident(vb, line, col);
+        AstNode *fail_pat = is_result ? optc_mk_variant_pat(fail, "_", line, col)
+                                      : optc_mk_ident(fail, line, col);
+        repl = optc_mk_match2(recv, succ_pat, succ_body, fail_pat, arg0, line, col);
+        arg0 = NULL;
+        break;
+    }
+    case OPTC_IS_SOME: case OPTC_IS_NONE: {
+        bool some_true = (id == OPTC_IS_SOME);
+        repl = optc_mk_match2(recv,
+                              optc_mk_variant_pat("Some", "_", line, col),
+                              optc_mk_bool(some_true, line, col),
+                              optc_mk_ident("None", line, col),
+                              optc_mk_bool(!some_true, line, col), line, col);
+        break;
+    }
+    case OPTC_IS_OK: case OPTC_IS_ERR: {
+        bool ok_true = (id == OPTC_IS_OK);
+        repl = optc_mk_match2(recv,
+                              optc_mk_variant_pat("Ok", "_", line, col),
+                              optc_mk_bool(ok_true, line, col),
+                              optc_mk_variant_pat("Err", "_", line, col),
+                              optc_mk_bool(!ok_true, line, col), line, col);
+        break;
+    }
+    default: return 0;
+    }
+
+    /* Steal repl's payload into node, then free the discarded AST_CALL shells. */
+    node->kind = repl->kind;
+    node->as = repl->as;
+    node->resolved_type = NULL;
+    free(repl);
+    ast_free(callee);          /* recv detached above; frees the field name + shell */
+    if (args) free(args);      /* the args array only; arg0 (if any) moved into repl */
+    return 1;
 }
 
 static Type *check_expr(Checker *c, AstNode *node)
@@ -4618,6 +4791,20 @@ static Type *check_expr(Checker *c, AstNode *node)
             if (!is_static_call)
             {
                 Type *obj_type = check_expr(c, obj_node);
+
+                /* C1: Option/Result combinators are compiler-lowered (rewrite this
+                   AST_CALL in place to force-unwrap / match, then re-check). Runs
+                   before the generic enum method dispatch, which has no methods for
+                   the builtin Option/Result templates. */
+                if (obj_type && obj_type->kind == TYPE_ENUM && obj_type->as.enom.name &&
+                    (strncmp(obj_type->as.enom.name, "Option(", 7) == 0 ||
+                     strncmp(obj_type->as.enom.name, "Result(", 7) == 0))
+                {
+                    int lo = lower_opt_combinator(c, node, obj_node, obj_type, method_name);
+                    if (lo == 1) { result = check_expr(c, node); break; }
+                    if (lo < 0)  { result = NULL; break; }
+                    /* lo == 0: not a combinator → fall through to normal dispatch. */
+                }
 
                 /* Intercept string builtin method calls: s.method(args...).
                    Phase 2.5: if the name matches no builtin method, fall through
