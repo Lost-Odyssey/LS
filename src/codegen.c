@@ -299,6 +299,13 @@ static void mark_string_moved(CodegenContext *ctx, LLVMValueRef str_alloca,
 static void cg_mark_last_temp_moved(CodegenContext *ctx, int mark, const char *reason);
 static void cg_register_result_temp(CodegenContext *ctx, LLVMValueRef result_alloca,
                                     Type *result_type);
+static AstNode *cg_match_arm_tail(AstNode *arm_body);
+static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
+                                          LLVMValueRef body_val, LLVMTypeRef res_llvm,
+                                          Type *result_type, int str_mark, int drop_floor,
+                                          bool did_move_out_binder);
+static void cg_match_arm_encapsulate(CodegenContext *ctx, int str_mark, int drop_floor,
+                                     Type *result_type);
 static void emit_scope_cleanup(CodegenContext *ctx);
 static void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloca);
 /* Unified value-drop authority: free heap owned by the value stored at `place_ptr`
@@ -2125,46 +2132,154 @@ static void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot)
     ctx->temp_drop_count = keep;
 }
 
-/* L-013 (match-result-ownership, step 1): register an EXISTING alloca that holds an
-   owned heap result value as the statement-level result temp. Unlike
-   cg_push_temp_string — which builds a fresh entry-block slot from an SSA value and
-   stores into it — this takes a pre-existing alloca (e.g. a match's result_alloca,
-   already populated by the taken arm) and registers it so the statement-end
-   cg_flush_temps drops it exactly once. That turns a value-producing match into an
-   owned-rvalue the consumer can claim via the existing "last temp moved" protocol.
-     - TYPE_STRING          → append to temp_string_slots (freed by emit_string_free)
-     - has_drop struct/enum → cg_push_temp_drop (dropped by cg_flush_temp_drops)
-     - otherwise            → no-op (static / borrow / POD result owns no heap)
-   The caller must ensure the alloca is zero-initialized on un-taken paths so a free
-   on a path that never populated it is safely skipped (cap=0 for string; moved/zero
-   for has_drop). */
+/* L-013 (match-result-ownership): register an EXISTING alloca that holds an owned
+   heap STRING result as the statement-level result temp. Unlike cg_push_temp_string
+   — which builds a fresh entry-block slot from an SSA value and stores into it —
+   this takes a pre-existing alloca (a match's result_alloca, already populated by the
+   taken arm) and registers it so the statement-end cg_flush_temps frees it exactly
+   once. That turns a value-producing match into an owned string rvalue the consumer
+   claims via the existing "count>mark → mark_last_moved → flush(skip_last)" protocol
+   (fixing the binder-yield leak — without a registered temp the consumer would clone
+   the arm's already-cloned binder, orphaning it).
+
+   ONLY strings are registered. has_drop struct/enum results are NOT: the var_decl /
+   assign / return consumers MOVE an owned has_drop rvalue (no clone for a non-IDENT
+   init), so registering one as a temp-drop would make both the consuming variable AND
+   the statement-end flush free it → double-free. For has_drop the result is made
+   independently owned at the arm (cg_match_arm_own_tail clones an outer/borrowed tail;
+   cg_match_arm_encapsulate transfers an rvalue tail temp out of the flush list), after
+   which the existing move-via-return path is correct with no registration.
+
+   The caller must zero-initialize the alloca so a path reaching merge without storing
+   (e.g. a non-exhaustive integer match default) leaves cap=0 → its free is skipped. */
 static void cg_register_result_temp(CodegenContext *ctx, LLVMValueRef result_alloca,
                                     Type *result_type)
 {
     if (result_alloca == NULL || result_type == NULL || ctx->current_fn == NULL)
         return;
-    if (result_type->kind == TYPE_STRING)
-    {
-        if (ctx->temp_string_count >= ctx->temp_string_cap)
-        {
-            ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
-            ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
-                                                ctx->temp_string_slots, ctx->temp_string_cap);
-        }
-        ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
-#if CG_DEBUG
-        {
-            char dbg_fmt[64];
-            snprintf(dbg_fmt, sizeof(dbg_fmt),
-                     "[cg] tmp.result slot=%d (alloca)\n",
-                     ctx->temp_string_count - 1);
-            cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
-        }
-#endif
+    if (result_type->kind != TYPE_STRING)
         return;
+    if (ctx->temp_string_count >= ctx->temp_string_cap)
+    {
+        ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
+        ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
+                                            ctx->temp_string_slots, ctx->temp_string_cap);
     }
-    /* has_drop struct/enum → temp-drop list (cg_push_temp_drop filters non-drop). */
-    cg_push_temp_drop(ctx, result_alloca, result_type);
+    ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
+#if CG_DEBUG
+    {
+        char dbg_fmt[64];
+        snprintf(dbg_fmt, sizeof(dbg_fmt),
+                 "[cg] tmp.result slot=%d (alloca)\n",
+                 ctx->temp_string_count - 1);
+        cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
+    }
+#endif
+}
+
+/* L-013: unwrap a match-arm body to its tail expression (the value the arm yields).
+   For a block body `=> { ...; E }` the tail is the last statement's expression;
+   for a bare `=> E` the tail is E itself. Returns NULL if there is no value tail. */
+static AstNode *cg_match_arm_tail(AstNode *arm_body)
+{
+    AstNode *tail = arm_body;
+    if (tail && tail->kind == AST_BLOCK && tail->as.block.stmt_count > 0)
+    {
+        AstNode *last_s = tail->as.block.stmts[tail->as.block.stmt_count - 1];
+        tail = (last_s && last_s->kind == AST_EXPR_STMT)
+                   ? last_s->as.expr_stmt.expr
+                   : NULL;
+    }
+    return tail;
+}
+
+/* L-013 (step 2+3): ensure the value an arm stores into result_alloca is owned
+   INDEPENDENTLY by the result, returning the value to store.
+   Clone is needed exactly when the tail aliases storage owned elsewhere with no
+   fresh owned temp to transfer: an outer local or a borrowed payload binder. A
+   freshly-produced rvalue temp (count grew) is transferred (not cloned); a binder
+   we just moved out already owns its independent B2 clone (not cloned); a static
+   literal / POD tail aliases no heap (stored as-is).
+   `did_move_out_binder` = the arm's move-out optimization marked a payload binder
+   borrowed this arm (enum path only; always false for non-enum patterns). */
+static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
+                                          LLVMValueRef body_val, LLVMTypeRef res_llvm,
+                                          Type *result_type, int str_mark, int drop_floor,
+                                          bool did_move_out_binder)
+{
+    if (body_val == NULL || result_type == NULL)
+        return body_val;
+    bool owned_heap =
+        result_type->kind == TYPE_STRING ||
+        (result_type->kind == TYPE_STRUCT && result_type->as.strukt.has_drop) ||
+        (result_type->kind == TYPE_ENUM   && result_type->as.enom.has_drop);
+    if (!owned_heap)
+        return body_val;
+    /* Fresh owned temp produced by this body → an rvalue we will transfer (no clone). */
+    if (ctx->temp_string_count > str_mark || ctx->temp_drop_count > drop_floor)
+        return body_val;
+    /* A binder we just moved out already owns an independent clone (no clone). */
+    if (did_move_out_binder)
+        return body_val;
+    /* Tail aliasing an owning IDENT (outer local, or borrowed binder) → clone so the
+       result owns independently of the real owner. Static/POD tails alias nothing. */
+    if (tail && tail->kind == AST_IDENT)
+    {
+        CgSymbol *s = cg_scope_resolve(ctx->current_scope, tail->as.ident.name);
+        if (s && s->value && s->type &&
+            (s->type->kind == TYPE_STRING ||
+             (s->type->kind == TYPE_STRUCT && s->type->as.strukt.has_drop) ||
+             (s->type->kind == TYPE_ENUM   && s->type->as.enom.has_drop)))
+            return emit_clone_value(ctx, body_val, res_llvm, result_type);
+    }
+    return body_val;
+}
+
+/* L-013 (step 2+3): encapsulate one match arm's statement-level temporaries after
+   its body_val has been stored into result_alloca. The single owned tail value the
+   arm yields is transferred to the result (which is registered as the lone result
+   temp at the merge block); every OTHER arm-body temp is freed/dropped here so it
+   does not leak into the outer statement temp tables.
+   - str_mark / drop_floor = temp_string_count / temp_drop_count captured just before
+     the body was evaluated. Pre-body temps (the subject drop at index < drop_floor,
+     and outer string temps below str_mark) are untouched.
+   - The tail temp matching result_type is neutralized (string: mark moved so its free
+     is skipped; has_drop: removed from the drop list) — the result owns its buffer. */
+static void cg_match_arm_encapsulate(CodegenContext *ctx, int str_mark, int drop_floor,
+                                     Type *result_type)
+{
+    bool res_is_string = result_type && result_type->kind == TYPE_STRING;
+    bool res_is_drop =
+        result_type &&
+        ((result_type->kind == TYPE_STRUCT && result_type->as.strukt.has_drop) ||
+         (result_type->kind == TYPE_ENUM   && result_type->as.enom.has_drop));
+
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
+    bool terminated = cur && LLVMGetBasicBlockTerminator(cur) != NULL;
+
+    /* Transfer the tail string temp into the result (its free is skipped below). */
+    if (res_is_string && ctx->temp_string_count > str_mark)
+        cg_mark_last_temp_moved(ctx, str_mark, "match arm: tail string -> result");
+    /* Free the arm-body string temps in [str_mark, count); the transferred tail
+       (cap=-1) is skipped by emit_string_free. */
+    if (!terminated)
+        for (int i = str_mark; i < ctx->temp_string_count; i++)
+            emit_string_free(ctx, ctx->temp_string_slots[i]);
+    ctx->temp_string_count = str_mark;
+
+    /* Transfer the tail has_drop temp into the result: remove the last body-registered
+       drop entry without emitting its drop (the result owns that buffer). */
+    if (res_is_drop && ctx->temp_drop_count > drop_floor)
+        ctx->temp_drop_count--;
+    /* Drop the remaining arm-body has_drop temps in [drop_floor, count). */
+    if (!terminated)
+        for (int i = drop_floor; i < ctx->temp_drop_count; i++)
+        {
+            Type *t = ctx->temp_drop_types[i];
+            if (t->kind == TYPE_STRUCT)    emit_struct_drop(ctx, ctx->temp_drop_slots[i], t);
+            else if (t->kind == TYPE_ENUM) emit_enum_drop(ctx, ctx->temp_drop_slots[i], t);
+        }
+    ctx->temp_drop_count = drop_floor;
 }
 
 /* M-LIT: apply the owned-param ABI to a key/value expression being moved into a
@@ -8616,6 +8731,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             else
                 LLVMPositionBuilderAtEnd(tmp, entry);
             result_alloca = LLVMBuildAlloca(tmp, res_llvm, "match.res");
+            /* L-013: zero-initialize so a path that reaches merge without storing
+               (e.g. a non-exhaustive integer match's default branch) leaves the
+               registered result temp with cap=0 / empty → its free/drop is skipped. */
+            LLVMBuildStore(tmp, LLVMConstNull(res_llvm), result_alloca);
             LLVMDisposeBuilder(tmp);
         }
 
@@ -8712,9 +8831,18 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     /* Wildcard → fill in the default block */
                     LLVMPositionBuilderAtEnd(ctx->builder, default_bb);
                     default_used = true;
+                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
+                    int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
+                    {
+                        body_val = cg_match_arm_own_tail(
+                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
+                            result_type, arm_str_mark, arm_drop_floor,
+                            /*did_move_out_binder=*/false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
+                    }
+                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
                     continue;
@@ -8874,7 +9002,11 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     }
                 }
 
+                int arm_str_mark = ctx->temp_string_count;   /* L-013 */
+                int arm_drop_floor = ctx->temp_drop_count;
                 LLVMValueRef body_val = codegen_expr(ctx, arm->body);
+                bool did_move_out_binder = false;
+                AstNode *tail = cg_match_arm_tail(arm->body);
                 /* BF-026 / BF-029 / VR-LIM-020: a match arm clones every owned
                    has_drop payload binder (binder_owns above), so the arm scope
                    normally frees that clone on exit to avoid leaks.
@@ -8885,45 +9017,45 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    `=> { ...; binder }`. Suppress the binder's scope-cleanup drop by
                    marking it borrowed — uniform across string / has_drop struct·enum /
                    map (body_val, the already-loaded SSA, is what the caller receives). */
-                if (body_val)
+                if (body_val && tail && tail->kind == AST_IDENT)
                 {
-                    /* Unwrap the arm body to its tail expression (block last-expr). */
-                    AstNode *tail = arm->body;
-                    if (tail && tail->kind == AST_BLOCK &&
-                        tail->as.block.stmt_count > 0)
+                    /* Resolve ONLY in the arm scope (the payload binders), not in
+                       outer scopes — we must not silently move out outer locals. */
+                    for (int si = ctx->current_scope->count - 1; si >= 0; si--)
                     {
-                        AstNode *last_s =
-                            tail->as.block.stmts[tail->as.block.stmt_count - 1];
-                        tail = (last_s && last_s->kind == AST_EXPR_STMT)
-                                   ? last_s->as.expr_stmt.expr
-                                   : NULL;
-                    }
-                    if (tail && tail->kind == AST_IDENT)
-                    {
-                        /* Resolve ONLY in the arm scope (the payload binders), not in
-                           outer scopes — we must not silently move out outer locals. */
-                        for (int si = ctx->current_scope->count - 1; si >= 0; si--)
+                        CgSymbol *bs = &ctx->current_scope->symbols[si];
+                        if (!bs->name ||
+                            strcmp(bs->name, tail->as.ident.name) != 0)
+                            continue;
+                        Type *bt = bs->type;
+                        bool owns_heap =
+                            bt && !bs->is_borrowed && bs->value &&
+                            (bt->kind == TYPE_STRING ||
+                             (bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
+                             (bt->kind == TYPE_ENUM && bt->as.enom.has_drop));
+                        if (owns_heap)
                         {
-                            CgSymbol *bs = &ctx->current_scope->symbols[si];
-                            if (!bs->name ||
-                                strcmp(bs->name, tail->as.ident.name) != 0)
-                                continue;
-                            Type *bt = bs->type;
-                            bool owns_heap =
-                                bt && !bs->is_borrowed && bs->value &&
-                                (bt->kind == TYPE_STRING ||
-                                 (bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
-                                 (bt->kind == TYPE_ENUM && bt->as.enom.has_drop));
-                            if (owns_heap)
-                                bs->is_borrowed = true; /* skip drop: moved out */
-                            break;
+                            bs->is_borrowed = true; /* skip drop: moved out */
+                            did_move_out_binder = true;
                         }
+                        break;
                     }
                 }
-                emit_scope_cleanup(ctx);
-                pop_scope(ctx);
+                /* L-013: make the result OWN its value independently. Clone a tail that
+                   aliases an outer local or a borrowed binder (must run while the arm
+                   scope is still alive so the tail IDENT resolves to the binder). */
+                if (result_alloca && body_val)
+                    body_val = cg_match_arm_own_tail(ctx, tail, body_val, res_llvm,
+                                                     result_type, arm_str_mark,
+                                                     arm_drop_floor, did_move_out_binder);
                 if (result_alloca && body_val)
                     LLVMBuildStore(ctx->builder, body_val, result_alloca);
+                emit_scope_cleanup(ctx);
+                pop_scope(ctx);
+                /* L-013: encapsulate arm-body temps (transfer the tail temp into the
+                   result, free the rest). Subject drop (index < arm_drop_floor) and
+                   outer temps (< arm_str_mark) are preserved. */
+                cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
                 /* Guard: arm body may end with 'return', which already terminates
                    the block.  Only emit the merge-branch when the block is still
                    open (no terminator yet). */
@@ -8988,6 +9120,15 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     cg_remove_temp_drop(ctx, subj_alloca);
                 }
             }
+
+            /* L-013: the match result is now an owned-rvalue funneled through
+               result_alloca (each arm transferred/cloned its owned tail into it).
+               Register it as the single statement-level result temp so the consumer
+               (var_decl/assign/return/call-arg) transfers it via the existing
+               "last temp moved" protocol — exactly one drop, no leak / no double-free.
+               Non-owned (static/POD) results are no-ops here. */
+            if (result_alloca)
+                cg_register_result_temp(ctx, result_alloca, result_type);
 
             if (result_alloca)
                 return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
@@ -9061,9 +9202,17 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     /* Wildcard → default block */
                     LLVMPositionBuilderAtEnd(ctx->builder, default_bb);
                     default_used = true;
+                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
+                    int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
+                    {
+                        body_val = cg_match_arm_own_tail(
+                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
+                            result_type, arm_str_mark, arm_drop_floor, false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
+                    }
+                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
                 }
@@ -9084,9 +9233,17 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     }
 
                     LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
+                    int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
+                    {
+                        body_val = cg_match_arm_own_tail(
+                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
+                            result_type, arm_str_mark, arm_drop_floor, false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
+                    }
+                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
                 }
@@ -9110,9 +9267,17 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
                 if (is_wildcard)
                 {
+                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
+                    int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
+                    {
+                        body_val = cg_match_arm_own_tail(
+                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
+                            result_type, arm_str_mark, arm_drop_floor, false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
+                    }
+                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
                 }
@@ -9186,9 +9351,17 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     LLVMBuildCondBr(ctx->builder, combined_cmp, then_bb, next_bb);
 
                     LLVMPositionBuilderAtEnd(ctx->builder, then_bb);
+                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
+                    int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
+                    {
+                        body_val = cg_match_arm_own_tail(
+                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
+                            result_type, arm_str_mark, arm_drop_floor, false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
+                    }
+                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
                     /* Guard: arm body may end with 'return'. */
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
@@ -9212,6 +9385,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         }
 
         LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
+        /* L-013: register the funneled owned result as the single result temp
+           (mirrors the enum path); no-op for static/POD results. */
+        if (result_alloca)
+            cg_register_result_temp(ctx, result_alloca, result_type);
         if (result_alloca)
             return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
         return NULL;
