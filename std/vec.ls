@@ -412,18 +412,50 @@ impl(T) Vec(T) {
         })
     }
 
+    // Bottom-up merge sort — O(n log n) worst case and STABLE (equal elements
+    // keep their original order, matching the previous insertion sort). `cmp(a,b)`
+    // returns <0 if a<b, 0 if equal, >0 if a>b; the result is ascending by cmp.
+    // (Was an O(n^2) insertion sort.) Uses a scratch buffer of n slots; elements
+    // are MOVED (`__take`, no clone) between data and scratch, so has_drop T is
+    // never double-freed. Comparisons still clone-read the two operands (cmp takes
+    // T by value) — that per-compare clone is the separate concern tracked in
+    // docs/limitations.md (functional/sort clone-on-read).
     fn sort_by(&!self, Block(T, T) -> int cmp) {
-        if self.len < 2 { return }
-        for (int i = 1; i < self.len; i = i + 1) {
-            int j = i
-            while j > 0 {
-                T a = self.data[j - 1]
-                T b = self.data[j]
-                if cmp(a, b) <= 0 { break }
-                self.swap(j - 1, j)
-                j = j - 1
+        int n = self.len
+        if n < 2 { return }
+        *T buf = std.c.malloc(n * sizeof(T)) as *T   // uninitialized scratch
+        int width = 1
+        while width < n {
+            int lo = 0
+            while lo < n {
+                int mid = lo + width
+                int hi = lo + width + width
+                if mid > n { mid = n }
+                if hi > n { hi = n }
+                // Merge runs [lo,mid) and [mid,hi) into buf[lo,hi) by moving.
+                int i = lo
+                int j = mid
+                int k = lo
+                while i < mid && j < hi {
+                    T a = self.data[i]                 // clone for compare
+                    T b = self.data[j]
+                    if cmp(a, b) <= 0 {                // <= keeps left first on tie (stable)
+                        buf[k] = __take(self.data[i]); i = i + 1
+                    } else {
+                        buf[k] = __take(self.data[j]); j = j + 1
+                    }
+                    k = k + 1
+                }
+                while i < mid { buf[k] = __take(self.data[i]); i = i + 1; k = k + 1 }
+                while j < hi  { buf[k] = __take(self.data[j]); j = j + 1; k = k + 1 }
+                // Move the merged run back into place (source slots were vacated).
+                int t = lo
+                while t < hi { self.data[t] = __take(buf[t]); t = t + 1 }
+                lo = lo + width + width
             }
+            width = width + width
         }
+        std.c.free(buf as *u8)                          // all elements moved back; buf empty
     }
 
     // ---- copy ----

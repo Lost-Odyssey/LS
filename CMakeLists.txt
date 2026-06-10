@@ -529,6 +529,19 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# Vec(T).sort / sort_by — O(n log n) stable merge sort (bugs/27_vec.txt #2):
+# larger n, explicit stability, has_drop elements, degenerate sizes.
+add_test(
+    NAME test_vec_sort
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_sort_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=vec_sort
+        -DMARKER=VECSORT
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # A-1 (docs/plan_runtime_primitives.md): std.c.{malloc,realloc,free,abort}
 # reachable by canonical path, incl. from generic method bodies instantiated
 # at the consumer site. JIT + AOT + memcheck.
