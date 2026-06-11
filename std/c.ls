@@ -52,10 +52,10 @@ extern fn __ls_readline_ptr() -> object
 
 // ---- regex engine (runtime/ls_regex.c) ----
 
-extern fn __ls_regex_compile(string pattern, int flags) -> int
+extern fn __ls_regex_compile(*u8 pattern, int flags) -> int
 extern fn __ls_regex_free(int handle)
 extern fn __ls_regex_last_error() -> object
-extern fn __ls_regex_exec(int handle, string text, int text_len, int start) -> int
+extern fn __ls_regex_exec(int handle, *u8 text, int text_len, int start) -> int
 extern fn __ls_regex_cap_start(int group) -> int
 extern fn __ls_regex_cap_len(int group) -> int
 extern fn __ls_regex_group_count(int handle) -> int
