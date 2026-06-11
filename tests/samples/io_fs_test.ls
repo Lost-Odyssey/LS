@@ -3,6 +3,7 @@
 import std.vec
 import std.io as io
 import std.fs as fs
+import std.str
 
 // ---- Part 1: read_line from stdin ----
 
@@ -52,7 +53,7 @@ fn test_readline() {
 fn test_list_dir() {
     // List the std/ directory — we know it contains at least io.ls, fs.ls, os.ls
     // The LS_HOME env var points to the project root; build the path from there.
-    Vec(string) entries = fs.list_dir("std")
+    Vec(Str) entries = fs.list_dir("std")
     if entries.len() == 0 {
         print("FAIL: list_dir returned empty vec for 'std'")
         return

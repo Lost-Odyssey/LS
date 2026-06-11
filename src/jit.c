@@ -175,6 +175,7 @@ int jit_init(JitEngine *engine) {
         extern int         __ls_readline_ok(void);
         extern long long   __ls_readline_len(void);
         extern void       *__ls_readline_take(void);
+        extern void       *__ls_readline_ptr(void);
         /* strconv float helpers */
         extern void        __ls_float_fixed_exec(double, int);
         extern void       *__ls_float_fixed_ptr(void);
@@ -208,7 +209,7 @@ int jit_init(JitEngine *engine) {
     pairs[i].Sym.Flags.TargetFlags = 0; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[87];
+        LLVMOrcCSymbolMapPair pairs[88];
         /* 0-5: memcheck */
         REG( 0, ls_mc_alloc);
         REG( 1, ls_mc_free);
@@ -308,9 +309,10 @@ int jit_init(JitEngine *engine) {
         REG(84, __ls_regex_named_count);
         REG(85, __ls_regex_named_name);
         REG(86, __ls_regex_named_index);
+        REG(87, __ls_readline_ptr);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 87);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 88);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */

@@ -46,6 +46,7 @@ extern fn __ls_readline_exec()
 extern fn __ls_readline_ok() -> int
 extern fn __ls_readline_len() -> i64
 extern fn __ls_readline_take() -> object
+extern fn __ls_readline_ptr() -> object
 
 // ---- regex engine (runtime/ls_regex.c) ----
 

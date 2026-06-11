@@ -251,8 +251,10 @@ fn read_line() -> Result(string, string) {
     if c.__ls_readline_ok() == 0 {
         return Err(_err("read_line: EOF"))
     }
-    object ptr = c.__ls_readline_take()
-    i64 len = c.__ls_readline_len()
-    string s = __string_take_buffer(ptr as *u8, len)
+    /* Copy out of the runtime-owned buffer (freed by the next _exec). Taking
+       ownership of a runtime-malloc'd pointer would make the eventual string
+       drop an INVALID FREE under --memcheck (untracked allocation). */
+    object ptr = c.__ls_readline_ptr()
+    string s = from_cstr(ptr)
     return Ok(s)
 }

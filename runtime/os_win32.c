@@ -308,7 +308,11 @@ void ls_os_listdir_prepare(const char *path) {
     g_dir_entries = NULL; g_dir_count = 0; g_dir_cap = 0;
 
     char pattern[MAX_PATH];
-    snprintf(pattern, sizeof(pattern), "%s\*", path);
+    /* "\\*" — a literal backslash + wildcard. The previous "\*" was an invalid
+       C escape that compiled to just "*", so the pattern became "<path>*" and
+       FindFirstFileA matched the directory ITSELF instead of its entries
+       (list_dir("std") returned ["std"]). */
+    snprintf(pattern, sizeof(pattern), "%s\\*", path);
 
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);

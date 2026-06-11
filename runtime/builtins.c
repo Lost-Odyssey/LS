@@ -265,6 +265,12 @@ void __ls_readline_exec(void) {
 int __ls_readline_ok(void)       { return g_readline_ok; }
 long long __ls_readline_len(void) { return (long long)g_readline_len; }
 
+/* Non-owning peek: the buffer stays owned by the runtime (freed by the next
+   __ls_readline_exec). Callers that copy (io.read_line via from_cstr) use this
+   instead of _take so the LS side never frees a runtime-malloc'd pointer —
+   under --memcheck such a free is untracked and reports INVALID FREE. */
+void *__ls_readline_ptr(void) { return g_readline_buf; }
+
 void *__ls_readline_take(void) {
     void *p = g_readline_buf;
     g_readline_buf = NULL;

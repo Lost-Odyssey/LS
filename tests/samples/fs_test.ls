@@ -3,6 +3,7 @@
 
 import std.vec
 import std.fs as fs
+import std.str
 import std.io as io
 
 fn main() {
@@ -62,7 +63,7 @@ fn main() {
     print(src_gone)                       /* false */
 
     /* ---- list_dir ---- */
-    Vec(string) entries = fs.list_dir(base)
+    Vec(Str) entries = fs.list_dir(base)
     bool has_entries = entries.len() > 0
     print(has_entries)                    /* true */
 
