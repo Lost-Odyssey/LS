@@ -21,7 +21,8 @@ fn from_static() -> Str {
 // owned string local -> Str return (deep copy; local freed at cleanup)
 fn from_owned() -> Str {
     string ov = "dyn"
-    ov.append("amic")
+    string amic = "amic"     // pin to `string` (builtin append arg, not Str)
+    ov.append(amic)
     return ov
 }
 
@@ -50,39 +51,44 @@ fn from_fstring(int n) -> Str {
     return f"n={n}"
 }
 
+// builtin-string equality helper: routes a (possibly Str-flipped) literal
+// back through a `string` param (expected==string) so the bridge's
+// builtin-string source/result comparisons stay string==string both states.
+fn seq(string a, string b) -> bool { return a == b }
+
 fn main() {
     Str a = from_static()
-    check(a.to_string() == "hello", "static local")
+    check(a.eq?("hello"), "static local")
 
     Str b = from_owned()
-    check(b.to_string() == "dynamic", "owned local")
+    check(b.eq?("dynamic"), "owned local")
 
     string base = "shout"
     Str c = from_temp(base)
-    check(c.to_string() == "SHOUT", "owned temp (method result)")
-    check(base == "shout", "src alive after temp return")
+    check(c.eq?("SHOUT"), "owned temp (method result)")
+    check(seq(base, "shout"), "src alive after temp return")
 
     Str d = from_concat("ab", "cd")
-    check(d.to_string() == "abcd", "owned temp (concat)")
+    check(d.eq?("abcd"), "owned temp (concat)")
 
     string borrowed = "borrowme"
     Str e = from_borrow(borrowed)
-    check(e.to_string() == "borrowme", "borrowed param")
-    check(borrowed == "borrowme", "borrow src alive")
+    check(e.eq?("borrowme"), "borrowed param")
+    check(seq(borrowed, "borrowme"), "borrow src alive")
 
     Str g = from_global()
-    check(g.to_string() == "gday", "global string")
-    check(GREET == "gday", "global alive")
+    check(g.eq?("gday"), "global string")
+    check(seq(GREET, "gday"), "global alive")
 
     Str h = from_fstring(42)
-    check(h.to_string() == "n=42", "f-string native Str")
+    check(h.eq?("n=42"), "f-string native Str")
 
     // returned Str flows into owned containers — memcheck guards the chain
     Vec(Str) v = {}
     v.push(from_owned())
     v.push(from_temp("mix"))
-    check(v.get(0).to_string() == "dynamic", "ret -> vec 0")
-    check(v.get(1).to_string() == "MIX", "ret -> vec 1")
+    check(v.get(0).eq?("dynamic"), "ret -> vec 0")
+    check(v.get(1).eq?("MIX"), "ret -> vec 1")
 
     print("STRBR PASS")
 }

@@ -11,30 +11,35 @@ fn check(bool ok, string what) {
 
 fn gimme() -> string { string s = "dynamic"  return s }
 
+// builtin-string equality helper: routes a (possibly Str-flipped) literal
+// back through a `string` param (expected==string) so the bridge's
+// builtin-string source/result comparisons stay string==string both states.
+fn seq(string a, string b) -> bool { return a == b }
+
 fn main() {
     // string variable -> Str (deep copy; source stays alive)
     string sv = "hello"
     Str a = sv
-    check(a.to_string() == "hello", "var s2s")
-    check(sv == "hello", "source alive")
+    check(a.eq?("hello"), "var s2s")
+    check(seq(sv, "hello"), "source alive")
 
     // mutate the Str copy; source string unaffected (independent buffers)
     a.push_byte(33)
-    check(a.to_string() == "hello!", "copy independent")
-    check(sv == "hello", "source unmutated")
+    check(a.eq?("hello!"), "copy independent")
+    check(seq(sv, "hello"), "source unmutated")
 
     // string-returning call -> Str
     Str b = gimme()
-    check(b.to_string() == "dynamic", "call s2s")
+    check(b.eq?("dynamic"), "call s2s")
 
     // string method result -> Str (owned temp; cloned then temp freed, no dbl-free)
     Str c = sv.upper()
-    check(c.to_string() == "HELLO", "method s2s")
+    check(c.eq?("HELLO"), "method s2s")
 
     // f-string (builtin) -> Str
     int n = 7
     Str d = f"n={n}"
-    check(d.to_string() == "n=7", "fstr s2s")
+    check(d.eq?("n=7"), "fstr s2s")
 
     // empty string -> Str
     string es = ""
@@ -46,11 +51,11 @@ fn main() {
     string w = "world"
     Str ws = w
     v.push(ws)
-    check(v.get(0).to_string() == "world", "s2s into vec")
+    check(v.get(0).eq?("world"), "s2s into vec")
 
     // literal path (zero-copy static) still works alongside
     Str lit = "static"
-    check(lit.to_string() == "static", "lit still ok")
+    check(lit.eq?("static"), "lit still ok")
 
     print("STRB PASS")
 }
