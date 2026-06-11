@@ -186,7 +186,6 @@ static Type *resolve_builtin_type_by_name(const char *name)
     if (strcmp(name, "i64") == 0)    return type_i64();
     if (strcmp(name, "f64") == 0)    return type_f64();
     if (strcmp(name, "bool") == 0)   return type_bool();
-    if (strcmp(name, "string") == 0) return type_string();
     if (strcmp(name, "char") == 0)   return type_char();
     return NULL;
 }
@@ -723,10 +722,6 @@ static const char *impl_key_of_type(const Type *t)
         return t->as.strukt.llvm_name ? t->as.strukt.llvm_name : t->as.strukt.name;
     if (t->kind == TYPE_ENUM)
         return t->as.enom.llvm_name ? t->as.enom.llvm_name : t->as.enom.name;
-    /* Phase 2.5: builtin types can carry user `impl` methods, keyed by their
-       bare type name (global, not module-prefixed). Currently only string. */
-    if (t->kind == TYPE_STRING)
-        return "string";
     return NULL;
 }
 
@@ -1383,7 +1378,6 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
             if (psym) {
                 psym->is_borrow = is_borrow;
                 psym->is_mut_borrow = is_mut_borrow;
-                if (sym_type->kind == TYPE_STRING) psym->is_static_string = false;
                 /* F5 (VR-LIM-017): an explicit `Block(..) f` param is a shallow
                    shared-env borrow (F.2: can't be moved). But a generic type
                    parameter `T x` that happens to monomorphize to Block (e.g.
@@ -1978,13 +1972,7 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
                         pointee->kind == TYPE_ENUM);   /* Phase 9: enum borrow */
         if (!ok_kind)
         {
-            if (pointee->kind == TYPE_STRING)
-                checker_error(c, line, col,
-                              "&%sstring has been removed; use &%sStr "
-                              "(import std.str) instead",
-                              tn->is_mut ? "!" : "", tn->is_mut ? "!" : "");
-            else
-                checker_error(c, line, col,
+            checker_error(c, line, col,
                               "&%s%s is not supported yet; only "
                               "&struct / &!struct / &enum are implemented",
                               tn->is_mut ? "!" : "",
@@ -2316,56 +2304,23 @@ static int find_fn_template(Checker *c, const char *name);
 
 /* ---- Helper functions ---- */
 
-static bool struct_has_string_fields(Type *t)
-{
-    if (t == NULL || t->kind != TYPE_STRUCT)
-        return false;
-    for (int i = 0; i < t->as.strukt.field_count; i++)
-    {
-        Type *ft = t->as.strukt.fields[i].type;
-        if (ft->kind == TYPE_STRING)
-            return true;
-        if (ft->kind == TYPE_STRUCT && struct_has_string_fields(ft))
-            return true;
-    }
-    return false;
-}
-
 /* ---- Move semantics helpers (Phase A: linear, no control flow) ---- */
 
-/* Returns true if a type requires move tracking (has heap ownership).
-   Used by Phase A/B checkers — Phase A currently only handles TYPE_STRING. */
+/* Returns true if a type requires move tracking (has heap ownership). */
 static bool type_is_movable(Type *t)
 {
     if (!t) return false;
     switch (t->kind)
     {
-    case TYPE_STRING: return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_BLOCK:  return true;  /* F.2: Block owns its env heap */
     default:          return false;
     }
 }
 
-/* Returns true if an expression statically evaluates to a string with cap==0 at runtime.
-   Only string literals and identifiers previously marked as static qualify. */
-static bool string_expr_is_static(Checker *c, AstNode *expr)
-{
-    if (!expr) return false;
-    if (expr->kind == AST_STRING_LIT) return true;
-    if (expr->kind == AST_IDENT)
-    {
-        Symbol *sym = scope_resolve(c->current_scope, expr->as.ident.name);
-        if (sym && sym->type && sym->type->kind == TYPE_STRING)
-            return sym->is_static_string;
-    }
-    return false;
-}
-
 /* Attempt to mark an IDENT arg as MOVED for any movable type
    (string, vec, map, struct-with-drop — see type_is_movable).
    - Non-IDENT nodes (temporaries, literals, field accesses) are silently skipped.
-   - Static strings (is_static_string == true) are never implicitly moved.
    - Already-moved variables are skipped (error already reported by check_expr).
    Call AFTER check_expr() has been called on the arg so that:
      (a) type info is resolved, and
@@ -2382,9 +2337,6 @@ static void checker_try_mark_moved(Checker *c, AstNode *arg)
     /* Borrow parameters (&T / &!T) hold no ownership — never marked moved.
        Move-site rejection is surfaced separately by checker_reject_borrow_move. */
     if (sym->is_borrow || sym->is_mut_borrow) return;
-    /* Static strings are freely shared — no heap ownership, no move.
-       Only applies to TYPE_STRING (other movable types have no "static" variant). */
-    if (sym->type->kind == TYPE_STRING && sym->is_static_string) return;
     sym->is_moved = true;
     /* Move-elision (Q4): record on the node that this use transferred ownership,
        so codegen can move (not clone) the heap and invalidate the source.
@@ -2618,457 +2570,6 @@ static void move_preseed_maybe_from_pass1(const MoveSnapshot *before,
             break;
         }
     }
-}
-
-/* ---- String builtin method type checking ---- */
-
-/* Type-check a string method call: s.method(args...).
-   Returns the result type, or NULL on error. */
-static Type *check_string_method(Checker *c, AstNode *call_node, Type *obj_type)
-{
-    (void)obj_type;
-    const char *method = call_node->as.call.callee->as.field_access.field;
-    int argc = call_node->as.call.arg_count;
-
-    /* s.append(string|char|int) -> void: in-place append */
-    if (strcmp(method, "append") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.append() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        /* Phase 5/5.5: receiver must be a mutable location. Reject read-only
-           borrows (`&string`) — they may not mutate. `&!string` (writable borrow)
-           and regular owned strings are fine. */
-        AstNode *recv = call_node->as.call.callee->as.field_access.object;
-        if (recv->kind == AST_IDENT)
-        {
-            Symbol *rsym = scope_resolve(c->current_scope, recv->as.ident.name);
-            if (rsym && rsym->is_borrow)
-            {
-                checker_move_error(c, recv->line, recv->column,
-                                   "cannot call string.append() on '%s': it is a read-only borrow",
-                                   recv->as.ident.name);
-                return NULL;
-            }
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING && arg->kind != TYPE_CHAR && !type_is_integer(arg))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.append() argument must be string, char, or int, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* s.empty() -> bool */
-    if (strcmp(method, "empty") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.empty() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* Phase E.3.3: s.to_cstr() -> object  — raw i8* for FFI calls.
-       Always available (works on owned, static, borrowed). Caller must not
-       free; LS retains ownership and frees on scope exit. */
-    if (strcmp(method, "to_cstr") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.to_cstr() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_object();
-    }
-
-    /* s.at(int i) -> int */
-    if (strcmp(method, "at") == 0 || strcmp(method, "at_unsafe") == 0 ||
-        strcmp(method, "skip_ws") == 0 || strcmp(method, "scan_plain") == 0 ||
-        strcmp(method, "scan_digits") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.%s() takes 1 argument, got %d", method, argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && !type_is_integer(arg))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.%s() index must be integer, got '%s'", method, type_name(arg));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* s.find(string sub) -> int */
-    if (strcmp(method, "find") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.find() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.find() argument must be string, got '%s'", type_name(arg));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* s.contains(string sub) -> bool */
-    if (strcmp(method, "contains") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.contains() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.contains() argument must be string, got '%s'", type_name(arg));
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* s.starts_with(string prefix) -> bool */
-    if (strcmp(method, "starts_with") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.starts_with() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.starts_with() argument must be string, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* s.ends_with(string suffix) -> bool */
-    if (strcmp(method, "ends_with") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.ends_with() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.ends_with() argument must be string, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_bool();
-    }
-
-    /* s.compare(string other) -> int */
-    if (strcmp(method, "compare") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.compare() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.compare() argument must be string, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* ---- Batch 2: methods that allocate new strings ---- */
-
-    /* s.upper() -> string */
-    if (strcmp(method, "upper") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.upper() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_string();
-    }
-
-    /* s.lower() -> string */
-    if (strcmp(method, "lower") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.lower() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_string();
-    }
-
-    /* s.substr(int start[, int len]) -> string */
-    if (strcmp(method, "substr") == 0)
-    {
-        if (argc < 1 || argc > 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.substr() takes 1 or 2 arguments, got %d", argc);
-            return NULL;
-        }
-        Type *arg0 = check_expr(c, call_node->as.call.args[0]);
-        if (arg0 && !type_is_integer(arg0))
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.substr() start must be integer, got '%s'",
-                          type_name(arg0));
-            return NULL;
-        }
-        if (argc == 2)
-        {
-            Type *arg1 = check_expr(c, call_node->as.call.args[1]);
-            if (arg1 && !type_is_integer(arg1))
-            {
-                checker_error(c, call_node->as.call.args[1]->line,
-                              call_node->as.call.args[1]->column,
-                              "string.substr() length must be integer, got '%s'",
-                              type_name(arg1));
-                return NULL;
-            }
-        }
-        return type_string();
-    }
-
-    /* s.trim() -> string */
-    if (strcmp(method, "trim") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.trim() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_string();
-    }
-
-    /* s.copy() -> string */
-    if (strcmp(method, "copy") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.copy() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_string();
-    }
-
-    /* s.replace(string old, string new) -> string */
-    if (strcmp(method, "replace") == 0)
-    {
-        if (argc != 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.replace() takes 2 arguments, got %d", argc);
-            return NULL;
-        }
-        Type *arg0 = check_expr(c, call_node->as.call.args[0]);
-        if (arg0 && arg0->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.replace() first argument must be string, got '%s'",
-                          type_name(arg0));
-            return NULL;
-        }
-        Type *arg1 = check_expr(c, call_node->as.call.args[1]);
-        if (arg1 && arg1->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[1]->line,
-                          call_node->as.call.args[1]->column,
-                          "string.replace() second argument must be string, got '%s'",
-                          type_name(arg1));
-            return NULL;
-        }
-        return type_string();
-    }
-
-    /* ---- Batch 3: rfind / count / split / join ---- */
-
-    /* s.rfind(string sub) -> int: last occurrence index, or -1 */
-    if (strcmp(method, "rfind") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.rfind() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.rfind() argument must be string, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* s.count(string sub) -> int: number of non-overlapping occurrences */
-    if (strcmp(method, "count") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.count() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg = check_expr(c, call_node->as.call.args[0]);
-        if (arg && arg->kind != TYPE_STRING)
-        {
-            checker_error(c, call_node->as.call.args[0]->line,
-                          call_node->as.call.args[0]->column,
-                          "string.count() argument must be string, got '%s'",
-                          type_name(arg));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* s.split(string sep) -> vec(string) */
-    /* Phase 2.5: split / join / lines / chars were moved out of the compiler
-       into pure-LS `impl string` (std/string.ls), returning Vec(T). They are no
-       longer builtin — calls fall through to the user impl lookup. */
-
-    /* s.to_int() -> Result(int, string) */
-    if (strcmp(method, "to_int") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.to_int() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return checker_instantiate_result(c, type_int(), type_string());
-    }
-
-    /* s.to_i64() -> Result(i64, string) */
-    if (strcmp(method, "to_i64") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.to_i64() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return checker_instantiate_result(c, type_i64(), type_string());
-    }
-
-    /* s.to_float() -> Result(f64, string) */
-    if (strcmp(method, "to_float") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.to_float() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return checker_instantiate_result(c, type_f64(), type_string());
-    }
-
-    /* s.to_bool() -> Result(bool, string) */
-    if (strcmp(method, "to_bool") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.to_bool() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return checker_instantiate_result(c, type_bool(), type_string());
-    }
-
-    /* s.repeat(int n) -> string */
-    if (strcmp(method, "repeat") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.repeat() takes 1 argument (count), got %d", argc);
-            return NULL;
-        }
-        Type *n_type = check_expr(c, call_node->as.call.args[0]);
-        if (n_type && !type_is_integer(n_type))
-            checker_error(c, call_node->line, call_node->column,
-                          "string.repeat() count must be an integer");
-        return type_string();
-    }
-
-    /* s.pad_left(int width, int fill_char) -> string */
-    /* s.pad_right(int width, int fill_char) -> string */
-    if (strcmp(method, "pad_left") == 0 || strcmp(method, "pad_right") == 0)
-    {
-        if (argc != 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "string.%s() takes 2 arguments (width, fill_char), got %d",
-                          method, argc);
-            return NULL;
-        }
-        Type *w = check_expr(c, call_node->as.call.args[0]);
-        if (w && !type_is_integer(w))
-            checker_error(c, call_node->line, call_node->column,
-                          "string.%s() width must be an integer", method);
-        Type *ch = check_expr(c, call_node->as.call.args[1]);
-        if (ch && ch->kind != TYPE_CHAR && !type_is_integer(ch))
-            checker_error(c, call_node->line, call_node->column,
-                          "string.%s() fill_char must be char or integer", method);
-        return type_string();
-    }
-
-    /* Phase 2.5: not a builtin string method — signal the caller to try a
-       user-defined `impl string` method (Step 11) before reporting an error. */
-    c->string_no_builtin_match = true;
-    return NULL;
 }
 
 /* Check builtin function calls that don't belong to a type */
@@ -3326,14 +2827,12 @@ static bool capture_type_is_pod(const Type *t) {
 
 /* Phase C.5/C.7+: by-move capture types — env owns the value, outer is
    marked moved.
-     C.5: TYPE_STRING
      C.7: TYPE_STRUCT(has_drop)
    Enum captures remain unsupported (Phase C.8 — needs box / payload
    walk inside env_drop). */
 static bool capture_type_is_by_move(const Type *t) {
     if (t == NULL) return false;
     switch (t->kind) {
-    case TYPE_STRING: return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;   /* F.5: has_drop enum → by-move */
     default:          return false;
@@ -3394,11 +2893,7 @@ static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t)
             s->had_error = true;
             return;
         }
-        /* Static strings have no heap ownership and remain freely shareable
-           (cap==0 at runtime); env's drop wrapper safely no-ops on them. */
-        if (!(t->kind == TYPE_STRING && outer->is_static_string)) {
-            outer->is_moved = true;
-        }
+        outer->is_moved = true;
     }
     if (s->capture_count >= s->capture_cap) {
         s->capture_cap = GROW_CAPACITY(s->capture_cap);
@@ -4187,13 +3682,7 @@ static Type *check_expr(Checker *c, AstNode *node)
         }
         if (sym->type == NULL || sym->type->kind != TYPE_STRUCT)
         {
-            /* P4(string→Str): &!string removed — point users at &!Str. */
-            if (sym->type != NULL && sym->type->kind == TYPE_STRING)
-                checker_error(c, node->line, node->column,
-                              "&!: writable borrows of builtin string have been "
-                              "removed; use Str + &!Str (import std.str) instead");
-            else
-                checker_error(c, node->line, node->column,
+            checker_error(c, node->line, node->column,
                               "&!: only &!struct is supported, got &!%s",
                               sym->type ? type_name(sym->type) : "?");
             result = NULL;
@@ -4320,12 +3809,6 @@ static Type *check_expr(Checker *c, AstNode *node)
         {
         /* Arithmetic: +, -, *, /, % */
         case TOKEN_PLUS:
-            /* Allow string + string for concatenation */
-            if (left->kind == TYPE_STRING && right->kind == TYPE_STRING)
-            {
-                result = type_string();
-                break;
-            }
             /* fall through to numeric check */
         case TOKEN_MINUS:
         case TOKEN_STAR:
@@ -4452,12 +3935,7 @@ static Type *check_expr(Checker *c, AstNode *node)
         case TOKEN_GT:
         case TOKEN_LEQ:
         case TOKEN_GEQ:
-            if (left && right &&
-                left->kind == TYPE_STRING && right->kind == TYPE_STRING)
-            {
-                result = type_bool();
-            }
-            else if (!type_is_numeric(left) || !type_is_numeric(right))
+            if (!type_is_numeric(left) || !type_is_numeric(right))
             {
                 checker_error(c, node->line, node->column,
                               "comparison requires numeric or string types, got '%s' and '%s'",
@@ -4684,8 +4162,6 @@ static Type *check_expr(Checker *c, AstNode *node)
             for (int pi = 0; pi < pc; pi++) {
                 Symbol *psym = scope_define(c->current_scope,
                     cloned->as.fn_decl.param_names[pi], params[pi]);
-                if (psym && params[pi]->kind == TYPE_STRING)
-                    psym->is_static_string = false;
             }
             Type *saved_ret = c->current_fn_return;
             c->current_fn_return = ret;
@@ -4936,30 +4412,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                     if (lo == 1) { result = oc_ty; break; }
                     if (lo < 0)  { result = NULL; break; }
                     /* lo == 0: not a combinator → fall through to normal dispatch. */
-                }
-
-                /* Intercept string builtin method calls: s.method(args...).
-                   Phase 2.5: if the name matches no builtin method, fall through
-                   to the user `impl string` lookup (Step 11) below. */
-                if (obj_type && obj_type->kind == TYPE_STRING)
-                {
-                    c->string_no_builtin_match = false;
-                    result = check_string_method(c, node, obj_type);
-                    if (!c->string_no_builtin_match)
-                        break;
-                    /* Not a builtin: require a user `impl string` method, else
-                       give a clear hint to import the stdlib that defines it. */
-                    if (find_method(c, "string", method_name) == NULL)
-                    {
-                        checker_error(c, node->line, node->column,
-                                      "string has no method '%s' "
-                                      "(did you forget `import std.string`?)",
-                                      method_name);
-                        result = NULL;
-                        break;
-                    }
-                    /* else: fall through (deref stays string, struct/enum blocks
-                       skipped, Step 11 resolves the user method). */
                 }
 
                 /* Check if obj is an instance of a struct */
@@ -5325,28 +4777,7 @@ static Type *check_expr(Checker *c, AstNode *node)
                 args_ok = false;
                 continue;
             }
-            /* Migration bridge (B-2): a builtin-string VARIABLE passed to a
-               by-value `Str` parameter is deep-copied into an owned Str by codegen.
-               Restricted to IDENT args: an owned string temp (e.g. sv.upper())
-               tangles with string-temp-moved bookkeeping → require `Str t = ...`
-               first. Literals already coerced zero-copy above. */
-            if (arg_type->kind == TYPE_STRING && type_is_str_struct(param_type) &&
-                node->as.call.args[i]->kind == AST_IDENT &&
-                !node->as.call.args[i]->coerce_str_lit_to_str)
-            {
-                node->as.call.args[i]->coerce_string_to_str = true;
-            }
-            /* Reverse bridge (B-3): a `Str` VARIABLE passed to a by-value
-               builtin-string parameter — codegen reinterprets + marks cap=-2
-               (borrowed, zero-copy; same convention as a named string var arg).
-               IDENT only: rvalue Str temps have no caller-side drop slot here. */
-            else if (type_is_str_struct(arg_type) &&
-                     param_type->kind == TYPE_STRING &&
-                     node->as.call.args[i]->kind == AST_IDENT)
-            {
-                node->as.call.args[i]->coerce_str_to_string = true;
-            }
-            else if (!type_assignable(param_type, arg_type))
+            if (!type_assignable(param_type, arg_type))
             {
                 checker_error(c, node->as.call.args[i]->line, node->as.call.args[i]->column,
                               "argument %d: expected '%s', got '%s'",
@@ -5559,22 +4990,6 @@ static Type *check_expr(Checker *c, AstNode *node)
             {
                 checker_error(c, node->line, node->column,
                               "array has no field '%s' (only 'length')", field_name);
-                result = NULL;
-            }
-            break;
-        }
-
-        /* String .length — O(1) from LsString struct */
-        if (obj->kind == TYPE_STRING)
-        {
-            if (strcmp(field_name, "length") == 0)
-            {
-                result = type_int();
-            }
-            else
-            {
-                checker_error(c, node->line, node->column,
-                              "string has no field '%s'", field_name);
                 result = NULL;
             }
             break;
@@ -5894,8 +5309,7 @@ static Type *check_expr(Checker *c, AstNode *node)
                     /* Phase B: for borrowed enum subject, mark owned payload binders
                        as read-only borrows — prevents moves and mutating methods. */
                     if (bsym && subj_is_enum_borrow && bt &&
-                        (bt->kind == TYPE_STRING ||
-                         (bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
+                        ((bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
                          (bt->kind == TYPE_ENUM   && bt->as.enom.has_drop)))
                     {
                         bsym->is_borrow = true;
@@ -6741,25 +6155,7 @@ static void check_stmt(Checker *c, AstNode *node)
                 c->expected_type = declared;
                 Type *init_type = check_expr(c, node->as.var_decl.init);
                 c->expected_type = saved_expected;
-                /* Migration bridge (B-step): a builtin-string value initializing a
-                   `Str` is deep-copied into an owned Str. The literal case already
-                   coerced (zero-copy) above; this catches string variables / string-
-                   returning calls. */
-                if (init_type != NULL && init_type->kind == TYPE_STRING &&
-                    type_is_str_struct(declared) &&
-                    !node->as.var_decl.init->coerce_str_lit_to_str)
-                {
-                    node->as.var_decl.init->coerce_string_to_str = true;
-                }
-                /* Reverse bridge (B-3): a `Str` value initializing a builtin-string
-                   var. IDENT source → codegen clones (source stays live); rvalue
-                   (call/match result) → raw transfer. */
-                else if (init_type != NULL && type_is_str_struct(init_type) &&
-                         declared->kind == TYPE_STRING)
-                {
-                    node->as.var_decl.init->coerce_str_to_string = true;
-                }
-                else if (init_type != NULL && !type_assignable(declared, init_type))
+                if (init_type != NULL && !type_assignable(declared, init_type))
                 {
                     checker_error(c, node->line, node->column,
                                   "cannot initialize '%s' (type '%s') with value of type '%s'",
@@ -6781,14 +6177,7 @@ static void check_stmt(Checker *c, AstNode *node)
         }
         else
         {
-            Symbol *new_sym = scope_define(c->current_scope, node->as.var_decl.name, declared);
-            if (new_sym && declared->kind == TYPE_STRING)
-            {
-                /* Track whether this string is statically allocated (cap==0 at runtime).
-                   Static: initialized from a string literal or from a known-static identifier.
-                   Dynamic: all other initializers (method calls, concatenation, f-strings, etc.) */
-                new_sym->is_static_string = string_expr_is_static(c, node->as.var_decl.init);
-            }
+            scope_define(c->current_scope, node->as.var_decl.name, declared);
             /* Phase 5.5: copying out of a writable borrow leaks ownership the
                caller still holds. Reject before move-tracking runs. */
             checker_reject_mut_borrow_copy_source(c, node->as.var_decl.init,
@@ -6806,12 +6195,8 @@ static void check_stmt(Checker *c, AstNode *node)
             /* Move tracking: if the initializer is a dynamic string IDENT, the source is moved.
                Static strings, borrow params, and non-string types are left untouched
                (checker_try_mark_moved skips them). Reading a borrow into a new local
-               yields a shallow copy with cap==0 at codegen — safe, no move.
-               Reverse bridge (B-3): a coerced Str→string init CLONES the Str source
-               (it stays live and is dropped by its own scope) — don't mark it moved. */
-            if (node->as.var_decl.init == NULL ||
-                !node->as.var_decl.init->coerce_str_to_string)
-                checker_try_mark_moved(c, node->as.var_decl.init);
+               yields a shallow copy with cap==0 at codegen — safe, no move. */
+            checker_try_mark_moved(c, node->as.var_decl.init);
         }
         node->resolved_type = declared;
         break;
@@ -6892,30 +6277,12 @@ static void check_stmt(Checker *c, AstNode *node)
         /* For compound assignments (+=, -=, etc.), check operand types */
         if (node->as.assign.op != TOKEN_ASSIGN)
         {
-            /* string += string|char|int is allowed (in-place append) */
-            bool str_append = (node->as.assign.op == TOKEN_PLUS_ASSIGN &&
-                               target && target->kind == TYPE_STRING &&
-                               value && (value->kind == TYPE_STRING ||
-                                         value->kind == TYPE_CHAR ||
-                                         type_is_integer(value)));
-            if (!type_is_numeric(target) && !str_append)
+            if (!type_is_numeric(target))
             {
                 checker_error(c, node->line, node->column,
                               "compound assignment requires numeric type, got '%s'",
                               type_name(target));
                 break;
-            }
-            if (str_append) {
-                /* `s += ...` turns a static string into an owned (dynamic) one at
-                   runtime. Update is_static_string so subsequent move analysis
-                   (e.g. vs.push(s)) correctly tracks ownership transfer. */
-                if (node->as.assign.target->kind == AST_IDENT) {
-                    Symbol *dst = scope_resolve(c->current_scope,
-                                                node->as.assign.target->as.ident.name);
-                    if (dst)
-                        dst->is_static_string = false;
-                }
-                break; /* type-checked, no further assignability check needed */
             }
         }
 
@@ -6945,16 +6312,6 @@ static void check_stmt(Checker *c, AstNode *node)
                F.3/F.4A rejections.) */
             /* If RHS is a dynamic string/Block/movable IDENT, mark it as moved */
             checker_try_mark_moved(c, node->as.assign.value);
-
-            /* Update is_static_string on the target variable to reflect its new value */
-            if (node->as.assign.target->kind == AST_IDENT &&
-                target != NULL && target->kind == TYPE_STRING)
-            {
-                Symbol *dst = scope_resolve(c->current_scope,
-                                            node->as.assign.target->as.ident.name);
-                if (dst)
-                    dst->is_static_string = string_expr_is_static(c, node->as.assign.value);
-            }
         }
 
         /* Struct assignment (Phase 3): structs with has_drop are treated as
@@ -6997,25 +6354,7 @@ static void check_stmt(Checker *c, AstNode *node)
             c->expected_type = c->current_fn_return;
             Type *val = check_expr(c, node->as.return_stmt.value);
             c->expected_type = saved_expected;
-            /* Migration bridge (B-2b): a builtin-string value returned from a
-               function declared `-> Str` is deep-copied into an owned Str by
-               codegen (the source string is dropped normally, not transferred).
-               Literals already coerced zero-copy via expected_type above. */
-            if (val != NULL && val->kind == TYPE_STRING &&
-                type_is_str_struct(c->current_fn_return) &&
-                !node->as.return_stmt.value->coerce_str_lit_to_str)
-            {
-                node->as.return_stmt.value->coerce_string_to_str = true;
-            }
-            /* Reverse bridge (B-3): a `Str` value returned from a `-> string`
-               function. IDENT source → codegen clones (the local Str keeps
-               ownership, cleaned up normally); rvalue → raw transfer. */
-            else if (val != NULL && type_is_str_struct(val) &&
-                     c->current_fn_return->kind == TYPE_STRING)
-            {
-                node->as.return_stmt.value->coerce_str_to_string = true;
-            }
-            else if (val != NULL && !type_assignable(c->current_fn_return, val))
+            if (val != NULL && !type_assignable(c->current_fn_return, val))
             {
                 checker_error(c, node->line, node->column,
                               "return type mismatch: expected '%s', got '%s'",
@@ -7419,10 +6758,6 @@ static void check_fn_decl(Checker *c, AstNode *node)
             {
                 param_sym->is_borrow = is_borrow;
                 param_sym->is_mut_borrow = is_mut_borrow;
-                /* String parameters are deep copies of the caller's value — always dynamic.
-                   Borrow / mut-borrow params: is_static_string stays false. */
-                if (sym_type->kind == TYPE_STRING)
-                    param_sym->is_static_string = false;
                 /* F.2: Block params are shallow copies (caller and callee share env_ptr).
                    Mark as borrow so checker_reject_block_param_move catches F1 h = g. */
                 if (sym_type->kind == TYPE_BLOCK)
@@ -7497,11 +6832,7 @@ static void check_struct_decl(Checker *c, AstNode *node)
     for (int i = 0; i < n && !needs_drop; i++)
     {
         Type *ft = st->as.strukt.fields[i].type;
-        if (ft->kind == TYPE_STRING)
-        {
-            needs_drop = true;
-        }
-        else if (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop)
+        if (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop)
         {
             needs_drop = true;
         }
@@ -7541,7 +6872,6 @@ static bool type_owns_heap_for_enum(const Type *t)
     if (t == NULL) return false;
     switch (t->kind)
     {
-    case TYPE_STRING: return true;
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;
     default:          return false;
@@ -7739,30 +7069,21 @@ static void check_impl_decl(Checker *c, AstNode *node)
     Type *st = find_struct_type(c, name);
     Type *et = NULL;
     bool is_enum_impl = false;
-    bool is_builtin_impl = false;  /* Phase 2.5: impl on a builtin type (string) */
-    Type *builtin_self = NULL;
     if (st == NULL)
     {
         et = find_enum_type(c, name);
         if (et == NULL)
         {
-            /* Phase 2.5: allow `impl string` (and future builtin types).
-               resolve_builtin_type returns a fresh Type for known names. */
-            builtin_self = resolve_builtin_type_by_name(name);
-            if (builtin_self == NULL)
+            if (resolve_builtin_type_by_name(name) != NULL)
             {
+                /* P5-4: `impl <builtin>` died with `impl string` (Phase 2.5). */
                 checker_error(c, node->line, node->column,
-                              "impl for undefined type '%s'", name);
+                              "impl on builtin type '%s' is not supported", name);
                 return;
             }
-            if (builtin_self->kind != TYPE_STRING)
-            {
-                checker_error(c, node->line, node->column,
-                              "impl on builtin type '%s' is not yet supported "
-                              "(only 'string' for now)", name);
-                return;
-            }
-            is_builtin_impl = true;
+            checker_error(c, node->line, node->column,
+                          "impl for undefined type '%s'", name);
+            return;
         }
         else
         {
@@ -7774,9 +7095,9 @@ static void check_impl_decl(Checker *c, AstNode *node)
        (struct and enum are mutually exclusive). */
     Type *saved_impl_st = c->current_impl_struct_type;
     Type *saved_impl_et = c->current_impl_enum_type;
-    c->current_impl_struct_type = (is_enum_impl || is_builtin_impl) ? NULL : st;
+    c->current_impl_struct_type = is_enum_impl ? NULL : st;
     c->current_impl_enum_type   = is_enum_impl ? et : NULL;
-    Type *self_type = is_builtin_impl ? builtin_self : (st ? st : et);
+    Type *self_type = st ? st : et;
 
     /* B-4.1: key the impl_registry by the type's unique name (llvm_name for module
        types) so same-named impls across modules don't collide. */
@@ -7895,9 +7216,6 @@ static void check_impl_decl(Checker *c, AstNode *node)
                 {
                     param_sym->is_borrow = is_borrow;
                     param_sym->is_mut_borrow = is_mut_borrow;
-                    /* String method parameters receive deep copies — always dynamic */
-                    if (pt->kind == TYPE_STRING)
-                        param_sym->is_static_string = false;
                     /* F.2: Block params are shallow-copy borrows of caller's env */
                     if (pt->kind == TYPE_BLOCK)
                         param_sym->is_borrow = true;
@@ -7929,12 +7247,6 @@ static void check_impl_decl(Checker *c, AstNode *node)
                               "enum '%s' cannot have a user-defined __drop method",
                               name);
             }
-            else if (is_builtin_impl)
-            {
-                checker_error(c, method->line, method->column,
-                              "builtin type '%s' cannot have a user-defined "
-                              "__drop method", name);
-            }
             else
             {
                 /* __drop must be an instance method with no user parameters and void return */
@@ -7965,7 +7277,7 @@ static void check_impl_decl(Checker *c, AstNode *node)
            module — without it, emit_struct_clone_val silently falls back to
            the field-wise auto-clone, which shallow-copies raw *T buffers and
            double-frees (e.g. Str clone in another module's function). */
-        if (!is_static && !is_enum_impl && !is_builtin_impl &&
+        if (!is_static && !is_enum_impl &&
             strcmp(method->as.fn_decl.name, "__clone") == 0)
         {
             st->as.strukt.has_user_clone = true;
@@ -8344,13 +7656,13 @@ static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *tra
     if (type == NULL) return false;
     if (strcmp(trait_name, "Eq") == 0)
     {
-        if (type->kind == TYPE_STRING || type->kind == TYPE_BOOL ||
+        if (type->kind == TYPE_BOOL ||
             type_is_numeric(type) || type_is_pointer_like(type))
             return true;
     }
     else if (strcmp(trait_name, "Ord") == 0)
     {
-        if (type->kind == TYPE_STRING || type_is_numeric(type))
+        if (type_is_numeric(type))
             return true;
     }
     const char *tname = type_name(type);
@@ -8680,8 +7992,6 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
                 {
                     param_sym->is_borrow = is_borrow;
                     param_sym->is_mut_borrow = is_mut_borrow;
-                    if (pt->kind == TYPE_STRING)
-                        param_sym->is_static_string = false;
                     if (pt->kind == TYPE_BLOCK)
                         param_sym->is_borrow = true;
                 }
@@ -9353,9 +8663,6 @@ static void check_pass(Checker *c, AstNode *program)
                 {
                     param_sym->is_borrow = is_borrow;
                     param_sym->is_mut_borrow = is_mut_borrow;
-                    /* String parameters receive deep copies from caller — always dynamic */
-                    if (pt && pt->kind == TYPE_STRING)
-                        param_sym->is_static_string = false;
                     /* F.2: Block params are shallow-copy borrows of caller's env */
                     if (pt && pt->kind == TYPE_BLOCK)
                         param_sym->is_borrow = true;

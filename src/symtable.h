@@ -19,11 +19,6 @@ typedef struct Symbol {
                                CAN be reassigned and mutated. Same type-unwrap convention
                                as is_borrow (type is the pointee T). Mutually exclusive
                                with is_borrow. */
-    bool is_static_string;  /* true if string is initialized from a literal (cap==0 at runtime).
-                               Static strings are never marked as moved by implicit operations
-                               (vec.push, map.set, direct assignment) because they have no
-                               heap ownership — they point into .rodata and are freely shared.
-                               Only __move() can force-move a static string. */
 } Symbol;
 
 typedef struct Scope {
