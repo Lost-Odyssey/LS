@@ -12,12 +12,14 @@
 // ---- C standard library (CRT) ----
 
 extern {
-    fn fopen(string path, string mode) -> object
+    // P5-3: char* params take raw `*u8` (NUL-terminated). Callers pass
+    // `str.c_str()` (Str.c_str guarantees a NUL terminator).
+    fn fopen(*u8 path, *u8 mode) -> object
     fn fclose(object fp) -> int
     fn fread(*u8 buf, i64 sz, i64 n, object fp) -> i64
     fn fwrite(*u8 buf, i64 sz, i64 n, object fp) -> i64
-    fn strlen(string s) -> i64
-    fn system(string cmd) -> int
+    fn strlen(*u8 s) -> i64
+    fn system(*u8 cmd) -> int
     fn strerror(int e) -> object
     // Raw heap management (CRT). size_t is 64-bit on x64 → i64. These bind to the
     // real CRT symbols (no __ls_ prefix — that's reserved for runtime-owned

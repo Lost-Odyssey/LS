@@ -49,11 +49,9 @@ fn exit(int code) {
 // Runs cmd via the system shell, streaming output to the terminal.
 // Returns the exit code (0 = success).
 fn run(Str cmd) -> int {
-    /* c.system is a DIRECT extern fn: the Str->string call-arg bridge does not
-       fire there (and Str.data has no NUL terminator), so route through a
-       builtin-string local — the var-decl bridge copies + NUL-terminates. */
-    string sc = cmd
-    int raw = c.system(sc)
+    /* c.system is a DIRECT extern fn taking *u8 (NUL-terminated char*).
+       Str.c_str() guarantees the NUL terminator. */
+    int raw = c.system(cmd.c_str())
     return _os.raw_wait_exit_code(raw)
 }
 
@@ -69,8 +67,10 @@ fn exec(Str cmd) -> Result(Str, Str) {
     i64 maxsz = 4194304
     *u8 buf = c.malloc(maxsz)
     i64 nread = _os.raw_pread(fp, buf as object, maxsz)
-    string raw_out = __string_take_buffer(buf, nread)
-    Str out = raw_out
+    // Own the c.malloc'd buffer zero-copy (Str drop frees it) — like io._own_buf.
+    // Replaces the old `string raw_out = __string_take_buffer(...); Str out = raw_out`
+    // which cloned into out and leaked the builtin-string intermediate.
+    Str out = Str { data: buf, len: nread as int, cap: maxsz as int }
     int code = _os.raw_pclose(fp)
     if code != 0 {
         return Err(out)

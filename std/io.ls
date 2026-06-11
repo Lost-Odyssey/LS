@@ -37,9 +37,9 @@ struct File {
 
 // ---- Internal helpers ----
 
-// Stays builtin string: feeds c.fopen (extern char*) directly.
-fn _mode_str(OpenMode m) -> string {
-    string r = "r"
+// Returns the fopen mode; c.fopen takes *u8, so callers pass `_mode_str(m).c_str()`.
+fn _mode_str(OpenMode m) -> Str {
+    Str r = "r"
     match m {
         Read         => { r = "r" }
         Write        => { r = "w" }
@@ -92,8 +92,8 @@ fn _own_buf(*u8 buf, i64 len, i64 cap) -> Str {
 // ---- Public API ----
 
 fn read_file(Str path) -> Result(Str, Str) {
-    string sp = path
-    object fp = c.fopen(sp, "rb")
+    Str mode = "rb"
+    object fp = c.fopen(path.c_str(), mode.c_str())
     if fp == nil {
         return Err(_err("read_file: open failed"))
     }
@@ -115,8 +115,8 @@ fn read_file(Str path) -> Result(Str, Str) {
 }
 
 fn write_file(Str path, Str content) -> Result(int, Str) {
-    string sp = path
-    object fp = c.fopen(sp, "wb")
+    Str mode = "wb"
+    object fp = c.fopen(path.c_str(), mode.c_str())
     if fp == nil {
         return Err(_err("write_file: open failed"))
     }
@@ -131,8 +131,8 @@ fn write_file(Str path, Str content) -> Result(int, Str) {
 }
 
 fn append_file(Str path, Str content) -> Result(int, Str) {
-    string sp = path
-    object fp = c.fopen(sp, "ab")
+    Str mode = "ab"
+    object fp = c.fopen(path.c_str(), mode.c_str())
     if fp == nil {
         return Err(_err("append_file: open failed"))
     }
@@ -147,8 +147,8 @@ fn append_file(Str path, Str content) -> Result(int, Str) {
 }
 
 fn exists(Str path) -> bool {
-    string sp = path
-    object fp = c.fopen(sp, "rb")
+    Str mode = "rb"
+    object fp = c.fopen(path.c_str(), mode.c_str())
     if fp == nil {
         return false
     }
@@ -157,9 +157,8 @@ fn exists(Str path) -> bool {
 }
 
 fn open(Str path, OpenMode m) -> Result(File, Str) {
-    string sp = path
-    string ms = _mode_str(m)
-    object fp = c.fopen(sp, ms)
+    Str ms = _mode_str(m)
+    object fp = c.fopen(path.c_str(), ms.c_str())
     if fp == nil {
         return Err(_err("open failed"))
     }
