@@ -671,3 +671,13 @@ impl Add for Str {
         return out
     }
 }
+
+// Operator `<` (trait Ord; `>`, `<=`, `>=` derive from `<` / `==`). Lexicographic
+// byte order — delegates to `compare` (defined earlier in the main impl block).
+// Lets `"a" < "b"` and `min_ord(Str)(...)` / `Vec(Str).sort()` work once P5-2
+// flips the literal default to Str.
+impl Ord for Str {
+    fn <(&self, &Str rhs) -> bool {
+        return self.compare(rhs) < 0
+    }
+}
