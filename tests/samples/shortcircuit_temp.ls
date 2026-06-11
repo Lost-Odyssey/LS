@@ -3,7 +3,9 @@
 // count without freeing). Also guards short-circuit evaluation semantics.
 // Self-verifying: prints "SC PASS" only if every check holds.
 
-fn mkstr(int n) -> string { string s = "v"; s.append(n + '0'); return s }
+import std.str
+
+fn mkstr(int n) -> Str { Str s = "v"; s.push_byte(n + '0'); return s }
 
 int calls = 0
 fn side() -> bool { calls = calls + 1; return true }
@@ -18,22 +20,22 @@ fn main() {
 
     // && LHS produces a heap string temp; result assigned to a bool.
     bool a = true
-    a = (mkstr(1) == "v1") && a
+    a = mkstr(1).eq?("v1") && a
     if !check(a, 1) { ok = false }
 
     // || LHS string temp.
     bool b = false
-    b = (mkstr(2) == "nope") || b
+    b = mkstr(2).eq?("nope") || b
     if !check(!b, 2) { ok = false }
 
     // string temp in the RHS operand.
     bool c = true
-    c = c && (mkstr(3) == "v3")
+    c = c && mkstr(3).eq?("v3")
     if !check(c, 3) { ok = false }
 
     // nested a && b && c, each operand a string-temp comparison.
     bool d = true
-    d = (mkstr(1) == "v1") && (mkstr(2) == "v2") && d
+    d = mkstr(1).eq?("v1") && mkstr(2).eq?("v2") && d
     if !check(d, 4) { ok = false }
 
     // short-circuit semantics must be preserved: RHS not evaluated.
@@ -44,7 +46,7 @@ fn main() {
     if !check(s2, 7) { ok = false }
 
     // var_decl form (already worked) stays correct.
-    bool e = (mkstr(9) == "v9") && true
+    bool e = mkstr(9).eq?("v9") && true
     if !check(e, 8) { ok = false }
 
     if ok { print("SC PASS") }

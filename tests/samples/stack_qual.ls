@@ -7,6 +7,7 @@
 // test_stack.cmake.
 
 import std.stack as st
+import std.str
 
 fn check(bool c, string l) {
     if c { print(f"ok {l}") } else { print(f"FAIL {l}") }
@@ -22,12 +23,12 @@ fn main() {
     check(si.pop() == 3, "qual int pop 3")
     check(si.len() == 2, "qual int len 2")
 
-    st.Stack(string) ss = new_stack(string)()
+    st.Stack(Str) ss = new_stack(Str)()
     ss.push("alpha")
     ss.push("beta")
     check(ss.len() == 2, "qual str len 2")
-    string t = ss.peek()
-    check(t == "beta", "qual str peek beta")
+    Str t = ss.peek()
+    check(t.eq?("beta"), "qual str peek beta")
 
     print("STACK PASS")
 }

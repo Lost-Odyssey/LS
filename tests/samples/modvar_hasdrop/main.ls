@@ -1,9 +1,10 @@
 import mod_a
+import std.str
 
 fn main() -> int {
-    string g = mod_a.get_greeting()
+    Str g = mod_a.get_greeting()
     print(f"greeting={g}")
-    if g == "hello" {
+    if g.eq?("hello") {
         print("MODVAR_HASDROP PASS")
     }
     return 0

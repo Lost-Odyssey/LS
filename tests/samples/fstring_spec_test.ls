@@ -1,9 +1,11 @@
 // fstring_spec_test.ls — f-string format specifier (Phase 0.3).
 // Prints "FSPEC PASS" on success, "FSPEC FAIL: ..." on any mismatch.
 
-fn check(string got, string want, string name) -> bool {
-    if got == want { return true }
-    print("FSPEC FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+import std.str
+
+fn check(Str got, Str want, Str name) -> bool {
+    if got.eq?(want) { return true }
+    print(f"FSPEC FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 

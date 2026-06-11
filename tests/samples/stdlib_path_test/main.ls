@@ -4,6 +4,7 @@
 // (user dir → LS_HOME/std/) works.
 
 import hello
+import std.str
 
 fn main() {
     int a = hello.answer()
@@ -13,8 +14,8 @@ fn main() {
     }
     print("PASS: stdlib hello.answer() = 42")
 
-    string g = hello.greet("LS")
-    if g != "Hello from stdlib, LS!" {
+    Str g = hello.greet("LS")
+    if !g.eq?("Hello from stdlib, LS!") {
         print("FAIL: stdlib hello.greet wrong text")
         print(g)
         return

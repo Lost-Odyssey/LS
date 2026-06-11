@@ -3,6 +3,7 @@
 
 import std.vec
 import std.ring
+import std.str
 
 fn check(bool c, string l) {
     if c { print(f"ok {l}") } else { print(f"FAIL {l}") }
@@ -43,13 +44,13 @@ fn main() {
     check(r.is_empty(), "empty after burst")
     match r.dequeue() { Some(v) => { check(false, "deq empty") } None => { check(true, "deq empty -> None") } }
 
-    // ---- Ring(string): has_drop element ownership ----
-    Ring(string) rs = new_ring(string)(2)   // cap 2
+    // ---- Ring(Str): has_drop element ownership ----
+    Ring(Str) rs = new_ring(Str)(2)   // cap 2
     check(rs.enqueue("alpha"), "str enq alpha")
     check(rs.enqueue("beta"), "str enq beta")
     check(rs.enqueue("gamma") == false, "str enq gamma rejected (full)")
 
-    match rs.dequeue() { Some(s) => { check(s == "alpha", "str deq alpha") } None => { check(false, "str deq alpha") } }
+    match rs.dequeue() { Some(s) => { check(s.eq?("alpha"), "str deq alpha") } None => { check(false, "str deq alpha") } }
     // rs still holds "beta"; enqueue "gamma" now fits (wrap)
     check(rs.enqueue("gamma"), "str enq gamma after deq")
 
