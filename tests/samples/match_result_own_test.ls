@@ -19,7 +19,7 @@ fn ret_match(Option(Str) o) -> Str {
 
 fn take(Str s) -> int { return s.len() }
 
-fn check(bool cond, string label) {
+fn check(bool cond, Str label) {
     if (!cond) { print("FAIL:", label) }
 }
 

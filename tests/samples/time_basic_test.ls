@@ -49,11 +49,11 @@ fn main() {
     if utc.year >= 2025 { print("PASS: utc year") } else { print("FAIL: utc year") }
 
     // ---- format ----
-    string fmt_out = T.format(utc, "%Y-%m-%d")
+    Str fmt_out = T.format(utc, "%Y-%m-%d")
     if fmt_out != "" { print("PASS: format") } else { print("FAIL: format") }
 
     // ---- iso8601 ----
-    string iso = T.iso8601(utc)
+    Str iso = T.iso8601(utc)
     if iso != "" { print("PASS: iso8601") } else { print("FAIL: iso8601") }
 
     // ---- add + diff_s ----

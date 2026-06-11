@@ -8,7 +8,7 @@ struct Point {
 }
 
 impl Point {
-    fn to_string() -> string {
+    fn to_string() -> Str {
         return f"Point({self.x}, {self.y})"
     }
 }
@@ -18,12 +18,12 @@ fn main() {
     f"Test 1: Anonymous f-string"
 
     // Test 2: f-string assigned to variable (should be freed at end of block)
-    string s1 = f"Test 2: {42}"
+    Str s1 = f"Test 2: {42}"
     print(s1)
 
     // Test 3: Multiple f-strings in a loop
     for i in 3 {
-        string s = f"Loop iteration {i}"
+        Str s = f"Loop iteration {i}"
         print(s)
     }
 
@@ -31,24 +31,24 @@ fn main() {
     Point p
     p.x = 100
     p.y = 200
-    string pt = p.to_string()
+    Str pt = p.to_string()
     print(pt)
 
     // Test 5: Chained operations on f-string result
-    string s2 = f"hello {42}".upper()
+    Str s2 = f"hello {42}".upper()
     print(s2)
 
     // Test 6: f-string returned from function
-    string result = make_greeting("World")
+    Str result = make_greeting("World")
     print(result)
 
     // Test 7: Nested f-string with method
-    string nested = f"Value: {p.to_string()}"
+    Str nested = f"Value: {p.to_string()}"
     print(nested)
 
     print("All f-string memory management tests passed!")
 }
 
-fn make_greeting(string name) -> string {
+fn make_greeting(Str name) -> Str {
     return f"Hello, {name}!"
 }

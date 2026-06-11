@@ -1,13 +1,13 @@
 // Phase A.5 验证：每种主要 alloc kind 都能被精确归类。
 // 期望 0 leak —— 这里只是 exercise 各路径，确认 kind 标签生效。
 fn main() -> int {
-    string a = "hello".upper()       // string.upper
-    string b = "WORLD".lower()       // string.lower
-    string c = "  pad  ".trim()      // string.trim
-    string d = "abcdef".substr(1, 3) // string.substr
-    string e = "x".copy()            // string.copy
-    string f = a + b                  // string.concat
-    string g = f"got {f}"             // string.fstring
+    Str a = "hello".upper()       // Str.upper
+    Str b = "WORLD".lower()       // Str.lower
+    Str c = "  pad  ".trim()      // Str.trim
+    Str d = "abcdef".substr(1, 3) // Str.substr
+    Str e = "x".copy()            // Str.copy
+    Str f = a + b                  // Str.concat
+    Str g = f"got {f}"             // Str.fstring
 
     print(a)
     print(b)
