@@ -1,6 +1,7 @@
 // Phase A end-to-end: build a document with every builder, render, print output.
 import std.vec
 import std.md as md
+import std.str
 import io
 
 fn main() {
@@ -11,19 +12,19 @@ fn main() {
     md.paragraph(&!doc, "Plain text with **bold** kept verbatim.")
     md.code_block(&!doc, "ls", "fn main() { print(42) }")
 
-    Vec(string) items = ["First", "Second", "Third"]
+    Vec(Str) items = ["First", "Second", "Third"]
     md.ul(&!doc, items)
 
-    Vec(string) steps = ["Step one", "Step two"]
+    Vec(Str) steps = ["Step one", "Step two"]
     md.ol(&!doc, steps)
 
     md.blockquote(&!doc, "A quoted line.")
 
-    Vec(string) headers = ["Name", "Score"]
-    Vec(Vec(string)) rows = {}
-    Vec(string) row0 = ["Alice", "9.5"]
+    Vec(Str) headers = ["Name", "Score"]
+    Vec(Vec(Str)) rows = {}
+    Vec(Str) row0 = ["Alice", "9.5"]
     rows.push(row0)
-    Vec(string) row1 = ["Bob", "8.1"]
+    Vec(Str) row1 = ["Bob", "8.1"]
     rows.push(row1)
     md.table(&!doc, headers, rows)
 

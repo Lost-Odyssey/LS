@@ -1,6 +1,7 @@
 // Phase C: inline parsing + extract helpers + round-trip.
 import std.vec
 import std.md as md
+import std.str
 import io
 
 fn main() {
@@ -13,12 +14,12 @@ fn main() {
     print(md.render(doc))
 
     print("---HEADINGS---")
-    Vec(string) hs = md.extract_headings(doc)
+    Vec(Str) hs = md.extract_headings(doc)
     int i = 0
     while i < hs.len { print(hs.get(i)); i = i + 1 }
 
     print("---LINKS---")
-    Vec(string) ls = md.extract_links(doc)
+    Vec(Str) ls = md.extract_links(doc)
     i = 0
     while i < ls.len { print(ls.get(i)); i = i + 1 }
 
