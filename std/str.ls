@@ -285,6 +285,16 @@ impl Str {
         return out
     }
 
+    // Explicit deep copy (mirrors the builtin string's .copy()). Static (cap 0)
+    // sources stay shared-static, owned sources get an independent heap buffer.
+    // Useful where an explicit independent value is wanted regardless of the
+    // call-site's clone/move policy (e.g. returning a borrowed match binder).
+    // NOTE: defined after substr — impl method bodies resolve sibling calls
+    // only to methods declared earlier in the block.
+    fn copy(&self) -> Str {
+        return self.substr(0, self.len)
+    }
+
     // ---- more search (byte layer) ----
 
     // Index of the LAST occurrence of `needle`, or -1. Empty needle -> len.

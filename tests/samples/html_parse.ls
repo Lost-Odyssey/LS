@@ -4,6 +4,7 @@
 import std.vec
 import std.html as html
 import io
+import std.str
 
 fn check(bool cond, int id) -> bool {
     if !cond {
@@ -60,7 +61,7 @@ fn main() {
 
     // --- extract_links across nesting ---
     html.HtmlDoc d12 = html.parse("<a href=\"u1\">x</a><div><a href=\"u2\">y</a></div>")
-    Vec(string) links = html.extract_links(d12)
+    Vec(Str) links = html.extract_links(d12)
     if !check(links.len == 2, 12) { ok = false }
     if !check(links.get(0) == "u1", 13) { ok = false }
     if !check(links.get(1) == "u2", 14) { ok = false }
@@ -80,9 +81,9 @@ fn main() {
     if !check(lis2.len == 2, 17) { ok = false }
 
     // --- round-trip: parse -> render -> parse renders identically ---
-    string src = "<div id=\"main\"><p>one</p><p>two</p></div>"
+    Str src = "<div id=\"main\"><p>one</p><p>two</p></div>"
     html.HtmlDoc rt1 = html.parse(src)
-    string once = html.render(rt1)
+    Str once = html.render(rt1)
     html.HtmlDoc rt2 = html.parse(once)
     if !check(html.render(rt2) == once, 18) { ok = false }
     if !check(once == src, 19) { ok = false }

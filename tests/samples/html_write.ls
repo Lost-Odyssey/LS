@@ -4,6 +4,7 @@
 import std.vec
 import std.html as html
 import io
+import std.str
 
 fn check(bool cond, int id) -> bool {
     if !cond {
@@ -39,8 +40,8 @@ fn main() {
     span_kids.push(html.text("hi"))
     html.HtmlNode sp = html.elem("span", span_kids)
 
-    Vec(Vec(string)) ap = {}
-    Vec(string) ap0 = {}
+    Vec(Vec(Str)) ap = {}
+    Vec(Str) ap0 = {}
     ap0.push("class")
     ap0.push("box")
     ap.push(ap0)
@@ -68,8 +69,8 @@ fn main() {
     if !check(html.render(d8) == "<!DOCTYPE html>", 8) { ok = false }
 
     // --- attribute value escaping ---
-    Vec(Vec(string)) qap = {}
-    Vec(string) qap0 = {}
+    Vec(Vec(Str)) qap = {}
+    Vec(Str) qap0 = {}
     qap0.push("title")
     qap0.push("a\"b<c")
     qap.push(qap0)
@@ -80,8 +81,8 @@ fn main() {
     if !check(html.render(d9) == "<p title=\"a&quot;b&lt;c\"></p>", 9) { ok = false }
 
     // --- fmt_tag pure-string helper ---
-    Vec(Vec(string)) ftp = {}
-    Vec(string) ftp0 = {}
+    Vec(Vec(Str)) ftp = {}
+    Vec(Str) ftp0 = {}
     ftp0.push("href")
     ftp0.push("u")
     ftp.push(ftp0)
