@@ -16,13 +16,28 @@ execute_process(
     ERROR_VARIABLE  jit_err
     RESULT_VARIABLE jit_rc
 )
-if(NOT "${jit_out}" MATCHES "ALL PASS")
+if(NOT "${jit_out}" MATCHES "ALL PASS" OR "${jit_out}" MATCHES "FAIL")
     message(FATAL_ERROR
         "test_regex JIT FAILED (exit ${jit_rc})\n"
         "stdout:\n${jit_out}\n"
         "stderr:\n${jit_err}")
 endif()
 message(STATUS "test_regex JIT: OK")
+
+# ---- memcheck path (catches leaks / UAF the ALL-PASS grep misses) ----
+execute_process(
+    COMMAND "${LS_EXE}" run --memcheck "${SAMPLE}"
+    OUTPUT_VARIABLE mc_out
+    ERROR_VARIABLE  mc_err
+    RESULT_VARIABLE mc_rc
+)
+if(NOT "${mc_out}${mc_err}" MATCHES "SUMMARY: 0 leak\\(s\\) \\(0 bytes\\), 0 double-free, 0 invalid free")
+    message(FATAL_ERROR
+        "test_regex memcheck FAILED (exit ${mc_rc})\n"
+        "stdout:\n${mc_out}\n"
+        "stderr:\n${mc_err}")
+endif()
+message(STATUS "test_regex memcheck: OK")
 
 # ---- AOT path ----
 set(aot_bin "${WORK_DIR}/test_regex_aot")
@@ -49,7 +64,7 @@ execute_process(
     RESULT_VARIABLE aot_rc
     WORKING_DIRECTORY "${_root}"
 )
-if(NOT "${aot_out}" MATCHES "ALL PASS")
+if(NOT "${aot_out}" MATCHES "ALL PASS" OR "${aot_out}" MATCHES "FAIL")
     message(FATAL_ERROR
         "test_regex AOT FAILED (exit ${aot_rc})\n"
         "stdout:\n${aot_out}\n"

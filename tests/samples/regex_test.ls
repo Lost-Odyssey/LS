@@ -27,7 +27,7 @@ fn test_quantifiers() {
     // lazy — capture returns Vec(Str), empty = no match
     Vec(Str) c = re.capture("aXbXc", "(a.*?c)")
     if c.len() == 0 { print("FAIL: lazy none"); return }
-    if c[0] != "aXbXc" { print(f"FAIL: lazy wrong: {c[0]}"); return }
+    if !c[0].eq?("aXbXc") { print(f"FAIL: lazy wrong: {c[0]}"); return }
     print("PASS: quantifiers")
 }
 
@@ -61,8 +61,8 @@ fn test_find() {
     Vec(Str) all = re.find_all("a1 b2 c3", "\\d+")
     if all.len() != 3 { print("FAIL: find_all count"); return }
     if !all[0].eq?("1") { print("FAIL: find_all[0]"); return }
-    if all[1] != "2" { print("FAIL: find_all[1]"); return }
-    if all[2] != "3" { print("FAIL: find_all[2]"); return }
+    if !all[1].eq?("2") { print("FAIL: find_all[1]"); return }
+    if !all[2].eq?("3") { print("FAIL: find_all[2]"); return }
     print("PASS: find")
 }
 
@@ -71,15 +71,15 @@ fn test_capture() {
     Vec(Str) caps = re.capture("2024-01-15", "(\\d{4})-(\\d{2})-(\\d{2})")
     if caps.len() == 0 { print("FAIL: capture none"); return }
     if caps.len() != 4 { print(f"FAIL: capture length {caps.len()}"); return }
-    if caps[0] != "2024-01-15" { print("FAIL: cap[0]"); return }
-    if caps[1] != "2024" { print("FAIL: cap[1]"); return }
-    if caps[2] != "01" { print("FAIL: cap[2]"); return }
-    if caps[3] != "15" { print("FAIL: cap[3]"); return }
+    if !caps[0].eq?("2024-01-15") { print("FAIL: cap[0]"); return }
+    if !caps[1].eq?("2024") { print("FAIL: cap[1]"); return }
+    if !caps[2].eq?("01") { print("FAIL: cap[2]"); return }
+    if !caps[3].eq?("15") { print("FAIL: cap[3]"); return }
 
     // capture_all returns flat vec; stride = group_count + 1
     // pattern "(\\w+)=(\\d+)" has 2 groups → stride = 3
     // "a=1 b=2 c=3" → 3 matches → 9 elements
-    string cap_all_pat = "(\\w+)=(\\d+)"
+    Str cap_all_pat = "(\\w+)=(\\d+)"
     int stride = re.group_count(cap_all_pat) + 1
     if stride != 3 { print(f"FAIL: group_count {stride}"); return }
     Vec(Str) flat = re.capture_all("a=1 b=2 c=3", cap_all_pat)
@@ -88,8 +88,8 @@ fn test_capture() {
     // match 1: flat[3]="b=2"  flat[4]="b"  flat[5]="2"
     // match 2: flat[6]="c=3"  flat[7]="c"  flat[8]="3"
     if !flat[1].eq?("a") { print("FAIL: capture_all[0][1]"); return }
-    if flat[5] != "2" { print("FAIL: capture_all[1][2]"); return }
-    if flat[7] != "c" { print("FAIL: capture_all[2][1]"); return }
+    if !flat[5].eq?("2") { print("FAIL: capture_all[1][2]"); return }
+    if !flat[7].eq?("c") { print("FAIL: capture_all[2][1]"); return }
     print("PASS: capture")
 }
 
@@ -103,18 +103,18 @@ fn test_named_capture() {
     if !mp.has?("year")  { print("FAIL: named year missing"); return }
     if !mp.has?("month") { print("FAIL: named month missing"); return }
     if !mp.has?("day")   { print("FAIL: named day missing"); return }
-    string y = ""
-    string mo = ""
-    string d = ""
-    match mp.get("year") { Some(vy) => { string sy = vy
+    Str y = ""
+    Str mo = ""
+    Str d = ""
+    match mp.get("year") { Some(vy) => { Str sy = vy
                                          y = sy } None => {} }
-    match mp.get("month") { Some(vm) => { string sm = vm
+    match mp.get("month") { Some(vm) => { Str sm = vm
                                           mo = sm } None => {} }
-    match mp.get("day") { Some(vd) => { string sd = vd
+    match mp.get("day") { Some(vd) => { Str sd = vd
                                         d = sd } None => {} }
-    if y != "2024" { print("FAIL: named year=" + y); return }
-    if mo != "01"  { print("FAIL: named month=" + mo); return }
-    if d != "15"   { print("FAIL: named day=" + d); return }
+    if !y.eq?("2024") { print(f"FAIL: named year={y}"); return }
+    if !mo.eq?("01")  { print(f"FAIL: named month={mo}"); return }
+    if !d.eq?("15")   { print(f"FAIL: named day={d}"); return }
     print("PASS: named_capture")
 }
 
@@ -127,7 +127,7 @@ fn test_lookahead() {
     // negative lookahead: foo when NOT followed by bar
     Vec(Str) v2 = re.find_all("foobar foobaz", "foo(?!bar)")
     if v2.len() != 1 { print(f"FAIL: neg lookahead count {v2.len()}"); return }
-    if v2[0] != "foo"  { print("FAIL: neg lookahead val"); return }
+    if !v2[0].eq?("foo")  { print("FAIL: neg lookahead val"); return }
     print("PASS: lookahead")
 }
 
@@ -144,15 +144,15 @@ fn test_flags() {
 }
 
 fn test_replace() {
-    string r1 = re.replace("hello world", "\\bworld\\b", "LS")
-    if r1 != "hello LS" { print("FAIL: replace: " + r1); return }
+    Str r1 = re.replace("hello world", "\\bworld\\b", "LS")
+    if !r1.eq?("hello LS") { print(f"FAIL: replace: {r1}"); return }
 
-    string r2 = re.replace_all("2024/01/15", "/", "-")
-    if r2 != "2024-01-15" { print("FAIL: replace_all: " + r2); return }
+    Str r2 = re.replace_all("2024/01/15", "/", "-")
+    if !r2.eq?("2024-01-15") { print(f"FAIL: replace_all: {r2}"); return }
 
     // replace_all with digits
-    string r3 = re.replace_all("a1 b2 c3", "\\d+", "X")
-    if r3 != "aX bX cX" { print("FAIL: replace_all digits: " + r3); return }
+    Str r3 = re.replace_all("a1 b2 c3", "\\d+", "X")
+    if !r3.eq?("aX bX cX") { print(f"FAIL: replace_all digits: {r3}"); return }
     print("PASS: replace")
 }
 
@@ -169,8 +169,8 @@ fn test_split() {
     bool found_world = false
     int i = 0
     while i < ws.len() {
-        if ws[i] == "hello" { found_hello = true }
-        if ws[i] == "world" { found_world = true }
+        if ws[i].eq?("hello") { found_hello = true }
+        if ws[i].eq?("world") { found_world = true }
         i = i + 1
     }
     if !found_hello { print("FAIL: split ws hello"); return }

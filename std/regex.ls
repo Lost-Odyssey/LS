@@ -73,9 +73,11 @@ fn find(Str text, Str pattern) -> Option(Str) {
     if h < 0 { return None }
     int n = c.__ls_regex_exec(h, st, st.length, 0)
     if n == 0 { c.__ls_regex_free(h); return None }
-    string m = _cap_str(st, 0)
+    // Bridge string->Str on the call rvalue directly; a `string m` intermediate
+    // then `Str ms = m` leaks m's buffer (var-decl bridge on an IDENT clones but
+    // leaves the source un-freed). See find_all/capture for the same pattern.
+    Str ms = _cap_str(st, 0)
     c.__ls_regex_free(h)
-    Str ms = m
     return Some(ms)
 }
 
@@ -93,7 +95,7 @@ fn find_all(Str text, Str pattern) -> Vec(Str) {
         if n == 0 { break }
         int s = c.__ls_regex_cap_start(0)
         int l = c.__ls_regex_cap_len(0)
-        string piece = st.substr(s, l)
+        Str piece = st.substr(s, l)
         result.push(piece)
         if l == 0 { pos = s + 1 } else { pos = s + l }
     }
@@ -114,7 +116,7 @@ fn capture(Str text, Str pattern) -> Vec(Str) {
     if n == 0 { c.__ls_regex_free(h); return caps }
     int i = 0
     while i < n {
-        string g = _cap_str(st, i)
+        Str g = _cap_str(st, i)
         caps.push(g)
         i = i + 1
     }
@@ -150,7 +152,7 @@ fn capture_all(Str text, Str pattern) -> Vec(Str) {
         int l = c.__ls_regex_cap_len(0)
         int i = 0
         while i < n {
-            string g = _cap_str(st, i)
+            Str g = _cap_str(st, i)
             result.push(g)
             i = i + 1
         }
@@ -175,12 +177,12 @@ fn capture_named(Str text, Str pattern) -> Map(Str, Str) {
     int nc = c.__ls_regex_named_count(h)
     int i = 0
     while i < nc {
-        string name = from_cstr(c.__ls_regex_named_name(h, i))
+        Str name = from_cstr(c.__ls_regex_named_name(h, i))
         int idx = c.__ls_regex_named_index(h, i)
         int s = c.__ls_regex_cap_start(idx)
         int l = c.__ls_regex_cap_len(idx)
         if s >= 0 {
-            string val = st.substr(s, l)
+            Str val = st.substr(s, l)
             m.set(name, val)
         }
         i = i + 1
@@ -255,13 +257,13 @@ fn split(Str text, Str pattern) -> Vec(Str) {
         if n == 0 { break }
         int s = c.__ls_regex_cap_start(0)
         int l = c.__ls_regex_cap_len(0)
-        string piece = st.substr(pos, s - pos)
-        if piece.length > 0 { result.push(piece) }
+        Str piece = st.substr(pos, s - pos)
+        if piece.len() > 0 { result.push(piece) }
         if l == 0 { pos = s + 1 } else { pos = s + l }
     }
     if pos <= tlen {
-        string tail = st.substr(pos, tlen - pos)
-        if tail.length > 0 { result.push(tail) }
+        Str tail = st.substr(pos, tlen - pos)
+        if tail.len() > 0 { result.push(tail) }
     }
     c.__ls_regex_free(h)
     return result
