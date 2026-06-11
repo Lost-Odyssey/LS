@@ -1,7 +1,8 @@
-// operator_overload_memcheck.ls — operator method on has_drop struct (string field).
+// operator_overload_memcheck.ls — operator method on has_drop struct (Str field).
 // Verifies &Self rhs is not consumed and the returned owned struct leaks nothing.
+import std.str
 
-struct Name { string first; int n }
+struct Name { Str first; int n }
 
 impl Add for Name {
     fn +(&self, &Name rhs) -> Name {

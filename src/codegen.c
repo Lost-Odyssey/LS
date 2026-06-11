@@ -4792,9 +4792,16 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
             LLVMValueRef sval = codegen_expr(ctx, arg);
             if (sval == NULL) { free(printf_args); return NULL; }
             cg_print_str_value(ctx, sval);
-            /* Owned Str rvalue (index/call clone) consumed by print → drop it
-               (F3 analog). Bare ident/field of a live binding is a borrow: skip. */
-            if (arg->kind == AST_INDEX || arg->kind == AST_CALL)
+            /* Owned Str rvalue consumed by print → drop it (F3 analog).
+               Besides index/call clones this covers terminal FIELD reads
+               (a has_drop field read clones, e.g. print(x.first)) and
+               lowered operator chains (print(a + b)) — the same whitelist
+               as the f-string interpolation site above; a static-Str clone
+               allocates nothing, which masked the field-read leak until an
+               owned field was printed. Bare ident stays a borrow: skip. */
+            if (arg->kind == AST_INDEX || arg->kind == AST_CALL ||
+                arg->kind == AST_FIELD ||
+                (arg->kind == AST_BINARY && arg->as.binary.lowered != NULL))
             {
                 LLVMValueRef stmp = cg_entry_alloca(ctx, type_to_llvm(ctx, t),
                                                     "print.str.drop");

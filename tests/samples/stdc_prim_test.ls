@@ -5,6 +5,8 @@
 // alias is torn down before consumer-side monomorphization). abort() is exercised
 // for compile/reachability only (an untaken branch — taking it would exit(1)).
 
+import std.str
+
 struct Buf(T) { *u8 p; int n }
 
 impl(T) Buf(T) {
@@ -22,7 +24,7 @@ impl(T) Buf(T) {
     }
 }
 
-fn check(bool ok, string label) {
+fn check(bool ok, Str label) {
     if ok { print(f"  ok: {label}") }
     else  { print(f"FAIL: {label}") }
 }

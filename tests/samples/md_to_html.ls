@@ -2,6 +2,7 @@
 // Self-verifying: prints "HTML PASS" only if every check holds.
 
 import std.md as md
+import std.str
 import io
 
 fn check(bool cond, int id) -> bool {
@@ -46,15 +47,15 @@ fn main() {
     if !check(md.to_html("---") == "<hr>\n", 12) { ok = false }
 
     // --- full document wrapper ---
-    string full = md.to_html_full("# Hi", "My Title")
-    if !check(full.starts_with("<!DOCTYPE html>\n<html>\n<head>\n"), 13) { ok = false }
-    if !check(full.contains("<title>My Title</title>"), 14) { ok = false }
-    if !check(full.contains("<h1>Hi</h1>"), 15) { ok = false }
-    if !check(full.contains("</body>\n</html>\n"), 16) { ok = false }
+    Str full = md.to_html_full("# Hi", "My Title")
+    if !check(full.starts_with?("<!DOCTYPE html>\n<html>\n<head>\n"), 13) { ok = false }
+    if !check(full.contains?("<title>My Title</title>"), 14) { ok = false }
+    if !check(full.contains?("<h1>Hi</h1>"), 15) { ok = false }
+    if !check(full.contains?("</body>\n</html>\n"), 16) { ok = false }
 
     // --- title is HTML-escaped in the head ---
-    string ft = md.to_html_full("x", "A < B")
-    if !check(ft.contains("<title>A &lt; B</title>"), 17) { ok = false }
+    Str ft = md.to_html_full("x", "A < B")
+    if !check(ft.contains?("<title>A &lt; B</title>"), 17) { ok = false }
 
     if ok { print("HTML PASS") }
 }

@@ -30,7 +30,7 @@ fn main() {
 
     md.hr(&!doc)
 
-    string out = md.render(doc)
+    Str out = md.render(doc)
     print(out)
 
     print("---FRAGMENTS---")

@@ -1,3 +1,5 @@
+import std.str
+
 fn ok?(int x) -> bool {
     return x > 0
 }
@@ -30,15 +32,15 @@ impl Box {
     }
 }
 
-fn check_bool(bool got, bool want, string name) -> bool {
+fn check_bool(bool got, bool want, Str name) -> bool {
     if got == want { return true }
-    print("IDENTSUF FAIL: " + name)
+    print(f"IDENTSUF FAIL: {name}")
     return false
 }
 
-fn check_int(int got, int want, string name) -> bool {
+fn check_int(int got, int want, Str name) -> bool {
     if got == want { return true }
-    print("IDENTSUF FAIL: " + name)
+    print(f"IDENTSUF FAIL: {name}")
     return false
 }
 

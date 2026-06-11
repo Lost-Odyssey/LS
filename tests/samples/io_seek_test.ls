@@ -1,9 +1,10 @@
 // Phase 9 v2: io seek/tell/size/rewind + append_file + remove + SeekFrom enum.
 // Binary-mode gate: seek/tell/size require a file opened in *Binary mode.
 import io
+import std.str
 
 fn main() -> int {
-    string path = "io_seek_test.tmp"
+    Str path = "io_seek_test.tmp"
 
     // Set up a 26-byte file: "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     match io.write_file(path, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {

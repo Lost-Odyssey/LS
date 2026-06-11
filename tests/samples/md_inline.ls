@@ -5,7 +5,7 @@ import std.str
 import io
 
 fn main() {
-    string src = "# Title with `code`\n\nText with **bold**, _italic_, ***both***, `c`, a [link](http://x.com) and ![img](pic.png).\n\n- item with [l2](http://y.com)\n\n> quoted [l3](http://z.com)\n"
+    Str src = "# Title with `code`\n\nText with **bold**, _italic_, ***both***, `c`, a [link](http://x.com) and ![img](pic.png).\n\n- item with [l2](http://y.com)\n\n> quoted [l3](http://z.com)\n"
 
     md.MdDoc doc = md.parse(src)
 

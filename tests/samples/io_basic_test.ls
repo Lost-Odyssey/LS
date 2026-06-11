@@ -2,12 +2,13 @@
 // Exercises read_file / write_file / exists / open / close / read_all / write
 // and the OpenMode enum + File struct.
 import io
+import std.str
 
 fn main() -> int {
-    string path = "io_basic_test.tmp"
+    Str path = "io_basic_test.tmp"
 
     // ---- write_file + exists + read_file roundtrip ----
-    string content = "Hello, LS!"
+    Str content = "Hello, LS!"
     match io.write_file(path, content) {
         Ok(n)  => print(n)        // 10
         Err(e) => print(e)
