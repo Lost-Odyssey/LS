@@ -61,6 +61,22 @@ impl Str {
     fn empty?(&self) -> bool { return self.len == 0 }
     fn as_ptr(&self) -> object { return self.data as object }
 
+    // FFI marshalling (P5-0, docs/plan_p5_remove_builtin_string.md §4):
+    // NUL-terminated view of the buffer for C `char*` consumers.
+    //   * cap == 0 && len > 0 — static/shared C string (a compiler-emitted
+    //     literal via LLVMBuildGlobalStringPtr, or a bridge view of a static
+    //     builtin string): already NUL-terminated, returned as-is (zero cost).
+    //   * otherwise (owned buffer, empty literal, or zero-init nil data) —
+    //     reserve one spare byte and write data[len] = 0 (len unchanged;
+    //     reserve handles nil data by mallocing a fresh buffer).
+    // NOTE: bytes after an embedded 0 are invisible to C (C-string semantics).
+    fn c_str(&!self) -> *u8 {
+        if self.cap == 0 && self.len > 0 { return self.data }
+        self.reserve(self.len + 1)
+        self.data[self.len] = 0 as u8
+        return self.data
+    }
+
     // Byte at index i (§6.3 byte layer). Bounds-checked: out-of-range aborts
     // (matches Vec.get / the safe default). `byte_at!` is the `!`-style
     // unchecked escape hatch (LS convention: `!` = unsafe, cf. Vec.get!/set!).

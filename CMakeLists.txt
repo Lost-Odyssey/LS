@@ -748,6 +748,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# P5-0 (docs/plan_p5_remove_builtin_string.md §4): Str.c_str() — NUL-terminated
+# view for FFI char* consumers, verified through CRT strlen in every state
+# (static literal zero-copy / owned / grown / empty / zero-init nil data).
+# Unfreezes std/c.ls + std/os.ls migration (P5-3). JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_str_cstr
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_cstr_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_cstr
+        -DMARKER=CSTR
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # Regression: owned Str cloned inside a MODULE function (by-value Map.set arg).
 # Guards the has_user_clone forward-declaration in emit_struct_clone_val —
 # without it the clone fell back to field-wise shallow copy of the raw *u8
