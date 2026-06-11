@@ -80,7 +80,7 @@ fn format(DateTime dt, Str fmt) -> Str {
     object r = _os.raw_time_format(dt.year, dt.month, dt.day,
                                     dt.hour, dt.minute, dt.second,
                                     dt.weekday, dt.yday, fmt)
-    string s = from_cstr(r)
+    Str s = from_cstr(r)
     return s
 }
 
