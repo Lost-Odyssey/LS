@@ -734,6 +734,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# string-to-stdlib P7-mig: impl Hash for Str (std/str.ls, FxHash via std.hash)
+# + operator == (impl Eq for Str) => Str usable as Map key (Hash + Eq bounds);
+# covers set/get/grow/overwrite/remove with has_drop Str keys. 0/0/0.
+add_test(
+    NAME test_str_hash_mapkey
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_hash_mapkey.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_hash_mapkey
+        -DMARKER=STRHK
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject

@@ -24,6 +24,7 @@
 
 import std.c
 import std.vec
+import std.hash as _hash
 
 struct Str { *u8 data; int len; int cap }
 
@@ -574,5 +575,35 @@ impl Str {
     // (cap == 0) point at .rodata and must not be freed.
     fn __drop() {
         if self.cap > 0 { std.c.free(self.data as *u8) }
+    }
+}
+
+// Operator `==` (trait Eq; `!=` derives). Needed e.g. for Str as a Map key
+// (`where K: Hash + Eq`). Operator method names are only legal inside
+// `impl Trait for Type` blocks, hence the separate block.
+impl Eq for Str {
+    fn ==(&self, &Str rhs) -> bool {
+        if self.len != rhs.len { return false }
+        for (int i = 0; i < self.len; i = i + 1) {
+            if self.data[i] != rhs.data[i] { return false }
+        }
+        return true
+    }
+}
+
+// Byte-wise FxHash (same algorithm as std.hash's builtin-string impl, which
+// P5 deletes). Lives here — not in std/hash.ls — so the method symbol carries
+// this module's type prefix (std_str__Str.hash); see the note in std/hash.ls.
+impl Hash for Str {
+    fn hash(&self) -> u64 {
+        u64 h = 0 as u64
+        int n = self.len
+        int i = 0
+        while i < n {
+            u64 b = self.data[i] as u64
+            h = _hash.fx_mix(h, b)
+            i = i + 1
+        }
+        return h
     }
 }

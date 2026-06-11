@@ -65,3 +65,8 @@ impl Hash for bool {
 impl Hash for string {
     fn hash(&self) -> u64 { return fxhash_str(self) }
 }
+
+// NOTE: `impl Hash for Str` lives in std/str.ls, NOT here: a trait impl for a
+// user struct must be emitted in the type's own module so the method symbol
+// gets the type's llvm_name prefix (std_str__Str.hash); emitting it here would
+// produce std_hash__Str.hash and JIT "Symbols not found" at call sites.
