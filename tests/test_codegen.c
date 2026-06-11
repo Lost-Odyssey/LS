@@ -3,6 +3,7 @@
 #include "parser.h"
 #include "checker.h"
 #include "codegen.h"
+#include "module.h"
 
 #include <llvm-c/Core.h>
 #include <stdio.h>
@@ -28,7 +29,13 @@ static char *compile_to_ir(const char *source) {
     AstNode *ast = parse(source, "<test>");
     if (ast == NULL) return NULL;
 
-    if (!checker_check(ast, "<test>", NULL, NULL)) {
+    /* P5-4 S-2: literals are Str (std.str) — mirror the real pipeline: inject
+       the prelude import and check/compile with a module registry. Module
+       resolution falls back to the executable's directory (build/<cfg>/std). */
+    ast_inject_std_str_import(ast);
+    ModuleRegistry *reg = module_registry_new();
+    if (!checker_check(ast, "<test>", reg, NULL)) {
+        module_registry_free(reg);
         ast_free(ast);
         return NULL;
     }
@@ -36,14 +43,16 @@ static char *compile_to_ir(const char *source) {
     CodegenContext ctx;
     codegen_init(&ctx, "<test>");
 
-    if (codegen_compile(&ctx, ast, NULL) != 0) {
+    if (codegen_compile(&ctx, ast, reg) != 0) {
         codegen_destroy(&ctx);
+        module_registry_free(reg);
         ast_free(ast);
         return NULL;
     }
 
     char *ir = codegen_get_ir(&ctx);
     codegen_destroy(&ctx);
+    module_registry_free(reg);
     ast_free(ast);
     return ir;
 }

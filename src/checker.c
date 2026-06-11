@@ -213,20 +213,32 @@ static Type *str_target_of_expected(const Type *t)
     return NULL;
 }
 
-/* P5-2 (docs/plan_p5_remove_builtin_string.md §5): string literals and f-strings
-   DEFAULT to the pure-LS `Str` type. Only an explicit builtin-string expectation
-   (expected_type == string) keeps the old builtin string. The escape hatch
-   `LS_STR_DEFAULT=0` restores the pre-flip builtin-string default — used by the
-   handful of tests that exercise builtin-string-only features (impl string,
-   std.string lenient to_bool) until builtin string is removed at P5-4. */
-static bool str_default_flip_enabled(void)
+/* P5-4 S-2: every string literal / f-string IS a `Str` — the builtin string
+   type is gone. Resolve the Str struct type: normally visible via import
+   std.str (the root program gets a prelude-injected import). Modules inside
+   std.str's own dependency cone (std.vec, std.c's chain, std.map) cannot
+   import std.str back; their literals resolve through the shared registry
+   instead — std.str's forward_pass registers `struct Str` (resolved_type set)
+   before its imports are recursively checked, so the type is always there. */
+static Type *checker_str_type(Checker *c)
 {
-    static int cached = -1;
-    if (cached < 0) {
-        const char *v = getenv("LS_STR_DEFAULT");
-        cached = (v != NULL && v[0] == '0') ? 0 : 1;   /* default ON; =0 disables */
+    Type *t = find_struct_type(c, "Str");
+    if (t != NULL) return t;
+    struct ModuleRegistry *reg = c->registry;
+    if (reg == NULL) return NULL;
+    for (int m = 0; m < reg->count; m++) {
+        AstNode *mast = reg->modules[m].ast;
+        if (mast == NULL || mast->kind != AST_PROGRAM) continue;
+        for (int d = 0; d < mast->as.program.decl_count; d++) {
+            AstNode *decl = mast->as.program.decls[d];
+            if (decl != NULL && decl->kind == AST_STRUCT_DECL &&
+                decl->resolved_type != NULL &&
+                decl->as.struct_decl.name != NULL &&
+                strcmp(decl->as.struct_decl.name, "Str") == 0)
+                return decl->resolved_type;
+        }
     }
-    return cached == 1;
+    return NULL;
 }
 
 /* Step 11: Get the impl_registry key name for a type.
@@ -3065,72 +3077,6 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
     int argc = call_node->as.call.arg_count;
     AstNode **args = call_node->as.call.args;
 
-    /* to_string(int/f64/etc) -> string */
-    if (strcmp(name, "to_string") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "to_string() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg_type = check_expr(c, args[0]);
-        if (arg_type == NULL)
-            return NULL;
-        if (!type_is_numeric(arg_type) && arg_type->kind != TYPE_BOOL)
-        {
-            checker_error(c, args[0]->line, args[0]->column,
-                          "to_string() requires numeric or bool type, got '%s'",
-                          type_name(arg_type));
-            return NULL;
-        }
-        return type_string();
-    }
-
-    /* from_int(string) -> int: parse string as integer */
-    if (strcmp(name, "from_int") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "from_int() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg_type = check_expr(c, args[0]);
-        if (arg_type == NULL)
-            return NULL;
-        if (arg_type->kind != TYPE_STRING)
-        {
-            checker_error(c, args[0]->line, args[0]->column,
-                          "from_int() requires string type, got '%s'",
-                          type_name(arg_type));
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* from_float(string) -> f64: parse string as float */
-    if (strcmp(name, "from_float") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "from_float() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg_type = check_expr(c, args[0]);
-        if (arg_type == NULL)
-            return NULL;
-        if (arg_type->kind != TYPE_STRING)
-        {
-            checker_error(c, args[0]->line, args[0]->column,
-                          "from_float() requires string type, got '%s'",
-                          type_name(arg_type));
-            return NULL;
-        }
-        return type_f64();
-    }
-
     /* Phase E.3.1: errno() -> int  — read C runtime errno (thread-local).
        On Windows uses _errno(), on POSIX uses __errno_location(). The codegen
        emits the platform-specific dereference inline. */
@@ -3145,50 +3091,9 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return type_int();
     }
 
-    /* __string_take_buffer(*u8 ptr, i64 len) -> string
-       Wraps a malloc'd buffer in an LsString, transferring ownership. Zero-copy.
-       INTERNAL: only safe when `ptr` was allocated via the LS-visible malloc
-       (so memcheck wrappers see the eventual free) and the allocation is
-       at least len+1 bytes. Used by stdlib io/fs to avoid the calloc+strlen+
-       memcpy round-trip in from_cstr. Not for end-user code. */
-    if (strcmp(name, "__string_take_buffer") == 0)
-    {
-        if (!path_is_under_stdlib(c->source_path))
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "__string_take_buffer() is internal: callable only from stdlib/ files");
-            return NULL;
-        }
-        if (argc != 2)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "__string_take_buffer() takes 2 arguments, got %d", argc);
-            return NULL;
-        }
-        Type *p_type = check_expr(c, args[0]);
-        Type *l_type = check_expr(c, args[1]);
-        if (p_type == NULL || l_type == NULL) return NULL;
-        if (p_type->kind != TYPE_OBJECT && p_type->kind != TYPE_POINTER &&
-            p_type->kind != TYPE_NIL)
-        {
-            checker_error(c, args[0]->line, args[0]->column,
-                          "__string_take_buffer() arg 1 requires *T/object, got '%s'",
-                          type_name(p_type));
-            return NULL;
-        }
-        if (!type_is_integer(l_type))
-        {
-            checker_error(c, args[1]->line, args[1]->column,
-                          "__string_take_buffer() arg 2 requires integer length, got '%s'",
-                          type_name(l_type));
-            return NULL;
-        }
-        return type_string();
-    }
-
-    /* Phase E.3.3: from_cstr(object) -> string
+    /* Phase E.3.3 / P5-4 S-2: from_cstr(object) -> Str
        Copies a C-style NUL-terminated char* (received via FFI as `object`)
-       into a managed LsString. Critical glue for getenv/strerror/readdir. */
+       into an OWNED Str. Critical glue for getenv/strerror/readdir. */
     if (strcmp(name, "from_cstr") == 0)
     {
         if (argc != 1)
@@ -3207,7 +3112,15 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
                           type_name(arg_type));
             return NULL;
         }
-        return type_string();
+        Type *strt = checker_str_type(c);
+        if (strt == NULL)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "from_cstr() requires the Str type from std.str "
+                          "(add `import std.str`)");
+            return NULL;
+        }
+        return strt;
     }
 
     /* __move(var) -> T  — explicit move annotation.
@@ -3332,11 +3245,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
 /* Check if a name is a builtin function (so we don't report "undefined variable") */
 static bool is_builtin_function(const char *name)
 {
-    return strcmp(name, "to_string") == 0 ||
-           strcmp(name, "from_int") == 0 ||
-           strcmp(name, "from_float") == 0 ||
-           strcmp(name, "from_cstr") == 0 ||
-           strcmp(name, "__string_take_buffer") == 0 ||
+    return strcmp(name, "from_cstr") == 0 ||
            strcmp(name, "errno") == 0 ||
            strcmp(name, "__move") == 0 ||
            strcmp(name, "__drop_at") == 0 ||
@@ -4043,26 +3952,21 @@ static Type *check_expr(Checker *c, AstNode *node)
         break;
 
     case AST_STRING_LIT:
-        result = type_string();
-        /* P1 (docs/plan_string_to_stdlib.md §5.1): a string literal in a context
-           expecting the pure-LS `Str` adopts the Str type — a static Str pointing
-           at the same .rodata bytes (cap 0). Lets `Str s = "..."` work while the
-           builtin string is still the default literal type. */
+        /* P5-4 S-2: a string literal IS a (static) Str — the builtin string
+           type is gone. Codegen keys off coerce_str_lit_to_str. */
         {
             Type *strt = str_target_of_expected(c->expected_type);
-            /* P5-2 dry-run: with the flip on, a literal in any position NOT
-               expecting builtin string defaults to (static) Str. Falls back to
-               builtin string when the Str struct isn't visible in this checker
-               (module without import std.str — root files get an injected
-               import, see ast_inject_std_str_import). */
-            if (strt == NULL && str_default_flip_enabled() &&
-                !(c->expected_type != NULL && c->expected_type->kind == TYPE_STRING))
-                strt = find_struct_type(c, "Str");
-            if (strt)
+            if (strt == NULL) strt = checker_str_type(c);
+            if (strt == NULL)
             {
-                node->coerce_str_lit_to_str = true;
-                result = strt;
+                checker_error(c, node->line, node->column,
+                              "string literal requires the Str type from std.str "
+                              "(add `import std.str`)");
+                result = NULL;
+                break;
             }
+            node->coerce_str_lit_to_str = true;
+            result = strt;
         }
         break;
 
@@ -4081,7 +3985,7 @@ static Type *check_expr(Checker *c, AstNode *node)
                 continue;
             /* Ensure the expression is a printable type. The pure-LS `Str` is
                printable too (interpolated via "%.*s" by codegen). */
-            if (!type_is_numeric(et) && et->kind != TYPE_BOOL && et->kind != TYPE_STRING && et->kind != TYPE_POINTER && et->kind != TYPE_OBJECT && !type_is_str_struct(et))
+            if (!type_is_numeric(et) && et->kind != TYPE_BOOL && et->kind != TYPE_POINTER && et->kind != TYPE_OBJECT && !type_is_str_struct(et))
             {
                 checker_error(c, node->as.format_string.exprs[i]->line,
                               node->as.format_string.exprs[i]->column,
@@ -4090,25 +3994,22 @@ static Type *check_expr(Checker *c, AstNode *node)
             }
         }
         c->expected_type = fstr_expected;
-        result = type_string();
-        /* P2 (docs/plan_string_to_stdlib.md §5.2): an f-string where a `Str` is
-           expected produces an OWNED Str rvalue (the formatted heap buffer wrapped
-           as Str, cap>0) — routed through the unified has_drop temp/drop path.
-           v1 keeps the existing per-type formatting; only the output type changes.
-           Default (no Str expected) stays builtin string.
-           Like gap① for literals, a read-only `&Str` position also triggers: the
-           owned Str rvalue is then auto-borrowed via the generic struct-arg spill
-           (which registers it as a has_drop temp). Covers `s + f"..."` (operator
-           rhs) and `s.push_str(f"...")`. */
+        /* P5-4 S-2: an f-string IS an OWNED Str rvalue (the formatted heap
+           buffer wrapped as Str, cap>0), routed through the unified has_drop
+           temp/drop path. In a read-only `&Str` position the owned rvalue is
+           auto-borrowed via the generic struct-arg spill. */
         {
             Type *strt = str_target_of_expected(fstr_expected);
-            /* P5-2 dry-run: same flip as AST_STRING_LIT — an f-string in any
-               position not expecting builtin string defaults to an OWNED Str. */
-            if (strt == NULL && str_default_flip_enabled() &&
-                !(fstr_expected != NULL && fstr_expected->kind == TYPE_STRING))
-                strt = find_struct_type(c, "Str");
-            if (strt)
-                result = strt;
+            if (strt == NULL) strt = checker_str_type(c);
+            if (strt == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "f-string requires the Str type from std.str "
+                              "(add `import std.str`)");
+                result = NULL;
+                break;
+            }
+            result = strt;
         }
         break;
     }

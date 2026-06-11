@@ -4,6 +4,7 @@
 #include "symtable.h"
 #include "checker.h"
 #include "parser.h"
+#include "module.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -252,11 +253,17 @@ static void test_scope_resolve_local(void) {
 
 /* ---- Type checker tests (using parser) ---- */
 
-/* Helper: parse + check, return true if no errors */
+/* Helper: parse + check, return true if no errors.
+   P5-4 S-2: literals are Str (std.str) — mirror the real pipeline: inject the
+   prelude import and check with a module registry (resolution falls back to
+   the executable's directory, build/<cfg>/std). */
 static bool check_source(const char *source) {
     AstNode *ast = parse(source, "<test>");
     if (ast == NULL) return false;
-    bool ok = checker_check(ast, "<test>", NULL, NULL);
+    ast_inject_std_str_import(ast);
+    ModuleRegistry *reg = module_registry_new();
+    bool ok = checker_check(ast, "<test>", reg, NULL);
+    module_registry_free(reg);
     ast_free(ast);
     return ok;
 }
@@ -879,55 +886,9 @@ static void test_check_global_array_ok(void) {
 
 
 
-static void test_check_from_int_ok(void) {
-    printf("  test_check_from_int_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    int n = from_int(\"123\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    int n = from_int(\"-456\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_from_int_wrong_type(void) {
-    printf("  test_check_from_int_wrong_type...");
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    int n = from_int(42)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_from_float_ok(void) {
-    printf("  test_check_from_float_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    f64 f = from_float(\"3.14\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_from_float_wrong_type(void) {
-    printf("  test_check_from_float_wrong_type...");
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    f64 f = from_float(42)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
 /* ---- Struct method (implicit self + static) type checker tests ---- */
 
@@ -2101,10 +2062,6 @@ int main(void) {
     printf("\n=== String Method Batch 3 Type Checker Tests ===\n");
 
     printf("\n=== String Conversion Builtin Type Checker Tests ===\n");
-    test_check_from_int_ok();
-    test_check_from_int_wrong_type();
-    test_check_from_float_ok();
-    test_check_from_float_wrong_type();
 
     printf("\n=== Struct Method (implicit self + static) Tests ===\n");
     test_check_instance_method_ok();

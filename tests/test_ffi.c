@@ -159,7 +159,7 @@ static void test_ffi_parse_dynamic_call(void) {
     const char *src =
         "lib msvcrt = load(\"msvcrt.dll\")\n"
         "fn main() -> int {\n"
-        "    msvcrt.call(\"puts\", \"hello\")\n"
+        "    msvcrt.call(\"_flushall\")\n"
         "    return 0\n"
         "}\n";
 
@@ -212,7 +212,7 @@ static void test_ffi_codegen_dynamic_call(void) {
     const char *src =
         "lib msvcrt = load(\"msvcrt.dll\")\n"
         "fn main() -> int {\n"
-        "    msvcrt.call(\"puts\", \"dynamic hello\")\n"
+        "    msvcrt.call(\"_set_errno\", 0)\n"
         "    return 0\n"
         "}\n";
 

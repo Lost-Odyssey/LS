@@ -849,6 +849,12 @@ int jit_repl(void) {
        __repl_N wrapper body. */
     char *accum_imports = (char *)malloc_safe(1); accum_imports[0] = '\0';
     size_t accum_imports_len = 0;
+    /* P5-4 S-2: literals are Str (builtin string removed) — seed the prelude
+       import exactly as if the user had typed `import std.str` first. It
+       replays at the top of every snippet through the normal import
+       accumulation (the same mechanism a manual import uses), avoiding the
+       per-snippet AST-injection path that made the piped repl tests flaky. */
+    accum_append(&accum_imports, &accum_imports_len, "import std.str");
     char *accum_decls   = (char *)malloc_safe(1); accum_decls[0] = '\0';
     size_t accum_decls_len = 0;
     char *accum_vars    = (char *)malloc_safe(1); accum_vars[0] = '\0';
@@ -900,12 +906,6 @@ int jit_repl(void) {
             fprintf(stderr, "%s  (parse error)%s\n", CER, CRST);
             free(input); continue;
         }
-        /* P5-2: the REPL intentionally does NOT auto-inject the std.str prelude.
-           Per-snippet re-import interacts with the snippet module replay and the
-           known REPL has_drop limitation (L-010), and made the piped repl tests
-           flaky for marginal benefit. REPL literals stay builtin string until P5-4
-           removes builtin string; users can `import std.str` manually meanwhile. */
-
         /* Type check with a fresh module registry (resolves replayed imports). */
         ModuleRegistry *reg = module_registry_new();
         CheckerGenericMethods gm = {0};

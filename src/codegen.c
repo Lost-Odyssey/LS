@@ -5349,9 +5349,17 @@ static LLVMValueRef codegen_from_cstr(CodegenContext *ctx, AstNode *node)
                                           "fromcstr.isnull");
     LLVMBuildCondBr(ctx->builder, is_null, null_bb, ok_bb);
 
-    /* null path: build empty static LsString and skip the malloc/memcpy. */
+    /* P5-4 S-2: from_cstr produces a `Str` (layout {*u8 data, int len, int cap},
+       same as the old LsString — only the LLVM struct type changes). */
+    LLVMTypeRef str_t = type_to_llvm(ctx, node->resolved_type);
+
+    /* null path: empty STATIC Str (cap 0 — drop is a no-op). */
     LLVMPositionBuilderAtEnd(ctx->builder, null_bb);
-    LLVMValueRef empty_str = ls_string_from_literal(ctx, "", "fromcstr.empty");
+    LLVMValueRef empty_data = LLVMBuildGlobalStringPtr(ctx->builder, "", "fromcstr.emptylit");
+    LLVMValueRef empty_str = LLVMGetUndef(str_t);
+    empty_str = LLVMBuildInsertValue(ctx->builder, empty_str, empty_data, 0, "fromcstr.e0");
+    empty_str = LLVMBuildInsertValue(ctx->builder, empty_str, LLVMConstInt(i32_t, 0, 0), 1, "fromcstr.e1");
+    empty_str = LLVMBuildInsertValue(ctx->builder, empty_str, LLVMConstInt(i32_t, 0, 0), 2, "fromcstr.e2");
     LLVMBuildBr(ctx->builder, cont_bb);
 
     /* ok path: strlen → malloc(len+1) → memcpy → LsString {buf, len, len+1} */
@@ -5388,19 +5396,20 @@ static LLVMValueRef codegen_from_cstr(CodegenContext *ctx, AstNode *node)
     LLVMValueRef mc_args[3] = { buf, p, cap64 };
     LLVMBuildCall2(ctx->builder, memcpy_ty, memcpy_fn, mc_args, 3, "");
 
-    LLVMValueRef ok_str = ls_string_make(ctx, buf, len32, cap32);
+    LLVMValueRef ok_str = LLVMGetUndef(str_t);
+    ok_str = LLVMBuildInsertValue(ctx->builder, ok_str, buf, 0, "fromcstr.o0");
+    ok_str = LLVMBuildInsertValue(ctx->builder, ok_str, len32, 1, "fromcstr.o1");
+    ok_str = LLVMBuildInsertValue(ctx->builder, ok_str, cap32, 2, "fromcstr.o2");
     LLVMBuildBr(ctx->builder, cont_bb);
 
-    /* phi the two paths */
+    /* phi the two paths. The result is an owned has_drop Str rvalue — the
+       generic struct rvalue protocol (var-decl transfer / call-arg spill /
+       expr-stmt drop) takes it from here; no temp_string registration. */
     LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
-    LLVMTypeRef ls_str_t = ls_string_type(ctx);
-    LLVMValueRef phi = LLVMBuildPhi(ctx->builder, ls_str_t, "fromcstr.r");
+    LLVMValueRef phi = LLVMBuildPhi(ctx->builder, str_t, "fromcstr.r");
     LLVMValueRef vals[2] = { empty_str, ok_str };
     LLVMBasicBlockRef blks[2] = { null_bb, ok_bb };
     LLVMAddIncoming(phi, vals, blks, 2);
-
-    /* Register as a temp so scope cleanup will free the heap (cap > 0). */
-    cg_push_temp_string(ctx, phi);
     (void)i8_t;
     return phi;
 }
