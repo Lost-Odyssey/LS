@@ -607,3 +607,17 @@ impl Hash for Str {
         return h
     }
 }
+
+// Operator `+` (trait Add): byte-wise concatenation producing a new owned Str.
+// Makes `a + b + "lit"` work for Str (literals coerce to &Str at the rhs),
+// which keeps the +-heavy std modules (strconv/plotfmt/plot/plottl) mechanical
+// to migrate. Bodies are inlined byte loops — no borrow-of-borrow forwarding.
+impl Add for Str {
+    fn +(&self, &Str rhs) -> Str {
+        Str out = ""
+        out.reserve(self.len + rhs.len)
+        for (int i = 0; i < self.len; i = i + 1) { out.push_byte(self.data[i]) }
+        for (int i = 0; i < rhs.len; i = i + 1) { out.push_byte(rhs.data[i]) }
+        return out
+    }
+}

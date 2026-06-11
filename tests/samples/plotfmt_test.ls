@@ -2,10 +2,12 @@
 // Prints "PLOTFMT PASS" on success, "PLOTFMT FAIL: ..." on any mismatch.
 
 import plotfmt
+import std.str
 
-fn check(string got, string want, string name) -> bool {
-    if got == want { return true }
-    print("PLOTFMT FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+fn check(Str got, string want, string name) -> bool {
+    string g = got
+    if g == want { return true }
+    print("PLOTFMT FAIL: " + name + " got=[" + g + "] want=[" + want + "]")
     return false
 }
 

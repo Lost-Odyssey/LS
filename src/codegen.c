@@ -2238,6 +2238,12 @@ static void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type
         return;
     bool is_drop_struct = (type->kind == TYPE_STRUCT && type->as.strukt.has_drop);
     bool is_drop_enum   = (type->kind == TYPE_ENUM   && type->as.enom.has_drop);
+    if (getenv("LS_DEBUG_TEMPS"))
+        fprintf(stderr, "[tmp] push fn=%s type=%s drop=%d n=%d\n",
+                ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
+                type->kind == TYPE_STRUCT ? (type->as.strukt.name ? type->as.strukt.name : "?")
+                                          : "(enum)",
+                (int)(is_drop_struct || is_drop_enum), ctx->temp_drop_count);
     if (!is_drop_struct && !is_drop_enum)
         return; /* nothing to drop — POD struct/enum or non-drop type */
 
@@ -2478,6 +2484,11 @@ static LLVMValueRef cg_litelem_string_own(CodegenContext *ctx, AstNode *elem,
 static void cg_flush_temp_drops(CodegenContext *ctx, int mark)
 {
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
+    if (getenv("LS_DEBUG_TEMPS") && ctx->temp_drop_count > 0)
+        fprintf(stderr, "[tmp] flush fn=%s mark=%d n=%d term=%d\n",
+                ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
+                mark, ctx->temp_drop_count,
+                (int)(cur && LLVMGetBasicBlockTerminator(cur) != NULL));
     if (cur && LLVMGetBasicBlockTerminator(cur) != NULL)
     {
         /* terminated block: just discard the high-water slots */
@@ -3984,6 +3995,14 @@ static void emit_struct_drop(CodegenContext *ctx, LLVMValueRef drop_ptr,
         return;
 
     LLVMValueRef drop_fn = (LLVMValueRef)struct_type->as.strukt.drop_fn;
+
+    /* USER __drop not yet stamped on this Type instance (its defining module's
+       body emits after the consumer module): forward-declare by llvm_name and
+       call it. Falling through to the inline fallback would SKIP raw-pointer
+       fields entirely — for a struct like Str{*u8,int,int} that silently frees
+       nothing (leak; hit by `+`-chain temps inside module functions). */
+    if (drop_fn == NULL && struct_type->as.strukt.has_user_drop)
+        drop_fn = cg_ensure_user_struct_drop_decl(ctx, struct_type);
 
     /* drop_fn is always complete (user wrapper or auto-generated).
        Just call it — reverse-order cleanup is already baked in. */
@@ -6955,6 +6974,15 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
         return LLVMBuildStructGEP2(ctx->builder, struct_llvm,
                                    struct_ptr, (unsigned)fidx, "field.addr");
     }
+
+    /* Operator-overload chain receiver: `(a + b) + c` lowers the inner binary
+       to a synthesized method call; the OUTER call's receiver is still the
+       AST_BINARY node. Route to the lowered call so the rvalue-receiver spill
+       below registers the intermediate has_drop result for cleanup (without
+       this it fell into the Phase-2.5 no-drop spill → leaked, e.g. chained
+       Str `+`). */
+    if (node->kind == AST_BINARY && node->as.binary.lowered != NULL)
+        return codegen_addr_of(ctx, node->as.binary.lowered);
 
     /* AST_CALL rvalue receiver: evaluate the call, spill to temp alloca so
        the caller can use it as `self` pointer for a chained method call

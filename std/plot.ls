@@ -15,6 +15,7 @@
 import std.vec
 import math
 import plotfmt
+import std.str
 
 // ---- Data model ----
 
@@ -568,7 +569,7 @@ fn _render_axes_text(Axes ax, int w, int h) -> string {
     if ax.title.length > 0 { s = s + ax.title + "\n" }
     int row = 0
     while row < gh {
-        string ylab = ""
+        Str ylab = ""
         if row == 0 { ylab = plotfmt.fmt_auto(ax.ymax) }
         else if row == gh - 1 { ylab = plotfmt.fmt_auto(ax.ymin) }
         string padded = plotfmt.pad_left(ylab, label_w)
@@ -584,9 +585,9 @@ fn _render_axes_text(Axes ax, int w, int h) -> string {
     s = s + axisline + "\n"
 
     // x range labels (xmin left, xmax right)
-    string lo_lab = plotfmt.fmt_auto(ax.xmin)
-    string hi_lab = plotfmt.fmt_auto(ax.xmax)
-    string xline = plotfmt.pad_left("", label_w + 1) + plotfmt.pad_right(lo_lab, gw - hi_lab.length) + hi_lab
+    Str lo_lab = plotfmt.fmt_auto(ax.xmin)
+    Str hi_lab = plotfmt.fmt_auto(ax.xmax)
+    string xline = plotfmt.pad_left("", label_w + 1) + plotfmt.pad_right(lo_lab, gw - hi_lab.len()) + hi_lab
     s = s + xline + "\n"
     return s
 }

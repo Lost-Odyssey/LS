@@ -1,4 +1,5 @@
 import std.vec
+import std.str
 import std.strconv as sc
 
 fn main() {
@@ -6,27 +7,27 @@ fn main() {
     int fail = 0
 
     // ── format: no placeholders ───────────────────────────────────────────────
-    Vec(string) empty_args = {}
+    Vec(Str) empty_args = {}
     string f1 = sc.format("hello world", empty_args)
     if f1.compare("hello world") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: format no-ph={f1}") }
 
     // ── format: one placeholder ───────────────────────────────────────────────
-    Vec(string) a1 = ["world"]
+    Vec(Str) a1 = ["world"]
     string f2 = sc.format("hello {}", a1)
     if f2.compare("hello world") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: format 1-ph={f2}") }
 
     // ── format: three placeholders ────────────────────────────────────────────
-    Vec(string) a3 = [f"{1}", f"{2}", f"{3}"]
+    Vec(Str) a3 = [f"{1}", f"{2}", f"{3}"]
     string f3 = sc.format("{} + {} = {}", a3)
     if f3.compare("1 + 2 = 3") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: format 3-ph={f3}") }
 
     // ── format: more placeholders than args (extras become empty) ─────────────
-    Vec(string) a2 = ["A", "B"]
+    Vec(Str) a2 = ["A", "B"]
     string f4 = sc.format("{}-{}-{}", a2)
     if f4.compare("A-B-") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: format ovph={f4}") }
 
     // ── format: leading/trailing text ─────────────────────────────────────────
-    Vec(string) a_name = ["Alice"]
+    Vec(Str) a_name = ["Alice"]
     string f5 = sc.format("Name: {}", a_name)
     if f5.compare("Name: Alice") == 0 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL: format lead={f5}") }
 

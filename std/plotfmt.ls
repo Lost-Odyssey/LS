@@ -15,16 +15,17 @@
 
 import math
 import strconv
+import std.str
 
-// ---- fmt_fixed(v, d) -> string ----
+// ---- fmt_fixed(v, d) -> Str ----
 // v formatted with exactly d decimal places (printf rounding).
-fn fmt_fixed(f64 v, int d) -> string {
+fn fmt_fixed(f64 v, int d) -> Str {
     return strconv.float_fixed(v, d)
 }
 
-// ---- fmt_auto(v) -> string ----
+// ---- fmt_auto(v) -> Str ----
 // Picks a decimal count based on magnitude — good default for axis tick labels.
-fn fmt_auto(f64 v) -> string {
+fn fmt_auto(f64 v) -> Str {
     f64 a = math.abs(v)
     if a == 0.0 { return "0" }
     if a >= 1000.0 { return strconv.float_fixed(v, 0) }
@@ -34,9 +35,9 @@ fn fmt_auto(f64 v) -> string {
     return strconv.float_fixed(v, 6)
 }
 
-// ---- fmt_sci(v) -> string ----
+// ---- fmt_sci(v) -> Str ----
 // Scientific notation with 2-digit mantissa, e.g. 12345.0 -> "1.23e4".
-fn fmt_sci(f64 v) -> string {
+fn fmt_sci(f64 v) -> Str {
     if v == 0.0 { return "0e0" }
     f64 a = math.abs(v)
     f64 expf = math.floor(math.log10(a))
@@ -45,9 +46,9 @@ fn fmt_sci(f64 v) -> string {
     return strconv.float_fixed(mant, 2) + "e" + strconv.to_string(e)
 }
 
-// ---- fmt_time(ns) -> string ----
+// ---- fmt_time(ns) -> Str ----
 // Formats a nanosecond duration with an auto-selected unit.
-fn fmt_time(i64 ns) -> string {
+fn fmt_time(i64 ns) -> Str {
     i64 a = ns
     if a < 0 { a = 0 - a }
     if a >= 1000000000 {
@@ -62,25 +63,20 @@ fn fmt_time(i64 ns) -> string {
         f64 val = (ns as f64) / 1000.0
         return strconv.float_fixed(val, 0) + "us"
     }
-    return f"{ns}ns"
+    Str s = f"{ns}ns"
+    return s
 }
 
 // ---- pad_left / pad_right ----
 // Pad s with spaces to width w (no truncation if already wider).
-fn pad_left(string s, int w) -> string {
-    string out = s.copy()
-    while out.length < w {
-        out = " " + out
-    }
-    return out
+// (Str.pad_left/pad_right pad with an arbitrary fill byte; these keep the
+// historical space-padding signature.)
+fn pad_left(Str s, int w) -> Str {
+    return s.pad_left(w, 32)    /* ' ' */
 }
 
-fn pad_right(string s, int w) -> string {
-    string out = s.copy()
-    while out.length < w {
-        out.append(" ")
-    }
-    return out
+fn pad_right(Str s, int w) -> Str {
+    return s.pad_right(w, 32)   /* ' ' */
 }
 
 // ---- clamp ----
@@ -99,20 +95,26 @@ fn clamp_f(f64 v, f64 lo, f64 hi) -> f64 {
 // ---- color helpers ----
 
 // Two-digit lowercase hex for a byte 0..255.
-fn _hex2(int n) -> string {
+fn _hex2(int n) -> Str {
     int c = clamp_i(n, 0, 255)
-    string h = strconv.int_to_hex(c)
-    if h.length < 2 { h = "0" + h }
+    Str h = strconv.int_to_hex(c)
+    if h.len() < 2 {
+        /* a bare "0" literal on the LHS of `+` would still be a builtin
+           string (no expected type) — start from a Str local instead */
+        Str z = "0"
+        return z + h
+    }
     return h
 }
 
 // (r,g,b) each 0..255 -> "#rrggbb".
-fn rgb_to_hex(int r, int g, int b) -> string {
-    return "#" + _hex2(r) + _hex2(g) + _hex2(b)
+fn rgb_to_hex(int r, int g, int b) -> Str {
+    Str out = "#"
+    return out + _hex2(r) + _hex2(g) + _hex2(b)
 }
 
 // HSV -> "#rrggbb". h in degrees [0,360), s,v in [0,1].
-fn hsv_to_hex(f64 h, f64 s, f64 v) -> string {
+fn hsv_to_hex(f64 h, f64 s, f64 v) -> Str {
     // normalize hue into [0,360)
     f64 hh = h - 360.0 * math.floor(h / 360.0)
     f64 c = v * s

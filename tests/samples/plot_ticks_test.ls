@@ -5,21 +5,24 @@ import plot
 import plotfmt
 import math
 import std.vec
+import std.str
 
-fn ticks_str(Vec(f64) t) -> string {
-    string s = ""
+fn ticks_str(Vec(f64) t) -> Str {
+    Str s = ""
     int i = 0
     while i < t.len() {
-        if i > 0 { s = s + "," }
-        s = s + plotfmt.fmt_fixed(t[i], 3)
+        if i > 0 { s.push_byte(44) }   /* ',' */
+        Str f = plotfmt.fmt_fixed(t[i], 3)
+        s.push_str(f)
         i = i + 1
     }
     return s
 }
 
-fn check(string got, string want, string name) -> bool {
-    if got == want { return true }
-    print("TICKS FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+fn check(Str got, string want, string name) -> bool {
+    string g = got
+    if g == want { return true }
+    print("TICKS FAIL: " + name + " got=[" + g + "] want=[" + want + "]")
     return false
 }
 
