@@ -1,10 +1,11 @@
 // B-4 cross-module struct literal + struct field defaults (options-struct pattern).
 // Prints "MSL PASS" / "MSL FAIL: ...".
 import opt
+import std.str
 
-fn check(string got, string want, string name) -> bool {
-    if got == want { return true }
-    print("MSL FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+fn check(Str got, Str want, Str name) -> bool {
+    if got.eq?(want) { return true }
+    print(f"MSL FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 

@@ -3,8 +3,9 @@
 // while/match next()). See docs/plan_userdef_for_in.md.
 
 import std.vec
+import std.str
 
-struct Person { string name; int age }
+struct Person { Str name; int age }
 
 fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
@@ -45,9 +46,9 @@ fn main() {
     check(n == 0, "empty vec: 0 iterations")
 
     // ---- Vec(string): has_drop element clone-on-read ----
-    Vec(string) vs = [f"a", f"bb", f"ccc"]
+    Vec(Str) vs = [f"a", f"bb", f"ccc"]
     int total = 0
-    for s in vs { total = total + s.length }
+    for s in vs { total = total + s.len() }
     check(total == 6, "Vec(string) length sum")
     check(vs.len() == 3, "Vec(string) still usable after for-in")
 

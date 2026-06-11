@@ -3,11 +3,12 @@
    `Vec(T).__from_list` via forward-declare from the pending-generic queue. */
 
 import std.vec
+import std.str
 
-struct Tag { string label }
+struct Tag { Str label }
 
 Vec(int)    nums  = [1, 2, 3]                                   // global list literal
-Vec(string) words = ["foo".upper(), "bar".upper()]             // owned-element literal
+Vec(Str)    words = ["foo".upper(), "bar".upper()]             // owned-element literal
 Vec(Tag)    tags  = [Tag { label: "x".upper() }, Tag { label: "y".upper() }]  // has_drop struct
 
 fn main() -> int {
@@ -28,11 +29,11 @@ fn main() -> int {
        trips a SEPARATE pre-existing codegen bug — has_drop vec-element field
        access in a `&&` condition → temp_drop alloca dominance failure — which is
        unrelated to global-vec init/cleanup. See bugfix_registry (pending). */
-    string t0 = tags[0].label
-    string t1 = tags[1].label
-    bool tags_ok = t0 == "X" && t1 == "Y"
+    Str t0 = tags[0].label
+    Str t1 = tags[1].label
+    bool tags_ok = t0.eq?("X") && t1.eq?("Y")
 
-    if s == 6 && s2 == 10 && words[0] == "FOO" && words[1] == "BAR" && tags_ok {
+    if s == 6 && s2 == 10 && words[0].eq?("FOO") && words[1].eq?("BAR") && tags_ok {
         print("GLOBAL_VEC_LIT PASS")
     }
     return 0

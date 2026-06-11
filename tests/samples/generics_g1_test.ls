@@ -1,5 +1,7 @@
 // Phase G1: user-defined generic struct tests
 
+import std.str
+
 struct Pair(T, U) {
     T first
     U second
@@ -17,17 +19,17 @@ fn main() {
     print(p1.second)
 
     // G1.2: string field, has_drop=true
-    Pair(string, int) p2 = Pair(string, int) { first: "hello", second: 42 }
+    Pair(Str, int) p2 = Pair(Str, int) { first: "hello", second: 42 }
     print(p2.first)
     print(p2.second)
 
     // G1.3: different instantiation of same template
-    Pair(int, string) p3 = Pair(int, string) { first: 99, second: "world" }
+    Pair(int, Str) p3 = Pair(int, Str) { first: 99, second: "world" }
     print(p3.first)
     print(p3.second)
 
     // G1.4: nested generics
-    Pair(Pair(int, int), string) p4 = Pair(Pair(int, int), string) {
+    Pair(Pair(int, int), Str) p4 = Pair(Pair(int, int), Str) {
         first: p1,
         second: "nested"
     }

@@ -5,6 +5,7 @@
 // See docs/plan_std_map.md §3. JIT + AOT + memcheck 0/0/0.
 
 import std.hash
+import std.str
 
 fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
@@ -26,7 +27,7 @@ impl(T) Box(T) {
 fn main() {
     // ---- stability: same key → same hash ----
     check(42.hash() == 42.hash(), "int hash stable")
-    string s = "hello"
+    Str s = "hello"
     check(s.hash() == "hello".hash(), "string hash stable (var vs literal)")
 
     // ---- distinctness: different keys → different hashes ----
@@ -56,7 +57,7 @@ fn main() {
     // ---- trait-bound dispatch through a generic method ----
     Box(int) bi = Box(int){ val: 7 }
     check(bi.h() == 7.hash(), "where T: Hash dispatch (int)")
-    Box(string) bs = Box(string){ val: "k" }
+    Box(Str) bs = Box(Str){ val: "k" }
     check(bs.h() == "k".hash(), "where T: Hash dispatch (string)")
 
     print("HASH PASS")

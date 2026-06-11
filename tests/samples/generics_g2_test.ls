@@ -1,5 +1,7 @@
 // Phase G2: user-defined generic function tests
 
+import std.str
+
 fn identity(T)(T x) -> T {
     return x
 }
@@ -23,7 +25,7 @@ fn main() {
     print(a)
 
     // G2.2: identity with string
-    string s = identity(string)("hello")
+    Str s = identity(Str)("hello")
     print(s)
 
     // G2.3: identity with f64
@@ -39,7 +41,8 @@ fn main() {
     print(sum)
 
     // G2.6: multi-type-param function returning generic struct
-    Pair(int, string) p = make_pair(int, string)(99, "world")
+    Str w = "world"
+    Pair(int, Str) p = make_pair(int, Str)(99, w)
     print(p.first)
     print(p.second)
 
