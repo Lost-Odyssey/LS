@@ -57,7 +57,7 @@ fn main() {
 
     // ---- SVG ----
     plottl.CpuTopology topo = plottl.topology(64, 32)
-    string svg = plottl.cpu_timeline_svg(make_cpu_events(), topo, plottl.CpuPlotOpts{})
+    Str svg = plottl.cpu_timeline_svg(make_cpu_events(), topo, plottl.CpuPlotOpts{})
     ok = has(svg, "CPU Scheduling Timeline", "svg.title") && ok
     ok = has(svg, "<pattern id=\"ht32\"", "ht.pattern.def") && ok
     ok = has(svg, "url(#ht32)", "ht.fill") && ok
@@ -65,23 +65,23 @@ fn main() {
     // legend: only "CPU x" (no "core X"), sorted ascending
     ok = has(svg, ">CPU 0<", "legend.cpu0") && ok
     ok = has(svg, ">CPU 32 (HT)<", "legend.cpu32.ht") && ok
-    if svg.contains("core 0<") { print("TL2 FAIL: legend still shows core"); ok = false }
+    if svg.contains?("core 0<") { print("TL2 FAIL: legend still shows core"); ok = false }
     // legend entry count == unique CPUs (0,1,32,33) = 4 (14x10 swatch only in legend)
     int legn = count_occ(svg, "width=\"14\" height=\"10\"")
     if legn != 4 {
-        print("TL2 FAIL: legend count got=" + f"{legn}" + " want=4"); ok = false
+        print(f"TL2 FAIL: legend count got={legn} want=4"); ok = false
     }
 
     // ---- options-struct theme override flows through (cross-module literal) ----
-    string svg_v = plottl.cpu_timeline_svg(make_cpu_events(), topo, plottl.CpuPlotOpts{theme: "viridis"})
+    Str svg_v = plottl.cpu_timeline_svg(make_cpu_events(), topo, plottl.CpuPlotOpts{theme: "viridis"})
     ok = has(svg_v, "fill=\"#440154\"", "opts.theme.viridis") && ok
 
     // ---- Text backend: thread activity only, no CPU info ----
-    string txt = plottl.cpu_timeline_text(make_cpu_events(), 50)
+    Str txt = plottl.cpu_timeline_text(make_cpu_events(), 50)
     ok = has(txt, "main", "text.main") && ok
     ok = has(txt, "worker-1", "text.worker1") && ok
-    if txt.contains("CPU") { print("TL2 FAIL: text leaks 'CPU'"); ok = false }
-    if txt.contains("core") { print("TL2 FAIL: text leaks 'core'"); ok = false }
+    if txt.contains?("CPU") { print("TL2 FAIL: text leaks 'CPU'"); ok = false }
+    if txt.contains?("core") { print("TL2 FAIL: text leaks 'core'"); ok = false }
 
     if ok { print("TL2 PASS") }
 }

@@ -3,6 +3,7 @@
 
 import plottl
 import std.vec
+import std.str
 
 fn make_events() -> Vec(CpuSchedEvent) {
     Vec(CpuSchedEvent) ev = {}
@@ -12,9 +13,9 @@ fn make_events() -> Vec(CpuSchedEvent) {
     return ev
 }
 
-fn has(string hay, string needle, string name) -> bool {
-    if hay.contains(needle) { return true }
-    print("HTML FAIL: " + name + " missing [" + needle + "]")
+fn has(Str hay, Str needle, Str name) -> bool {
+    if hay.contains?(needle) { return true }
+    print(f"HTML FAIL: {name} missing [{needle}]")
     return false
 }
 
@@ -22,7 +23,7 @@ fn main() {
     bool ok = true
 
     plottl.CpuTopology topo = plottl.topology(8, 4)
-    string html = plottl.cpu_timeline_html(make_events(), topo, plottl.CpuPlotOpts{})
+    Str html = plottl.cpu_timeline_html(make_events(), topo, plottl.CpuPlotOpts{})
 
     // document + scroll container (pure scheme A)
     ok = has(html, "<!DOCTYPE html>", "doctype") && ok

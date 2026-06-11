@@ -4,10 +4,9 @@
 import plotfmt
 import std.str
 
-fn check(Str got, string want, string name) -> bool {
-    string g = got
-    if g == want { return true }
-    print("PLOTFMT FAIL: " + name + " got=[" + g + "] want=[" + want + "]")
+fn check(Str got, Str want, Str name) -> bool {
+    if got.eq?(want) { return true }
+    print(f"PLOTFMT FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 

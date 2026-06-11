@@ -3,6 +3,7 @@
 
 import plottl
 import std.vec
+import std.str
 
 fn make_events() -> Vec(TimelineEvent) {
     Vec(TimelineEvent) ev = {}
@@ -12,29 +13,29 @@ fn make_events() -> Vec(TimelineEvent) {
     return ev
 }
 
-fn has(string hay, string needle, string name) -> bool {
-    if hay.contains(needle) { return true }
-    print("TL FAIL: " + name + " missing [" + needle + "]")
+fn has(Str hay, Str needle, Str name) -> bool {
+    if hay.contains?(needle) { return true }
+    print(f"TL FAIL: {name} missing [{needle}]")
     return false
 }
 
-fn count_lines(string s) -> int {
+fn count_lines(Str s) -> int {
     int n = 0
     int i = 0
-    while i < s.length {
-        if s.at(i) == '\n' { n = n + 1 }
+    while i < s.len() {
+        if s.byte_at(i) == '\n' { n = n + 1 }
         i = i + 1
     }
     return n
 }
 
-fn count_occ(string hay, string needle) -> int {
+fn count_occ(Str hay, Str needle) -> int {
     int n = 0
     int i = 0
-    int hl = hay.length
-    int nl = needle.length
+    int hl = hay.len()
+    int nl = needle.len()
     while i + nl <= hl {
-        if hay.substr(i, nl) == needle { n = n + 1; i = i + nl }
+        if hay.substr(i, nl).eq?(needle) { n = n + 1; i = i + nl }
         else { i = i + 1 }
     }
     return n
@@ -44,7 +45,7 @@ fn main() {
     bool ok = true
 
     // ---- SVG ----
-    string svg = plottl.timeline_svg(make_events(), 600, 200, "sched")
+    Str svg = plottl.timeline_svg(make_events(), 600, 200, "sched")
     ok = has(svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"600\"", "svg.header") && ok
     ok = has(svg, "</svg>", "svg.footer") && ok
     ok = has(svg, ">sched<", "title") && ok
@@ -55,19 +56,19 @@ fn main() {
     // 3 events -> 3 <rect ...><title> (plus the bg rect without title)
     int rects = count_occ(svg, "<title>")
     if rects != 3 {
-        print("TL FAIL: rect/title count got=" + f"{rects}" + " want=3")
+        print(f"TL FAIL: rect/title count got={rects} want=3")
         ok = false
     }
 
     // ---- Text ----
-    string txt = plottl.timeline_text(make_events(), 50)
+    Str txt = plottl.timeline_text(make_events(), 50)
     ok = has(txt, "main", "text.lane.main") && ok
     ok = has(txt, "worker", "text.lane.worker") && ok
     ok = has(txt, "#", "text.active") && ok
     // 2 unique lanes -> 2 rows
     int lc = count_lines(txt)
     if lc != 2 {
-        print("TL FAIL: text line count got=" + f"{lc}" + " want=2")
+        print(f"TL FAIL: text line count got={lc} want=2")
         ok = false
     }
 

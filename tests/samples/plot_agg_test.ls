@@ -3,6 +3,7 @@
 
 import plottl
 import std.vec
+import std.str
 
 fn make_events() -> Vec(CpuSchedEvent) {
     Vec(CpuSchedEvent) ev = {}
@@ -14,19 +15,19 @@ fn make_events() -> Vec(CpuSchedEvent) {
     return ev
 }
 
-fn has(string hay, string needle, string name) -> bool {
-    if hay.contains(needle) { return true }
-    print("AGG FAIL: " + name + " missing [" + needle + "]")
+fn has(Str hay, Str needle, Str name) -> bool {
+    if hay.contains?(needle) { return true }
+    print(f"AGG FAIL: {name} missing [{needle}]")
     return false
 }
 
-fn count_occ(string hay, string needle) -> int {
+fn count_occ(Str hay, Str needle) -> int {
     int n = 0
     int i = 0
-    int hl = hay.length
-    int nl = needle.length
+    int hl = hay.len()
+    int nl = needle.len()
     while i + nl <= hl {
-        if hay.substr(i, nl) == needle { n = n + 1; i = i + nl }
+        if hay.substr(i, nl).eq?(needle) { n = n + 1; i = i + nl }
         else { i = i + 1 }
     }
     return n
@@ -37,7 +38,7 @@ fn main() {
 
     plottl.CpuTopology topo = plottl.topology(4, 4)   // 4 physical, no HT
     // 10ms aggregation window
-    string svg = plottl.cpu_timeline_aggregated(make_events(), topo, 10000000, plottl.CpuPlotOpts{})
+    Str svg = plottl.cpu_timeline_aggregated(make_events(), topo, 10000000, plottl.CpuPlotOpts{})
 
     ok = has(svg, "aggregated, window=", "title") && ok
     ok = has(svg, "window=10.0ms", "window_label") && ok
@@ -49,7 +50,7 @@ fn main() {
     // exactly 2 aggregated cells (2 windows with activity); "on CPU " only in cell titles
     int cells = count_occ(svg, "on CPU ")
     if cells != 2 {
-        print("AGG FAIL: cell count got=" + f"{cells}" + " want=2"); ok = false
+        print(f"AGG FAIL: cell count got={cells} want=2"); ok = false
     }
     // legend has both CPUs
     ok = has(svg, ">CPU 0<", "legend_cpu0") && ok

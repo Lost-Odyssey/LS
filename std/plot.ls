@@ -22,25 +22,25 @@ import std.str
 struct LineStyle {
     Vec(f64) xs
     Vec(f64) ys
-    string color
-    string label
+    Str color
+    Str label
     f64 linewidth
     bool is_scatter
 }
 
 struct BarSeries {
-    Vec(string) labels
+    Vec(Str) labels
     Vec(f64) values
-    string color
-    string label
+    Str color
+    Str label
 }
 
 struct Axes {
     Vec(LineStyle) lines
     Vec(BarSeries) bars
-    string title
-    string xlabel
-    string ylabel
+    Str title
+    Str xlabel
+    Str ylabel
     bool auto_scale
     f64 xmin
     f64 xmax
@@ -60,12 +60,12 @@ struct Figure {
     int svg_height
     int text_width
     int text_height
-    string background
+    Str background
 }
 
 // ---- Color palette (replaces `const COLORS`) ----
 
-fn color_at(int i) -> string {
+fn color_at(int i) -> Str {
     int k = i % 10
     if k == 0 { return "#4363d8" }      // blue
     else if k == 1 { return "#e6194b" } // red
@@ -86,20 +86,20 @@ struct FigureOpts {
     int svg_h = 500
     int text_w = 70
     int text_h = 20
-    string background = "#ffffff"
+    Str background = "#ffffff"
 }
 
 // LineOpts: color "" means auto-assign from the palette by series index.
 struct LineOpts {
-    string color = ""
-    string label = ""
+    Str color = ""
+    Str label = ""
     f64 width = 2.0
     bool scatter = false
 }
 
 struct BarOpts {
-    string color = "#4363d8"
-    string label = ""
+    Str color = "#4363d8"
+    Str label = ""
 }
 
 // ---- Constructors ----
@@ -263,7 +263,7 @@ fn finalize(&!Axes ax) {
 
 fn plot(&!Axes ax, Vec(f64) ys) {
     Vec(f64) xs = _range(ys.len())
-    string c = color_at(ax.lines.len())
+    Str c = color_at(ax.lines.len())
     ax.lines.push(LineStyle {
         xs: xs, ys: ys, color: c, label: "", linewidth: 2.0, is_scatter: false
     })
@@ -272,17 +272,17 @@ fn plot(&!Axes ax, Vec(f64) ys) {
 // line: one series (line or scatter) with styling via LineOpts.
 // Replaces plot_xy / plot_styled / scatter. opts.color == "" -> auto palette.
 fn line(&!Axes ax, Vec(f64) xs, Vec(f64) ys, LineOpts opts) {
-    string c = opts.color
-    if c.length == 0 { c = color_at(ax.lines.len()) }
+    Str c = opts.color
+    if c.len() == 0 { c = color_at(ax.lines.len()) }
     ax.lines.push(LineStyle {
         xs: xs, ys: ys, color: c, label: opts.label,
         linewidth: opts.width, is_scatter: opts.scatter
     })
 }
 
-fn bar(&!Axes ax, Vec(string) labels, Vec(f64) values, BarOpts opts) {
-    string c = opts.color
-    if c.length == 0 { c = color_at(ax.bars.len()) }
+fn bar(&!Axes ax, Vec(Str) labels, Vec(f64) values, BarOpts opts) {
+    Str c = opts.color
+    if c.len() == 0 { c = color_at(ax.bars.len()) }
     ax.bars.push(BarSeries {
         labels: labels, values: values, color: c, label: opts.label
     })
@@ -290,9 +290,9 @@ fn bar(&!Axes ax, Vec(string) labels, Vec(f64) values, BarOpts opts) {
 
 // ---- Style controls (mutable borrow &!Axes) ----
 
-fn set_title(&!Axes ax, string t) { ax.title = t }
-fn set_xlabel(&!Axes ax, string t) { ax.xlabel = t }
-fn set_ylabel(&!Axes ax, string t) { ax.ylabel = t }
+fn set_title(&!Axes ax, Str t) { ax.title = t }
+fn set_xlabel(&!Axes ax, Str t) { ax.xlabel = t }
+fn set_ylabel(&!Axes ax, Str t) { ax.ylabel = t }
 
 fn set_xlim(&!Axes ax, f64 lo, f64 hi) {
     ax.auto_scale = false
@@ -318,8 +318,8 @@ fn add_axes(&!Figure fig, Axes ax) {
 // ---- Output (Phase 1 stubs: textual summary; Phase 2+ adds tick engine,
 //      real SVG and Text/Unicode renderers) ----
 
-fn show_text(&Figure fig) -> string {
-    string s = f"Figure {fig.svg_width}x{fig.svg_height} axes={fig.axes_list.len()}\n"
+fn show_text(&Figure fig) -> Str {
+    Str s = f"Figure {fig.svg_width}x{fig.svg_height} axes={fig.axes_list.len()}\n"
     int i = 0
     while i < fig.axes_list.len() {
         Axes ax = fig.axes_list[i]
@@ -345,17 +345,17 @@ struct Layout {
     int height
 }
 
-fn _svg_escape(string s) -> string {
-    string r = ""
+fn _svg_escape(&Str s) -> Str {
+    Str r = ""
     int i = 0
-    int n = s.length
+    int n = s.len()
     while i < n {
-        int ch = s.at(i)
-        if ch == '&' { r.append("&amp;") }
-        else if ch == '<' { r.append("&lt;") }
-        else if ch == '>' { r.append("&gt;") }
-        else if ch == '"' { r.append("&quot;") }
-        else { r.append(ch) }
+        int ch = s.byte_at(i)
+        if ch == '&' { r.push_str("&amp;") }
+        else if ch == '<' { r.push_str("&lt;") }
+        else if ch == '>' { r.push_str("&gt;") }
+        else if ch == '"' { r.push_str("&quot;") }
+        else { r.push_byte(ch) }
         i = i + 1
     }
     return r
@@ -370,8 +370,8 @@ fn _layout(int sw, int sh) -> Layout {
 }
 
 // Render one finalized Axes (owned by value) into SVG fragments.
-fn _render_axes_svg(Axes ax, Layout lo) -> string {
-    string s = ""
+fn _render_axes_svg(Axes ax, Layout lo) -> Str {
+    Str s = ""
     int bottom = lo.top + lo.height
     int right = lo.left + lo.width
 
@@ -387,7 +387,7 @@ fn _render_axes_svg(Axes ax, Layout lo) -> string {
             s = s + f"<line x1=\"{pxf:.1f}\" y1=\"{lo.top}\" x2=\"{pxf:.1f}\" y2=\"{bottom}\" stroke=\"#e0e0e0\" stroke-width=\"0.5\"/>"
         }
         s = s + f"<line x1=\"{pxf:.1f}\" y1=\"{bottom}\" x2=\"{pxf:.1f}\" y2=\"{bottom + 4}\" stroke=\"#333333\" stroke-width=\"1\"/>"
-        string lbl = plotfmt.fmt_auto(tx)
+        Str lbl = plotfmt.fmt_auto(tx)
         s = s + f"<text x=\"{pxf:.1f}\" y=\"{bottom + 16}\" font-size=\"10\" font-family=\"monospace\" fill=\"#555555\" text-anchor=\"middle\">{lbl}</text>"
         i = i + 1
     }
@@ -401,7 +401,7 @@ fn _render_axes_svg(Axes ax, Layout lo) -> string {
             s = s + f"<line x1=\"{lo.left}\" y1=\"{pyf:.1f}\" x2=\"{right}\" y2=\"{pyf:.1f}\" stroke=\"#e0e0e0\" stroke-width=\"0.5\"/>"
         }
         s = s + f"<line x1=\"{lo.left - 4}\" y1=\"{pyf:.1f}\" x2=\"{lo.left}\" y2=\"{pyf:.1f}\" stroke=\"#333333\" stroke-width=\"1\"/>"
-        string lbl = plotfmt.fmt_auto(ty)
+        Str lbl = plotfmt.fmt_auto(ty)
         s = s + f"<text x=\"{lo.left - 6}\" y=\"{pyf:.1f}\" font-size=\"10\" font-family=\"monospace\" fill=\"#555555\" text-anchor=\"end\">{lbl}</text>"
         j = j + 1
     }
@@ -420,7 +420,7 @@ fn _render_axes_svg(Axes ax, Layout lo) -> string {
                 k = k + 1
             }
         } else {
-            string pts = ""
+            Str pts = ""
             int k = 0
             while k < n {
                 if k > 0 { pts = pts + " " }
@@ -436,13 +436,13 @@ fn _render_axes_svg(Axes ax, Layout lo) -> string {
 
     // title + axis labels
     int cx = lo.left + lo.width / 2
-    if ax.title.length > 0 {
+    if ax.title.len() > 0 {
         s = s + f"<text x=\"{cx}\" y=\"24\" font-size=\"16\" font-family=\"sans-serif\" font-weight=\"bold\" fill=\"#000000\" text-anchor=\"middle\">{_svg_escape(ax.title)}</text>"
     }
-    if ax.xlabel.length > 0 {
+    if ax.xlabel.len() > 0 {
         s = s + f"<text x=\"{cx}\" y=\"{bottom + 34}\" font-size=\"12\" font-family=\"sans-serif\" fill=\"#333333\" text-anchor=\"middle\">{_svg_escape(ax.xlabel)}</text>"
     }
-    if ax.ylabel.length > 0 {
+    if ax.ylabel.len() > 0 {
         int yc = lo.top + lo.height / 2
         s = s + f"<text x=\"16\" y=\"{yc}\" font-size=\"12\" font-family=\"sans-serif\" fill=\"#333333\" text-anchor=\"middle\" transform=\"rotate(-90 16 {yc})\">{_svg_escape(ax.ylabel)}</text>"
     }
@@ -452,9 +452,9 @@ fn _render_axes_svg(Axes ax, Layout lo) -> string {
 // to_svg: render the whole Figure to an SVG document string. Each Axes is
 // deep-copied and finalized locally (limits/margins/ticks), so the call is
 // read-only on `fig` and idempotent. (Multi-subplot layout: Phase 2b.)
-fn to_svg(&Figure fig) -> string {
+fn to_svg(&Figure fig) -> Str {
     Layout lo = _layout(fig.svg_width, fig.svg_height)
-    string body = ""
+    Str body = ""
     int i = 0
     while i < fig.axes_list.len() {
         Axes a = fig.axes_list[i]
@@ -462,23 +462,23 @@ fn to_svg(&Figure fig) -> string {
         body = body + _render_axes_svg(a, lo)
         i = i + 1
     }
-    string head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{fig.svg_width}\" height=\"{fig.svg_height}\">"
-    string bg = f"<rect width=\"100%\" height=\"100%\" fill=\"{fig.background}\"/>"
+    Str head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{fig.svg_width}\" height=\"{fig.svg_height}\">"
+    Str bg = f"<rect width=\"100%\" height=\"100%\" fill=\"{fig.background}\"/>"
     return head + bg + body + "</svg>"
 }
 
 // ---- Text / ASCII backend ----
 //
-// The grid is a Vec(string), one string per row, each a run of single-byte
+// The grid is a Vec(Str), one Str per row, each a run of single-byte
 // ASCII chars. (Unicode block glyphs ▁▂▃█ are multi-byte UTF-8 and would
 // desync the byte-offset _put_char column math; an Unicode cell-grid is a
 // later enhancement.)
 
-fn _make_grid(int w, int h) -> Vec(string) {
-    string row = ""
+fn _make_grid(int w, int h) -> Vec(Str) {
+    Str row = ""
     int j = 0
     while j < w { row = row + " "; j = j + 1 }
-    Vec(string) g = {}
+    Vec(Str) g = {}
     int i = 0
     while i < h { g.push(row.copy()); i = i + 1 }
     return g
@@ -487,11 +487,11 @@ fn _make_grid(int w, int h) -> Vec(string) {
 // Write a single ASCII char at (col,row). NOTE: build the new row in a local
 // before assigning to the vec element — assigning a concat rvalue directly to
 // g[row] leaks a temporary string in current LS.
-fn _put(&!Vec(string) g, int col, int row, string ch) {
+fn _put(&!Vec(Str) g, int col, int row, Str ch) {
     if row < 0 || row >= g.len() { return }
-    string r = g[row]
-    if col < 0 || col >= r.length { return }
-    string nr = r.substr(0, col) + ch + r.substr(col + 1, r.length - col - 1)
+    Str r = g[row]
+    if col < 0 || col >= r.len() { return }
+    Str nr = r.substr(0, col) + ch + r.substr(col + 1, r.len() - col - 1)
     g[row] = nr
 }
 
@@ -512,7 +512,7 @@ fn _row_text(f64 y, f64 ymin, f64 ymax, int gh) -> int {
 }
 
 // DDA line rasterization, choosing a slope-appropriate ASCII glyph.
-fn _rasterize_line(&!Vec(string) g, LineStyle ln,
+fn _rasterize_line(&!Vec(Str) g, LineStyle ln,
                    f64 xmin, f64 xmax, f64 ymin, f64 ymax, int gw, int gh) {
     int n = math.min(ln.xs.len(), ln.ys.len())
     if n == 1 {
@@ -528,7 +528,7 @@ fn _rasterize_line(&!Vec(string) g, LineStyle ln,
         int r1 = _row_text(ln.ys[i + 1], ymin, ymax, gh)
         int dc = c1 - c0
         int dr = r1 - r0
-        string ch = "*"
+        Str ch = "*"
         if ln.is_scatter { ch = "o" }
         else if math.abs(dr) * 2 < math.abs(dc) { ch = "-" }
         else if math.abs(dc) * 2 < math.abs(dr) { ch = "|" }
@@ -550,14 +550,14 @@ fn _rasterize_line(&!Vec(string) g, LineStyle ln,
     }
 }
 
-fn _render_axes_text(Axes ax, int w, int h) -> string {
+fn _render_axes_text(Axes ax, int w, int h) -> Str {
     int label_w = 6
     int gw = w - label_w - 1
     int gh = h - 1
     if gw < 1 { gw = 1 }
     if gh < 1 { gh = 1 }
 
-    Vec(string) g = _make_grid(gw, gh)
+    Vec(Str) g = _make_grid(gw, gh)
     int li = 0
     while li < ax.lines.len() {
         LineStyle ln = ax.lines[li]
@@ -565,21 +565,21 @@ fn _render_axes_text(Axes ax, int w, int h) -> string {
         li = li + 1
     }
 
-    string s = ""
-    if ax.title.length > 0 { s = s + ax.title + "\n" }
+    Str s = ""
+    if ax.title.len() > 0 { s = s + ax.title + "\n" }
     int row = 0
     while row < gh {
         Str ylab = ""
         if row == 0 { ylab = plotfmt.fmt_auto(ax.ymax) }
         else if row == gh - 1 { ylab = plotfmt.fmt_auto(ax.ymin) }
-        string padded = plotfmt.pad_left(ylab, label_w)
-        string line = g[row]
+        Str padded = plotfmt.pad_left(ylab, label_w)
+        Str line = g[row]
         s = s + padded + "|" + line + "\n"
         row = row + 1
     }
 
     // x axis
-    string axisline = plotfmt.pad_left("", label_w) + "+"
+    Str axisline = plotfmt.pad_left("", label_w) + "+"
     int c = 0
     while c < gw { axisline = axisline + "-"; c = c + 1 }
     s = s + axisline + "\n"
@@ -587,15 +587,15 @@ fn _render_axes_text(Axes ax, int w, int h) -> string {
     // x range labels (xmin left, xmax right)
     Str lo_lab = plotfmt.fmt_auto(ax.xmin)
     Str hi_lab = plotfmt.fmt_auto(ax.xmax)
-    string xline = plotfmt.pad_left("", label_w + 1) + plotfmt.pad_right(lo_lab, gw - hi_lab.len()) + hi_lab
+    Str xline = plotfmt.pad_left("", label_w + 1) + plotfmt.pad_right(lo_lab, gw - hi_lab.len()) + hi_lab
     s = s + xline + "\n"
     return s
 }
 
 // to_text: render the whole Figure to a terminal string. Each Axes is
 // deep-copied and finalized locally (read-only on `fig`, idempotent).
-fn to_text(&Figure fig) -> string {
-    string out = ""
+fn to_text(&Figure fig) -> Str {
+    Str out = ""
     int ai = 0
     while ai < fig.axes_list.len() {
         Axes a = fig.axes_list[ai]

@@ -4,10 +4,11 @@
 import plot
 import math
 import std.vec
+import std.str
 
-fn has(string hay, string needle, string name) -> bool {
-    if hay.contains(needle) { return true }
-    print("SVG FAIL: " + name + " missing [" + needle + "]")
+fn has(Str hay, Str needle, Str name) -> bool {
+    if hay.contains?(needle) { return true }
+    print(f"SVG FAIL: {name} missing [{needle}]")
     return false
 }
 
@@ -39,7 +40,7 @@ fn main() {
     plot.Figure fig = plot.figure(plot.FigureOpts{})
     plot.add_axes(&!fig, ax)
 
-    string svg = plot.to_svg(fig)
+    Str svg = plot.to_svg(fig)
 
     // ---- structural assertions ----
     ok = has(svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"800\" height=\"500\">", "svg.header") && ok

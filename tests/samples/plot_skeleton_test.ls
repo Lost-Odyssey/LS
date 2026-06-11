@@ -5,10 +5,11 @@
 import plot
 import math
 import std.vec
+import std.str
 
-fn check(string got, string want, string name) -> bool {
-    if got == want { return true }
-    print("PLOT FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+fn check(Str got, Str want, Str name) -> bool {
+    if got.eq?(want) { return true }
+    print(f"PLOT FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 
@@ -40,7 +41,7 @@ fn main() {
     // ---- a bar chart on a second axes ----
     plot.Axes ax2 = plot.axes()
     plot.set_title(&!ax2, "counts")
-    Vec(string) labels = ["a", "b", "c"]
+    Vec(Str) labels = ["a", "b", "c"]
     Vec(f64) vals = [3.0, 7.0, 5.0]
     plot.bar(&!ax2, labels, vals, plot.BarOpts{color: "#4363d8", label: "n"})
 
@@ -50,14 +51,14 @@ fn main() {
     plot.add_axes(&!fig, ax2)
 
     // ---- verify summary ----
-    string summary = plot.show_text(fig)
-    string want = "Figure 800x500 axes=2\n  axes[0] 'trig': lines=2 bars=0 grid legend\n  axes[1] 'counts': lines=0 bars=1\n"
+    Str summary = plot.show_text(fig)
+    Str want = "Figure 800x500 axes=2\n  axes[0] 'trig': lines=2 bars=0 grid legend\n  axes[1] 'counts': lines=0 bars=1\n"
     ok = check(summary, want, "summary") && ok
 
     // ---- to_svg placeholder is well-formed ----
-    string svg = plot.to_svg(fig)
-    bool svg_ok = svg.starts_with("<svg") && svg.ends_with("</svg>")
-    if !svg_ok { print("PLOT FAIL: svg malformed: " + svg); ok = false }
+    Str svg = plot.to_svg(fig)
+    bool svg_ok = svg.starts_with?("<svg") && svg.ends_with?("</svg>")
+    if !svg_ok { print(f"PLOT FAIL: svg malformed: {svg}"); ok = false }
 
     if ok { print("PLOT PASS") }
 }

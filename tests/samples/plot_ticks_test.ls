@@ -19,10 +19,9 @@ fn ticks_str(Vec(f64) t) -> Str {
     return s
 }
 
-fn check(Str got, string want, string name) -> bool {
-    string g = got
-    if g == want { return true }
-    print("TICKS FAIL: " + name + " got=[" + g + "] want=[" + want + "]")
+fn check(Str got, Str want, Str name) -> bool {
+    if got.eq?(want) { return true }
+    print(f"TICKS FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 
