@@ -1279,6 +1279,17 @@ add_test(
 )
 set_tests_properties(test_map_builtin_syntax_reject PROPERTIES DEPENDS "test_vec_builtin_syntax_reject")
 
+# P4 (docs/plan_p5_remove_builtin_string.md §3): &string / &!string borrow
+# params are no longer accepted — superseded by &Str / &!Str (pointer ABI).
+add_test(
+    NAME test_string_borrow_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/string_borrow_reject.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_string_borrow_reject.cmake
+)
+set_tests_properties(test_string_borrow_reject PROPERTIES DEPENDS "test_map_builtin_syntax_reject")
+
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(

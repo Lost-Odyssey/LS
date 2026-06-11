@@ -4085,21 +4085,13 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
     case TYPE_POINTER:
         return LLVMPointerTypeInContext(ctx->context, 0);
     case TYPE_REFERENCE:
-        /* ABI policy for reference types:
-             &string   — by-value (16-byte POD, cap=0 marker prevents free)
-             &!string  — pointer (mutations must write through to caller)
-             &vec(T)   — pointer (Phase 5.6, uniform with &!vec; checker forbids mutation)
-             &!vec(T)  — pointer (Phase 5.6, writes through to caller)
-           String is the sole by-value specialisation; every other &T defaults
-           to pointer. emit_scope_cleanup honours is_borrowed on the CgSymbol
-           so borrowed slots are never freed regardless of ABI choice. */
-        if (t->is_mut)
-            return LLVMPointerTypeInContext(ctx->context, 0);
-        if (t->as.pointer_to &&
-            (t->as.pointer_to->kind == TYPE_STRUCT ||
-             t->as.pointer_to->kind == TYPE_ENUM))   /* Phase 9: &enum → ptr */
-            return LLVMPointerTypeInContext(ctx->context, 0);
-        return type_to_llvm(ctx, t->as.pointer_to);
+        /* ABI policy for reference types: uniform pointer ABI.
+           P4(string→Str) removed the sole by-value specialisation
+           (read-only &string, 16-byte POD with cap=0 marker); the checker
+           now only admits &struct / &!struct / &enum pointees, all pointer.
+           emit_scope_cleanup honours is_borrowed on the CgSymbol so
+           borrowed slots are never freed. */
+        return LLVMPointerTypeInContext(ctx->context, 0);
     case TYPE_LIB:
         return LLVMPointerTypeInContext(ctx->context, 0);
     case TYPE_ARRAY:
@@ -13227,15 +13219,13 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             (void)is_mut_borrow_param;
             continue;
         }
-        /* Phase 5.6/5.7/9: &vec(T) / &map(K,V) / &struct / &enum (read-only) use
-           pointer ABI. Register sym->value as a raw pointer to the underlying
-           struct — all codegen paths treat sym->value as a pointer.
+        /* Phase 5.6/5.7/9 + P4: read-only &T uses pointer ABI (checker only
+           admits struct/enum pointees since &string was removed). Register
+           sym->value as a raw pointer to the underlying struct — all codegen
+           paths treat sym->value as a pointer.
            Checker statically forbids mutating calls on this symbol. */
         if (param_type && param_type->kind == TYPE_REFERENCE &&
-            !param_type->is_mut &&
-            param_type->as.pointer_to &&
-            (param_type->as.pointer_to->kind == TYPE_STRUCT ||
-             param_type->as.pointer_to->kind == TYPE_ENUM))
+            !param_type->is_mut)
         {
             param_type = param_type->as.pointer_to;
             LLVMValueRef ptr = LLVMGetParam(fn, (unsigned)llvm_idx);
@@ -13250,9 +13240,6 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             }
             continue;
         }
-        /* Phase 5: unwrap &T → T (read-only borrow keeps by-value ABI for string). */
-        if (param_type && param_type->kind == TYPE_REFERENCE)
-            param_type = param_type->as.pointer_to;
         LLVMTypeRef param_llvm = type_to_llvm(ctx, param_type);
         LLVMValueRef alloca = cg_entry_alloca(ctx, param_llvm,
                                               node->as.fn_decl.param_names[i]);

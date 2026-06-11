@@ -25,8 +25,9 @@ fn fx_mix(u64 h, u64 word) -> u64 {
 }
 
 // Byte-wise FxHash over a string's bytes (v1: one byte per step; an 8-byte-word
-// variant is a possible v2 speedup). Borrows the string — no copy.
-fn fxhash_str(&string s) -> u64 {
+// variant is a possible v2 speedup). Plain by-value string param = runtime
+// cap=-2 borrow, no copy (P4 removed the `&string` parameter type).
+fn fxhash_str(string s) -> u64 {
     u64 h = 0 as u64
     int n = s.length
     int i = 0

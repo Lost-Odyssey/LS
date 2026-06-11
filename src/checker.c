@@ -1945,18 +1945,24 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     {
         Type *pointee = resolve_type_node(c, tn->as.pointee, line, col);
         if (pointee == NULL) return NULL;
-        /* Phase 5/5.5/5.8/9: supported borrow pointees are
-           string / struct / enum. */
-        bool ok_kind = (pointee->kind == TYPE_STRING ||
-                        pointee->kind == TYPE_STRUCT ||
+        /* Phase 5.8/9 + P4(string→Str): supported borrow pointees are
+           struct / enum. `&string`/`&!string` were removed in P4 — builtin
+           string borrows are superseded by `&Str`/`&!Str` (pointer ABI). */
+        bool ok_kind = (pointee->kind == TYPE_STRUCT ||
                         pointee->kind == TYPE_ENUM);   /* Phase 9: enum borrow */
         if (!ok_kind)
         {
-            checker_error(c, line, col,
-                          "&%s%s is not supported yet; only &string / &!string / "
-                          "&struct / &!struct / &enum are implemented",
-                          tn->is_mut ? "!" : "",
-                          type_name(pointee));
+            if (pointee->kind == TYPE_STRING)
+                checker_error(c, line, col,
+                              "&%sstring has been removed; use &%sStr "
+                              "(import std.str) instead",
+                              tn->is_mut ? "!" : "", tn->is_mut ? "!" : "");
+            else
+                checker_error(c, line, col,
+                              "&%s%s is not supported yet; only "
+                              "&struct / &!struct / &enum are implemented",
+                              tn->is_mut ? "!" : "",
+                              type_name(pointee));
             return NULL;
         }
         /* Phase B: drop struct borrow now allowed. */
@@ -4251,13 +4257,17 @@ static Type *check_expr(Checker *c, AstNode *node)
             result = NULL;
             break;
         }
-        if (sym->type == NULL ||
-            (sym->type->kind != TYPE_STRING &&
-             sym->type->kind != TYPE_STRUCT))
+        if (sym->type == NULL || sym->type->kind != TYPE_STRUCT)
         {
-            checker_error(c, node->line, node->column,
-                          "&!: only &!string and &!struct are supported, got &!%s",
-                          sym->type ? type_name(sym->type) : "?");
+            /* P4(string→Str): &!string removed — point users at &!Str. */
+            if (sym->type != NULL && sym->type->kind == TYPE_STRING)
+                checker_error(c, node->line, node->column,
+                              "&!: writable borrows of builtin string have been "
+                              "removed; use Str + &!Str (import std.str) instead");
+            else
+                checker_error(c, node->line, node->column,
+                              "&!: only &!struct is supported, got &!%s",
+                              sym->type ? type_name(sym->type) : "?");
             result = NULL;
             break;
         }
@@ -4274,18 +4284,6 @@ static Type *check_expr(Checker *c, AstNode *node)
         {
             checker_error(c, node->line, node->column,
                           "&!: variable '%s' has been moved", op->as.ident.name);
-            result = NULL;
-            break;
-        }
-        /* Static strings (literals without .upper()/etc) are rejected: they
-           live in .rodata, and append/reassign would force-own them on the
-           fly — not implemented, and would surprise users. Require owned. */
-        if (sym->is_static_string)
-        {
-            checker_error(c, node->line, node->column,
-                          "&!: variable '%s' is a static string literal; "
-                          "writable borrow requires an owned string",
-                          op->as.ident.name);
             result = NULL;
             break;
         }

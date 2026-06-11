@@ -1,8 +1,8 @@
 // B-2b: a builtin-string value returned from a function declared `-> Str` is
 // deep-copied into an owned Str (the source string keeps its normal cleanup;
 // no transfer/skip-cleanup, no mark-temp-moved). Covers static/owned locals,
-// owned string temps (method result, concat), borrowed &string params and a
-// global. JIT+AOT+memcheck 0/0/0.
+// owned string temps (method result, concat), borrowed string params (cap=-2
+// by-value ABI) and a global. JIT+AOT+memcheck 0/0/0.
 import std.str
 import std.vec
 
@@ -35,8 +35,8 @@ fn from_concat(string a, string b) -> Str {
     return a + b
 }
 
-// borrowed &string param -> Str return (cap -2 source: must deep copy)
-fn from_borrow(&string s) -> Str {
+// borrowed plain string param -> Str return (cap -2 source: must deep copy)
+fn from_borrow(string s) -> Str {
     return s
 }
 
