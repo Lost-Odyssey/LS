@@ -29,7 +29,7 @@ fn test_vec_block() {
     }
 }   /* handlers drops: 3 envs freed */
 
-/* F.4.2: Vec(Namer) — push closures with string capture */
+/* F.4.2: Vec(Namer) — push closures with Str capture */
 fn test_vec_namer() {
     Str s1 = "add3"
     Str s2 = "sub2"
@@ -42,9 +42,9 @@ fn test_vec_namer() {
         print(ns[i]())
         i = i + 1
     }
-}   /* ns drops: 2 envs freed (each holds a moved string) */
+}   /* ns drops: 2 envs freed (each holds a moved Str) */
 
-/* F.4.3: Map(string, H) — set lambdas, call by key */
+/* F.4.3: Map(Str, H) — set lambdas, call by key */
 fn test_map_block() {
     Map(Str, H) ops = {}
     ops.set("mul", |x| { return x * 10 })

@@ -1,4 +1,4 @@
-// vec_struct_clone_test.ls — Vec(struct-with-string) element clone independence.
+// vec_struct_clone_test.ls — Vec(struct-with-Str) element clone independence.
 // VR-LIM-008 (fixed F3): print(vp[0]) — an owned has_drop struct rvalue from an
 // index clone — is now dropped after printing (no leak).
 
@@ -7,7 +7,7 @@ import std.vec
 struct Person {
     int age;
     int id;
-    string name;
+    Str name;
 }
 
 fn main() -> int {

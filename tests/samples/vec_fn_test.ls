@@ -2,7 +2,7 @@
 import std.vec
 
 fn test() {
-    Vec(string) v = {}
+    Vec(Str) v = {}
     v.push("hello")
     v.pop()
     print("done")

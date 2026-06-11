@@ -50,7 +50,7 @@ fn test_e2_vec() {
     print(result2)          // 15
 }
 
-// ── E.2.2: Map(string,int) closure parameter — by-value ─────────────────────
+// ── E.2.2: Map(Str,int) closure parameter — by-value ─────────────────────
 fn test_e2_map() {
     Map(Str, int) scores = {}
     scores.set("a", 10)

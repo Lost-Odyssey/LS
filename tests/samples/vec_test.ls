@@ -86,20 +86,20 @@ fn main() -> int {
     }
     print(gsum)             // 190  (0+1+...+19)
 
-    // === 8. Vec(string) ===
-    Vec(string) words = {}
+    // === 8. Vec(Str) ===
+    Vec(Str) words = {}
     words.push("hello")
     words.push("world")
     words.push("foo")
     print(words.len())      // 3
     int clen = 0
     for (int i = 0; i < words.len(); i = i + 1) {
-        string w = words[i]
-        clen = clen + w.length
+        Str w = words[i]
+        clen = clen + w.len()
     }
     print(clen)             // 13  (5+5+3)
 
-    // === 9. Vec(string) index write frees old ===
+    // === 9. Vec(Str) index write frees old ===
     words[0] = "hello".upper()    // frees static "hello", stores "HELLO"
     print(words[0])               // HELLO
 

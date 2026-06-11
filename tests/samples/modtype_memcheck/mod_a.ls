@@ -9,7 +9,7 @@ impl Node {
     fn tag(&self) -> Str { return self.label }
 }
 /* Build inline (owned Str literal in the struct literal) — avoids the
-   string-param-into-returned-struct AOT path tracked as BF-045. */
+   Str-param-into-returned-struct AOT path tracked as BF-045. */
 fn make() -> Node { return Node { label: "A".upper(), weight: 1 } }
 
 /* has_drop enum (Str payload) — same name as mod_b's. */

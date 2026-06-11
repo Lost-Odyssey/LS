@@ -4,14 +4,14 @@
 import std.vec
 
 struct Item {
-    string name;
+    Str name;
     int value;
 }
 
 impl Item {
     fn __drop() { }
 
-    static fn make(string n, int v) -> Item {
+    static fn make(Str n, int v) -> Item {
         Item it
         it.name = n
         it.value = v

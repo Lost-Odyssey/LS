@@ -57,7 +57,7 @@ fn make_counter() -> Counter {
     }
 }
 
-/* F.1.4: map [move] with string value */
+/* F.1.4: map [move] with Str value */
 fn make_msg_fn() -> MsgFn {
     Map(Str, Str) msgs = {}
     msgs.set("greeting", "hello world")
@@ -83,7 +83,7 @@ fn main() {
     Counter cnt = make_counter()
     print(cnt())       /* 4 */
 
-    /* F.1.4: map [move] with string value */
+    /* F.1.4: map [move] with Str value */
     MsgFn mf = make_msg_fn()
     print(mf())        /* hello world */
 }

@@ -18,12 +18,12 @@ struct Pipe {
     Handler step2
 }
 
-/* F.3.2: struct with a capturing Block field (string by-move) */
+/* F.3.2: struct with a capturing Block field (Str by-move) */
 struct Maker {
     Factory produce
 }
 
-/* F.3.3: struct with Block + string + POD (multiple has_drop fields) */
+/* F.3.3: struct with Block + Str + POD (multiple has_drop fields) */
 struct MultiDrop {
     Str prefix
     Handler transform
@@ -41,12 +41,12 @@ fn main() {
     print(p.step1(5))    /* 10 */
     print(p.step2(5))    /* 15 */
 
-    /* F.3.2: Block field captures string by-move; struct drop frees env */
+    /* F.3.2: Block field captures Str by-move; struct drop frees env */
     Str tag = "factory_ok"
     Maker m = Maker { produce: [move tag] || { return tag } }
     print(m.produce())   /* factory_ok */
 
-    /* F.3.3: struct with string + Block + POD — all freed on scope exit */
+    /* F.3.3: struct with Str + Block + POD — all freed on scope exit */
     MultiDrop md = MultiDrop { prefix: "x", transform: |x| { return x + 1 }, base: 2 }
     print(md.transform(md.base))  /* 3 */
 

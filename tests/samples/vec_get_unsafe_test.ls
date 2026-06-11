@@ -1,5 +1,5 @@
 // vec_get_unsafe_test.ls — Vec.get!(i): unchecked index load. Must match
-// v[i] / v.get(i) for in-bounds access, for both POD and owned (string) elems.
+// v[i] / v.get(i) for in-bounds access, for both POD and owned (Str) elems.
 import std.vec
 import std.str
 

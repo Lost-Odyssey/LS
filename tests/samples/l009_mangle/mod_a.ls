@@ -1,4 +1,5 @@
 module mod_a
+import std.str
 
 /* Same function name as mod_b.helper — L-009 must keep them distinct. */
 fn helper() -> int {
@@ -6,7 +7,7 @@ fn helper() -> int {
 }
 
 /* Same name as the user's local read_file and mod_b's — distinct symbols. */
-fn read_file(string s) -> string {
+fn read_file(Str s) -> Str {
     return f"a:{s}"
 }
 

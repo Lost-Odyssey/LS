@@ -4,10 +4,10 @@ import std.str
 /* Phase F.7 stress test: 1000-iteration loop over all closure capture patterns.
    Each iteration exercises:
      S1. POD capture (int by-copy)
-     S2. string by-move capture + factory
+     S2. Str by-move capture + factory
      S3. struct(has_drop) with Block field
      S4. Vec(Block) push + call + drop
-     S5. enum(has_drop) by-move capture (Option(string)) — exercises emit_enum_clone_val
+     S5. enum(has_drop) by-move capture (Option(Str)) — exercises emit_enum_clone_val
      S6. [move] inline Vec capture (explicit by-move on local variable)
    Expected output:
      stress ok
@@ -22,7 +22,7 @@ fn make_counter(int start) -> Counter {
     return || { return start }
 }
 
-/* ── S2: string by-move capture ──────────────────────────────────── */
+/* ── S2: Str by-move capture ──────────────────────────────────── */
 fn make_greeter(Str name) -> Greeter {
     return || { return f"hi {name}" }
 }

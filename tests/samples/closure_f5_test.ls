@@ -49,7 +49,7 @@ fn test_option_capture() {
     print(f())   /* 42 */
 }
 
-/* F.5.3: capture Result(int, string) (has_drop enum, by-move) */
+/* F.5.3: capture Result(int, Str) (has_drop enum, by-move) */
 fn test_result_capture() {
     Result(int, Str) r = Err("not found")
     StringGetter f = || {

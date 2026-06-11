@@ -1,6 +1,7 @@
 module mod_a
+import std.str
 
-struct Widget { string name; int v }
+struct Widget { Str name; int v }
 impl Widget {
     fn val(&self) -> int { return self.v * 10 }
     static fn make(int n) -> Widget { return Widget { name: "a".upper(), v: n } }

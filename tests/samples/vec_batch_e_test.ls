@@ -41,7 +41,7 @@ fn main() -> int {
     se.sort()
     print(se.len())  // 0
 
-    // sort string Vec(lexicographic)
+    // sort Str Vec(lexicographic)
     Vec(Str) sv = {}
     sv.push("banana")
     sv.push("apple")
@@ -113,7 +113,7 @@ fn main() -> int {
     Vec(int) sl6 = empty_sl.slice(0, 10)
     print(sl6.len()) // 0
 
-    // slice string vec — independent deep copies
+    // slice Str vec — independent deep copies
     Vec(Str) ssrc = {}
     ssrc.push("alpha")
     ssrc.push("beta")

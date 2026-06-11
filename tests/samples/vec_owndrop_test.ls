@@ -16,7 +16,7 @@ import std.str
 struct Inner { Str tag }
 struct Person { int age; Str name; Inner inner }
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 fn name_age(Person p) -> int { return p.age }
 

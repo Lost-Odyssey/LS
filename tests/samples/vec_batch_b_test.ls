@@ -28,7 +28,7 @@ fn main() -> int {
     print(v.len())     // 0
     print(v.empty?)    // true
 
-    // truncate on string vec — must drop freed strings without double-free
+    // truncate on Str vec — must drop freed strings without double-free
     Vec(Str) sv = {}
     sv.push("alpha")
     sv.push("beta")
@@ -62,7 +62,7 @@ fn main() -> int {
     print(r.len())     // 1
     print(r[0])        // 300
 
-    // remove on string vec — must drop string without leaking
+    // remove on Str vec — must drop Str without leaking
     Vec(Str) sr = {}
     sr.push("one")
     sr.push("two")
@@ -89,7 +89,7 @@ fn main() -> int {
     sw.swap(1, 1)
     print(sw[1])       // 2
 
-    // swap on string vec — raw byte swap, no clone/free
+    // swap on Str vec — raw byte swap, no clone/free
     Vec(Str) ssw = {}
     ssw.push("first")
     ssw.push("second")
@@ -133,7 +133,7 @@ fn main() -> int {
     reve.reverse()
     print(reve.len())  // 0
 
-    // reverse on string vec — raw byte swap, no leak
+    // reverse on Str vec — raw byte swap, no leak
     Vec(Str) srev = {}
     srev.push("a")
     srev.push("b")

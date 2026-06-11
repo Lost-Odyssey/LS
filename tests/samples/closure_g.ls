@@ -44,7 +44,7 @@ fn main() {
     Fn h = fns[1]                            // no-capture: env NULL, clone no-op
     ok = check(h(8) == 16, 4) && ok
 
-    // --- 2) string capture extracted from a struct field ---
+    // --- 2) Str capture extracted from a struct field ---
     Str prefix = "val="                       // length 4
     Holder hold = Holder { op: |x| x + prefix.len() }
     Fn sf = hold.op

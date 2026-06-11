@@ -2,7 +2,7 @@
    through vec containers, map, enum payloads, methods, deep copy out of vec, and
    cross-module returns — all under --memcheck (0 leak / 0 double-free).
    Structs are built inline (module make()/nodes()) to avoid the unrelated
-   string-param-into-returned-struct AOT bug (BF-045).
+   Str-param-into-returned-struct AOT bug (BF-045).
    F6b (fixed): uses std.vec Vec(T). Vec instantiation names are now mangled with
    each element type's module-qualified llvm_name (Vec(mod_a__Node) vs
    Vec(mod_b__Node)), so the two same-named Node types are no longer conflated. */
@@ -14,7 +14,7 @@ import mod_a as A
 import mod_b as B
 
 fn main() -> int {
-    /* has_drop structs with owned string fields, distinct layouts, + methods */
+    /* has_drop structs with owned Str fields, distinct layouts, + methods */
     A.Node na = A.make()
     B.Node nb = B.make()
     print(f"na={na.tag()} nb={nb.tag()}")
@@ -32,7 +32,7 @@ fn main() -> int {
     B.Box bb = B.wrap()
     print(f"ba={A.unwrap(ba)} bb={B.unwrap(bb)}")
 
-    /* NOTE: map keyed by string with a has_drop struct VALUE is intentionally not
+    /* NOTE: map keyed by Str with a has_drop struct VALUE is intentionally not
        exercised here — it leaks the struct value's owned fields on map drop, an
        unrelated pre-existing bug tracked as BF-046 (reproduces on root structs).
        The cross-module struct/method/vec/enum/Phase-H coverage above is the point. */

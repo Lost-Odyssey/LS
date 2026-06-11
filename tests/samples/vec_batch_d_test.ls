@@ -19,7 +19,7 @@ fn main() -> int {
     Vec(int) empty = {}
     print(empty.has?(1))  // false
 
-    // contains on string vec
+    // contains on Str vec
     Vec(Str) sv = {}
     sv.push("alpha")
     sv.push("beta")
@@ -45,7 +45,7 @@ fn main() -> int {
     Vec(int) empty2 = {}
     print(empty2.index_of(1))   // -1
 
-    // index_of on string vec
+    // index_of on Str vec
     Vec(Str) sidx = {}
     sidx.push("x")
     sidx.push("y")
@@ -91,7 +91,7 @@ fn main() -> int {
     r2.resize(0, 0)
     print(r2.len())  // 0
 
-    // resize string vec — new slots get empty strings
+    // resize Str vec — new slots get empty strings
     Vec(Str) sr = {}
     sr.push("hello")
     sr.resize(3, f"")
@@ -99,7 +99,7 @@ fn main() -> int {
     print(sr[0])      // hello
     // sr[1] and sr[2] are empty strings (safe to print)
 
-    // shrink string vec — drops freed strings
+    // shrink Str vec — drops freed strings
     sr.push("world")
     sr.resize(1, f"")
     print(sr.len())  // 1
@@ -129,7 +129,7 @@ fn main() -> int {
     print(cp2.len())  // 0
     print(cp2.empty?) // true
 
-    // copy of string vec — independent deep copies
+    // copy of Str vec — independent deep copies
     Vec(Str) sorig = {}
     sorig.push("hello")
     sorig.push("world")

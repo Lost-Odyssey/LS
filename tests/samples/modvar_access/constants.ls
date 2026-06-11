@@ -1,4 +1,5 @@
 module constants
+import std.str
 
 int ANSWER = 42
-string VERSION = "1.0"
+Str VERSION = "1.0"

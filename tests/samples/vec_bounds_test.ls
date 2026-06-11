@@ -3,13 +3,13 @@
 import std.vec
 
 // Test 1: pop后string元素被重置
-Vec(string) v1 = {}
+Vec(Str) v1 = {}
 v1.push("hello")
 print("v1.len before pop:", v1.len())
 v1.pop()
 print("v1.len after pop:", v1.len())
 print("v1[0] after pop:", v1[0])
-print("v1[0] should be empty:", v1[0].length)
+print("v1[0] should be empty:", v1[0].len())
 
 // Test 2: bounds check with warning
 Vec(int) v2 = {}

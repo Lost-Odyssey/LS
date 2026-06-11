@@ -57,7 +57,7 @@ fn main() {
     print(summer())         // 24
     print(summer())         // 24
 
-    // E.1.4: closure captures Map(string,int) by-move, body borrows for read
+    // E.1.4: closure captures Map(Str,int) by-move, body borrows for read
     Map(Str, int) scores = {}
     scores.set("alice", 42)
     scores.set("bob", 99)

@@ -36,7 +36,7 @@ fn main() -> int {
     print(d[0])      // 10
     print(d[1])      // 20
 
-    // extend string vec — elements must be deep-cloned (independent copies)
+    // extend Str vec — elements must be deep-cloned (independent copies)
     Vec(Str) sa = {}
     sa.push("hello")
     sa.push("world")
@@ -98,7 +98,7 @@ fn main() -> int {
     print(empty.len())    // 1
     print(empty[0])       // 42
 
-    // insert on string vec — ownership transfer (no double-free)
+    // insert on Str vec — ownership transfer (no double-free)
     Vec(Str) sv = {}
     sv.push("first")
     sv.push("third")
@@ -108,7 +108,7 @@ fn main() -> int {
     print(sv[1])      // second
     print(sv[2])      // third
 
-    // insert at beginning of string vec
+    // insert at beginning of Str vec
     sv.insert(0, "zero")
     print(sv.len())   // 4
     print(sv[0])      // zero

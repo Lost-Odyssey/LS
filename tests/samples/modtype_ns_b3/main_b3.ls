@@ -2,7 +2,7 @@ import mod_b3
 
 fn main() -> int {
     Widget w = mod_b3.make_widget("hello", 42)
-    string desc = mod_b3.describe(w)
+    Str desc = mod_b3.describe(w)
     print(f"{desc}\n")
 
     Widget w2 = Widget.make("world", 100)

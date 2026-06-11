@@ -1,10 +1,10 @@
 import std.vec
 
 fn main() -> int {
-    Vec(string) v = {}
-    string name = "Alice"
+    Vec(Str) v = {}
+    Str name = "Alice"
     v.push(name)
-    string city = "Beijing"
+    Str city = "Beijing"
     v.push(city)
     print(v[0])
     print(v[1])

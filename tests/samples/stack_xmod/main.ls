@@ -1,6 +1,6 @@
 // stack_xmod/main.ls — cross-module / transitive generic container use.
 //
-// main imports std.stack directly (Stack(string)) AND imports `helper`, which
+// main imports std.stack directly (Stack(Str)) AND imports `helper`, which
 // itself imports std.stack and uses Stack(int) internally. Exercises:
 //   - the same generic template (Stack) registered in two checkers (helper +
 //     main) without a duplicate-registration crash (idempotent registration);
@@ -14,8 +14,8 @@ import std.stack
 import helper
 
 fn main() {
-    // Direct use in the root module: a different instantiation (string).
-    Stack(string) ss = new_stack(string)()
+    // Direct use in the root module: a different instantiation (Str).
+    Stack(Str) ss = new_stack(Str)()
     ss.push("x")
     ss.push("y")
 

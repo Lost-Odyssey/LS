@@ -23,7 +23,7 @@ fn fill_globals() {
     gitems.push(Item.make("two".upper()))
 }
 
-fn check(bool c, string label) -> bool {
+fn check(bool c, Str label) -> bool {
     if c { return true }
     print(f"FAIL {label}")
     return false

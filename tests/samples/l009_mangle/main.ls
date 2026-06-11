@@ -6,7 +6,7 @@ import mod_b
 /* Local function with the SAME name as mod_a.read_file / mod_b.read_file.
    Pre-L-009 this collided with the imported @read_file and crashed IR
    verification. The root function must stay unmangled and win for bare calls. */
-fn read_file(string s) -> string {
+fn read_file(Str s) -> Str {
     return f"local:{s}"
 }
 
@@ -21,10 +21,10 @@ fn main() -> int {
     int cb = mod_b.combined()   // 2 + 20 = 22
     print(f"combined a={ca} b={cb}")
 
-    /* Same-named string functions, all distinct. */
-    string la = mod_a.read_file("x")   // a:x
-    string lb = mod_b.read_file("x")   // b:x
-    string ll = read_file("x")         // local:x
+    /* Same-named Str functions, all distinct. */
+    Str la = mod_a.read_file("x")   // a:x
+    Str lb = mod_b.read_file("x")   // b:x
+    Str ll = read_file("x")         // local:x
     print(f"read {la} {lb} {ll}")
 
     if a == 1 && b == 2 && ca == 11 && cb == 22 {

@@ -37,8 +37,8 @@ fn main() -> int {
     match empty.first() { Some(x) => { print(x) } None => { print(0) } }  // 0
     match empty.last()  { Some(x) => { print(x) } None => { print(0) } }  // 0
 
-    // --- string Vec: first() and last() return owned clones ---
-    Vec(string) sv = {}
+    // --- Str Vec: first() and last() return owned clones ---
+    Vec(Str) sv = {}
     sv.push("alpha")
     sv.push("beta")
     sv.push("gamma")
@@ -46,14 +46,14 @@ fn main() -> int {
     bool se = sv.empty?
     print(se)               // false
 
-    string sf = ""
+    Str sf = ""
     match sv.first() {
         Some(x) => { sf = x }
         None => { sf = "" }
     }
     print(sf)               // alpha
 
-    string sl = ""
+    Str sl = ""
     match sv.last() {
         Some(x) => { sl = x }
         None => { sl = "" }

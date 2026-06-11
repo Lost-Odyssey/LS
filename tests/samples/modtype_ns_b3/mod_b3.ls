@@ -1,12 +1,13 @@
 module mod_b3
+import std.str
 
 struct Widget {
-    string name
+    Str name
     int value
 }
 
 impl Widget {
-    fn get_name(&self) -> string {
+    fn get_name(&self) -> Str {
         return self.name
     }
 
@@ -18,7 +19,7 @@ impl Widget {
         self.value = v
     }
 
-    static fn make(string n, int v) -> Widget {
+    static fn make(Str n, int v) -> Widget {
         Widget w
         w.name = n
         w.value = v
@@ -26,11 +27,11 @@ impl Widget {
     }
 }
 
-fn make_widget(string n, int v) -> Widget {
+fn make_widget(Str n, int v) -> Widget {
     return Widget.make(n, v)
 }
 
-fn describe(Widget w) -> string {
+fn describe(Widget w) -> Str {
     return f"{w.get_name()}={w.get_value()}"
 }
 

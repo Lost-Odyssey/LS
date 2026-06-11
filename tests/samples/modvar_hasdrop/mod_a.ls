@@ -1,11 +1,12 @@
 module mod_a
+import std.str
 
-string greeting = "hello"
+Str greeting = "hello"
 
-fn get_greeting() -> string {
+fn get_greeting() -> Str {
     return greeting
 }
 
-fn set_greeting(string s) {
+fn set_greeting(Str s) {
     greeting = s
 }
