@@ -688,6 +688,7 @@ static int jit_run_file_impl(const char *path, bool memcheck, bool profile, bool
     }
 
     /* Type check (with module support) */
+    ast_inject_std_str_import(ast);
     ModuleRegistry *reg = module_registry_new();
     CheckerGenericMethods gm = {0};
     if (!checker_check(ast, path, reg, &gm)) {

@@ -138,6 +138,36 @@ AstNode *ast_new(AstNodeType kind, int line, int col) {
     return n;
 }
 
+/* P5-2 dry-run (LS_STR_DEFAULT=1): prepend `import std.str` to a ROOT program
+   so the flipped default literal type (Str) resolves without every sample
+   spelling the import (docs/plan_p5_remove_builtin_string.md §5). No-op when
+   the flag is off, the node isn't a program, or std.str is already imported.
+   Root files only — modules pull their own imports (injecting into std.c
+   would create an import cycle std.str→std.c→std.str). */
+void ast_inject_std_str_import(AstNode *program) {
+    const char *v = getenv("LS_STR_DEFAULT");
+    if (v == NULL || v[0] == '\0' || v[0] == '0') return;
+    if (program == NULL || program->kind != AST_PROGRAM) return;
+    for (int i = 0; i < program->as.program.decl_count; i++) {
+        AstNode *d = program->as.program.decls[i];
+        if (d != NULL && d->kind == AST_IMPORT_DECL &&
+            d->as.import_decl.path != NULL &&
+            strcmp(d->as.import_decl.path, "std.str") == 0)
+            return;
+    }
+    AstNode *imp = ast_new(AST_IMPORT_DECL, 0, 0);
+    imp->as.import_decl.path = ast_strdup("std.str");
+    imp->as.import_decl.alias = NULL;
+    int n = program->as.program.decl_count;
+    AstNode **decls = (AstNode **)realloc(program->as.program.decls,
+                                          (size_t)(n + 1) * sizeof(AstNode *));
+    if (decls == NULL) { ast_free(imp); return; }
+    memmove(&decls[1], &decls[0], (size_t)n * sizeof(AstNode *));
+    decls[0] = imp;
+    program->as.program.decls = decls;
+    program->as.program.decl_count = n + 1;
+}
+
 void ast_free(AstNode *node) {
     if (node == NULL) return;
     type_free(node->coerce_block_type);

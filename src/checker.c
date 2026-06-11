@@ -213,6 +213,21 @@ static Type *str_target_of_expected(const Type *t)
     return NULL;
 }
 
+/* P5-2 dry-run switch (docs/plan_p5_remove_builtin_string.md §5):
+   LS_STR_DEFAULT=1 flips the DEFAULT type of string literals and f-strings
+   from builtin string to pure-LS Str. Only an explicit builtin-string
+   expectation (expected_type == string) keeps the old type. Experimental —
+   used to inventory the no-expected-position breakage before the real flip. */
+static bool str_default_flip_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("LS_STR_DEFAULT");
+        cached = (v != NULL && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 /* Step 11: Get the impl_registry key name for a type.
    For structs returns the struct name; for builtins returns "int", "f64" etc. */
 static const char *type_impl_name(Type *t)
@@ -4036,6 +4051,14 @@ static Type *check_expr(Checker *c, AstNode *node)
            builtin string is still the default literal type. */
         {
             Type *strt = str_target_of_expected(c->expected_type);
+            /* P5-2 dry-run: with the flip on, a literal in any position NOT
+               expecting builtin string defaults to (static) Str. Falls back to
+               builtin string when the Str struct isn't visible in this checker
+               (module without import std.str — root files get an injected
+               import, see ast_inject_std_str_import). */
+            if (strt == NULL && str_default_flip_enabled() &&
+                !(c->expected_type != NULL && c->expected_type->kind == TYPE_STRING))
+                strt = find_struct_type(c, "Str");
             if (strt)
             {
                 node->coerce_str_lit_to_str = true;
@@ -4080,6 +4103,11 @@ static Type *check_expr(Checker *c, AstNode *node)
            rhs) and `s.push_str(f"...")`. */
         {
             Type *strt = str_target_of_expected(fstr_expected);
+            /* P5-2 dry-run: same flip as AST_STRING_LIT — an f-string in any
+               position not expecting builtin string defaults to an OWNED Str. */
+            if (strt == NULL && str_default_flip_enabled() &&
+                !(fstr_expected != NULL && fstr_expected->kind == TYPE_STRING))
+                strt = find_struct_type(c, "Str");
             if (strt)
                 result = strt;
         }

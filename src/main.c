@@ -127,6 +127,7 @@ static int cmd_check(const char *path) {
         free(source);
         return 1;
     }
+    ast_inject_std_str_import(ast);
     ModuleRegistry *reg = module_registry_new();
     bool ok = checker_check(ast, path, reg, NULL);
     if (ok) {
@@ -155,6 +156,7 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
     }
 
     /* Type check (with module support) */
+    ast_inject_std_str_import(ast);
     ModuleRegistry *reg = module_registry_new();
     CheckerGenericMethods gm = {0};
     if (!checker_check(ast, path, reg, &gm)) {
@@ -346,6 +348,7 @@ static int cmd_emit_ir(const char *path) {
     AstNode *ast = parse(source, path);
     if (ast == NULL) { free(source); return 1; }
 
+    ast_inject_std_str_import(ast);
     ModuleRegistry *reg = module_registry_new();
     CheckerGenericMethods gm2 = {0};
     if (!checker_check(ast, path, reg, &gm2)) {

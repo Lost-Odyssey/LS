@@ -572,6 +572,11 @@ AstNode *ast_new(AstNodeType kind, int line, int col);
 /* Recursively free an AST node and all its children */
 void ast_free(AstNode *node);
 
+/* P5-2 dry-run (LS_STR_DEFAULT=1): prepend `import std.str` to a root program
+   so the flipped default literal type (Str) resolves. No-op when the flag is
+   off or std.str is already imported. Call on ROOT files only (not modules). */
+void ast_inject_std_str_import(AstNode *program);
+
 /* Recursively free a TypeNode */
 void type_node_free(TypeNode *type);
 
