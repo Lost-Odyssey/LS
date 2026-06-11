@@ -1,9 +1,10 @@
 import std.vec
 import std.regex as re
+import std.str
 
 fn main() {
     print("a")
-    Vec(string) caps = re.capture("2024", "(\\d+)")
+    Vec(Str) caps = re.capture("2024", "(\\d+)")
     print("b")
     if caps.len() == 0 { print("none"); return }
     print(f"len={caps.len()}")

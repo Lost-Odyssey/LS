@@ -1,6 +1,7 @@
 // tests/samples/regex_test.ls — Integration tests for std.regex
 import std.vec
 import std.regex as re
+import std.str
 
 fn test_basic() {
     // matches
@@ -14,7 +15,7 @@ fn test_basic() {
 
 fn test_quantifiers() {
     // greedy *
-    Vec(string) v = re.find_all("aabbb", "a*")
+    Vec(Str) v = re.find_all("aabbb", "a*")
     if v.len() == 0 { print("FAIL: greedy star"); return }
     // + requires at least one
     if re.matches("b", "a+") { print("FAIL: plus neg"); return }
@@ -23,8 +24,8 @@ fn test_quantifiers() {
     if !re.matches("aaa", "a{3}") { print("FAIL: {n}"); return }
     if re.matches("aa", "a{3}") { print("FAIL: {n} neg"); return }
     if !re.matches("aaaa", "a{2,4}") { print("FAIL: {n,m}"); return }
-    // lazy — capture returns Vec(string), empty = no match
-    Vec(string) c = re.capture("aXbXc", "(a.*?c)")
+    // lazy — capture returns Vec(Str), empty = no match
+    Vec(Str) c = re.capture("aXbXc", "(a.*?c)")
     if c.len() == 0 { print("FAIL: lazy none"); return }
     if c[0] != "aXbXc" { print(f"FAIL: lazy wrong: {c[0]}"); return }
     print("PASS: quantifiers")
@@ -52,22 +53,22 @@ fn test_alternation() {
 }
 
 fn test_find() {
-    Option(string) m = re.find("price: 42.5 USD", "\\d+\\.\\d+")
+    Option(Str) m = re.find("price: 42.5 USD", "\\d+\\.\\d+")
     match m {
-        Some(s) => { if s != "42.5" { print("FAIL: find got " + s); return } }
+        Some(s) => { if !s.eq?("42.5") { print(f"FAIL: find got {s}"); return } }
         None    => { print("FAIL: find none"); return }
     }
-    Vec(string) all = re.find_all("a1 b2 c3", "\\d+")
+    Vec(Str) all = re.find_all("a1 b2 c3", "\\d+")
     if all.len() != 3 { print("FAIL: find_all count"); return }
-    if all[0] != "1" { print("FAIL: find_all[0]"); return }
+    if !all[0].eq?("1") { print("FAIL: find_all[0]"); return }
     if all[1] != "2" { print("FAIL: find_all[1]"); return }
     if all[2] != "3" { print("FAIL: find_all[2]"); return }
     print("PASS: find")
 }
 
 fn test_capture() {
-    // capture returns Vec(string): [full, g1, g2, ...]  empty = no match
-    Vec(string) caps = re.capture("2024-01-15", "(\\d{4})-(\\d{2})-(\\d{2})")
+    // capture returns Vec(Str): [full, g1, g2, ...]  empty = no match
+    Vec(Str) caps = re.capture("2024-01-15", "(\\d{4})-(\\d{2})-(\\d{2})")
     if caps.len() == 0 { print("FAIL: capture none"); return }
     if caps.len() != 4 { print(f"FAIL: capture length {caps.len()}"); return }
     if caps[0] != "2024-01-15" { print("FAIL: cap[0]"); return }
@@ -81,20 +82,20 @@ fn test_capture() {
     string cap_all_pat = "(\\w+)=(\\d+)"
     int stride = re.group_count(cap_all_pat) + 1
     if stride != 3 { print(f"FAIL: group_count {stride}"); return }
-    Vec(string) flat = re.capture_all("a=1 b=2 c=3", cap_all_pat)
+    Vec(Str) flat = re.capture_all("a=1 b=2 c=3", cap_all_pat)
     if flat.len() != 9 { print(f"FAIL: capture_all count {flat.len()}"); return }
     // match 0: flat[0]="a=1"  flat[1]="a"  flat[2]="1"
     // match 1: flat[3]="b=2"  flat[4]="b"  flat[5]="2"
     // match 2: flat[6]="c=3"  flat[7]="c"  flat[8]="3"
-    if flat[1] != "a" { print("FAIL: capture_all[0][1]"); return }
+    if !flat[1].eq?("a") { print("FAIL: capture_all[0][1]"); return }
     if flat[5] != "2" { print("FAIL: capture_all[1][2]"); return }
     if flat[7] != "c" { print("FAIL: capture_all[2][1]"); return }
     print("PASS: capture")
 }
 
 fn test_named_capture() {
-    // capture_named returns Map(string,string); empty map = no match
-    Map(string, string) mp = re.capture_named(
+    // capture_named returns Map(Str,Str); empty map = no match
+    Map(Str, Str) mp = re.capture_named(
         "2024-01-15",
         "(?<year>\\d{4})-(?<month>\\d{2})-(?<day>\\d{2})"
     )
@@ -105,9 +106,12 @@ fn test_named_capture() {
     string y = ""
     string mo = ""
     string d = ""
-    match mp.get("year") { Some(vy) => { y = vy } None => {} }
-    match mp.get("month") { Some(vm) => { mo = vm } None => {} }
-    match mp.get("day") { Some(vd) => { d = vd } None => {} }
+    match mp.get("year") { Some(vy) => { string sy = vy
+                                         y = sy } None => {} }
+    match mp.get("month") { Some(vm) => { string sm = vm
+                                          mo = sm } None => {} }
+    match mp.get("day") { Some(vd) => { string sd = vd
+                                        d = sd } None => {} }
     if y != "2024" { print("FAIL: named year=" + y); return }
     if mo != "01"  { print("FAIL: named month=" + mo); return }
     if d != "15"   { print("FAIL: named day=" + d); return }
@@ -116,12 +120,12 @@ fn test_named_capture() {
 
 fn test_lookahead() {
     // positive lookahead: foo only when followed by bar
-    Vec(string) v = re.find_all("foobar foobaz", "foo(?=bar)")
+    Vec(Str) v = re.find_all("foobar foobaz", "foo(?=bar)")
     if v.len() != 1 { print(f"FAIL: pos lookahead count {v.len()}"); return }
-    if v[0] != "foo"  { print("FAIL: pos lookahead val"); return }
+    if !v[0].eq?("foo")  { print("FAIL: pos lookahead val"); return }
 
     // negative lookahead: foo when NOT followed by bar
-    Vec(string) v2 = re.find_all("foobar foobaz", "foo(?!bar)")
+    Vec(Str) v2 = re.find_all("foobar foobaz", "foo(?!bar)")
     if v2.len() != 1 { print(f"FAIL: neg lookahead count {v2.len()}"); return }
     if v2[0] != "foo"  { print("FAIL: neg lookahead val"); return }
     print("PASS: lookahead")
@@ -153,13 +157,13 @@ fn test_replace() {
 }
 
 fn test_split() {
-    Vec(string) parts = re.split("one,,two,,,three", ",+")
+    Vec(Str) parts = re.split("one,,two,,,three", ",+")
     if parts.len() != 3 { print(f"FAIL: split count {parts.len()}"); return }
-    if parts[0] != "one"   { print("FAIL: split[0]"); return }
-    if parts[1] != "two"   { print("FAIL: split[1]"); return }
-    if parts[2] != "three" { print("FAIL: split[2]"); return }
+    if !parts[0].eq?("one")   { print("FAIL: split[0]"); return }
+    if !parts[1].eq?("two")   { print("FAIL: split[1]"); return }
+    if !parts[2].eq?("three") { print("FAIL: split[2]"); return }
 
-    Vec(string) ws = re.split("  hello   world  ", "\\s+")
+    Vec(Str) ws = re.split("  hello   world  ", "\\s+")
     // leading/trailing empty strings dropped
     bool found_hello = false
     bool found_world = false
@@ -178,7 +182,7 @@ fn test_error_handling() {
     // Invalid pattern — unclosed group — should return safe defaults
     bool m = re.matches("hello", "(unclosed")
     if m { print("FAIL: error handling matched"); return }
-    Option(string) f = re.find("hello", "[invalid")
+    Option(Str) f = re.find("hello", "[invalid")
     match f {
         Some(_) => { print("FAIL: error find matched"); return }
         None    => { }

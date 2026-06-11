@@ -1,4 +1,5 @@
 import std.regex as re
+import std.str
 
 fn main() {
     bool r1 = re.matches("cat", "cat|dog")
@@ -9,9 +10,9 @@ fn main() {
     print(f"bird(should be false): {r3}")
     bool r4 = re.matches("hello", "[invalid")
     print(f"invalid pattern: {r4}")
-    Option(string) f = re.find("hello", "[invalid")
+    Option(Str) f = re.find("hello", "[invalid")
     match f {
-        Some(s) => { print("find: Some " + s) }
+        Some(s) => { print(f"find: Some {s}") }
         None => { print("find: None") }
     }
 }
