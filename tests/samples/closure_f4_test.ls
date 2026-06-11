@@ -10,9 +10,10 @@
 
 import std.vec
 import std.map
+import std.str
 
 type H = Block(int) -> int
-type Namer = Block() -> string
+type Namer = Block() -> Str
 
 /* F.4.1: Vec(H) — push lambdas, iterate and call each */
 fn test_vec_block() {
@@ -30,8 +31,8 @@ fn test_vec_block() {
 
 /* F.4.2: Vec(Namer) — push closures with string capture */
 fn test_vec_namer() {
-    string s1 = "add3"
-    string s2 = "sub2"
+    Str s1 = "add3"
+    Str s2 = "sub2"
     Vec(Namer) ns = {}
     ns.push([move s1] || { return s1 })
     ns.push([move s2] || { return s2 })
@@ -45,7 +46,7 @@ fn test_vec_namer() {
 
 /* F.4.3: Map(string, H) — set lambdas, call by key */
 fn test_map_block() {
-    Map(string, H) ops = {}
+    Map(Str, H) ops = {}
     ops.set("mul", |x| { return x * 10 })
     match ops.get("mul") {
         Some(f) => { print(f(10)) }

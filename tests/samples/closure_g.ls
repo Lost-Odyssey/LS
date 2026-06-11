@@ -9,6 +9,7 @@
 
 import std.vec
 import std.map
+import std.str
 
 type Fn = Block(int) -> int
 
@@ -17,7 +18,7 @@ struct Holder {
 }
 
 struct Tag {
-    string name
+    Str name
 }
 
 fn check(bool cond, int id) -> bool {
@@ -44,8 +45,8 @@ fn main() {
     ok = check(h(8) == 16, 4) && ok
 
     // --- 2) string capture extracted from a struct field ---
-    string prefix = "val="                   // length 4
-    Holder hold = Holder { op: |x| x + prefix.length as int }
+    Str prefix = "val="                       // length 4
+    Holder hold = Holder { op: |x| x + prefix.len() }
     Fn sf = hold.op
     ok = check(sf(10) == 14, 5) && ok
     ok = check(sf(20) == 24, 6) && ok
@@ -53,7 +54,7 @@ fn main() {
     // --- 3) has_drop struct capture extracted from a vec ---
     Tag t = Tag { name: "kg" }               // length 2
     Vec(Fn) sfns = {}
-    sfns.push(|x| x + t.name.length as int)
+    sfns.push(|x| x + t.name.len())
     Fn a = sfns[0]
     Fn b = sfns[0]                           // two independent clones, same element
     ok = check(a(1) == 3, 7) && ok
@@ -62,7 +63,7 @@ fn main() {
 
     // --- 4) capture extracted from a Map value ---
     int k = 3
-    Map(string, Fn) tbl = {}
+    Map(Str, Fn) tbl = {}
     tbl.set("add_k", |x| x + k)
     match tbl.get("add_k") {
         Some(mf) => {

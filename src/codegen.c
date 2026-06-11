@@ -11650,10 +11650,24 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 if (sym)
                 {
                     bool is_global = LLVMIsAGlobalVariable(sym->value);
-                    /* BF-045: a borrowed string param must clone on return. */
-                    bool borrowed_string = (ret_type->kind == TYPE_STRING &&
-                                            sym->is_borrowed);
-                    if (is_global || borrowed_string)
+                    /* BF-045: a borrowed string param must clone on return.
+                       Generalized: a borrowed has_drop struct/enum binder must
+                       clone too. A match payload binder of a *borrow* subject
+                       (&Enum param OR a closure's by-move capture, which is
+                       marked is_borrowed so the body's scope cleanup leaves the
+                       drop to the env) aliases the subject's payload zero-copy.
+                       Returning it by transfer hands the caller an alias the
+                       subject's owner (caller / env_drop) will also free →
+                       double-free (string survived only because its borrow ABI
+                       marks cap=BORROWED so the caller skips the free; Str/Vec/Map
+                       carry no such marker). Clone so the caller owns an
+                       independent copy. */
+                    bool borrowed_heap =
+                        sym->is_borrowed &&
+                        (ret_type->kind == TYPE_STRING ||
+                         (ret_type->kind == TYPE_STRUCT && ret_type->as.strukt.has_drop) ||
+                         (ret_type->kind == TYPE_ENUM && ret_type->as.enom.has_drop));
+                    if (is_global || borrowed_heap)
                         ret_global_movetype = true; /* clone, don't transfer */
                     else
                         return_alloca = sym->value; /* local: transfer + skip */
@@ -11716,10 +11730,15 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                    so transferring it to the caller (who also frees) double-frees.
                    Clone here so caller owns an independent copy. (Local strings
                    take the move-transfer path above and must NOT clone.) */
-                if (ret_global_movetype && ret_type &&
-                    ret_type->kind == TYPE_STRING && val)
+                if (ret_global_movetype && ret_type && val)
                 {
-                    val = emit_string_clone_val(ctx, val);
+                    if (ret_type->kind == TYPE_STRING)
+                        val = emit_string_clone_val(ctx, val);
+                    else if ((ret_type->kind == TYPE_STRUCT && ret_type->as.strukt.has_drop) ||
+                             (ret_type->kind == TYPE_ENUM && ret_type->as.enom.has_drop))
+                        /* borrowed has_drop binder (see borrowed_heap above):
+                           deep-copy the loaded value so the caller owns it. */
+                        val = emit_clone_value(ctx, val, type_to_llvm(ctx, ret_type), ret_type);
                 }
 
                 /* Implicit numeric widening to the function's declared return

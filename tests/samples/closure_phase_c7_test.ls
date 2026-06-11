@@ -3,19 +3,20 @@
 
 import std.vec
 import std.map
+import std.str
 
 type IntGetter  = Block(int) -> int
-type StrBuilder = Block(string) -> string
-type MapLookup  = Block(string) -> int
-type Stamper    = Block(string) -> string
+type StrBuilder = Block(Str) -> Str
+type MapLookup  = Block(Str) -> int
+type Stamper    = Block(Str) -> Str
 
 struct Tag {
-    string name
+    Str name
     int weight
 }
 
 fn make_stamper(Tag t) -> Stamper {
-    return |sep| t.name + sep + to_string(t.weight)
+    return |sep| f"{t.name}{sep}{t.weight}"
 }
 
 fn main() {
@@ -27,10 +28,10 @@ fn main() {
     // nums was moved into the closure; post-capture mutations are not possible.
     // The closure owns its own copy.
 
-    // 2) Vec(string) by-move capture: inline closure.
-    Vec(string) words = ["hello", "world"]
+    // 2) Vec(Str) by-move capture: inline closure.
+    Vec(Str) words = ["hello", "world"]
     StrBuilder joiner = |sep| {
-        string out = ""
+        Str out = ""
         int i = 0
         while i < words.len() {
             if i > 0 { out = out + sep }
@@ -41,8 +42,8 @@ fn main() {
     }
     print(joiner("-"))      // hello-world
 
-    // 3) Map(string, int) by-move capture.
-    Map(string, int) scores = {}
+    // 3) Map(Str, int) by-move capture.
+    Map(Str, int) scores = {}
     scores.set("alice", 90)
     MapLookup look = |key| {
         match scores.get(key) {
@@ -54,7 +55,8 @@ fn main() {
     print(look("nobody"))   // 0
 
     // 4) struct(has_drop) by-move: factory pattern; outer moved into env.
-    Tag t = Tag { name: "lvl".upper(), weight: 7 }
+    Str lvl = "lvl"
+    Tag t = Tag { name: lvl.upper(), weight: 7 }
     Stamper st = make_stamper(t)
     print(st(":"))          // LVL:7
 }

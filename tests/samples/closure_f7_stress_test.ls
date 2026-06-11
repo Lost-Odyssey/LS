@@ -1,4 +1,5 @@
 import std.vec
+import std.str
 
 /* Phase F.7 stress test: 1000-iteration loop over all closure capture patterns.
    Each iteration exercises:
@@ -13,7 +14,7 @@ import std.vec
 */
 
 type Counter  = Block() -> int
-type Greeter  = Block() -> string
+type Greeter  = Block() -> Str
 type IntOp    = Block(int) -> int
 
 /* ── S1: POD capture ─────────────────────────────────────────────── */
@@ -22,7 +23,7 @@ fn make_counter(int start) -> Counter {
 }
 
 /* ── S2: string by-move capture ──────────────────────────────────── */
-fn make_greeter(string name) -> Greeter {
+fn make_greeter(Str name) -> Greeter {
     return || { return f"hi {name}" }
 }
 
@@ -41,7 +42,7 @@ fn transform_run(Transformer t) -> int {
 }
 
 /* ── S5: enum capture ────────────────────────────────────────────── */
-fn make_opt_getter(Option(string) val) -> Greeter {
+fn make_opt_getter(Option(Str) val) -> Greeter {
     return || {
         match val {
             Some(s) => { return s }
@@ -56,10 +57,10 @@ fn run_iteration(int i) {
     int cv = c()
     if cv != i { print("S1 fail") }
 
-    /* S2: string capture */
-    string name = f"user{i}"
+    /* S2: Str capture */
+    Str name = f"user{i}"
     Greeter g = make_greeter(name)
-    string gv = g()
+    Str gv = g()
 
     /* S3: struct with Block field */
     Transformer t = make_transformer(i)
@@ -78,11 +79,11 @@ fn run_iteration(int i) {
     if sum4 != 3 { print("S4 fail") }
 
     /* S5: enum(has_drop) capture - named variable path exercises emit_enum_clone_val */
-    string payload = f"msg{i}"
-    Option(string) opt = Some(payload)
+    Str payload = f"msg{i}"
+    Option(Str) opt = Some(payload)
     Greeter og = make_opt_getter(opt)
-    string ov = og()
-    if ov != f"msg{i}" { print("S5 fail") }
+    Str ov = og()
+    if !ov.eq?(f"msg{i}") { print("S5 fail") }
 }
 
 fn main() {

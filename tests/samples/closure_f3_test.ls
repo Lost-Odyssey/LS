@@ -7,8 +7,10 @@
      7
 */
 
+import std.str
+
 type Handler = Block(int) -> int
-type Factory = Block() -> string
+type Factory = Block() -> Str
 
 /* F.3.1: struct with two no-capture Block fields */
 struct Pipe {
@@ -23,7 +25,7 @@ struct Maker {
 
 /* F.3.3: struct with Block + string + POD (multiple has_drop fields) */
 struct MultiDrop {
-    string prefix
+    Str prefix
     Handler transform
     int base
 }
@@ -40,7 +42,7 @@ fn main() {
     print(p.step2(5))    /* 15 */
 
     /* F.3.2: Block field captures string by-move; struct drop frees env */
-    string tag = "factory_ok"
+    Str tag = "factory_ok"
     Maker m = Maker { produce: [move tag] || { return tag } }
     print(m.produce())   /* factory_ok */
 

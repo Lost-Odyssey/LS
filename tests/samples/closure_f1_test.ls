@@ -10,11 +10,12 @@
 
 import std.vec
 import std.map
+import std.str
 
 type Summer = Block() -> int
 type ScoreFn = Block() -> int
 type Counter = Block() -> int
-type MsgFn = Block() -> string
+type MsgFn = Block() -> Str
 
 /* F.1.1: Vec [move] — factory pattern (correct after outer scope exits). */
 fn make_summer() -> Summer {
@@ -38,7 +39,7 @@ fn pollute() -> int {
 
 /* F.1.2: map [move] — factory pattern */
 fn make_score_fn() -> ScoreFn {
-    Map(string, int) scores = {}
+    Map(Str, int) scores = {}
     scores.set("alice", 99)
     return [move scores] || {
         match scores.get("alice") {
@@ -58,7 +59,7 @@ fn make_counter() -> Counter {
 
 /* F.1.4: map [move] with string value */
 fn make_msg_fn() -> MsgFn {
-    Map(string, string) msgs = {}
+    Map(Str, Str) msgs = {}
     msgs.set("greeting", "hello world")
     return [move msgs] || {
         match msgs.get("greeting") {

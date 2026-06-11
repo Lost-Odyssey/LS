@@ -7,8 +7,10 @@
      factory_ok
 */
 
+import std.str
+
 type F1 = Block(int) -> int
-type F0 = Block() -> string
+type F0 = Block() -> Str
 
 /* F.2.1: simple Block assignment — g moved to h, h works, g.env_ptr nulled */
 fn test_f2_1() -> int {
@@ -41,7 +43,7 @@ fn test_f2_4() -> int {
 
 /* F.2.5: Block returned from factory by named variable */
 fn make_greeter() -> F0 {
-    string tag = "factory_ok"
+    Str tag = "factory_ok"
     F0 g = [move tag] || { return tag }
     return g
 }

@@ -11,12 +11,13 @@
 */
 
 import std.vec
+import std.str
 
 enum Direction { North South East West }
 enum Color     { Red Green Blue RGB(int r, int g, int b) }
 
 type IntGetter    = Block() -> int
-type StringGetter = Block() -> string
+type StringGetter = Block() -> Str
 type OptGetter    = Block() -> int
 
 /* F.5.1: capture non-has_drop enum (disc-only) — by-copy */
@@ -50,7 +51,7 @@ fn test_option_capture() {
 
 /* F.5.3: capture Result(int, string) (has_drop enum, by-move) */
 fn test_result_capture() {
-    Result(int, string) r = Err("not found")
+    Result(int, Str) r = Err("not found")
     StringGetter f = || {
         match r {
             Ok(v)  => { return "ok" }
@@ -61,7 +62,7 @@ fn test_result_capture() {
 }
 
 /* F.5.4: factory — return Block capturing has_drop enum */
-fn make_ok_getter(Result(string, string) res) -> StringGetter {
+fn make_ok_getter(Result(Str, Str) res) -> StringGetter {
     return || {
         match res {
             Ok(s)  => { return s }

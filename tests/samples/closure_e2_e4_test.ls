@@ -9,9 +9,10 @@
 
 import std.vec
 import std.map
+import std.str
 
 type Reducer    = Block(Vec(int)) -> int
-type MapQuery   = Block(Map(string, int)) -> int
+type MapQuery   = Block(Map(Str, int)) -> int
 type ArrGetter  = Block(int) -> int
 type ArrSummer  = Block() -> int
 
@@ -24,7 +25,7 @@ fn sum_vec(Vec(int) v) -> int {
     return s
 }
 
-fn map_size(&Map(string, int) m) -> int {
+fn map_size(&Map(Str, int) m) -> int {
     return m.len()
 }
 
@@ -34,7 +35,7 @@ fn apply_reducer(&Vec(int) data, Reducer r) -> int {
     return r(copy)
 }
 
-fn apply_query(Map(string, int) m, MapQuery q) -> int {
+fn apply_query(Map(Str, int) m, MapQuery q) -> int {
     return q(m)
 }
 
@@ -51,7 +52,7 @@ fn test_e2_vec() {
 
 // ── E.2.2: Map(string,int) closure parameter — by-value ─────────────────────
 fn test_e2_map() {
-    Map(string, int) scores = {}
+    Map(Str, int) scores = {}
     scores.set("a", 10)
     scores.set("b", 20)
     MapQuery q = |m| { return map_size(m) }
