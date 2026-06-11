@@ -4,13 +4,14 @@
 // Self-verifying; the driver also runs AOT + memcheck (owned payloads must not
 // leak / double-free). Panic and use-after-move paths live in sibling samples.
 import std.map
+import std.str
 
 fn check(bool c, string label) {
     if c { print(f"  ok: {label}") } else { print(f"FAIL: {label}") }
 }
 
-fn mk(int n) -> Option(int)            { if n > 0 { return Some(n) } return None }
-fn mkr(int n) -> Result(int, string)   { if n > 0 { return Ok(n) }   return Err("neg") }
+fn mk(int n) -> Option(int)         { if n > 0 { return Some(n) } return None }
+fn mkr(int n) -> Result(int, Str)   { if n > 0 { return Ok(n) }   return Err("neg") }
 
 fn main() -> int {
     // ---- unwrap (Option / Result success) ----
@@ -21,9 +22,9 @@ fn main() -> int {
     Option(int) none = None
     check(none.unwrap_or(99) == 99, "Option unwrap_or (None -> fallback)")
     check(Some(7).unwrap_or(0) == 7, "Option unwrap_or (Some -> payload)")
-    Result(int, string) er = Err("bad")
+    Result(int, Str) er = Err("bad")
     check(er.unwrap_or(-1) == -1, "Result unwrap_or (Err -> fallback, drops payload)")
-    Result(int, string) ok = Ok(8)
+    Result(int, Str) ok = Ok(8)
     check(ok.unwrap_or(0) == 8, "Result unwrap_or (Ok -> payload)")
 
     // ---- predicates borrow (do NOT consume the receiver) ----
@@ -33,18 +34,18 @@ fn main() -> int {
     check(d.unwrap() == 1, "receiver still usable after predicates")
     Option(int) e = None
     check(e.is_none?() && !e.is_some?(), "None predicates")
-    Result(int, string) r1 = Ok(3)
+    Result(int, Str) r1 = Ok(3)
     check(r1.is_ok?() && !r1.is_err?(), "Result Ok predicates")
-    Result(int, string) r2 = Err("x")
+    Result(int, Str) r2 = Err("x")
     check(r2.is_err?() && !r2.is_ok?(), "Result Err predicates")
 
     // ---- owned success payload: unwrap moves it out (no leak) ----
-    Option(string) s = Some("hello")
-    string got = s.unwrap()
-    check(got == "hello", "owned string unwrap moves out")
-    Option(string) t = None
-    string fb = t.unwrap_or("fallback")
-    check(fb == "fallback", "owned string unwrap_or fallback")
+    Option(Str) s = Some("hello")
+    Str got = s.unwrap()
+    check(got.eq?("hello"), "owned Str unwrap moves out")
+    Option(Str) t = None
+    Str fb = t.unwrap_or("fallback")
+    check(fb.eq?("fallback"), "owned Str unwrap_or fallback")
 
     // ---- expect success path returns the payload ----
     Option(int) some42 = Some(42)
@@ -65,25 +66,29 @@ fn main() -> int {
     // ---- C2a: Option<->Result conversions (ok / err / ok_or) ----
     // ok_or: Option(T) -> Result(T, E), attaching an error value.
     Option(int) sv = Some(7)
-    Result(int, string) ro = sv.ok_or("missing")
+    Str missing = "missing"
+    Result(int, Str) ro = sv.ok_or(missing)
     check(ro.is_ok?() && ro.unwrap_or(-1) == 7, "ok_or: Some -> Ok")
     Option(int) nv = None
-    Result(int, string) re = nv.ok_or("missing")
+    Str missing2 = "missing"
+    Result(int, Str) re = nv.ok_or(missing2)
     check(re.is_err?() && re.unwrap_or(-1) == -1, "ok_or: None -> Err")
 
     // ok(): Result(T,E) -> Option(T), dropping the error. Chained with no expected
     // type (a second Option instantiation exists above), exercising the
     // hint-directed bare-ctor disambiguation.
-    Result(int, string) cok = Ok(42)
-    Result(int, string) cer = Err("boom")
+    Result(int, Str) cok = Ok(42)
+    Result(int, Str) cer = Err("boom")
     check(cok.ok().unwrap_or(0) == 42, "ok(): Ok -> Some, chained unwrap_or")
     check(cer.ok().unwrap_or(-9) == -9, "ok(): Err -> None (payload dropped)")
 
     // err(): Result(T,E) -> Option(E), keeping the error.
-    Result(int, string) cer2 = Err("bang")
-    check(cer2.err().unwrap_or("clean") == "bang", "err(): Err -> Some(error)")
-    Result(int, string) cok2 = Ok(1)
-    check(cok2.err().unwrap_or("none") == "none", "err(): Ok -> None")
+    Result(int, Str) cer2 = Err("bang")
+    Str clean = "clean"
+    check(cer2.err().unwrap_or(clean).eq?("bang"), "err(): Err -> Some(error)")
+    Result(int, Str) cok2 = Ok(1)
+    Str nonefb = "none"
+    check(cok2.err().unwrap_or(nonefb).eq?("none"), "err(): Ok -> None")
 
     // ok_or + try interop: an Option flows into Result-propagation in one line.
     check(read_first(true) == 5, "try ok_or interop (present)")
@@ -96,12 +101,13 @@ fn main() -> int {
 // `ok_or` adapts an Option into a Result so `try` can propagate it from a
 // Result-returning function — the headline C2a use case.
 fn read_first(bool present) -> int {
-    Result(int, string) r = read_val(present)
+    Result(int, Str) r = read_val(present)
     return match r { Ok(v) => v  Err(e) => -1 }
 }
-fn read_val(bool present) -> Result(int, string) {
+fn read_val(bool present) -> Result(int, Str) {
     Option(int) o = None
     if present { o = Some(5) }
-    int v = try o.ok_or("absent")
+    Str absent = "absent"
+    int v = try o.ok_or(absent)
     return Ok(v)
 }

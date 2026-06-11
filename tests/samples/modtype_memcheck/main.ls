@@ -9,6 +9,7 @@
 module main
 
 import std.vec
+import std.str
 import mod_a as A
 import mod_b as B
 
@@ -36,8 +37,8 @@ fn main() -> int {
        unrelated pre-existing bug tracked as BF-046 (reproduces on root structs).
        The cross-module struct/method/vec/enum/Phase-H coverage above is the point. */
 
-    if na.tag() == "A" && nb.tag() == "B" && first.tag() == "A1" && bfirst.tag() == "B1"
-        && A.unwrap(ba) == "AX" && B.unwrap(bb) == "BX" {
+    if na.tag().eq?("A") && nb.tag().eq?("B") && first.tag().eq?("A1") && bfirst.tag().eq?("B1")
+        && A.unwrap(ba).eq?("AX") && B.unwrap(bb).eq?("BX") {
         print("MODTYPE_MEMCHECK PASS")
     }
     return 0

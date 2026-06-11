@@ -24,8 +24,8 @@ fn main() {
     bool ok = true
 
     // --- escape ---
-    string e = html.escape("a<b>&c")
-    if !check(e == "a&lt;b&gt;&amp;c", 1) { ok = false }
+    Str e = html.escape("a<b>&c")
+    if !check(e.eq?("a&lt;b&gt;&amp;c"), 1) { ok = false }
 
     // --- leaf text node (escaped) ---
     html.HtmlDoc d2 = frag1(html.text("x & y"))
@@ -86,8 +86,8 @@ fn main() {
     ftp0.push("href")
     ftp0.push("u")
     ftp.push(ftp0)
-    string ft = html.fmt_tag("a", ftp, "x<y")
-    if !check(ft == "<a href=\"u\">x&lt;y</a>", 10) { ok = false }
+    Str ft = html.fmt_tag("a", ftp, "x<y")
+    if !check(ft.eq?("<a href=\"u\">x&lt;y</a>"), 10) { ok = false }
 
     // --- document with nested tree + render ---
     Vec(html.HtmlNode) body_kids = {}

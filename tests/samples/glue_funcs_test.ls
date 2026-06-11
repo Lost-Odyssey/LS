@@ -36,9 +36,12 @@ fn main() {
     }
     print("PASS: extern strlen on LS string (uses string→i8* C ABI)")
 
-    // Explicit to_cstr() exposed pointer compares byte-equal to literal
+    // Explicit to_cstr() exposed pointer compares byte-equal to literal.
+    // FFI boundary stays on builtin string (red line: Str must not feed extern fn);
+    // the literal receiver is pinned to `string` so it survives the str-default flip.
     object cs = greeting.to_cstr()
-    object lit_cs = "hello world".to_cstr()
+    string greeting_lit = "hello world"
+    object lit_cs = greeting_lit.to_cstr()
     i64 cmp_n = 11
     int cmp = memcmp(cs, lit_cs, cmp_n)
     if cmp != 0 {
