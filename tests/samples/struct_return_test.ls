@@ -1,12 +1,15 @@
-// Test: return struct with string field - ownership transfer
+// Test: return struct with Str field - ownership transfer
+import std.str
+
 struct Item {
-    string name;
-    int value;
+    Str name
+    int value
 }
 
 fn make() -> Item {
     Item it
-    it.name = "world".upper()
+    Str w = "world"
+    it.name = w.upper()
     it.value = 1
     return it
     // 'it' is marked as is_returning, so its destructor is skipped

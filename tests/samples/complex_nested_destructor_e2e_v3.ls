@@ -1,9 +1,10 @@
 // Complex E2E Test for Nested Struct Destructor Fix
 // This test specifically verifies the bug fix for nested struct destructors
+import std.str
 
 struct Address {
-    string street;
-    string city;
+    Str street;
+    Str city;
 }
 
 impl Address {
@@ -13,7 +14,7 @@ impl Address {
 }
 
 struct Person {
-    string name;
+    Str name;
     Address address;
     int age;
 }

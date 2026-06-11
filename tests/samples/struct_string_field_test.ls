@@ -1,7 +1,9 @@
-// Test: struct with string field - does the string get properly freed?
+// Test: struct with Str field - does the Str get properly freed?
+import std.str
+
 struct Person {
-    string name;
-    int age;
+    Str name
+    int age
 }
 
 fn main() {
@@ -9,6 +11,6 @@ fn main() {
     p.name = "Alice"
     p.age = 30
     print("Person: ", p.name, ", age: ", p.age)
-    
+
     // p goes out of scope here - does p.name get freed?
 }

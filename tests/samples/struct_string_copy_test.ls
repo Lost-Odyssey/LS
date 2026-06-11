@@ -1,16 +1,18 @@
-// Test: struct with string field - implicit copy should be forbidden
+// Test: struct with Str field - variable assignment moves the struct
+import std.str
+
 struct Person {
-    string name;
-    int age;
+    Str name
+    int age
 }
 
 fn main() {
     Person p1
     p1.name = "Alice"
     p1.age = 30
-    
-    // This should produce an error: cannot implicitly copy struct with string fields
+
+    // `Person p2 = p1` moves p1 into p2 (has_drop struct move); p1 is dead after.
     Person p2 = p1
-    
+
     print(p2.name)
 }

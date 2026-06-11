@@ -2,6 +2,7 @@
 // Prints "SFD2 PASS" / "SFD2 FAIL: ...".
 
 import std.vec
+import std.str
 
 struct Sub {
     int a = 5
@@ -12,13 +13,13 @@ struct Cfg {
     int w = 800
     Vec(int) preset = [1, 2, 3]      // literal vec default
     Vec(f64) data = []               // empty vec default
-    Vec(string) names = ["x", "y"]   // string vec default
+    Vec(Str) names = ["x", "y"]      // Str vec default
     Sub inner = Sub{}                // nested struct default
 }
 
-fn check(string got, string want, string name) -> bool {
-    if got == want { return true }
-    print("SFD2 FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+fn check(Str got, Str want, Str name) -> bool {
+    if got.eq?(want) { return true }
+    print(f"SFD2 FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 
@@ -38,8 +39,8 @@ fn main() {
     c.data.push(2.5)
     ok = check(f"{c.data.len()}", "2", "vec_empty_push") && ok
 
-    // string vec default
-    string n1 = c.names[1]
+    // Str vec default
+    Str n1 = c.names[1]
     ok = check(f"{c.names.len()}:{n1}", "2:y", "vec_string_default") && ok
 
     // nested struct default

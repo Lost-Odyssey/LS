@@ -12,23 +12,24 @@
 // sample emits "BYVAL PASS" and never "FAIL", under JIT + AOT + memcheck.
 import std.vec
 import std.map
+import std.str
 
 struct Box { Vec(int) items }
-struct Bag { string name; Map(string,int) counts }
+struct Bag { Str name; Map(Str,int) counts }
 struct Inner { Vec(int) data }
 struct Wrap  { Inner inner }
 
 // by-value struct-with-vec param, read a field
 fn peek(Box b) -> int { return b.items.len() }
-// by-value struct-with-{string,map} param, read both fields
-fn name_len(Bag g) -> int { return g.name.length + g.counts.len() }
+// by-value struct-with-{Str,map} param, read both fields
+fn name_len(Bag g) -> int { return g.name.len() + g.counts.len() }
 // by-value nested struct param: consume the nested field, then read it
 fn use_wrap(Wrap w) -> int {
     Inner local = w.inner          // owns an independent deep copy of w.inner
     return local.data.len()
 }
 
-fn check(bool cond, string label) {
+fn check(bool cond, Str label) {
     if (cond) { print(f"{label} PASS") } else { print(f"{label} FAIL") }
 }
 
@@ -44,7 +45,7 @@ fn main() {
     check(bx.items.len() == 3, "vec_field_after")   // caller still owns bx
 
     // --- struct{string, map} by value, multiple passes ---
-    Map(string,int) m = {}
+    Map(Str,int) m = {}
     m.set("x", 10)
     m.set("y", 20)
     Bag g = Bag { name: "hello", counts: m }

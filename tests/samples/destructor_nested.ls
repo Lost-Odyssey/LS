@@ -1,4 +1,5 @@
 module main
+import std.str
 
 struct Inner {
     int id
@@ -29,7 +30,7 @@ impl Outer {
 
 struct Deep {
     Outer outer
-    string tag
+    Str tag
 }
 
 impl Deep {

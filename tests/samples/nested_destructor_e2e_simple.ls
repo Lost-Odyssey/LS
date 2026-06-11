@@ -1,8 +1,9 @@
 // End-to-End Test for Nested Struct Destructor Fix
 // This test verifies that nested struct destructors are called correctly
+import std.str
 
 struct Inner {
-    string name;
+    Str name;
     int value;
 }
 
@@ -14,7 +15,7 @@ impl Inner {
 
 struct Outer {
     Inner inner;
-    string description;
+    Str description;
     int id;
 }
 

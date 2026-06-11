@@ -1,20 +1,21 @@
 // struct_field_defaults_test.ls — struct field defaults + partial init (v1).
 // Prints "SFDEF PASS" / "SFDEF FAIL: ...".
 import std.vec
+import std.str
 
-// POD + string + bool + f64 + negative-literal defaults
+// POD + Str + bool + f64 + negative-literal defaults
 struct Cfg {
     int w = 1000
     int h = 400
-    string theme = "rainbow"
+    Str theme = "rainbow"
     bool grid = true
     f64 margin = 0.05
     int decimals = -1
 }
 
-// has_drop struct: string field has a default, vec field has none (must be explicit)
+// has_drop struct: Str field has a default, vec field has none (must be explicit)
 struct Box {
-    string label = "box"
+    Str label = "box"
     Vec(f64) data
 }
 
@@ -25,18 +26,18 @@ struct Sc { int a = 6; int b = 7
             int d = 8 }                            // mixed: ';' then newline
 struct Sd { int a = 9, int b = 10, }               // trailing comma
 
-fn check(string got, string want, string name) -> bool {
-    if got == want { return true }
-    print("SFDEF FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+fn check(Str got, Str want, Str name) -> bool {
+    if got.eq?(want) { return true }
+    print(f"SFDEF FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 
-fn cfg_str(Cfg c) -> string {
+fn cfg_str(Cfg c) -> Str {
     return f"{c.w},{c.h},{c.theme},{c.grid},{c.margin:.2f},{c.decimals}"
 }
 
 // consume a Box by value (move); reads its fields
-fn box_sum(Box b) -> string {
+fn box_sum(Box b) -> Str {
     f64 s = 0.0
     int i = 0
     while i < b.data.len() {

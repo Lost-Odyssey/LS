@@ -1,12 +1,15 @@
 // Test: verify struct return ownership - destructor called on caller side
+import std.str
+
 struct Item {
-    string name;
-    int value;
+    Str name
+    int value
 }
 
 fn make() -> Item {
     Item it
-    it.name = "world".upper()
+    Str w = "world"
+    it.name = w.upper()
     it.value = 1
     print("make: returning it")
     return it
