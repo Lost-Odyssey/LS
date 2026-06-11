@@ -1981,6 +1981,19 @@ static LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
         LLVMValueRef user_clone = LLVMGetNamedFunction(ctx->module, clone_fn_name);
         if (user_clone == NULL)
             user_clone = cg_declare_pending_generic_method(ctx, clone_fn_name);
+        if (user_clone == NULL && struct_type->as.strukt.has_user_clone)
+        {
+            /* Concrete (non-generic) user __clone from an imported module whose
+               body hasn't been emitted yet in this LLVM module (module functions
+               can emit before the defining std module). Forward-declare
+               `<llvm_name>.__clone : Struct (ptr)` — JIT/AOT linking resolves it
+               to the real definition. Falling through to the field-wise
+               auto-clone here would shallow-copy raw *T buffers and double-free
+               (hit by Str-by-value args inside module functions). */
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+            LLVMTypeRef ucfn_t = LLVMFunctionType(llvm_struct_type, &ptr_t, 1, 0);
+            user_clone = LLVMAddFunction(ctx->module, clone_fn_name, ucfn_t);
+        }
         if (user_clone != NULL)
         {
             /* __clone(&self): spill the value to a temp to get a self pointer. */

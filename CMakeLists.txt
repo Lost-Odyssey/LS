@@ -748,6 +748,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# Regression: owned Str cloned inside a MODULE function (by-value Map.set arg).
+# Guards the has_user_clone forward-declaration in emit_struct_clone_val —
+# without it the clone fell back to field-wise shallow copy of the raw *u8
+# buffer => double-free (found migrating std/env to Str). 0/0/0.
+add_test(
+    NAME test_str_modfn_clone
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_modfn_clone/main.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_modfn_clone
+        -DMARKER=STRMC
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # C1: Option/Result combinators (unwrap/expect/unwrap_or/is_some?/is_none?/
 # is_ok?/is_err?), compiler-lowered like try/force-unwrap. Positive JIT+AOT+
 # memcheck + negative unwrap-None-abort + use-after-move compile reject

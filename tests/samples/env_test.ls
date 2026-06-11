@@ -1,6 +1,7 @@
 // env_test.ls — Tests for the env stdlib module.
 
 import env
+import std.str
 
 fn main() -> int {
     // Test 1: env.has — PATH should always be set
@@ -12,14 +13,14 @@ fn main() -> int {
     print("PASS: env.has")
 
     // Test 2: env.get — PATH returns Some
-    Option(string) p = env.get("PATH")
+    Option(Str) p = env.get("PATH")
     match p {
         None     => { print("FAIL: env.get PATH returned None"); return 1 }
         Some(v)  => { print("PASS: env.get") }
     }
 
     // Test 3: env.get on missing var returns None
-    Option(string) missing = env.get("__LS_NO_SUCH_VAR_12345__")
+    Option(Str) missing = env.get("__LS_NO_SUCH_VAR_12345__")
     match missing {
         None    => { print("PASS: env.get missing") }
         Some(v) => { print("FAIL: env.get missing should be None"); return 1 }
@@ -64,7 +65,7 @@ fn main() -> int {
 
     // Test 8: env.all — returns non-empty map containing PATH
     env.set("__LS_ALL_TEST__", "all_works")
-    Map(string, string) all = env.all()
+    Map(Str, Str) all = env.all()
     if all.has?("__LS_ALL_TEST__") {
         print("PASS: env.all contains set var")
     } else {

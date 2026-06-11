@@ -45,6 +45,7 @@ struct Type {
             int field_count;
             bool has_drop;           /* true if struct has a __drop destructor */
             bool has_user_drop;      /* true if __drop was user-defined (not auto-generated) */
+            bool has_user_clone;     /* true if __clone was user-defined (raw-pointer owners) */
             void *drop_fn;           /* LLVMValueRef: complete __drop function (codegen use) */
             bool is_extern_c;        /* true = declared via 'extern struct', C-ABI layout, no drop */
             /* VR-LIM-018 / F6: generic-instantiation metadata (set by

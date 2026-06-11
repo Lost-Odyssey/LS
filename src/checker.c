@@ -1721,12 +1721,16 @@ static void instantiate_impl_method_types(
         for (int m = 0; m < impl_node->as.impl_decl.method_count; m++)
         {
             AstNode *mm = impl_node->as.impl_decl.methods[m];
-            if (mm->kind == AST_FN_DECL && mm->as.fn_decl.name &&
-                strcmp(mm->as.fn_decl.name, "__drop") == 0)
+            if (mm->kind != AST_FN_DECL || mm->as.fn_decl.name == NULL)
+                continue;
+            if (strcmp(mm->as.fn_decl.name, "__drop") == 0)
             {
                 struct_type->as.strukt.has_drop = true;
                 struct_type->as.strukt.has_user_drop = true;
-                break;
+            }
+            else if (strcmp(mm->as.fn_decl.name, "__clone") == 0)
+            {
+                struct_type->as.strukt.has_user_clone = true;
             }
         }
         return;
@@ -1802,6 +1806,10 @@ static void instantiate_impl_method_types(
         {
             struct_type->as.strukt.has_drop = true;
             struct_type->as.strukt.has_user_drop = true;
+        }
+        if (strcmp(mname, "__clone") == 0)
+        {
+            struct_type->as.strukt.has_user_clone = true;
         }
 
         /* Build concrete method type: self ptr (if instance) + user params */
@@ -8016,6 +8024,18 @@ static void check_impl_decl(Checker *c, AstNode *node)
                 st->as.strukt.has_drop = true;
                 st->as.strukt.has_user_drop = true;
             }
+        }
+
+        /* Record a user-defined __clone (raw-pointer-owning structs supply
+           their own deep copy). Codegen needs this to forward-declare the
+           symbol when the defining module's body is emitted after a consumer
+           module — without it, emit_struct_clone_val silently falls back to
+           the field-wise auto-clone, which shallow-copies raw *T buffers and
+           double-frees (e.g. Str clone in another module's function). */
+        if (!is_static && !is_enum_impl && !is_builtin_impl &&
+            strcmp(method->as.fn_decl.name, "__clone") == 0)
+        {
+            st->as.strukt.has_user_clone = true;
         }
     }
 
