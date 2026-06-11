@@ -5,7 +5,7 @@ import std.vec
 //   - POD struct (no has_drop) follows clone semantics
 //   - vec.push on has_drop struct transfers ownership
 struct Pod { int x; int y; }
-struct Person { string name; int age; }
+struct Person { Str name; int age; }
 
 fn main() -> int {
     // --- POD struct: clone semantics, source remains usable. ---

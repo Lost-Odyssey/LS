@@ -5,7 +5,7 @@
 // For built-in container ops (vec.push / map.set / ...), ownership is already
 // transferred unconditionally, so `vec.push(x)` and `vec.push(__move(x))` are
 // identical at both checker and codegen level.
-struct Person { string name; int age; }
+struct Person { Str name; int age; }
 
 fn consume(Person who) {
     // `who` is owned by this function. Its strings will be freed at scope exit.
