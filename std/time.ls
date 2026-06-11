@@ -2,6 +2,7 @@
 // Pure LS — platform differences handled by std.os (os_win32.c / os_posix.c).
 
 import std.os as _os
+import std.str
 
 // ---- Public types ----
 
@@ -75,40 +76,49 @@ fn now_utc() -> DateTime {
 
 // ---- Formatting ----
 
-fn format(DateTime dt, string fmt) -> string {
+fn format(DateTime dt, Str fmt) -> Str {
     object r = _os.raw_time_format(dt.year, dt.month, dt.day,
                                     dt.hour, dt.minute, dt.second,
                                     dt.weekday, dt.yday, fmt)
-    return from_cstr(r)
+    string s = from_cstr(r)
+    return s
 }
 
 // Returns an ISO 8601 string: "2026-05-16T10:30:00+08:00"
-fn iso8601(DateTime dt) -> string {
-    string date_part = format(dt, "%Y-%m-%dT%H:%M:%S")
+fn iso8601(DateTime dt) -> Str {
+    Str out = format(dt, "%Y-%m-%dT%H:%M:%S")
     int off = dt.utcoff
     if off == 0 {
-        return date_part + "Z"
+        Str z = "Z"
+        out.push_str(z)
+        return out
     }
-    string sign = "+"
+    int o = off
     if off < 0 {
-        sign = "-"
-        off = 0 - off
+        o = 0 - off
+        out.push_byte(45)   // '-'
+    } else {
+        out.push_byte(43)   // '+'
     }
-    int hh = off / 3600
-    int mm = (off % 3600) / 60
-    string hh_s = ""
-    string mm_s = ""
-    if hh < 10 { hh_s = f"0{hh}" } else { hh_s = f"{hh}" }
-    if mm < 10 { mm_s = f"0{mm}" } else { mm_s = f"{mm}" }
-    return date_part + sign + hh_s + ":" + mm_s
+    int hh = o / 3600
+    int mm = (o % 3600) / 60
+    Str hh_s = f"{hh}"
+    Str mm_s = f"{mm}"
+    Str zero = "0"
+    if hh < 10 { out.push_str(zero) }
+    out.push_str(hh_s)
+    out.push_byte(58)       // ':'
+    if mm < 10 { out.push_str(zero) }
+    out.push_str(mm_s)
+    return out
 }
 
 // ---- Parsing ----
 
 // Parses text using strftime-style format.
 // Supported specifiers: %Y %m %d %H %M %S (and literal separators).
-// Returns Ok(DateTime) or Err(string).
-fn parse(string text, string fmt) -> Result(DateTime, string) {
+// Returns Ok(DateTime) or Err(Str).
+fn parse(Str text, Str fmt) -> Result(DateTime, Str) {
     int ok = _os.raw_time_parse(text, fmt)
     if ok == 0 {
         return Err(f"time.parse: cannot parse '{text}' with format '{fmt}'")
@@ -150,4 +160,4 @@ fn diff_s(DateTime dt1, DateTime dt2) -> i64 {
 fn sleep_ms(i64 ms) { _os.raw_sleep_ms(ms) }
 fn sleep_us(i64 us) { _os.raw_sleep_us(us) }
 
-fn now() -> string { return iso8601(now_utc())}
+fn now() -> Str { return iso8601(now_utc())}

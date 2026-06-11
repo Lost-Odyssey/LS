@@ -2,6 +2,7 @@
 // Tests: unix timestamps, duration arithmetic, now_local/now_utc field ranges,
 // format, parse, diff_s, add, sleep_ms, iso8601.
 import std.time as T
+import std.str
 
 fn main() {
     // ---- Unix timestamp sanity ----
@@ -62,7 +63,7 @@ fn main() {
     if diff == exp_diff { print("PASS: diff_s") } else { print("FAIL: diff_s") }
 
     // ---- parse ----
-    Result(DateTime, string) pr = T.parse("2026-05-17", "%Y-%m-%d")
+    Result(DateTime, Str) pr = T.parse("2026-05-17", "%Y-%m-%d")
     match pr {
         Ok(pdt) => {
             if pdt.year == 2026 { print("PASS: parse year") } else { print("FAIL: parse year") }
