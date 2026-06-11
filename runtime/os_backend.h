@@ -24,6 +24,8 @@
  * double-free on the next run).
  */
 void        ls_os_exec_run(const char *cmd);
+void       *ls_os_exec_stdout_ptr(void);
+void       *ls_os_exec_stderr_ptr(void);
 void       *ls_os_exec_take_stdout(void);
 long long   ls_os_exec_stdout_len(void);
 void       *ls_os_exec_take_stderr(void);

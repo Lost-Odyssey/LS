@@ -1,5 +1,6 @@
 // proc_test.ls — Tests for the proc stdlib module.
 
+import std.str
 import std.vec
 import proc
 
@@ -24,7 +25,7 @@ fn main() -> int {
 
     // Test 3: proc.args() — called with no extra args, should be empty
     // (when run as: ls run proc_test.ls — no user args follow)
-    Vec(string) args = proc.args()
+    Vec(Str) args = proc.args()
     print(f"PASS: proc.args count={args.len()}")
 
     // Test 4: proc.run — echo succeeds with exit code 0
@@ -37,14 +38,14 @@ fn main() -> int {
     }
 
     // Test 5: proc.exec — capture echo output
-    Result(string, string) r = proc.exec("echo hello_from_exec")
+    Result(Str, Str) r = proc.exec("echo hello_from_exec")
     match r {
         Err(e) => {
             print(f"FAIL: proc.exec error: {e}")
             return 1
         }
         Ok(out) => {
-            if out.contains("hello_from_exec") {
+            if out.contains?("hello_from_exec") {
                 print("PASS: proc.exec output")
             } else {
                 print(f"FAIL: proc.exec unexpected output: {out}")
@@ -54,7 +55,7 @@ fn main() -> int {
     }
 
     // Test 6: proc.exec — non-zero exit returns Err
-    Result(string, string) r2 = proc.exec("exit 1")
+    Result(Str, Str) r2 = proc.exec("exit 1")
     match r2 {
         Ok(v) => {
             print("FAIL: proc.exec exit 1 should return Err")
@@ -66,14 +67,14 @@ fn main() -> int {
     }
 
     // Test 7: proc.exec_full — separate stdout/stderr
-    Result(ExecResult, string) r3 = proc.exec_full("echo stdout_line")
+    Result(ExecResult, Str) r3 = proc.exec_full("echo stdout_line")
     match r3 {
         Err(e) => {
             print(f"FAIL: exec_full error: {e}")
             return 1
         }
         Ok(res) => {
-            if res.stdout.contains("stdout_line") && res.exit_code == 0 {
+            if res.stdout.contains?("stdout_line") && res.exit_code == 0 {
                 print("PASS: proc.exec_full")
             } else {
                 print(f"FAIL: exec_full stdout={res.stdout} code={res.exit_code}")

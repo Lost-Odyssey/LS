@@ -6,11 +6,12 @@
 //   world
 //   123
 
+import std.str
 import std.vec
 import std.proc as proc
 
 fn main() -> int {
-    Vec(string) a = proc.args()
+    Vec(Str) a = proc.args()
     a.each(|s| { print(s) })
     return 0
 }

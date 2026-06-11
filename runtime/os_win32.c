@@ -107,6 +107,12 @@ void ls_os_exec_run(const char *cmd) {
     g_exec_ok = 1;
 }
 
+/* Non-owning peeks: buffers stay owned by the backend (freed by the next
+   ls_os_exec_run). LS copies out of them instead of taking ownership, so the
+   LS side never frees a backend-malloc'd pointer (memcheck: INVALID FREE). */
+void *ls_os_exec_stdout_ptr(void) { return g_exec_stdout; }
+void *ls_os_exec_stderr_ptr(void) { return g_exec_stderr; }
+
 void *ls_os_exec_take_stdout(void) {
     void *p = g_exec_stdout; g_exec_stdout = NULL; return p;
 }

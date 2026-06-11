@@ -106,6 +106,8 @@ int jit_init(JitEngine *engine) {
         /* os backend — process execution */
         extern void        ls_os_exec_run(const char *);
         extern void       *ls_os_exec_take_stdout(void);
+        extern void       *ls_os_exec_stdout_ptr(void);
+        extern void       *ls_os_exec_stderr_ptr(void);
         extern long long   ls_os_exec_stdout_len(void);
         extern void       *ls_os_exec_take_stderr(void);
         extern long long   ls_os_exec_stderr_len(void);
@@ -209,7 +211,7 @@ int jit_init(JitEngine *engine) {
     pairs[i].Sym.Flags.TargetFlags = 0; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[88];
+        LLVMOrcCSymbolMapPair pairs[90];
         /* 0-5: memcheck */
         REG( 0, ls_mc_alloc);
         REG( 1, ls_mc_free);
@@ -310,9 +312,11 @@ int jit_init(JitEngine *engine) {
         REG(85, __ls_regex_named_name);
         REG(86, __ls_regex_named_index);
         REG(87, __ls_readline_ptr);
+        REG(88, ls_os_exec_stdout_ptr);
+        REG(89, ls_os_exec_stderr_ptr);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 88);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 90);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */

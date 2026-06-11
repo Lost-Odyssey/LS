@@ -19,6 +19,8 @@
 extern fn ls_os_exec_run(string cmd)
 extern fn ls_os_exec_take_stdout() -> object
 extern fn ls_os_exec_take_stderr() -> object
+extern fn ls_os_exec_stdout_ptr() -> object
+extern fn ls_os_exec_stderr_ptr() -> object
 extern fn ls_os_exec_stdout_len() -> i64
 extern fn ls_os_exec_stderr_len() -> i64
 extern fn ls_os_exec_get_code() -> int
@@ -26,6 +28,8 @@ extern fn ls_os_exec_get_ok() -> int
 
 fn raw_exec_run(string cmd) { ls_os_exec_run(cmd) }
 fn raw_exec_take_stdout() -> object { return ls_os_exec_take_stdout() }
+fn raw_exec_stdout_ptr() -> object { return ls_os_exec_stdout_ptr() }
+fn raw_exec_stderr_ptr() -> object { return ls_os_exec_stderr_ptr() }
 fn raw_exec_take_stderr() -> object { return ls_os_exec_take_stderr() }
 fn raw_exec_stdout_len() -> i64 { return ls_os_exec_stdout_len() }
 fn raw_exec_stderr_len() -> i64 { return ls_os_exec_stderr_len() }
