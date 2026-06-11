@@ -1,7 +1,7 @@
 // trait_call_test.ls — Step 6: verify trait methods can be called
 
 trait Greet {
-    fn greet(&self) -> string
+    fn greet(&self) -> Str
 }
 
 trait HasValue {
@@ -9,12 +9,12 @@ trait HasValue {
 }
 
 struct Person {
-    string name
+    Str name
     int age
 }
 
 impl Greet for Person {
-    fn greet(&self) -> string {
+    fn greet(&self) -> Str {
         return self.name
     }
 }
@@ -27,7 +27,7 @@ impl HasValue for Person {
 
 // Regular impl still works alongside trait impls
 impl Person {
-    static fn create(string n, int a) -> Person {
+    static fn create(Str n, int a) -> Person {
         return Person { name: n, age: a }
     }
 }

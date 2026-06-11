@@ -1,9 +1,9 @@
-// Vec(Vec(string)) build + .get + drop (B)
+// Vec(Vec(Str)) build + .get + drop (B)
 import std.vec
 
 fn main() {
-    Vec(Vec(string)) m = {}
-    Vec(string) r = ["a","b"]; m.push(r)
-    Vec(string) g = m.get(0)
+    Vec(Vec(Str)) m = {}
+    Vec(Str) r = ["a","b"]; m.push(r)
+    Vec(Str) g = m.get(0)
     print(g.len())
 }

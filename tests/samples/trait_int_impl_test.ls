@@ -1,23 +1,23 @@
 // trait_int_impl_test.ls — Step 11: impl trait for builtin types
 
 trait Describable {
-    fn describe(&self) -> string
+    fn describe(&self) -> Str
 }
 
 impl Describable for int {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         return f"int:{self}"
     }
 }
 
 impl Describable for f64 {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         return f"f64:{self}"
     }
 }
 
 impl Describable for bool {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         if self {
             return "bool:true"
         }

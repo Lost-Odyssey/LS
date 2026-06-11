@@ -1,7 +1,7 @@
 // trait_struct_bound_reject.ls — negative test: type doesn't satisfy struct bound
 
 trait Describable {
-    fn describe(&self) -> string
+    fn describe(&self) -> Str
 }
 
 struct Wrapper(T: Describable) {

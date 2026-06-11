@@ -5,7 +5,7 @@
 
 import std.map
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 // helper: Option(int) -> int with sentinel for miss
 fn gv(&Map(int, int) m, int k) -> int {

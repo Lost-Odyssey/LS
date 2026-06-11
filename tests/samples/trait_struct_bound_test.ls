@@ -1,7 +1,7 @@
 // trait_struct_bound_test.ls — Step 13: trait bounds on generic struct type params
 
 trait Describable {
-    fn describe(&self) -> string
+    fn describe(&self) -> Str
 }
 
 struct Circle {
@@ -9,7 +9,7 @@ struct Circle {
 }
 
 impl Describable for Circle {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         return f"Circle(r={self.radius})"
     }
 }

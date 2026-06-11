@@ -1,7 +1,7 @@
 // trait_constraint_reject.ls — negative: type doesn't satisfy trait bound
 
 trait Describable {
-    fn describe(&self) -> string
+    fn describe(&self) -> Str
 }
 
 struct Circle {
@@ -9,7 +9,7 @@ struct Circle {
 }
 
 impl Describable for Circle {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         return "circle"
     }
 }

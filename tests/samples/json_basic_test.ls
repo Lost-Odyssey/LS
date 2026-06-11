@@ -145,7 +145,7 @@ fn main() {
     }
 
     // ---- Test 11: Nested structure ----
-    string nested = "{\"users\": [{\"name\": \"Bob\", \"active\": true}], \"count\": 1}"
+    Str nested = "{\"users\": [{\"name\": \"Bob\", \"active\": true}], \"count\": 1}"
     Result(JsonValue, Str) r11 = json.parse(nested)
     match r11 {
         Ok(v) => {
@@ -158,7 +158,7 @@ fn main() {
     Result(JsonValue, Str) r12 = json.parse("{\"a\": 1, \"b\": [2, 3]}")
     match r12 {
         Ok(v) => {
-            string pretty = json.stringify_pretty(v, 2)
+            Str pretty = json.stringify_pretty(v, 2)
             print("PASS 12: pretty=")
             print(pretty)
         }

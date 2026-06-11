@@ -1,7 +1,7 @@
 // trait_bounds_parse_test.ls — Step 7: verify trait bounds syntax parses
 
 trait Printable {
-    fn to_string(&self) -> string
+    fn to_string(&self) -> Str
 }
 
 trait HasValue {
@@ -14,7 +14,7 @@ struct Point {
 }
 
 impl Printable for Point {
-    fn to_string(&self) -> string {
+    fn to_string(&self) -> Str {
         return "point"
     }
 }

@@ -1,7 +1,7 @@
 // impl_trait_parse_test.ls — Step 4: verify impl Trait for Struct parsing
 
 trait Printable {
-    fn to_string(&self) -> string
+    fn to_string(&self) -> Str
 }
 
 trait Comparable {
@@ -14,7 +14,7 @@ struct Point {
 }
 
 impl Printable for Point {
-    fn to_string(&self) -> string {
+    fn to_string(&self) -> Str {
         return "point"
     }
 }

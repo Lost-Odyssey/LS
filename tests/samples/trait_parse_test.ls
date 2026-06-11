@@ -2,7 +2,7 @@
 
 // Simple trait with one method
 trait Printable {
-    fn to_string(&self) -> string
+    fn to_string(&self) -> Str
 }
 
 // Trait with multiple methods

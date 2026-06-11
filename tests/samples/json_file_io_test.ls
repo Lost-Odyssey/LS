@@ -52,7 +52,7 @@ fn main() {
     match r4 {
         Err(e) => { print(f"FAIL 4: load error={e}"); return }
         Ok(data) => {
-            string s1 = json.stringify(data)
+            Str s1 = json.stringify(data)
 
             Result(int, Str) wr = json.save_compact("json_e2e_out.json", data)
             match wr {
@@ -64,7 +64,7 @@ fn main() {
             match r4b {
                 Err(e) => { print(f"FAIL 4b: load back error={e}"); return }
                 Ok(data2) => {
-                    string s2 = json.stringify(data2)
+                    Str s2 = json.stringify(data2)
                     if s1.compare(s2) == 0 { print("PASS 4b: compact round-trip matches") }
                     else { print("FAIL 4b: compact round-trip mismatch") }
                 }
@@ -77,7 +77,7 @@ fn main() {
     match r5 {
         Err(e) => { print(f"FAIL 5: load error={e}"); return }
         Ok(data) => {
-            string s1 = json.stringify(data)
+            Str s1 = json.stringify(data)
 
             Result(int, Str) wr = json.save_file("json_e2e_out.json", data)
             match wr {
@@ -100,7 +100,7 @@ fn main() {
             match r5c {
                 Err(e) => { print(f"FAIL 5c: re-parse error={e}"); return }
                 Ok(data2) => {
-                    string s2 = json.stringify(data2)
+                    Str s2 = json.stringify(data2)
                     if s1.compare(s2) == 0 { print("PASS 5c: pretty round-trip matches") }
                     else { print("FAIL 5c: pretty round-trip mismatch") }
                 }

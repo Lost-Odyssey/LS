@@ -1,7 +1,7 @@
 // trait_extra_method.ls — negative test: extra method not in trait
 
 trait Printable {
-    fn to_string(&self) -> string
+    fn to_string(&self) -> Str
 }
 
 struct Point {
@@ -11,7 +11,7 @@ struct Point {
 
 // Implements to_string (correct) + extra method 'foo' (not in trait)
 impl Printable for Point {
-    fn to_string(&self) -> string {
+    fn to_string(&self) -> Str {
         return "point"
     }
     fn foo(&self) -> int {

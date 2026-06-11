@@ -7,9 +7,9 @@ import std.map
 enum JV {
     Null
     Num(f64 val)
-    Str(string val)
+    Text(Str val)
     Arr(Vec(JV) items)
-    Obj(Map(string, JV) entries)
+    Obj(Map(Str, JV) entries)
 }
 
 fn main() {
@@ -28,9 +28,9 @@ fn main() {
     }
 
     // Test 3: Str variant
-    JV c = Str("hello")
+    JV c = Text("hello")
     match c {
-        Str(s) => print(f"PASS 3: Str={s}")
+        Text(s) => print(f"PASS 3: Str={s}")
         _ => print("FAIL 3")
     }
 
@@ -38,7 +38,7 @@ fn main() {
     Vec(JV) items = {}
     items.push(Num(1.0))
     items.push(Num(2.0))
-    items.push(Str("three"))
+    items.push(Text("three"))
     JV d = Arr(items)
     match d {
         Arr(arr) => print(f"PASS 4: Arr len={arr.len()}")
@@ -46,8 +46,8 @@ fn main() {
     }
 
     // Test 5: Obj variant with Map(string, JV)
-    Map(string, JV) entries = {}
-    entries.set("name", Str("Alice"))
+    Map(Str, JV) entries = {}
+    entries.set("name", Text("Alice"))
     entries.set("age", Num(30.0))
     JV e = Obj(entries)
     match e {

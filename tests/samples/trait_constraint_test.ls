@@ -5,7 +5,7 @@ trait HasValue {
 }
 
 trait Describable {
-    fn describe(&self) -> string
+    fn describe(&self) -> Str
 }
 
 struct Circle {
@@ -19,7 +19,7 @@ impl HasValue for Circle {
 }
 
 impl Describable for Circle {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         return "circle"
     }
 }
@@ -29,7 +29,7 @@ struct Square {
 }
 
 impl Describable for Square {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         return "square"
     }
 }
@@ -39,8 +39,8 @@ fn get_value(T: HasValue)(T x) -> int {
     return x.value()
 }
 
-// Single bound, returns string
-fn get_desc(T: Describable)(T x) -> string {
+// Single bound, returns Str
+fn get_desc(T: Describable)(T x) -> Str {
     return x.describe()
 }
 

@@ -2,7 +2,7 @@
 // should produce compile error: "conflicting method 'greet'"
 
 trait Greet {
-    fn greet(&self) -> string
+    fn greet(&self) -> Str
 }
 
 trait HasValue {
@@ -10,12 +10,12 @@ trait HasValue {
 }
 
 struct Person {
-    string name
+    Str name
     int age
 }
 
 impl Greet for Person {
-    fn greet(&self) -> string {
+    fn greet(&self) -> Str {
         return self.name
     }
 }

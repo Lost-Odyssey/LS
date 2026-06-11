@@ -5,7 +5,7 @@
 import std.map
 
 fn main() -> int {
-    Map(string, int) m = {}
+    Map(Str, int) m = {}
     m["present"] = 1
     int bad = m["absent"]          // missing key -> print + abort()
     print(f"AFTER {bad}")          // must never run

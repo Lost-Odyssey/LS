@@ -1,8 +1,8 @@
-// Map(string,string) build + drop
+// Map(Str,Str) build + drop
 import std.map
 
 fn main() {
-    Map(string,string) m = {}
+    Map(Str,Str) m = {}
     m.set("k".copy(), "v".copy())
     print(m.has?("k"))
 }

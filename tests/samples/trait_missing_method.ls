@@ -1,7 +1,7 @@
 // trait_missing_method.ls — negative test: missing method in trait impl
 
 trait Printable {
-    fn to_string(&self) -> string
+    fn to_string(&self) -> Str
     fn display(&self)
 }
 
@@ -12,7 +12,7 @@ struct Point {
 
 // Only implements to_string, missing display
 impl Printable for Point {
-    fn to_string(&self) -> string {
+    fn to_string(&self) -> Str {
         return "point"
     }
 }

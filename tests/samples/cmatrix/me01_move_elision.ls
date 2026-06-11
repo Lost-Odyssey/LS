@@ -13,7 +13,7 @@ import std.str
 struct Box { Str label }
 enum Tag { A(Str), B }
 
-fn check(bool ok, string what) {
+fn check(bool ok, Str what) {
     if ok { print(f"ok {what}") } else { print(f"FAIL {what}") }
 }
 
@@ -56,8 +56,8 @@ fn main() {
     check(v2.get(0).eq?("ETA"), "vec-var")
 
     // --- Map var_decl move ---
-    Map(string,int) p1 = { "k": 7 }
-    Map(string,int) p2 = p1
+    Map(Str,int) p1 = { "k": 7 }
+    Map(Str,int) p2 = p1
     bool map_ok = false
     match p2.get("k") {
         Some(v) => { map_ok = v == 7 }
