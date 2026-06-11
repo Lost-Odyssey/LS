@@ -1,6 +1,6 @@
-// Test: nested struct with string in deep level
+// Test: nested struct with Str in deep level
 struct Inner {
-    string data;
+    Str data;
 }
 
 struct Outer {

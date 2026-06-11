@@ -1,6 +1,6 @@
-// Test: 3-level nested struct with string at deepest level
+// Test: 3-level nested struct with Str at deepest level
 struct Level3 {
-    string data;
+    Str data;
 }
 
 struct Level2 {

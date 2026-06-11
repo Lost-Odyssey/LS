@@ -1,6 +1,6 @@
-// Test: 5-level deep nested struct with string at bottom
+// Test: 5-level deep nested struct with Str at bottom
 struct L5 {
-    string data;
+    Str data;
 }
 struct L4 {
     L5 l5;

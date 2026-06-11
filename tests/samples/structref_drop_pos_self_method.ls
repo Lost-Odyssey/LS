@@ -1,11 +1,11 @@
 /* Phase B: drop struct 上的 &self / &!self 方法。 */
-struct Person { string name; int age; }
+struct Person { Str name; int age; }
 
 impl Person {
     fn greet(&self) {
         print(self.name)
     }
-    fn rename(&!self, string n) {
+    fn rename(&!self, Str n) {
         self.name = n
     }
 }
@@ -14,7 +14,7 @@ fn through_ro(&Person p) {
     p.greet()
 }
 
-fn through_mut(&!Person p, string n) {
+fn through_mut(&!Person p, Str n) {
     p.rename(n)
     p.greet()  /* &!self -> downgrade to &self method */
 }

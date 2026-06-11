@@ -6,12 +6,12 @@ impl Resource {
     }
 }
 
-fn test_shadowed() -> string {
-    string outer = "outer string"
+fn test_shadowed() -> Str {
+    Str outer = "outer string"
     print("outer created")
     
     {
-        string inner = "inner string"
+        Str inner = "inner string"
         print("inner created")
         return inner
     }
@@ -38,7 +38,7 @@ fn test_struct_shadowed() -> Resource {
 
 fn main() {
     print("=== Test 1: shadowed string ===")
-    string result1 = test_shadowed()
+    Str result1 = test_shadowed()
     print("result1:")
     print(result1)
     

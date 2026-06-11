@@ -1,12 +1,12 @@
-/* Phase B: drop struct (含 string) 借用基础测试。 */
-struct Person { string name; int age; }
+/* Phase B: drop struct (含 Str) 借用基础测试。 */
+struct Person { Str name; int age; }
 
 fn show(&Person p) {
     print(p.name)
     print(p.age)
 }
 
-fn rename(&!Person p, string n) {
+fn rename(&!Person p, Str n) {
     p.name = n
 }
 

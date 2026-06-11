@@ -1,5 +1,5 @@
-fn test_nested_no_shadow() -> string {
-    string x = "hello"
+fn test_nested_no_shadow() -> Str {
+    Str x = "hello"
     {
         print("inner block")
     }
@@ -7,6 +7,6 @@ fn test_nested_no_shadow() -> string {
 }
 
 fn main() {
-    string result = test_nested_no_shadow()
+    Str result = test_nested_no_shadow()
     print(result)
 }

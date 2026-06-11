@@ -1,6 +1,6 @@
-// Test: struct with string field + user-defined __drop()
+// Test: struct with Str field + user-defined __drop()
 struct Person {
-    string name;
+    Str name;
     int age;
 }
 

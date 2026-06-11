@@ -1,6 +1,6 @@
 // Test: Outer has NO user-defined __drop, should auto-generate that calls Inner
 struct Inner {
-    string data;
+    Str data;
 }
 
 struct Outer {

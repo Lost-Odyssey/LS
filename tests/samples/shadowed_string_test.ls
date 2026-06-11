@@ -1,9 +1,9 @@
-fn test_shadowed_string() -> string {
-    string x = "outer"
+fn test_shadowed_string() -> Str {
+    Str x = "outer"
     print("outer created")
     
     {
-        string x = "inner"  // shadows outer
+        Str x = "inner"  // shadows outer
         print("inner created")
         return x  // should NOT drop inner
     }
@@ -14,7 +14,7 @@ fn test_shadowed_string() -> string {
 
 fn main() {
     print("=== Test: shadowed string ===")
-    string result = test_shadowed_string()
+    Str result = test_shadowed_string()
     print("result:")
     print(result)
 }
