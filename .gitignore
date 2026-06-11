@@ -95,3 +95,6 @@ benchmarks/results/*_rs.txt
 benchmarks/results/*_py.txt
 benchmarks/results/*_rb.txt
 benchmarks/results/*_c.txt
+
+# test-run artifacts (samples executed from tests/samples cwd)
+*.tmp
