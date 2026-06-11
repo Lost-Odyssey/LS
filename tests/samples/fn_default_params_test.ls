@@ -1,21 +1,23 @@
 // fn_default_params_test.ls — function positional default parameters (档1).
 // Prints "FNDEF PASS" / "FNDEF FAIL: ...".
 
+import std.str
+
 struct Opts {
     int w = 800
-    string theme = "rainbow"
+    Str theme = "rainbow"
     bool grid = true
 }
 
-fn check(string got, string want, string name) -> bool {
-    if got == want { return true }
-    print("FNDEF FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+fn check(Str got, Str want, Str name) -> bool {
+    if got.eq?(want) { return true }
+    print(f"FNDEF FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 
-// literal defaults (string / int / bool)
-fn label(string base, string sep = "-", int n = 1, bool up = false) -> string {
-    string s = base
+// literal defaults (Str / int / bool)
+fn label(Str base, Str sep = "-", int n = 1, bool up = false) -> Str {
+    Str s = base
     int i = 0
     while i < n { s = s + sep; i = i + 1 }
     if up { s = s + "U" }
@@ -23,7 +25,7 @@ fn label(string base, string sep = "-", int n = 1, bool up = false) -> string {
 }
 
 // struct param default (options-struct pattern: opts = Opts{})
-fn render(string title, Opts o = Opts{}) -> string {
+fn render(Str title, Opts o = Opts{}) -> Str {
     return f"{title}/{o.w}/{o.theme}/{o.grid}"
 }
 

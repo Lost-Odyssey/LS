@@ -6,6 +6,8 @@
 // triggers several realloc migrations (0 -> 4 -> 8 -> 16 -> 32).
 // Prints "ok <label>" / "FAIL <label>" then "RAWPOC PASS".
 
+import std.str
+
 struct RawVecI {
     *int data
     int  len
@@ -41,7 +43,7 @@ impl RawVecI {
     }
 }
 
-fn check(bool c, string l) {
+fn check(bool c, Str l) {
     if c { print(f"ok {l}") } else { print(f"FAIL {l}") }
 }
 

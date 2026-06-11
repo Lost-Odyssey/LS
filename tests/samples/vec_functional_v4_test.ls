@@ -1,5 +1,6 @@
 // Phase V.4 — Vec.reduce(U)(init, Block(U,T)->U) -> U
 import std.vec
+import std.str
 
 fn main() {
     Vec(int) nums = [1, 2, 3, 4, 5]
@@ -71,15 +72,15 @@ fn main() {
     }
     print("PASS: reduce single = 7")
 
-    // === reduce with string concatenation ===
-    Vec(string) words = {}
-    string w1 = "hello"
-    string w2 = " "
-    string w3 = "world"
+    // === reduce with Str concatenation ===
+    Vec(Str) words = {}
+    Str w1 = "hello"
+    Str w2 = " "
+    Str w3 = "world"
     words.push(w1)
     words.push(w2)
     words.push(w3)
-    string joined = words.reduce(string)(f"", |acc, s| acc + s)
+    Str joined = words.reduce(Str)(f"", |acc, s| acc + s)
     if joined.compare("hello world") != 0 {
         print("FAIL: string reduce expected 'hello world' got")
         print(joined)
@@ -87,8 +88,8 @@ fn main() {
     }
     print("PASS: reduce string concat = 'hello world'")
 
-    // === reduce: string length sum ===
-    int total_len = words.reduce(int)(0, |acc, s| acc + s.length)
+    // === reduce: Str length sum ===
+    int total_len = words.reduce(int)(0, |acc, s| acc + s.len())
     if total_len != 11 {
         print("FAIL: total_len expected 11 got")
         print(total_len)

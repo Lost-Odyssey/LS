@@ -5,9 +5,11 @@
 // All buffers are freed; memcheck must be 0/0/0.
 // Prints "ok <label>" / "FAIL <label>" then "PTRIDX PASS".
 
+import std.str
+
 struct Pt { i8 tag; i64 v }   // sizeof 16 (i8@0, pad, i64@8) — stride probe
 
-fn check(bool c, string l) {
+fn check(bool c, Str l) {
     if c { print(f"ok {l}") } else { print(f"FAIL {l}") }
 }
 

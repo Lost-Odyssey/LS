@@ -1,7 +1,9 @@
 // trait_basic_test.ls — Step 9: end-to-end integration test
 
+import std.str
+
 trait Describable {
-    fn describe(&self) -> string
+    fn describe(&self) -> Str
 }
 
 struct Circle {
@@ -9,7 +11,7 @@ struct Circle {
 }
 
 impl Describable for Circle {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         return f"Circle(r={self.radius})"
     }
 }
@@ -19,7 +21,7 @@ struct Square {
 }
 
 impl Describable for Square {
-    fn describe(&self) -> string {
+    fn describe(&self) -> Str {
         return f"Square(s={self.side})"
     }
 }
@@ -29,8 +31,8 @@ fn print_desc(T: Describable)(T x) {
     print(x.describe())
 }
 
-// Constrained generic returning string
-fn get_desc(T: Describable)(T x) -> string {
+// Constrained generic returning Str
+fn get_desc(T: Describable)(T x) -> Str {
     return x.describe()
 }
 
@@ -44,7 +46,7 @@ fn main() {
     print_desc(Square)(s)
 
     // Return value from constrained generic
-    string d = get_desc(Circle)(c)
+    Str d = get_desc(Circle)(c)
     print(d)
 
     // Unconstrained generic still works

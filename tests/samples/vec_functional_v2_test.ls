@@ -1,5 +1,6 @@
 // Phase V.2 — Vec functional methods: filter, find, pos
 import std.vec
+import std.str
 
 fn main() {
     Vec(int) nums = [3, 1, 4, 1, 5, 9, 2, 6]
@@ -55,15 +56,15 @@ fn main() {
     }
     print("PASS: empty.filter = []")
 
-    // === filter with string elements (clone test) ===
-    Vec(string) names = {}
-    string n1 = "alice"
-    string n2 = "bob"
-    string n3 = "charlie"
+    // === filter with Str elements (clone test) ===
+    Vec(Str) names = {}
+    Str n1 = "alice"
+    Str n2 = "bob"
+    Str n3 = "charlie"
     names.push(n1)
     names.push(n2)
     names.push(n3)
-    Vec(string) long_names = names.filter(|s| s.length > 3)
+    Vec(Str) long_names = names.filter(|s| s.len() > 3)
     if long_names.len() != 2 {
         print("FAIL: string filter expected 2 got")
         print(long_names.len())
@@ -117,8 +118,8 @@ fn main() {
         }
     }
 
-    // === find with string (clone test) ===
-    Option(string) fs = names.find(|s| s.length == 3)
+    // === find with Str (clone test) ===
+    Option(Str) fs = names.find(|s| s.len() == 3)
     match fs {
         Some(s) => {
             if s.compare("bob") != 0 {

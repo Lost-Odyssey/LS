@@ -5,12 +5,13 @@
 
 import std.vec
 import std.map
+import std.str
 
 struct Point { int x; int y }
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
-fn get_int(&Map(string, int) m, string k) -> int {
+fn get_int(&Map(Str, int) m, Str k) -> int {
     match m.get(k) {
         Some(v) => { return v }
         None => { return -1 }
@@ -34,8 +35,8 @@ fn main() {
     check(v.len() == 3, "Vec(int) no-init then push")
     check(v.get(0) + v.get(1) + v.get(2) == 6, "Vec(int) values")
 
-    // ---- built-in map, no init ≡ {} ----
-    Map(string, int) m
+    // ---- Map, no init ≡ {} ----
+    Map(Str, int) m
     m.set("a", 10)
     m.set("b", 20)
     check(get_int(m, "a") == 10, "map a")
@@ -45,11 +46,11 @@ fn main() {
     Point p
     check(p.x == 0 && p.y == 0, "struct zero-init")
 
-    // ---- has_drop element container (Vec(string)) ----
-    Vec(string) names
+    // ---- has_drop element container (Vec(Str)) ----
+    Vec(Str) names
     names.push(f"hello")
-    string n0 = names.get(0)
-    check(n0.length == 5, "Vec(string) no-init element")
+    Str n0 = names.get(0)
+    check(n0.len() == 5, "Vec(Str) no-init element")
 
     // ---- nested generic container, no init ----
     Vec(Vec(int)) vv

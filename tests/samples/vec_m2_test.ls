@@ -1,15 +1,16 @@
-// rawvec_m2_test.ls — Step 6 / Gate M2: generic std.vec Vec(T) under
+// vec_m2_test.ls — Step 6 / Gate M2: generic std.vec Vec(T) under
 // monomorphization, across element types, matching builtin vec semantics.
-// Element types: int (POD), string (has_drop scalar), Pt (has_drop struct).
+// Element types: int (POD), Str (has_drop scalar), Pt (has_drop struct).
 // Dimensions: push+grow, get(clone), pop(move-out), set, clear, scope-drop,
 // whole-container move. All paths memcheck 0/0/0.
 // Prints "ok <label>" / "FAIL <label>" then "M2 PASS".
 
 import std.vec
+import std.str
 
-struct Pt { string tag; int v }
+struct Pt { Str tag; int v }
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 fn main() {
     // ───────── Vec(int): POD ─────────
@@ -27,17 +28,17 @@ fn main() {
     vi.clear()
     check(vi.empty?, "int: empty after clear")
 
-    // ───────── Vec(string): has_drop scalar ─────────
-    Vec(string) vs = {}
+    // ───────── Vec(Str): has_drop scalar ─────────
+    Vec(Str) vs = {}
     for (int i = 0; i < 6; i = i + 1) { vs.push(f"s{i}") }
-    check(vs.get(2) == "s2", "str: get(2) clone = s2")
-    match vs.pop() { Some(x) => { check(x == "s5", "str: pop move-out = s5") } None => { check(false, "str pop") } }
+    check(vs.get(2).eq?("s2"), "str: get(2) clone = s2")
+    match vs.pop() { Some(x) => { check(x.eq?("s5"), "str: pop move-out = s5") } None => { check(false, "str pop") } }
     vs.set(1, f"NEW")
-    check(vs.get(1) == "NEW", "str: set(1)=NEW")
+    check(vs.get(1).eq?("NEW"), "str: set(1)=NEW")
     check(vs.len() == 5, "str: len 5")
 
     // whole-container move (vec b = a moves; a dead)
-    Vec(string) vs2 = vs
+    Vec(Str) vs2 = vs
     check(vs2.len() == 5, "str: moved container len 5")
 
     // ───────── Vec(Pt): has_drop struct (recursive element drop) ─────────
@@ -49,10 +50,10 @@ fn main() {
     check(vp.len() == 5, "struct: len 5")
     // aggregate element reads (clone-on-read) + field read-through of a method result
     Pt g = vp.get(2)
-    check(g.tag == "t2", "struct: get(2).tag = t2 (bind)")
-    check(vp.get(0).tag == "t0", "struct: get(0).tag = t0 (rvalue field)")
+    check(g.tag.eq?("t2"), "struct: get(2).tag = t2 (bind)")
+    check(vp.get(0).tag.eq?("t0"), "struct: get(0).tag = t0 (rvalue field)")
     check(vp.get(4).v == 40, "struct: get(4).v = 40 (POD field)")
-    match vp.pop() { Some(p) => { check(p.tag == "t4", "struct: pop().tag = t4") } None => { check(false, "struct pop") } }
+    match vp.pop() { Some(p) => { check(p.tag.eq?("t4"), "struct: pop().tag = t4") } None => { check(false, "struct pop") } }
     check(vp.len() == 4, "struct: len 4 after pop")
 
     print("M2 PASS")

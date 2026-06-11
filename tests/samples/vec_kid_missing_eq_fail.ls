@@ -1,9 +1,10 @@
-// rawvec_kid_missing_eq_fail.ls -- KI-D negative case: calling an equality
+// vec_kid_missing_eq_fail.ls -- KI-D negative case: calling an equality
 // search method on Vec(Pt) must report the method-level where bound.
 
 import std.vec
+import std.str
 
-struct Pt { string tag; int v }
+struct Pt { Str tag; int v }
 
 fn main() {
     Vec(Pt) ps = {}

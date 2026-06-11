@@ -1,13 +1,14 @@
-// rawvec_map_reduce_test.ls -- method-level generic map/reduce on Vec(T).
-// Tests: int->int, int->string, string->string, string->int, struct->string,
-//        reduce with POD accumulator, string accumulator, and struct accumulator.
+// vec_map_reduce_test.ls -- method-level generic map/reduce on Vec(T).
+// Tests: int->int, int->Str, Str->Str, Str->int, struct->Str,
+//        reduce with POD accumulator, Str accumulator, and struct accumulator.
 // All three paths: JIT + AOT + memcheck must pass with 0 leaks.
 
 import std.vec
+import std.str
 
-struct Person { string name; int age }
+struct Person { Str name; int age }
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 fn main() {
 
@@ -18,20 +19,20 @@ fn main() {
     check(doubled[0] == 2 && doubled[2] == 6 && doubled[4] == 10, "map int->int vals")
     check(nums.len() == 5, "map src untouched")
 
-    // ── map: int → string ───────────────────────────────────────────────────
-    Vec(string) strs = nums.map(string)(|x| f"n{x}")
+    // ── map: int → Str ───────────────────────────────────────────────────────
+    Vec(Str) strs = nums.map(Str)(|x| f"n{x}")
     check(strs.len() == 5, "map int->string len")
-    check(strs[0] == "n1" && strs[2] == "n3" && strs[4] == "n5", "map int->string vals")
+    check(strs[0].eq?("n1") && strs[2].eq?("n3") && strs[4].eq?("n5"), "map int->string vals")
 
-    // ── map: string → string ────────────────────────────────────────────────
-    Vec(string) words = [f"apple", f"banana", f"cherry"]
-    Vec(string) upper_words = words.map(string)(|s| s.upper())
+    // ── map: Str → Str ───────────────────────────────────────────────────────
+    Vec(Str) words = [f"apple", f"banana", f"cherry"]
+    Vec(Str) upper_words = words.map(Str)(|s| s.upper())
     check(upper_words.len() == 3, "map str->str len")
-    check(upper_words[0] == "APPLE" && upper_words[2] == "CHERRY", "map str->str vals")
-    check(words[0] == "apple", "map str src untouched")
+    check(upper_words[0].eq?("APPLE") && upper_words[2].eq?("CHERRY"), "map str->str vals")
+    check(words[0].eq?("apple"), "map str src untouched")
 
-    // ── map: string → int (length) ──────────────────────────────────────────
-    Vec(int) lens = words.map(int)(|s| s.length)
+    // ── map: Str → int (length) ──────────────────────────────────────────────
+    Vec(int) lens = words.map(int)(|s| s.len())
     check(lens.len() == 3, "map str->int len")
     check(lens[0] == 5 && lens[1] == 6 && lens[2] == 6, "map str->int vals")
 
@@ -39,17 +40,17 @@ fn main() {
     Vec(int) ages = [20, 30, 40]
     Vec(Person) people = ages.map(Person)(|a| Person { name: f"p{a}", age: a })
     check(people.len() == 3, "map int->struct len")
-    check(people[0].name == "p20" && people[0].age == 20, "map int->struct first")
-    check(people[2].name == "p40" && people[2].age == 40, "map int->struct last")
+    check(people[0].name.eq?("p20") && people[0].age == 20, "map int->struct first")
+    check(people[2].name.eq?("p40") && people[2].age == 40, "map int->struct last")
 
-    // ── map: struct → string ────────────────────────────────────────────────
-    Vec(string) names = people.map(string)(|p| p.name)
+    // ── map: struct → Str ────────────────────────────────────────────────────
+    Vec(Str) names = people.map(Str)(|p| p.name)
     check(names.len() == 3, "map struct->string len")
-    check(names[1] == "p30", "map struct->string val")
+    check(names[1].eq?("p30"), "map struct->string val")
 
     // ── map on empty vec ────────────────────────────────────────────────────
     Vec(int) empty = {}
-    Vec(string) empty_mapped = empty.map(string)(|x| f"x{x}")
+    Vec(Str) empty_mapped = empty.map(Str)(|x| f"x{x}")
     check(empty_mapped.len() == 0, "map empty")
 
     // ── reduce: int sum ─────────────────────────────────────────────────────
@@ -69,18 +70,18 @@ fn main() {
     })
     check(mx == 9, "reduce int max")
 
-    // ── reduce: string join (concat with separator) ──────────────────────────
-    Vec(string) parts = [f"hello", f"world", f"ls"]
-    string joined = parts.reduce(string)(f"", |acc, s| {
-        if acc.length == 0 { return f"" + s }
+    // ── reduce: Str join (concat with separator) ─────────────────────────────
+    Vec(Str) parts = [f"hello", f"world", f"ls"]
+    Str joined = parts.reduce(Str)(f"", |acc, s| {
+        if acc.len() == 0 { return f"{s}" }
         return acc + f", " + s
     })
-    check(joined == "hello, world, ls", "reduce string join")
+    check(joined.eq?("hello, world, ls"), "reduce string join")
 
-    // ── reduce: string collect int-to-string ─────────────────────────────────
+    // ── reduce: Str collect int-to-string ────────────────────────────────────
     Vec(int) digits = [1, 2, 3]
-    string digit_str = digits.reduce(string)(f"", |acc, d| acc + f"{d}")
-    check(digit_str == "123", "reduce int->string concat")
+    Str digit_str = digits.reduce(Str)(f"", |acc, d| acc + f"{d}")
+    check(digit_str.eq?("123"), "reduce int->string concat")
 
     // ── reduce: int accumulator from struct vec ──────────────────────────────
     Vec(Person) group = [
@@ -91,12 +92,12 @@ fn main() {
     int total_age = group.reduce(int)(0, |acc, p| acc + p.age)
     check(total_age == 90, "reduce struct->int sum")
 
-    // ── reduce: string from struct vec ──────────────────────────────────────
-    string name_list = group.reduce(string)(f"", |acc, p| {
-        if acc.length == 0 { return p.name }
+    // ── reduce: Str from struct vec ──────────────────────────────────────────
+    Str name_list = group.reduce(Str)(f"", |acc, p| {
+        if acc.len() == 0 { return p.name }
         return acc + f"," + p.name
     })
-    check(name_list == "alice,bob,cara", "reduce struct->string")
+    check(name_list.eq?("alice,bob,cara"), "reduce struct->string")
 
     // ── reduce on empty vec (returns init) ───────────────────────────────────
     Vec(int) empty2 = {}

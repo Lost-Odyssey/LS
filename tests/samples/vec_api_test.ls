@@ -1,11 +1,12 @@
-// rawvec_api_test.ls — comprehensive Vec(T) API parity with builtin vec.
-// Exercises every method on int (POD) and string (has_drop), incl. move-out
+// vec_api_test.ls — comprehensive Vec(T) API parity with builtin vec.
+// Exercises every method on int (POD) and Str (has_drop), incl. move-out
 // (pop/remove/swap/reverse via __take) and search (index_of/contains/count).
 // memcheck must be 0/0/0. Prints "ok <l>" / "FAIL <l>" then "API PASS".
 
 import std.vec
+import std.str
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 fn main() {
     // ───────────────── int (POD) ─────────────────
@@ -61,41 +62,41 @@ fn main() {
     v.shrink_to_fit()
     check(v.cap() == 0, "shrink empty -> cap 0")
 
-    // ───────────────── string (has_drop) ─────────────────
-    Vec(string) s = [f"a", f"b", f"c", f"d"]
+    // ───────────────── Str (has_drop) ─────────────────
+    Vec(Str) s = [f"a", f"b", f"c", f"d"]
     check(s.len() == 4, "str len 4")
-    check(s[1] == "b", "str index read")
+    check(s[1].eq?("b"), "str index read")
     s[1] = f"B"
-    check(s.get(1) == "B" && s[1] == "B", "str index set")
+    check(s.get(1).eq?("B") && s[1].eq?("B"), "str index set")
     check(s.has?("B"), "str contains B")
     check(s.index_of("c") == 2, "str index_of c")
     check(s.count_eq("missing") == 0, "str count_eq missing")
 
     s.insert(1, f"X")                    // [a,X,b,c,d]
-    check(s.get(1) == "X" && s.get(2) == "B", "str insert")
+    check(s.get(1).eq?("X") && s.get(2).eq?("B"), "str insert")
 
-    string r = s.remove(0)               // -> a, [X,b,c,d]
-    check(r == "a" && s.get(0) == "X", "str remove (move-out)")
+    Str r = s.remove(0)                  // -> a, [X,b,c,d]
+    check(r.eq?("a") && s.get(0).eq?("X"), "str remove (move-out)")
 
     s.swap(0, 3)                         // [d,b,c,X]
-    check(s.get(0) == "d" && s.get(3) == "X", "str swap")
+    check(s.get(0).eq?("d") && s.get(3).eq?("X"), "str swap")
 
     s.reverse()                          // [X,c,b,d]
-    check(s.get(0) == "X" && s.get(3) == "d", "str reverse")
+    check(s.get(0).eq?("X") && s.get(3).eq?("d"), "str reverse")
 
     s.set(0, f"NEW")                     // drop X, [NEW,c,b,d]
-    check(s.get(0) == "NEW", "str set")
+    check(s.get(0).eq?("NEW"), "str set")
 
-    match s.pop() { Some(x) => { check(x == "d", "str pop (move-out)") } None => { check(false, "str pop") } }
+    match s.pop() { Some(x) => { check(x.eq?("d"), "str pop (move-out)") } None => { check(false, "str pop") } }
     check(s.len() == 3, "str len after pop")
 
     s.resize(5, f"fill")                 // [NEW,c,b,fill,fill]
-    check(s.len() == 5 && s.get(4) == "fill", "str resize grow (clone fill)")
+    check(s.len() == 5 && s.get(4).eq?("fill"), "str resize grow (clone fill)")
     s.truncate(2)                        // [NEW,c]
     check(s.len() == 2, "str truncate")
 
-    Vec(string) sc = s.copy()
-    check(sc.len() == 2 && sc.get(1) == "c", "str copy")
+    Vec(Str) sc = s.copy()
+    check(sc.len() == 2 && sc.get(1).eq?("c"), "str copy")
 
     print("API PASS")
     // scope exit: v (empty), c, s, sc all drop their remaining elements + buffers.

@@ -1,11 +1,12 @@
-// rawvec_kid_lazy_test.ls -- KI-D: Vec(Pt) must not require Eq unless an
+// vec_kid_lazy_test.ls -- KI-D: Vec(Pt) must not require Eq unless an
 // equality-search method is actually called.
 
 import std.vec
+import std.str
 
-struct Pt { string tag; int v }
+struct Pt { Str tag; int v }
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 fn main() {
     Vec(Pt) ps = {}
@@ -16,7 +17,7 @@ fn main() {
 
     check(ps.len() == 2, "len")
     Pt got = ps.get(1)
-    check(got.tag == "b" && got.v == 20, "get clone")
+    check(got.tag.eq?("b") && got.v == 20, "get clone")
 
     print("KID LAZY PASS")
 }

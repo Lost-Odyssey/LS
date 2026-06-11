@@ -1,5 +1,6 @@
 // Phase V.1 — Vec functional methods: any, all, count, each
 import std.vec
+import std.str
 
 fn main() {
     // === Setup ===
@@ -77,15 +78,15 @@ fn main() {
     }
     print("PASS: empty Vec any=false all=true count=0")
 
-    // === string elements (borrowed) ===
-    Vec(string) names = {}
-    string n1 = "alice"
-    string n2 = "bob"
-    string n3 = "charlie"
+    // === Str elements (borrowed) ===
+    Vec(Str) names = {}
+    Str n1 = "alice"
+    Str n2 = "bob"
+    Str n3 = "charlie"
     names.push(n1)
     names.push(n2)
     names.push(n3)
-    int long_names = names.count(|s| s.length > 3)
+    int long_names = names.count(|s| s.len() > 3)
     if long_names != 2 {
         print("FAIL: string count(len > 3) expected 2 got")
         print(long_names)

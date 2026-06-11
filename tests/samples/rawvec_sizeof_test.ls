@@ -4,7 +4,9 @@
 // instantiation, plus arithmetic (count * sizeof(T)).
 // Prints "ok <label>" / "FAIL <label>" then "SIZEOF PASS".
 
-fn check(bool c, string l) {
+import std.str
+
+fn check(bool c, Str l) {
     if c { print(f"ok {l}") } else { print(f"FAIL {l}") }
 }
 

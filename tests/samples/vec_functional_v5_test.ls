@@ -1,6 +1,8 @@
 // Phase V.5 — Vec.sort_by(Block(T,T)->int) inline insertion sort
 import std.vec
 
+import std.str
+
 fn main() {
     // === ascending sort with lambda ===
     Vec(int) nums = [3, 1, 4, 1, 5, 9, 2, 6]
@@ -36,15 +38,15 @@ fn main() {
     }
     print("PASS: descending sort with captured bool")
 
-    // === sort strings by length ===
-    Vec(string) words = {}
-    string w1 = "banana"
-    string w2 = "hi"
-    string w3 = "apple"
+    // === sort Strs by length ===
+    Vec(Str) words = {}
+    Str w1 = "banana"
+    Str w2 = "hi"
+    Str w3 = "apple"
     words.push(w1)
     words.push(w2)
     words.push(w3)
-    words.sort_by(|a, b| a.length - b.length)
+    words.sort_by(|a, b| a.len() - b.len())
     if words[0].compare("hi") != 0 {
         print("FAIL: string sort by length[0] expected 'hi' got")
         print(words[0])

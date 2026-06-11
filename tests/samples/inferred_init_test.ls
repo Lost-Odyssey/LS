@@ -6,11 +6,12 @@
 
 import std.vec
 import std.map
+import std.str
 
 struct Point { int x; int y; int z }
 struct Mixed { int n; bool flag; *int ptr }
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 // anon partial literal in return position (type inferred from -> Point)
 fn mk_point() -> Point { return { x: 7 } }
@@ -43,12 +44,12 @@ fn main() {
     check(m.n == 0, "Mixed {} int zero")
     check(m.flag == false, "Mixed {} bool false")
 
-    // Vec(string) v = {} replaces new_rawvec(string)()
-    Vec(string) v = {}
+    // Vec(Str) v = {} replaces new_rawvec(Str)()
+    Vec(Str) v = {}
     check(v.len() == 0, "Vec {} empty")
     v.push(f"a"); v.push(f"b")
     check(v.len() == 2, "Vec {} push works")
-    check(v.get(0) == "a", "Vec {} get(0)")
+    check(v.get(0).eq?("a"), "Vec {} get(0)")
 
     // Vec(int) too
     Vec(int) vi = {}
@@ -58,13 +59,13 @@ fn main() {
     // ---- list-literal init (the __from_list protocol; Vec(T) v = [..]) ----
     Vec(int) li = [10, 20, 30, 40]
     check(li.len() == 4 && li.get(0) == 10 && li.get(3) == 40, "Vec(int) = [..]")
-    Vec(string) ls = [f"a", f"b", f"c"]
-    check(ls.len() == 3 && ls.get(1) == "b", "Vec(string) = [..]")
+    Vec(Str) ls = [f"a", f"b", f"c"]
+    check(ls.len() == 3 && ls.get(1).eq?("b"), "Vec(Str) = [..]")
     Vec(int) le = []
     check(le.len() == 0, "Vec = [] empty")
 
     // empty map literal still resolves via declared Map type (not hijacked)
-    Map(string, int) mp = {}
+    Map(Str, int) mp = {}
     mp.set("k", 42)
     int got = -1
     match mp.get("k") {

@@ -6,13 +6,13 @@
 // Confirmed memory-safe idioms (each verified individually during Step 5):
 //   * push owned temp   : v.push(f"...")                — temp consumed, no caller drop
 //   * push named local  : v.push(__move(local))         — explicit move marks the local
-//   * string read/get   : string t = self.data[i]; return t  — var_decl deep-clones strings
-//   * pop / move-out     : string o = self.data[i]; __drop_at(self.data[i]); len-=1; return o
+//   * Str read/get      : Str t = self.data[i]; return t  — var_decl deep-clones Str
+//   * pop / move-out     : Str o = self.data[i]; __drop_at(self.data[i]); len-=1; return o
 //   * set (overwrite)    : __drop_at(self.data[i]); self.data[i] = x
 //   * __drop             : for i in 0..len { __drop_at(self.data[i]) }; free(data)
-//   * __drop_at recurses via emit_drop_value -> string free / struct.__drop / nested.
+//   * __drop_at recurses via emit_drop_value -> Str.__drop / struct.__drop / nested.
 //
-// Reads match Vec[i] exactly: p[i] DEEP-CLONES owned element data (string/struct/
+// Reads match Vec[i] exactly: p[i] DEEP-CLONES owned element data (Str/struct/
 // has_drop), so struct element reads and field read-throughs (self.data[i].name)
 // are memory-safe — see RawVecP below.
 // Nested container reads ALSO match Vec(Vec(T)): a struct with a user `__clone(&self)
@@ -22,33 +22,35 @@
 //
 // Prints "ok <label>" / "FAIL <label>" then "M1 PASS".
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+import std.str
 
-// ───────────────────────── RawVecS: string elements ─────────────────────────
-struct RawVecS { *string data; int len; int cap }
-fn new_rvs() -> RawVecS { *string p = nil; return RawVecS { data: p, len: 0, cap: 0 } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+
+// ───────────────────────── RawVecS: Str elements ─────────────────────────
+struct RawVecS { *Str data; int len; int cap }
+fn new_rvs() -> RawVecS { *Str p = nil; return RawVecS { data: p, len: 0, cap: 0 } }
 impl RawVecS {
-    fn push(&!self, string x) {
+    fn push(&!self, Str x) {
         if self.len >= self.cap {
             int n = 4
             if self.cap > 0 { n = self.cap * 2 }
-            self.data = std.c.realloc(self.data as *u8, n * sizeof(string)) as *string
+            self.data = std.c.realloc(self.data as *u8, n * sizeof(Str)) as *Str
             self.cap = n
         }
         self.data[self.len] = x          // move-in (raw store, no drop old)
         self.len = self.len + 1
     }
-    fn get(&self, int i) -> string {
-        string tmp = self.data[i]        // var_decl deep-clones the slot's string
+    fn get(&self, int i) -> Str {
+        Str tmp = self.data[i]           // var_decl deep-clones the slot's Str
         return tmp
     }
-    fn pop(&!self) -> string {
+    fn pop(&!self) -> Str {
         self.len = self.len - 1
-        string out = self.data[self.len] // clone out
+        Str out = self.data[self.len]    // clone out
         __drop_at(self.data[self.len])   // drop the slot original
         return out
     }
-    fn set(&!self, int i, string x) {
+    fn set(&!self, int i, Str x) {
         __drop_at(self.data[i])          // drop old element
         self.data[i] = x                 // raw store new
     }
@@ -58,7 +60,7 @@ impl RawVecS {
     fn __clone(&self) -> RawVecS {
         RawVecS out = new_rvs()
         for (int i = 0; i < self.len; i = i + 1) {
-            string s = self.data[i]      // clone-on-read each element
+            Str s = self.data[i]         // clone-on-read each element
             out.push(s)
         }
         return out
@@ -70,7 +72,7 @@ impl RawVecS {
 }
 
 // ──────────────── RawVecP: has_drop struct elements (Person) ────────────────
-struct Person { string name; int age }
+struct Person { Str name; int age }
 struct RawVecP { *Person data; int len; int cap }
 fn new_rvp() -> RawVecP { *Person p = nil; return RawVecP { data: p, len: 0, cap: 0 } }
 impl RawVecP {
@@ -86,13 +88,13 @@ impl RawVecP {
     }
     fn count(&self) -> int { return self.len }
     // Aggregate element reads now match vec[i]: a read DEEP-CLONES the element,
-    // so these are memory-safe (struct read, string field read-through, POD field).
+    // so these are memory-safe (struct read, Str field read-through, POD field).
     fn get_full(&self, int i) -> Person { Person pp = self.data[i]; return pp }
-    fn name_of(&self, int i) -> string { return self.data[i].name }
+    fn name_of(&self, int i) -> Str { return self.data[i].name }
     fn age_of(&self, int i) -> int { return self.data[i].age }
     fn __drop() {
         // __drop_at on each struct slot recurses into Person's auto __drop, which
-        // frees the `name` string field — proving recursive (nested) struct drop.
+        // frees the `name` Str field — proving recursive (nested) struct drop.
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
         if self.cap > 0 { std.c.free(self.data as *u8) }
     }
@@ -120,13 +122,13 @@ impl RawVecV {
         RawVecS inner = self.data[i]     // -> RawVecS.__clone (deep copy)
         return inner.length()
     }
-    fn row_get(&self, int i, int j) -> string {
+    fn row_get(&self, int i, int j) -> Str {
         RawVecS inner = self.data[i]     // -> RawVecS.__clone
-        string s = inner.get(j)
+        Str s = inner.get(j)
         return s
     }
     fn __drop() {
-        // recurses two levels: __drop_at -> RawVecS.__drop -> inner string frees
+        // recurses two levels: __drop_at -> RawVecS.__drop -> inner Str frees
         // + inner buffer free, then this outer buffer free.
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
         if self.cap > 0 { std.c.free(self.data as *u8) }
@@ -134,21 +136,21 @@ impl RawVecV {
 }
 
 fn main() {
-    // ---- RawVecS lifecycle (string elements: full read/write) ----
+    // ---- RawVecS lifecycle (Str elements: full read/write) ----
     RawVecS v = new_rvs()
     for (int i = 0; i < 6; i = i + 1) { v.push(f"s{i}") }   // grows 0->4->8
     check(v.length() == 6, "len 6 after 6 push")
-    check(v.get(0) == "s0", "get(0) clone = s0")
-    check(v.get(5) == "s5", "get(5) clone = s5")
+    check(v.get(0).eq?("s0"), "get(0) clone = s0")
+    check(v.get(5).eq?("s5"), "get(5) clone = s5")
 
-    string a = v.pop()                  // move-out s5
-    string b = v.pop()                  // move-out s4
-    check(a == "s5", "pop -> s5")
-    check(b == "s4", "pop -> s4")
+    Str a = v.pop()                     // move-out s5
+    Str b = v.pop()                     // move-out s4
+    check(a.eq?("s5"), "pop -> s5")
+    check(b.eq?("s4"), "pop -> s4")
     check(v.length() == 4, "len 4 after 2 pop")
 
     v.set(1, f"NEW")                    // drop s1, store NEW
-    check(v.get(1) == "NEW", "set(1) -> NEW")
+    check(v.get(1).eq?("NEW"), "set(1) -> NEW")
 
     // ---- RawVecP: has_drop struct elements (recursive struct drop) ----
     RawVecP pv = new_rvp()
@@ -159,9 +161,9 @@ fn main() {
     check(pv.count() == 5, "RawVecP count 5")
     // aggregate element reads (now clone-on-read, matching vec[i])
     Person g = pv.get_full(2)
-    check(g.name == "person-2", "get_full(2).name = person-2")
-    check(pv.name_of(0) == "person-0", "name_of(0) field read-through = person-0")
-    check(pv.name_of(4) == "person-4", "name_of(4) field read-through = person-4")
+    check(g.name.eq?("person-2"), "get_full(2).name = person-2")
+    check(pv.name_of(0).eq?("person-0"), "name_of(0) field read-through = person-0")
+    check(pv.name_of(4).eq?("person-4"), "name_of(4) field read-through = person-4")
     check(pv.age_of(3) == 30, "age_of(3) POD field = 30")
 
     // ---- RawVecV: nested RawVec of RawVecS (two-level recursive drop) ----
@@ -175,11 +177,11 @@ fn main() {
     check(vv.count() == 3, "nested outer count 3")
     // nested element reads via RawVecS.__clone (matches Vec(Vec(T)))
     check(vv.row_len(0) == 2, "nested row 0 len 2")
-    check(vv.row_get(1, 0) == "row1-a", "nested row_get(1,0) = row1-a")
-    check(vv.row_get(2, 1) == "row2-b", "nested row_get(2,1) = row2-b")
+    check(vv.row_get(1, 0).eq?("row1-a"), "nested row_get(1,0) = row1-a")
+    check(vv.row_get(2, 1).eq?("row2-b"), "nested row_get(2,1) = row2-b")
 
     print("M1 PASS")
-    // scope exit: a,b drop (owned strings); v.__drop frees 4 remaining + buffer;
+    // scope exit: a,b drop (owned Strs); v.__drop frees 4 remaining + buffer;
     // pv.__drop recurses into Person.__drop (frees each name); vv.__drop recurses
-    // into each RawVecS.__drop (inner strings + inner buffers) then its own buffer.
+    // into each RawVecS.__drop (inner Strs + inner buffers) then its own buffer.
 }

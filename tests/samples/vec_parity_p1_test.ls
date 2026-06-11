@@ -1,9 +1,10 @@
-// rawvec_parity_p1_test.ls -- Vec parity P1 with builtin vec APIs that do
+// vec_parity_p1_test.ls -- Vec parity P1 with builtin vec APIs that do
 // not require method-level generic result types.
 
 import std.vec
+import std.str
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 fn main() {
     Vec(int) v = [3, 1, 4, 1, 5]
@@ -20,9 +21,9 @@ fn main() {
     Vec(int) clamped = v.slice(-5, 2)
     check(clamped.len() == 2 && clamped[0] == 3 && clamped[1] == 1, "slice clamp")
 
-    Vec(string) words = [f"banana", f"hi", f"apple"]
-    Vec(string) tail = words.slice(1, 3)
-    check(tail.len() == 2 && tail[0] == "hi" && tail[1] == "apple", "string slice")
+    Vec(Str) words = [f"banana", f"hi", f"apple"]
+    Vec(Str) tail = words.slice(1, 3)
+    check(tail.len() == 2 && tail[0].eq?("hi") && tail[1].eq?("apple"), "string slice")
 
     print("RAWVEC PARITY P1 PASS")
 }

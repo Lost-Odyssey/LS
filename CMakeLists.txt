@@ -1848,8 +1848,8 @@ add_test(
 )
 set_tests_properties(test_vec_m1 PROPERTIES DEPENDS "test_vec_poc")
 
-# RawVec Step 6 / Gate M2 — generic std.rawvec RawVec(T) (int/string/Pt) under
-# monomorphization, matching vec semantics. Imports std.rawvec (LS_HOME=repo).
+# RawVec Step 6 / Gate M2 — generic std.vec Vec(T) (int/string/Pt) under
+# monomorphization, matching vec semantics. Imports std.vec (LS_HOME=repo).
 add_test(
     NAME test_vec_m2
     COMMAND ${CMAKE_COMMAND}
@@ -1873,7 +1873,7 @@ add_test(
 set_tests_properties(test_vec_move PROPERTIES DEPENDS "test_vec_m2")
 
 # Inferred aggregate init: `Type v = {}` zero-inits a struct (LHS-inferred),
-# replacing new_rawvec(T)() with `RawVec(T) v = {}` (matches vec(T) v = []).
+# (historic: replaced new_rawvec(T)() with Vec(T) v = {}; today both Vec/Map support it).
 add_test(
     NAME test_inferred_init
     COMMAND ${CMAKE_COMMAND}

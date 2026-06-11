@@ -1,5 +1,6 @@
 // Phase V.3 — Vec.map(U)(Block(T)->U) -> Vec(U)
 import std.vec
+import std.str
 
 fn main() {
     Vec(int) nums = [1, 2, 3, 4, 5]
@@ -20,8 +21,8 @@ fn main() {
     }
     print("PASS: map int->int doubled")
 
-    // === map cross type: int -> string ===
-    Vec(string) strs = nums.map(string)(|x| f"v={x}")
+    // === map cross type: int -> Str ===
+    Vec(Str) strs = nums.map(Str)(|x| f"v={x}")
     if strs.len() != 5 {
         print("FAIL: strs.length expected 5")
         return
@@ -53,15 +54,15 @@ fn main() {
     }
     print("PASS: map on empty vec")
 
-    // === map string Vec -> string Vec (length transform) ===
-    Vec(string) words = {}
-    string w1 = "hello"
-    string w2 = "world"
-    string w3 = "hi"
+    // === map Str Vec -> Str Vec (length transform) ===
+    Vec(Str) words = {}
+    Str w1 = "hello"
+    Str w2 = "world"
+    Str w3 = "hi"
     words.push(w1)
     words.push(w2)
     words.push(w3)
-    Vec(int) lengths = words.map(int)(|s| s.length)
+    Vec(int) lengths = words.map(int)(|s| s.len())
     if lengths.len() != 3 {
         print("FAIL: lengths.length expected 3")
         return
@@ -80,8 +81,8 @@ fn main() {
     }
     print("PASS: map string->int (length)")
 
-    // === map string -> string (upper) ===
-    Vec(string) uppers = words.map(string)(|s| s.upper())
+    // === map Str -> Str (upper) ===
+    Vec(Str) uppers = words.map(Str)(|s| s.upper())
     if uppers.len() != 3 {
         print("FAIL: uppers.length expected 3")
         return
