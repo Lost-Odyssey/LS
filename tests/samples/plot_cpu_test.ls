@@ -3,6 +3,7 @@
 
 import plottl
 import std.vec
+import std.str
 
 fn make_cpu_events() -> Vec(CpuSchedEvent) {
     Vec(CpuSchedEvent) ev = {}
@@ -13,28 +14,22 @@ fn make_cpu_events() -> Vec(CpuSchedEvent) {
     return ev
 }
 
-fn has(string hay, string needle, string name) -> bool {
-    if hay.contains(needle) { return true }
-    print("TL2 FAIL: " + name + " missing [" + needle + "]")
+// helpers take Str: plottl's color helpers now return Str, and call-rvalue
+// args don't pass through the Str->string bridge (IDENT-only).
+fn has(Str hay, Str needle, Str name) -> bool {
+    if hay.contains?(needle) { return true }
+    print(f"TL2 FAIL: {name} missing [{needle}]")
     return false
 }
 
-fn check(string got, string want, string name) -> bool {
+fn check(Str got, Str want, Str name) -> bool {
     if got == want { return true }
-    print("TL2 FAIL: " + name + " got=[" + got + "] want=[" + want + "]")
+    print(f"TL2 FAIL: {name} got=[{got}] want=[{want}]")
     return false
 }
 
-fn count_occ(string hay, string needle) -> int {
-    int n = 0
-    int i = 0
-    int hl = hay.length
-    int nl = needle.length
-    while i + nl <= hl {
-        if hay.substr(i, nl) == needle { n = n + 1; i = i + nl }
-        else { i = i + 1 }
-    }
-    return n
+fn count_occ(Str hay, Str needle) -> int {
+    return hay.count(needle)
 }
 
 fn main() {

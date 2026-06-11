@@ -18,15 +18,15 @@ fn main() {
 
     // peek parsed fields (deep-copy reads)
     TimelineEvent e0 = ev[0]
-    if e0.lane != "main" { print("CSV FAIL: e0.lane=[" + e0.lane + "]"); ok = false }
+    if e0.lane != "main" { print(f"CSV FAIL: e0.lane=[{e0.lane}]"); ok = false }
     if e0.start_ns != 0 { print("CSV FAIL: e0.start"); ok = false }
     if e0.end_ns != 5000000 { print("CSV FAIL: e0.end"); ok = false }
-    if e0.color != "#4363d8" { print("CSV FAIL: e0.color=[" + e0.color + "]"); ok = false }
+    if e0.color != "#4363d8" { print(f"CSV FAIL: e0.color=[{e0.color}]"); ok = false }
 
     // worker row had no color -> auto palette index 1 (#e6194b)
     TimelineEvent e1 = ev[1]
-    if e1.lane != "worker" { print("CSV FAIL: e1.lane=[" + e1.lane + "]"); ok = false }
-    if e1.color != "#e6194b" { print("CSV FAIL: e1.auto-color=[" + e1.color + "]"); ok = false }
+    if e1.lane != "worker" { print(f"CSV FAIL: e1.lane=[{e1.lane}]"); ok = false }
+    if e1.color != "#e6194b" { print(f"CSV FAIL: e1.auto-color=[{e1.color}]"); ok = false }
 
     // parsed events render
     string svg = plottl.timeline_svg(ev, 600, 200, "from csv")

@@ -5,38 +5,40 @@
 // (rects + hover <title> + time-axis ticks) or terminal text (active '#').
 //
 // TL-2 adds CPU-scheduling + Hyper-Threading coloring on top of this model.
+//
+// P7-mig: all string workflows migrated to the pure-LS `Str` (std.str).
 
 import math
 import plotfmt
 import io
 import std.vec
-import std.string
+import std.str
 
 struct TimelineEvent {
     i64 start_ns
     i64 end_ns
-    string lane
-    string label
-    string color
+    Str lane
+    Str label
+    Str color
 }
 
-fn event(i64 s, i64 e, string lane, string label, string color) -> TimelineEvent {
+fn event(i64 s, i64 e, Str lane, Str label, Str color) -> TimelineEvent {
     return TimelineEvent { start_ns: s, end_ns: e, lane: lane, label: label, color: color }
 }
 
 // ---- helpers ----
 
-fn _tl_escape(string s) -> string {
-    string r = ""
+fn _tl_escape(Str s) -> Str {
+    Str r = ""
     int i = 0
-    int n = s.length
+    int n = s.len()
     while i < n {
-        int ch = s.at(i)
-        if ch == '&' { r.append("&amp;") }
-        else if ch == '<' { r.append("&lt;") }
-        else if ch == '>' { r.append("&gt;") }
-        else if ch == '"' { r.append("&quot;") }
-        else { r.append(ch) }
+        int ch = s.byte_at(i)
+        if ch == '&' { r.push_str("&amp;") }
+        else if ch == '<' { r.push_str("&lt;") }
+        else if ch == '>' { r.push_str("&gt;") }
+        else if ch == '"' { r.push_str("&quot;") }
+        else { r.push_byte(ch) }
         i = i + 1
     }
     return r
@@ -50,7 +52,7 @@ fn _map_time(i64 t, i64 tmin, i64 tmax, int left, int width) -> f64 {
 
 // ---- SVG backend ----
 
-fn timeline_svg(Vec(TimelineEvent) events, int w, int h, string title) -> string {
+fn timeline_svg(Vec(TimelineEvent) events, int w, int h, Str title) -> Str {
     int n = events.len()
 
     // 1. time range
@@ -70,18 +72,18 @@ fn timeline_svg(Vec(TimelineEvent) events, int w, int h, string title) -> string
     if tmax <= tmin { tmax = tmin + 1 }
 
     // 2. unique lanes (preserve first-seen order)
-    Vec(string) lanes = {}
+    Vec(Str) lanes = {}
     i = 0
     while i < n {
         TimelineEvent e = events[i]
         bool found = false
         int j = 0
         while j < lanes.len() {
-            string ln = lanes[j]
+            Str ln = lanes[j]
             if ln == e.lane { found = true }
             j = j + 1
         }
-        if !found { lanes.push(e.lane.copy()) }
+        if !found { lanes.push(e.lane) }
         i = i + 1
     }
 
@@ -94,9 +96,9 @@ fn timeline_svg(Vec(TimelineEvent) events, int w, int h, string title) -> string
     int lane_h = 24
     int plot_bottom = top + lanes.len() * lane_h
 
-    string s = ""
+    Str s = ""
     // title
-    if title.length > 0 {
+    if title.len() > 0 {
         int cx = left + width / 2
         s = s + f"<text x=\"{cx}\" y=\"22\" font-size=\"15\" font-family=\"sans-serif\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#000000\">{_tl_escape(title)}</text>"
     }
@@ -104,7 +106,7 @@ fn timeline_svg(Vec(TimelineEvent) events, int w, int h, string title) -> string
     // lane labels + row separators
     int li = 0
     while li < lanes.len() {
-        string lname = lanes[li]
+        Str lname = lanes[li]
         int ly = top + li * lane_h
         s = s + f"<text x=\"{left - 8}\" y=\"{ly + lane_h / 2 + 4}\" font-size=\"11\" font-family=\"monospace\" text-anchor=\"end\" fill=\"#333333\">{_tl_escape(lname)}</text>"
         s = s + f"<line x1=\"{left}\" y1=\"{ly}\" x2=\"{right}\" y2=\"{ly}\" stroke=\"#eeeeee\" stroke-width=\"0.5\"/>"
@@ -118,7 +120,7 @@ fn timeline_svg(Vec(TimelineEvent) events, int w, int h, string title) -> string
         int idx = 0
         int j = 0
         while j < lanes.len() {
-            string ln = lanes[j]
+            Str ln = lanes[j]
             if ln == e.lane { idx = j }
             j = j + 1
         }
@@ -140,21 +142,21 @@ fn timeline_svg(Vec(TimelineEvent) events, int w, int h, string title) -> string
         i64 tv = tmin + (tmax - tmin) * (ti as i64) / (nt as i64)
         f64 tx = _map_time(tv, tmin, tmax, left, width)
         s = s + f"<line x1=\"{tx:.1f}\" y1=\"{plot_bottom}\" x2=\"{tx:.1f}\" y2=\"{plot_bottom + 4}\" stroke=\"#333333\" stroke-width=\"1\"/>"
-        string tl = plotfmt.fmt_time(tv - tmin)
+        Str tl = plotfmt.fmt_time(tv - tmin)
         s = s + f"<text x=\"{tx:.1f}\" y=\"{plot_bottom + 16}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"middle\" fill=\"#555555\">{tl}</text>"
         ti = ti + 1
     }
 
     int svgh = plot_bottom + 30
     if svgh < h { svgh = h }
-    string head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
-    string bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
+    Str head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
+    Str bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
     return head + bg + s + "</svg>"
 }
 
 // ---- Text backend ----
 
-fn timeline_text(Vec(TimelineEvent) events, int w) -> string {
+fn timeline_text(Vec(TimelineEvent) events, int w) -> Str {
     int n = events.len()
 
     bool first = true
@@ -172,18 +174,18 @@ fn timeline_text(Vec(TimelineEvent) events, int w) -> string {
     }
     if tmax <= tmin { tmax = tmin + 1 }
 
-    Vec(string) lanes = {}
+    Vec(Str) lanes = {}
     i = 0
     while i < n {
         TimelineEvent e = events[i]
         bool found = false
         int j = 0
         while j < lanes.len() {
-            string ln = lanes[j]
+            Str ln = lanes[j]
             if ln == e.lane { found = true }
             j = j + 1
         }
-        if !found { lanes.push(e.lane.copy()) }
+        if !found { lanes.push(e.lane) }
         i = i + 1
     }
 
@@ -192,11 +194,11 @@ fn timeline_text(Vec(TimelineEvent) events, int w) -> string {
     if gw < 1 { gw = 1 }
     i64 span = tmax - tmin
 
-    string out = ""
+    Str out = ""
     int li = 0
     while li < lanes.len() {
-        string lname = lanes[li]
-        string row = ""
+        Str lname = lanes[li]
+        Str row = ""
         int c = 0
         while c < gw {
             i64 t = tmin + span * (c as i64) / (gw as i64)
@@ -211,11 +213,11 @@ fn timeline_text(Vec(TimelineEvent) events, int w) -> string {
                 }
                 k = k + 1
             }
-            if active { row = row + "#" }
-            else { row = row + " " }
+            if active { row.push_byte('#') }
+            else { row.push_byte(' ') }
             c = c + 1
         }
-        string padded = plotfmt.pad_right(lname, label_w)
+        Str padded = plotfmt.pad_right(lname, label_w)
         out = out + padded + row + "\n"
         li = li + 1
     }
@@ -229,22 +231,22 @@ fn timeline_text(Vec(TimelineEvent) events, int w) -> string {
 // Blank lines and malformed rows are skipped. When the color column is absent
 // or empty, a stable palette color is assigned per lane (first-seen order).
 
-fn _starts_num(string s) -> bool {
-    if s.length == 0 { return false }
-    int c = s.at(0)
+fn _starts_num(&Str s) -> bool {
+    if s.len() == 0 { return false }
+    int c = s.byte_at(0)
     if c == '-' || c == '+' { return true }
     if c >= '0' && c <= '9' { return true }
     return false
 }
 
-fn _to_i64_or(string s, i64 dflt) -> i64 {
+fn _to_i64_or(&Str s, i64 dflt) -> i64 {
     match s.to_i64() {
         Ok(v) => { return v }
         Err(e) => { return dflt }
     }
 }
 
-fn _palette(int i) -> string {
+fn _palette(int i) -> Str {
     int k = i % 8
     if k == 0 { return "#4363d8" }
     else if k == 1 { return "#e6194b" }
@@ -256,41 +258,41 @@ fn _palette(int i) -> string {
     return "#469990"
 }
 
-fn parse_timeline_csv(string text) -> Vec(TimelineEvent) {
+fn parse_timeline_csv(Str text) -> Vec(TimelineEvent) {
     Vec(TimelineEvent) out = {}
-    Vec(string) lane_seen = {}
-    Vec(string) rows = text.lines()
+    Vec(Str) lane_seen = {}
+    Vec(Str) rows = text.lines()
     int r = 0
     while r < rows.len() {
-        string line = rows[r]
-        string t = line.trim()
-        if t.length > 0 {
-            Vec(string) f = t.split(",")
+        Str line = rows[r]
+        Str t = line.trim()
+        if t.len() > 0 {
+            Vec(Str) f = t.split(",")
             if f.len() >= 4 {
-                string c0 = f[0].trim()
+                Str c0 = f[0].trim()
                 if _starts_num(c0) {
                     i64 s64 = _to_i64_or(c0, 0)
                     i64 e64 = _to_i64_or(f[1].trim(), 0)
-                    string lane = f[2].trim()
-                    string label = f[3].trim()
-                    string color = ""
+                    Str lane = f[2].trim()
+                    Str label = f[3].trim()
+                    Str color = ""
                     if f.len() >= 5 {
-                        string c4 = f[4].trim()
-                        if c4.length > 0 { color = c4 }
+                        Str c4 = f[4].trim()
+                        if c4.len() > 0 { color = c4 }
                     }
                     // lane index (also tracks first-seen order for auto color)
                     int idx = 0 - 1
                     int j = 0
                     while j < lane_seen.len() {
-                        string sn = lane_seen[j]
+                        Str sn = lane_seen[j]
                         if sn == lane { idx = j }
                         j = j + 1
                     }
                     if idx < 0 {
                         idx = lane_seen.len()
-                        lane_seen.push(lane.copy())
+                        lane_seen.push(lane)
                     }
-                    if color.length == 0 { color = _palette(idx) }
+                    if color.len() == 0 { color = _palette(idx) }
                     out.push(TimelineEvent {
                         start_ns: s64, end_ns: e64,
                         lane: lane, label: label, color: color
@@ -304,7 +306,7 @@ fn parse_timeline_csv(string text) -> Vec(TimelineEvent) {
 }
 
 // Read a CSV file and parse it. Returns an empty vec if the file can't be read.
-fn load_timeline_csv(string path) -> Vec(TimelineEvent) {
+fn load_timeline_csv(Str path) -> Vec(TimelineEvent) {
     match io.read_file(path) {
         Ok(text) => { return parse_timeline_csv(text) }
         Err(e) => {
@@ -322,9 +324,9 @@ struct CpuSchedEvent {
     i64 start_ns
     i64 end_ns
     int tid
-    string tname
+    Str tname
     int cpu_id
-    string proc
+    Str proc
 }
 
 struct CpuTopology {
@@ -342,10 +344,10 @@ struct CpuPlotOpts {
     int w = 1000
     int h = 400
     int chart_width = 2400
-    string theme = "rainbow"
+    Str theme = "rainbow"
 }
 
-fn cpu_event(i64 s, i64 e, int tid, string tname, int cpu_id, string proc) -> CpuSchedEvent {
+fn cpu_event(i64 s, i64 e, int tid, Str tname, int cpu_id, Str proc) -> CpuSchedEvent {
     return CpuSchedEvent { start_ns: s, end_ns: e, tid: tid, tname: tname, cpu_id: cpu_id, proc: proc }
 }
 
@@ -377,7 +379,7 @@ fn cpu_hue(int cpu_id, int total_physical) -> f64 {
 }
 
 // Fill color: bright primary for first logical CPU, dimmer for the HT sibling.
-fn cpu_color(int cpu_id, int total_physical) -> string {
+fn cpu_color(int cpu_id, int total_physical) -> Str {
     f64 h = cpu_hue(cpu_id, total_physical)
     if is_ht_sibling(cpu_id, total_physical) {
         return plotfmt.hsv_to_hex(h, 0.60, 0.55)
@@ -394,7 +396,7 @@ fn cpu_color(int cpu_id, int total_physical) -> string {
 fn _lerp(f64 a, f64 b, f64 t) -> f64 { return a + (b - a) * t }
 
 // viridis-like colormap (5 anchors), frac in [0,1]; mul dims for HT siblings.
-fn _viridis_hex(f64 frac, f64 mul) -> string {
+fn _viridis_hex(f64 frac, f64 mul) -> Str {
     f64 f = frac
     if f < 0.0 { f = 0.0 }
     if f > 1.0 { f = 1.0 }
@@ -420,7 +422,7 @@ fn _viridis_hex(f64 frac, f64 mul) -> string {
     return plotfmt.rgb_to_hex(ri, gi, bi)
 }
 
-fn cpu_theme_color(int cpu_id, int total_physical, string theme) -> string {
+fn cpu_theme_color(int cpu_id, int total_physical, Str theme) -> Str {
     if theme == "rainbow" { return cpu_color(cpu_id, total_physical) }
     int pc = physical_core(cpu_id, total_physical)
     bool ht = is_ht_sibling(cpu_id, total_physical)
@@ -468,7 +470,7 @@ fn _sort_int(&!Vec(int) v) {
 
 // ---- Text backend: thread activity only (no CPU distinction) ----
 
-fn cpu_timeline_text(Vec(CpuSchedEvent) events, int w) -> string {
+fn cpu_timeline_text(Vec(CpuSchedEvent) events, int w) -> Str {
     int n = events.len()
     bool first = true
     i64 tmin = 0
@@ -485,18 +487,18 @@ fn cpu_timeline_text(Vec(CpuSchedEvent) events, int w) -> string {
     }
     if tmax <= tmin { tmax = tmin + 1 }
 
-    Vec(string) lanes = {}
+    Vec(Str) lanes = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
         bool found = false
         int j = 0
         while j < lanes.len() {
-            string ln = lanes[j]
+            Str ln = lanes[j]
             if ln == e.tname { found = true }
             j = j + 1
         }
-        if !found { lanes.push(e.tname.copy()) }
+        if !found { lanes.push(e.tname) }
         i = i + 1
     }
 
@@ -505,11 +507,11 @@ fn cpu_timeline_text(Vec(CpuSchedEvent) events, int w) -> string {
     if gw < 1 { gw = 1 }
     i64 span = tmax - tmin
 
-    string out = ""
+    Str out = ""
     int li = 0
     while li < lanes.len() {
-        string lname = lanes[li]
-        string row = ""
+        Str lname = lanes[li]
+        Str row = ""
         int c = 0
         while c < gw {
             i64 t = tmin + span * (c as i64) / (gw as i64)
@@ -524,11 +526,11 @@ fn cpu_timeline_text(Vec(CpuSchedEvent) events, int w) -> string {
                 }
                 k = k + 1
             }
-            if active { row = row + "#" }
-            else { row = row + " " }
+            if active { row.push_byte('#') }
+            else { row.push_byte(' ') }
             c = c + 1
         }
-        string padded = plotfmt.pad_right(lname, label_w)
+        Str padded = plotfmt.pad_right(lname, label_w)
         out = out + padded + row + "\n"
         li = li + 1
     }
@@ -537,10 +539,10 @@ fn cpu_timeline_text(Vec(CpuSchedEvent) events, int w) -> string {
 
 // ---- SVG backend: swimlanes per thread, HT coloring, CPU legend ----
 
-fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
+fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> Str {
     int w = opts.w
     int h = opts.h
-    string theme = opts.theme
+    Str theme = opts.theme
     int n = events.len()
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
@@ -563,7 +565,7 @@ fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
 
     // unique lanes by tid (parallel tid + name)
     Vec(int) lane_tids = {}
-    Vec(string) lane_names = {}
+    Vec(Str) lane_names = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
@@ -573,7 +575,7 @@ fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
             if lane_tids[j] == e.tid { found = true }
             j = j + 1
         }
-        if !found { lane_tids.push(e.tid); lane_names.push(e.tname.copy()) }
+        if !found { lane_tids.push(e.tid); lane_names.push(e.tname) }
         i = i + 1
     }
 
@@ -601,27 +603,27 @@ fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
     int plot_bottom = top + lane_tids.len() * lane_h
 
     // <defs>: a diagonal-stripe pattern per HT-sibling CPU
-    string defs = "<defs>"
+    Str defs = "<defs>"
     int ci = 0
     while ci < cpus.len() {
         int cpu = cpus[ci]
         if cpu >= phys {
-            string dim = cpu_theme_color(cpu, phys, theme)
-            string acc = cpu_theme_color(cpu % phys, phys, theme)
+            Str dim = cpu_theme_color(cpu, phys, theme)
+            Str acc = cpu_theme_color(cpu % phys, phys, theme)
             defs = defs + f"<pattern id=\"ht{cpu}\" width=\"6\" height=\"6\" patternUnits=\"userSpaceOnUse\" patternTransform=\"rotate(45)\"><rect width=\"6\" height=\"6\" fill=\"{dim}\"/><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"{acc}\" stroke-width=\"1.5\"/></pattern>"
         }
         ci = ci + 1
     }
     defs = defs + "</defs>"
 
-    string s = ""
+    Str s = ""
     int cx = left + width / 2
     s = s + f"<text x=\"{cx}\" y=\"22\" font-size=\"15\" font-family=\"sans-serif\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#000000\">CPU Scheduling Timeline</text>"
 
     // lane labels
     int li = 0
     while li < lane_tids.len() {
-        string lname = lane_names[li]
+        Str lname = lane_names[li]
         int tid = lane_tids[li]
         int ly = top + li * lane_h
         s = s + f"<text x=\"{left - 8}\" y=\"{ly + lane_h / 2 + 4}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"end\" fill=\"#333333\">{_tl_escape(lname)} ({tid})</text>"
@@ -646,7 +648,7 @@ fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
         int ry = top + idx * lane_h + 3
         int rh = lane_h - 6
         int pc = e.cpu_id % phys
-        string fill = cpu_theme_color(e.cpu_id, phys, theme)
+        Str fill = cpu_theme_color(e.cpu_id, phys, theme)
         if e.cpu_id >= phys { fill = f"url(#ht{e.cpu_id})" }
         int htflag = 0
         if e.cpu_id >= phys { htflag = 1 }
@@ -662,7 +664,7 @@ fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
         i64 tv = tmin + (tmax - tmin) * (ti as i64) / (nt as i64)
         f64 tx = _map_time(tv, tmin, tmax, left, width)
         s = s + f"<line x1=\"{tx:.1f}\" y1=\"{plot_bottom}\" x2=\"{tx:.1f}\" y2=\"{plot_bottom + 4}\" stroke=\"#333333\" stroke-width=\"1\"/>"
-        string tl = plotfmt.fmt_time(tv - tmin)
+        Str tl = plotfmt.fmt_time(tv - tmin)
         s = s + f"<text x=\"{tx:.1f}\" y=\"{plot_bottom + 16}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"middle\" fill=\"#555555\">{tl}</text>"
         ti = ti + 1
     }
@@ -675,10 +677,10 @@ fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
     while ci < cpus.len() {
         int cpu = cpus[ci]
         int ry = leg_y + 8 + ci * 16
-        string fill = cpu_theme_color(cpu, phys, theme)
+        Str fill = cpu_theme_color(cpu, phys, theme)
         if cpu >= phys { fill = f"url(#ht{cpu})" }
         s = s + f"<rect x=\"{left}\" y=\"{ry}\" width=\"14\" height=\"10\" fill=\"{fill}\" stroke=\"#999999\" stroke-width=\"0.5\"/>"
-        string htmark = ""
+        Str htmark = ""
         if cpu >= phys { htmark = " (HT)" }
         s = s + f"<text x=\"{left + 20}\" y=\"{ry + 9}\" font-size=\"10\" font-family=\"monospace\" fill=\"#333333\">CPU {cpu}{htmark}</text>"
         ci = ci + 1
@@ -686,8 +688,8 @@ fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
 
     int svgh = leg_y + 8 + cpus.len() * 16 + 12
     if svgh < h { svgh = h }
-    string head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
-    string bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
+    Str head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
+    Str bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
     return head + bg + defs + s + "</svg>"
 }
 
@@ -697,9 +699,9 @@ fn cpu_timeline_svg(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opt
 // browser provides a native horizontal scrollbar; the thread-name column sits
 // outside the scroll area and stays fixed. Zero JS, self-contained single file.
 
-fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
+fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> Str {
     int chart_width = opts.chart_width
-    string theme = opts.theme
+    Str theme = opts.theme
     int n = events.len()
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
@@ -720,7 +722,7 @@ fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
     if tmax <= tmin { tmax = tmin + 1 }
 
     Vec(int) lane_tids = {}
-    Vec(string) lane_names = {}
+    Vec(Str) lane_names = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
@@ -730,7 +732,7 @@ fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
             if lane_tids[j] == e.tid { found = true }
             j = j + 1
         }
-        if !found { lane_tids.push(e.tid); lane_names.push(e.tname.copy()) }
+        if !found { lane_tids.push(e.tid); lane_names.push(e.tname) }
         i = i + 1
     }
 
@@ -756,13 +758,13 @@ fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
     int svg_h = axis_h + lane_tids.len() * lane_h + 4
 
     // <defs> HT stripe patterns
-    string defs = "<defs>"
+    Str defs = "<defs>"
     int ci = 0
     while ci < cpus.len() {
         int cpu = cpus[ci]
         if cpu >= phys {
-            string dim = cpu_theme_color(cpu, phys, theme)
-            string acc = cpu_theme_color(cpu % phys, phys, theme)
+            Str dim = cpu_theme_color(cpu, phys, theme)
+            Str acc = cpu_theme_color(cpu % phys, phys, theme)
             defs = defs + f"<pattern id=\"ht{cpu}\" width=\"6\" height=\"6\" patternUnits=\"userSpaceOnUse\" patternTransform=\"rotate(45)\"><rect width=\"6\" height=\"6\" fill=\"{dim}\"/><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"{acc}\" stroke-width=\"1.5\"/></pattern>"
         }
         ci = ci + 1
@@ -770,7 +772,7 @@ fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
     defs = defs + "</defs>"
 
     // wide SVG strip (no left labels): top time axis + row separators + rects
-    string strip = ""
+    Str strip = ""
     strip = strip + f"<line x1=\"0\" y1=\"{axis_h}\" x2=\"{cw}\" y2=\"{axis_h}\" stroke=\"#333333\" stroke-width=\"1\"/>"
     int nt = 8
     int ti = 0
@@ -778,8 +780,8 @@ fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
         i64 tv = tmin + (tmax - tmin) * (ti as i64) / (nt as i64)
         f64 tx = _map_time(tv, tmin, tmax, pad, cw - 2 * pad)
         strip = strip + f"<line x1=\"{tx:.1f}\" y1=\"{axis_h - 4}\" x2=\"{tx:.1f}\" y2=\"{axis_h}\" stroke=\"#333333\" stroke-width=\"1\"/>"
-        string tl = plotfmt.fmt_time(tv - tmin)
-        string anch = "middle"
+        Str tl = plotfmt.fmt_time(tv - tmin)
+        Str anch = "middle"
         if ti == 0 { anch = "start" }
         else if ti == nt { anch = "end" }
         strip = strip + f"<text x=\"{tx:.1f}\" y=\"{axis_h - 9}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"{anch}\" fill=\"#555555\">{tl}</text>"
@@ -807,20 +809,21 @@ fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
         int ry = axis_h + idx * lane_h + 4
         int rh = lane_h - 8
         int pc = e.cpu_id % phys
-        string fill = cpu_theme_color(e.cpu_id, phys, theme)
+        Str fill = cpu_theme_color(e.cpu_id, phys, theme)
         if e.cpu_id >= phys { fill = f"url(#ht{e.cpu_id})" }
         int htflag = 0
         if e.cpu_id >= phys { htflag = 1 }
         strip = strip + f"<rect x=\"{x0:.1f}\" y=\"{ry}\" width=\"{ww:.1f}\" height=\"{rh}\" rx=\"1\" fill=\"{fill}\"><title>Thread {_tl_escape(e.tname)} (TID {e.tid}) on CPU {e.cpu_id} [core {pc}, HT={htflag}]</title></rect>"
         i = i + 1
     }
-    string svg = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{cw}\" height=\"{svg_h}\">" + defs + strip + "</svg>"
+    Str svg = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{cw}\" height=\"{svg_h}\">"
+    svg = svg + defs + strip + "</svg>"
 
     // left fixed lane column (aligned row heights)
-    string lanes_html = "<div class=\"lhead\"></div>"
+    Str lanes_html = "<div class=\"lhead\"></div>"
     li = 0
     while li < lane_tids.len() {
-        string lname = lane_names[li]
+        Str lname = lane_names[li]
         int tid = lane_tids[li]
         lanes_html = lanes_html + f"<div class=\"lane\">{_tl_escape(lname)} ({tid})</div>"
         li = li + 1
@@ -828,28 +831,29 @@ fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
 
     // legend (CSS stripes mimic HT pattern; unique CPUs sorted ascending)
     _sort_int(&!cpus)
-    string legend = "<div class=\"legend\"><b>Legend (CPU)</b><br>"
+    Str legend = "<div class=\"legend\"><b>Legend (CPU)</b><br>"
     ci = 0
     while ci < cpus.len() {
         int cpu = cpus[ci]
-        string style = ""
+        Str style = ""
         if cpu >= phys {
-            string dim = cpu_theme_color(cpu, phys, theme)
-            string acc = cpu_theme_color(cpu % phys, phys, theme)
+            Str dim = cpu_theme_color(cpu, phys, theme)
+            Str acc = cpu_theme_color(cpu % phys, phys, theme)
             style = f"background:repeating-linear-gradient(45deg,{dim},{dim} 3px,{acc} 3px,{acc} 4px)"
         } else {
             style = f"background:{cpu_theme_color(cpu, phys, theme)}"
         }
-        string htmark = ""
+        Str htmark = ""
         if cpu >= phys { htmark = " (HT)" }
         legend = legend + f"<span class=\"item\"><span class=\"sw\" style=\"{style}\"></span>CPU {cpu}{htmark}</span>"
         ci = ci + 1
     }
     legend = legend + "</div>"
 
-    string css = "<style>body{font-family:sans-serif;margin:12px}.wrap{display:flex;border:1px solid #cccccc;width:fit-content;max-width:100%}.lanes{flex:0 0 150px;background:#fafafa;border-right:1px solid #cccccc}.lhead{height:26px;border-bottom:1px solid #eeeeee;box-sizing:border-box}.lane{height:28px;line-height:28px;padding:0 8px;font:11px monospace;white-space:nowrap;overflow:hidden;border-bottom:1px solid #f5f5f5;box-sizing:border-box}.scroll{overflow-x:auto;overflow-y:hidden}.sw{display:inline-block;width:16px;height:11px;margin-right:5px;border:1px solid #999999;vertical-align:middle}.item{margin-right:18px;white-space:nowrap}.legend{margin-top:10px;font:12px sans-serif}.hint{color:#888888;font:11px sans-serif;margin-top:6px}</style>"
+    Str css = "<style>body{font-family:sans-serif;margin:12px}.wrap{display:flex;border:1px solid #cccccc;width:fit-content;max-width:100%}.lanes{flex:0 0 150px;background:#fafafa;border-right:1px solid #cccccc}.lhead{height:26px;border-bottom:1px solid #eeeeee;box-sizing:border-box}.lane{height:28px;line-height:28px;padding:0 8px;font:11px monospace;white-space:nowrap;overflow:hidden;border-bottom:1px solid #f5f5f5;box-sizing:border-box}.scroll{overflow-x:auto;overflow-y:hidden}.sw{display:inline-block;width:16px;height:11px;margin-right:5px;border:1px solid #999999;vertical-align:middle}.item{margin-right:18px;white-space:nowrap}.legend{margin-top:10px;font:12px sans-serif}.hint{color:#888888;font:11px sans-serif;margin-top:6px}</style>"
 
-    string html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" + css + "</head><body>"
+    Str html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+    html = html + css + "</head><body>"
     html = html + "<h3 style=\"margin:0 0 8px\">CPU Scheduling Timeline</h3>"
     html = html + "<div class=\"wrap\"><div class=\"lanes\">" + lanes_html + "</div>"
     html = html + "<div class=\"scroll\">" + svg + "</div></div>"
@@ -866,10 +870,10 @@ fn cpu_timeline_html(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts op
 // axis is redrawn by JS on each transform so labels never stretch. Self-contained
 // single file, no external deps.
 
-fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
+fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOpts opts = CpuPlotOpts{}) -> Str {
     int w = opts.w
     int h = opts.h
-    string theme = opts.theme
+    Str theme = opts.theme
     int n = events.len()
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
@@ -890,7 +894,7 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     if tmax <= tmin { tmax = tmin + 1 }
 
     Vec(int) lane_tids = {}
-    Vec(string) lane_names = {}
+    Vec(Str) lane_names = {}
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
@@ -900,7 +904,7 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
             if lane_tids[j] == e.tid { found = true }
             j = j + 1
         }
-        if !found { lane_tids.push(e.tid); lane_names.push(e.tname.copy()) }
+        if !found { lane_tids.push(e.tid); lane_names.push(e.tname) }
         i = i + 1
     }
 
@@ -930,13 +934,13 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     i64 span = tmax - tmin
 
     // defs: HT patterns + clip
-    string defs = "<defs>"
+    Str defs = "<defs>"
     int ci = 0
     while ci < cpus.len() {
         int cpu = cpus[ci]
         if cpu >= phys {
-            string dim = cpu_theme_color(cpu, phys, theme)
-            string acc = cpu_theme_color(cpu % phys, phys, theme)
+            Str dim = cpu_theme_color(cpu, phys, theme)
+            Str acc = cpu_theme_color(cpu % phys, phys, theme)
             defs = defs + f"<pattern id=\"ht{cpu}\" width=\"6\" height=\"6\" patternUnits=\"userSpaceOnUse\" patternTransform=\"rotate(45)\"><rect width=\"6\" height=\"6\" fill=\"{dim}\"/><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"{acc}\" stroke-width=\"1.5\"/></pattern>"
         }
         ci = ci + 1
@@ -944,13 +948,13 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     defs = defs + f"<clipPath id=\"clip\"><rect x=\"{left}\" y=\"{top}\" width=\"{plotw}\" height=\"{ploth}\"/></clipPath></defs>"
 
     // fixed layer: title, lane labels, plot border, row separators
-    string fixed = ""
+    Str fixed = ""
     int cx = left + plotw / 2
     fixed = fixed + f"<text x=\"{cx}\" y=\"24\" font-size=\"15\" font-family=\"sans-serif\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#000000\">CPU Scheduling Timeline (drag = pan, wheel = zoom, dbl-click = reset)</text>"
     fixed = fixed + f"<rect x=\"{left}\" y=\"{top}\" width=\"{plotw}\" height=\"{ploth}\" fill=\"#fafafa\" stroke=\"#333333\" stroke-width=\"1\"/>"
     int li = 0
     while li < lane_tids.len() {
-        string lname = lane_names[li]
+        Str lname = lane_names[li]
         int tid = lane_tids[li]
         int ly = top + li * lane_h
         fixed = fixed + f"<text x=\"{left - 8}\" y=\"{ly + lane_h / 2 + 4}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"end\" fill=\"#333333\">{_tl_escape(lname)} ({tid})</text>"
@@ -959,7 +963,7 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     }
 
     // content layer (transformed by JS): event rects in content space [0,plotw]
-    string content = ""
+    Str content = ""
     i = 0
     while i < n {
         CpuSchedEvent e = events[i]
@@ -976,7 +980,7 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
         int ry = top + idx * lane_h + 4
         int rh = lane_h - 8
         int pc = e.cpu_id % phys
-        string fill = cpu_theme_color(e.cpu_id, phys, theme)
+        Str fill = cpu_theme_color(e.cpu_id, phys, theme)
         if e.cpu_id >= phys { fill = f"url(#ht{e.cpu_id})" }
         int htflag = 0
         if e.cpu_id >= phys { htflag = 1 }
@@ -986,19 +990,19 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
 
     // legend (HTML, CSS stripes; unique CPUs sorted ascending)
     _sort_int(&!cpus)
-    string legend = "<div class=\"legend\"><b>Legend (CPU)</b><br>"
+    Str legend = "<div class=\"legend\"><b>Legend (CPU)</b><br>"
     ci = 0
     while ci < cpus.len() {
         int cpu = cpus[ci]
-        string style = ""
+        Str style = ""
         if cpu >= phys {
-            string dim = cpu_theme_color(cpu, phys, theme)
-            string acc = cpu_theme_color(cpu % phys, phys, theme)
+            Str dim = cpu_theme_color(cpu, phys, theme)
+            Str acc = cpu_theme_color(cpu % phys, phys, theme)
             style = f"background:repeating-linear-gradient(45deg,{dim},{dim} 3px,{acc} 3px,{acc} 4px)"
         } else {
             style = f"background:{cpu_theme_color(cpu, phys, theme)}"
         }
-        string htmark = ""
+        Str htmark = ""
         if cpu >= phys { htmark = " (HT)" }
         legend = legend + f"<span class=\"item\"><span class=\"sw\" style=\"{style}\"></span>CPU {cpu}{htmark}</span>"
         ci = ci + 1
@@ -1006,16 +1010,19 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
     legend = legend + "</div>"
 
     // PLOT params for the JS (built via concat to keep literal braces out of f-strings)
-    string plotvar = "<script>var PLOT={tmin:" + f"{tmin}" + ",span:" + f"{span}" + ",left:" + f"{left}" + ",top:" + f"{top}" + ",width:" + f"{plotw}" + ",vbw:" + f"{w}" + "};</script>"
+    Str plotvar = "<script>var PLOT={tmin:"
+    plotvar = plotvar + f"{tmin}" + ",span:" + f"{span}" + ",left:" + f"{left}" + ",top:" + f"{top}" + ",width:" + f"{plotw}" + ",vbw:" + f"{w}" + "};</script>"
 
     // pan/zoom JS (single quotes only -> no escaping needed in this string literal)
-    string js = "<script>(function(){var P=PLOT;var svg=document.getElementById('chart');var content=document.getElementById('content');var axis=document.getElementById('axis');var tx=0,sx=1;function fmt(ns){var a=Math.abs(ns);if(a>=1e9)return (ns/1e9).toFixed(2)+'s';if(a>=1e6)return (ns/1e6).toFixed(1)+'ms';if(a>=1e3)return (ns/1e3).toFixed(0)+'us';return ns.toFixed(0)+'ns';}function clamp(){var mn=P.width*(1-sx);if(tx>0)tx=0;if(tx<mn)tx=mn;}function drawAxis(){while(axis.firstChild)axis.removeChild(axis.firstChild);var SVGNS='http://www.w3.org/2000/svg';var nn=8;for(var i=0;i<=nn;i++){var sX=P.width*i/nn;var cX=(sX-tx)/sx;var t=P.tmin+cX/P.width*P.span;var x=P.left+sX;var ln=document.createElementNS(SVGNS,'line');ln.setAttribute('x1',x);ln.setAttribute('y1',P.top-4);ln.setAttribute('x2',x);ln.setAttribute('y2',P.top);ln.setAttribute('stroke','#333');axis.appendChild(ln);var tt=document.createElementNS(SVGNS,'text');tt.setAttribute('x',x);tt.setAttribute('y',P.top-8);tt.setAttribute('font-size','10');tt.setAttribute('font-family','monospace');tt.setAttribute('text-anchor','middle');tt.setAttribute('fill','#555');tt.textContent=fmt(t-P.tmin);axis.appendChild(tt);}}function apply(){clamp();content.setAttribute('transform','translate('+(P.left+tx)+' 0) scale('+sx+' 1)');drawAxis();}var drag=false,lx=0;svg.addEventListener('mousedown',function(e){drag=true;lx=e.clientX;});window.addEventListener('mouseup',function(){drag=false;});window.addEventListener('mousemove',function(e){if(!drag)return;var r=svg.getBoundingClientRect();var sf=P.vbw/r.width;tx+=(e.clientX-lx)*sf;lx=e.clientX;apply();});svg.addEventListener('wheel',function(e){e.preventDefault();var r=svg.getBoundingClientRect();var sf=P.vbw/r.width;var mx=(e.clientX-r.left)*sf-P.left;if(mx<0)mx=0;if(mx>P.width)mx=P.width;var f=e.deltaY<0?1.15:1/1.15;var ns=sx*f;if(ns<1)ns=1;if(ns>60)ns=60;tx=mx-((mx-tx)/sx)*ns;sx=ns;apply();},{passive:false});svg.addEventListener('dblclick',function(){tx=0;sx=1;apply();});apply();})();</script>"
+    Str js = "<script>(function(){var P=PLOT;var svg=document.getElementById('chart');var content=document.getElementById('content');var axis=document.getElementById('axis');var tx=0,sx=1;function fmt(ns){var a=Math.abs(ns);if(a>=1e9)return (ns/1e9).toFixed(2)+'s';if(a>=1e6)return (ns/1e6).toFixed(1)+'ms';if(a>=1e3)return (ns/1e3).toFixed(0)+'us';return ns.toFixed(0)+'ns';}function clamp(){var mn=P.width*(1-sx);if(tx>0)tx=0;if(tx<mn)tx=mn;}function drawAxis(){while(axis.firstChild)axis.removeChild(axis.firstChild);var SVGNS='http://www.w3.org/2000/svg';var nn=8;for(var i=0;i<=nn;i++){var sX=P.width*i/nn;var cX=(sX-tx)/sx;var t=P.tmin+cX/P.width*P.span;var x=P.left+sX;var ln=document.createElementNS(SVGNS,'line');ln.setAttribute('x1',x);ln.setAttribute('y1',P.top-4);ln.setAttribute('x2',x);ln.setAttribute('y2',P.top);ln.setAttribute('stroke','#333');axis.appendChild(ln);var tt=document.createElementNS(SVGNS,'text');tt.setAttribute('x',x);tt.setAttribute('y',P.top-8);tt.setAttribute('font-size','10');tt.setAttribute('font-family','monospace');tt.setAttribute('text-anchor','middle');tt.setAttribute('fill','#555');tt.textContent=fmt(t-P.tmin);axis.appendChild(tt);}}function apply(){clamp();content.setAttribute('transform','translate('+(P.left+tx)+' 0) scale('+sx+' 1)');drawAxis();}var drag=false,lx=0;svg.addEventListener('mousedown',function(e){drag=true;lx=e.clientX;});window.addEventListener('mouseup',function(){drag=false;});window.addEventListener('mousemove',function(e){if(!drag)return;var r=svg.getBoundingClientRect();var sf=P.vbw/r.width;tx+=(e.clientX-lx)*sf;lx=e.clientX;apply();});svg.addEventListener('wheel',function(e){e.preventDefault();var r=svg.getBoundingClientRect();var sf=P.vbw/r.width;var mx=(e.clientX-r.left)*sf-P.left;if(mx<0)mx=0;if(mx>P.width)mx=P.width;var f=e.deltaY<0?1.15:1/1.15;var ns=sx*f;if(ns<1)ns=1;if(ns>60)ns=60;tx=mx-((mx-tx)/sx)*ns;sx=ns;apply();},{passive:false});svg.addEventListener('dblclick',function(){tx=0;sx=1;apply();});apply();})();</script>"
 
-    string css = "<style>body{font-family:sans-serif;margin:12px}svg{border:1px solid #ddd;cursor:grab;user-select:none;width:100%;height:auto;display:block}svg:active{cursor:grabbing}.sw{display:inline-block;width:16px;height:11px;margin-right:5px;border:1px solid #999;vertical-align:middle}.item{margin-right:18px;white-space:nowrap}.legend{margin-top:10px;font:12px sans-serif}</style>"
+    Str css = "<style>body{font-family:sans-serif;margin:12px}svg{border:1px solid #ddd;cursor:grab;user-select:none;width:100%;height:auto;display:block}svg:active{cursor:grabbing}.sw{display:inline-block;width:16px;height:11px;margin-right:5px;border:1px solid #999;vertical-align:middle}.item{margin-right:18px;white-space:nowrap}.legend{margin-top:10px;font:12px sans-serif}</style>"
 
-    string svg = f"<svg id=\"chart\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {svgh}\" width=\"{w}\" height=\"{svgh}\">" + defs + fixed + f"<g id=\"vp\" clip-path=\"url(#clip)\"><g id=\"content\">" + content + "</g></g><g id=\"axis\"></g></svg>"
+    Str svg = f"<svg id=\"chart\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {svgh}\" width=\"{w}\" height=\"{svgh}\">"
+    svg = svg + defs + fixed + f"<g id=\"vp\" clip-path=\"url(#clip)\"><g id=\"content\">" + content + "</g></g><g id=\"axis\"></g></svg>"
 
-    string html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" + css + "</head><body>"
+    Str html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+    html = html + css + "</head><body>"
     html = html + svg + legend + plotvar + js
     html = html + "</body></html>"
     return html
@@ -1031,10 +1038,10 @@ fn cpu_timeline_html_zoom(Vec(CpuSchedEvent) events, CpuTopology topo, CpuPlotOp
 // (bounded), not event count.
 
 fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
-                           i64 time_window_ns, CpuPlotOpts opts = CpuPlotOpts{}) -> string {
+                           i64 time_window_ns, CpuPlotOpts opts = CpuPlotOpts{}) -> Str {
     int w = opts.w
     int h = opts.h
-    string theme = opts.theme
+    Str theme = opts.theme
     int n = events.len()
     int phys = topo.total_physical
     if phys < 1 { phys = 1 }
@@ -1064,7 +1071,7 @@ fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
 
     // unique lanes (tid + name) and CPUs
     Vec(int) lane_tids = {}
-    Vec(string) lane_names = {}
+    Vec(Str) lane_names = {}
     Vec(int) cpus = {}
     i = 0
     while i < n {
@@ -1072,7 +1079,7 @@ fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
         bool lf = false
         int j = 0
         while j < lane_tids.len() { if lane_tids[j] == e.tid { lf = true } j = j + 1 }
-        if !lf { lane_tids.push(e.tid); lane_names.push(e.tname.copy()) }
+        if !lf { lane_tids.push(e.tid); lane_names.push(e.tname) }
         bool cf = false
         j = 0
         while j < cpus.len() { if cpus[j] == e.cpu_id { cf = true } j = j + 1 }
@@ -1089,28 +1096,28 @@ fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
     int plot_bottom = top + lane_tids.len() * lane_h
 
     // <defs> HT stripe patterns
-    string defs = "<defs>"
+    Str defs = "<defs>"
     int ci = 0
     while ci < cpus.len() {
         int cpu = cpus[ci]
         if cpu >= phys {
-            string dim = cpu_theme_color(cpu, phys, theme)
-            string acc = cpu_theme_color(cpu % phys, phys, theme)
+            Str dim = cpu_theme_color(cpu, phys, theme)
+            Str acc = cpu_theme_color(cpu % phys, phys, theme)
             defs = defs + f"<pattern id=\"ht{cpu}\" width=\"6\" height=\"6\" patternUnits=\"userSpaceOnUse\" patternTransform=\"rotate(45)\"><rect width=\"6\" height=\"6\" fill=\"{dim}\"/><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"{acc}\" stroke-width=\"1.5\"/></pattern>"
         }
         ci = ci + 1
     }
     defs = defs + "</defs>"
 
-    string s = ""
+    Str s = ""
     int cx = left + width / 2
-    string wlabel = plotfmt.fmt_time(win)
+    Str wlabel = plotfmt.fmt_time(win)
     s = s + f"<text x=\"{cx}\" y=\"22\" font-size=\"15\" font-family=\"sans-serif\" font-weight=\"bold\" text-anchor=\"middle\" fill=\"#000000\">CPU Scheduling Timeline (aggregated, window={wlabel})</text>"
 
     // lane labels + separators
     int li = 0
     while li < lane_tids.len() {
-        string lname = lane_names[li]
+        Str lname = lane_names[li]
         int tid = lane_tids[li]
         int ly = top + li * lane_h
         s = s + f"<text x=\"{left - 8}\" y=\"{ly + lane_h / 2 + 4}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"end\" fill=\"#333333\">{_tl_escape(lname)} ({tid})</text>"
@@ -1122,7 +1129,7 @@ fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
     li = 0
     while li < lane_tids.len() {
         int tid = lane_tids[li]
-        string lname2 = lane_names[li]
+        Str lname2 = lane_names[li]
         int wi = 0
         while wi < nwin {
             i64 ws = tmin + (wi as i64) * win
@@ -1160,7 +1167,7 @@ fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
                 int ry = top + li * lane_h + 3
                 int rh = lane_h - 6
                 int pc = best_cpu % phys
-                string fill = cpu_theme_color(best_cpu, phys, theme)
+                Str fill = cpu_theme_color(best_cpu, phys, theme)
                 if best_cpu >= phys { fill = f"url(#ht{best_cpu})" }
                 int htflag = 0
                 if best_cpu >= phys { htflag = 1 }
@@ -1179,7 +1186,7 @@ fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
         i64 tv = tmin + (tmax - tmin) * (ti as i64) / (nt as i64)
         f64 tx = _map_time(tv, tmin, tmax, left, width)
         s = s + f"<line x1=\"{tx:.1f}\" y1=\"{plot_bottom}\" x2=\"{tx:.1f}\" y2=\"{plot_bottom + 4}\" stroke=\"#333333\" stroke-width=\"1\"/>"
-        string tl = plotfmt.fmt_time(tv - tmin)
+        Str tl = plotfmt.fmt_time(tv - tmin)
         s = s + f"<text x=\"{tx:.1f}\" y=\"{plot_bottom + 16}\" font-size=\"10\" font-family=\"monospace\" text-anchor=\"middle\" fill=\"#555555\">{tl}</text>"
         ti = ti + 1
     }
@@ -1192,10 +1199,10 @@ fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
     while ci < cpus.len() {
         int cpu = cpus[ci]
         int ry = leg_y + 8 + ci * 16
-        string fill = cpu_theme_color(cpu, phys, theme)
+        Str fill = cpu_theme_color(cpu, phys, theme)
         if cpu >= phys { fill = f"url(#ht{cpu})" }
         s = s + f"<rect x=\"{left}\" y=\"{ry}\" width=\"14\" height=\"10\" fill=\"{fill}\" stroke=\"#999999\" stroke-width=\"0.5\"/>"
-        string htmark = ""
+        Str htmark = ""
         if cpu >= phys { htmark = " (HT)" }
         s = s + f"<text x=\"{left + 20}\" y=\"{ry + 9}\" font-size=\"10\" font-family=\"monospace\" fill=\"#333333\">CPU {cpu}{htmark}</text>"
         ci = ci + 1
@@ -1203,7 +1210,7 @@ fn cpu_timeline_aggregated(Vec(CpuSchedEvent) events, CpuTopology topo,
 
     int svgh = leg_y + 8 + cpus.len() * 16 + 12
     if svgh < h { svgh = h }
-    string head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
-    string bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
+    Str head = f"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{svgh}\">"
+    Str bg = "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>"
     return head + bg + defs + s + "</svg>"
 }

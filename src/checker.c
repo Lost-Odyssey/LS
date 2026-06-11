@@ -4067,9 +4067,16 @@ static Type *check_expr(Checker *c, AstNode *node)
            expected produces an OWNED Str rvalue (the formatted heap buffer wrapped
            as Str, cap>0) — routed through the unified has_drop temp/drop path.
            v1 keeps the existing per-type formatting; only the output type changes.
-           Default (no Str expected) stays builtin string. */
-        if (type_is_str_struct(fstr_expected))
-            result = fstr_expected;
+           Default (no Str expected) stays builtin string.
+           Like gap① for literals, a read-only `&Str` position also triggers: the
+           owned Str rvalue is then auto-borrowed via the generic struct-arg spill
+           (which registers it as a has_drop temp). Covers `s + f"..."` (operator
+           rhs) and `s.push_str(f"...")`. */
+        {
+            Type *strt = str_target_of_expected(fstr_expected);
+            if (strt)
+                result = strt;
+        }
         break;
     }
 

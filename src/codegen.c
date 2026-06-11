@@ -4723,7 +4723,13 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
                         LLVMBuildExtractValue(ctx->builder, sval, 1, "Str.l");
                     printf_args[printf_argc++] =
                         LLVMBuildExtractValue(ctx->builder, sval, 0, "Str.d");
-                    if (expr->kind == AST_CALL || expr->kind == AST_INDEX)
+                    /* Owned Str rvalue interpolated → register for drop. Besides
+                       call/index clones this covers FIELD reads (a terminal
+                       has_drop field read clones, e.g. f"{e.color}") and lowered
+                       operator chains (f"{a + b}"). Bare ident stays a borrow. */
+                    if (expr->kind == AST_CALL || expr->kind == AST_INDEX ||
+                        expr->kind == AST_FIELD ||
+                        (expr->kind == AST_BINARY && expr->as.binary.lowered != NULL))
                     {
                         LLVMValueRef stmp = cg_entry_alloca(
                             ctx, type_to_llvm(ctx, expr->resolved_type), "fstr.str.drop");
@@ -4944,10 +4950,14 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
             }
             vals[val_count++] = LLVMBuildExtractValue(ctx->builder, val, 1, "Str.l");
             vals[val_count++] = LLVMBuildExtractValue(ctx->builder, val, 0, "Str.d");
-            /* Owned Str rvalue (call/index clone) interpolated → drop after the
-               result is built (statement-end flush runs after the snprintf below).
-               Bare ident/field is a borrow: leave it alone. */
-            if (expr->kind == AST_CALL || expr->kind == AST_INDEX)
+            /* Owned Str rvalue interpolated → drop after the result is built
+               (statement-end flush runs after the snprintf below). Besides
+               call/index clones this covers FIELD reads (a terminal has_drop
+               field read CLONES — f"{e.color}" leaked one per evaluation) and
+               lowered operator chains (f"{a + b}"). Bare ident is a borrow. */
+            if (expr->kind == AST_CALL || expr->kind == AST_INDEX ||
+                expr->kind == AST_FIELD ||
+                (expr->kind == AST_BINARY && expr->as.binary.lowered != NULL))
             {
                 LLVMValueRef stmp = cg_entry_alloca(
                     ctx, type_to_llvm(ctx, expr->resolved_type), "fstr.str.drop");
@@ -11175,7 +11185,13 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         LLVMTypeRef i1 = LLVMInt1TypeInContext(ctx->context);
                         LLVMBuildStore(ctx->builder, LLVMConstInt(i1, 0, 0), sym->moved_flag);
                     }
-                    ctx->temp_string_count = temp_mark;
+                    /* Flush statement temps INCLUDING has_drop spills (mirrors the
+                       var_decl path): rvalue borrows registered while evaluating the
+                       RHS (e.g. the f-string Str spilled for `s = s + f"..."`) must
+                       drop here — deferring to scope end leaks all but the last loop
+                       iteration (the entry alloca is reused). The stored result value
+                       itself is never temp_drop-registered (var_decl invariant). */
+                    cg_flush_temps(ctx, temp_mark, false);
                 }
                 else if (sym->type && sym->type->kind == TYPE_ENUM &&
                          sym->type->as.enom.has_drop)
@@ -11227,7 +11243,9 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                             LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 0, 0),
                             sym->moved_flag);
                     }
-                    ctx->temp_string_count = temp_mark;
+                    /* Same as the has_drop struct branch above: flush statement
+                       temps including has_drop spills (var_decl parity). */
+                    cg_flush_temps(ctx, temp_mark, false);
                 }
                 else if (sym->type && sym->type->kind == TYPE_BLOCK)
                 {
