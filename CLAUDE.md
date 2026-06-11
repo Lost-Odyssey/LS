@@ -92,8 +92,9 @@ ls.exe run input.ls                     # JIT 执行
 ls.exe run --memcheck input.ls          # JIT + 内存检查
 ls.exe repl                             # REPL
 
-# 测试
-cd build && ctest --output-on-failure -C Release
+# 测试（-j 5 并行留 1 核：~2 分钟 vs 串行 465s，2026-06-12 实测 -j6 205/205 无撞车；
+# 测试间无共享文件，新增会写盘的测试时确认文件名唯一或加 RESOURCE_LOCK）
+cd build && ctest -j 5 --output-on-failure -C Release
 ```
 
 > ✅ **AOT flake 已根治**（2026-06-10）：曾经「全量跑随机某个 AOT 测试 fail、单独
