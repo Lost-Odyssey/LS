@@ -29,12 +29,12 @@ fn main() {
     check(cnt(s, ".") == 3, "freefn lit")
 
     // multiple literal args + chaining
-    check(s.replace(".", "-").to_string() == "a-b-c-b", "replace lits")
+    check(s.replace(".", "-").eq?("a-b-c-b"), "replace lits")
     check(s.split(".").len() == 4, "split lit")
 
     // borrowing a literal does not disturb the receiver
     check(s.find("c") == 4, "find c")
-    check(s.to_string() == "a.b.c.b", "receiver intact")
+    check(s.eq?("a.b.c.b"), "receiver intact")
 
     print("STRLB PASS")
 }

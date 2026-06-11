@@ -35,39 +35,39 @@ fn main() {
 
     // substr (owned)
     Str hi = s.substr(0, 5)
-    check(hi.to_string() == "Hello", "substr")
+    check(hi.eq?("Hello"), "substr")
     Str clip = s.substr(7, 999)            // lenient clamp
-    check(clip.to_string() == "World", "substr clamp")
+    check(clip.eq?("World"), "substr clamp")
     Str none = s.substr(100, 5)            // out-of-range start -> empty
     check(none.empty?(), "substr oob")
 
     // upper / lower (ASCII)
-    check(lo.upper().to_string() == "HELLO", "upper")
-    check(wo.lower().to_string() == "world", "lower")
+    check(lo.upper().eq?("HELLO"), "upper")
+    check(wo.lower().eq?("world"), "lower")
 
     // trim
     Str padded = "  spaced \t"
     Str nows = "nows"
-    check(padded.trim().to_string() == "spaced", "trim")
-    check(nows.trim().to_string() == "nows", "trim none")
+    check(padded.trim().eq?("spaced"), "trim")
+    check(nows.trim().eq?("nows"), "trim none")
 
     // concat (owned)
     Str greet = lo.concat(comma)
     Str full = greet.concat(wo)
-    check(full.to_string() == "hello, World", "concat")
+    check(full.eq?("hello, World"), "concat")
 
     // repeat
     Str ab = "ab"
     Str x = "x"
-    check(ab.repeat(3).to_string() == "ababab", "repeat")
+    check(ab.repeat(3).eq?("ababab"), "repeat")
     check(x.repeat(0).empty?(), "repeat zero")
 
     // chained owned rvalues drop clean (memcheck guards this)
-    check(s.substr(0, 5).lower().to_string() == "hello", "chain")
+    check(s.substr(0, 5).lower().eq?("hello"), "chain")
 
     // borrowed args don't consume their source
     check(s.contains?(wo), "no consume")
-    check(wo.to_string() == "World", "src alive")
+    check(wo.eq?("World"), "src alive")
 
     print("STRM PASS")
 }

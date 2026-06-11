@@ -16,15 +16,15 @@ fn main() {
 
     // Str var interpolated into an f-string that yields a Str
     Str g = f"hi {a}!"
-    check(g.to_string() == "hi world!", "borrow interp")
+    check(g.eq?("hi world!"), "borrow interp")
 
     // owned Str rvalue (method clone) interpolated — must drop, not leak
     Str u = f"up={a.upper()}"
-    check(u.to_string() == "up=WORLD", "owned interp")
+    check(u.eq?("up=WORLD"), "owned interp")
 
     // mixed: borrow + owned rvalue + POD in one f-string
     Str m = f"[{a}]({a.upper()})#{a.len()}"
-    check(m.to_string() == "[world](WORLD)#5", "mixed interp")
+    check(m.eq?("[world](WORLD)#5"), "mixed interp")
 
     // Str interpolation inline in print() (separate codegen path) — eyeball + memcheck
     print(f"P:{a} {b} {a.upper()}")        // P:world WD WORLD
@@ -34,13 +34,14 @@ fn main() {
     v.push("alpha")
     v.push("beta")
     Str e = f"{v.get(0)}-{v.get(1)}"
-    check(e.to_string() == "alpha-beta", "vec elem interp")
+    check(e.eq?("alpha-beta"), "vec elem interp")
 
     // builtin-string interpolation still works unchanged (default path)
     string s = "plain"
     int n = 9
     string bs = f"{s}={n}"
-    check(bs == "plain=9", "builtin fstring intact")
+    string bs_exp = "plain=9"     // pin to `string` so == stays builtin both states
+    check(bs == bs_exp, "builtin fstring intact")
 
     print("STRFI PASS")
 }

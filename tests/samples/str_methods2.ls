@@ -32,17 +32,17 @@ fn main() {
     // replace
     Str src = "a.b.c"
     Str dash = "-"
-    check(src.replace(dot, dash).to_string() == "a-b-c", "replace")
+    check(src.replace(dot, dash).eq?("a-b-c"), "replace")
     Str hello = "hello"
     Str ll = "ll"
     Str LL = "[LL]"
-    check(hello.replace(ll, LL).to_string() == "he[LL]o", "replace mid")
+    check(hello.replace(ll, LL).eq?("he[LL]o"), "replace mid")
 
     // pad
     Str x = "42"
-    check(x.pad_left(5, 48).to_string() == "00042", "pad_left")    // '0' = 48
-    check(x.pad_right(5, 46).to_string() == "42...", "pad_right")  // '.' = 46
-    check(x.pad_left(1, 48).to_string() == "42", "pad noop")
+    check(x.pad_left(5, 48).eq?("00042"), "pad_left")    // '0' = 48
+    check(x.pad_right(5, 46).eq?("42..."), "pad_right")  // '.' = 46
+    check(x.pad_left(1, 48).eq?("42"), "pad noop")
 
     // bytes (bind literal to a Str var first — bare literal receiver is pre-P5)
     Str AB = "AB"
@@ -54,8 +54,8 @@ fn main() {
     // split
     Vec(Str) parts = s.split(dot)
     check(parts.len() == 4, "split len")
-    check(parts.get(0).to_string() == "a", "split 0")
-    check(parts.get(3).to_string() == "b", "split 3")
+    check(parts.get(0).eq?("a"), "split 0")
+    check(parts.get(3).eq?("b"), "split 3")
 
     Str csv = "a,b,"
     Str comma = ","
@@ -67,9 +67,9 @@ fn main() {
     Str text = "one\ntwo\r\nthree"
     Vec(Str) ls = text.lines()
     check(ls.len() == 3, "lines len")
-    check(ls.get(0).to_string() == "one", "lines 0")
-    check(ls.get(1).to_string() == "two", "lines crlf")
-    check(ls.get(2).to_string() == "three", "lines 2")
+    check(ls.get(0).eq?("one"), "lines 0")
+    check(ls.get(1).eq?("two"), "lines crlf")
+    check(ls.get(2).eq?("three"), "lines 2")
 
     print("STRM2 PASS")
 }
