@@ -1,14 +1,15 @@
 import std.vec
+import std.str
 
-fn check_int(int got, int want, string name) {
+fn check_int(int got, int want, Str name) {
     if got == want { return }
-    print("FORCEUNWRAP FAIL: " + name)
+    print(f"FORCEUNWRAP FAIL: {name}")
 }
 
-// Build a genuinely owned (cap>0) string so move semantics are exercised
-// (string literals are static/cap==0 and would mask a double-free).
-fn mk_owned_str(string tail) -> Option(string) {
-    string base = "owned-"
+// Build a genuinely owned (cap>0) Str so move semantics are exercised
+// (Str literals are static/cap==0 and would mask a double-free).
+fn mk_owned_str(Str tail) -> Option(Str) {
+    Str base = "owned-"
     return Some(base + tail)
 }
 
@@ -24,7 +25,7 @@ fn get_some(int x) -> Option(int) {
     return None
 }
 
-fn get_ok(int x) -> Result(int, string) {
+fn get_ok(int x) -> Result(int, Str) {
     if x > 0 { return Ok(x) }
     return Err("bad")
 }
@@ -37,7 +38,7 @@ impl Box {
         return None
     }
 
-    fn result(&self) -> Result(int, string) {
+    fn result(&self) -> Result(int, Str) {
         if self.n > 0 { return Ok(self.n) }
         return Err("bad")
     }
@@ -62,11 +63,11 @@ fn main() {
     check_int(box.result()!, 7, "method.result")
 
     // Test 5: Force-unwrap on Result Ok
-    Result(int, string) r1 = Ok(55)
+    Result(int, Str) r1 = Ok(55)
     check_int((r1)!, 55, "result.ok")
 
     // Test 6: Force-unwrap on Result from function
-    Result(int, string) r2 = get_ok(33)
+    Result(int, Str) r2 = get_ok(33)
     check_int((r2)!, 33, "result.ok.fn")
 
     // Test 7: Nested usage - force-unwrap in expression
@@ -74,13 +75,13 @@ fn main() {
 
     // Test 8: owned string success type, variable operand (regression: must
     // move the string out and invalidate the source enum, else double-free).
-    Option(string) os = mk_owned_str("abcdef")   // owned, cap>0
-    string su = (os)!
-    check_int(su.length, 12, "owned.string.var")   // "owned-abcdef" == 12
+    Option(Str) os = mk_owned_str("abcdef")   // owned, cap>0
+    Str su = (os)!
+    check_int(su.len(), 12, "owned.string.var")   // "owned-abcdef" == 12
 
-    // Test 9: owned string success type, rvalue operand
-    string sr = mk_owned_str("xy")!
-    check_int(sr.length, 8, "owned.string.rvalue") // "owned-xy" == 8
+    // Test 9: owned Str success type, rvalue operand
+    Str sr = mk_owned_str("xy")!
+    check_int(sr.len(), 8, "owned.string.rvalue") // "owned-xy" == 8
 
     // Test 10: owned Vec success type — variable + rvalue operands
     Option(Vec(int)) ov = mk_owned_vec(40)

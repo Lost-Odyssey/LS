@@ -5,19 +5,21 @@
 //   - Same for Option(T): Some(T) unwraps, None propagates
 //   - try chains in a sequence work for both happy and failing paths
 
-fn parse_pos(int x) -> Result(int, string) {
+import std.str
+
+fn parse_pos(int x) -> Result(int, Str) {
     match x {
         0 => Err("zero")
         _ => Ok(x)
     }
 }
 
-fn double_pos(int x) -> Result(int, string) {
+fn double_pos(int x) -> Result(int, Str) {
     int v = try parse_pos(x)
     return Ok(v * 2)
 }
 
-fn chain(int a, int b, int c) -> Result(int, string) {
+fn chain(int a, int b, int c) -> Result(int, Str) {
     int x = try parse_pos(a)
     int y = try parse_pos(b)
     int z = try parse_pos(c)
@@ -38,19 +40,19 @@ fn double_even(int x) -> Option(int) {
 
 fn main() -> int {
     // Result success path
-    Result(int, string) r1 = double_pos(5)
+    Result(int, Str) r1 = double_pos(5)
     match r1 { Ok(v) => print(v)  Err(m) => print(m) }    // 10
 
     // Result failure path: Err propagates with original message
-    Result(int, string) r2 = double_pos(0)
+    Result(int, Str) r2 = double_pos(0)
     match r2 { Ok(v) => print(v)  Err(m) => print(m) }    // zero
 
     // Chain all-success
-    Result(int, string) r3 = chain(1, 2, 3)
+    Result(int, Str) r3 = chain(1, 2, 3)
     match r3 { Ok(v) => print(v)  Err(m) => print(m) }    // 6
 
     // Chain failure in the middle: stops at second try
-    Result(int, string) r4 = chain(1, 0, 3)
+    Result(int, Str) r4 = chain(1, 0, 3)
     match r4 { Ok(v) => print(v)  Err(m) => print(m) }    // zero
 
     // Option success
