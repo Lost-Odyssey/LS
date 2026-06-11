@@ -11,6 +11,10 @@ fn check(bool ok, string what) {
     if !ok { print(f"STRP3 FAIL: {what}") }
 }
 
+// builtin-string equality helper: routes a (possibly Str-flipped) literal back
+// through a `string` param so the `to_string()` round-trips stay covered.
+fn seq(string a, string b) -> bool { return a == b }
+
 fn make() -> Str { return f"made-{7}" }
 
 fn main() {
@@ -21,12 +25,12 @@ fn main() {
     // print an owned (bridge-built) Str — buffer NOT NUL-terminated, %.*s bounds it
     Str b = Str.from_string("dyn world")
     print(b)                       // dyn world
-    check(b.to_string() == "dyn world", "owned roundtrip")
+    check(seq(b.to_string(), "dyn world"), "owned roundtrip")
 
     // print an owned f-string Str
     Str f = f"x={42}"
     print(f)                       // x=42
-    check(f.to_string() == "x=42", "fstr roundtrip")
+    check(seq(f.to_string(), "x=42"), "fstr roundtrip")
 
     // print an owned Str RVALUE (clone) — must print text AND drop the clone clean
     print(b.__clone())             // dyn world
@@ -44,7 +48,7 @@ fn main() {
 
     // bare-binding print does NOT consume (b still usable afterward)
     print(b)                       // dyn world
-    check(b.to_string() == "dyn world", "no-consume after print")
+    check(seq(b.to_string(), "dyn world"), "no-consume after print")
 
     print("STRP3 PASS")
 }

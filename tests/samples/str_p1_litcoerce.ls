@@ -12,6 +12,10 @@ fn check(bool ok, string what) {
     if !ok { print(f"STRP1 FAIL: {what}") }
 }
 
+// builtin-string equality helper: routes a (possibly Str-flipped) literal back
+// through a `string` param so the `to_string()` round-trips stay covered.
+fn seq(string a, string b) -> bool { return a == b }
+
 // literal flows into a Str parameter slot (by-value clone of a static = static)
 fn take(Str s) -> int { return s.len() }
 
@@ -23,7 +27,7 @@ fn main() {
     Str a = "hello"
     check(a.len() == 5, "litdecl len")
     check(a.byte_at(0) == 104, "litdecl byte")
-    check(a.to_string() == "hello", "litdecl roundtrip")
+    check(seq(a.to_string(), "hello"), "litdecl roundtrip")
 
     // empty literal -> static Str, empty
     Str e = ""
@@ -35,18 +39,18 @@ fn main() {
 
     // move of a static Str
     Str c = a
-    check(c.to_string() == "hello", "move static")
+    check(seq(c.to_string(), "hello"), "move static")
 
     // literal into a param slot
     check(take("abcd") == 4, "param lit")
 
     // literal into a return slot
     Str w = make()
-    check(w.to_string() == "world", "return lit")
+    check(seq(w.to_string(), "world"), "return lit")
 
     // literal into a struct field slot
     Box bx = Box { s: "hi", n: 9 }
-    check(bx.s.to_string() == "hi", "field lit")
+    check(seq(bx.s.to_string(), "hi"), "field lit")
     check(bx.n == 9, "field n")
 
     // literal pushed into Vec(Str) (element slot expects Str)
@@ -54,13 +58,13 @@ fn main() {
     v.push("x")
     v.push("yy")
     check(v.len() == 2, "vec push lit")
-    check(v.get(1).to_string() == "yy", "vec elem lit")
+    check(seq(v.get(1).to_string(), "yy"), "vec elem lit")
 
     // owned Str (built via bridge) still works alongside static literals,
     // and concatenating a literal-built byte keeps drop clean
     Str owned = Str.from_string("dyn")
     owned.push_byte(33)
-    check(owned.to_string() == "dyn!", "owned mix")
+    check(seq(owned.to_string(), "dyn!"), "owned mix")
 
     print("STRP1 PASS")
 }
