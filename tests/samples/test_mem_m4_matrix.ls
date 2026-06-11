@@ -14,17 +14,18 @@
 //   7. match arm binder × {string, struct, enum}
 
 import std.vec
+import std.str
 import std.map
 
 struct Item {
-    string name
+    Str name
     int qty
 }
 
 enum Box {
     Empty
-    One(string)
-    Pair(string, int)
+    One(Str)
+    Pair(Str, int)
 }
 
 enum Holder {
@@ -32,21 +33,21 @@ enum Holder {
     Nil
 }
 
-fn mk_str() -> string { return "rvalue".upper() }
+fn mk_str() -> Str { return "rvalue".upper() }
 fn mk_item() -> Item { return Item{name: "from-fn".upper(), qty: 7} }
 fn mk_box() -> Box  { return One("box-rval".upper()) }
-fn mk_vec() -> Vec(string) {
-    Vec(string) v = ["a".upper(), "b".upper()]
+fn mk_vec() -> Vec(Str) {
+    Vec(Str) v = ["a".upper(), "b".upper()]
     return v
 }
-fn mk_map() -> Map(string, int) {
-    Map(string, int) m = {}
+fn mk_map() -> Map(Str, int) {
+    Map(Str, int) m = {}
     m.set("k".upper(), 1)
     return m
 }
 
-// 接收 string by-value（move 语义）
-fn take_str(string s) -> int {
+// 接收 Str by-value（move 语义）
+fn take_str(Str s) -> int {
     print(s)
     return 1
 }
@@ -59,7 +60,7 @@ fn take_item(Item it) -> int {
 
 fn main() -> int {
     // ========== 1. AST_VAR_DECL ==========
-    string s_var = mk_str()
+    Str s_var = mk_str()
     print(s_var)
 
     Item it_var = mk_item()
@@ -72,50 +73,50 @@ fn main() -> int {
         Pair(x, n) => { print(x) }
     }
 
-    Vec(string) v_var = mk_vec()
+    Vec(Str) v_var = mk_vec()
     print(v_var[0])
 
-    Map(string, int) m_var = mk_map()
+    Map(Str, int) m_var = mk_map()
     print("m_var ok")
 
     // ========== 2. AST_ASSIGN var (=) ==========
-    string s_asn = "init".copy()
-    s_asn = mk_str()           // string rvalue 赋给已存在变量
+    Str s_asn = "init".copy()
+    s_asn = mk_str()           // Str rvalue 赋给已存在变量
     print(s_asn)
 
     // ========== 3. AST_ASSIGN field.x ==========
     Item it_asn = Item{name: "old".copy(), qty: 1}
-    it_asn.name = mk_str()      // string rvalue 赋给 struct.field
+    it_asn.name = mk_str()      // Str rvalue 赋给 struct.field
     print(it_asn.name)
 
-    string fresh = "FRESH".copy()
-    it_asn.name = fresh         // string IDENT move 赋给 struct.field
+    Str fresh = "FRESH".copy()
+    it_asn.name = fresh         // Str IDENT move 赋给 struct.field
     print(it_asn.name)
 
     // ========== 4. AST_RETURN ========== (覆盖通过 mk_* 已隐式测试)
 
     // ========== 5. Vec / map 字面量 + map.set / map[k]= ==========
-    Vec(string) v_lit = ["x".upper(), "y".upper(), "z".upper()]
+    Vec(Str) v_lit = ["x".upper(), "y".upper(), "z".upper()]
     print(v_lit[2])
 
-    Map(string, int) m_lit = { "hello": 100, "world": 200 }
+    Map(Str, int) m_lit = { "hello": 100, "world": 200 }
     print("m_lit ok")
 
-    Map(string, int) m2 = {}
-    m2.set("alpha".upper(), 1)         // map.set with string rvalue key
-    string mk = "beta".upper()
-    m2.set(mk, 2)                       // map.set with string IDENT key (move)
+    Map(Str, int) m2 = {}
+    m2.set("alpha".upper(), 1)         // map.set with Str rvalue key
+    Str mk = "beta".upper()
+    m2.set(mk, 2)                       // map.set with Str IDENT key (move)
     print("m2 ok")
 
-    Map(string, string) m3 = {}
-    m3.set("k1".copy(), "v1".upper())   // string rvalue value
-    string mv = "v2".upper()
-    m3.set("k2".copy(), mv)             // string IDENT value (move)
+    Map(Str, Str) m3 = {}
+    m3.set("k1".copy(), "v1".upper())   // Str rvalue value
+    Str mv = "v2".upper()
+    m3.set("k2".copy(), mv)             // Str IDENT value (move)
     print("m3 ok")
 
     // ========== 6. 函数实参 → 形参 (by-value) ==========
-    string s_pass = "pass".upper()
-    int n1 = take_str(s_pass)           // string IDENT move 给形参
+    Str s_pass = "pass".upper()
+    int n1 = take_str(s_pass)           // Str IDENT move 给形参
     print(n1)
 
     int n2 = take_str(mk_str())         // rvalue 直接传形参
@@ -129,7 +130,7 @@ fn main() -> int {
     Box bx_m = One("inner".upper())
     match bx_m {
         Empty => { print("empty") }
-        One(x) => { print(x) }                  // bind string from enum
+        One(x) => { print(x) }                  // bind Str from enum
         Pair(x, n) => { print(x) }
     }
 
@@ -151,10 +152,10 @@ fn main() -> int {
     Item it0 = vit[0]               // 变量绑定（所有权转移，基线已正确）
     print(it0.name)
 
-    // Vec(Vec(string)) — 暂不测：同样涉及嵌套 vec 借用 bug
+    // Vec(Vec(Str)) — 暂不测：同样涉及嵌套 vec 借用 bug
     // 已派生独立任务跟踪
 
-    // map(string, Vec(string)) — 暂不测：runtime symbol mismatch bug
+    // map(Str, Vec(Str)) — 暂不测：runtime symbol mismatch bug
     // 已派生独立任务跟踪
 
     // ========== 9. has_drop struct/enum 整体赋值 ==========

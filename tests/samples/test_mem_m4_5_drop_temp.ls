@@ -1,19 +1,20 @@
 // M-4.5: Vec[i] 索引访问返回 has_drop struct/enum 的深拷贝。
 // 该深拷贝是语句级临时值，若不转移给命名变量必须在语句结束时 drop，
-// 否则其拥有的堆资源（string 字段 / enum payload）泄漏。
+// 否则其拥有的堆资源（Str 字段 / enum payload）泄漏。
 // 目标：memcheck OK clean（0 leak / 0 dfree / 0 ifree），JIT + AOT 双通道。
 
 import std.vec
+import std.str
 
 struct Item {
-    string name
+    Str name
     int qty
 }
 
 enum Box {
     Empty
-    One(string)
-    Pair(string, int)
+    One(Str)
+    Pair(Str, int)
 }
 
 fn main() -> int {

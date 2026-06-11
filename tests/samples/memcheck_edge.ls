@@ -2,10 +2,11 @@
 // 期望：跑 `ls run --memcheck` 输出 OK clean。任何 LEAK / DOUBLE FREE 都是真实 bug。
 
 import std.vec
+import std.str
 import std.map
 
 struct Person {
-    string name
+    Str name
     int    age
 }
 
@@ -26,37 +27,37 @@ fn sum_tree(Tree t) -> int {
     }
 }
 
-fn try_inner(int x) -> Result(string, string) {
+fn try_inner(int x) -> Result(Str, Str) {
     if x < 0 { return Err("negative".upper()) }
     return Ok(f"got {x}")
 }
 
-fn try_chain(int x) -> Result(string, string) {
-    string s = try try_inner(x)
+fn try_chain(int x) -> Result(Str, Str) {
+    Str s = try try_inner(x)
     return Ok(s + "!")
 }
 
 fn break_with_owned(int n) -> int {
     int total = 0
     for i in 0..n {
-        string s = f"i={i}"
+        Str s = f"i={i}"
         if i == 5 { break }
-        total = total + s.length
+        total = total + s.len()
     }
     return total
 }
 
 fn main() -> int {
-    // ---- Vec(string) ----
-    Vec(string) names = ["alice".upper(), "bob".upper(), "charlie".upper()]
+    // ---- Vec(Str) ----
+    Vec(Str) names = ["alice".upper(), "bob".upper(), "charlie".upper()]
     for n in names { print(n) }
 
     Vec(int) nums = {}
     for i in 0..20 { nums.push(i * i) }   // triggers Vec.grow (realloc)
     print(nums.len())
 
-    // ---- Map(string, int) ----
-    Map(string, int) ages = {}
+    // ---- Map(Str, int) ----
+    Map(Str, int) ages = {}
     ages.set("alice", 30)
     ages.set("bob",   25)
     ages.set("charlie", 40)
@@ -66,7 +67,7 @@ fn main() -> int {
         None => { print(-1) }
     }
 
-    // ---- struct with string field (has_drop) ----
+    // ---- struct with Str field (has_drop) ----
     Person p = Person { name: "diana".upper(), age: 28 }
     print(p.name)
     print(p.age)
@@ -88,8 +89,8 @@ fn main() -> int {
     // ---- break inside loop with owned scope vars ----
     print(break_with_owned(10))        // 0+1+2+3+4 totals length sum
 
-    // ---- string concat in loop ----
-    string accum = ""
+    // ---- Str concat in loop ----
+    Str accum = ""
     for i in 0..5 {
         accum = accum + f"[{i}]"
     }

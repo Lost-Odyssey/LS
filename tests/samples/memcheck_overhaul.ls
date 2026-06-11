@@ -3,17 +3,18 @@
 // 目标：JIT + AOT 下 memcheck OK clean（0 leak / 0 dfree / 0 ifree）。
 
 import std.vec
+import std.str
 import std.map
 
 struct Item {
-    string name
+    Str name
     int qty
 }
 
 enum Box {
     Empty
-    One(string)
-    Pair(string, int)
+    One(Str)
+    Pair(Str, int)
 }
 
 enum Tree {
@@ -23,23 +24,23 @@ enum Tree {
 
 type IntFn = Block() -> int
 
-// borrowed string 参数 → enum ctor（必须 clone）
-fn wrap_enum(string s) -> Box {
+// borrowed Str 参数 → enum ctor（必须 clone）
+fn wrap_enum(Str s) -> Box {
     return One(s)
 }
 
-// borrowed string 参数 → struct ctor（必须 clone）
-fn wrap_struct(string s) -> Item {
+// borrowed Str 参数 → struct ctor（必须 clone）
+fn wrap_struct(Str s) -> Item {
     return Item{name: s, qty: 1}
 }
 
 // borrowed string → 显式 copy
-fn echo_copy(string s) -> string {
+fn echo_copy(Str s) -> Str {
     return s.copy()
 }
 
 // match binder 作为返回值
-fn unwrap_or(Box b, string fallback) -> string {
+fn unwrap_or(Box b, Str fallback) -> Str {
     match b {
         One(x) => { return x.copy() }
         Pair(x, n) => { return x.copy() }
@@ -47,15 +48,15 @@ fn unwrap_or(Box b, string fallback) -> string {
     }
 }
 
-// try 早返：Result(int, string)
-fn parse_pos(string s) -> Result(int, string) {
-    if s.length == 0 {
+// try 早返：Result(int, Str)
+fn parse_pos(Str s) -> Result(int, Str) {
+    if s.len() == 0 {
         return Err("empty".upper())
     }
-    return Ok(s.length)
+    return Ok(s.len())
 }
 
-fn use_try(string s) -> Result(int, string) {
+fn use_try(Str s) -> Result(int, Str) {
     int n = try parse_pos(s)
     return Ok(n + 1)
 }
@@ -69,9 +70,9 @@ fn tree_sum(Tree t) -> int {
 }
 
 fn main() -> int {
-    // ===== 1. print 各种动态 string 参数 (M-1) =====
-    string s = "hello"
-    print(s.upper())                       // string 方法
+    // ===== 1. print 各种动态 Str 参数 (M-1) =====
+    Str s = "hello"
+    print(s.upper())                       // Str 方法
     print("a" + "b")                       // 拼接
     int nn = 42
     print(f"n={nn}")                        // f-string
@@ -79,9 +80,9 @@ fn main() -> int {
     print("  HELLO  ".trim().lower())       // 链式方法
     print(s.upper(), s.lower(), "lit")      // 多参数
 
-    // ===== 2. borrowed string 跨函数边界 (M-2) =====
-    string owned = "world".upper()
-    string e1 = echo_copy(owned)
+    // ===== 2. borrowed Str 跨函数边界 (M-2) =====
+    Str owned = "world".upper()
+    Str e1 = echo_copy(owned)
     print(e1)
     print(owned)                            // owned 仍 live（借用，非 move）
 
@@ -94,33 +95,33 @@ fn main() -> int {
     }
     print(owned)                            // 仍 live
 
-    // ===== 4. struct ctor with string method (M-4) =====
+    // ===== 4. struct ctor with Str method (M-4) =====
     Item it = wrap_struct("name".upper())
     print(it.name)
     Item it2 = Item{name: "alice".upper(), qty: 30}
     print(it2.name)
 
     // ===== 5. Vec 元素 swap via index assign (M-4/bug_23) =====
-    Vec(string) vs = ["AAA".copy(), "BBB".copy()]
-    string a = vs[0]
-    string b = vs[1]
+    Vec(Str) vs = ["AAA".copy(), "BBB".copy()]
+    Str a = vs[0]
+    Str b = vs[1]
     vs[0] = b
     vs[1] = a
     print(vs[0])
     print(vs[1])
 
-    // ===== 6. Vec(string) push + pop + for (BF-001) =====
-    Vec(string) names = {}
+    // ===== 6. Vec(Str) push + pop + for (BF-001) =====
+    Vec(Str) names = {}
     names.push("n1".upper())
     names.push("n2".upper())
     names.push("n3".upper())
-    Option(string) _pn = names.pop()        // VR-LIM-014: must assign
+    Option(Str) _pn = names.pop()        // VR-LIM-014: must assign
     for i in 0..names.len() {
         print(names[i])
     }
 
-    // ===== 7. Map(string,string) set + get + read (M-4/BF-039) =====
-    Map(string, string) m = {}
+    // ===== 7. Map(Str, Str) set + get + read (M-4/BF-039) =====
+    Map(Str, Str) m = {}
     m.set("k1".upper(), "v1".upper())
     m.set("k2".upper(), "v2".upper())
     match m.get("k1".upper()) {             // get 临时读取
@@ -131,7 +132,7 @@ fn main() -> int {
         Some(v2) => { print(v2) }
         None => { print("missing") }
     }
-    string mv = ""
+    Str mv = ""
     match m.get("k1".upper()) {             // 转移给命名变量
         Some(v3) => { mv = v3 }
         None => {}
@@ -140,25 +141,25 @@ fn main() -> int {
 
     // ===== 8. match binder return (BF-029) =====
     Box b2 = Pair("pair".upper(), 7)
-    string r8 = unwrap_or(b2, "none".upper())
+    Str r8 = unwrap_or(b2, "none".upper())
     print(r8)
 
     // ===== 9. try 早返路径 string (BF-012) =====
-    Result(int, string) tr = use_try("abcd")
+    Result(int, Str) tr = use_try("abcd")
     match tr {
         Ok(v) => { print(f"try ok {v}") }
         Err(msg) => { print(msg) }
     }
-    Result(int, string) tr2 = use_try("")   // 触发 Err 早返
+    Result(int, Str) tr2 = use_try("")   // 触发 Err 早返
     match tr2 {
         Ok(v) => { print(f"try ok {v}") }
         Err(msg) => { print(msg) }
     }
 
-    // ===== 10. 循环内 string 分配 + break (BF-012) =====
+    // ===== 10. 循环内 Str 分配 + break (BF-012) =====
     int k = 0
     while k < 5 {
-        string loopstr = "iter".upper()
+        Str loopstr = "iter".upper()
         if k == 2 {
             print(loopstr)
             break
@@ -168,7 +169,7 @@ fn main() -> int {
 
     // ===== 11. 闭包捕获 string + int (Phase C/F) =====
     int base = 100
-    string tag = "tag".upper()
+    Str tag = "tag".upper()
     IntFn adder = || {
         return base + 1
     }
@@ -179,7 +180,7 @@ fn main() -> int {
     Tree tree = Node(1, Node(2, Leaf, Leaf), Node(3, Leaf, Leaf))
     print(f"tree_sum={tree_sum(tree)}")
 
-    // ===== 13. f-string with % literal (今日修复) =====
+    // ===== 13. f-Str with % literal (今日修复) =====
     int pct = 50
     print(f"{pct}% complete")
 
