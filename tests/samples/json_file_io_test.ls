@@ -5,6 +5,7 @@
 
 import std.vec
 import std.json as json
+import std.str
 import io
 
 fn main() {
@@ -85,11 +86,11 @@ fn main() {
             }
 
             // Verify the written file contains newlines (pretty-printed)
-            Result(string, string) r5raw = io.read_file("json_e2e_out.json")
+            Result(Str, Str) r5raw = io.read_file("json_e2e_out.json")
             match r5raw {
                 Err(e) => { print(f"FAIL 5b: read raw error={e}") }
                 Ok(raw) => {
-                    if raw.contains("\n") { print("PASS 5b: file has newlines") }
+                    if raw.contains?("\n") { print("PASS 5b: file has newlines") }
                     else { print("FAIL 5b: file has no newlines") }
                 }
             }

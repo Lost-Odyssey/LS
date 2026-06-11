@@ -1,9 +1,17 @@
 // std/io.ls — File I/O module.
 // Pure LS — no platform conditionals, no direct extern fn (all via std.c / std.os).
+//
+// FFI rule (string->Str migration): paths handed to the DIRECT extern fn
+// c.fopen go through a builtin-string local first — the Str->string var-decl
+// bridge copies + NUL-terminates (Str.data itself has NO NUL and the call-arg
+// bridge does not cover direct extern calls). Write paths use Str.as_ptr+len
+// (fwrite is length-based, no NUL needed); read paths wrap the malloc'd buffer
+// into an owned Str zero-copy.
 
 
 import std.os as _os
 import std.c as c
+import std.str
 
 // ---- Public types ----
 
@@ -29,6 +37,7 @@ struct File {
 
 // ---- Internal helpers ----
 
+// Stays builtin string: feeds c.fopen (extern char*) directly.
 fn _mode_str(OpenMode m) -> string {
     string r = "r"
     match m {
@@ -68,14 +77,23 @@ fn _seek_origin(SeekFrom o) -> int {
 fn _fseek64(object fp, i64 off, int origin) -> int { return _os.raw_fseek64(fp, off, origin) }
 fn _ftell64(object fp) -> i64 { return _os.raw_ftell64(fp) }
 
-fn _err(string msg) -> string {
-    return "io: " + msg
+fn _err(Str msg) -> Str {
+    Str e = "io: "
+    e.push_str(msg)
+    return e
+}
+
+// Wrap a tracked (c.malloc'd) buffer into an owned Str, zero-copy.
+// cap must be the malloc'd size (> len). The Str drop frees the buffer.
+fn _own_buf(*u8 buf, i64 len, i64 cap) -> Str {
+    return Str { data: buf, len: len as int, cap: cap as int }
 }
 
 // ---- Public API ----
 
-fn read_file(string path) -> Result(string, string) {
-    object fp = c.fopen(path, "rb")
+fn read_file(Str path) -> Result(Str, Str) {
+    string sp = path
+    object fp = c.fopen(sp, "rb")
     if fp == nil {
         return Err(_err("read_file: open failed"))
     }
@@ -89,21 +107,21 @@ fn read_file(string path) -> Result(string, string) {
     *u8 buf = c.malloc(sz + 1)
     i64 nread = c.fread(buf, 1, sz, fp)
     c.fclose(fp)
-    string s = __string_take_buffer(buf, nread)
+    Str s = _own_buf(buf, nread, sz + 1)
     if nread != sz {
         return Err(_err("read_file: read incomplete"))
     }
     return Ok(s)
 }
 
-fn write_file(string path, string content) -> Result(int, string) {
-    object fp = c.fopen(path, "wb")
+fn write_file(Str path, Str content) -> Result(int, Str) {
+    string sp = path
+    object fp = c.fopen(sp, "wb")
     if fp == nil {
         return Err(_err("write_file: open failed"))
     }
-    i64 len = content.length
-    *u8 cstr = content.to_cstr() as *u8
-    i64 wrote = c.fwrite(cstr, 1, len, fp)
+    i64 len = content.len()
+    i64 wrote = c.fwrite(content.as_ptr() as *u8, 1, len, fp)
     c.fclose(fp)
     if wrote != len {
         return Err(_err("write_file: write incomplete"))
@@ -112,14 +130,14 @@ fn write_file(string path, string content) -> Result(int, string) {
     return Ok(n)
 }
 
-fn append_file(string path, string content) -> Result(int, string) {
-    object fp = c.fopen(path, "ab")
+fn append_file(Str path, Str content) -> Result(int, Str) {
+    string sp = path
+    object fp = c.fopen(sp, "ab")
     if fp == nil {
         return Err(_err("append_file: open failed"))
     }
-    i64 len = content.length
-    *u8 cstr = content.to_cstr() as *u8
-    i64 wrote = c.fwrite(cstr, 1, len, fp)
+    i64 len = content.len()
+    i64 wrote = c.fwrite(content.as_ptr() as *u8, 1, len, fp)
     c.fclose(fp)
     if wrote != len {
         return Err(_err("append_file: write incomplete"))
@@ -128,8 +146,9 @@ fn append_file(string path, string content) -> Result(int, string) {
     return Ok(n)
 }
 
-fn exists(string path) -> bool {
-    object fp = c.fopen(path, "rb")
+fn exists(Str path) -> bool {
+    string sp = path
+    object fp = c.fopen(sp, "rb")
     if fp == nil {
         return false
     }
@@ -137,9 +156,10 @@ fn exists(string path) -> bool {
     return true
 }
 
-fn open(string path, OpenMode m) -> Result(File, string) {
+fn open(Str path, OpenMode m) -> Result(File, Str) {
+    string sp = path
     string ms = _mode_str(m)
-    object fp = c.fopen(path, ms)
+    object fp = c.fopen(sp, ms)
     if fp == nil {
         return Err(_err("open failed"))
     }
@@ -152,7 +172,7 @@ fn close(File f) -> int {
     return c.fclose(f.handle)
 }
 
-fn read_all(File f) -> Result(string, string) {
+fn read_all(File f) -> Result(Str, Str) {
     if f.handle == nil {
         return Err(_err("read_all: file is closed"))
     }
@@ -162,25 +182,24 @@ fn read_all(File f) -> Result(string, string) {
     i64 sz = endp - saved
     _fseek64(f.handle, saved, 0)
     if sz <= 0 {
-        string empty = ""
+        Str empty = ""
         return Ok(empty)
     }
     *u8 buf = c.malloc(sz + 1)
     i64 nread = c.fread(buf, 1, sz, f.handle)
-    string s = __string_take_buffer(buf, nread)
+    Str s = _own_buf(buf, nread, sz + 1)
     if nread != sz {
         return Err(_err("read_all: read incomplete"))
     }
     return Ok(s)
 }
 
-fn write(File f, string content) -> Result(int, string) {
+fn write(File f, Str content) -> Result(int, Str) {
     if f.handle == nil {
         return Err(_err("write: file is closed"))
     }
-    i64 len = content.length
-    *u8 cstr = content.to_cstr() as *u8
-    i64 wrote = c.fwrite(cstr, 1, len, f.handle)
+    i64 len = content.len()
+    i64 wrote = c.fwrite(content.as_ptr() as *u8, 1, len, f.handle)
     if wrote != len {
         return Err(_err("write: write incomplete"))
     }
@@ -188,7 +207,7 @@ fn write(File f, string content) -> Result(int, string) {
     return Ok(n)
 }
 
-fn seek(File f, i64 offset, SeekFrom origin) -> Result(i64, string) {
+fn seek(File f, i64 offset, SeekFrom origin) -> Result(i64, Str) {
     if !f.is_binary || f.handle == nil {
         return Err(_err("file is text-mode or closed (positioning requires binary)"))
     }
@@ -201,7 +220,7 @@ fn seek(File f, i64 offset, SeekFrom origin) -> Result(i64, string) {
     return Ok(pos)
 }
 
-fn tell(File f) -> Result(i64, string) {
+fn tell(File f) -> Result(i64, Str) {
     if !f.is_binary || f.handle == nil {
         return Err(_err("file is text-mode or closed (positioning requires binary)"))
     }
@@ -212,7 +231,7 @@ fn tell(File f) -> Result(i64, string) {
     return Ok(pos)
 }
 
-fn size(File f) -> Result(i64, string) {
+fn size(File f) -> Result(i64, Str) {
     if !f.is_binary || f.handle == nil {
         return Err(_err("file is text-mode or closed (positioning requires binary)"))
     }
@@ -223,7 +242,7 @@ fn size(File f) -> Result(i64, string) {
     return Ok(sz)
 }
 
-fn rewind(File f) -> Result(int, string) {
+fn rewind(File f) -> Result(int, Str) {
     if !f.is_binary || f.handle == nil {
         return Err(_err("file is text-mode or closed (positioning requires binary)"))
     }
@@ -235,7 +254,7 @@ fn rewind(File f) -> Result(int, string) {
     return Ok(z)
 }
 
-fn remove(string path) -> Result(int, string) {
+fn remove(Str path) -> Result(int, Str) {
     int r = _os.raw_unlink(path)
     if r != 0 {
         return Err(_err("remove failed"))
@@ -246,7 +265,7 @@ fn remove(string path) -> Result(int, string) {
 
 // Reads one line from stdin, stripping the trailing newline.
 // Returns Ok(line) on success, Err("io: read_line: EOF") at end of input.
-fn read_line() -> Result(string, string) {
+fn read_line() -> Result(Str, Str) {
     c.__ls_readline_exec()
     if c.__ls_readline_ok() == 0 {
         return Err(_err("read_line: EOF"))
@@ -255,6 +274,6 @@ fn read_line() -> Result(string, string) {
        ownership of a runtime-malloc'd pointer would make the eventual string
        drop an INVALID FREE under --memcheck (untracked allocation). */
     object ptr = c.__ls_readline_ptr()
-    string s = from_cstr(ptr)
+    Str s = from_cstr(ptr)
     return Ok(s)
 }

@@ -5,6 +5,7 @@
 
 import std.vec
 import std.json as json
+import std.str
 import io
 
 fn main() {
@@ -82,18 +83,19 @@ fn main() {
 
             // Write compact JSON to a temp file
             string tmpfile = "json_rt_tmp.json"
-            Result(int, string) wr = io.write_file(tmpfile, compact)
+            Result(int, Str) wr = io.write_file(tmpfile, compact)
             match wr {
                 Err(e) => { print(f"FAIL 4a: write_file error={e}"); return }
                 Ok(n) => { print(f"PASS 4a: wrote {n} bytes") }
             }
 
             // Read back
-            Result(string, string) rd = io.read_file(tmpfile)
+            Result(Str, Str) rd = io.read_file(tmpfile)
             match rd {
                 Err(e) => { print(f"FAIL 4b: read_file error={e}"); return }
                 Ok(content) => {
-                    if content.compare(compact) == 0 {
+                    Str cs = compact.copy()
+                    if content.compare(cs) == 0 {
                         print("PASS 4b: file content matches stringify")
                     } else {
                         print("FAIL 4b: file content mismatch")
@@ -118,7 +120,7 @@ fn main() {
             }
 
             // Clean up temp file (ignore result)
-            Result(int, string) rm = io.remove(tmpfile)
+            Result(int, Str) rm = io.remove(tmpfile)
         }
     }
 

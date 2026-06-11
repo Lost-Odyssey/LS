@@ -12988,6 +12988,14 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
        temps from a previous function don't bleed into this one. */
     int saved_temp_count = ctx->temp_string_count;
     ctx->temp_string_count = 0;
+    /* Same isolation for M-4.5 has_drop temp slots: a function whose last
+       statement early-returns from every match arm can leave registered
+       temp_drop entries unflushed; without this reset the NEXT function's
+       first flush emits drops referencing the previous function's allocas
+       (LLVM "instruction does not dominate all uses"). Hit by the B-2
+       string->Str call-arg bridge in std.json's io wrappers. */
+    int saved_temp_drop_count = ctx->temp_drop_count;
+    ctx->temp_drop_count = 0;
 
     int total_n = fn_type_ml->as.function.param_count;
     LLVMTypeRef fn_type = type_to_llvm(ctx, fn_type_ml);
@@ -13315,6 +13323,7 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
 
     /* Restore temp string count to what it was before compiling this function */
     ctx->temp_string_count = saved_temp_count;
+    ctx->temp_drop_count = saved_temp_drop_count;
 
     /* Verify function */
     if (LLVMVerifyFunction(fn, LLVMPrintMessageAction))

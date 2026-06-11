@@ -4,6 +4,7 @@
 import std.vec
 import std.map
 import io
+import std.str
 
 // ---- Core type ----
 
@@ -787,17 +788,36 @@ fn object_keys(JsonValue v) -> Vec(string) {
 // ---- File I/O convenience wrappers ----
 // Note: names avoid conflict with io.ls (LLVM has no module-level name mangling).
 
+// io.* now returns Result(_, Str) while this module is still builtin-string
+// based: unpack via match and let the Str->string bridges convert payloads
+// (`try` would propagate an Err(Str) into our Result(_, string)).
+
 fn load_file(string path) -> Result(JsonValue, string) {
-    string content = try io.read_file(path)
-    return parse(content)
+    match io.read_file(path) {
+        Ok(content) => { return parse(content) }
+        Err(e) => {
+            string es = e
+            return Err(es)
+        }
+    }
+}
+
+fn _wf_to_string_err(Result(int, Str) r) -> Result(int, string) {
+    match r {
+        Ok(n) => { return Ok(n) }
+        Err(e) => {
+            string es = e
+            return Err(es)
+        }
+    }
 }
 
 fn save_file(string path, JsonValue val) -> Result(int, string) {
     string content = stringify_pretty(val, 2)
-    return io.write_file(path, content)
+    return _wf_to_string_err(io.write_file(path, content))
 }
 
 fn save_compact(string path, JsonValue val) -> Result(int, string) {
     string content = stringify(val)
-    return io.write_file(path, content)
+    return _wf_to_string_err(io.write_file(path, content))
 }

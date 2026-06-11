@@ -9069,6 +9069,11 @@ static void forward_pass(Checker *c, AstNode *program)
                symbol table. The module Type is bound into the current
                scope so subsequent name-resolution treats `math.X` like
                any other module-qualified access. */
+            if (getenv("LS_DEBUG_MODULES"))
+                fprintf(stderr, "[mod] import '%s' (from %s): builtin=%d userfile=%d\n",
+                        import_path, c->source_path ? c->source_path : "?",
+                        builtin_module_exists(import_path),
+                        module_user_file_exists(import_path, c->source_path));
             if (builtin_module_exists(import_path) &&
                 !module_user_file_exists(import_path, c->source_path))
             {
@@ -9111,6 +9116,26 @@ static void forward_pass(Checker *c, AstNode *program)
                                         c->registry, &sub_gm);
                 c->registry->current_check_module = saved_ccm;
                 module_pop_import(c->registry);
+                /* DANGLING-POINTER FIX: the recursive check above loads the
+                   module's own imports, growing reg->modules; GROW_ARRAY's
+                   realloc can MOVE the array, invalidating `mod` (a pointer
+                   INTO it). Writing mod->checked / reading mod->ast through
+                   the stale pointer is a use-after-free whose symptom depends
+                   on heap reuse: sometimes fine, sometimes "unknown type
+                   'Str'" / "module has no export" cascades, sometimes a
+                   silent segfault — all NONDETERMINISTIC per run (hit when
+                   the std.str chain pushed the registry past a capacity
+                   boundary). Re-resolve by name after the recursion. */
+                mod = module_find(c->registry, import_path);
+                if (mod == NULL)
+                {
+                    checker_error(c, decl->line, decl->column,
+                                  "module '%s' lost during recursive check",
+                                  import_path);
+                    break;
+                }
+                if (getenv("LS_DEBUG_MODULES"))
+                    fprintf(stderr, "[mod] checked '%s': ok=%d\n", import_path, (int)ok);
                 if (!ok)
                 {
                     if (sub_gm.methods)

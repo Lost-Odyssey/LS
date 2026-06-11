@@ -1,5 +1,5 @@
 // json_e2e_test.ls — end-to-end JSON file read + iterate keys/values
-import std.io as io
+import io
 import std.json as json
 
 fn print_value(string key, JsonValue val) {
@@ -27,10 +27,15 @@ fn print_value(string key, JsonValue val) {
 
 fn main() {
     // Read JSON file
-    string raw
-    Result(string, string) rraw = io.read_file("tests/samples/json_e2e_data.json")
-    match rraw {
-        Ok(s) => { raw = s }
+    // NOTE: no `import std.str` / no explicit Result(Str, Str) annotation here —
+    // JsonValue has a variant literally named `Str`, and importing the struct
+    // Str alongside std.json breaks top-level signature resolution (known
+    // collision, resolves itself when json.ls migrates in P7 #17). Matching the
+    // call directly avoids naming the type.
+    string raw = ""
+    match io.read_file("tests/samples/json_e2e_data.json") {
+        Ok(s) => { string ss = s
+                   raw = ss }
         Err(e) => {
             print("read_file error:", e)
             return

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #define PATH_SEP '\\'
@@ -12,6 +13,7 @@
   typedef unsigned long DWORD_W32_M;
   __declspec(dllimport) DWORD_W32_M __stdcall GetModuleFileNameA(
       void *hModule, char *lpFilename, DWORD_W32_M nSize);
+  __declspec(dllimport) void __stdcall Sleep(DWORD_W32_M dwMilliseconds);
 #else
 #define PATH_SEP '/'
 #define PATH_SEP_STR "/"
@@ -47,8 +49,29 @@ static char *get_directory(const char *file_path) {
 }
 
 /* Read an entire file into a malloc'd buffer. Returns NULL on failure. */
+/* fopen with a short retry loop. On Windows, antivirus (Defender) can hold a
+   transient lock on recently-written files (the build copies std/*.ls), making
+   a single fopen fail spuriously. A failed open here is SEMANTIC, not just an
+   error: module_user_file_exists falling through makes `import io` silently
+   bind the compiler BUILTIN io module (different export set) → nondeterministic
+   "module 'io' has no export 'read_file'" / "unknown type 'Str'" cascades.
+   Retries only run on the failure path; the success path costs nothing. */
+static FILE *fopen_retry(const char *path, const char *mode) {
+    FILE *f = fopen(path, mode);
+#ifdef _WIN32
+    /* Only retry lock-style failures (EACCES/EBUSY...). ENOENT is a NORMAL
+       outcome here — path resolution probes several candidate locations —
+       and must stay a single cheap miss, not a 100ms retry loop. */
+    for (int i = 0; f == NULL && errno != ENOENT && i < 5; i++) {
+        Sleep(20);
+        f = fopen(path, mode);
+    }
+#endif
+    return f;
+}
+
 static char *read_file(const char *path) {
-    FILE *file = fopen(path, "rb");
+    FILE *file = fopen_retry(path, "rb");
     if (file == NULL) return NULL;
     fseek(file, 0, SEEK_END);
     long size = ftell(file);
@@ -126,7 +149,7 @@ static char *resolve_stdlib_path(const char *import_path) {
     size_t full_len = strlen(root) + 1 + strlen(rel_path) + 3 + 1;
     char *full = (char *)malloc_safe(full_len);
     snprintf(full, full_len, "%s%s%s.ls", root, PATH_SEP_STR, rel_path);
-    FILE *f = fopen(full, "rb");
+    FILE *f = fopen_retry(full, "rb");
     if (f != NULL) { fclose(f); free(rel_path); return full; }
     free(full);
 
@@ -136,7 +159,7 @@ static char *resolve_stdlib_path(const char *import_path) {
     snprintf(full2, full2_len, "%s%sstd%s%s.ls",
              root, PATH_SEP_STR, PATH_SEP_STR, rel_path);
     free(rel_path);
-    f = fopen(full2, "rb");
+    f = fopen_retry(full2, "rb");
     if (f != NULL) { fclose(f); return full2; }
     free(full2);
     return NULL;
@@ -175,7 +198,7 @@ bool module_user_file_exists(const char *import_path, const char *current_file) 
        includes any file reachable via resolve_stdlib_path (std/ directory). */
     char *path = module_resolve_path(import_path, current_file);
     if (path != NULL) {
-        FILE *f = fopen(path, "rb");
+        FILE *f = fopen_retry(path, "rb");
         bool exists = (f != NULL);
         if (f) fclose(f);
         free(path);
