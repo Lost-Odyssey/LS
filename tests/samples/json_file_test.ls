@@ -11,7 +11,7 @@ import io
 fn main() {
     // ---- Medium-sized JSON (embedded as string literal) ----
     // ~20 values: nested objects, arrays, strings, numbers, booleans, null
-    string src = "{\"name\":\"test_dataset\",\"version\":2,\"active\":true,\"score\":98.6,\"tags\":[\"alpha\",\"beta\",\"gamma\"],\"config\":{\"debug\":false,\"timeout\":30,\"retries\":3},\"users\":[{\"id\":1,\"name\":\"Alice\",\"role\":\"admin\"},{\"id\":2,\"name\":\"Bob\",\"role\":\"user\"},{\"id\":3,\"name\":\"Carol\",\"role\":\"user\"}],\"metadata\":null}"
+    Str src = "{\"name\":\"test_dataset\",\"version\":2,\"active\":true,\"score\":98.6,\"tags\":[\"alpha\",\"beta\",\"gamma\"],\"config\":{\"debug\":false,\"timeout\":30,\"retries\":3},\"users\":[{\"id\":1,\"name\":\"Alice\",\"role\":\"admin\"},{\"id\":2,\"name\":\"Bob\",\"role\":\"user\"},{\"id\":3,\"name\":\"Carol\",\"role\":\"user\"}],\"metadata\":null}"
 
     // ---- Test 1: parse medium JSON ----
     Result(JsonValue, Str) r1 = json.parse(src)
@@ -79,10 +79,10 @@ fn main() {
     match r4 {
         Err(e) => { print(f"FAIL 4: {e}"); return }
         Ok(root) => {
-            string compact = json.stringify(root)
+            Str compact = json.stringify(root)
 
             // Write compact JSON to a temp file
-            string tmpfile = "json_rt_tmp.json"
+            Str tmpfile = "json_rt_tmp.json"
             Result(int, Str) wr = io.write_file(tmpfile, compact)
             match wr {
                 Err(e) => { print(f"FAIL 4a: write_file error={e}"); return }
@@ -106,7 +106,7 @@ fn main() {
                     match r4c {
                         Err(e) => { print(f"FAIL 4c: re-parse error={e}") }
                         Ok(root2) => {
-                            string compact2 = json.stringify(root2)
+                            Str compact2 = json.stringify(root2)
                             if compact2.compare(compact) == 0 {
                                 print("PASS 4c: round-trip stringify matches")
                             } else {
@@ -129,14 +129,14 @@ fn main() {
     match r5 {
         Err(e) => { print(f"FAIL 5: {e}"); return }
         Ok(v5) => {
-            string pretty = json.stringify_pretty(v5, 2)
+            Str pretty = json.stringify_pretty(v5, 2)
             // Re-parse the pretty version
             Result(JsonValue, Str) r5b = json.parse(pretty)
             match r5b {
                 Err(e) => { print(f"FAIL 5: pretty re-parse error={e}") }
                 Ok(v5b) => {
-                    string compact5 = json.stringify(v5b)
-                    string expected5 = json.stringify(v5)
+                    Str compact5 = json.stringify(v5b)
+                    Str expected5 = json.stringify(v5)
                     if compact5.compare(expected5) == 0 {
                         print("PASS 5: pretty round-trip OK")
                     } else {
@@ -149,7 +149,7 @@ fn main() {
 
     // ---- Test 6: large array (100 elements) ----
     // Build by concatenating a JSON string, then parse + verify array_len
-    string big = "["
+    Str big = "["
     int idx = 0
     while idx < 100 {
         if idx > 0 { big = big + "," }
