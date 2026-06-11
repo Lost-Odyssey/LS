@@ -7,7 +7,7 @@ import std.str
 
 struct Person { Str name; int age }
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 // rvalue source: a fresh owned Vec that must outlive the loop (materialized).
 fn make_ints() -> Vec(int) {

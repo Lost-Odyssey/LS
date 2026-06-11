@@ -12,12 +12,12 @@
 import std.map
 import std.vec
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 struct P { int x; int y }
 
 fn apply_p(&P p, Block(&P) -> int q) -> int { return q(p) }
-fn apply_m(&Map(string, int) m, Block(&Map(string, int)) -> int q) -> int { return q(m) }
+fn apply_m(&Map(Str, int) m, Block(&Map(Str, int)) -> int q) -> int { return q(m) }
 
 fn main() {
     // &struct block param: field access
@@ -25,7 +25,7 @@ fn main() {
     check(apply_p(p, |pp| { return pp.x + pp.y }) == 7, "Block(&P) field access")
 
     // &Map block param: method call; source stays usable after (borrow)
-    Map(string, int) m = {}
+    Map(Str, int) m = {}
     m.set("a", 10)
     m.set("b", 20)
     check(apply_m(m, |mm| { return mm.len() }) == 2, "Block(&Map) len")

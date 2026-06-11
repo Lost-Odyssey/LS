@@ -6,7 +6,7 @@
 import std.map
 import std.str
 
-fn check(bool c, string label) {
+fn check(bool c, Str label) {
     if c { print(f"  ok: {label}") } else { print(f"FAIL: {label}") }
 }
 
@@ -52,7 +52,7 @@ fn main() -> int {
     check(some42.expect("must exist") == 42, "expect success")
 
     // ---- headline use case: m.get(k).unwrap_or(default) ----
-    Map(string, int) m = {}
+    Map(Str, int) m = {}
     m["a"] = 1
     m["b"] = 2
     check(m.get("a").unwrap_or(0) == 1, "map.get(k).unwrap_or hit")

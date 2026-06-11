@@ -8,12 +8,12 @@
 type Adder       = Block(int) -> int
 type Predicate   = Block(int) -> bool
 type Comparator  = Block(int, int) -> bool
-type LineHandler = Block(string)
+type LineHandler = Block(Str)
 type Nop         = Block()
 
 // Aliases over primitive types should be transparent.
 type MyInt    = int
-type MyString = string
+type MyString = Str
 
 // Aliases over user types.
 struct Point {
