@@ -900,10 +900,11 @@ int jit_repl(void) {
             fprintf(stderr, "%s  (parse error)%s\n", CER, CRST);
             free(input); continue;
         }
-        /* P5-2: REPL snippets get the std.str prelude too, so literals default to
-           Str consistently with file execution. Replayed every snippet like the
-           other imports. */
-        ast_inject_std_str_import(ast);
+        /* P5-2: the REPL intentionally does NOT auto-inject the std.str prelude.
+           Per-snippet re-import interacts with the snippet module replay and the
+           known REPL has_drop limitation (L-010), and made the piped repl tests
+           flaky for marginal benefit. REPL literals stay builtin string until P5-4
+           removes builtin string; users can `import std.str` manually meanwhile. */
 
         /* Type check with a fresh module registry (resolves replayed imports). */
         ModuleRegistry *reg = module_registry_new();
