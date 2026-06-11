@@ -138,15 +138,15 @@ AstNode *ast_new(AstNodeType kind, int line, int col) {
     return n;
 }
 
-/* P5-2 dry-run (LS_STR_DEFAULT=1): prepend `import std.str` to a ROOT program
-   so the flipped default literal type (Str) resolves without every sample
-   spelling the import (docs/plan_p5_remove_builtin_string.md §5). No-op when
-   the flag is off, the node isn't a program, or std.str is already imported.
-   Root files only — modules pull their own imports (injecting into std.c
-   would create an import cycle std.str→std.c→std.str). */
+/* P5-2 prelude (docs/plan_p5_remove_builtin_string.md §5): prepend `import std.str`
+   to a ROOT program so the default literal type (Str) resolves without every file
+   spelling the import. No-op under the escape hatch `LS_STR_DEFAULT=0`, when the
+   node isn't a program, or std.str is already imported. Root files only — modules
+   pull their own imports (injecting into std.c would create the cycle
+   std.str→std.c→std.str). */
 void ast_inject_std_str_import(AstNode *program) {
     const char *v = getenv("LS_STR_DEFAULT");
-    if (v == NULL || v[0] == '\0' || v[0] == '0') return;
+    if (v != NULL && v[0] == '0') return;   /* escape hatch: keep builtin default */
     if (program == NULL || program->kind != AST_PROGRAM) return;
     for (int i = 0; i < program->as.program.decl_count; i++) {
         AstNode *d = program->as.program.decls[i];

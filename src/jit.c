@@ -900,6 +900,10 @@ int jit_repl(void) {
             fprintf(stderr, "%s  (parse error)%s\n", CER, CRST);
             free(input); continue;
         }
+        /* P5-2: REPL snippets get the std.str prelude too, so literals default to
+           Str consistently with file execution. Replayed every snippet like the
+           other imports. */
+        ast_inject_std_str_import(ast);
 
         /* Type check with a fresh module registry (resolves replayed imports). */
         ModuleRegistry *reg = module_registry_new();

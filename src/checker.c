@@ -213,17 +213,18 @@ static Type *str_target_of_expected(const Type *t)
     return NULL;
 }
 
-/* P5-2 dry-run switch (docs/plan_p5_remove_builtin_string.md §5):
-   LS_STR_DEFAULT=1 flips the DEFAULT type of string literals and f-strings
-   from builtin string to pure-LS Str. Only an explicit builtin-string
-   expectation (expected_type == string) keeps the old type. Experimental —
-   used to inventory the no-expected-position breakage before the real flip. */
+/* P5-2 (docs/plan_p5_remove_builtin_string.md §5): string literals and f-strings
+   DEFAULT to the pure-LS `Str` type. Only an explicit builtin-string expectation
+   (expected_type == string) keeps the old builtin string. The escape hatch
+   `LS_STR_DEFAULT=0` restores the pre-flip builtin-string default — used by the
+   handful of tests that exercise builtin-string-only features (impl string,
+   std.string lenient to_bool) until builtin string is removed at P5-4. */
 static bool str_default_flip_enabled(void)
 {
     static int cached = -1;
     if (cached < 0) {
         const char *v = getenv("LS_STR_DEFAULT");
-        cached = (v != NULL && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+        cached = (v != NULL && v[0] == '0') ? 0 : 1;   /* default ON; =0 disables */
     }
     return cached == 1;
 }
