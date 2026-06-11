@@ -1,14 +1,15 @@
 // vec_global_drop_test.ls — VR-LIM-002: global user Vec(T) must run __drop.
 
 import std.vec
+import std.str
 
 Vec(int) gi = {}
-Vec(string) gs = {}
+Vec(Str) gs = {}
 
-struct Item { string name }
+struct Item { Str name }
 
 impl Item {
-    static fn make(string s) -> Item { return Item { name: s } }
+    static fn make(Str s) -> Item { return Item { name: s } }
 }
 
 Vec(Item) gitems = {}
@@ -24,7 +25,7 @@ fn fill_globals() {
 
 fn check(bool c, string label) -> bool {
     if c { return true }
-    print("FAIL " + label)
+    print(f"FAIL {label}")
     return false
 }
 
@@ -32,8 +33,8 @@ fn main() {
     fill_globals()
     bool ok = true
     ok = check(gi.len() == 2 && gi.get(1) == 20, "global Vec(int)") && ok
-    ok = check(gs.len() == 2 && gs.get(0) == "ALPHA", "global Vec(string)") && ok
+    ok = check(gs.len() == 2 && gs.get(0).eq?("ALPHA"), "global Vec(Str)") && ok
     Item item = gitems.get(1)
-    ok = check(gitems.len() == 2 && item.name == "TWO", "global Vec(Item)") && ok
+    ok = check(gitems.len() == 2 && item.name.eq?("TWO"), "global Vec(Item)") && ok
     if ok { print("VEC_GLOBAL_DROP PASS") }
 }

@@ -500,6 +500,24 @@ impl Str {
         if first == 45 { neg = true  i = 1 }
         else if first == 43 { i = 1 }
         if i >= n { return Err("no digits") }
+        // hex prefix (0x / 0X), parity with the old builtin
+        if i + 1 < n && self.data[i] == 48 && (self.data[i + 1] == 120 || self.data[i + 1] == 88) {
+            i = i + 2
+            if i >= n { return Err("no hex digits") }
+            int hv = 0
+            while i < n {
+                int hd = self.data[i]
+                int dig = 0
+                if hd >= 48 && hd <= 57 { dig = hd - 48 }
+                else if hd >= 97 && hd <= 102 { dig = hd - 97 + 10 }
+                else if hd >= 65 && hd <= 70 { dig = hd - 65 + 10 }
+                else { return Err("invalid hex digit") }
+                hv = hv * 16 + dig
+                i = i + 1
+            }
+            if neg { hv = 0 - hv }
+            return Ok(hv)
+        }
         int val = 0
         while i < n {
             int d = self.data[i]
@@ -520,6 +538,24 @@ impl Str {
         if first == 45 { neg = true  i = 1 }
         else if first == 43 { i = 1 }
         if i >= n { return Err("no digits") }
+        // hex prefix (0x / 0X), parity with the old builtin
+        if i + 1 < n && self.data[i] == 48 && (self.data[i + 1] == 120 || self.data[i + 1] == 88) {
+            i = i + 2
+            if i >= n { return Err("no hex digits") }
+            i64 hv = 0
+            while i < n {
+                int hd = self.data[i]
+                int dig = 0
+                if hd >= 48 && hd <= 57 { dig = hd - 48 }
+                else if hd >= 97 && hd <= 102 { dig = hd - 97 + 10 }
+                else if hd >= 65 && hd <= 70 { dig = hd - 65 + 10 }
+                else { return Err("invalid hex digit") }
+                hv = hv * 16 + (dig as i64)
+                i = i + 1
+            }
+            if neg { hv = 0 - hv }
+            return Ok(hv)
+        }
         i64 val = 0
         while i < n {
             int d = self.data[i]

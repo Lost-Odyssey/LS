@@ -2,6 +2,7 @@
 //   v[i] / v.get(i)  (bounds-checked)  and  v.get!(i) / v.set!(i,x)  (unchecked).
 // Out-of-range panic is covered by the negative samples vec_oob_panic_*.ls.
 import std.vec
+import std.str
 
 fn main() -> int {
     int pass = 0
@@ -24,15 +25,15 @@ fn main() -> int {
     v.set!(4, 44)
     if v.get!(4) == 44 { pass = pass + 1 } else { fail = fail + 1; print("FAIL get!/set!") }
 
-    // owned (string) elements: checked + unchecked clones, no double-free
-    Vec(string) sv = {}
+    // owned (Str) elements: checked + unchecked clones, no double-free
+    Vec(Str) sv = {}
     sv.push("alpha")
     sv.push("beta")
-    string a = sv.get(0)
-    string b = sv.get!(1)
-    if a == "alpha" && b == "beta" { pass = pass + 1 } else { fail = fail + 1; print("FAIL str") }
+    Str a = sv.get(0)
+    Str b = sv.get!(1)
+    if a.eq?("alpha") && b.eq?("beta") { pass = pass + 1 } else { fail = fail + 1; print("FAIL str") }
     sv.set(0, "ALPHA")
-    if sv[0] == "ALPHA" { pass = pass + 1 } else { fail = fail + 1; print("FAIL str set") }
+    if sv[0].eq?("ALPHA") { pass = pass + 1 } else { fail = fail + 1; print("FAIL str set") }
 
     // in-range mutators (insert/remove/swap/truncate/resize) must behave
     Vec(int) m = {}

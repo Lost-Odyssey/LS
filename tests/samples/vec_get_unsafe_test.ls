@@ -1,6 +1,7 @@
 // vec_get_unsafe_test.ls — Vec.get!(i): unchecked index load. Must match
 // v[i] / v.get(i) for in-bounds access, for both POD and owned (string) elems.
 import std.vec
+import std.str
 
 fn main() -> int {
     int pass = 0
@@ -18,17 +19,17 @@ fn main() -> int {
     if s_idx == s_unsafe { pass = pass + 1 } else { fail = fail + 1; print("FAIL pod sum") }
     if v.get!(50) == 150 { pass = pass + 1 } else { fail = fail + 1; print("FAIL pod elem") }
 
-    // string elements: get! returns an owned clone (no double-free)
-    Vec(string) sv = {}
+    // Str elements: get! returns an owned clone (no double-free)
+    Vec(Str) sv = {}
     sv.push("alpha")
     sv.push("beta".upper())
     sv.push("gamma")
-    string b = sv.get!(1)
-    if b == "BETA" { pass = pass + 1 } else { fail = fail + 1; print("FAIL str elem") }
+    Str b = sv.get!(1)
+    if b.eq?("BETA") { pass = pass + 1 } else { fail = fail + 1; print("FAIL str elem") }
     int tot = 0
     for i in 0..sv.len() {
-        string w = sv.get!(i)
-        tot = tot + w.length
+        Str w = sv.get!(i)
+        tot = tot + w.len()
     }
     if tot == 14 { pass = pass + 1 } else { fail = fail + 1; print(f"FAIL str len tot={tot}") }
 
