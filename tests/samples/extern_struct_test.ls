@@ -24,7 +24,7 @@ extern {
     }
 
     fn abs(int x) -> int
-    fn strcmp(string a, string b) -> int
+    fn strcmp(*u8 a, *u8 b) -> int
 }
 
 // --- Helper to construct and inspect extern struct values ---
@@ -89,7 +89,9 @@ fn main() {
     print("PASS: extern fn abs without from")
 
     // --- Test 6: extern fn strcmp (from block) ---
-    int cmp = strcmp("hello", "hello")
+    Str h1 = "hello"
+    Str h2 = "hello"
+    int cmp = strcmp(h1.c_str(), h2.c_str())
     if cmp != 0 {
         print("FAIL: strcmp equal strings expected 0 got ")
         print(cmp)

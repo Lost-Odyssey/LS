@@ -1,11 +1,13 @@
-// FFI: Calling Windows system DLLs
+// FFI: Calling Windows system DLLs.
+// FFI red line: extern fns take *u8; Str crosses the boundary via c_str().
+import std.str
 
 lib kernel32 = load("kernel32.dll")
 lib msvcrt   = load("msvcrt.dll")
 
 // Declare extern functions with type signatures
 extern fn GetCurrentProcessId() -> int from kernel32
-extern fn puts(string s) -> int from msvcrt
+extern fn puts(*u8 s) -> int from msvcrt
 
 fn main() -> int {
     // 1. Call kernel32.dll — get current process ID
@@ -13,10 +15,12 @@ fn main() -> int {
     print(f"Current Process ID: {pid}")
 
     // 2. Call msvcrt.dll — puts
-    puts("Hello from msvcrt.dll puts!")
+    Str a = "Hello from msvcrt.dll puts!"
+    puts(a.c_str())
 
-    // 3. Dynamic call (no type checking, unsafe)
-    msvcrt.call("puts", "Dynamic call to msvcrt!")
+    // 3. Dynamic call (no type checking, unsafe; *u8 arg passes as C pointer)
+    Str b = "Dynamic call to msvcrt!"
+    msvcrt.call("puts", b.c_str())
 
     // 4. Call kernel32 dynamically
     kernel32.call("Sleep", 0)

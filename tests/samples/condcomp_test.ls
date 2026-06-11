@@ -4,17 +4,19 @@
 // Each test relies on the inactive branch containing code that would
 // produce a parse / type error if compiled.
 
-extern fn strlen(string s) -> i64
+import std.str
+
+extern fn strlen(*u8 s) -> i64
 
 #if WINDOWS
-fn platform_name() -> string {
+fn platform_name() -> Str {
     return "WINDOWS"
 }
 #else
 // This branch must be skipped on Windows. If the scanner failed to
 // suppress it, the parser would see a duplicate fn definition (or hit
 // the bogus identifier below) and fail.
-fn platform_name() -> string {
+fn platform_name() -> Str {
     return "OTHER"
 }
 this_should_be_skipped_garbage_!!!
@@ -37,7 +39,7 @@ fn _win_only() -> int { return 1 }
 // Verifies the scanner correctly suppresses unparseable tokens in inactive branches.
 #if MACOS
 garbage_that_must_be_skipped_and_never_parsed_!!!
-fn bad_fn() -> string { return undefined_on_all_platforms() }
+fn bad_fn() -> Str { return undefined_on_all_platforms() }
 #end
 
 // Test 3: nested conditional (Windows-only: inner #else should be taken)
@@ -52,8 +54,8 @@ fn outer_win() -> int {
 #end
 
 fn main() {
-    string p = platform_name()
-    if strlen(p) <= 0 {
+    Str p = platform_name()
+    if strlen(p.c_str()) <= 0 {
         print("FAIL: platform_name returned empty")
         return
     }

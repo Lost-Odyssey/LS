@@ -1221,24 +1221,6 @@ add_test(
 set_tests_properties(test_extern_struct_byval PROPERTIES DEPENDS "test_extern_struct")
 endif()
 
-# Phase E.3.3: glue functions (from_cstr / to_cstr / vec.as_ptr)
-add_test(
-    NAME test_e3_glue
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/glue_funcs_test.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=glue_funcs
-        -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
-)
-# On Windows the full chain runs through test_extern_struct_byval.
-# On Linux/macOS that test is skipped, so depend directly on test_extern_struct.
-if(WIN32)
-    set_tests_properties(test_e3_glue PROPERTIES DEPENDS "test_extern_struct_byval")
-else()
-    set_tests_properties(test_e3_glue PROPERTIES DEPENDS "test_extern_struct")
-endif()
-
 # Phase E.3.1: errno() builtin
 add_test(
     NAME test_e3_errno
@@ -1249,7 +1231,13 @@ add_test(
         -DTEST_NAME=errno
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
 )
-set_tests_properties(test_e3_errno PROPERTIES DEPENDS "test_e3_glue")
+# On Windows the full chain runs through test_extern_struct_byval.
+# On Linux/macOS that test is skipped, so depend directly on test_extern_struct.
+if(WIN32)
+    set_tests_properties(test_e3_errno PROPERTIES DEPENDS "test_extern_struct_byval")
+else()
+    set_tests_properties(test_e3_errno PROPERTIES DEPENDS "test_extern_struct")
+endif()
 
 # Phase E.3.2: conditional compilation #if WINDOWS / LINUX / MACOS
 add_test(
