@@ -9,14 +9,20 @@
 //   ls_os_*  — internal C symbols (runtime/os_win32.c or os_posix.c)
 //   raw_*    — public LS wrappers exported by this module
 //
+// FFI boundary (P5-3): extern fn take raw `*u8` (NUL-terminated char*); the
+// raw_* wrappers take `Str` and pass `str.c_str()` (Str.c_str guarantees a
+// NUL terminator). Callers already hold Str, so they pass it through unchanged.
+//
 // WARNING: raw_* functions are implementation details of the stdlib.
 // User code should NOT import std.os or call raw_* directly.
 // Use the high-level stdlib modules (std.proc, std.env, std.io) instead.
 
+import std.str
+
 
 // ---- Process execution backend (exec_full) ----
 
-extern fn ls_os_exec_run(string cmd)
+extern fn ls_os_exec_run(*u8 cmd)
 extern fn ls_os_exec_take_stdout() -> object
 extern fn ls_os_exec_take_stderr() -> object
 extern fn ls_os_exec_stdout_ptr() -> object
@@ -26,7 +32,7 @@ extern fn ls_os_exec_stderr_len() -> i64
 extern fn ls_os_exec_get_code() -> int
 extern fn ls_os_exec_get_ok() -> int
 
-fn raw_exec_run(string cmd) { ls_os_exec_run(cmd) }
+fn raw_exec_run(Str cmd) { ls_os_exec_run(cmd.c_str()) }
 fn raw_exec_take_stdout() -> object { return ls_os_exec_take_stdout() }
 fn raw_exec_stdout_ptr() -> object { return ls_os_exec_stdout_ptr() }
 fn raw_exec_stderr_ptr() -> object { return ls_os_exec_stderr_ptr() }
@@ -38,13 +44,13 @@ fn raw_exec_get_ok() -> int { return ls_os_exec_get_ok() }
 
 // ---- Process helpers (popen / pread / pclose / pid / exit-code decoding) ----
 
-extern fn ls_os_popen(string cmd) -> object
+extern fn ls_os_popen(*u8 cmd) -> object
 extern fn ls_os_pread(object fp, object buf, i64 maxsz) -> i64
 extern fn ls_os_pclose(object fp) -> int
 extern fn ls_os_pid() -> int
 extern fn ls_os_wait_exit_code(int raw) -> int
 
-fn raw_popen(string cmd) -> object { return ls_os_popen(cmd) }
+fn raw_popen(Str cmd) -> object { return ls_os_popen(cmd.c_str()) }
 fn raw_pread(object fp, object buf, i64 maxsz) -> i64 { return ls_os_pread(fp, buf, maxsz) }
 fn raw_pclose(object fp) -> int { return ls_os_pclose(fp) }
 fn raw_pid() -> int { return ls_os_pid() }
@@ -52,13 +58,13 @@ fn raw_wait_exit_code(int r) -> int { return ls_os_wait_exit_code(r) }
 
 // ---- Environment variable access and mutation ----
 
-extern fn ls_os_getenv(string name) -> object
-extern fn ls_os_setenv(string name, string value) -> int
-extern fn ls_os_unsetenv(string name) -> int
+extern fn ls_os_getenv(*u8 name) -> object
+extern fn ls_os_setenv(*u8 name, *u8 value) -> int
+extern fn ls_os_unsetenv(*u8 name) -> int
 
-fn raw_getenv(string name) -> object { return ls_os_getenv(name) }
-fn raw_setenv(string name, string value) -> int { return ls_os_setenv(name, value) }
-fn raw_unsetenv(string name) -> int { return ls_os_unsetenv(name) }
+fn raw_getenv(Str name) -> object { return ls_os_getenv(name.c_str()) }
+fn raw_setenv(Str name, Str value) -> int { return ls_os_setenv(name.c_str(), value.c_str()) }
+fn raw_unsetenv(Str name) -> int { return ls_os_unsetenv(name.c_str()) }
 
 // ---- Environment variable snapshot ----
 
@@ -74,44 +80,44 @@ fn raw_env_entry(int i) -> object { return ls_os_env_entry(i) }
 
 extern fn ls_os_fseek64(object fp, i64 off, int origin) -> int
 extern fn ls_os_ftell64(object fp) -> i64
-extern fn ls_os_unlink(string path) -> int
+extern fn ls_os_unlink(*u8 path) -> int
 
 fn raw_fseek64(object fp, i64 off, int origin) -> int { return ls_os_fseek64(fp, off, origin) }
 fn raw_ftell64(object fp) -> i64 { return ls_os_ftell64(fp) }
-fn raw_unlink(string path) -> int { return ls_os_unlink(path) }
+fn raw_unlink(Str path) -> int { return ls_os_unlink(path.c_str()) }
 
 // ---- Directory listing (os_win32.c / os_posix.c) ----
 
-extern fn ls_os_listdir_prepare(string path)
+extern fn ls_os_listdir_prepare(*u8 path)
 extern fn ls_os_listdir_count() -> int
 extern fn ls_os_listdir_entry(int i) -> object
 
-fn raw_listdir_prepare(string path) { ls_os_listdir_prepare(path) }
+fn raw_listdir_prepare(Str path) { ls_os_listdir_prepare(path.c_str()) }
 fn raw_listdir_count() -> int { return ls_os_listdir_count() }
 fn raw_listdir_entry(int i) -> object { return ls_os_listdir_entry(i) }
 
 // ---- Filesystem / path operations (os_win32.c / os_posix.c) ----
 
-extern fn ls_os_path_exists(string path) -> int
-extern fn ls_os_path_is_dir(string path) -> int
-extern fn ls_os_path_is_file(string path) -> int
-extern fn ls_os_mkdir(string path) -> int
-extern fn ls_os_mkdir_all(string path) -> int
-extern fn ls_os_rmdir(string path) -> int
-extern fn ls_os_rename_path(string from_path, string to_path) -> int
+extern fn ls_os_path_exists(*u8 path) -> int
+extern fn ls_os_path_is_dir(*u8 path) -> int
+extern fn ls_os_path_is_file(*u8 path) -> int
+extern fn ls_os_mkdir(*u8 path) -> int
+extern fn ls_os_mkdir_all(*u8 path) -> int
+extern fn ls_os_rmdir(*u8 path) -> int
+extern fn ls_os_rename_path(*u8 from_path, *u8 to_path) -> int
 extern fn ls_os_getcwd() -> object
-extern fn ls_os_chdir(string path) -> int
+extern fn ls_os_chdir(*u8 path) -> int
 extern fn ls_os_last_error() -> object
 
-fn raw_path_exists(string path) -> int  { return ls_os_path_exists(path) }
-fn raw_path_is_dir(string path) -> int  { return ls_os_path_is_dir(path) }
-fn raw_path_is_file(string path) -> int { return ls_os_path_is_file(path) }
-fn raw_mkdir(string path) -> int        { return ls_os_mkdir(path) }
-fn raw_mkdir_all(string path) -> int    { return ls_os_mkdir_all(path) }
-fn raw_rmdir(string path) -> int        { return ls_os_rmdir(path) }
-fn raw_rename_path(string f, string t) -> int { return ls_os_rename_path(f, t) }
+fn raw_path_exists(Str path) -> int  { return ls_os_path_exists(path.c_str()) }
+fn raw_path_is_dir(Str path) -> int  { return ls_os_path_is_dir(path.c_str()) }
+fn raw_path_is_file(Str path) -> int { return ls_os_path_is_file(path.c_str()) }
+fn raw_mkdir(Str path) -> int        { return ls_os_mkdir(path.c_str()) }
+fn raw_mkdir_all(Str path) -> int    { return ls_os_mkdir_all(path.c_str()) }
+fn raw_rmdir(Str path) -> int        { return ls_os_rmdir(path.c_str()) }
+fn raw_rename_path(Str f, Str t) -> int { return ls_os_rename_path(f.c_str(), t.c_str()) }
 fn raw_getcwd() -> object               { return ls_os_getcwd() }
-fn raw_chdir(string path) -> int        { return ls_os_chdir(path) }
+fn raw_chdir(Str path) -> int        { return ls_os_chdir(path.c_str()) }
 fn raw_last_error() -> object           { return ls_os_last_error() }
 
 // ---- Calendar / wall-clock time (time.ls backend) ----
@@ -130,8 +136,8 @@ extern fn ls_os_time_get_weekday() -> int
 extern fn ls_os_time_get_yday() -> int
 extern fn ls_os_time_get_utcoff() -> int
 extern fn ls_os_time_to_unix(int year, int month, int day, int hour, int minute, int second, int is_utc) -> i64
-extern fn ls_os_time_format(int year, int month, int day, int hour, int minute, int second, int weekday, int yday, string fmt) -> object
-extern fn ls_os_time_parse(string text, string fmt) -> int
+extern fn ls_os_time_format(int year, int month, int day, int hour, int minute, int second, int weekday, int yday, *u8 fmt) -> object
+extern fn ls_os_time_parse(*u8 text, *u8 fmt) -> int
 extern fn ls_os_sleep_ms(i64 ms)
 extern fn ls_os_sleep_us(i64 us)
 
@@ -151,9 +157,9 @@ fn raw_time_get_utcoff() -> int  { return ls_os_time_get_utcoff() }
 fn raw_time_to_unix(int year, int month, int day, int hour, int minute, int second, int is_utc) -> i64 {
     return ls_os_time_to_unix(year, month, day, hour, minute, second, is_utc)
 }
-fn raw_time_format(int year, int month, int day, int hour, int minute, int second, int weekday, int yday, string fmt) -> object {
-    return ls_os_time_format(year, month, day, hour, minute, second, weekday, yday, fmt)
+fn raw_time_format(int year, int month, int day, int hour, int minute, int second, int weekday, int yday, Str fmt) -> object {
+    return ls_os_time_format(year, month, day, hour, minute, second, weekday, yday, fmt.c_str())
 }
-fn raw_time_parse(string text, string fmt) -> int { return ls_os_time_parse(text, fmt) }
+fn raw_time_parse(Str text, Str fmt) -> int { return ls_os_time_parse(text.c_str(), fmt.c_str()) }
 fn raw_sleep_ms(i64 ms) { ls_os_sleep_ms(ms) }
 fn raw_sleep_us(i64 us) { ls_os_sleep_us(us) }
