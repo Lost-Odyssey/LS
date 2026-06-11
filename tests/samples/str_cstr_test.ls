@@ -7,7 +7,7 @@ import std.str
 
 extern fn strlen(*u8 p) -> i64
 
-fn check(bool ok, string what) {
+fn check(bool ok, Str what) {
     if !ok { print(f"CSTR FAIL: {what}") }
 }
 

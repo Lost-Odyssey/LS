@@ -7,7 +7,7 @@
 import std.str
 import std.vec
 
-fn check(bool ok, string what) {
+fn check(bool ok, Str what) {
     if !ok { print(f"STRLB FAIL: {what}") }
 }
 

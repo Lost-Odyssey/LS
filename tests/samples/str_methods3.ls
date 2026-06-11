@@ -4,17 +4,17 @@
 // JIT+AOT+memcheck 0/0/0.
 import std.str
 
-fn check(bool ok, string what) {
+fn check(bool ok, Str what) {
     if !ok { print(f"STRM3 FAIL: {what}") }
 }
 
-fn iok(Result(int, Str) r, int want, string what) {
+fn iok(Result(int, Str) r, int want, Str what) {
     match r {
         Ok(v) => check(v == want, what)
         Err(e) => check(false, what)
     }
 }
-fn ierr(Result(int, Str) r, string what) {
+fn ierr(Result(int, Str) r, Str what) {
     match r {
         Ok(v) => check(false, what)
         Err(e) => check(!e.empty?(), what)

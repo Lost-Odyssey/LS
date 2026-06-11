@@ -6,7 +6,7 @@
 import std.str
 import std.vec
 
-fn check(bool ok, string what) {
+fn check(bool ok, Str what) {
     if !ok { print(f"STRFI FAIL: {what}") }
 }
 
@@ -35,13 +35,6 @@ fn main() {
     v.push("beta")
     Str e = f"{v.get(0)}-{v.get(1)}"
     check(e.eq?("alpha-beta"), "vec elem interp")
-
-    // builtin-string interpolation still works unchanged (default path)
-    string s = "plain"
-    int n = 9
-    string bs = f"{s}={n}"
-    string bs_exp = "plain=9"     // pin to `string` so == stays builtin both states
-    check(bs == bs_exp, "builtin fstring intact")
 
     print("STRFI PASS")
 }

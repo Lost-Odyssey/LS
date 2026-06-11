@@ -4,7 +4,7 @@
 // bool/int; borrowed args use &Str pointer ABI. JIT+AOT+memcheck 0/0/0.
 import std.str
 
-fn check(bool ok, string what) {
+fn check(bool ok, Str what) {
     if !ok { print(f"STRM FAIL: {what}") }
 }
 

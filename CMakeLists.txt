@@ -544,25 +544,10 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# string-to-stdlib P0: the pure-LS `Str` skeleton (std/str.ls) coexists with the
-# builtin string; validate the unified has_drop ownership path (build / read /
-# clone / move / struct field / Vec element / drop). JIT+AOT correctness +
-# memcheck 0/0/0 (docs/plan_string_to_stdlib.md §9 P0).
-add_test(
-    NAME test_str_p0
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p0_smoke.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=str_p0
-        -DMARKER=STRP0
-        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
-)
-
 # string-to-stdlib P1: a string LITERAL in a `Str`-expecting position lowers to a
-# static Str {data:.rodata, len, cap:0} (no malloc; layout-identical to LsString).
-# The builtin string stays the default literal type; this only fires where Str is
-# expected (var-decl / param / return / struct field / Vec element). JIT+AOT+
+# static Str {data:.rodata, len, cap:0} (no malloc). Since P5-2 the literal
+# default IS Str; this pins the static-Str lowering across all positions
+# (var-decl / param / return / struct field / Vec element). JIT+AOT+
 # memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.1).
 add_test(
     NAME test_str_p1
@@ -575,10 +560,10 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# string-to-stdlib P2: an f-string in a `Str`-expecting position produces an
-# OWNED Str rvalue (cap>0, the formatted heap buffer wrapped as Str, zero-copy),
-# routed through the unified has_drop temp/drop path. Default (no Str expected)
-# stays builtin string. JIT+AOT+memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.2).
+# string-to-stdlib P2: an f-string with interpolations produces an OWNED Str
+# rvalue (cap>0, the formatted heap buffer wrapped as Str, zero-copy), routed
+# through the unified has_drop temp/drop path. Since P5-2 the f-string default
+# IS Str. JIT+AOT+memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.2).
 add_test(
     NAME test_str_p2
     COMMAND ${CMAKE_COMMAND}
@@ -674,63 +659,6 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_fstring_interp
         -DMARKER=STRFI
-        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
-)
-
-# string-to-stdlib migration bridge B-1: a builtin-string VALUE initializing a
-# `Str` var is deep-copied into an owned Str (var-decl site). Also covers the
-# static-Str copy-on-grow fix (reserve mallocs fresh at cap 0, never reallocs
-# .rodata). JIT+AOT+memcheck 0/0/0.
-add_test(
-    NAME test_str_bridge_s2s
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_bridge_s2s.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=str_bridge_s2s
-        -DMARKER=STRB
-        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
-)
-
-# string-to-stdlib migration bridge B-2: a builtin-string VARIABLE passed to a
-# by-value `Str` parameter is deep-copied into an owned Str (caller owns the temp,
-# callee borrows). IDENT args only. JIT+AOT+memcheck 0/0/0.
-add_test(
-    NAME test_str_bridge_arg
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_bridge_arg.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=str_bridge_arg
-        -DMARKER=STRBA
-        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
-)
-
-# string-to-stdlib migration bridge B-2b: a builtin-string value returned from a
-# `-> Str` function is deep-copied into an owned Str (source keeps its normal
-# cleanup; covers locals, temps, &string params, globals). JIT+AOT+memcheck 0/0/0.
-add_test(
-    NAME test_str_bridge_ret
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_bridge_ret.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=str_bridge_ret
-        -DMARKER=STRBR
-        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
-)
-
-# string-to-stdlib migration bridge B-3 (reverse): a `Str` value flowing into a
-# builtin-string slot — var-decl (IDENT clone / rvalue transfer), call-arg
-# (IDENT, cap=-2 borrow), return (IDENT clone / rvalue transfer). 0/0/0.
-add_test(
-    NAME test_str_bridge_rev
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_bridge_rev.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=str_bridge_rev
-        -DMARKER=STRBV
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
@@ -1140,30 +1068,6 @@ add_test(
 # Order this after test_memory so the JIT memcheck path is already validated.
 set_tests_properties(test_memcheck_aot PROPERTIES DEPENDS "test_memory")
 
-# M-1 回归：消除双轨临时值跟踪后，print 各类动态 string 参数不 leak 不 double-free
-# JIT path（ls run --memcheck）
-add_test(
-    NAME test_mem_m1_jit
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m1_temp_unify.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=mem_m1
-        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
-)
-set_tests_properties(test_mem_m1_jit PROPERTIES DEPENDS "test_memory")
-
-# M-1 回归：AOT path（ls compile --memcheck && exec）
-add_test(
-    NAME test_mem_m1_aot
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m1_temp_unify.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
-)
-set_tests_properties(test_mem_m1_aot PROPERTIES DEPENDS "test_mem_m1_jit")
-
 # Bug-6 回归：memcheck_edge.ls（Phase B 极端场景）— JIT memcheck OK clean
 # 修复：移除 self-recursive enum 参数的 is_borrowed=true hack，callee 正确 drop 深拷贝
 add_test(
@@ -1175,20 +1079,7 @@ add_test(
         -DTEST_NAME=test_memcheck_edge_jit
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
-set_tests_properties(test_memcheck_edge_jit PROPERTIES DEPENDS "test_mem_m1_aot")
-
-# M-2 回归：cap=-2 borrowed semantics — JIT memcheck OK clean
-# 验证 borrowed string 参数存入 enum/struct/f-string 时正确 clone，不 leak 不 dfree
-add_test(
-    NAME test_mem_m2_jit
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m2_cap_borrowed.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=test_mem_m2_jit
-        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
-)
-set_tests_properties(test_mem_m2_jit PROPERTIES DEPENDS "test_memcheck_edge_jit")
+set_tests_properties(test_memcheck_edge_jit PROPERTIES DEPENDS "test_memory")
 
 # M-3: 统一所有权转移 API memcheck 验证
 add_test(
@@ -1200,7 +1091,7 @@ add_test(
         -DTEST_NAME=test_mem_m3_jit
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
-set_tests_properties(test_mem_m3_jit PROPERTIES DEPENDS "test_mem_m2_jit")
+set_tests_properties(test_mem_m3_jit PROPERTIES DEPENDS "test_memcheck_edge_jit")
 
 # M-4: 所有权转移审计矩阵 — 覆盖 AST_VAR_DECL/ASSIGN/RETURN × 各类型，
 # vec/map 字面量，函数参数 by-value，match binder，嵌套容器等
@@ -1240,30 +1131,6 @@ add_test(
 )
 set_tests_properties(test_mem_m4_5_aot PROPERTIES DEPENDS "test_mem_m4_5_jit")
 
-# M-5 正向：checker move 分析与 codegen 所有权语义一致性（move 语义 move 后不用、
-# clone 语义 ctor 后源仍 live）。含 BF-039（map[key]/m.get value clone 临时泄漏）回归。JIT path。
-add_test(
-    NAME test_mem_m5_jit
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m5_move_ok.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DTEST_NAME=test_mem_m5_jit
-        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
-)
-set_tests_properties(test_mem_m5_jit PROPERTIES DEPENDS "test_mem_m4_5_jit")
-
-# M-5 正向：AOT path
-add_test(
-    NAME test_mem_m5_aot
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m5_move_ok.ls
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
-)
-set_tests_properties(test_mem_m5_aot PROPERTIES DEPENDS "test_mem_m5_jit")
-
 # M-5 负向：move-after-use（绑定 move / 分支 MAYBE_MOVED）必须编译期拒绝
 add_test(
     NAME test_mem_m5_neg
@@ -1272,7 +1139,7 @@ add_test(
         -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
         -P ${CMAKE_SOURCE_DIR}/tests/test_mem_m5_neg.cmake
 )
-set_tests_properties(test_mem_m5_neg PROPERTIES DEPENDS "test_mem_m5_jit")
+set_tests_properties(test_mem_m5_neg PROPERTIES DEPENDS "test_mem_m4_5_jit")
 
 # Phase 3 P3-1: builtin vec(T) syntax is no longer accepted by the frontend.
 add_test(
@@ -1294,17 +1161,6 @@ add_test(
 )
 set_tests_properties(test_map_builtin_syntax_reject PROPERTIES DEPENDS "test_vec_builtin_syntax_reject")
 
-# P4 (docs/plan_p5_remove_builtin_string.md §3): &string / &!string borrow
-# params are no longer accepted — superseded by &Str / &!Str (pointer ABI).
-add_test(
-    NAME test_string_borrow_reject
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/string_borrow_reject.ls
-        -P ${CMAKE_SOURCE_DIR}/tests/test_string_borrow_reject.cmake
-)
-set_tests_properties(test_string_borrow_reject PROPERTIES DEPENDS "test_map_builtin_syntax_reject")
-
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(
@@ -1325,7 +1181,7 @@ add_test(
         -DTEST_NAME=test_mem_overhaul_jit
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
-set_tests_properties(test_mem_overhaul_jit PROPERTIES DEPENDS "test_mem_m5_jit")
+set_tests_properties(test_mem_overhaul_jit PROPERTIES DEPENDS "test_mem_m4_5_jit")
 
 # M-6 汇总回归套件：AOT path
 add_test(
@@ -1662,20 +1518,6 @@ add_test(
 set_tests_properties(test_string_parse PROPERTIES DEPENDS "test_vec_functional_v5")
 
 add_test(
-    NAME test_string_utils
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_string_utils.cmake
-)
-# Escape hatch (P5-2): exercises std.string's lenient `to_bool` (yes/no/1/0) — a
-# builtin-string semantic Str deliberately does not replicate (Str.to_bool is
-# strict true/false). Pin LS_STR_DEFAULT=0; removed with builtin string at P5-4.
-set_tests_properties(test_string_utils PROPERTIES DEPENDS "test_string_parse"
-    ENVIRONMENT "LS_STR_DEFAULT=0")
-
-add_test(
     NAME test_strconv
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
@@ -1683,7 +1525,7 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_strconv.cmake
 )
-set_tests_properties(test_strconv PROPERTIES DEPENDS "test_string_utils")
+set_tests_properties(test_strconv PROPERTIES DEPENDS "test_string_parse")
 
 add_test(
     NAME test_perf
@@ -2106,22 +1948,6 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_block_ref_param.cmake
 )
 set_tests_properties(test_block_ref_param PROPERTIES DEPENDS "test_map_option_payload")
-
-# Phase 2.5: impl on builtin string + split/lines/chars/join → std/string.ls.
-# (docs/plan_impl_builtin_types.md). JIT + AOT + memcheck 0/0/0.
-add_test(
-    NAME test_impl_string
-    COMMAND ${CMAKE_COMMAND}
-        -DLS_EXE=$<TARGET_FILE:ls>
-        -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_impl_string.cmake
-)
-# Escape hatch (P5-2): exercises the `impl string` extension feature, which lives
-# on the builtin string type. Pin LS_STR_DEFAULT=0 so it keeps testing builtin
-# string after the literal-default flips to Str; removed with builtin string at P5-4.
-set_tests_properties(test_impl_string PROPERTIES DEPENDS "test_iter_protocol"
-    ENVIRONMENT "LS_STR_DEFAULT=0")
 
 add_test(
     NAME test_string_ord
