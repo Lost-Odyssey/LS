@@ -129,7 +129,7 @@ static void test_all_keywords(void) {
 
 static void test_type_keywords(void) {
     Scanner s;
-    scanner_init(&s, "int i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool string void lib");
+    scanner_init(&s, "int i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool string void lib"  /* string is an IDENTIFIER since P5-4 */);
 
     ASSERT_TOKEN(s, TOKEN_TYPE_INT);
     ASSERT_TOKEN(s, TOKEN_TYPE_I8);
@@ -143,7 +143,7 @@ static void test_type_keywords(void) {
     ASSERT_TOKEN(s, TOKEN_TYPE_F32);
     ASSERT_TOKEN(s, TOKEN_TYPE_F64);
     ASSERT_TOKEN(s, TOKEN_TYPE_BOOL);
-    ASSERT_TOKEN(s, TOKEN_TYPE_STRING);
+    ASSERT_TOKEN(s, TOKEN_IDENTIFIER);  /* "string" demoted to identifier (P5-4 S-1) */
     ASSERT_TOKEN(s, TOKEN_TYPE_VOID);
     ASSERT_TOKEN(s, TOKEN_TYPE_LIB);
     ASSERT_TOKEN(s, TOKEN_EOF);

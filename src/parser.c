@@ -1703,7 +1703,7 @@ static bool is_type_keyword(TokenType t) {
     case TOKEN_TYPE_U16: case TOKEN_TYPE_U32: case TOKEN_TYPE_U64:
     case TOKEN_TYPE_F32: case TOKEN_TYPE_F64: case TOKEN_TYPE_BOOL:
     case TOKEN_TYPE_CHAR:
-    case TOKEN_TYPE_STRING: case TOKEN_TYPE_VOID:
+    case TOKEN_TYPE_VOID:
     case TOKEN_TYPE_OBJECT:
     case TOKEN_ARRAY:
         return true;
@@ -2929,7 +2929,7 @@ static AstNode *parse_impl_decl(Parser *p) {
             if (!check(p, TOKEN_IDENTIFIER) &&
                 !check(p, TOKEN_TYPE_INT) && !check(p, TOKEN_TYPE_I64) &&
                 !check(p, TOKEN_TYPE_F64) && !check(p, TOKEN_TYPE_BOOL) &&
-                !check(p, TOKEN_TYPE_STRING) && !check(p, TOKEN_TYPE_CHAR)) {
+                !check(p, TOKEN_TYPE_CHAR)) {
                 error_at_current(p, "expected type name after 'for' in impl");
                 free(trait_name);
                 return NULL;
@@ -3003,16 +3003,8 @@ static AstNode *parse_impl_decl(Parser *p) {
         consume(p, TOKEN_RPAREN, "expected ')' after impl type params");
     }
 
-    /* Phase 2.5: allow `impl <builtin type>` (currently only string) so the
-       standard library can attach extension methods to builtin types. */
-    if (!check(p, TOKEN_IDENTIFIER) && !check(p, TOKEN_TYPE_STRING)) {
+    if (!check(p, TOKEN_IDENTIFIER)) {
         error_at_current(p, "expected struct name after 'impl'");
-        for (int i = 0; i < type_param_count; i++) free(type_params[i]);
-        free(type_params);
-        return NULL;
-    }
-    if (check(p, TOKEN_TYPE_STRING) && type_param_count > 0) {
-        error_at_current(p, "cannot impl a generic block for builtin type 'string'");
         for (int i = 0; i < type_param_count; i++) free(type_params[i]);
         free(type_params);
         return NULL;
@@ -3118,8 +3110,7 @@ static AstNode *parse_module_decl(Parser *p) {
    valid std module file names. */
 static bool is_import_path_segment(TokenType t) {
     return t == TOKEN_IDENTIFIER ||
-           t == TOKEN_ARRAY ||
-           t == TOKEN_TYPE_STRING;  /* Phase 2.5: `import std.string` */
+           t == TOKEN_ARRAY;
 }
 
 static AstNode *parse_import_decl(Parser *p) {

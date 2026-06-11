@@ -61,7 +61,6 @@ typedef enum {
     TOKEN_TYPE_F64,         /* f64 */
     TOKEN_TYPE_BOOL,        /* bool */
     TOKEN_TYPE_CHAR,        /* char */
-    TOKEN_TYPE_STRING,      /* string */
     TOKEN_TYPE_VOID,        /* void */
     TOKEN_TYPE_LIB,         /* lib */
     TOKEN_TYPE_OBJECT,      /* object (type-erased pointer, like void*) */

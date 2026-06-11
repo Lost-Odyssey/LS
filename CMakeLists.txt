@@ -1161,6 +1161,17 @@ add_test(
 )
 set_tests_properties(test_map_builtin_syntax_reject PROPERTIES DEPENDS "test_vec_builtin_syntax_reject")
 
+# P5-4 S-1 (docs/plan_p5_remove_builtin_string.md §8): the builtin `string` type
+# keyword was removed from the frontend — `string x` must be rejected.
+add_test(
+    NAME test_string_type_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/string_type_reject.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_string_type_reject.cmake
+)
+set_tests_properties(test_string_type_reject PROPERTIES DEPENDS "test_map_builtin_syntax_reject")
+
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(

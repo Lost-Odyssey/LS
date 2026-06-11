@@ -31,7 +31,7 @@ static void test_classify(void) {
     ASSERT(repl_classify("impl P {}") == REPL_DECL, "impl → DECL");
     ASSERT(repl_classify("type F = int") == REPL_DECL, "type → DECL");
     ASSERT(repl_classify("int x = 1") == REPL_VAR, "int x → VAR");
-    ASSERT(repl_classify("string s = \"hi\"") == REPL_VAR, "string s → VAR");
+    ASSERT(repl_classify("Str s = \"hi\"") == REPL_VAR, "Str s → VAR");
     ASSERT(repl_classify("vec(int) v = []") == REPL_EXPR, "builtin vec syntax → EXPR");
     ASSERT(repl_classify("Point p = mk()") == REPL_VAR, "user type → VAR");
     ASSERT(repl_classify("print(x)") == REPL_EXPR, "call → EXPR");
@@ -96,7 +96,7 @@ static void test_highlight(void) {
     ASSERT(strcmp(stripped, src) == 0, "strip(highlight) == original");
 
     /* string literal coloring + round-trip */
-    const char *s2 = "string s = \"hello\"";
+    const char *s2 = "Str s = \"hello\"";
     repl_highlight_render(s2, out, sizeof(out));
     ASSERT(strstr(out, "\x1b[32m") != NULL, "string green present");
     strip_ansi(out, stripped);

@@ -153,7 +153,6 @@ static const Keyword keywords[] = {
     {"return",   6, TOKEN_RETURN},
     {"self",     4, TOKEN_SELF},
     {"static",   6, TOKEN_STATIC},
-    {"string",   6, TOKEN_TYPE_STRING},
     {"struct",   6, TOKEN_STRUCT},
     {"trait",    5, TOKEN_TRAIT},
     {"true",     4, TOKEN_TRUE},
@@ -717,7 +716,6 @@ const char *token_type_name(TokenType type) {
     case TOKEN_TYPE_F64:      return "TYPE_F64";
     case TOKEN_TYPE_BOOL:     return "TYPE_BOOL";
     case TOKEN_TYPE_CHAR:     return "TYPE_CHAR";
-    case TOKEN_TYPE_STRING:   return "TYPE_STRING";
     case TOKEN_TYPE_VOID:     return "TYPE_VOID";
     case TOKEN_TYPE_LIB:      return "TYPE_LIB";
     case TOKEN_TYPE_OBJECT:   return "TYPE_OBJECT";

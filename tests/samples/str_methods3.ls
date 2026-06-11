@@ -29,9 +29,12 @@ fn main() {
     iok(a.to_int(), 123, "int pos")
     iok(b.to_int(), -7, "int neg")
     iok(c.to_int(), 42, "int plus")
-    ierr(Str.from_string("12z").to_int(), "int bad")
-    ierr(Str.from_string("").to_int(), "int empty")
-    ierr(Str.from_string("-").to_int(), "int signonly")
+    Str bad = "12z"
+    Str emp = ""
+    Str sgn = "-"
+    ierr(bad.to_int(), "int bad")
+    ierr(emp.to_int(), "int empty")
+    ierr(sgn.to_int(), "int signonly")
 
     // to_i64
     Str big = "1000000"
@@ -47,7 +50,8 @@ fn main() {
     match f1.to_float() { Ok(v) => check(v == 2.5, "float") Err(e) => check(false, "float") }
     match f2.to_float() { Ok(v) => check(v == -0.25, "float neg") Err(e) => check(false, "float neg") }
     match f3.to_float() { Ok(v) => check(v == 10.0, "float int") Err(e) => check(false, "float int") }
-    match Str.from_string("x").to_float() { Ok(v) => check(false, "float bad") Err(e) => check(true, "float bad") }
+    Str fx = "x"
+    match fx.to_float() { Ok(v) => check(false, "float bad") Err(e) => check(true, "float bad") }
 
     // to_bool
     Str t = "true"

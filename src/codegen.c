@@ -8017,7 +8017,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             case TOKEN_TYPE_F32:    tname = "f32";    break;
                             case TOKEN_TYPE_F64:    tname = "f64";    break;
                             case TOKEN_TYPE_BOOL:   tname = "bool";   break;
-                            case TOKEN_TYPE_STRING: tname = "string"; break;
                             case TOKEN_TYPE_CHAR:   tname = "char";   break;
                             default:                tname = "?";      break;
                             }
@@ -8112,7 +8111,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             case TOKEN_TYPE_F32:    tname = "f32";    break;
                             case TOKEN_TYPE_F64:    tname = "f64";    break;
                             case TOKEN_TYPE_BOOL:   tname = "bool";   break;
-                            case TOKEN_TYPE_STRING: tname = "string"; break;
                             case TOKEN_TYPE_CHAR:   tname = "char";   break;
                             default:                tname = "?";      break;
                             }

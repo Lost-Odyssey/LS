@@ -81,7 +81,7 @@ static void test_fn_decl_with_return(void) {
 }
 
 static void test_fn_decl_void_return(void) {
-    AstNode *ast = parse_source("fn greet(string name) { }");
+    AstNode *ast = parse_source("fn greet(Str name) { }");
     ASSERT(ast != NULL, "parse failed");
     ASSERT_EQ(ast->as.program.decl_count, 1);
     AstNode *fn = ast->as.program.decls[0];
@@ -479,7 +479,7 @@ static void test_hello_sample(void) {
         "module main\n"
         "\n"
         "fn main() -> int {\n"
-        "    string greeting = \"Hello, World!\"\n"
+        "    Str greeting = \"Hello, World!\"\n"
         "    int x = 42\n"
         "    f64 pi = 3.14159\n"
         "    bool flag = true\n"
@@ -587,7 +587,7 @@ static void test_extern_fn(void) {
 }
 
 static void test_string_literals(void) {
-    AstNode *ast = parse_source("string s = \"hello\\nworld\"");
+    AstNode *ast = parse_source("Str s = \"hello\\nworld\"");
     ASSERT(ast != NULL, "parse failed");
     ASSERT_EQ(ast->as.program.decl_count, 1);
     AstNode *decl = ast->as.program.decls[0];

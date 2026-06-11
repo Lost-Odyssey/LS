@@ -129,9 +129,9 @@ static void test_ffi_parse_extern(void) {
     printf("  test_ffi_parse_extern...");
     const char *src =
         "lib msvcrt = load(\"msvcrt.dll\")\n"
-        "extern fn puts(string s) -> int from msvcrt\n"
+        "extern fn putchar(int c) -> int from msvcrt\n"
         "fn main() -> int {\n"
-        "    puts(\"hello\")\n"
+        "    putchar(72)\n"
         "    return 0\n"
         "}\n";
 
@@ -179,9 +179,9 @@ static void test_ffi_codegen_extern(void) {
     printf("  test_ffi_codegen_extern...");
     const char *src =
         "lib msvcrt = load(\"msvcrt.dll\")\n"
-        "extern fn puts(string s) -> int from msvcrt\n"
+        "extern fn putchar(int c) -> int from msvcrt\n"
         "fn main() -> int {\n"
-        "    puts(\"hello from codegen\")\n"
+        "    putchar(73)\n"
         "    return 0\n"
         "}\n";
 

@@ -1943,8 +1943,6 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
             return type_bool();
         case TOKEN_TYPE_CHAR:
             return type_char();
-        case TOKEN_TYPE_STRING:
-            return type_string();
         case TOKEN_TYPE_VOID:
             return type_void();
         case TOKEN_TYPE_LIB:

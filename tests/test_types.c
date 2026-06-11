@@ -268,7 +268,6 @@ static void test_check_var_decl_ok(void) {
         "    int x = 42\n"
         "    f64 y = 3.14\n"
         "    bool b = true\n"
-        "    string s = \"hello\"\n"
         "    return 0\n"
         "}\n"
     ));
@@ -523,18 +522,6 @@ static void test_check_forward_function_ref(void) {
     printf(" ok\n");
 }
 
-static void test_check_string_concat(void) {
-    printf("  test_check_string_concat...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string a = \"hello\"\n"
-        "    string b = \" world\"\n"
-        "    string c = a + b\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
 static void test_check_unary_ops(void) {
     printf("  test_check_unary_ops...");
@@ -610,7 +597,6 @@ static void test_check_samples_hello(void) {
     ASSERT_TRUE(check_source(
         "module main\n"
         "fn main() -> int {\n"
-        "    string greeting = \"Hello, World!\"\n"
         "    int x = 42\n"
         "    f64 pi = 3.14159\n"
         "    bool flag = true\n"
@@ -866,433 +852,32 @@ static void test_check_global_array_ok(void) {
     printf(" ok\n");
 }
 
-/* ---- String LsString type checker tests ---- */
 
-static void test_check_string_length_ok(void) {
-    printf("  test_check_string_length_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    int len = s.length\n"
-        "    return len\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_no_field(void) {
-    printf("  test_check_string_no_field...");
-    /* Accessing a non-existent field on string should fail */
-    ASSERT_FALSE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    int x = s.foobar\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_compare_ok(void) {
-    printf("  test_check_string_compare_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string a = \"abc\"\n"
-        "    string b = \"def\"\n"
-        "    bool eq = (a == b)\n"
-        "    bool ne = (a != b)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_concat_to_var(void) {
-    printf("  test_check_string_concat_to_var...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string a = \"hello\"\n"
-        "    string b = \" world\"\n"
-        "    string c = a + b\n"
-        "    int len = c.length\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* ---- String method type checker tests ---- */
 
-static void test_check_string_empty_ok(void) {
-    printf("  test_check_string_empty_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    bool b = s.empty()\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_at_ok(void) {
-    printf("  test_check_string_at_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    int ch = s.at(0)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_find_ok(void) {
-    printf("  test_check_string_find_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello world\"\n"
-        "    int pos = s.find(\"world\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_contains_ok(void) {
-    printf("  test_check_string_contains_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello world\"\n"
-        "    bool has = s.contains(\"llo\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_starts_ends_with_ok(void) {
-    printf("  test_check_string_starts_ends_with_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello world\"\n"
-        "    bool a = s.starts_with(\"hello\")\n"
-        "    bool b = s.ends_with(\"world\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_compare_method_ok(void) {
-    printf("  test_check_string_compare_method_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string a = \"abc\"\n"
-        "    string b = \"def\"\n"
-        "    int c = a.compare(b)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_method_wrong_args(void) {
-    printf("  test_check_string_method_wrong_args...");
-    /* empty() with args should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    bool b = s.empty(1)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    /* at() with string arg should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    int ch = s.at(\"x\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    /* find() with int arg should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    int pos = s.find(42)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_unknown_method(void) {
-    printf("  test_check_string_unknown_method...");
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    int x = s.foobar()\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* ---- String Batch 2 type checker tests ---- */
 
-static void test_check_string_upper_ok(void) {
-    printf("  test_check_string_upper_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    string u = s.upper()\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_lower_ok(void) {
-    printf("  test_check_string_lower_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"HELLO\"\n"
-        "    string l = s.lower()\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_substr_ok(void) {
-    printf("  test_check_string_substr_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello world\"\n"
-        "    string sub = s.substr(0, 5)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_trim_ok(void) {
-    printf("  test_check_string_trim_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"  hello  \"\n"
-        "    string t = s.trim()\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_replace_ok(void) {
-    printf("  test_check_string_replace_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello world\"\n"
-        "    string r = s.replace(\"world\", \"LS\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_batch2_wrong_args(void) {
-    printf("  test_check_string_batch2_wrong_args...");
-    /* upper() with args should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    string u = s.upper(1)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    /* substr() with zero args should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    string sub = s.substr()\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    /* substr() with string arg should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    string sub = s.substr(\"a\", 3)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    /* replace() with int args should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    string r = s.replace(42, \"x\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* ---- String Batch 3 type checker tests ---- */
 
-static void test_check_string_rfind_ok(void) {
-    printf("  test_check_string_rfind_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello world hello\"\n"
-        "    int pos = s.rfind(\"hello\")\n"
-        "    return pos\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_count_ok(void) {
-    printf("  test_check_string_count_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"aababab\"\n"
-        "    int n = s.count(\"ab\")\n"
-        "    return n\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_substr_one_arg_ok(void) {
-    printf("  test_check_string_substr_one_arg_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello world\"\n"
-        "    string tail = s.substr(6)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* Phase 2.5: split/join are no longer compiler builtins — they live in pure-LS
-   std/string.ls (`impl string`). Without `import std.string` (which this
-   no-stdlib checker harness cannot resolve), `s.split(...)` / `sep.join(...)`
-   must be rejected as "string has no method". */
-static void test_check_string_split_ok(void) {
-    printf("  test_check_string_split_no_import_rejected...");
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"a,b,c\"\n"
-        "    string parts = s.split(\",\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-static void test_check_string_join_ok(void) {
-    printf("  test_check_string_join_no_import_rejected...");
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string sep = \", \"\n"
-        "    string result = sep.join(\"x\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
-
-static void test_check_string_batch3_wrong_args(void) {
-    printf("  test_check_string_batch3_wrong_args...");
-    /* rfind with no args should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    int p = s.rfind()\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    /* count with non-string arg should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    int n = s.count(42)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    /* split with int arg should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"
-        "    vec(string) v = s.split(1)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    /* join with vec(int) should fail */
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    vec(int) nums\n"
-        "    nums.push(1)\n"
-        "    string r = \",\".join(nums)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
-
-/* ---- String conversion builtin type checker tests ---- */
-
-static void test_check_to_string_ok(void) {
-    printf("  test_check_to_string_ok...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = to_string(42)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = to_string(3.14)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = to_string(true)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
-
-static void test_check_to_string_wrong_type(void) {
-    printf("  test_check_to_string_wrong_type...");
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = to_string(\"hello\")\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
-
-static void test_check_to_string_wrong_arg_count(void) {
-    printf("  test_check_to_string_wrong_arg_count...");
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = to_string()\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    ASSERT_TRUE(!check_source(
-        "fn main() -> int {\n"
-        "    string s = to_string(1, 2)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
 static void test_check_from_int_ok(void) {
     printf("  test_check_from_int_ok...");
@@ -2368,109 +1953,12 @@ static void test_move_static_string_push_no_move(void) {
     printf(" ok\n");
 }
 
-/* --- Dynamic string: vec.push moves the source --- */
-static void test_move_dynamic_string_push_marks_moved(void) {
-    printf("  test_move_dynamic_string_push_marks_moved...");
-    ASSERT_FALSE(check_source(
-        "fn main() -> int {\n"
-        "    vec(string) v\n"
-        "    string b = \"world\".upper()\n"  /* dynamic string */
-        "    v.push(b)\n"                      /* moves b */
-        "    print(b)\n"                       /* ERROR: use of moved variable 'b' */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- Use of moved variable in second vec.push --- */
-static void test_move_double_push_error(void) {
-    printf("  test_move_double_push_error...");
-    ASSERT_FALSE(check_source(
-        "fn main() -> int {\n"
-        "    vec(string) v\n"
-        "    string s = \"hello\".upper()\n"
-        "    v.push(s)\n"   /* s: MOVED */
-        "    v.push(s)\n"   /* ERROR: use of moved variable 's' */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- Direct string-to-string assignment moves source (dynamic) --- */
-static void test_move_direct_assignment_moves(void) {
-    printf("  test_move_direct_assignment_moves...");
-    ASSERT_FALSE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\".upper()\n"  /* dynamic */
-        "    string t = s\n"                   /* moves s */
-        "    print(s)\n"                       /* ERROR */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- Direct string-to-string assignment from static: NOT moved --- */
-static void test_move_static_assignment_no_move(void) {
-    printf("  test_move_static_assignment_no_move...");
-    ASSERT_TRUE(check_source(
-        "fn main() -> int {\n"
-        "    string s = \"hello\"\n"  /* static */
-        "    string t = s\n"           /* s is static → NOT moved */
-        "    print(s)\n"               /* s still LIVE */
-        "    print(t)\n"
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- Re-assign to moved variable is an error --- */
-static void test_move_reassign_to_moved_error(void) {
-    printf("  test_move_reassign_to_moved_error...");
-    ASSERT_FALSE(check_source(
-        "fn main() -> int {\n"
-        "    vec(string) v\n"
-        "    string s = \"hello\".upper()\n"
-        "    v.push(s)\n"              /* s: MOVED */
-        "    s = \"new\".upper()\n"   /* ERROR: re-assign to moved variable */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- __move explicit move on dynamic string --- */
-static void test_move_explicit_move_builtin(void) {
-    printf("  test_move_explicit_move_builtin...");
-    ASSERT_FALSE(check_source(
-        "fn main() -> int {\n"
-        "    vec(string) v\n"
-        "    string s = \"hello\".upper()\n"
-        "    v.push(__move(s))\n"  /* explicit move */
-        "    print(s)\n"           /* ERROR: use of moved variable */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- __move on static string forces move --- */
-static void test_move_explicit_move_static_forced(void) {
-    printf("  test_move_explicit_move_static_forced...");
-    ASSERT_FALSE(check_source(
-        "fn main() -> int {\n"
-        "    vec(string) v\n"
-        "    string s = \"hello\"\n"   /* static */
-        "    v.push(__move(s))\n"      /* __move forces move even on static */
-        "    print(s)\n"               /* ERROR: use of moved variable */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
 /* --- __move on non-movable type is an error --- */
 static void test_move_explicit_move_non_movable_error(void) {
@@ -2485,39 +1973,7 @@ static void test_move_explicit_move_non_movable_error(void) {
     printf(" ok\n");
 }
 
-/* --- Function call does NOT move caller's string (deep copy) --- */
-static void test_move_fn_param_no_move_caller(void) {
-    printf("  test_move_fn_param_no_move_caller...");
-    ASSERT_TRUE(check_source(
-        "fn greet(string name) {\n"
-        "    print(name)\n"
-        "}\n"
-        "fn main() -> int {\n"
-        "    string s = \"Alice\".upper()\n"  /* dynamic */
-        "    greet(s)\n"                        /* deep copy — s stays LIVE */
-        "    print(s)\n"                        /* OK */
-        "    greet(s)\n"                        /* can call again */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- vec.insert also moves the element --- */
-static void test_move_vec_insert_moves(void) {
-    printf("  test_move_vec_insert_moves...");
-    ASSERT_FALSE(check_source(
-        "fn main() -> int {\n"
-        "    vec(string) v\n"
-        "    v.push(\"a\")\n"
-        "    string s = \"b\".upper()\n"  /* dynamic */
-        "    v.insert(0, s)\n"             /* moves s */
-        "    print(s)\n"                   /* ERROR */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
 /* --- is_static_string propagates through assignment --- */
 static void test_move_static_propagates_through_assign(void) {
@@ -2545,21 +2001,6 @@ static void test_move_static_propagates_through_assign(void) {
    drop requirement (plain POD) keep the prior clone semantics and are NOT
    affected by these tests. */
 
-/* --- Assign with-drop struct: source is marked moved --- */
-static void test_move_struct_with_drop_assignment(void) {
-    printf("  test_move_struct_with_drop_assignment...");
-    ASSERT_FALSE(check_source(
-        "struct Person { string name; int age; }\n"
-        "fn main() -> int {\n"
-        "    Person p\n"
-        "    p.name = \"Alice\".upper()\n"
-        "    Person q = p\n"        /* q = p moves p */
-        "    print(p.age)\n"          /* ERROR: use of moved variable 'p' */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
 /* --- POD struct (no drop) retains clone semantics --- */
 static void test_move_struct_no_drop_clone_ok(void) {
@@ -2577,107 +2018,11 @@ static void test_move_struct_no_drop_clone_ok(void) {
     printf(" ok\n");
 }
 
-/* --- Field-level assignment does NOT move the struct --- */
-static void test_move_struct_field_assign_no_move(void) {
-    printf("  test_move_struct_field_assign_no_move...");
-    ASSERT_TRUE(check_source(
-        "struct Person { string name; int age; }\n"
-        "fn main() -> int {\n"
-        "    Person p\n"
-        "    p.name = \"Alice\".upper()\n"  /* field write — does not move p */
-        "    p.name = \"Bob\".upper()\n"    /* still OK */
-        "    print(p.name)\n"                /* p still LIVE */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- vec.push on with-drop struct marks it moved --- */
-static void test_move_struct_vec_push_moves(void) {
-    printf("  test_move_struct_vec_push_moves...");
-    ASSERT_FALSE(check_source(
-        "struct Person { string name; int age; }\n"
-        "fn main() -> int {\n"
-        "    vec(Person) people\n"
-        "    Person p\n"
-        "    p.name = \"Alice\".upper()\n"
-        "    people.push(p)\n"          /* moves p */
-        "    print(p.age)\n"             /* ERROR */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- Re-assignment to moved with-drop struct is an error --- */
-static void test_move_struct_reassign_to_moved_error(void) {
-    printf("  test_move_struct_reassign_to_moved_error...");
-    ASSERT_FALSE(check_source(
-        "struct Person { string name; int age; }\n"
-        "fn main() -> int {\n"
-        "    Person p\n"
-        "    p.name = \"Alice\".upper()\n"
-        "    Person q = p\n"             /* p: MOVED */
-        "    p = Person{}\n"              /* ERROR: use of moved variable 'p' on lhs */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- Nested has_drop struct is tracked (via transitive has_drop) --- */
-static void test_move_struct_nested_drop_moves(void) {
-    printf("  test_move_struct_nested_drop_moves...");
-    ASSERT_FALSE(check_source(
-        "struct Inner { string s; }\n"
-        "struct Outer { Inner inner; int tag; }\n"
-        "fn main() -> int {\n"
-        "    Outer o\n"
-        "    o.inner.s = \"hi\".upper()\n"
-        "    Outer q = o\n"            /* transitive has_drop → moves o */
-        "    print(o.tag)\n"             /* ERROR */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- Phase B: if/else with both branches moving struct → MOVED afterwards --- */
-static void test_move_struct_if_else_both_move(void) {
-    printf("  test_move_struct_if_else_both_move...");
-    ASSERT_FALSE(check_source(
-        "struct Person { string name; int age; }\n"
-        "fn main() -> int {\n"
-        "    vec(Person) ps\n"
-        "    Person p\n"
-        "    p.name = \"A\".upper()\n"
-        "    bool c = true\n"
-        "    if c { ps.push(p) } else { ps.push(p) }\n"
-        "    print(p.age)\n"             /* ERROR: MOVED on every path */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
-/* --- Phase B: if-only (no else) moving struct → MAYBE_MOVED afterwards --- */
-static void test_move_struct_if_only_maybe_moved(void) {
-    printf("  test_move_struct_if_only_maybe_moved...");
-    ASSERT_FALSE(check_source(
-        "struct Person { string name; int age; }\n"
-        "fn main() -> int {\n"
-        "    vec(Person) ps\n"
-        "    Person p\n"
-        "    p.name = \"A\".upper()\n"
-        "    bool c = true\n"
-        "    if c { ps.push(p) }\n"
-        "    print(p.age)\n"             /* ERROR: MAYBE_MOVED = death */
-        "    return 0\n"
-        "}\n"
-    ));
-    printf(" ok\n");
-}
 
 /* ---- Main ---- */
 
@@ -2706,7 +2051,6 @@ int main(void) {
     test_check_match_arms_consistent();
     test_check_scope_shadowing();
     test_check_forward_function_ref();
-    test_check_string_concat();
     test_check_unary_ops();
     test_check_pointer_deref();
     test_check_impl_method();
@@ -2749,41 +2093,14 @@ int main(void) {
     test_check_global_array_ok();
 
     printf("\n=== String LsString Type Checker Tests ===\n");
-    test_check_string_length_ok();
-    test_check_string_no_field();
-    test_check_string_compare_ok();
-    test_check_string_concat_to_var();
 
     printf("\n=== String Method Type Checker Tests ===\n");
-    test_check_string_empty_ok();
-    test_check_string_at_ok();
-    test_check_string_find_ok();
-    test_check_string_contains_ok();
-    test_check_string_starts_ends_with_ok();
-    test_check_string_compare_method_ok();
-    test_check_string_method_wrong_args();
-    test_check_string_unknown_method();
 
     printf("\n=== String Method Batch 2 Type Checker Tests ===\n");
-    test_check_string_upper_ok();
-    test_check_string_lower_ok();
-    test_check_string_substr_ok();
-    test_check_string_trim_ok();
-    test_check_string_replace_ok();
-    test_check_string_batch2_wrong_args();
 
     printf("\n=== String Method Batch 3 Type Checker Tests ===\n");
-    test_check_string_rfind_ok();
-    test_check_string_count_ok();
-    test_check_string_substr_one_arg_ok();
-    test_check_string_split_ok();
-    test_check_string_join_ok();
-    test_check_string_batch3_wrong_args();
 
     printf("\n=== String Conversion Builtin Type Checker Tests ===\n");
-    test_check_to_string_ok();
-    test_check_to_string_wrong_type();
-    test_check_to_string_wrong_arg_count();
     test_check_from_int_ok();
     test_check_from_int_wrong_type();
     test_check_from_float_ok();
@@ -2826,27 +2143,11 @@ int main(void) {
 
     printf("\n=== String Move Semantics Phase A Tests ===\n");
     printf("  skipped: builtin vec(T) static-string push tests are unreachable after Phase 3 P3-1\n");
-    test_move_dynamic_string_push_marks_moved();
-    test_move_double_push_error();
-    test_move_direct_assignment_moves();
-    test_move_static_assignment_no_move();
-    test_move_reassign_to_moved_error();
-    test_move_explicit_move_builtin();
-    test_move_explicit_move_static_forced();
     test_move_explicit_move_non_movable_error();
-    test_move_fn_param_no_move_caller();
-    test_move_vec_insert_moves();
     printf("  skipped: builtin vec(T) static propagation test is unreachable after Phase 3 P3-1\n");
 
     printf("\n=== Struct Move Semantics Phase 3 Tests ===\n");
-    test_move_struct_with_drop_assignment();
     test_move_struct_no_drop_clone_ok();
-    test_move_struct_field_assign_no_move();
-    test_move_struct_vec_push_moves();
-    test_move_struct_reassign_to_moved_error();
-    test_move_struct_nested_drop_moves();
-    test_move_struct_if_else_both_move();
-    test_move_struct_if_only_maybe_moved();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

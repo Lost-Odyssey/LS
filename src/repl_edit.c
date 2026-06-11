@@ -33,7 +33,7 @@ static bool is_scalar_type_token(TokenType t) {
         case TOKEN_TYPE_I32: case TOKEN_TYPE_I64: case TOKEN_TYPE_U8:
         case TOKEN_TYPE_U16: case TOKEN_TYPE_U32: case TOKEN_TYPE_U64:
         case TOKEN_TYPE_F32: case TOKEN_TYPE_F64: case TOKEN_TYPE_BOOL:
-        case TOKEN_TYPE_CHAR: case TOKEN_TYPE_STRING: case TOKEN_TYPE_VOID:
+        case TOKEN_TYPE_CHAR: case TOKEN_TYPE_VOID:
         case TOKEN_TYPE_OBJECT: case TOKEN_TYPE_LIB:
             return true;
         default:
@@ -178,7 +178,7 @@ static const char *ansi_for_token(TokenType t) {
         case TOKEN_TYPE_I32: case TOKEN_TYPE_I64: case TOKEN_TYPE_U8:
         case TOKEN_TYPE_U16: case TOKEN_TYPE_U32: case TOKEN_TYPE_U64:
         case TOKEN_TYPE_F32: case TOKEN_TYPE_F64: case TOKEN_TYPE_BOOL:
-        case TOKEN_TYPE_CHAR: case TOKEN_TYPE_STRING: case TOKEN_TYPE_VOID:
+        case TOKEN_TYPE_CHAR: case TOKEN_TYPE_VOID:
         case TOKEN_TYPE_LIB: case TOKEN_TYPE_OBJECT: case TOKEN_ARRAY:
         case TOKEN_BLOCK:
             return C_TYPE;

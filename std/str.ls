@@ -127,32 +127,6 @@ impl Str {
         return Str { data: z, len: 0, cap: 0 }
     }
 
-    // ---- interop with builtin string (P0 bridge; removed once string is gone) ----
-
-    // Build an OWNED Str by copying the bytes of a builtin string. This is the
-    // P0 validation bridge: it lets us exercise the unified ownership path while
-    // the builtin string still produces every literal. Disappears in P5.
-    static fn from_string(string s) -> Str {
-        *u8 z = nil
-        Str out = Str { data: z, len: 0, cap: 0 }
-        int n = s.length
-        out.reserve(n)
-        for (int i = 0; i < n; i = i + 1) {
-            out.push_byte(s.at_unsafe(i))
-        }
-        return out
-    }
-
-    // Materialise a builtin string from the bytes (P0 read-back bridge, also for
-    // printing while @print is not yet wired — P3). Removed in P5.
-    fn to_string(&self) -> string {
-        string out = ""
-        for (int i = 0; i < self.len; i = i + 1) {
-            out.append(self.data[i])
-        }
-        return out
-    }
-
     // ---- equality (byte-wise) ----
 
     fn eq?(&self, &Str other) -> bool {
