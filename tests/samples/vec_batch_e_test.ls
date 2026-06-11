@@ -1,5 +1,6 @@
 // vec Batch E end-to-end test: sort(), sort_by(), slice(), shrink_to_fit()
 import std.vec
+import std.str
 
 fn cmp_desc(int a, int b) -> int {
     return b - a
@@ -41,7 +42,7 @@ fn main() -> int {
     print(se.len())  // 0
 
     // sort string Vec(lexicographic)
-    Vec(string) sv = {}
+    Vec(Str) sv = {}
     sv.push("banana")
     sv.push("apple")
     sv.push("cherry")
@@ -113,12 +114,12 @@ fn main() -> int {
     print(sl6.len()) // 0
 
     // slice string vec — independent deep copies
-    Vec(string) ssrc = {}
+    Vec(Str) ssrc = {}
     ssrc.push("alpha")
     ssrc.push("beta")
     ssrc.push("gamma")
     ssrc.push("delta")
-    Vec(string) sslice = ssrc.slice(1, 3)
+    Vec(Str) sslice = ssrc.slice(1, 3)
     print(sslice.len())  // 2
     print(sslice[0])      // beta
     print(sslice[1])      // gamma

@@ -1,5 +1,6 @@
 // vec Batch B end-to-end test: truncate(), remove(), swap(), reverse()
 import std.vec
+import std.str
 
 fn main() -> int {
     // ===================== truncate() =====================
@@ -28,7 +29,7 @@ fn main() -> int {
     print(v.empty?)    // true
 
     // truncate on string vec — must drop freed strings without double-free
-    Vec(string) sv = {}
+    Vec(Str) sv = {}
     sv.push("alpha")
     sv.push("beta")
     sv.push("gamma")
@@ -62,7 +63,7 @@ fn main() -> int {
     print(r[0])        // 300
 
     // remove on string vec — must drop string without leaking
-    Vec(string) sr = {}
+    Vec(Str) sr = {}
     sr.push("one")
     sr.push("two")
     sr.push("three")
@@ -89,7 +90,7 @@ fn main() -> int {
     print(sw[1])       // 2
 
     // swap on string vec — raw byte swap, no clone/free
-    Vec(string) ssw = {}
+    Vec(Str) ssw = {}
     ssw.push("first")
     ssw.push("second")
     ssw.push("third")
@@ -133,7 +134,7 @@ fn main() -> int {
     print(reve.len())  // 0
 
     // reverse on string vec — raw byte swap, no leak
-    Vec(string) srev = {}
+    Vec(Str) srev = {}
     srev.push("a")
     srev.push("b")
     srev.push("c")

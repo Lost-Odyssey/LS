@@ -5,8 +5,9 @@
 // present, FAIL is absent, and (under --memcheck) 0 leak / 0 double-free.
 
 import std.stack
+import std.str
 
-fn check(bool cond, string label) {
+fn check(bool cond, Str label) {
     if cond {
         print(f"ok {label}")
     } else {
@@ -35,25 +36,25 @@ fn main() {
     si.clear()
     check(si.is_empty(), "int empty after clear")
 
-    // ---- Stack(string): has_drop element ----
-    Stack(string) ss = new_stack(string)()
+    // ---- Stack(Str): has_drop element ----
+    Stack(Str) ss = new_stack(Str)()
     ss.push("alpha")
     ss.push("beta")
     ss.push("gamma")
     check(ss.len() == 3, "str len 3")
 
     // peek clones the top; the original stays in the stack.
-    string top = ss.peek()
-    check(top == "gamma", "str peek gamma")
+    Str top = ss.peek()
+    check(top.eq?("gamma"), "str peek gamma")
     check(ss.len() == 3, "str peek non-destructive")
 
     // pop moves the top out; `g` owns it, the stack no longer does.
-    string g = ss.pop()
-    check(g == "gamma", "str pop gamma")
+    Str g = ss.pop()
+    check(g.eq?("gamma"), "str pop gamma")
     check(ss.len() == 2, "str len 2 after pop")
 
     // ss still owns "alpha" and "beta": when it goes out of scope the stack
-    // drops its Vec(string), which must free both remaining strings exactly
+    // drops its Vec(Str), which must free both remaining strings exactly
     // once (the memcheck probe for generic struct + Vec(T) field drop).
     print("STACK PASS")
 }

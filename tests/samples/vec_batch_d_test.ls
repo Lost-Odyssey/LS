@@ -1,5 +1,6 @@
 // vec Batch D end-to-end test: contains(), index_of(), resize(), copy()
 import std.vec
+import std.str
 
 fn main() -> int {
     // ===================== contains() =====================
@@ -19,7 +20,7 @@ fn main() -> int {
     print(empty.has?(1))  // false
 
     // contains on string vec
-    Vec(string) sv = {}
+    Vec(Str) sv = {}
     sv.push("alpha")
     sv.push("beta")
     sv.push("gamma")
@@ -45,7 +46,7 @@ fn main() -> int {
     print(empty2.index_of(1))   // -1
 
     // index_of on string vec
-    Vec(string) sidx = {}
+    Vec(Str) sidx = {}
     sidx.push("x")
     sidx.push("y")
     sidx.push("z")
@@ -91,7 +92,7 @@ fn main() -> int {
     print(r2.len())  // 0
 
     // resize string vec — new slots get empty strings
-    Vec(string) sr = {}
+    Vec(Str) sr = {}
     sr.push("hello")
     sr.resize(3, f"")
     print(sr.len())  // 3
@@ -129,10 +130,10 @@ fn main() -> int {
     print(cp2.empty?) // true
 
     // copy of string vec — independent deep copies
-    Vec(string) sorig = {}
+    Vec(Str) sorig = {}
     sorig.push("hello")
     sorig.push("world")
-    Vec(string) scp = sorig.copy()
+    Vec(Str) scp = sorig.copy()
     print(scp.len())  // 2
     print(scp[0])      // hello
     print(scp[1])      // world

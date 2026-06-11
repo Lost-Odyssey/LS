@@ -2,10 +2,11 @@
 // and STABLE. Exercises a larger n (multiple merge passes), explicit stability,
 // has_drop (string) elements, and degenerate sizes. Self-verifying.
 import std.vec
+import std.str
 
 struct Item { int key; int seq }
 
-fn check(bool c, string label) {
+fn check(bool c, Str label) {
     if c { print(f"  ok: {label}") } else { print(f"FAIL: {label}") }
 }
 
@@ -43,7 +44,7 @@ fn main() -> int {
     check(stable, "stable on equal keys")
 
     // ---- has_drop (string) elements sort + no leak (driver runs memcheck) ----
-    Vec(string) words = {}
+    Vec(Str) words = {}
     words.push("delta")
     words.push("alpha")
     words.push("charlie")
@@ -53,7 +54,7 @@ fn main() -> int {
         if a > b { return 1 }
         return 0
     })
-    check(words[0] == "alpha" && words[3] == "delta", "string sort")
+    check(words[0].eq?("alpha") && words[3].eq?("delta"), "string sort")
 
     // ---- degenerate sizes: empty + single must be no-ops, no crash ----
     Vec(int) e = {}

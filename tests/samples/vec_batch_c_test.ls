@@ -1,5 +1,6 @@
 // vec Batch C end-to-end test: extend(), insert()
 import std.vec
+import std.str
 
 fn main() -> int {
     // ===================== extend() =====================
@@ -36,10 +37,10 @@ fn main() -> int {
     print(d[1])      // 20
 
     // extend string vec — elements must be deep-cloned (independent copies)
-    Vec(string) sa = {}
+    Vec(Str) sa = {}
     sa.push("hello")
     sa.push("world")
-    Vec(string) sb = {}
+    Vec(Str) sb = {}
     sb.push("foo")
     sb.push("bar")
     sa.extend(sb)
@@ -98,7 +99,7 @@ fn main() -> int {
     print(empty[0])       // 42
 
     // insert on string vec — ownership transfer (no double-free)
-    Vec(string) sv = {}
+    Vec(Str) sv = {}
     sv.push("first")
     sv.push("third")
     sv.insert(1, "second")
