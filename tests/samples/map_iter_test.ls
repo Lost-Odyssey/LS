@@ -5,8 +5,9 @@
 
 import std.map
 import std.vec
+import std.str
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 fn main() {
     // ---- POD: for-in + keys/values/each ----
@@ -54,23 +55,23 @@ fn main() {
     check(ez == 0, "for-in over empty map: 0 iterations")
 
     // ---- has_drop keys: Map(string,int) ----
-    Map(string, int) sm = {}
+    Map(Str, int) sm = {}
     sm.set("a", 1)
     sm.set("bb", 2)
     sm.set("ccc", 3)
     int klen = 0
     int sv = 0
     for e in sm {
-        klen = klen + e.key.length
+        klen = klen + e.key.len()
         sv = sv + e.val
     }
     check(klen == 6, "string-key for-in: key length sum")
     check(sv == 6, "string-key for-in: val sum")
-    Vec(string) sks = sm.keys()
+    Vec(Str) sks = sm.keys()
     check(sks.len() == 3, "string keys() len")
 
     // ---- has_drop container values: Map(string,Vec(int)) for-in ----
-    Map(string, Vec(int)) mv = {}
+    Map(Str, Vec(int)) mv = {}
     Vec(int) a = [1, 2, 3]
     mv.set("a", a)
     Vec(int) b = [4, 5]

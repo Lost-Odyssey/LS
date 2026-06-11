@@ -7,7 +7,7 @@ import std.str
 import std.io as io
 
 fn main() {
-    string base = "fs_test_tmp"
+    Str base = "fs_test_tmp"
 
     /* ---- mkdir / exists / is_dir / is_file ---- */
     match fs.mkdir(base) {
@@ -23,7 +23,7 @@ fn main() {
     print(e)                              /* true */
 
     /* ---- mkdir_all (nested) ---- */
-    string nested = "fs_test_tmp/a/b/c"
+    Str nested = "fs_test_tmp/a/b/c"
     match fs.mkdir_all(nested) {
         Ok(v) => { print("mkdir_all ok") }
         Err(e) => { print("mkdir_all fail") }
@@ -32,8 +32,8 @@ fn main() {
     print(nd)                             /* true */
 
     /* ---- cwd / chdir ---- */
-    string w = fs.cwd()
-    bool wok = w.length > 0
+    Str w = fs.cwd()
+    bool wok = w.len() > 0
     print(wok)                            /* true */
 
     match fs.chdir(base) {
@@ -47,8 +47,8 @@ fn main() {
     }
 
     /* ---- rename ---- */
-    string src_path = "fs_test_tmp/hello.txt"
-    string dst_path = "fs_test_tmp/world.txt"
+    Str src_path = "fs_test_tmp/hello.txt"
+    Str dst_path = "fs_test_tmp/world.txt"
     match io.write_file(src_path, "hi") {
         Ok(v) => { }
         Err(e) => { }

@@ -4,20 +4,20 @@
 // n=200000 would overflow the 1MB JIT stack before the fix.
 // Phase 2.5: split now returns std.vec Vec(string) from std.string.
 import std.vec
-import std.string
+import std.str
 fn main() -> int {
     int n = 200000
-    string base = "The Quick Brown Fox"
+    Str base = "The Quick Brown Fox"
 
     i64 acc = 0
     for i in 0..n {
-        string u = base.upper()
-        string l = base.lower()
-        string s = base.substr(4, 5)
-        string r = base.replace("o", "0")
-        Vec(string) parts = base.split(" ")
-        acc = acc + u.length as i64 + l.length as i64 + s.length as i64
-              + r.length as i64 + parts.len() as i64
+        Str u = base.upper()
+        Str l = base.lower()
+        Str s = base.substr(4, 5)
+        Str r = base.replace("o", "0")
+        Vec(Str) parts = base.split(" ")
+        acc = acc + u.len() as i64 + l.len() as i64 + s.len() as i64
+              + r.len() as i64 + parts.len() as i64
     }
 
     // per iter: upper 19 + lower 19 + substr 5 + replace 19 + parts 4 = 66

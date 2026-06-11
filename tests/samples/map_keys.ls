@@ -5,19 +5,20 @@
 
 import std.vec
 import std.map
+import std.str
 
 fn check(bool cond, int id) -> bool {
     if !cond { print(id); print("MK FAIL") }
     return cond
 }
 
-struct P { string name; int age }
+struct P { Str name; int age }
 
 fn main() {
     bool ok = true
 
     // --- string keys: count + get(k) round-trip ---
-    Map(string, string) a = {}
+    Map(Str, Str) a = {}
     a.set("class", "box")
     a.set("id", "x")
     int c = 0
@@ -27,14 +28,14 @@ fn main() {
     int kv = 0
     for k in a.keys() {
         match a.get(k) {
-            Some(v) => { kv = kv + v.length }
+            Some(v) => { kv = kv + v.len() }
             None => {}
         }
     }   // "box"=3 + "x"=1 = 4
     if !check(kv == 4, 2) { ok = false }
 
     // --- keys() as a bound vec expression ---
-    Vec(string) ks = a.keys()
+    Vec(Str) ks = a.keys()
     if !check(ks.len() == 2, 3) { ok = false }
 
     // --- int keys + values sums (order-independent) ---
@@ -58,13 +59,13 @@ fn main() {
     if !check(cont == 40, 7) { ok = false }
 
     // --- empty map: zero iterations ---
-    Map(string, int) e = {}
+    Map(Str, int) e = {}
     int ec = 0
     for k in e.keys() { ec = ec + 1 }
     if !check(ec == 0, 8) { ok = false }
 
     // --- values() of has_drop struct: deep-cloned, dropped cleanly ---
-    Map(string, P) ps = {}
+    Map(Str, P) ps = {}
     ps.set("a", P { name: "alice", age: 30 })
     ps.set("b", P { name: "bob", age: 25 })
     int tot = 0

@@ -3,8 +3,9 @@
 // model: m[k] is the convenient panic-on-miss accessor, get(k) stays Option.
 // Self-verifying; the driver also runs AOT + memcheck (no leak on clones).
 import std.map
+import std.str
 
-fn check(bool c, string label) {
+fn check(bool c, Str label) {
     if c { print(f"  ok: {label}") } else { print(f"FAIL: {label}") }
 }
 
@@ -24,11 +25,11 @@ fn main() -> int {
     check(sq[5] + 1 == 26, "m[k] is V, usable in arithmetic")
 
     // ---- string keys + string values (has_drop), index read clones ----
-    Map(string, string) names = {}
+    Map(Str, Str) names = {}
     names["hi"] = "HELLO"
-    check(names["hi"] == "HELLO", "string-key string-value index get")
+    check(names["hi"].eq?("HELLO"), "string-key string-value index get")
 
-    Map(string, int) age = {}
+    Map(Str, int) age = {}
     age["alice"] = 30
     age["bob"] = 25
     check(age["alice"] == 30 && age["bob"] == 25, "string-key index get")
@@ -46,7 +47,7 @@ fn main() -> int {
 
     // ---- Vec value (has_drop): index-set moves it in, index-get clones it out;
     //      m[k].len() proves the result is V (a Vec), and chains like v[i] ----
-    Map(string, Vec(int)) lists = {}
+    Map(Str, Vec(int)) lists = {}
     Vec(int) ev = {}
     ev.push(2)
     ev.push(4)

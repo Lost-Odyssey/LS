@@ -5,19 +5,20 @@
 // JIT + AOT + memcheck must stay 0/0/0.
 
 import std.map
+import std.str
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
-struct Holder { Map(string, int) m; int tag }
+struct Holder { Map(Str, int) m; int tag }
 
 enum Cfg {
     Empty
-    Table(Map(string, int))
+    Table(Map(Str, int))
 }
 
-Map(string, int) gmap = {}
+Map(Str, int) gmap = {}
 
-fn get_int(&Map(string, int) m, string k) -> int {
+fn get_int(&Map(Str, int) m, Str k) -> int {
     match m.get(k) {
         Some(v) => { return v }
         None => { return -1 }
@@ -48,7 +49,7 @@ fn check_global_map() {
 }
 
 fn check_enum_payload() {
-    Map(string, int) local = {}
+    Map(Str, int) local = {}
     local.set("port", 8080)
     local.set("workers", 4)
     Cfg cfg = Table(local)
@@ -65,7 +66,7 @@ fn check_enum_payload() {
 }
 
 fn check_nested_map() {
-    Map(string, Map(int, int)) outer = {}
+    Map(Str, Map(int, int)) outer = {}
     Map(int, int) inner = {}
     inner.set(1, 10)
     inner.set(2, 20)

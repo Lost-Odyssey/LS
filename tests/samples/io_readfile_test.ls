@@ -1,8 +1,9 @@
 import io
+import std.str
 
 fn main() -> int {
-    string path = "io_rft.tmp"
-    string content = "Hello, LS!"
+    Str path = "io_rft.tmp"
+    Str content = "Hello, LS!"
     match io.write_file(path, content) {
         Ok(n)  => print(n)
         Err(e) => print(e)

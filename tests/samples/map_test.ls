@@ -1,6 +1,7 @@
 // map_test.ls - end-to-end tests for std.map Map(K,V)
 
 import std.map
+import std.str
 
 fn get_ii(&Map(int, int) m, int key) -> int {
     match m.get(key) {
@@ -9,14 +10,14 @@ fn get_ii(&Map(int, int) m, int key) -> int {
     }
 }
 
-fn get_si(&Map(string, int) m, string key) -> int {
+fn get_si(&Map(Str, int) m, Str key) -> int {
     match m.get(key) {
         Some(v) => { return v }
         None => { return 0 }
     }
 }
 
-fn get_ss(&Map(string, string) m, string key) -> string {
+fn get_ss(&Map(Str, Str) m, Str key) -> Str {
     match m.get(key) {
         Some(v) => { return v }
         None => { return "" }
@@ -47,7 +48,7 @@ fn test_int_int() {
 }
 
 fn test_string_int() {
-    Map(string, int) freq = {}
+    Map(Str, int) freq = {}
     freq.set("hello", 1)
     freq.set("world", 2)
     freq.set("hello", 3)  // update
@@ -60,13 +61,13 @@ fn test_string_int() {
 }
 
 fn test_string_string() {
-    Map(string, string) dict = {}
+    Map(Str, Str) dict = {}
     dict.set("key1", "value1")
     dict.set("key2", "value2")
     dict.set("key3", "value3")
 
-    string v1 = get_ss(dict, "key1")
-    string v2 = get_ss(dict, "key2")
+    Str v1 = get_ss(dict, "key1")
+    Str v2 = get_ss(dict, "key2")
     print(v1)   // value1
     print(v2)   // value2
     print(dict.len())   // 3
@@ -92,14 +93,14 @@ fn test_clear() {
 }
 
 fn test_is_empty() {
-    Map(string, int) m = {}
+    Map(Str, int) m = {}
     print(m.empty?())  // true
     m.set("x", 1)
     print(m.empty?())  // false
 }
 
 fn test_index_syntax() {
-    Map(string, int) m = {}
+    Map(Str, int) m = {}
     m.set("a", 10)
     m.set("b", 20)
     print(get_si(m, "a"))  // 10

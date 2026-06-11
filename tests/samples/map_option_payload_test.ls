@@ -7,12 +7,13 @@
 
 import std.map
 import std.vec
+import std.str
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 // OPT-001: Option(Map) binder + for-in over it.
 fn nested_for_in() -> int {
-    Map(string, Map(int, int)) outer = {}
+    Map(Str, Map(int, int)) outer = {}
     Map(int, int) inner = {}
     inner.set(1, 10)
     inner.set(2, 20)
@@ -27,7 +28,7 @@ fn nested_for_in() -> int {
 
 // OPT-001 sibling: Option(Map) binder + method call in the arm.
 fn nested_get() -> int {
-    Map(string, Map(int, int)) outer = {}
+    Map(Str, Map(int, int)) outer = {}
     Map(int, int) inner = {}
     inner.set(7, 70)
     outer.set("g", inner)
@@ -40,14 +41,14 @@ fn nested_get() -> int {
 }
 
 // M5-004 shape: recursive has_drop enum with a Map payload, consumed recursively.
-enum JV { Nil, Num(int), Obj(Map(string, JV)) }
+enum JV { Nil, Num(int), Obj(Map(Str, JV)) }
 fn jv_total(&JV v) -> int {
     match v {
         Nil => { return 0 }
         Num(n) => { return n }
         Obj(m) => {
             int t = 0
-            Vec(string) ks = m.keys()
+            Vec(Str) ks = m.keys()
             for k in ks {
                 match m.get(k) { Some(val) => { t = t + jv_total(val) } None => {} }
             }
@@ -60,7 +61,7 @@ fn main() {
     check(nested_for_in() == 30, "Option(Map) binder + for-in")
     check(nested_get() == 70, "Option(Map) binder + get")
 
-    Map(string, JV) o = {}
+    Map(Str, JV) o = {}
     o.set("a", Num(5))
     o.set("b", Num(7))
     JV root = Obj(o)
@@ -71,10 +72,10 @@ fn main() {
     // Before the has_drop fixpoint, Option(JV) was wrongly non-has_drop (JV is
     // has_drop only through its recursive Map payload), so no __drop was emitted
     // and the inner Map's buffers leaked.
-    Map(string, JV) di = {}
+    Map(Str, JV) di = {}
     di.set("x", Num(3))
     di.set("y", Num(4))
-    Map(string, JV) doo = {}
+    Map(Str, JV) doo = {}
     doo.set("g", Obj(di))
     JV deep = Obj(doo)
     check(jv_total(deep) == 7, "container-payload value via get (M5-004)")

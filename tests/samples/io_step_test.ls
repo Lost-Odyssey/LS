@@ -1,9 +1,10 @@
 import io
+import std.str
 
 fn main() -> int {
-    string path = "io_step_test.tmp"
+    Str path = "io_step_test.tmp"
     print("step1")
-    string content = "Hello, LS!"
+    Str content = "Hello, LS!"
     print("step2")
     match io.write_file(path, content) {
         Ok(n)  => print(n)
