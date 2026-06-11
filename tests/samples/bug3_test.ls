@@ -1,7 +1,7 @@
 struct Person {
     int age;
     int id;
-    string name;
+    Str name;
 }
 
 fn main() -> int {

@@ -27,7 +27,7 @@ fn main() -> int {
     }
 
     // Test 4: env.get_or with default
-    string val = env.get_or("__LS_NO_SUCH_VAR_12345__", "default_value")
+    Str val = env.get_or("__LS_NO_SUCH_VAR_12345__", "default_value")
     if val == "default_value" {
         print("PASS: env.get_or default")
     } else {
@@ -37,7 +37,7 @@ fn main() -> int {
 
     // Test 5: env.set + env.get roundtrip
     env.set("__LS_TEST_VAR__", "hello_ls")
-    string got = env.get_or("__LS_TEST_VAR__", "")
+    Str got = env.get_or("__LS_TEST_VAR__", "")
     if got == "hello_ls" {
         print("PASS: env.set/get roundtrip")
     } else {

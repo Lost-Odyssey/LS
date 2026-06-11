@@ -1,5 +1,5 @@
 // hash_test.ls — std.map prereq M-H: the `Hash` trait + FxHash hasher.
-// Verifies: stable hashes (int/string), distinct keys differ, good high-bit
+// Verifies: stable hashes (int/Str), distinct keys differ, good high-bit
 // distribution under the Fibonacci scatter the Map will use, and trait-bound
 // dispatch `x.hash()` through `where T: Hash` in a generic struct method.
 // See docs/plan_std_map.md §3. JIT + AOT + memcheck 0/0/0.
@@ -7,7 +7,7 @@
 import std.hash
 import std.str
 
-fn check(bool c, string l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
+fn check(bool c, Str l) { if c { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 
 // Fibonacci scatter onto [0, 2^bits): the index mapping the Map uses (§5.1).
 // Uses the HIGH bits of (h * FIB), which is where FxHash entropy lives.
@@ -28,12 +28,12 @@ fn main() {
     // ---- stability: same key → same hash ----
     check(42.hash() == 42.hash(), "int hash stable")
     Str s = "hello"
-    check(s.hash() == "hello".hash(), "string hash stable (var vs literal)")
+    check(s.hash() == "hello".hash(), "Str hash stable (var vs literal)")
 
     // ---- distinctness: different keys → different hashes ----
     check(1.hash() != 2.hash(), "int 1 != 2")
-    check("foo".hash() != "bar".hash(), "string foo != bar")
-    check("".hash() != "a".hash(), "empty vs non-empty string")
+    check("foo".hash() != "bar".hash(), "Str foo != bar")
+    check("".hash() != "a".hash(), "empty vs non-empty Str")
 
     // ---- bool / char impls exist and are stable ----
     check(true.hash() != false.hash(), "bool true != false")
@@ -58,7 +58,7 @@ fn main() {
     Box(int) bi = Box(int){ val: 7 }
     check(bi.h() == 7.hash(), "where T: Hash dispatch (int)")
     Box(Str) bs = Box(Str){ val: "k" }
-    check(bs.h() == "k".hash(), "where T: Hash dispatch (string)")
+    check(bs.h() == "k".hash(), "where T: Hash dispatch (Str)")
 
     print("HASH PASS")
 }

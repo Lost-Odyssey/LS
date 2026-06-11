@@ -8,7 +8,7 @@ impl Point {
         sqrt(self.x * self.x + self.y * self.y)
     }
 
-    fn to_string() -> string {
+    fn to_string() -> Str {
         return f"({self.x}, {self.y})"
     }
 

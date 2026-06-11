@@ -15,8 +15,8 @@ fn main() -> int {
     }
 
     // Test 2: proc.program() — should be non-empty
-    string prog = proc.program()
-    if prog.length > 0 {
+    Str prog = proc.program()
+    if prog.len() > 0 {
         print("PASS: proc.program")
     } else {
         print("FAIL: proc.program empty")

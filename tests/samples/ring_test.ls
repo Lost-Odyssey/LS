@@ -5,7 +5,7 @@ import std.vec
 import std.ring
 import std.str
 
-fn check(bool c, string l) {
+fn check(bool c, Str l) {
     if c { print(f"ok {l}") } else { print(f"FAIL {l}") }
 }
 
