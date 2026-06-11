@@ -14,7 +14,7 @@ fn main() {
     string src = "{\"name\":\"test_dataset\",\"version\":2,\"active\":true,\"score\":98.6,\"tags\":[\"alpha\",\"beta\",\"gamma\"],\"config\":{\"debug\":false,\"timeout\":30,\"retries\":3},\"users\":[{\"id\":1,\"name\":\"Alice\",\"role\":\"admin\"},{\"id\":2,\"name\":\"Bob\",\"role\":\"user\"},{\"id\":3,\"name\":\"Carol\",\"role\":\"user\"}],\"metadata\":null}"
 
     // ---- Test 1: parse medium JSON ----
-    Result(JsonValue, string) r1 = json.parse(src)
+    Result(JsonValue, Str) r1 = json.parse(src)
     match r1 {
         Err(e) => { print(f"FAIL 1: parse error={e}"); return }
         Ok(v) => {
@@ -24,7 +24,7 @@ fn main() {
     }
 
     // ---- Test 2: navigation API ----
-    Result(JsonValue, string) r2 = json.parse(src)
+    Result(JsonValue, Str) r2 = json.parse(src)
     match r2 {
         Err(e) => { print(f"FAIL 2: {e}"); return }
         Ok(root) => {
@@ -41,7 +41,7 @@ fn main() {
             else { print("FAIL 2c: should not have 'notexist'") }
 
             // object_keys — should list 8 keys in insertion order
-            Vec(string) ks = json.object_keys(root)
+            Vec(Str) ks = json.object_keys(root)
             if ks.len() == 8 { print(f"PASS 2d: object_keys len={ks.len()}") }
             else { print(f"FAIL 2d: keys len={ks.len()} expected 8") }
 
@@ -53,7 +53,7 @@ fn main() {
     // ---- Test 3: parse sub-structures (array_len / object_len on tags/config) ----
     // We re-parse since we can't safely extract sub-values (Phase H not yet done).
     // Instead verify stringify → re-parse consistency via round-trip below.
-    Result(JsonValue, string) r3 = json.parse("[1,2,3,4,5]")
+    Result(JsonValue, Str) r3 = json.parse("[1,2,3,4,5]")
     match r3 {
         Err(e) => { print(f"FAIL 3: {e}"); return }
         Ok(arr) => {
@@ -64,7 +64,7 @@ fn main() {
     }
 
     // array_len on non-array returns -1
-    Result(JsonValue, string) r3b = json.parse("42")
+    Result(JsonValue, Str) r3b = json.parse("42")
     match r3b {
         Err(e) => { print(f"FAIL 3b: {e}") }
         Ok(num) => {
@@ -75,7 +75,7 @@ fn main() {
     }
 
     // ---- Test 4: stringify + file round-trip ----
-    Result(JsonValue, string) r4 = json.parse(src)
+    Result(JsonValue, Str) r4 = json.parse(src)
     match r4 {
         Err(e) => { print(f"FAIL 4: {e}"); return }
         Ok(root) => {
@@ -102,7 +102,7 @@ fn main() {
                     }
 
                     // Parse the file content again (second parse)
-                    Result(JsonValue, string) r4c = json.parse(content)
+                    Result(JsonValue, Str) r4c = json.parse(content)
                     match r4c {
                         Err(e) => { print(f"FAIL 4c: re-parse error={e}") }
                         Ok(root2) => {
@@ -125,13 +125,13 @@ fn main() {
     }
 
     // ---- Test 5: pretty-print round-trip ----
-    Result(JsonValue, string) r5 = json.parse("{\"a\":1,\"b\":[true,false,null],\"c\":{\"x\":\"hello\",\"y\":-0.5}}")
+    Result(JsonValue, Str) r5 = json.parse("{\"a\":1,\"b\":[true,false,null],\"c\":{\"x\":\"hello\",\"y\":-0.5}}")
     match r5 {
         Err(e) => { print(f"FAIL 5: {e}"); return }
         Ok(v5) => {
             string pretty = json.stringify_pretty(v5, 2)
             // Re-parse the pretty version
-            Result(JsonValue, string) r5b = json.parse(pretty)
+            Result(JsonValue, Str) r5b = json.parse(pretty)
             match r5b {
                 Err(e) => { print(f"FAIL 5: pretty re-parse error={e}") }
                 Ok(v5b) => {
@@ -157,7 +157,7 @@ fn main() {
         idx = idx + 1
     }
     big = big + "]"
-    Result(JsonValue, string) r6 = json.parse(big)
+    Result(JsonValue, Str) r6 = json.parse(big)
     match r6 {
         Err(e) => { print(f"FAIL 6: {e}") }
         Ok(arr6) => {

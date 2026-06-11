@@ -2883,17 +2883,23 @@ static bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Typ
         return true;
     case TYPE_STRUCT:
         if (!type->as.strukt.has_drop) return false;
-        if (sym->moved_flag)
-            LLVMBuildStore(ctx->builder,
-                LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
-                sym->moved_flag);
+        /* No moved_flag → the invalidation would be a NO-OP, so returning true
+           (caller skips the clone) hands the SAME heap to the destination while
+           the original owner still drops it. Hit by zero-copy match binders of
+           an owned-rvalue subject (sym->value GEPs into the subject temp, no
+           moved_flag): `match f() { Ok(s) => { outer = s } }` double-freed the
+           payload. Fall back to clone instead. */
+        if (!sym->moved_flag) return false;
+        LLVMBuildStore(ctx->builder,
+            LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+            sym->moved_flag);
         return true;
     case TYPE_ENUM:
         if (!type->as.enom.has_drop) return false;
-        if (sym->moved_flag)
-            LLVMBuildStore(ctx->builder,
-                LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
-                sym->moved_flag);
+        if (!sym->moved_flag) return false;   /* same no-op-invalidate hazard */
+        LLVMBuildStore(ctx->builder,
+            LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
+            sym->moved_flag);
         return true;
     default:
         return false;
@@ -11060,8 +11066,13 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             }
         }
 
-        /* Track temp string slots created during value evaluation */
+        /* Track temp string slots created during value evaluation. Also snapshot
+           the has_drop temp COUNT: the string-count-based mark cannot tell a
+           pre-statement registration (e.g. an enclosing match's owned-rvalue
+           subject) from an RHS-created spill when no string temps intervene —
+           flushing by mark would double-drop the subject. */
         int temp_mark = ctx->temp_string_count;
+        int assign_drop_floor = ctx->temp_drop_count;
         LLVMValueRef val = codegen_expr(ctx, node->as.assign.value);
         if (val == NULL)
             return;
@@ -11185,13 +11196,29 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         LLVMTypeRef i1 = LLVMInt1TypeInContext(ctx->context);
                         LLVMBuildStore(ctx->builder, LLVMConstInt(i1, 0, 0), sym->moved_flag);
                     }
-                    /* Flush statement temps INCLUDING has_drop spills (mirrors the
-                       var_decl path): rvalue borrows registered while evaluating the
-                       RHS (e.g. the f-string Str spilled for `s = s + f"..."`) must
-                       drop here — deferring to scope end leaks all but the last loop
-                       iteration (the entry alloca is reused). The stored result value
-                       itself is never temp_drop-registered (var_decl invariant). */
-                    cg_flush_temps(ctx, temp_mark, false);
+                    /* Drop the has_drop temps the RHS registered (e.g. the f-string
+                       Str spilled for `s = s + f"..."`): deferring to scope end
+                       leaks all but the last loop iteration (the entry alloca is
+                       reused). Use the temp_drop COUNT floor, NOT cg_flush_temps's
+                       string-count mark — a mark-based flush also catches an
+                       enclosing match's owned-rvalue subject registered before this
+                       statement (same mark when no string temps intervene) and
+                       double-drops it. The stored result value itself is never
+                       temp_drop-registered (var_decl invariant). */
+                    for (int ti = assign_drop_floor; ti < ctx->temp_drop_count; ti++)
+                    {
+                        Type *tt = ctx->temp_drop_types[ti];
+                        if (tt->kind == TYPE_STRUCT)
+                            emit_struct_drop(ctx, ctx->temp_drop_slots[ti], tt);
+                        else if (tt->kind == TYPE_ENUM)
+                            emit_enum_drop(ctx, ctx->temp_drop_slots[ti], tt);
+                    }
+                    ctx->temp_drop_count = assign_drop_floor;
+                    /* String temps from the RHS are garbage here (result is a
+                       struct): free them as before. */
+                    for (int ti = temp_mark; ti < ctx->temp_string_count; ti++)
+                        emit_string_free(ctx, ctx->temp_string_slots[ti]);
+                    ctx->temp_string_count = temp_mark;
                 }
                 else if (sym->type && sym->type->kind == TYPE_ENUM &&
                          sym->type->as.enom.has_drop)
@@ -11243,9 +11270,21 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                             LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 0, 0),
                             sym->moved_flag);
                     }
-                    /* Same as the has_drop struct branch above: flush statement
-                       temps including has_drop spills (var_decl parity). */
-                    cg_flush_temps(ctx, temp_mark, false);
+                    /* Same as the has_drop struct branch above: drop RHS-registered
+                       has_drop temps by COUNT floor (not mark — see that branch),
+                       then free RHS string temps. */
+                    for (int ti = assign_drop_floor; ti < ctx->temp_drop_count; ti++)
+                    {
+                        Type *tt = ctx->temp_drop_types[ti];
+                        if (tt->kind == TYPE_STRUCT)
+                            emit_struct_drop(ctx, ctx->temp_drop_slots[ti], tt);
+                        else if (tt->kind == TYPE_ENUM)
+                            emit_enum_drop(ctx, ctx->temp_drop_slots[ti], tt);
+                    }
+                    ctx->temp_drop_count = assign_drop_floor;
+                    for (int ti = temp_mark; ti < ctx->temp_string_count; ti++)
+                        emit_string_free(ctx, ctx->temp_string_slots[ti]);
+                    ctx->temp_string_count = temp_mark;
                 }
                 else if (sym->type && sym->type->kind == TYPE_BLOCK)
                 {

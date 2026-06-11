@@ -1,5 +1,10 @@
 // std/json.ls — JSON parser and serializer for LS.
 // Pure LS implementation; recursive-descent parser + recursive serializer.
+//
+// P7-mig: all string workflows migrated to the pure-LS `Str` (std.str).
+// The string variant is named `Text` (was `Str`): the old variant name
+// collided with the `Str` struct in type-resolution positions once both are
+// in scope. Helper names (str_val / is_str / as_string) are unchanged.
 
 import std.vec
 import std.map
@@ -12,9 +17,9 @@ enum JsonValue {
     Null
     Bool(bool val)
     Number(f64 val)
-    Str(string val)
+    Text(Str val)
     Array(Vec(JsonValue) items)
-    Object(Vec(string) keys, Map(string, JsonValue) entries)
+    Object(Vec(Str) keys, Map(Str, JsonValue) entries)
 }
 
 // ---- JsonValue impl: methods ----
@@ -25,14 +30,14 @@ impl JsonValue {
     static fn bool_val(bool b) -> JsonValue { return Bool(b) }
     static fn num_val(f64 n) -> JsonValue { return Number(n) }
     static fn int_val(int n) -> JsonValue { return Number(n as f64) }
-    static fn str_val(string s) -> JsonValue { return Str(s) }
+    static fn str_val(Str s) -> JsonValue { return Text(s) }
     static fn array_new() -> JsonValue {
         Vec(JsonValue) v = {}
         return Array(v)
     }
     static fn object_new() -> JsonValue {
-        Vec(string) ks = {}
-        Map(string, JsonValue) m = {}
+        Vec(Str) ks = {}
+        Map(Str, JsonValue) m = {}
         return Object(ks, m)
     }
 
@@ -47,7 +52,7 @@ impl JsonValue {
         match self { Number(_) => true, _ => false, }
     }
     fn is_str(&self) -> bool {
-        match self { Str(_) => true, _ => false, }
+        match self { Text(_) => true, _ => false, }
     }
     fn is_array(&self) -> bool {
         match self { Array(_) => true, _ => false, }
@@ -77,7 +82,7 @@ impl JsonValue {
             _ => { return 0 - 1 }
         }
     }
-    fn object_has(&self, string key) -> bool {
+    fn object_has(&self, Str key) -> bool {
         match self {
             Object(_, entries) => { return entries.has?(key) }
             _ => { return false }
@@ -99,15 +104,14 @@ impl JsonValue {
     }
 
     // Insert or update a key in an Object variant in place.
-    // 'key' must be an owned string (call key.copy() if passing a literal).
-    fn set(&!self, string key, JsonValue val) {
+    fn set(&!self, Str key, JsonValue val) {
         match self {
             Object(keys, entries) => {
-                Vec(string) nks = keys.copy()
-                Map(string, JsonValue) nem = entries.copy()
-                string k = key.copy()   // cap=0 param -> owned copy
+                Vec(Str) nks = keys.copy()
+                Map(Str, JsonValue) nem = entries.copy()
+                Str k = key.copy()
                 if (!nem.has?(k)) {
-                    nks.push(k.copy())  // k still valid after push (push takes .copy() result)
+                    nks.push(k)         // push clones the IDENT; k stays valid
                 }
                 nem.set(k, val)         // map clones key+val internally
                 self = Object(nks, nem)
@@ -135,8 +139,8 @@ fn number_int(int n) -> JsonValue {
     return Number(n as f64)
 }
 
-fn str_val(string s) -> JsonValue {
-    return Str(s)
+fn str_val(Str s) -> JsonValue {
+    return Text(s)
 }
 
 fn array_new() -> JsonValue {
@@ -145,8 +149,8 @@ fn array_new() -> JsonValue {
 }
 
 fn object_new() -> JsonValue {
-    Vec(string) ks = {}
-    Map(string, JsonValue) m = {}
+    Vec(Str) ks = {}
+    Map(Str, JsonValue) m = {}
     return Object(ks, m)
 }
 
@@ -175,7 +179,7 @@ fn is_number(JsonValue v) -> bool {
 
 fn is_string(JsonValue v) -> bool {
     match v {
-        Str(s) => { return true }
+        Text(s) => { return true }
         _ => { return false }
     }
 }
@@ -196,28 +200,28 @@ fn is_object(JsonValue v) -> bool {
 
 // ---- Value extraction ----
 
-fn as_bool(JsonValue v) -> Result(bool, string) {
+fn as_bool(JsonValue v) -> Result(bool, Str) {
     match v {
         Bool(b) => { return Ok(b) }
         _ => { return Err("json: expected Bool") }
     }
 }
 
-fn as_number(JsonValue v) -> Result(f64, string) {
+fn as_number(JsonValue v) -> Result(f64, Str) {
     match v {
         Number(n) => { return Ok(n) }
         _ => { return Err("json: expected Number") }
     }
 }
 
-fn as_string(JsonValue v) -> Result(string, string) {
+fn as_string(JsonValue v) -> Result(Str, Str) {
     match v {
-        Str(s) => { return Ok(s) }
-        _ => { return Err("json: expected Str") }
+        Text(s) => { return Ok(s) }
+        _ => { return Err("json: expected Text") }
     }
 }
 
-fn as_int(JsonValue v) -> Result(int, string) {
+fn as_int(JsonValue v) -> Result(int, Str) {
     match v {
         Number(n) => { return Ok(n as int) }
         _ => { return Err("json: expected Number") }
@@ -231,20 +235,21 @@ fn as_int(JsonValue v) -> Result(int, string) {
 // we use a struct to thread state through the recursive descent.
 
 struct JParser {
-    string input
+    Str input
     int pos
     int len
 }
 
-fn _new_parser(string input) -> JParser {
-    JParser p = JParser { input: input, pos: 0, len: input.length }
+fn _new_parser(Str input) -> JParser {
+    int n = input.len()
+    JParser p = JParser { input: input, pos: 0, len: n }
     return p
 }
 
 // Skip whitespace (space, tab, \n, \r)
 fn _skip_ws(&!JParser p) {
     while p.pos < p.len {
-        int ch = p.input.at_unsafe(p.pos)
+        int ch = p.input.byte_at!(p.pos)
         if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
             p.pos = p.pos + 1
         } else {
@@ -256,19 +261,19 @@ fn _skip_ws(&!JParser p) {
 // Peek current char (returns -1 at end)
 fn _peek(&!JParser p) -> int {
     if p.pos >= p.len { return 0 - 1 }
-    return p.input.at_unsafe(p.pos)
+    return p.input.byte_at!(p.pos)
 }
 
 // Consume one char and advance
 fn _advance(&!JParser p) -> int {
     if p.pos >= p.len { return 0 - 1 }
-    int ch = p.input.at_unsafe(p.pos)
+    int ch = p.input.byte_at!(p.pos)
     p.pos = p.pos + 1
     return ch
 }
 
 // Expect a specific char, or return error
-fn _expect(&!JParser p, int expected) -> Result(int, string) {
+fn _expect(&!JParser p, int expected) -> Result(int, Str) {
     int ch = _advance(&!p)
     if ch != expected {
         return Err(f"json: expected '{expected}' at position {p.pos}")
@@ -285,24 +290,24 @@ fn _expect(&!JParser p, int expected) -> Result(int, string) {
 fn _scan_plain(&!JParser p) -> int {
     int start = p.pos
     while p.pos < p.len {
-        int c = p.input.at_unsafe(p.pos)
+        int c = p.input.byte_at!(p.pos)
         if c == '"' || c == '\\' { return p.pos - start }
         p.pos = p.pos + 1
     }
     return p.pos - start
 }
 
-fn _parse_string_raw(&!JParser p) -> Result(string, string) {
+fn _parse_string_raw(&!JParser p) -> Result(Str, Str) {
     int ch = _advance(&!p)
     if ch != '"' { return Err(f"json: expected '\"' at position {p.pos}") }
 
-    string result = ""
+    Str result = ""
     while p.pos < p.len {
         // Bulk-copy plain chars in one substr call — no per-char overhead
         int seg_start = p.pos
         int seg_len   = _scan_plain(&!p)
         if seg_len > 0 {
-            result.append(p.input.substr(seg_start, seg_len))
+            result.push_str(p.input.substr(seg_start, seg_len))
         }
         // p.pos is now at '"', '\\', or p.len
         ch = _advance(&!p)
@@ -310,19 +315,19 @@ fn _parse_string_raw(&!JParser p) -> Result(string, string) {
         if ch == '\\' {
             int next = _advance(&!p)
             match next {
-                '"'  => { result.append('"') }
-                '/'  => { result.append('/') }
-                '\\' => { result.append('\\') }
-                'n'  => { result.append('\n') }
-                'r'  => { result.append('\r') }
-                't'  => { result.append('\t') }
-                'b'  => { result.append(8) }   // backspace U+0008
-                'f'  => { result.append(12) }  // form feed U+000C
+                '"'  => { result.push_byte('"') }
+                '/'  => { result.push_byte('/') }
+                '\\' => { result.push_byte('\\') }
+                'n'  => { result.push_byte('\n') }
+                'r'  => { result.push_byte('\r') }
+                't'  => { result.push_byte('\t') }
+                'b'  => { result.push_byte(8) }   // backspace U+0008
+                'f'  => { result.push_byte(12) }  // form feed U+000C
                 'u'  => {
                     if p.pos + 4 <= p.len {
-                        string hex = p.input.substr(p.pos, 4)
-                        result.append("\\u")
-                        result.append(hex)
+                        Str hex = p.input.substr(p.pos, 4)
+                        result.push_str("\\u")
+                        result.push_str(hex)
                         p.pos = p.pos + 4
                     } else {
                         return Err(f"json: incomplete \\u escape at position {p.pos}")
@@ -340,30 +345,30 @@ fn _is_digit(int ch) -> bool {
     return ch >= '0' && ch <= '9'
 }
 
-fn _parse_number(&!JParser p) -> Result(JsonValue, string) {
+fn _parse_number(&!JParser p) -> Result(JsonValue, Str) {
     int start = p.pos
     // Optional leading minus
     if _peek(&!p) == '-' { p.pos = p.pos + 1 }
-    // Integer part (inline at() — p.pos < p.len already checked by while)
+    // Integer part (inline byte_at! — p.pos < p.len already checked by while)
     if !_is_digit(_peek(&!p)) {
         return Err(f"json: expected digit at position {p.pos}")
     }
-    while p.pos < p.len && _is_digit(p.input.at_unsafe(p.pos)) {
+    while p.pos < p.len && _is_digit(p.input.byte_at!(p.pos)) {
         p.pos = p.pos + 1
     }
     // Optional fraction
-    if p.pos < p.len && p.input.at_unsafe(p.pos) == '.' {
+    if p.pos < p.len && p.input.byte_at!(p.pos) == '.' {
         p.pos = p.pos + 1
         if !_is_digit(_peek(&!p)) {
             return Err(f"json: expected digit after '.' at position {p.pos}")
         }
-        while p.pos < p.len && _is_digit(p.input.at_unsafe(p.pos)) {
+        while p.pos < p.len && _is_digit(p.input.byte_at!(p.pos)) {
             p.pos = p.pos + 1
         }
     }
     // Optional exponent
     if p.pos < p.len {
-        int ec = p.input.at_unsafe(p.pos)
+        int ec = p.input.byte_at!(p.pos)
         if ec == 'e' || ec == 'E' {
             p.pos = p.pos + 1
             int sc = _peek(&!p)
@@ -371,20 +376,20 @@ fn _parse_number(&!JParser p) -> Result(JsonValue, string) {
             if !_is_digit(_peek(&!p)) {
                 return Err(f"json: expected digit in exponent at position {p.pos}")
             }
-            while p.pos < p.len && _is_digit(p.input.at_unsafe(p.pos)) {
+            while p.pos < p.len && _is_digit(p.input.byte_at!(p.pos)) {
                 p.pos = p.pos + 1
             }
         }
     }
-    string num_str = p.input.substr(start, p.pos - start)
-    Result(f64, string) conv = num_str.to_float()
+    Str num_str = p.input.substr(start, p.pos - start)
+    Result(f64, Str) conv = num_str.to_float()
     match conv {
         Ok(val) => { return Ok(Number(val)) }
         Err(e) => { return Err(f"json: invalid number '{num_str}' at position {start}") }
     }
 }
 
-fn _parse_array(&!JParser p) -> Result(JsonValue, string) {
+fn _parse_array(&!JParser p) -> Result(JsonValue, Str) {
     // '[' already peeked, consume it
     p.pos = p.pos + 1
     _skip_ws(&!p)
@@ -398,7 +403,7 @@ fn _parse_array(&!JParser p) -> Result(JsonValue, string) {
     }
 
     // First element
-    Result(JsonValue, string) first = _parse_value(&!p)
+    Result(JsonValue, Str) first = _parse_value(&!p)
     match first {
         Err(e) => { return Err(e) }
         Ok(v) => { items.push(v) }
@@ -408,7 +413,7 @@ fn _parse_array(&!JParser p) -> Result(JsonValue, string) {
     while _peek(&!p) == ',' {
         p.pos = p.pos + 1
         _skip_ws(&!p)
-        Result(JsonValue, string) elem = _parse_value(&!p)
+        Result(JsonValue, Str) elem = _parse_value(&!p)
         match elem {
             Err(e) => { return Err(e) }
             Ok(v) => { items.push(v) }
@@ -423,13 +428,13 @@ fn _parse_array(&!JParser p) -> Result(JsonValue, string) {
     return Ok(Array(items))
 }
 
-fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
+fn _parse_object(&!JParser p) -> Result(JsonValue, Str) {
     // '{' already peeked, consume it
     p.pos = p.pos + 1
     _skip_ws(&!p)
 
-    Vec(string) ks = {}
-    Map(string, JsonValue) entries = {}
+    Vec(Str) ks = {}
+    Map(Str, JsonValue) entries = {}
 
     // Empty object
     if _peek(&!p) == '}' {
@@ -440,7 +445,7 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
     // Parse key-value pairs
     // First pair
     _skip_ws(&!p)
-    Result(string, string) k1 = _parse_string_raw(&!p)
+    Result(Str, Str) k1 = _parse_string_raw(&!p)
     match k1 {
         Err(e) => { return Err(e) }
         Ok(key) => {
@@ -450,7 +455,7 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
             }
             p.pos = p.pos + 1
             _skip_ws(&!p)
-            Result(JsonValue, string) val_r = _parse_value(&!p)
+            Result(JsonValue, Str) val_r = _parse_value(&!p)
             match val_r {
                 Err(e) => { return Err(e) }
                 Ok(val) => {
@@ -465,7 +470,7 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
     while _peek(&!p) == ',' {
         p.pos = p.pos + 1
         _skip_ws(&!p)
-        Result(string, string) kn = _parse_string_raw(&!p)
+        Result(Str, Str) kn = _parse_string_raw(&!p)
         match kn {
             Err(e) => { return Err(e) }
             Ok(key) => {
@@ -475,7 +480,7 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
                 }
                 p.pos = p.pos + 1
                 _skip_ws(&!p)
-                Result(JsonValue, string) val_r = _parse_value(&!p)
+                Result(JsonValue, Str) val_r = _parse_value(&!p)
                 match val_r {
                     Err(e) => { return Err(e) }
                     Ok(val) => {
@@ -497,22 +502,22 @@ fn _parse_object(&!JParser p) -> Result(JsonValue, string) {
 
 fn _match4(&!JParser p, int c0, int c1, int c2, int c3) -> bool {
     if p.pos + 4 > p.len { return false }
-    return p.input.at_unsafe(p.pos)   == c0 &&
-           p.input.at_unsafe(p.pos+1) == c1 &&
-           p.input.at_unsafe(p.pos+2) == c2 &&
-           p.input.at_unsafe(p.pos+3) == c3
+    return p.input.byte_at!(p.pos)   == c0 &&
+           p.input.byte_at!(p.pos+1) == c1 &&
+           p.input.byte_at!(p.pos+2) == c2 &&
+           p.input.byte_at!(p.pos+3) == c3
 }
 
 fn _match5(&!JParser p, int c0, int c1, int c2, int c3, int c4) -> bool {
     if p.pos + 5 > p.len { return false }
-    return p.input.at_unsafe(p.pos)   == c0 &&
-           p.input.at_unsafe(p.pos+1) == c1 &&
-           p.input.at_unsafe(p.pos+2) == c2 &&
-           p.input.at_unsafe(p.pos+3) == c3 &&
-           p.input.at_unsafe(p.pos+4) == c4
+    return p.input.byte_at!(p.pos)   == c0 &&
+           p.input.byte_at!(p.pos+1) == c1 &&
+           p.input.byte_at!(p.pos+2) == c2 &&
+           p.input.byte_at!(p.pos+3) == c3 &&
+           p.input.byte_at!(p.pos+4) == c4
 }
 
-fn _parse_value(&!JParser p) -> Result(JsonValue, string) {
+fn _parse_value(&!JParser p) -> Result(JsonValue, Str) {
     _skip_ws(&!p)
     if p.pos >= p.len {
         return Err("json: unexpected end of input")
@@ -521,10 +526,10 @@ fn _parse_value(&!JParser p) -> Result(JsonValue, string) {
 
     match ch {
         '"' => {
-            Result(string, string) sr = _parse_string_raw(&!p)
+            Result(Str, Str) sr = _parse_string_raw(&!p)
             match sr {
                 Err(e) => { return Err(e) }
-                Ok(s)  => { return Ok(Str(s)) }
+                Ok(s)  => { return Ok(Text(s)) }
             }
         }
         '-' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => {
@@ -559,9 +564,9 @@ fn _parse_value(&!JParser p) -> Result(JsonValue, string) {
 
 // ---- Public parse API ----
 
-fn parse(string input) -> Result(JsonValue, string) {
+fn parse(Str input) -> Result(JsonValue, Str) {
     JParser p = _new_parser(input)
-    Result(JsonValue, string) result = _parse_value(&!p)
+    Result(JsonValue, Str) result = _parse_value(&!p)
     match result {
         Err(e) => { return Err(e) }
         Ok(v) => {
@@ -577,27 +582,27 @@ fn parse(string input) -> Result(JsonValue, string) {
 
 // ---- Serializer (stringify) ----
 
-fn _escape_string(string s) -> string {
-    int n = s.length
+fn _escape_string(Str s) -> Str {
+    int n = s.len()
     int i = 0
     // Fast-path: scan for first char that needs escaping.
     // Most JSON keys/values are plain ASCII — avoid per-char match entirely.
     while i < n {
-        int ch = s.at_unsafe(i)
+        int ch = s.byte_at!(i)
         if ch == '"' || ch == '\\' || ch == '\n' || ch == '\r' || ch == '\t' || ch == 8 || ch == 12 {
             // Slow path: copy clean prefix, then escape from i onward.
-            string result = s.substr(0, i)
+            Str result = s.substr(0, i)
             while i < n {
-                ch = s.at_unsafe(i)
+                ch = s.byte_at!(i)
                 match ch {
-                    '"'  => { result.append("\\\"") }
-                    '\\' => { result.append("\\\\") }
-                    '\n' => { result.append("\\n") }
-                    '\r' => { result.append("\\r") }
-                    '\t' => { result.append("\\t") }
-                    8    => { result.append("\\b") }
-                    12   => { result.append("\\f") }
-                    _    => { result.append(ch) }
+                    '"'  => { result.push_str("\\\"") }
+                    '\\' => { result.push_str("\\\\") }
+                    '\n' => { result.push_str("\\n") }
+                    '\r' => { result.push_str("\\r") }
+                    '\t' => { result.push_str("\\t") }
+                    8    => { result.push_str("\\b") }
+                    12   => { result.push_str("\\f") }
+                    _    => { result.push_byte(ch) }
                 }
                 i = i + 1
             }
@@ -605,23 +610,23 @@ fn _escape_string(string s) -> string {
         }
         i = i + 1
     }
-    // No escaping needed — return a direct copy.
-    return s.copy()
+    // No escaping needed — the by-value param is already an owned copy.
+    return s
 }
 
-fn _indent_str(int depth, int indent) -> string {
+fn _indent_str(int depth, int indent) -> Str {
     int total = depth * indent
     if total <= 0 { return "" }
-    string s = ""
+    Str s = ""
     int i = 0
     while i < total {
-        s.append(" ")
+        s.push_byte(' ')
         i = i + 1
     }
     return s
 }
 
-fn _format_number(f64 n) -> string {
+fn _format_number(f64 n) -> Str {
     // Check if it's an integer value (no fractional part)
     int i = n as int
     f64 check = i as f64
@@ -631,7 +636,7 @@ fn _format_number(f64 n) -> string {
     return f"{n}"
 }
 
-fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
+fn _stringify_impl(&JsonValue val, int depth, int indent) -> Str {
     match val {
         Null => { return "null" }
         Bool(b) => {
@@ -641,40 +646,40 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
         Number(n) => {
             return _format_number(n)
         }
-        Str(s) => {
-            string r = "\""
-            r.append(_escape_string(s))
-            r.append('"')
+        Text(s) => {
+            Str r = "\""
+            r.push_str(_escape_string(s))
+            r.push_byte('"')
             return r
         }
         Array(items) => {
             if items.len() == 0 { return "[]" }
             if indent <= 0 {
                 // Compact mode
-                string result = "["
+                Str result = "["
                 int i = 0
                 while i < items.len() {
-                    if i > 0 { result.append(",") }
-                    result.append(_stringify_impl(items[i], depth, 0))
+                    if i > 0 { result.push_str(",") }
+                    result.push_str(_stringify_impl(items[i], depth, 0))
                     i = i + 1
                 }
-                result.append("]")
+                result.push_str("]")
                 return result
             } else {
                 // Pretty mode
-                string result = "[\n"
-                string child_pad = _indent_str(depth + 1, indent)
-                string close_pad = _indent_str(depth, indent)
+                Str result = "[\n"
+                Str child_pad = _indent_str(depth + 1, indent)
+                Str close_pad = _indent_str(depth, indent)
                 int i = 0
                 while i < items.len() {
-                    if i > 0 { result.append(",\n") }
-                    result.append(child_pad)
-                    result.append(_stringify_impl(items[i], depth + 1, indent))
+                    if i > 0 { result.push_str(",\n") }
+                    result.push_str(child_pad)
+                    result.push_str(_stringify_impl(items[i], depth + 1, indent))
                     i = i + 1
                 }
-                result.append("\n")
-                result.append(close_pad)
-                result.append("]")
+                result.push_str("\n")
+                result.push_str(close_pad)
+                result.push_str("]")
                 return result
             }
         }
@@ -682,44 +687,44 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
             if ks.len() == 0 { return "{}" }
             if indent <= 0 {
                 // Compact mode
-                string result = "{"
+                Str result = "{"
                 int i = 0
                 while i < ks.len() {
-                    if i > 0 { result.append(",") }
-                    string key = ks[i]   // cache: avoid two separate vec clones
-                    result.append("\"")
-                    result.append(_escape_string(key))
-                    result.append("\":")
+                    if i > 0 { result.push_str(",") }
+                    Str key = ks[i]   // cache: avoid two separate vec clones
+                    result.push_str("\"")
+                    result.push_str(_escape_string(key))
+                    result.push_str("\":")
                     match entries.get(key) {
-                        Some(cv) => { result.append(_stringify_impl(cv, depth, 0)) }
+                        Some(cv) => { result.push_str(_stringify_impl(cv, depth, 0)) }
                         None => {}
                     }
                     i = i + 1
                 }
-                result.append("}")
+                result.push_str("}")
                 return result
             } else {
                 // Pretty mode
-                string result = "{\n"
-                string child_pad = _indent_str(depth + 1, indent)
-                string close_pad = _indent_str(depth, indent)
+                Str result = "{\n"
+                Str child_pad = _indent_str(depth + 1, indent)
+                Str close_pad = _indent_str(depth, indent)
                 int i = 0
                 while i < ks.len() {
-                    if i > 0 { result.append(",\n") }
-                    string key = ks[i]   // cache: avoid two separate vec clones
-                    result.append(child_pad)
-                    result.append("\"")
-                    result.append(_escape_string(key))
-                    result.append("\": ")
+                    if i > 0 { result.push_str(",\n") }
+                    Str key = ks[i]   // cache: avoid two separate vec clones
+                    result.push_str(child_pad)
+                    result.push_str("\"")
+                    result.push_str(_escape_string(key))
+                    result.push_str("\": ")
                     match entries.get(key) {
-                        Some(cv) => { result.append(_stringify_impl(cv, depth + 1, indent)) }
+                        Some(cv) => { result.push_str(_stringify_impl(cv, depth + 1, indent)) }
                         None => {}
                     }
                     i = i + 1
                 }
-                result.append("\n")
-                result.append(close_pad)
-                result.append("}")
+                result.push_str("\n")
+                result.push_str(close_pad)
+                result.push_str("}")
                 return result
             }
         }
@@ -728,11 +733,11 @@ fn _stringify_impl(&JsonValue val, int depth, int indent) -> string {
 
 // ---- Public stringify API ----
 
-fn stringify(JsonValue val) -> string {
+fn stringify(JsonValue val) -> Str {
     return _stringify_impl(val, 0, 0)
 }
 
-fn stringify_pretty(JsonValue val, int indent) -> string {
+fn stringify_pretty(JsonValue val, int indent) -> Str {
     return _stringify_impl(val, 0, indent)
 }
 
@@ -755,7 +760,7 @@ fn object_len(JsonValue v) -> int {
 }
 
 // Return true if v is an Object that contains the given key.
-fn object_has(JsonValue v, string key) -> bool {
+fn object_has(JsonValue v, Str key) -> bool {
     match v {
         Object(ks, entries) => { return entries.has?(key) }
         _ => { return false }
@@ -764,22 +769,19 @@ fn object_has(JsonValue v, string key) -> bool {
 
 // Return an owned copy of the key list of an Object (preserving insertion order),
 // or an empty vec if v is not an object.
-// Note: we deep-copy each key string so the returned vec owns independent data
-// (the binder `ks` shares memory with the JsonValue payload which is dropped on
-// function return — Phase H / has_drop binder copy limitation).
-fn object_keys(JsonValue v) -> Vec(string) {
+fn object_keys(JsonValue v) -> Vec(Str) {
     match v {
         Object(ks, entries) => {
-            Vec(string) result = {}
+            Vec(Str) result = {}
             int i = 0
             while i < ks.len() {
-                result.push(ks[i].copy())
+                result.push(ks[i])     // ks[i] is already an owned clone
                 i = i + 1
             }
             return result
         }
         _ => {
-            Vec(string) empty = {}
+            Vec(Str) empty = {}
             return empty
         }
     }
@@ -788,36 +790,19 @@ fn object_keys(JsonValue v) -> Vec(string) {
 // ---- File I/O convenience wrappers ----
 // Note: names avoid conflict with io.ls (LLVM has no module-level name mangling).
 
-// io.* now returns Result(_, Str) while this module is still builtin-string
-// based: unpack via match and let the Str->string bridges convert payloads
-// (`try` would propagate an Err(Str) into our Result(_, string)).
-
-fn load_file(string path) -> Result(JsonValue, string) {
+fn load_file(Str path) -> Result(JsonValue, Str) {
     match io.read_file(path) {
         Ok(content) => { return parse(content) }
-        Err(e) => {
-            string es = e
-            return Err(es)
-        }
+        Err(e) => { return Err(e.copy()) }
     }
 }
 
-fn _wf_to_string_err(Result(int, Str) r) -> Result(int, string) {
-    match r {
-        Ok(n) => { return Ok(n) }
-        Err(e) => {
-            string es = e
-            return Err(es)
-        }
-    }
+fn save_file(Str path, JsonValue val) -> Result(int, Str) {
+    Str content = stringify_pretty(val, 2)
+    return io.write_file(path, content)
 }
 
-fn save_file(string path, JsonValue val) -> Result(int, string) {
-    string content = stringify_pretty(val, 2)
-    return _wf_to_string_err(io.write_file(path, content))
-}
-
-fn save_compact(string path, JsonValue val) -> Result(int, string) {
-    string content = stringify(val)
-    return _wf_to_string_err(io.write_file(path, content))
+fn save_compact(Str path, JsonValue val) -> Result(int, Str) {
+    Str content = stringify(val)
+    return io.write_file(path, content)
 }

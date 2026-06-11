@@ -515,8 +515,8 @@ impl Str {
         return Ok(val)
     }
 
-    // Parse a decimal float (sign, integer part, optional '.fraction'; no
-    // exponent — keep it simple, §6.5 defers full numeric parsing).
+    // Parse a decimal float: sign, integer part, optional '.fraction', optional
+    // 'e'/'E' exponent (parity with the old builtin — JSON needs `1e6`).
     fn to_float(&self) -> Result(f64, Str) {
         int n = self.len
         if n == 0 { return Err("empty string") }
@@ -530,16 +530,18 @@ impl Str {
         while i < n {
             int d = self.data[i]
             if d == 46 { break }
+            if d == 101 || d == 69 { break }      // 'e' | 'E'
             if d < 48 || d > 57 { return Err("invalid digit") }
             val = val * 10.0 + ((d - 48) as f64)
             any = true
             i = i + 1
         }
-        if i < n {
+        if i < n && self.data[i] == 46 {
             i = i + 1
             f64 scale = 0.1
             while i < n {
                 int d = self.data[i]
+                if d == 101 || d == 69 { break }  // 'e' | 'E'
                 if d < 48 || d > 57 { return Err("invalid digit") }
                 val = val + ((d - 48) as f64) * scale
                 scale = scale * 0.1
@@ -548,6 +550,28 @@ impl Str {
             }
         }
         if !any { return Err("no digits") }
+        if i < n {
+            int ec = self.data[i]
+            if ec != 101 && ec != 69 { return Err("invalid digit") }
+            i = i + 1
+            bool eneg = false
+            if i < n {
+                int sc = self.data[i]
+                if sc == 45 { eneg = true  i = i + 1 }
+                else if sc == 43 { i = i + 1 }
+            }
+            if i >= n { return Err("no digits") }
+            int ev = 0
+            while i < n {
+                int d = self.data[i]
+                if d < 48 || d > 57 { return Err("invalid digit") }
+                ev = ev * 10 + (d - 48)
+                i = i + 1
+            }
+            f64 p10 = 1.0
+            for (int t = 0; t < ev; t = t + 1) { p10 = p10 * 10.0 }
+            if eneg { val = val / p10 } else { val = val * p10 }
+        }
         if neg { val = 0.0 - val }
         return Ok(val)
     }
