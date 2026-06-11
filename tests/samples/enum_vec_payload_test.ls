@@ -3,12 +3,13 @@
 
 import std.vec
 import std.map
+import std.str
 
 enum Data {
     Empty
     Numbers(Vec(int) nums)
-    Lookup(Map(string, int) table)
-    Mixed(string label, Vec(string) items)
+    Lookup(Map(Str, int) table)
+    Mixed(Str label, Vec(Str) items)
 }
 
 fn make_numbers() -> Data {
@@ -17,14 +18,14 @@ fn make_numbers() -> Data {
 }
 
 fn make_lookup() -> Data {
-    Map(string, int) m = {}
+    Map(Str, int) m = {}
     m.set("a", 1)
     m.set("b", 2)
     return Lookup(m)
 }
 
 fn make_mixed() -> Data {
-    Vec(string) items = {}
+    Vec(Str) items = {}
     items.push("hello")
     items.push("world")
     return Mixed("test", items)

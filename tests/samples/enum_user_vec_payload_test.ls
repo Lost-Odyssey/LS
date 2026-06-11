@@ -3,10 +3,11 @@
 // for enum drop/clone dispatching Vec(T).__drop / __clone instead of raw fields.
 
 import std.vec
+import std.str
 
 enum UserVecData {
     Nums(Vec(int) nums)
-    Mixed(string label, Vec(string) items)
+    Mixed(Str label, Vec(Str) items)
     Empty
 }
 
@@ -16,7 +17,7 @@ fn make_numbers() -> UserVecData {
 }
 
 fn make_mixed() -> UserVecData {
-    Vec(string) items = []
+    Vec(Str) items = []
     items.push("hello")
     items.push("world")
     return Mixed("test", items)

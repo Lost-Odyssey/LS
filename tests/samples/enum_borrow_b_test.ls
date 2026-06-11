@@ -1,17 +1,18 @@
-// enum_borrow_b_test.ls — Phase B: owned payload (string/Vec/map/struct/nested enum)
+// enum_borrow_b_test.ls — Phase B: owned payload (Str/Vec/map/struct/nested enum)
 // borrow bindings in &Enum match.
 //
 // Tests:
-//   1. String payload binder: read-only, no clone, f-string works
+//   1. Str payload binder: read-only, no clone, f-string works
 //   2. Vec payload binder: length + indexed read
 //   3. Map payload binder: .get() read
 //   4. Struct payload binder (has_drop): field read + method call
 //   5. Nested has_drop enum: further borrow match
 //   6. Multiple borrows of same value (non-consuming)
 //   7. Recursive JSON-like stringify via &Jv borrow
-//   8. Checker: mutation of string binder rejected (string.append blocked)
+//   8. Checker: mutation of Str binder rejected (Str.push_str blocked)
 
 import std.vec
+import std.str
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -28,39 +29,39 @@ impl Point {
 
 enum Inner {
     INum(f64 n)
-    IStr(string s)
+    IStr(Str s)
 }
 
 enum Jv {
     JNull
     JBool(bool b)
     JNum(f64 n)
-    JStr(string s)
+    JStr(Str s)
     JArr(Vec(Jv) items)
     JPoint(Point p)
     JInner(Inner inner)
 }
 
 // Recursive stringify using &Jv borrow — no clones of payload
-fn jv_str(&Jv v) -> string {
+fn jv_str(&Jv v) -> Str {
     match v {
         JNull    => { return "null" }
         JBool(b) => { if b { return "true" } return "false" }
         JNum(n)  => { return f"{n:.1f}" }
         JStr(s)  => {
-            // Phase B: s is a string binder — cap=LS_CAP_BORROWED
+            // Phase B: s is a Str binder — borrowed, no clone
             return f"\"{s}\""
         }
         JArr(items) => {
             // Phase B: items is a Vec binder — sym->value = field_ptr
             int n = items.len()
             if n == 0 { return "[]" }
-            string r = "["
+            Str r = "["
             for (int i = 0; i < n; i = i + 1) {
-                if i > 0 { r.append(",") }
-                r.append(jv_str(items[i]))
+                if i > 0 { r.push_str(",") }
+                r.push_str(jv_str(items[i]))
             }
-            r.append("]")
+            r.push_str("]")
             return r
         }
         JPoint(p) => {
@@ -89,10 +90,10 @@ fn main() -> int {
     int pass = 0
     int fail = 0
 
-    // T01: JStr binder — string read via f-string
+    // T01: JStr binder — Str read via f-string
     Jv js = JStr("hello")
-    string s1 = jv_str(js)
-    if s1 == "\"hello\"" {
+    Str s1 = jv_str(js)
+    if s1.eq?("\"hello\"") {
         print("T01 JStr binder: PASS")
         pass = pass + 1
     } else {
@@ -116,8 +117,8 @@ fn main() -> int {
     }
 
     // T03: recursive stringify of JArr
-    string s3 = jv_str(ja)
-    if s3 == "[1.0,2.0,\"x\"]" {
+    Str s3 = jv_str(ja)
+    if s3.eq?("[1.0,2.0,\"x\"]") {
         print("T03 JArr stringify: PASS")
         pass = pass + 1
     } else {
@@ -128,8 +129,8 @@ fn main() -> int {
     // T04: JPoint struct binder — field access + method call
     Point pt = Point{ x: 3.0, y: 4.0 }
     Jv jp = JPoint(pt)
-    string s4 = jv_str(jp)
-    if s4 == "pt(3.0,4.0)" {
+    Str s4 = jv_str(jp)
+    if s4.eq?("pt(3.0,4.0)") {
         print("T04 JPoint struct binder: PASS")
         pass = pass + 1
     } else {
@@ -139,8 +140,8 @@ fn main() -> int {
 
     // T05: JInner nested enum binder
     Jv ji1 = JInner(INum(42.0))
-    string s5 = jv_str(ji1)
-    if s5 == "inner:42.0" {
+    Str s5 = jv_str(ji1)
+    if s5.eq?("inner:42.0") {
         print("T05 JInner(INum) binder: PASS")
         pass = pass + 1
     } else {
@@ -149,9 +150,9 @@ fn main() -> int {
     }
 
     Jv ji2 = JInner(IStr("world"))
-    string s6 = jv_str(ji2)
-    if s6 == "inner:\"world\"" {
-        print("T06 JInner(IStr) nested string binder: PASS")
+    Str s6 = jv_str(ji2)
+    if s6.eq?("inner:\"world\"") {
+        print("T06 JInner(IStr) nested Str binder: PASS")
         pass = pass + 1
     } else {
         print(f"T06 FAIL: got {s6}")
@@ -159,10 +160,10 @@ fn main() -> int {
     }
 
     // T07: multiple borrows of same value (non-consuming)
-    string r1 = jv_str(js)
-    string r2 = jv_str(js)
-    string r3 = jv_str(js)
-    if r1 == "\"hello\"" && r2 == "\"hello\"" && r3 == "\"hello\"" {
+    Str r1 = jv_str(js)
+    Str r2 = jv_str(js)
+    Str r3 = jv_str(js)
+    if r1.eq?("\"hello\"") && r2.eq?("\"hello\"") && r3.eq?("\"hello\"") {
         print("T07 multiple borrows: PASS")
         pass = pass + 1
     } else {
@@ -171,9 +172,9 @@ fn main() -> int {
     }
 
     // T08: JNull/JBool (scalar payloads — unchanged)
-    string sn = jv_str(JNull)
-    string sb = jv_str(JBool(true))
-    if sn == "null" && sb == "true" {
+    Str sn = jv_str(JNull)
+    Str sb = jv_str(JBool(true))
+    if sn.eq?("null") && sb.eq?("true") {
         print("T08 scalar variants: PASS")
         pass = pass + 1
     } else {
@@ -189,8 +190,8 @@ fn main() -> int {
     outer_arr.push(JArr(inner_arr))
     outer_arr.push(JBool(false))
     Jv jnested = JArr(outer_arr)
-    string s9 = jv_str(jnested)
-    if s9 == "[[10.0,\"y\"],false]" {
+    Str s9 = jv_str(jnested)
+    if s9.eq?("[[10.0,\"y\"],false]") {
         print("T09 nested JArr: PASS")
         pass = pass + 1
     } else {

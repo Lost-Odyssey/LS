@@ -7,6 +7,8 @@
 //   5. Leaf(scalar) payload extraction via borrow match
 //   6. Non-self-recursive enum borrow (Option-like)
 
+import std.str
+
 enum Tree {
     Leaf(i64 val)
     Node(Tree left, Tree right)
@@ -49,7 +51,7 @@ enum Color {
     Blue
 }
 
-fn color_name(&Color c) -> string {
+fn color_name(&Color c) -> Str {
     match c {
         Red   => { return "red" }
         Green => { return "green" }
@@ -119,8 +121,8 @@ fn main() -> int {
 
     // Test 6: non-recursive enum borrow (no box payload)
     Color c = Green
-    string cn = color_name(c)
-    if cn == "green" {
+    Str cn = color_name(c)
+    if cn.eq?("green") {
         print("T06 color borrow: PASS")
         pass = pass + 1
     } else {

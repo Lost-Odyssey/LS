@@ -4,26 +4,29 @@
 // Expected: 0 leaks, 0 double-frees with --memcheck
 
 import std.vec
+import std.str
 
 enum JVal {
     JNull
-    JStr(string s)
+    JStr(Str s)
     JArr(Vec(JVal) items)
 }
 
+fn owned(Str x) -> Str { return x.copy() }
+
 fn make_arr() -> JVal {
-    Vec(JVal) items = [JStr("a".copy()), JStr("b".copy())]
+    Vec(JVal) items = [JStr(owned("a")), JStr(owned("b"))]
     return JArr(items)
 }
 
 fn main() {
     // A: nested construction + scope drop
-    Vec(JVal) inner = [JStr("x".copy()), JStr("y".copy())]
+    Vec(JVal) inner = [JStr(owned("x")), JStr(owned("y"))]
     JVal arr = JArr(inner)
     Vec(JVal) outer = {}
     outer.push(arr)
     print("PASS 1: outer len =", outer.len())
-    // outer → JArr → vec → JStr → string: full chain drop
+    // outer → JArr → vec → JStr → Str: full chain drop
 
     // B: copy nested structure (deep clone of enum containing vec)
     Vec(JVal) outer2 = outer.copy()
@@ -42,10 +45,10 @@ fn main() {
     // src and dst independent — both JArr payloads own separate vecs
 
     // E: reassignment of nested enum
-    JVal e = JStr("old".copy())
+    JVal e = JStr(owned("old"))
     e = make_arr()
     print("PASS 5: reassign done")
-    // "old" string dropped before reassign
+    // "old" Str dropped before reassign
 
     // F: vec of nested enum copy
     Vec(JVal) nested_vec = [make_arr(), make_arr()]

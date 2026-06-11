@@ -2,15 +2,19 @@
 // Phase E-3 TDD: has-drop enum variable declaration ownership semantics
 // Verifies: 0 leaks, 0 double-frees with --memcheck
 
+import std.str
+
 enum Value {
     None
     Num(f64 n)
-    Txt(string s)
-    Pair(string a, string b)
+    Txt(Str s)
+    Pair(Str a, Str b)
 }
 
+fn owned(Str x) -> Str { return x.copy() }
+
 fn make_txt() -> Value {
-    return Txt("hello".copy())
+    return Txt(owned("hello"))
 }
 
 fn identity(Value v) -> Value {
@@ -28,33 +32,33 @@ fn main() {
     // a and b are fully independent → both drop cleanly
 
     // C: reassignment (drop old + store new)
-    Value c = Txt("old".copy())
-    c = Txt("new".copy())
+    Value c = Txt(owned("old"))
+    c = Txt(owned("new"))
     print("PASS 3")
-    // "old" string was dropped before reassign; c holds "new"
+    // "old" Str was dropped before reassign; c holds "new"
 
     // D: uninitialized var + later assign (zero-init fix, Bug #14)
     Value d
-    d = Pair("x".copy(), "y".copy())
+    d = Pair(owned("x"), owned("y"))
     print("PASS 4")
     // zero-init ensures clean state before first assignment
 
     // E: match + enum stays alive after
-    Value e = Txt("match_me".copy())
+    Value e = Txt(owned("match_me"))
     match e {
         Txt(s) => { print("PASS 5") }
         _ => {}
     }
 
     // F: chain of copies — all independent
-    Value f1 = Pair("p".copy(), "q".copy())
+    Value f1 = Pair(owned("p"), owned("q"))
     Value f2 = f1
     Value f3 = f2
     print("PASS 6")
-    // f1, f2, f3 each own their own strings
+    // f1, f2, f3 each own their own Strs
 
     // G: identity pass-through (fn receives clone, returns owned)
-    Value g_in = Txt("passthru".copy())
+    Value g_in = Txt(owned("passthru"))
     Value g_out = identity(g_in)
     print("PASS 7")
 

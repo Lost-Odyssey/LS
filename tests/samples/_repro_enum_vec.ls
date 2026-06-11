@@ -1,9 +1,10 @@
 import std.vec
+import std.str
 
 enum Numbers {
     Empty
     Nums(Vec(int) nums)
-    Mixed(string label, Vec(string) items)
+    Mixed(Str label, Vec(Str) items)
 }
 
 fn make_numbers() -> Numbers {
@@ -12,7 +13,7 @@ fn make_numbers() -> Numbers {
 }
 
 fn make_mixed() -> Numbers {
-    Vec(string) items = []
+    Vec(Str) items = []
     items.push("hello")
     items.push("world")
     return Mixed("test", items)

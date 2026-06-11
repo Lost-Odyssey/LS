@@ -1,9 +1,11 @@
-// Phase 8: enum with string payload — exercises has_drop + auto-cleanup
+// Phase 8: enum with Str payload — exercises has_drop + auto-cleanup
+
+import std.str
 
 enum Event {
     Quit
     Click(int x, int y)
-    Message(string text)
+    Message(Str text)
 }
 
 fn main() -> int {

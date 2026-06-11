@@ -1,18 +1,19 @@
 import std.vec
+import std.str
 
-enum JsonValue { Null, Bool(bool), Int(int), String(string), Array(Vec(JsonValue)) }
+enum JsonValue { Null, Bool(bool), Int(int), String(Str), Array(Vec(JsonValue)) }
 
 impl JsonValue {
     fn is_null(&self) -> bool {
         match self { Null => true, _ => false }
     }
-    fn type_name(&self) -> string {
+    fn type_name(&self) -> Str {
         match self {
-            Null => "null",
-            Bool(_) => "bool",
-            Int(_) => "int",
-            String(_) => "string",
-            Array(_) => "array",
+            Null => { return "null" }
+            Bool(_) => { return "bool" }
+            Int(_) => { return "int" }
+            String(_) => { return "string" }
+            Array(_) => { return "array" }
         }
     }
 }
@@ -26,7 +27,7 @@ fn main() {
     items.push(String("world"));
     JsonValue d = Array(items);
     if (a.is_null()) { print("PASS 4a") }
-    if (b.type_name() == "int") { print("PASS 4b") }
-    if (c.type_name() == "string") { print("PASS 4c") }
-    if (d.type_name() == "array") { print("PASS 4d") }
+    if (b.type_name().eq?("int")) { print("PASS 4b") }
+    if (c.type_name().eq?("string")) { print("PASS 4c") }
+    if (d.type_name().eq?("array")) { print("PASS 4d") }
 }
