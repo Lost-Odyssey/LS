@@ -1669,7 +1669,11 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_string_utils.cmake
 )
-set_tests_properties(test_string_utils PROPERTIES DEPENDS "test_string_parse")
+# Escape hatch (P5-2): exercises std.string's lenient `to_bool` (yes/no/1/0) — a
+# builtin-string semantic Str deliberately does not replicate (Str.to_bool is
+# strict true/false). Pin LS_STR_DEFAULT=0; removed with builtin string at P5-4.
+set_tests_properties(test_string_utils PROPERTIES DEPENDS "test_string_parse"
+    ENVIRONMENT "LS_STR_DEFAULT=0")
 
 add_test(
     NAME test_strconv
@@ -2113,7 +2117,11 @@ add_test(
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_impl_string.cmake
 )
-set_tests_properties(test_impl_string PROPERTIES DEPENDS "test_iter_protocol")
+# Escape hatch (P5-2): exercises the `impl string` extension feature, which lives
+# on the builtin string type. Pin LS_STR_DEFAULT=0 so it keeps testing builtin
+# string after the literal-default flips to Str; removed with builtin string at P5-4.
+set_tests_properties(test_impl_string PROPERTIES DEPENDS "test_iter_protocol"
+    ENVIRONMENT "LS_STR_DEFAULT=0")
 
 add_test(
     NAME test_string_ord
