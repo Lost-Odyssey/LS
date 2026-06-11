@@ -1,7 +1,7 @@
-// Test: f-string in expression chain (method call on f-string result)
+// Test: f-Str in expression chain (method call on f-Str result)
 fn main() {
     int x = 42
-    string result = f"number: {x}".upper()
+    Str result = f"number: {x}".upper()
     print(result)
     print("done")
 }

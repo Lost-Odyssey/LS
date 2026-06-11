@@ -24,8 +24,8 @@ fn main() {
     int lit = @time 42
     print(lit)     /* 42 */
 
-    /* T3: @time on a function call that returns string */
-    string s = @time "hello".upper()
+    /* T3: @time on a function call that returns Str */
+    Str s = @time "hello".upper()
     print(s)       /* HELLO */
 
     /* T4: @bench returns f64 (mean ns); we only check it's >= 0 */

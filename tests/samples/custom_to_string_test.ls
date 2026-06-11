@@ -5,7 +5,7 @@ struct Point {
 }
 
 impl Point {
-    fn to_string() -> string {
+    fn to_string() -> Str {
         return f"({self.x}, {self.y})"
     }
 }
@@ -14,6 +14,6 @@ fn main() {
     Point p
     p.x = 10
     p.y = 20
-    string s = p.to_string()
+    Str s = p.to_string()
     print("Point: ", s)
 }

@@ -1,5 +1,5 @@
 fn main() -> int {
-    string name = "Alice"
+    Str name = "Alice"
     int age = 30
     f64 pi = 3.14159
 

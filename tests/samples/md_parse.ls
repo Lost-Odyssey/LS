@@ -1,13 +1,13 @@
 // Phase B: parse Markdown into MdDoc, verify block count, round-trip.
 // NOTE: VR-LIM-018 prevents Vec method calls on cross-module types;
-// uses .len field + string-based block inspection instead.
+// uses .len field + Str-based block inspection instead.
 
 import std.vec
 import std.md as md
 import io
 import std.str
 
-fn check(bool cond, string label) {
+fn check(bool cond, Str label) {
     if cond { print(f"ok {label}") } else { print(f"FAIL {label}") }
 }
 

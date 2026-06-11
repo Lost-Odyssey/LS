@@ -1,7 +1,7 @@
 // stack_qual.ls — module-qualified generic type `st.Stack(int)` (single-owner).
 //
 // Exercises the qualified-type form: `import std.stack as st` then use the
-// generic as `st.Stack(int)` / `st.Stack(string)` in type position. The
+// generic as `st.Stack(int)` / `st.Stack(Str)` in type position. The
 // qualifier is validated against the module that owns the generic. Construction
 // uses the (unambiguous) bare constructor; prints "STACK PASS" so it reuses
 // test_stack.cmake.
@@ -9,7 +9,7 @@
 import std.stack as st
 import std.str
 
-fn check(bool c, string l) {
+fn check(bool c, Str l) {
     if c { print(f"ok {l}") } else { print(f"FAIL {l}") }
 }
 

@@ -1,6 +1,6 @@
-type Greeter = Block() -> string
+type Greeter = Block() -> Str
 
-fn make_opt_getter(Option(string) val) -> Greeter {
+fn make_opt_getter(Option(Str) val) -> Greeter {
     return || {
         match val {
             Some(s) => { return s }
@@ -11,13 +11,13 @@ fn make_opt_getter(Option(string) val) -> Greeter {
 
 fn main() {
     int i = 0
-    string payload = f"msg{i}"
-    Option(string) opt = Some(payload)
+    Str payload = f"msg{i}"
+    Option(Str) opt = Some(payload)
     print("before make_opt_getter")
     Greeter og = make_opt_getter(opt)
     print("after make_opt_getter")
     print("before og()")
-    string ov = og()
+    Str ov = og()
     print("after og()")
     print(ov)
 }

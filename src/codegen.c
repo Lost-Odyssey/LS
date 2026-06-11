@@ -6999,11 +6999,14 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
     if (node->kind == AST_BINARY && node->as.binary.lowered != NULL)
         return codegen_addr_of(ctx, node->as.binary.lowered);
 
-    /* AST_CALL rvalue receiver: evaluate the call, spill to temp alloca so
-       the caller can use it as `self` pointer for a chained method call
-       (e.g. `vec.map(U)(...).reduce(U)(...)`). Register for has_drop cleanup
-       so the temporary container's buffer is freed at end-of-scope. */
-    if (node->kind == AST_CALL)
+    /* Owned-rvalue receiver: evaluate it, spill to temp alloca so the caller
+       can use it as `self` pointer for a chained method call. Register for
+       has_drop cleanup so the temporary's buffer is freed at end-of-scope.
+         - AST_CALL          — `vec.map(U)(...).reduce(U)(...)`
+         - AST_FORMAT_STRING — `f"...".upper()` (the f-string Str temp would
+           otherwise leak: it never binds to a variable and the receiver path
+           did not register it for drop). */
+    if (node->kind == AST_CALL || node->kind == AST_FORMAT_STRING)
     {
         Type *rtype = node->resolved_type;
         if (rtype == NULL)

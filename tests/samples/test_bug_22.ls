@@ -1,13 +1,13 @@
 // test_bug_22.ls
-// Tests: global struct with all-empty string fields, Vec(struct) field access,
-// f-string formatting in multi-branch logic, string length checks.
+// Tests: global struct with all-empty Str fields, Vec(struct) field access,
+// f-Str formatting in multi-branch logic, Str length checks.
 
 fn main() -> int {
-    string a = "a"
-    string x = "x"
-    string b = "b"
-    string c = "c"
-    string d = "d"
+    Str a = "a"
+    Str x = "x"
+    Str b = "b"
+    Str c = "c"
+    Str d = "d"
     print(f">>>{a}{x}{b}{x}{c}{d}")
     
     return 0
