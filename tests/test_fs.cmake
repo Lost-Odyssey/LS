@@ -20,6 +20,9 @@ execute_process(
     ERROR_VARIABLE  jit_err
     RESULT_VARIABLE jit_rc
 )
+if(jit_out MATCHES "FAIL")
+    message(FATAL_ERROR "fs JIT reported a FAIL:\n${jit_out}")
+endif()
 if(NOT jit_out MATCHES "ALL PASS")
     message(FATAL_ERROR
         "fs JIT: program did not print ALL PASS (rc=${jit_rc})\n"
@@ -54,6 +57,9 @@ execute_process(
     ERROR_VARIABLE  aot_err
     RESULT_VARIABLE aot_rc
 )
+if(aot_out MATCHES "FAIL")
+    message(FATAL_ERROR "fs AOT reported a FAIL:\n${aot_out}")
+endif()
 if(NOT aot_out MATCHES "ALL PASS")
     message(FATAL_ERROR
         "fs AOT: program did not print ALL PASS (rc=${aot_rc})\n"
@@ -62,3 +68,19 @@ endif()
 
 file(REMOVE "${aot_bin}")
 message(STATUS "fs AOT: OK")
+
+# ---- memcheck: 0 leak / 0 double-free / 0 invalid free ----
+execute_process(
+    COMMAND "${LS_EXE}" run --memcheck "${SAMPLE}"
+    WORKING_DIRECTORY "${WORK_DIR}"
+    OUTPUT_VARIABLE mc_out
+    ERROR_VARIABLE  mc_err
+    RESULT_VARIABLE mc_rc
+)
+if(NOT mc_rc EQUAL 0)
+    message(FATAL_ERROR "fs memcheck run failed (rc=${mc_rc})\nstderr:\n${mc_err}")
+endif()
+if(NOT mc_err MATCHES "SUMMARY: 0 leak\\(s\\) \\(0 bytes\\), 0 double-free, 0 invalid free")
+    message(FATAL_ERROR "fs memcheck SUMMARY mismatch\nstderr:\n${mc_err}")
+endif()
+message(STATUS "fs memcheck: OK")

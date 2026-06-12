@@ -19,6 +19,9 @@ execute_process(
 if(NOT jit_rc EQUAL 0)
     message(FATAL_ERROR "enum_borrow_b JIT run failed (rc=${jit_rc}):\n${jit_err}")
 endif()
+if(jit_out MATCHES "FAIL")
+    message(FATAL_ERROR "reported a FAIL:\n${jit_out}")
+endif()
 if(NOT jit_out MATCHES "ALL PASS")
     message(FATAL_ERROR "enum_borrow_b JIT: expected 'ALL PASS', got:\n${jit_out}")
 endif()
@@ -55,6 +58,9 @@ execute_process(
     ERROR_VARIABLE  aot_err
     RESULT_VARIABLE aot_rc
 )
+if(aot_out MATCHES "FAIL")
+    message(FATAL_ERROR "reported a FAIL:\n${aot_out}")
+endif()
 if(NOT aot_out MATCHES "ALL PASS")
     message(FATAL_ERROR "enum_borrow_b AOT: expected 'ALL PASS', got (rc=${aot_rc}):\n${aot_out}")
 endif()
@@ -76,6 +82,9 @@ execute_process(
     ERROR_VARIABLE  mc_aot_err
     RESULT_VARIABLE mc_aot_rc
 )
+if(mc_aot_out MATCHES "FAIL")
+    message(FATAL_ERROR "reported a FAIL:\n${mc_aot_out}")
+endif()
 if(NOT mc_aot_out MATCHES "ALL PASS")
     message(FATAL_ERROR "enum_borrow_b AOT memcheck: expected 'ALL PASS', got:\n${mc_aot_out}")
 endif()

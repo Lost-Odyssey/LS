@@ -18,6 +18,9 @@ execute_process(
 if(NOT jit_rc EQUAL 0)
     message(FATAL_ERROR "perf JIT run failed (rc=${jit_rc}):\n${jit_err}")
 endif()
+if(jit_out MATCHES "FAIL")
+    message(FATAL_ERROR "reported a FAIL:\n${jit_out}")
+endif()
 if(NOT jit_out MATCHES "ALL PASS")
     message(FATAL_ERROR "perf JIT: expected 'ALL PASS', got:\n${jit_out}")
 endif()
@@ -39,6 +42,9 @@ execute_process(
     ERROR_VARIABLE  aot_err
     RESULT_VARIABLE aot_rc
 )
+if(aot_out MATCHES "FAIL")
+    message(FATAL_ERROR "reported a FAIL:\n${aot_out}")
+endif()
 if(NOT aot_out MATCHES "ALL PASS")
     message(FATAL_ERROR "perf AOT: expected 'ALL PASS', got (rc=${aot_rc}):\n${aot_out}")
 endif()

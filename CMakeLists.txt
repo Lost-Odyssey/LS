@@ -1233,6 +1233,20 @@ add_test(
 )
 set_tests_properties(test_impl_imported_struct PROPERTIES DEPENDS "test_match_concat_temp")
 
+# C-1 (docs/bugs_deferred_p5_4.md §C-1): test_fs.cmake was an orphan driver never
+# registered in CMakeLists — fs_test never ran under ctest. Register it (now with
+# FAIL-rejection + memcheck added per C-2). It mkdir/chdir/writes under
+# WORK_DIR/fs_test_tmp, so serialize it via a RESOURCE_LOCK to stay -j safe.
+add_test(
+    NAME test_fs
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fs_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_fs.cmake
+)
+set_tests_properties(test_fs PROPERTIES RESOURCE_LOCK "fs_scratch_dir")
+
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(

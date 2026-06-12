@@ -20,6 +20,9 @@ execute_process(
     ERROR_VARIABLE  jit_err
     RESULT_VARIABLE jit_rc
 )
+if(jit_out MATCHES "FAIL")
+    message(FATAL_ERROR "reported a FAIL:\n${jit_out}")
+endif()
 if(NOT jit_out MATCHES "ALL PASS")
     message(FATAL_ERROR
         "profile JIT: program did not print ALL PASS (rc=${jit_rc})\n"
@@ -66,6 +69,9 @@ execute_process(
     ERROR_VARIABLE  aot_err
     RESULT_VARIABLE aot_rc
 )
+if(aot_out MATCHES "FAIL")
+    message(FATAL_ERROR "reported a FAIL:\n${aot_out}")
+endif()
 if(NOT aot_out MATCHES "ALL PASS")
     message(FATAL_ERROR
         "profile AOT: program did not print ALL PASS (rc=${aot_rc})\n"

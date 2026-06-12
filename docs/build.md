@@ -59,3 +59,36 @@ cmake -B build -G Ninja -DCG_DEBUG=1 -DCMAKE_BUILD_TYPE=Debug ...
 ```
 
 或在 `src/common.h` 中临时修改 `#define CG_DEBUG 1`。
+
+## AOT Defender flake 与缓解（Windows）
+
+全量 `ctest -j` 偶发**随机某个 AOT 测试空 stdout 失败、单独重跑即过**。判据：
+失败集**每轮不同**、隔离重跑全绿 = flake，**非回归**。
+
+- **真因（与输出丢失无关，那个是另一桩已根治的 CRT flush 问题，见 CLAUDE.md §3）**：
+  Windows Defender 实时监控在 AOT 刚落盘 `.exe` 时短暂持锁，使紧随其后的
+  compile/run/delete 偶发失败。
+- **治本**：把构建目录加入 Defender 排除项（管理员 PowerShell，一次性）：
+
+  ```powershell
+  Add-MpPreference -ExclusionPath "C:\YANG\10003_language\LS\build"
+  # 可选：连源树一起排除，覆盖 AOT 写到源树临时目录的少数测试
+  Add-MpPreference -ExclusionPath "C:\YANG\10003_language\LS"
+  ```
+
+  查看/移除：
+
+  ```powershell
+  (Get-MpPreference).ExclusionPath
+  Remove-MpPreference -ExclusionPath "C:\YANG\10003_language\LS\build"
+  ```
+
+- **兜底（无管理员权限时）**：对全量跑加 `--repeat until-pass:2`，让单测失败自动
+  重跑一次：
+
+  ```powershell
+  cd build; ctest -j 5 -C Release --repeat until-pass:2
+  ```
+
+  注意 `until-pass` 会把**真回归**也重试一次——确认失败稳定（每轮同一测试）
+  再判定为真 bug，勿用重试掩盖回归。
