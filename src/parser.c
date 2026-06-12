@@ -3595,6 +3595,32 @@ static AstNode *parse_block(Parser *p) {
             synchronize(p);
             continue;
         }
+        /* Nested top-level definitions inside a block are not supported
+           (codegen has no place to emit them and would produce a basic
+           block with no terminator). Reject cleanly here at parse time. */
+        const char *nested_what = NULL;
+        switch (stmt->kind) {
+            case AST_FN_DECL:         nested_what = "function"; break;
+            case AST_STRUCT_DECL:     nested_what = "struct"; break;
+            case AST_ENUM_DECL:       nested_what = "enum"; break;
+            case AST_IMPL_DECL:
+            case AST_IMPL_TRAIT_DECL: nested_what = "impl"; break;
+            case AST_TRAIT_DECL:      nested_what = "trait"; break;
+            case AST_MODULE_DECL:     nested_what = "module"; break;
+            default: break;
+        }
+        if (nested_what != NULL) {
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "nested %s definition is not allowed inside a function "
+                     "body; move it to the top level", nested_what);
+            Token at = p->current;
+            at.line = stmt->line;
+            at.column = stmt->column;
+            error_at(p, &at, msg);
+            ast_free(stmt);
+            continue;
+        }
         if (stmt_count >= stmt_cap) {
             stmt_cap = GROW_CAPACITY(stmt_cap);
             stmts = GROW_ARRAY(AstNode *, stmts, stmt_cap);
