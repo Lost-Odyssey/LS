@@ -1247,6 +1247,18 @@ add_test(
 )
 set_tests_properties(test_fs PROPERTIES RESOURCE_LOCK "fs_scratch_dir")
 
+# D-1 (docs/bugs_deferred_p5_4.md §D-1): struct auto-print renders Str fields as
+# quoted text (not Str{data=ptr,...}). JIT+AOT exact-format + memcheck 0/0/0.
+add_test(
+    NAME test_struct_print_str
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/deep_copy_all_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_struct_print_str.cmake
+)
+set_tests_properties(test_struct_print_str PROPERTIES DEPENDS "test_fs")
+
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(

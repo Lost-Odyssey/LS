@@ -3514,7 +3514,17 @@ static void codegen_print_struct_value(CodegenContext *ctx, LLVMValueRef val, Ty
 
         LLVMValueRef fval = LLVMBuildExtractValue(ctx->builder, val, (unsigned)i, "sf");
 
-        if (ftype->kind == TYPE_STRUCT)
+        if (cg_type_is_str(ftype))
+        {
+            /* D-1 (docs/bugs_deferred_p5_4.md §D-1): a Str field is a struct, but
+               printing it as `Str{data=ptr,len,cap}` leaks a pointer (and is
+               non-deterministic). Render its text instead, quoted for clarity. */
+            emit_printf(ctx, "\"", NULL, 0);
+            cg_print_str_value(ctx, fval);
+            emit_printf(ctx, "\"", NULL, 0);
+            continue;
+        }
+        else if (ftype->kind == TYPE_STRUCT)
         {
             /* Nested struct — recurse */
             codegen_print_struct_value(ctx, fval, ftype);
