@@ -5,6 +5,7 @@
 // leak / double-free). Panic and use-after-move paths live in sibling samples.
 import std.map
 import std.str
+import std.vec
 
 fn check(bool c, Str label) {
     if c { print(f"  ok: {label}") } else { print(f"FAIL: {label}") }
@@ -12,6 +13,9 @@ fn check(bool c, Str label) {
 
 fn mk(int n) -> Option(int)         { if n > 0 { return Some(n) } return None }
 fn mkr(int n) -> Result(int, Str)   { if n > 0 { return Ok(n) }   return Err("neg") }
+// C2b helpers: produce owned-Str payloads so the closure-combinator tests
+// exercise has_drop move-out / passthrough.
+fn ok_str(int n) -> Result(Str, Str) { return Ok(f"n{n}") }
 
 fn main() -> int {
     // ---- unwrap (Option / Result success) ----
@@ -93,6 +97,62 @@ fn main() -> int {
     // ok_or + try interop: an Option flows into Result-propagation in one line.
     check(read_first(true) == 5, "try ok_or interop (present)")
     check(read_first(false) == -1, "try ok_or interop (absent -> Err propagated)")
+
+    // ---- C2b: closure combinators (map / and_then / map_err / unwrap_or_else) ----
+    // The result type param U is explicit, matching `vec.map(int)(...)`. The
+    // closure body is inlined into the lowered match (no closure value / env).
+
+    // map: transform the success payload.
+    Option(int) m1 = Some(5)
+    check(m1.map(int)(|x| x * 2).unwrap_or(0) == 10, "map: Some -> doubled")
+    Option(int) m2 = None
+    check(m2.map(int)(|x| x * 2).is_none?(), "map: None passthrough")
+    // map to a different type (int -> owned Str); verified via match (consumes result).
+    Option(int) m3 = Some(3)
+    check(match m3.map(Str)(|x| f"v{x}") { Some(s) => s.eq?("v3")  None => false },
+          "map: int -> owned Str")
+    // map on Result maps the Ok value; Err passes through.
+    Result(int, Str) mr = Ok(4)
+    check(mr.map(int)(|x| x + 1).unwrap_or(0) == 5, "map: Result Ok mapped")
+    Result(int, Str) mre = Err("bad")
+    check(mre.map(int)(|x| x + 1).is_err?(), "map: Result Err passthrough")
+    // map moves an owned Str payload out and transforms it.
+    Option(Str) mo = Some("hello")
+    check(match mo.map(Str)(|x| x.upper()) { Some(s) => s.eq?("HELLO")  None => false },
+          "map: owned Str moves & transforms")
+
+    // and_then: chain a fallible step (closure returns the full Option/Result).
+    check(mk(6).and_then(int)(|x| mk(x - 6)).is_none?(), "and_then: -> None")
+    check(mk(6).and_then(int)(|x| mk(x)).unwrap_or(0) == 6, "and_then: -> Some")
+    check(mkr(3).and_then(int)(|x| mkr(x * 2)).unwrap_or(0) == 6, "and_then: Result Ok")
+    check(mkr(-1).and_then(int)(|x| mkr(x)).is_err?(), "and_then: Result Err passthrough")
+    // and_then producing an owned-Str Result, verified via match.
+    Result(int, Str) a1 = Ok(3)
+    check(match a1.and_then(Str)(|x| ok_str(x)) { Ok(s) => s.eq?("n3")  Err(_) => false },
+          "and_then: owned Str Ok result")
+
+    // map_err: transform the error (Result only).
+    Result(int, Str) e1 = Err("oops")
+    check(e1.map_err(int)(|e| e.len()).is_err?(), "map_err: Err mapped to int")
+    Result(int, Str) e2 = Ok(9)
+    check(e2.map_err(int)(|e| 0).unwrap_or(0) == 9, "map_err: Ok passthrough")
+    // map_err to an owned Str error, verified via match.
+    Result(int, Str) g1 = Err("boom")
+    check(match g1.map_err(Str)(|e| f"{e}!") { Ok(_) => false  Err(s) => s.eq?("boom!") },
+          "map_err: owned Str error")
+
+    // unwrap_or_else: compute a fallback lazily (no type arg).
+    Option(int) u1 = None
+    check(u1.unwrap_or_else(|| 40 + 2) == 42, "unwrap_or_else: Option None -> computed")
+    check(mk(7).unwrap_or_else(|| 0) == 7, "unwrap_or_else: Option Some")
+    Result(int, Str) u2 = Err("oops")
+    check(u2.unwrap_or_else(|e| e.len()) == 4, "unwrap_or_else: Result Err uses error")
+    check(mkr(8).unwrap_or_else(|e| -1) == 8, "unwrap_or_else: Result Ok")
+
+    // headline chain: v.get(i) -> Option, then map, then unwrap_or.
+    Vec(int) vv = [10, 20, 30]
+    check(vv.get(1).map(int)(|x| x + 5).unwrap_or(0) == 25, "v.get(i).map(...) chain")
+    check(vv.get(9).map(int)(|x| x + 5).unwrap_or(-1) == -1, "v.get(oob).map -> None")
 
     print("OPTCOMB PASS")
     return 0

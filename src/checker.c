@@ -3163,7 +3163,13 @@ typedef enum {
     /* C2a: Option↔Result conversions (match desugar; result type is built so the
        bare variant ctors in the arm bodies resolve regardless of call context). */
     OPTC_OK,      OPTC_ERR,     /* Result → Option(T) / Option(E) */
-    OPTC_OK_OR                  /* Option → Result(T, E), 1 error-value arg */
+    OPTC_OK_OR,                 /* Option → Result(T, E), 1 error-value arg */
+    /* C2b: closure combinators (inline the closure body into the match). The
+       result type param U is explicit: `opt.map(U)(|x| ...)`. */
+    OPTC_MAP,                   /* Option(T)→Option(U) / Result(T,E)→Result(U,E) */
+    OPTC_AND_THEN,              /* closure returns Option(U)/Result(U,E) directly */
+    OPTC_MAP_ERR,              /* Result(T,E)→Result(T,F), maps the error */
+    OPTC_UNWRAP_OR_ELSE         /* None/Err → closure result; → T (no type arg) */
 } OptCombinator;
 
 static OptCombinator opt_combinator_id(const char *name)
@@ -3178,6 +3184,10 @@ static OptCombinator opt_combinator_id(const char *name)
     if (strcmp(name, "ok")        == 0) return OPTC_OK;
     if (strcmp(name, "err")       == 0) return OPTC_ERR;
     if (strcmp(name, "ok_or")     == 0) return OPTC_OK_OR;
+    if (strcmp(name, "map")       == 0) return OPTC_MAP;
+    if (strcmp(name, "and_then")  == 0) return OPTC_AND_THEN;
+    if (strcmp(name, "map_err")   == 0) return OPTC_MAP_ERR;
+    if (strcmp(name, "unwrap_or_else") == 0) return OPTC_UNWRAP_OR_ELSE;
     return OPTC_NONE;
 }
 
@@ -3278,6 +3288,109 @@ static AstNode *optc_mk_match2(AstNode *subject,
     return m;
 }
 
+/* ---- C2b: closure combinators (map / and_then / unwrap_or_else / map_err) ----
+   These take a closure argument. To sidestep the closure-as-callee inference gap
+   (a bare `|x| body` literal in callee position has no Block expected type), the
+   lower INLINES the closure body directly into the lowered match arm, reusing the
+   closure's parameter name as the arm binder. No closure value, env, or call is
+   created — captured variables resolve in the enclosing scope as ordinary reads.
+   The new result type param U is supplied explicitly (`opt.map(U)(|x| ...)`),
+   matching the language's existing method-level generic convention
+   (`vec.map(int)(...)`); it builds the result Option(U)/Result(...) pushed as the
+   expected type so the bare ctors in the arm bodies resolve. */
+
+/* Does the subtree contain a `return` statement? Used to reject closures with
+   early returns, which cannot be inlined (the inlined return would escape the
+   enclosing function rather than yield the arm value). */
+static bool optc_subtree_has_return(AstNode *n)
+{
+    if (n == NULL) return false;
+    switch (n->kind) {
+    case AST_RETURN: return true;
+    case AST_BLOCK:
+        for (int i = 0; i < n->as.block.stmt_count; i++)
+            if (optc_subtree_has_return(n->as.block.stmts[i])) return true;
+        return false;
+    case AST_EXPR_STMT:
+        return optc_subtree_has_return(n->as.expr_stmt.expr);
+    case AST_IF:
+        return optc_subtree_has_return(n->as.if_stmt.then_block) ||
+               optc_subtree_has_return(n->as.if_stmt.else_block);
+    case AST_WHILE:
+        return optc_subtree_has_return(n->as.while_stmt.body);
+    case AST_FOR:
+        return optc_subtree_has_return(n->as.for_stmt.body);
+    case AST_MATCH:
+        for (int i = 0; i < n->as.match.arm_count; i++)
+            if (optc_subtree_has_return(n->as.match.arms[i].body)) return true;
+        return false;
+    default:
+        return false;
+    }
+}
+
+/* Validate that `arg` is a ruby-form closure literal of the expected arity, and
+   return it (with *out_param0 set to its first param name, if any). Else report
+   an error and return NULL. */
+static AstNode *optc_closure_arg(Checker *c, AstNode *arg, int want_params,
+                                 const char *method_name,
+                                 const char **out_param0, int line, int col)
+{
+    if (out_param0) *out_param0 = NULL;
+    if (arg == NULL || arg->kind != AST_CLOSURE || !arg->as.closure.is_ruby_form) {
+        checker_error(c, line, col,
+                      "'%s' expects a closure literal `|...| expr` argument",
+                      method_name);
+        return NULL;
+    }
+    if (arg->as.closure.param_count != want_params) {
+        checker_error(c, line, col,
+                      "'%s' closure expects %d parameter(s), got %d",
+                      method_name, want_params, arg->as.closure.param_count);
+        return NULL;
+    }
+    if (out_param0 && want_params >= 1)
+        *out_param0 = arg->as.closure.param_names[0];
+    return arg;
+}
+
+/* Convert a ruby-closure body into an expression node usable as a match arm body,
+   detaching it from the closure. The body is a block ending in `return E`; we
+   rewrite that trailing return in place to an expr-stmt (so the block yields E)
+   and hand back the block (a block-expression). Returns NULL on an unsupported
+   shape (no trailing value, or an early return). */
+static AstNode *optc_take_closure_body(Checker *c, AstNode *closure,
+                                       const char *method_name, int line, int col)
+{
+    AstNode *body = closure->as.closure.body;
+    if (body == NULL || body->kind != AST_BLOCK ||
+        body->as.block.stmt_count < 1) {
+        checker_error(c, line, col, "'%s' closure has no body value", method_name);
+        return NULL;
+    }
+    int n = body->as.block.stmt_count;
+    AstNode *tail = body->as.block.stmts[n - 1];
+    if (tail->kind != AST_RETURN || tail->as.return_stmt.value == NULL) {
+        checker_error(c, line, col,
+                      "'%s' closure must end in an expression value", method_name);
+        return NULL;
+    }
+    for (int i = 0; i < n - 1; i++)
+        if (optc_subtree_has_return(body->as.block.stmts[i])) {
+            checker_error(c, line, col,
+                          "'%s' closure must not contain an early `return`",
+                          method_name);
+            return NULL;
+        }
+    /* Rewrite trailing `return E` -> expr-stmt E. return_stmt.value and
+       expr_stmt.expr alias in the union, so the pointer survives the kind flip. */
+    AstNode *e = tail->as.return_stmt.value;
+    tail->kind = AST_EXPR_STMT;
+    tail->as.expr_stmt.expr = e;
+    closure->as.closure.body = NULL;   /* detach so ast_free(closure) won't free it */
+    return body;
+}
+
 /* Rewrite `recv.METHOD(args)` (an AST_CALL `node`) in place into the lowered form
    and re-check it. Returns 1 = rewrote (result type in *out_ty), -1 = error
    reported, 0 = METHOD is not a combinator (caller falls through to normal enum
@@ -3297,9 +3410,15 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
     int argc = node->as.call.arg_count;
     AstNode **args = node->as.call.args;
     AstNode *callee = node->as.call.callee;   /* AST_FIELD shell, discarded below */
+    /* Saved so we can free the explicit type-arg nodes after node->as is stolen. */
+    TypeNode **saved_targs = node->as.call.type_args;
+    int saved_targ_count = node->as.call.type_arg_count;
 
+    /* C2b closure combinators take exactly one argument (the closure). */
+    bool is_c2b = (id == OPTC_MAP || id == OPTC_AND_THEN ||
+                   id == OPTC_MAP_ERR || id == OPTC_UNWRAP_OR_ELSE);
     int want_args = (id == OPTC_EXPECT || id == OPTC_UNWRAP_OR ||
-                     id == OPTC_OK_OR) ? 1 : 0;
+                     id == OPTC_OK_OR || is_c2b) ? 1 : 0;
     if (argc != want_args) {
         checker_error(c, line, col, "'%s' expects %d argument(s), got %d",
                       method_name, want_args, argc);
@@ -3312,10 +3431,21 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
         return -1;
     }
     if ((id == OPTC_IS_OK || id == OPTC_IS_ERR ||
-         id == OPTC_OK || id == OPTC_ERR) && !is_result) {
+         id == OPTC_OK || id == OPTC_ERR || id == OPTC_MAP_ERR) && !is_result) {
         checker_error(c, line, col,
                       "'%s' is a Result combinator, but got '%s'",
                       method_name, type_name(recv_type));
+        return -1;
+    }
+    /* C2b: map / and_then / map_err carry an explicit result type param U;
+       unwrap_or_else carries none (its result is the success payload T). */
+    int want_targs = (id == OPTC_MAP || id == OPTC_AND_THEN ||
+                      id == OPTC_MAP_ERR) ? 1 : 0;
+    if (is_c2b && node->as.call.type_arg_count != want_targs) {
+        checker_error(c, line, col,
+                      "'%s' expects %d type argument(s) (e.g. `x.%s(U)(|..| ..)`),"
+                      " got %d", method_name, want_targs, method_name,
+                      node->as.call.type_arg_count);
         return -1;
     }
 
@@ -3420,6 +3550,128 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
         arg0 = NULL;
         break;
     }
+    case OPTC_MAP: {
+        /* Option(T).map(U)(|x| body) -> Option(U):
+             match recv { Some(x)=>Some(body)  None=>None }
+           Result(T,E).map(U)(|x| body) -> Result(U,E):
+             match recv { Ok(x)=>Ok(body)  Err(e$)=>Err(e$) } */
+        Type *U = resolve_type_node(c, saved_targs[0], line, col);
+        const char *pname = NULL;
+        AstNode *clo = optc_closure_arg(c, args[0], 1, method_name, &pname, line, col);
+        if (clo == NULL || U == NULL) return -1;
+        AstNode *body = optc_take_closure_body(c, clo, method_name, line, col);
+        if (body == NULL) return -1;
+        if (is_option) {
+            result_ctx = instantiate_template(c, find_template_idx(c, "Option"),
+                                              &U, 1, line, col);
+            repl = optc_mk_match2(recv,
+                optc_mk_variant_pat("Some", pname, line, col),
+                optc_mk_variant_call("Some", body, line, col),
+                optc_mk_ident("None", line, col),
+                optc_mk_ident("None", line, col), line, col);
+        } else {
+            Type *E = optc_variant_payload(recv_type, "Err");
+            Type *targs[2] = { U, E };
+            result_ctx = E ? instantiate_template(c, find_template_idx(c, "Result"),
+                                                  targs, 2, line, col) : NULL;
+            char eb[32]; snprintf(eb, sizeof eb, "__ocv$%d", g_optc_uid++);
+            repl = optc_mk_match2(recv,
+                optc_mk_variant_pat("Ok", pname, line, col),
+                optc_mk_variant_call("Ok", body, line, col),
+                optc_mk_variant_pat("Err", eb, line, col),
+                optc_mk_variant_call("Err", optc_mk_ident(eb, line, col), line, col),
+                line, col);
+        }
+        ast_free(clo);
+        break;
+    }
+    case OPTC_AND_THEN: {
+        /* Option(T).and_then(U)(|x| body) -> Option(U): the closure body already
+           yields an Option(U); we just splice it into the Some arm.
+             match recv { Some(x)=>body  None=>None }
+           Result(T,E).and_then(U)(|x| body) -> Result(U,E):
+             match recv { Ok(x)=>body  Err(e$)=>Err(e$) } */
+        Type *U = resolve_type_node(c, saved_targs[0], line, col);
+        const char *pname = NULL;
+        AstNode *clo = optc_closure_arg(c, args[0], 1, method_name, &pname, line, col);
+        if (clo == NULL || U == NULL) return -1;
+        AstNode *body = optc_take_closure_body(c, clo, method_name, line, col);
+        if (body == NULL) return -1;
+        if (is_option) {
+            result_ctx = instantiate_template(c, find_template_idx(c, "Option"),
+                                              &U, 1, line, col);
+            repl = optc_mk_match2(recv,
+                optc_mk_variant_pat("Some", pname, line, col),
+                body,
+                optc_mk_ident("None", line, col),
+                optc_mk_ident("None", line, col), line, col);
+        } else {
+            Type *E = optc_variant_payload(recv_type, "Err");
+            Type *targs[2] = { U, E };
+            result_ctx = E ? instantiate_template(c, find_template_idx(c, "Result"),
+                                                  targs, 2, line, col) : NULL;
+            char eb[32]; snprintf(eb, sizeof eb, "__ocv$%d", g_optc_uid++);
+            repl = optc_mk_match2(recv,
+                optc_mk_variant_pat("Ok", pname, line, col),
+                body,
+                optc_mk_variant_pat("Err", eb, line, col),
+                optc_mk_variant_call("Err", optc_mk_ident(eb, line, col), line, col),
+                line, col);
+        }
+        ast_free(clo);
+        break;
+    }
+    case OPTC_MAP_ERR: {
+        /* Result(T,E).map_err(F)(|e| body) -> Result(T,F):
+             match recv { Ok(v$)=>Ok(v$)  Err(e)=>Err(body) } */
+        Type *F = resolve_type_node(c, saved_targs[0], line, col);
+        const char *pname = NULL;
+        AstNode *clo = optc_closure_arg(c, args[0], 1, method_name, &pname, line, col);
+        if (clo == NULL || F == NULL) return -1;
+        AstNode *body = optc_take_closure_body(c, clo, method_name, line, col);
+        if (body == NULL) return -1;
+        Type *T = optc_variant_payload(recv_type, "Ok");
+        Type *targs[2] = { T, F };
+        result_ctx = T ? instantiate_template(c, find_template_idx(c, "Result"),
+                                              targs, 2, line, col) : NULL;
+        char vbk[32]; snprintf(vbk, sizeof vbk, "__ocv$%d", g_optc_uid++);
+        repl = optc_mk_match2(recv,
+            optc_mk_variant_pat("Ok", vbk, line, col),
+            optc_mk_variant_call("Ok", optc_mk_ident(vbk, line, col), line, col),
+            optc_mk_variant_pat("Err", pname, line, col),
+            optc_mk_variant_call("Err", body, line, col), line, col);
+        ast_free(clo);
+        break;
+    }
+    case OPTC_UNWRAP_OR_ELSE: {
+        /* Option(T).unwrap_or_else(|| body) -> T:
+             match recv { Some(v$)=>v$  None=>body }
+           Result(T,E).unwrap_or_else(|e| body) -> T:
+             match recv { Ok(v$)=>v$  Err(e)=>body } */
+        const char *pname = NULL;
+        int want_p = is_option ? 0 : 1;
+        AstNode *clo = optc_closure_arg(c, args[0], want_p, method_name, &pname, line, col);
+        if (clo == NULL) return -1;
+        AstNode *body = optc_take_closure_body(c, clo, method_name, line, col);
+        if (body == NULL) return -1;
+        result_ctx = optc_variant_payload(recv_type, succ);  /* T, helps body coerce */
+        char vbk[32]; snprintf(vbk, sizeof vbk, "__ocv$%d", g_optc_uid++);
+        if (is_option) {
+            repl = optc_mk_match2(recv,
+                optc_mk_variant_pat("Some", vbk, line, col),
+                optc_mk_ident(vbk, line, col),
+                optc_mk_ident("None", line, col),
+                body, line, col);
+        } else {
+            repl = optc_mk_match2(recv,
+                optc_mk_variant_pat("Ok", vbk, line, col),
+                optc_mk_ident(vbk, line, col),
+                optc_mk_variant_pat("Err", pname, line, col),
+                body, line, col);
+        }
+        ast_free(clo);
+        break;
+    }
     default: return 0;
     }
 
@@ -3430,6 +3682,10 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
     free(repl);
     ast_free(callee);          /* recv detached above; frees the field name + shell */
     if (args) free(args);      /* the args array only; arg0 (if any) moved into repl */
+    if (saved_targs) {         /* C2b explicit type-arg nodes (resolved above) */
+        for (int i = 0; i < saved_targ_count; i++) type_node_free(saved_targs[i]);
+        free(saved_targs);
+    }
 
     /* Re-check the rewritten node. Conversion combinators push their freshly-built
        result type as the expected type so bare ctors in the arm bodies resolve. */
@@ -5230,7 +5486,14 @@ static Type *check_expr(Checker *c, AstNode *node)
 
     case AST_MATCH:
     {
+        /* The subject's type is intrinsic to the subject expression and must not
+           be coerced by the match's own expected result type — otherwise a bare
+           ctor subject (e.g. lowered `Some(3).map(Str)(...)`) would be checked
+           against the wrong instantiation. Clear expected_type for the subject. */
+        Type *saved_subj_exp = c->expected_type;
+        c->expected_type = NULL;
         Type *subject = check_expr(c, node->as.match.subject);
+        c->expected_type = saved_subj_exp;
         if (subject == NULL)
         {
             result = NULL;

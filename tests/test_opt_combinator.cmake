@@ -77,4 +77,26 @@ if(NOT "${r_out}${r_err}" MATCHES "moved")
 endif()
 message(STATUS "opt_combinator_reject: rejected as expected (rc=${r_rc})")
 
+# ---- C2b negative: map/and_then/map_err need an explicit result type param ----
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/c2b_no_typearg.ls"
+    OUTPUT_VARIABLE t_out ERROR_VARIABLE t_err RESULT_VARIABLE t_rc)
+if(t_rc EQUAL 0)
+    message(FATAL_ERROR "c2b_no_typearg: expected non-zero exit (missing type arg)\n${t_out}")
+endif()
+if(NOT "${t_out}${t_err}" MATCHES "type argument")
+    message(FATAL_ERROR "c2b_no_typearg: missing 'type argument' diagnostic\n${t_out}\n${t_err}")
+endif()
+message(STATUS "c2b_no_typearg: rejected as expected (rc=${t_rc})")
+
+# ---- C2b negative: map_err is Result-only; on an Option it is rejected ----
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/c2b_map_err_option.ls"
+    OUTPUT_VARIABLE me_out ERROR_VARIABLE me_err RESULT_VARIABLE me_rc)
+if(me_rc EQUAL 0)
+    message(FATAL_ERROR "c2b_map_err_option: expected non-zero exit (Result-only)\n${me_out}")
+endif()
+if(NOT "${me_out}${me_err}" MATCHES "Result combinator")
+    message(FATAL_ERROR "c2b_map_err_option: missing 'Result combinator' diagnostic\n${me_out}\n${me_err}")
+endif()
+message(STATUS "c2b_map_err_option: rejected as expected (rc=${me_rc})")
+
 message(STATUS "test_opt_combinator: ALL PASSED")
