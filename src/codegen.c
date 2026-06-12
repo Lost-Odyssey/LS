@@ -9310,7 +9310,17 @@ static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
             Type *pointee = dst_t->as.pointer_to;
             AstNode *a = node->as.call.args[i];
             LLVMValueRef ptr = NULL;
-            if (a->kind == AST_IDENT)
+            /* `&!v` (AST_MUT_BORROW) — or any argument that already resolved
+               to a reference — evaluates to the caller's slot POINTER itself.
+               Pass it through; falling into the rvalue materialisation below
+               would store the pointer into a pointee-sized temp and hand the
+               closure a garbage borrow (heap corruption on first mutation). */
+            if (a->kind == AST_MUT_BORROW ||
+                (src_t && src_t->kind == TYPE_REFERENCE))
+            {
+                ptr = av;
+            }
+            else if (a->kind == AST_IDENT)
             {
                 CgSymbol *sym = cg_scope_resolve(ctx->current_scope,
                                                  a->as.ident.name);

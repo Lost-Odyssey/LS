@@ -2621,6 +2621,19 @@ set_tests_properties(test_s13_borrow_gaps PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- Block(&!T) 可写借用块参数（plan_std_map §13 收官） ----
+add_test(
+    NAME test_block_mutref
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_block_mutref.cmake
+)
+set_tests_properties(test_block_mutref PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- Bug #26: loop-body temp allocas → JIT stack overflow (entry-block fix) ----
 add_test(
     NAME test_string_loop
