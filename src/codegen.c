@@ -297,8 +297,6 @@ static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
 static void mark_string_moved(CodegenContext *ctx, LLVMValueRef str_alloca,
                               const char *reason);
 static void cg_mark_last_temp_moved(CodegenContext *ctx, int mark, const char *reason);
-static void cg_register_result_temp(CodegenContext *ctx, LLVMValueRef result_alloca,
-                                    Type *result_type);
 static AstNode *cg_match_arm_tail(AstNode *arm_body);
 static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
                                           LLVMValueRef body_val, LLVMTypeRef res_llvm,
@@ -2149,50 +2147,6 @@ static void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot)
     ctx->temp_drop_count = keep;
 }
 
-/* L-013 (match-result-ownership): register an EXISTING alloca that holds an owned
-   heap STRING result as the statement-level result temp. Unlike cg_push_temp_string
-   — which builds a fresh entry-block slot from an SSA value and stores into it —
-   this takes a pre-existing alloca (a match's result_alloca, already populated by the
-   taken arm) and registers it so the statement-end cg_flush_temps frees it exactly
-   once. That turns a value-producing match into an owned string rvalue the consumer
-   claims via the existing "count>mark → mark_last_moved → flush(skip_last)" protocol
-   (fixing the binder-yield leak — without a registered temp the consumer would clone
-   the arm's already-cloned binder, orphaning it).
-
-   ONLY strings are registered. has_drop struct/enum results are NOT: the var_decl /
-   assign / return consumers MOVE an owned has_drop rvalue (no clone for a non-IDENT
-   init), so registering one as a temp-drop would make both the consuming variable AND
-   the statement-end flush free it → double-free. For has_drop the result is made
-   independently owned at the arm (cg_match_arm_own_tail clones an outer/borrowed tail;
-   cg_match_arm_encapsulate transfers an rvalue tail temp out of the flush list), after
-   which the existing move-via-return path is correct with no registration.
-
-   The caller must zero-initialize the alloca so a path reaching merge without storing
-   (e.g. a non-exhaustive integer match default) leaves cap=0 → its free is skipped. */
-static void cg_register_result_temp(CodegenContext *ctx, LLVMValueRef result_alloca,
-                                    Type *result_type)
-{
-    if (result_alloca == NULL || result_type == NULL || ctx->current_fn == NULL)
-        return;
-    if (result_type->kind != TYPE_STRING)
-        return;
-    if (ctx->temp_string_count >= ctx->temp_string_cap)
-    {
-        ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
-        ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
-                                            ctx->temp_string_slots, ctx->temp_string_cap);
-    }
-    ctx->temp_string_slots[ctx->temp_string_count++] = result_alloca;
-#if CG_DEBUG
-    {
-        char dbg_fmt[64];
-        snprintf(dbg_fmt, sizeof(dbg_fmt),
-                 "[cg] tmp.result slot=%d (alloca)\n",
-                 ctx->temp_string_count - 1);
-        cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
-    }
-#endif
-}
 
 /* L-013: unwrap a match-arm body to its tail expression (the value the arm yields).
    For a block body `=> { ...; E }` the tail is the last statement's expression;
@@ -2227,7 +2181,6 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
     if (body_val == NULL || result_type == NULL)
         return body_val;
     bool owned_heap =
-        result_type->kind == TYPE_STRING ||
         (result_type->kind == TYPE_STRUCT && result_type->as.strukt.has_drop) ||
         (result_type->kind == TYPE_ENUM   && result_type->as.enom.has_drop);
     if (!owned_heap)
@@ -2244,8 +2197,7 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
     {
         CgSymbol *s = cg_scope_resolve(ctx->current_scope, tail->as.ident.name);
         if (s && s->value && s->type &&
-            (s->type->kind == TYPE_STRING ||
-             (s->type->kind == TYPE_STRUCT && s->type->as.strukt.has_drop) ||
+            ((s->type->kind == TYPE_STRUCT && s->type->as.strukt.has_drop) ||
              (s->type->kind == TYPE_ENUM   && s->type->as.enom.has_drop)))
             return emit_clone_value(ctx, body_val, res_llvm, result_type);
     }
@@ -2299,43 +2251,6 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int str_mark, int drop
     ctx->temp_drop_count = drop_floor;
 }
 
-/* M-LIT: apply the owned-param ABI to a key/value expression being moved into a
-   user container literal (Map `__from_pairs`). Only TYPE_STRING needs a runtime
-   cap fixup: a named-var source is borrowed (cap=-2 → callee clones, caller keeps
-   ownership), an `__move(var)` source marks the variable moved, and a plain rvalue
-   temp is marked moved so the statement flush won't free it (the callee owns it).
-   Other has_drop rvalues flow in as moved temps with no fixup. `pm` = the
-   temp_string mark taken just before evaluating `elem`. Mirrors the __from_list
-   element-ownership block. */
-static LLVMValueRef cg_litelem_string_own(CodegenContext *ctx, AstNode *elem,
-                                          LLVMValueRef ev, int pm)
-{
-    Type *et = elem ? elem->resolved_type : NULL;
-    if (et == NULL || et->kind != TYPE_STRING)
-        return ev;
-    AstNode *uw = ast_unwrap_move(elem);
-    bool is_move = (elem != uw);
-    if (uw->kind == AST_IDENT)
-    {
-        if (is_move)
-        {
-            CgSymbol *as = cg_scope_resolve(ctx->current_scope, uw->as.ident.name);
-            if (as && as->value)
-                mark_string_moved(ctx, as->value, "litpair: __move source");
-        }
-        else
-        {
-            LLVMValueRef capb = LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
-                                             (unsigned long long)LS_CAP_BORROWED, 0);
-            ev = LLVMBuildInsertValue(ctx->builder, ev, capb, 2, "litpair.borrow");
-        }
-    }
-    else
-    {
-        cg_mark_last_temp_moved(ctx, pm, "litpair: rvalue string");
-    }
-    return ev;
-}
 
 /* M-4.5: drop and release all temp_drop slots whose assoc mark >= `mark`.
    Compacts surviving (mark < flush-mark) entries to the front. */
@@ -7114,30 +7029,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                                 continue;
                             }
 
-                            /* Phase B: string payload — load value and mark cap as
-                               LS_CAP_BORROWED so emit_string_free skips it and
-                               emit_string_clone_val clones on copy. */
-                            if (pt->kind == TYPE_STRING) {
-                                LLVMTypeRef str_t = ls_string_type(ctx);
-                                LLVMValueRef str_val = LLVMBuildLoad2(
-                                    ctx->builder, str_t, field_ptr, "s.bval");
-                                LLVMValueRef cap_b = LLVMConstInt(
-                                    LLVMInt32TypeInContext(ctx->context),
-                                    (unsigned long long)LS_CAP_BORROWED, 0);
-                                str_val = LLVMBuildInsertValue(
-                                    ctx->builder, str_val, cap_b, 2, "s.borrow");
-                                LLVMBuilderRef bb_tmp = LLVMCreateBuilderInContext(ctx->context);
-                                LLVMValueRef first_i = LLVMGetFirstInstruction(entry);
-                                if (first_i) LLVMPositionBuilderBefore(bb_tmp, first_i);
-                                else         LLVMPositionBuilderAtEnd(bb_tmp, entry);
-                                LLVMValueRef bind_alloca = LLVMBuildAlloca(bb_tmp, str_t, bname);
-                                LLVMDisposeBuilder(bb_tmp);
-                                LLVMBuildStore(ctx->builder, str_val, bind_alloca);
-                                CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
-                                                                bind_alloca, pt, NULL);
-                                if (sym) sym->is_borrowed = true;
-                                continue;
-                            }
                             /* Scalars (int/f64/bool/char) and other non-owned types:
                                fall through to the normal load-into-alloca path below. */
                         }
@@ -7169,12 +7060,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             /* Owned-temp subject: clone every has_drop binder so it
                                is independent of the subject (which we drop). */
                             val = emit_clone_value(ctx, val, field_llvm, pt);
-                            binder_owns = true;
-                        } else if (!subj_is_enum_borrow && pt && pt->kind == TYPE_STRING) {
-                            /* Owned borrow subject: clone strings only (existing behavior).
-                               Borrow path skips clone — string payloads in borrow match
-                               are treated like scalars (not owned). */
-                            val = emit_string_clone_val(ctx, val);
                             binder_owns = true;
                         }
 
@@ -7223,8 +7108,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         Type *bt = bs->type;
                         bool owns_heap =
                             bt && !bs->is_borrowed && bs->value &&
-                            (bt->kind == TYPE_STRING ||
-                             (bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
+                            ((bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
                              (bt->kind == TYPE_ENUM && bt->as.enom.has_drop));
                         if (owns_heap)
                         {
@@ -7321,7 +7205,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                "last temp moved" protocol — exactly one drop, no leak / no double-free.
                Non-owned (static/POD) results are no-ops here. */
             if (result_alloca)
-                cg_register_result_temp(ctx, result_alloca, result_type);
 
             if (result_alloca)
                 return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
@@ -7339,7 +7222,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                OR-ing the comparisons together before the CondBr. */
 
         bool use_int_switch = false;
-        if (subj_type && !is_fp && subj_type->kind != TYPE_STRING)
+        if (subj_type && !is_fp)
         {
             /* All non-wildcard patterns must be integer constants. */
             use_int_switch = true;
@@ -7510,20 +7393,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         if (pattern == NULL) continue;
 
                         LLVMValueRef cmp;
-                        if (subj_type && subj_type->kind == TYPE_STRING)
-                        {
-                            LLVMValueRef strcmp_fn = LLVMGetNamedFunction(ctx->module, "strcmp");
-                            LLVMTypeRef  sc_type   = LLVMGlobalGetValueType(strcmp_fn);
-                            LLVMValueRef s_data    = ls_string_data(ctx, subject);
-                            LLVMValueRef p_data    = ls_string_data(ctx, pattern);
-                            LLVMValueRef sc_args[] = {s_data, p_data};
-                            LLVMValueRef sc_res = LLVMBuildCall2(ctx->builder, sc_type,
-                                                                 strcmp_fn, sc_args, 2, "match.strcmp");
-                            cmp = LLVMBuildICmp(ctx->builder, LLVMIntEQ, sc_res,
-                                                LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
-                                                "match.cmp");
-                        }
-                        else if (is_fp)
+                        if (is_fp)
                             cmp = LLVMBuildFCmp(ctx->builder, LLVMRealOEQ, subject, pattern, "match.cmp");
                         else
                             cmp = LLVMBuildICmp(ctx->builder, LLVMIntEQ, subject, pattern, "match.cmp");
@@ -7581,7 +7451,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         /* L-013: register the funneled owned result as the single result temp
            (mirrors the enum path); no-op for static/POD results. */
         if (result_alloca)
-            cg_register_result_temp(ctx, result_alloca, result_type);
         if (result_alloca)
             return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
         return NULL;
@@ -7665,16 +7534,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMValueRef ok_val = LLVMBuildLoad2(
                 ctx->builder, success_llvm, field_ptr, "try.ok.val");
             LLVMBuildStore(ctx->builder, ok_val, result_alloca);
-            /* If the unwrapped value is a string, zero its cap in inner_alloca
-               so scope-cleanup skips the now-moved data (ownership transferred). */
-            if (success_t && success_t->kind == TYPE_STRING) {
-                LLVMTypeRef str_t = ls_string_type(ctx);
-                LLVMValueRef cap_ptr = LLVMBuildStructGEP2(
-                    ctx->builder, str_t, field_ptr, 2, "try.ok.cap.z");
-                LLVMBuildStore(ctx->builder,
-                    LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
-                    cap_ptr);
-            }
         }
         LLVMBuildBr(ctx->builder, merge_bb);
 
@@ -7723,20 +7582,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 };
                 LLVMTypeRef mc_type = LLVMGlobalGetValueType(memcpy_fn);
                 LLVMBuildCall2(ctx->builder, mc_type, memcpy_fn, mc_args, 3, "");
-            }
-            /* Zero the string cap in inner_alloca's Err payload so scope
-               cleanup of the try's temporary alloca doesn't double-free the
-               data now owned by ret_alloca. */
-            Type *err_type = inner_type->as.enom.variants[failure_idx].payload_types[0];
-            if (err_type && err_type->kind == TYPE_STRING) {
-                LLVMValueRef err_field = LLVMBuildStructGEP2(
-                    ctx->builder, err_struct, in_payload, 0, "try.err.field");
-                LLVMTypeRef str_t = ls_string_type(ctx);
-                LLVMValueRef cap_ptr = LLVMBuildStructGEP2(
-                    ctx->builder, str_t, err_field, 2, "try.err.cap.z");
-                LLVMBuildStore(ctx->builder,
-                    LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
-                    cap_ptr);
             }
         }
 
@@ -8558,42 +8403,8 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     LLVMTypeRef fl_ft = LLVMGlobalGetValueType(fl_fn);
                     for (int i = 0; i < lit->as.array_lit.count; i++)
                     {
-                        int pm = ctx->temp_string_count;
                         LLVMValueRef ev = codegen_expr(ctx, lit->as.array_lit.elements[i]);
                         if (ev == NULL) continue;
-                        Type *et = lit->as.array_lit.elements[i]->resolved_type;
-                        /* string element ownership (owned-param ABI, mirror call site):
-                           rvalue → keep cap>0 (callee moves) + mark temp moved;
-                           named var → cap=-2 (callee clones, caller keeps);
-                           __move(var) → keep cap>0 + mark source moved. */
-                        if (et && et->kind == TYPE_STRING)
-                        {
-                            AstNode *raw = lit->as.array_lit.elements[i];
-                            AstNode *uw = ast_unwrap_move(raw);
-                            bool is_move = (raw != uw);
-                            if (uw->kind == AST_IDENT)
-                            {
-                                if (is_move)
-                                {
-                                    CgSymbol *as = cg_scope_resolve(ctx->current_scope,
-                                                                    uw->as.ident.name);
-                                    if (as && as->value)
-                                        mark_string_moved(ctx, as->value, "list: __move elem");
-                                }
-                                else
-                                {
-                                    LLVMValueRef capb = LLVMConstInt(
-                                        LLVMInt32TypeInContext(ctx->context),
-                                        (unsigned long long)LS_CAP_BORROWED, 0);
-                                    ev = LLVMBuildInsertValue(ctx->builder, ev, capb, 2,
-                                                              "list.borrow");
-                                }
-                            }
-                            else
-                            {
-                                cg_mark_last_temp_moved(ctx, pm, "list: rvalue string elem");
-                            }
-                        }
                         LLVMValueRef fl_args[2] = { alloca, ev };
                         LLVMBuildCall2(ctx->builder, fl_ft, fl_fn, fl_args, 2, "");
                     }
@@ -8621,14 +8432,10 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     LLVMTypeRef fp_ft = LLVMGlobalGetValueType(fp_fn);
                     for (int i = 0; i < ml->as.map_lit.pair_count; i++)
                     {
-                        int pmk = ctx->temp_string_count;
                         LLVMValueRef kv = codegen_expr(ctx, ml->as.map_lit.keys[i]);
                         if (kv == NULL) continue;
-                        kv = cg_litelem_string_own(ctx, ml->as.map_lit.keys[i], kv, pmk);
-                        int pmv = ctx->temp_string_count;
                         LLVMValueRef vv = codegen_expr(ctx, ml->as.map_lit.vals[i]);
                         if (vv == NULL) continue;
-                        vv = cg_litelem_string_own(ctx, ml->as.map_lit.vals[i], vv, pmv);
                         LLVMValueRef fp_args[3] = { alloca, kv, vv };
                         LLVMBuildCall2(ctx->builder, fp_ft, fp_fn, fp_args, 3, "");
                     }
@@ -10143,8 +9950,6 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         /* For each by-move capture, dispatch on type:
               string : cap > 0 → free(data)                       (C.5)
               struct : call Struct.__drop(slot_ptr)                (C.7) */
-        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-        LLVMTypeRef str_t = ls_string_type(ctx);
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
             /* Drop this slot if it's a by-move type. */
@@ -10154,28 +9959,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 ctx->builder, env_struct_t, d_env,
                 (unsigned)(i + 2), "cap.slot");
 
-            if (ct->kind == TYPE_STRING) {
-                LLVMValueRef strv = LLVMBuildLoad2(ctx->builder, str_t, slot,
-                                                   "cap.str");
-                LLVMValueRef capv = LLVMBuildExtractValue(ctx->builder, strv, 2,
-                                                          "cap.cap");
-                LLVMValueRef is_owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT,
-                                                      capv, LLVMConstInt(i32_t, 0, 0),
-                                                      "cap.owned");
-                LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, drop_fn, "drop.free");
-                LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, drop_fn, "drop.cont");
-                LLVMBuildCondBr(ctx->builder, is_owned, do_bb, done_bb);
-                LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-                LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, strv, 0,
-                                                          "cap.data");
-                cg_emit_free(ctx, data, "closure.capture.str",
-                             node->line, node->column);
-                LLVMBuildBr(ctx->builder, done_bb);
-                LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
-            }
-            else if (ct->kind == TYPE_STRUCT && ct->as.strukt.has_drop) {
+            if (ct->kind == TYPE_STRUCT && ct->as.strukt.has_drop) {
                 /* Call the struct's auto/user-defined __drop on its slot. */
                 LLVMValueRef sdfn = (LLVMValueRef)ct->as.strukt.drop_fn;
                 if (sdfn == NULL) {
@@ -10558,16 +10342,6 @@ static LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
     free(args);
     (void)env_ptr;
 
-    /* Phase C.7: if the closure returned a string, register it as a temp
-       so cg_flush_temps reclaims it at the statement boundary. Without
-       this, code like `print(stamper(":"))` leaks the heap returned from
-       the closure body (non-Block calls do this in their own codegen
-       paths, but block_call has its own dispatch). */
-    if (!void_ret && block_t->as.function.return_type &&
-        block_t->as.function.return_type->kind == TYPE_STRING)
-    {
-        return cg_push_temp_string(ctx, result);
-    }
     return result;
 }
 
