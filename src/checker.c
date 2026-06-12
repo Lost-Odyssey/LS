@@ -5601,6 +5601,11 @@ static Type *check_expr(Checker *c, AstNode *node)
             break;
         }
 
+        /* C1 `.expect(msg)`: type the message expr (P5-4 S-3: codegen no longer
+           has an untyped-literal fallback — the literal must resolve to Str). */
+        if (node->as.force_unwrap.message != NULL)
+            check_expr(c, node->as.force_unwrap.message);
+
         /* Extract success type T */
         Type *success_t = NULL;
         for (int i = 0; i < inner->as.enom.variant_count; i++)
