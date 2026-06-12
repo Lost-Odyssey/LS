@@ -167,6 +167,88 @@ int __ls_str_scan_digits(const char *data, int len, int start) {
     return i;
 }
 
+/* __ls_str_find(hay, hlen, needle, nlen, start) -> int
+   Byte offset of the first occurrence of `needle` in `hay` at or after `start`,
+   or -1 if absent. Empty needle -> `start` (clamped to hlen). Works on raw
+   ptr+len buffers (NO NUL termination assumed, embedded zeros allowed), so it is
+   safe to call from a read-only `&self` / `&Str` without c_str(). Backs std.str's
+   find / contains? / count / replace / split sep-scan.
+
+   Strategy is size-adaptive (mirrors glibc / CPython fastsearch — the right
+   algorithm depends on the input, no single one wins everywhere):
+
+     * nlen == 1            -> memchr (SIMD, unbeatable for a single byte).
+     * hlen < SHORT_HAY     -> memchr first-byte locate + memcmp verify, NO
+                               preprocessing. For the common case of many
+                               searches over small strings, building a 256-entry
+                               skip table every call would cost more than it saves
+                               (this is glibc's short-needle strategy).
+     * otherwise            -> Boyer-Moore-Horspool / Sunday Quick-Search: memchr
+                               still does the SIMD first-byte locate, but on a
+                               verify miss we skip by the Sunday bad-character
+                               shift (the byte one past the window) instead of +1.
+                               On long / repetitive / common-first-byte text this
+                               avoids the O(n*m) blow-up that plain memchr+memcmp
+                               degrades to. */
+#define LS_STRFIND_SHORT_HAY 256
+
+int __ls_str_find(const char *hay, int hlen, const char *needle, int nlen, int start) {
+    if (start < 0) start = 0;
+    if (nlen == 0) return start <= hlen ? start : -1;
+    if (nlen > hlen) return -1;
+    unsigned char first = (unsigned char)needle[0];
+    if (nlen == 1) {
+        const char *p = memchr(hay + start, first, (size_t)(hlen - start));
+        return p ? (int)(p - hay) : -1;
+    }
+    int last = hlen - nlen;  /* greatest valid start index */
+
+    /* Short haystack: SIMD locate + verify, no skip-table preprocessing. */
+    if (hlen < LS_STRFIND_SHORT_HAY) {
+        int i = start;
+        while (i <= last) {
+            const char *p = memchr(hay + i, first, (size_t)(last - i + 1));
+            if (!p) return -1;
+            i = (int)(p - hay);
+            if (memcmp(hay + i + 1, needle + 1, (size_t)(nlen - 1)) == 0) return i;
+            i++;
+        }
+        return -1;
+    }
+
+    /* Long haystack: Sunday Quick-Search bad-character table. qs[c] = shift to
+       apply, keyed on the byte one PAST the current window; a byte absent from
+       the needle skips the whole window + 1. Shifts are in [1, nlen+1], so `i`
+       strictly increases — no infinite loop. Combining the table with a
+       memchr-forward locate is safe: memchr only moves to the next first-byte
+       candidate, and the Sunday shift provably skips no real match. */
+    int qs[256];
+    for (int k = 0; k < 256; k++) qs[k] = nlen + 1;
+    for (int k = 0; k < nlen; k++) qs[(unsigned char)needle[k]] = nlen - k;
+
+    int i = start;
+    while (i <= last) {
+        const char *p = memchr(hay + i, first, (size_t)(last - i + 1));
+        if (!p) return -1;
+        i = (int)(p - hay);
+        if (memcmp(hay + i + 1, needle + 1, (size_t)(nlen - 1)) == 0) return i;
+        int nxt = i + nlen;             /* Sunday character (one past window) */
+        if (nxt >= hlen) return -1;     /* window already at the tail */
+        i += qs[(unsigned char)hay[nxt]];
+    }
+    return -1;
+}
+
+/* __ls_bytecopy(dst, doff, src, soff, n) — copy `n` bytes from src+soff to
+   dst+doff. A single memcpy (SIMD-accelerated in the CRT) replacing std.str's
+   per-byte copy loops (substr / concat / __clone / reserve copy-on-grow /
+   push_str). Takes byte offsets because LS has no pointer arithmetic, so callers
+   can't form `&buf[off]` themselves. n <= 0 is a no-op (src/dst may be nil). */
+void __ls_bytecopy(void *dst, int doff, const void *src, int soff, int n) {
+    if (n <= 0) return;
+    memcpy((char *)dst + doff, (const char *)src + soff, (size_t)n);
+}
+
 /* Flush all CRT output streams. Codegen injects a call to this before every
    `ret` in main so buffered stdout/stderr is written WHILE this translation unit's
    CRT is still live — not left to the process-teardown path. On Windows the AOT

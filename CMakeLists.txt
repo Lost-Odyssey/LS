@@ -633,6 +633,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# strbench P0/P1/P2 optimization regression — the runtime-accelerated methods
+# (find/contains?/count via __ls_str_find, replace single-byte fast-path,
+# substr/concat/__clone/+/repeat via __ls_bytecopy, split_view zero-copy views)
+# must stay byte-for-byte correct. JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_str_perf_methods
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_perf_methods.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=str_perf_methods
+        -DMARKER=STRPERF
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # string-to-stdlib gap①: a string literal passed where a read-only `&Str` is
 # expected coerces to a static Str and auto-borrows (method-arg + free-fn-arg).
 # JIT+AOT+memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.1).

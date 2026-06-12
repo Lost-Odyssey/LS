@@ -42,6 +42,15 @@ extern fn __ls_get_argc() -> int
 extern fn __ls_get_argv(int i) -> object
 extern fn __ls_proc_exit(int code)
 
+// Substring search over raw ptr+len buffers (memchr+memcmp, SIMD-accelerated in
+// the CRT). No NUL termination assumed — safe to call on a read-only &Str's data.
+// Returns the byte offset of `needle` in `hay` at/after `start`, or -1.
+extern fn __ls_str_find(*u8 hay, int hlen, *u8 needle, int nlen, int start) -> int
+
+// Copy `n` bytes from src+soff to dst+doff (one memcpy, SIMD in the CRT). Byte
+// offsets because LS has no pointer arithmetic. n <= 0 is a no-op.
+extern fn __ls_bytecopy(*u8 dst, int doff, *u8 src, int soff, int n)
+
 // ---- stdin readline (runtime/builtins.c) ----
 
 extern fn __ls_readline_exec()

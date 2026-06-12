@@ -22,11 +22,16 @@
 //   * __from_parts             P2: f-string builder appends into an owned Str.
 //   * __clone / __drop         the generic has_drop deep-copy / destructor hooks.
 
-import std.c
+import std.c as c
 import std.vec
 import std.hash as _hash
 
 struct Str { *u8 data; int len; int cap }
+
+// A borrowed view into a Str: byte offset + length, NO owned buffer (POD, not
+// has_drop). Produced by `split_view` to defer the per-part heap copy that
+// `split` pays eagerly — materialize on demand with `Str.slice_str(view)`.
+struct StrSlice { int off; int len }
 
 impl Str {
     // ---- capacity ----
@@ -43,13 +48,13 @@ impl Str {
             // empty (data == nil). Either way the pointer is NOT ours to realloc —
             // malloc a fresh buffer and copy the existing bytes (copy-on-grow).
             // This makes a static Str safely mutable without touching .rodata.
-            *u8 nd = std.c.malloc(n) as *u8
-            for (int i = 0; i < self.len; i = i + 1) { nd[i] = self.data[i] }
+            *u8 nd = c.malloc(n) as *u8
+            c.__ls_bytecopy(nd, 0, self.data, 0, self.len)
             self.data = nd
             self.cap = n
             return
         }
-        self.data = std.c.realloc(self.data as *u8, n) as *u8
+        self.data = c.realloc(self.data as *u8, n) as *u8
         self.cap = n
     }
 
@@ -83,7 +88,7 @@ impl Str {
     fn byte_at(&self, int i) -> int {
         if i < 0 || i >= self.len {
             print("Str byte index out of bounds")
-            std.c.abort()
+            c.abort()
         }
         return self.data[i]
     }
@@ -104,10 +109,8 @@ impl Str {
     fn push_str(&!self, &Str other) {
         int n = other.len
         self.reserve(self.len + n)
-        for (int i = 0; i < n; i = i + 1) {
-            self.data[self.len] = other.data[i]
-            self.len = self.len + 1
-        }
+        c.__ls_bytecopy(self.data, self.len, other.data, 0, n)
+        self.len = self.len + n
     }
 
     // ---- reserved construction protocols (compiler hooks, later phases) ----
@@ -140,20 +143,10 @@ impl Str {
     // ---- search (byte layer; needle borrowed) ----
 
     // Index of the first occurrence of `needle`, or -1. Empty needle -> 0.
+    // Delegates to the runtime memchr+memcmp scan (SIMD-accelerated in the CRT)
+    // over raw ptr+len — no NUL needed, so the read-only &self borrow is safe.
     fn find(&self, &Str needle) -> int {
-        int n = self.len
-        int m = needle.len
-        if m == 0 { return 0 }
-        if m > n { return -1 }
-        int last = n - m
-        for (int i = 0; i <= last; i = i + 1) {
-            bool hit = true
-            for (int j = 0; j < m; j = j + 1) {
-                if self.data[i + j] != needle.data[j] { hit = false  break }
-            }
-            if hit { return i }
-        }
-        return -1
+        return c.__ls_str_find(self.data, self.len, needle.data, needle.len, 0)
     }
 
     fn contains?(&self, &Str needle) -> bool { return self.find(needle) >= 0 }
@@ -193,7 +186,7 @@ impl Str {
         *u8 z = nil
         Str out = Str { data: z, len: 0, cap: 0 }
         out.reserve(l)
-        for (int i = 0; i < l; i = i + 1) { out.data[i] = self.data[s + i] }
+        c.__ls_bytecopy(out.data, 0, self.data, s, l)
         out.len = l
         return out
     }
@@ -251,8 +244,8 @@ impl Str {
         *u8 z = nil
         Str out = Str { data: z, len: 0, cap: 0 }
         out.reserve(a + b)
-        for (int i = 0; i < a; i = i + 1) { out.data[i] = self.data[i] }
-        for (int i = 0; i < b; i = i + 1) { out.data[a + i] = other.data[i] }
+        c.__ls_bytecopy(out.data, 0, self.data, 0, a)
+        c.__ls_bytecopy(out.data, a, other.data, 0, b)
         out.len = a + b
         return out
     }
@@ -264,12 +257,8 @@ impl Str {
         if times <= 0 { return out }
         int n = self.len
         out.reserve(n * times)
-        int k = 0
         for (int t = 0; t < times; t = t + 1) {
-            for (int i = 0; i < n; i = i + 1) {
-                out.data[k] = self.data[i]
-                k = k + 1
-            }
+            c.__ls_bytecopy(out.data, t * n, self.data, 0, n)
         }
         out.len = n * times
         return out
@@ -310,12 +299,11 @@ impl Str {
         int n = self.len
         int total = 0
         int i = 0
-        while i + m <= n {
-            bool hit = true
-            for (int j = 0; j < m; j = j + 1) {
-                if self.data[i + j] != needle.data[j] { hit = false  break }
-            }
-            if hit { total = total + 1  i = i + m } else { i = i + 1 }
+        while true {
+            int p = c.__ls_str_find(self.data, n, needle.data, m, i)
+            if p < 0 { break }
+            total = total + 1
+            i = p + m
         }
         return total
     }
@@ -342,32 +330,39 @@ impl Str {
     // Replace every non-overlapping occurrence of `old` with `rep`. Empty `old`
     // copies self unchanged.
     fn replace(&self, &Str old, &Str rep) -> Str {
-        *u8 z = nil
-        Str out = Str { data: z, len: 0, cap: 0 }
         int m = old.len
         int n = self.len
-        if m == 0 {
-            out.reserve(n)
-            for (int i = 0; i < n; i = i + 1) { out.data[i] = self.data[i] }
-            out.len = n
+        // Empty `old`: copy self unchanged.
+        if m == 0 { return self.copy() }
+        // Single-byte equal-length fast-path (cf. Rust's 1:1 byte replace): clone
+        // self, then memchr-scan and overwrite each match IN PLACE — no rebuild,
+        // no per-byte push. Result has the same length as self.
+        if m == 1 && rep.len == 1 {
+            Str out = self.copy()
+            int rb = rep.data[0]
+            int i = 0
+            while true {
+                int p = c.__ls_str_find(out.data, n, old.data, 1, i)
+                if p < 0 { break }
+                out.data[p] = rb as u8
+                i = p + 1
+            }
             return out
         }
+        // General path: locate each match with the runtime scan, append the
+        // run before it, then `rep`.
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
         int i = 0
         while i < n {
-            bool hit = false
-            if i + m <= n {
-                hit = true
-                for (int j = 0; j < m; j = j + 1) {
-                    if self.data[i + j] != old.data[j] { hit = false  break }
-                }
+            int p = c.__ls_str_find(self.data, n, old.data, m, i)
+            if p < 0 {
+                for (int k = i; k < n; k = k + 1) { out.push_byte(self.data[k]) }
+                break
             }
-            if hit {
-                for (int j = 0; j < rep.len; j = j + 1) { out.push_byte(rep.data[j]) }
-                i = i + m
-            } else {
-                out.push_byte(self.data[i])
-                i = i + 1
-            }
+            for (int k = i; k < p; k = k + 1) { out.push_byte(self.data[k]) }
+            for (int j = 0; j < rep.len; j = j + 1) { out.push_byte(rep.data[j]) }
+            i = p + m
         }
         return out
     }
@@ -419,21 +414,47 @@ impl Str {
         }
         int start = 0
         int i = 0
-        while i + sn <= n {
-            bool hit = true
-            for (int j = 0; j < sn; j = j + 1) {
-                if self.data[i + j] != sep.data[j] { hit = false  break }
-            }
-            if hit {
-                out.push(self.substr(start, i - start))
-                i = i + sn
-                start = i
-            } else {
-                i = i + 1
-            }
+        while true {
+            int p = c.__ls_str_find(self.data, n, sep.data, sn, i)
+            if p < 0 { break }
+            out.push(self.substr(start, p - start))
+            i = p + sn
+            start = i
         }
         out.push(self.substr(start, n - start))
         return out
+    }
+
+    // Zero-copy split: return byte-offset views (StrSlice) instead of owned Str
+    // parts, so a split of K pieces does NOT do K heap allocations — only the
+    // Vec(StrSlice) buffer grows. Materialize the parts you actually need with
+    // `slice_str`. Same boundary semantics as `split` (empty sep -> whole string;
+    // trailing sep -> trailing empty view).
+    fn split_view(&self, &Str sep) -> Vec(StrSlice) {
+        Vec(StrSlice) out = {}
+        int sn = sep.len
+        int n = self.len
+        if sn == 0 {
+            out.push(StrSlice { off: 0, len: n })
+            return out
+        }
+        int start = 0
+        int i = 0
+        while true {
+            int p = c.__ls_str_find(self.data, n, sep.data, sn, i)
+            if p < 0 { break }
+            out.push(StrSlice { off: start, len: p - start })
+            i = p + sn
+            start = i
+        }
+        out.push(StrSlice { off: start, len: n - start })
+        return out
+    }
+
+    // Materialize a view into an owned Str (the deferred copy). `s` is POD so it
+    // is passed by value. Offsets are clamped by substr.
+    fn slice_str(&self, StrSlice s) -> Str {
+        return self.substr(s.off, s.len)
     }
 
     // Split into lines on '\n', stripping a preceding '\r' (CRLF). A trailing
@@ -624,9 +645,7 @@ impl Str {
         *u8 z = nil
         Str out = Str { data: z, len: 0, cap: 0 }
         out.reserve(self.len)
-        for (int i = 0; i < self.len; i = i + 1) {
-            out.data[i] = self.data[i]
-        }
+        c.__ls_bytecopy(out.data, 0, self.data, 0, self.len)
         out.len = self.len
         return out
     }
@@ -634,7 +653,7 @@ impl Str {
     // Destructor: free the buffer only when we own it (cap > 0). Static strings
     // (cap == 0) point at .rodata and must not be freed.
     fn __drop() {
-        if self.cap > 0 { std.c.free(self.data as *u8) }
+        if self.cap > 0 { c.free(self.data as *u8) }
     }
 }
 
@@ -676,8 +695,9 @@ impl Add for Str {
     fn +(&self, &Str rhs) -> Str {
         Str out = ""
         out.reserve(self.len + rhs.len)
-        for (int i = 0; i < self.len; i = i + 1) { out.push_byte(self.data[i]) }
-        for (int i = 0; i < rhs.len; i = i + 1) { out.push_byte(rhs.data[i]) }
+        c.__ls_bytecopy(out.data, 0, self.data, 0, self.len)
+        c.__ls_bytecopy(out.data, self.len, rhs.data, 0, rhs.len)
+        out.len = self.len + rhs.len
         return out
     }
 }
