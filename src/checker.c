@@ -1910,6 +1910,27 @@ static void ensure_generic_struct_impls_local(Checker *c, Type *st)
         tp_names, st->as.strukt.generic_args, st->as.strukt.generic_arg_count);
 }
 
+/* find_method with the VR-LIM-018 on-demand registration fallback: an imported
+   generic instantiation (e.g. Vec(std_str__Str) stamped by another module's
+   checker) has no impl methods in THIS checker's registry until first method
+   dispatch. The method-call path already retries via
+   ensure_generic_struct_impls_local; protocol gates (__index/__index_set) that
+   probe with a bare find_method must use this wrapper or they miss (the old
+   "cannot index non-array type 'Vec(...)'" on borrow-match binders from
+   imported enums, plan_std_map §13). */
+static Type *find_method_ensured(Checker *c, Type *st, const char *mname)
+{
+    const char *key = impl_key_of_type(st);
+    if (key == NULL) return NULL;
+    Type *m = find_method(c, key, mname);
+    if (m == NULL && st->kind == TYPE_STRUCT && st->as.strukt.generic_base)
+    {
+        ensure_generic_struct_impls_local(c, st);
+        m = find_method(c, key, mname);
+    }
+    return m;
+}
+
 /* ---- Resolve TypeNode -> Type ---- */
 
 static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
@@ -4755,6 +4776,22 @@ static Type *check_expr(Checker *c, AstNode *node)
                so a Ruby-style closure literal (`|x| body`) at this position can
                infer its untyped params from the callee's `Block(...)` signature. */
             Type *param_type = callee_type->as.function.params[i + param_offset];
+            /* §13: explicit `&x` argument to a read-only `&T` parameter — strip
+               the address-of shell so the call takes the proven auto-borrow path
+               (identical to passing `x` bare). Without this, `&x` types as a raw
+               `*T` and mismatches the `&T` formal. Writable borrows stay explicit
+               `&!x` (AST_MUT_BORROW — untouched here). */
+            {
+                AstNode *argn = node->as.call.args[i];
+                if (param_type && param_type->kind == TYPE_REFERENCE &&
+                    !param_type->is_mut &&
+                    argn->kind == AST_UNARY && argn->as.unary.op == TOKEN_AMP &&
+                    argn->as.unary.operand->kind == AST_IDENT)
+                {
+                    /* shell intentionally leaked, same as the index-protocol rewrite */
+                    node->as.call.args[i] = argn->as.unary.operand;
+                }
+            }
             Type *saved_exp = c->expected_type;
             c->expected_type = param_type;
             Type *arg_type = check_expr(c, node->as.call.args[i]);
@@ -4914,7 +4951,7 @@ static Type *check_expr(Checker *c, AstNode *node)
             }
         }
         else if (obj->kind == TYPE_STRUCT &&
-                 find_method(c, impl_key_of_type(obj), "__index") != NULL)
+                 find_method_ensured(c, obj, "__index") != NULL)
         {
             /* Index protocol: `v[i]` on a struct that opts in via
                `__index(&self, int) -> T` desugars to `v.__index(i)`. Rewrite the
@@ -6205,7 +6242,7 @@ static void check_stmt(Checker *c, AstNode *node)
             AstNode *tobj = node->as.assign.target->as.index_expr.object;
             Type *to = check_expr(c, tobj);
             if (to && to->kind == TYPE_STRUCT &&
-                find_method(c, impl_key_of_type(to), "__index_set") != NULL)
+                find_method_ensured(c, to, "__index_set") != NULL)
             {
                 AstNode *idxn = node->as.assign.target->as.index_expr.index;
                 AstNode *valn = node->as.assign.value;

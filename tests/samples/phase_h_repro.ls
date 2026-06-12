@@ -14,7 +14,7 @@ fn main() {
     // Extract the map and access a value — this triggers a deep-clone via map subscript
     match root {
         Object(keys, entries) => {
-            Str k = keys.get!(0)     // "x" (borrow-match binder Vec: `[]` unsupported, see plan_std_map §13)
+            Str k = keys[0]     // "x" (§13 已修：borrow-match binder Vec 可用 `[]` 下标)
             match entries.get(k) {      // Map.get returns Option(V) (clone of "hello" Str)
                 Some(v) => { print("v is a string") }
                 None => {}
