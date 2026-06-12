@@ -929,7 +929,7 @@ static void test_struct_drop_nested(void) {
         "struct Outer { Inner inner; int y; }\n"
         "impl Outer {\n"
         "    fn __drop() {\n"
-        "        self.inner.__drop()\n"
+        "        print(\"Outer dropped\")\n"
         "    }\n"
         "}\n"
         "fn main() -> int {\n"
@@ -938,7 +938,9 @@ static void test_struct_drop_nested(void) {
         "}\n"
     );
     ASSERT_NOT_NULL(ir);
-    /* Both __drop functions should be generated */
+    /* Both __drop functions should be generated: the compiler auto-drops the
+       nested Inner field after running the user-defined Outer.__drop (explicit
+       __drop() calls are rejected by the checker, see A-2). */
     ASSERT_TRUE(ir_contains(ir, "@Inner.__drop") && ir_contains(ir, "@Outer.__drop"));
     LLVMDisposeMessage(ir);
     printf(" ok\n");

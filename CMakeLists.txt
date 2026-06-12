@@ -1183,6 +1183,16 @@ add_test(
 )
 set_tests_properties(test_nested_decl_reject PROPERTIES DEPENDS "test_string_type_reject")
 
+# A-2 (docs/bugs_deferred_p5_4.md §2): explicit `.__drop()` calls are rejected.
+add_test(
+    NAME test_explicit_drop_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/explicit_drop_reject.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_explicit_drop_reject.cmake
+)
+set_tests_properties(test_explicit_drop_reject PROPERTIES DEPENDS "test_nested_decl_reject")
+
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(

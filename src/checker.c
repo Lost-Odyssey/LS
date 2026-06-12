@@ -4608,31 +4608,20 @@ static Type *check_expr(Checker *c, AstNode *node)
 
             after_method_check: ;
 
-            /* Check for dangerous __drop call in user-defined __drop */
-            if (c->in_user_defined_drop &&
-                strcmp(method_name, "__drop") == 0 &&
-                is_method_call)
+            /* A-2 (docs/bugs_deferred_p5_4.md §2): explicit `.__drop()` calls in
+               source are rejected. The compiler manages destruction automatically
+               (RAII at scope exit); an explicit call is always a double-free
+               footgun, and for a compiler-generated member __drop the symbol may
+               not even be emitted (JIT "Symbols not found"). Block it cleanly at
+               the checker rather than crashing/double-freeing at runtime. */
+            if (strcmp(method_name, "__drop") == 0 && is_method_call)
             {
-                /* Check if the target struct has compiler-generated __drop (no user impl) */
-                Type *target_struct = find_struct_type(c, method_struct);
-                if (target_struct && target_struct->kind == TYPE_STRUCT &&
-                    target_struct->as.strukt.has_drop)
-                {
-                    /* The target has __drop. Check if it's compiler-generated (no user impl)
-                       or user-defined (user wrote impl with __drop).
-                       We can check if this is a compiler-generated __drop by seeing
-                       if the struct was defined without an impl block.
-                       Simpler: check if __drop method has no body in the source (hard to detect).
-                       Alternative: don't warn if the caller struct also has compiler-generated __drop
-                       (in that case user is just propagating the auto-cleanup). */
-
-                    /* Only warn if we're in a user-defined __drop (not compiler-generated) */
-                    /* We can't easily detect this, but we can warn about the pattern */
-                    checker_warning(c, node->line, node->column,
-                                    "explicitly calling __drop() in a __drop method may cause double-free if "
-                                    "the target has compiler-generated destructor; "
-                                    "the compiler will also call it automatically when the variable goes out of scope");
-                }
+                checker_error(c, node->line, node->column,
+                              "cannot call __drop() explicitly; the compiler "
+                              "destroys values automatically at scope exit "
+                              "(an explicit call would double-free)");
+                result = NULL;
+                break;
             }
         }
         else
