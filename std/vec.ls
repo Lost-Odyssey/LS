@@ -162,13 +162,11 @@ impl(T) Vec(T) {
         return tmp
     }
 
-    // Bounds-checked read: deep clone of element i, aborting on out-of-range.
-    fn get(&self, int i) -> T {
-        if i < 0 || i >= self.len {
-            print(f"Vec index out of bounds: len={self.len} index={i}")
-            std.c.abort()
-        }
-        return self.get!(i)
+    // Safe recoverable read: deep clone of element i, or None when out-of-range.
+    // For the panic-on-OOB form use `v[i]`; for the unchecked form use `get!`.
+    fn get(&self, int i) -> Option(T) {
+        if i < 0 || i >= self.len { return None }
+        return Some(self.get!(i))
     }
 
     // UNCHECKED raw overwrite of slot i: drop the old, move the new in. Caller MUST
@@ -188,9 +186,16 @@ impl(T) Vec(T) {
     }
 
     // Index / IndexMut protocol (reserved methods): enables `v[i]` (read, clone)
-    // and `v[i] = x` (write, drop old + move new). These delegate to the checked
-    // get/set, so `v[i]` / `v[i] = x` are bounds-checked (abort on out-of-range).
-    fn __index(&self, int i) -> T { return self.get(i) }
+    // and `v[i] = x` (write, drop old + move new). Both bounds-checked, aborting
+    // on out-of-range. __index must stay `-> T` (never Option) or `v[i].foo()`
+    // chains would break; it carries its own check now that get returns Option.
+    fn __index(&self, int i) -> T {
+        if i < 0 || i >= self.len {
+            print(f"Vec index out of bounds: len={self.len} index={i}")
+            std.c.abort()
+        }
+        return self.get!(i)
+    }
     fn __index_set(&!self, int i, T x) { self.set(i, x) }
 
     // Append deep clones of every element in src. The source Vec is borrowed

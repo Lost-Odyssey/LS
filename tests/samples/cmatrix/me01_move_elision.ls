@@ -53,7 +53,7 @@ fn main() {
     // --- Vec var_decl move (was a latent double-free before Q4) ---
     Vec(Str) v1 = ["eta".upper(), "theta".upper()]
     Vec(Str) v2 = v1
-    check(v2.get(0).eq?("ETA"), "vec-var")
+    check(v2.get!(0).eq?("ETA"), "vec-var")
 
     // --- Map var_decl move ---
     Map(Str,int) p1 = { "k": 7 }

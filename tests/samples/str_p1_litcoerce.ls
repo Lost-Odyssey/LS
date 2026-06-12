@@ -54,7 +54,7 @@ fn main() {
     v.push("x")
     v.push("yy")
     check(v.len() == 2, "vec push lit")
-    check(v.get(1).eq?("yy"), "vec elem lit")
+    check(v.get!(1).eq?("yy"), "vec elem lit")
 
     // owned Str (deep copy allocates) still works alongside static literals,
     // and appending a byte to it keeps drop clean

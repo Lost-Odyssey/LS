@@ -37,8 +37,8 @@ fn main() {
     int vsAll = 0
     int n = 0
     while n < 10 {
-        ksAll = ksAll + ks.get(n)
-        vsAll = vsAll + vs.get(n)
+        ksAll = ksAll + ks.get!(n)
+        vsAll = vsAll + vs.get!(n)
         n = n + 1
     }
     check(ksAll == 45, "keys() sum")

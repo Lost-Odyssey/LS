@@ -33,7 +33,7 @@ fn main() {
     Vec(Str) v = {}
     v.push("alpha")
     v.push("beta")
-    Str e = f"{v.get(0)}-{v.get(1)}"
+    Str e = f"{v.get!(0)}-{v.get!(1)}"
     check(e.eq?("alpha-beta"), "vec elem interp")
 
     print("STRFI PASS")

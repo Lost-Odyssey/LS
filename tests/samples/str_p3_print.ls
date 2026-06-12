@@ -37,8 +37,8 @@ fn main() {
     Vec(Str) v = {}
     v.push("alpha")
     v.push(f"beta-{1}")
-    print(v.get(0))                // alpha
-    print(v.get(1))                // beta-1
+    print(v.get!(0))                // alpha
+    print(v.get!(1))                // beta-1
     check(v.len() == 2, "vec len")
 
     // bare-binding print does NOT consume (b still usable afterward)

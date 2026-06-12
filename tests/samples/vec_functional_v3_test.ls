@@ -11,11 +11,11 @@ fn main() {
         print("FAIL: doubled.length expected 5")
         return
     }
-    if doubled.get(0) != 2 {
+    if doubled.get!(0) != 2 {
         print("FAIL: doubled[0] expected 2")
         return
     }
-    if doubled.get(4) != 10 {
+    if doubled.get!(4) != 10 {
         print("FAIL: doubled[4] expected 10")
         return
     }
@@ -27,11 +27,11 @@ fn main() {
         print("FAIL: strs.length expected 5")
         return
     }
-    if strs.get(0).compare("v=1") != 0 {
+    if strs.get!(0).compare("v=1") != 0 {
         print("FAIL: strs[0] expected 'v=1'")
         return
     }
-    if strs.get(4).compare("v=5") != 0 {
+    if strs.get!(4).compare("v=5") != 0 {
         print("FAIL: strs[4] expected 'v=5'")
         return
     }
@@ -39,7 +39,7 @@ fn main() {
 
     // === map with condition (multiply only evens, else 0) ===
     Vec(int) evens_doubled = nums.map(int)(|x| x * 2)
-    if evens_doubled.get(1) != 4 {
+    if evens_doubled.get!(1) != 4 {
         print("FAIL: evens_doubled[1] expected 4")
         return
     }
@@ -67,15 +67,15 @@ fn main() {
         print("FAIL: lengths.length expected 3")
         return
     }
-    if lengths.get(0) != 5 {
+    if lengths.get!(0) != 5 {
         print("FAIL: lengths[0] expected 5 (hello)")
         return
     }
-    if lengths.get(1) != 5 {
+    if lengths.get!(1) != 5 {
         print("FAIL: lengths[1] expected 5 (world)")
         return
     }
-    if lengths.get(2) != 2 {
+    if lengths.get!(2) != 2 {
         print("FAIL: lengths[2] expected 2 (hi)")
         return
     }
@@ -87,11 +87,11 @@ fn main() {
         print("FAIL: uppers.length expected 3")
         return
     }
-    if uppers.get(0).compare("HELLO") != 0 {
+    if uppers.get!(0).compare("HELLO") != 0 {
         print("FAIL: uppers[0] expected HELLO")
         return
     }
-    if uppers.get(2).compare("HI") != 0 {
+    if uppers.get!(2).compare("HI") != 0 {
         print("FAIL: uppers[2] expected HI")
         return
     }
@@ -104,11 +104,11 @@ fn main() {
         print("FAIL: chain map.filter expected len 2")
         return
     }
-    if big.get(0) != 12 {
+    if big.get!(0) != 12 {
         print("FAIL: chain[0] expected 12")
         return
     }
-    if big.get(1) != 15 {
+    if big.get!(1) != 15 {
         print("FAIL: chain[1] expected 15")
         return
     }
@@ -120,11 +120,11 @@ fn main() {
         print("FAIL: bools.length expected 5")
         return
     }
-    if bools.get(0) != false {
+    if bools.get!(0) != false {
         print("FAIL: bools[0] expected false")
         return
     }
-    if bools.get(4) != true {
+    if bools.get!(4) != true {
         print("FAIL: bools[4] expected true")
         return
     }

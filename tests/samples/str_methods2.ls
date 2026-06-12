@@ -48,28 +48,28 @@ fn main() {
     Str AB = "AB"
     Vec(int) bs = AB.bytes()
     check(bs.len() == 2, "bytes len")
-    check(bs.get(0) == 65, "bytes 0")
-    check(bs.get(1) == 66, "bytes 1")
+    check(bs.get!(0) == 65, "bytes 0")
+    check(bs.get!(1) == 66, "bytes 1")
 
     // split
     Vec(Str) parts = s.split(dot)
     check(parts.len() == 4, "split len")
-    check(parts.get(0).eq?("a"), "split 0")
-    check(parts.get(3).eq?("b"), "split 3")
+    check(parts.get!(0).eq?("a"), "split 0")
+    check(parts.get!(3).eq?("b"), "split 3")
 
     Str csv = "a,b,"
     Str comma = ","
     Vec(Str) cp = csv.split(comma)
     check(cp.len() == 3, "split trailing")
-    check(cp.get(2).empty?(), "split trailing empty")
+    check(cp.get!(2).empty?(), "split trailing empty")
 
     // lines
     Str text = "one\ntwo\r\nthree"
     Vec(Str) ls = text.lines()
     check(ls.len() == 3, "lines len")
-    check(ls.get(0).eq?("one"), "lines 0")
-    check(ls.get(1).eq?("two"), "lines crlf")
-    check(ls.get(2).eq?("three"), "lines 2")
+    check(ls.get!(0).eq?("one"), "lines 0")
+    check(ls.get!(1).eq?("two"), "lines crlf")
+    check(ls.get!(2).eq?("three"), "lines 2")
 
     print("STRM2 PASS")
 }

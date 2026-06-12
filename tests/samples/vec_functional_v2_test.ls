@@ -13,19 +13,19 @@ fn main() {
         return
     }
     // Verify contents: 4, 5, 9, 6
-    if big.get(0) != 4 {
+    if big.get!(0) != 4 {
         print("FAIL: filter[0] expected 4")
         return
     }
-    if big.get(1) != 5 {
+    if big.get!(1) != 5 {
         print("FAIL: filter[1] expected 5")
         return
     }
-    if big.get(2) != 9 {
+    if big.get!(2) != 9 {
         print("FAIL: filter[2] expected 9")
         return
     }
-    if big.get(3) != 6 {
+    if big.get!(3) != 6 {
         print("FAIL: filter[3] expected 6")
         return
     }

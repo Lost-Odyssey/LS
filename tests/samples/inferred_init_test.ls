@@ -49,18 +49,18 @@ fn main() {
     check(v.len() == 0, "Vec {} empty")
     v.push(f"a"); v.push(f"b")
     check(v.len() == 2, "Vec {} push works")
-    check(v.get(0).eq?("a"), "Vec {} get(0)")
+    check(v.get!(0).eq?("a"), "Vec {} get(0)")
 
     // Vec(int) too
     Vec(int) vi = {}
     for (int i = 0; i < 5; i = i + 1) { vi.push(i * i) }
-    check(vi.len() == 5 && vi.get(4) == 16, "Vec(int) {} works")
+    check(vi.len() == 5 && vi.get!(4) == 16, "Vec(int) {} works")
 
     // ---- list-literal init (the __from_list protocol; Vec(T) v = [..]) ----
     Vec(int) li = [10, 20, 30, 40]
-    check(li.len() == 4 && li.get(0) == 10 && li.get(3) == 40, "Vec(int) = [..]")
+    check(li.len() == 4 && li.get!(0) == 10 && li.get!(3) == 40, "Vec(int) = [..]")
     Vec(Str) ls = [f"a", f"b", f"c"]
-    check(ls.len() == 3 && ls.get(1).eq?("b"), "Vec(Str) = [..]")
+    check(ls.len() == 3 && ls.get!(1).eq?("b"), "Vec(Str) = [..]")
     Vec(int) le = []
     check(le.len() == 0, "Vec = [] empty")
 

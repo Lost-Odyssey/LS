@@ -78,7 +78,7 @@ fn main() {
 
     // ---- L: get(i) (deep-clone, source vec unaffected) ----
     Vec(Data) v12 = [Text(owned("l1")), Text(owned("l2")), Text(owned("l3"))]
-    Data l_mid = v12.get(1)
+    Data l_mid = v12.get!(1)
     print("L: get done, vec len =", v12.len())
     // l_mid owns its copy; v12[1] still alive
 

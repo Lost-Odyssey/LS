@@ -103,7 +103,7 @@ fn ul(&!MdDoc d, Vec(Str) items) {
     Vec(Vec(MdInline)) its = {}
     int i = 0
     while i < items.len {
-        its.push(_inline_text(items.get(i)))
+        its.push(_inline_text(items.get!(i)))
         i = i + 1
     }
     d.blocks.push(UnorderedList(its))
@@ -113,7 +113,7 @@ fn ol(&!MdDoc d, Vec(Str) items) {
     Vec(Vec(MdInline)) its = {}
     int i = 0
     while i < items.len {
-        its.push(_inline_text(items.get(i)))
+        its.push(_inline_text(items.get!(i)))
         i = i + 1
     }
     d.blocks.push(OrderedList(its))
@@ -157,7 +157,7 @@ fn _render_inlines(Vec(MdInline) inls) -> Str {
     Str out = ""
     int i = 0
     while i < inls.len {
-        out.push_str(_render_inline(inls.get(i)))
+        out.push_str(_render_inline(inls.get!(i)))
         i = i + 1
     }
     return out
@@ -172,13 +172,13 @@ fn _render_table(Vec(Str) headers, Vec(Vec(Str)) rows) -> Str {
     Vec(int) widths = {}
     int c = 0
     while c < cols {
-        int w = headers.get(c).len()
+        int w = headers.get!(c).len()
         if w < 3 { w = 3 }
         int r = 0
         while r < rows.len {
-            Vec(Str) row = rows.get(r)
+            Vec(Str) row = rows.get!(r)
             if c < row.len {
-                int cw = row.get(c).len()
+                int cw = row.get!(c).len()
                 if cw > w { w = cw }
             }
             r = r + 1
@@ -192,7 +192,7 @@ fn _render_table(Vec(Str) headers, Vec(Vec(Str)) rows) -> Str {
     c = 0
     while c < cols {
         out.push_str(" ")
-        out.push_str(_pad_right(headers.get(c), widths.get(c)))
+        out.push_str(_pad_right(headers.get!(c), widths.get!(c)))
         out.push_str(" |")
         c = c + 1
     }
@@ -201,21 +201,21 @@ fn _render_table(Vec(Str) headers, Vec(Vec(Str)) rows) -> Str {
     c = 0
     while c < cols {
         out.push_str(" ")
-        out.push_str(_repeat_char('-', widths.get(c)))
+        out.push_str(_repeat_char('-', widths.get!(c)))
         out.push_str(" |")
         c = c + 1
     }
     out.push_str("\n")
     int r = 0
     while r < rows.len {
-        Vec(Str) row = rows.get(r)
+        Vec(Str) row = rows.get!(r)
         out.push_str("|")
         c = 0
         while c < cols {
             Str cell = ""
-            if c < row.len { cell = row.get(c) }
+            if c < row.len { cell = row.get!(c) }
             out.push_str(" ")
-            out.push_str(_pad_right(cell, widths.get(c)))
+            out.push_str(_pad_right(cell, widths.get!(c)))
             out.push_str(" |")
             c = c + 1
         }
@@ -254,7 +254,7 @@ fn _render_block(MdBlock b) -> Str {
             int i = 0
             while i < items.len {
                 r.push_str("- ")
-                r.push_str(_render_inlines(items.get(i)))
+                r.push_str(_render_inlines(items.get!(i)))
                 r.push_str("\n")
                 i = i + 1
             }
@@ -266,7 +266,7 @@ fn _render_block(MdBlock b) -> Str {
             int i = 0
             while i < items.len {
                 r.push_str(f"{i + 1}. ")
-                r.push_str(_render_inlines(items.get(i)))
+                r.push_str(_render_inlines(items.get!(i)))
                 r.push_str("\n")
                 i = i + 1
             }
@@ -277,7 +277,7 @@ fn _render_block(MdBlock b) -> Str {
             Str inner = ""
             int i = 0
             while i < children.len {
-                inner.push_str(_render_block(children.get(i)))
+                inner.push_str(_render_block(children.get!(i)))
                 i = i + 1
             }
             Str r = ""
@@ -318,7 +318,7 @@ fn render(&MdDoc d) -> Str {
     Str out = ""
     int i = 0
     while i < d.blocks.len {
-        out.push_str(_render_block(d.blocks.get(i)))
+        out.push_str(_render_block(d.blocks.get!(i)))
         i = i + 1
     }
     return out
@@ -386,7 +386,7 @@ fn _split_table_row(&Str line) -> Vec(Str) {
     int rn = raw.len()
     int i = 0
     while i < rn {
-        Str cell = raw.get(i).trim()
+        Str cell = raw.get!(i).trim()
         bool skip = false
         if i == 0 && cell.len() == 0 { skip = true }
         if i == rn - 1 && cell.len() == 0 { skip = true }
@@ -549,7 +549,7 @@ fn _parse_blocks(Str input) -> Vec(MdBlock) {
     int i = 0
 
     while i < nl {
-        Str line = lines.get(i)
+        Str line = lines.get!(i)
         Str t = line.trim()
 
         if t.len() == 0 {
@@ -571,7 +571,7 @@ fn _parse_blocks(Str input) -> Vec(MdBlock) {
             bool firstc = true
             i = i + 1
             while i < nl {
-                Str cl = lines.get(i)
+                Str cl = lines.get!(i)
                 if cl.trim().starts_with?("```") { i = i + 1; break }
                 if !firstc { code.push_str("\n") }
                 code.push_str(cl)
@@ -591,7 +591,7 @@ fn _parse_blocks(Str input) -> Vec(MdBlock) {
         if line.starts_with?("- ") || line.starts_with?("* ") {
             Vec(Vec(MdInline)) items = {}
             while i < nl {
-                Str li = lines.get(i)
+                Str li = lines.get!(i)
                 if li.starts_with?("- ") || li.starts_with?("* ") {
                     items.push(_parse_inlines(li.substr(2, li.len() - 2).trim()))
                     i = i + 1
@@ -606,7 +606,7 @@ fn _parse_blocks(Str input) -> Vec(MdBlock) {
         if _ordered_prefix_len(line) > 0 {
             Vec(Vec(MdInline)) items = {}
             while i < nl {
-                Str li = lines.get(i)
+                Str li = lines.get!(i)
                 int p = _ordered_prefix_len(li)
                 if p > 0 {
                     items.push(_parse_inlines(li.substr(p, li.len() - p).trim()))
@@ -623,7 +623,7 @@ fn _parse_blocks(Str input) -> Vec(MdBlock) {
             Str inner = ""
             bool firstq = true
             while i < nl {
-                Str li = lines.get(i)
+                Str li = lines.get!(i)
                 Str lt = li.trim()
                 if li.starts_with?("> ") {
                     if !firstq { inner.push_str("\n") }
@@ -642,19 +642,19 @@ fn _parse_blocks(Str input) -> Vec(MdBlock) {
             continue
         }
 
-        if t.starts_with?("|") && i + 1 < nl && _is_table_sep(lines.get(i + 1)) {
+        if t.starts_with?("|") && i + 1 < nl && _is_table_sep(lines.get!(i + 1)) {
             Vec(Str) headers = _split_table_row(line)
             int ncols = headers.len
             i = i + 2
             Vec(Vec(Str)) rows = {}
             while i < nl {
-                Str rl = lines.get(i)
+                Str rl = lines.get!(i)
                 if !rl.trim().starts_with?("|") { break }
                 Vec(Str) rc = _split_table_row(rl)
                 Vec(Str) row = {}
                 int k = 0
                 while k < ncols {
-                    if k < rc.len { row.push(rc.get(k)) }
+                    if k < rc.len { row.push(rc.get!(k)) }
                     else { row.push("") }
                     k = k + 1
                 }
@@ -668,7 +668,7 @@ fn _parse_blocks(Str input) -> Vec(MdBlock) {
         Str para = ""
         bool firstp = true
         while i < nl {
-            Str pl = lines.get(i)
+            Str pl = lines.get!(i)
             Str pt = pl.trim()
             if pt.len() == 0 { break }
             if _heading_level(pl) > 0 { break }
@@ -717,7 +717,7 @@ fn _inlines_plain(Vec(MdInline) inls) -> Str {
     Str out = ""
     int i = 0
     while i < inls.len {
-        out.push_str(_inline_plain(inls.get(i)))
+        out.push_str(_inline_plain(inls.get!(i)))
         i = i + 1
     }
     return out
@@ -741,7 +741,7 @@ fn _inline_links(Vec(MdInline) inls) -> Vec(Str) {
     Vec(Str) out = {}
     int i = 0
     while i < inls.len {
-        Str u = _inline_link_of(inls.get(i))
+        Str u = _inline_link_of(inls.get!(i))
         if u.len() > 0 { out.push(u) }
         i = i + 1
     }
@@ -758,9 +758,9 @@ fn _block_links(MdBlock b) -> Vec(Str) {
             Vec(Str) out = {}
             int i = 0
             while i < items.len {
-                Vec(Str) ls = _inline_links(items.get(i))
+                Vec(Str) ls = _inline_links(items.get!(i))
                 int j = 0
-                while j < ls.len { out.push(ls.get(j)); j = j + 1 }
+                while j < ls.len { out.push(ls.get!(j)); j = j + 1 }
                 i = i + 1
             }
             return out
@@ -769,9 +769,9 @@ fn _block_links(MdBlock b) -> Vec(Str) {
             Vec(Str) out = {}
             int i = 0
             while i < items.len {
-                Vec(Str) ls = _inline_links(items.get(i))
+                Vec(Str) ls = _inline_links(items.get!(i))
                 int j = 0
-                while j < ls.len { out.push(ls.get(j)); j = j + 1 }
+                while j < ls.len { out.push(ls.get!(j)); j = j + 1 }
                 i = i + 1
             }
             return out
@@ -780,9 +780,9 @@ fn _block_links(MdBlock b) -> Vec(Str) {
             Vec(Str) out = {}
             int i = 0
             while i < ch.len {
-                Vec(Str) ls = _block_links(ch.get(i))
+                Vec(Str) ls = _block_links(ch.get!(i))
                 int j = 0
-                while j < ls.len { out.push(ls.get(j)); j = j + 1 }
+                while j < ls.len { out.push(ls.get!(j)); j = j + 1 }
                 i = i + 1
             }
             return out
@@ -802,7 +802,7 @@ fn _block_plain(MdBlock b) -> Str {
             Str s = ""
             int i = 0
             while i < items.len {
-                s.push_str(_inlines_plain(items.get(i)))
+                s.push_str(_inlines_plain(items.get!(i)))
                 s.push_str("\n")
                 i = i + 1
             }
@@ -812,7 +812,7 @@ fn _block_plain(MdBlock b) -> Str {
             Str s = ""
             int i = 0
             while i < items.len {
-                s.push_str(_inlines_plain(items.get(i)))
+                s.push_str(_inlines_plain(items.get!(i)))
                 s.push_str("\n")
                 i = i + 1
             }
@@ -822,7 +822,7 @@ fn _block_plain(MdBlock b) -> Str {
             Str s = ""
             int i = 0
             while i < ch.len {
-                s.push_str(_block_plain(ch.get(i)))
+                s.push_str(_block_plain(ch.get!(i)))
                 s.push_str("\n")
                 i = i + 1
             }
@@ -832,10 +832,10 @@ fn _block_plain(MdBlock b) -> Str {
             Str s = ""
             int r = 0
             while r < rows.len {
-                Vec(Str) row = rows.get(r)
+                Vec(Str) row = rows.get!(r)
                 int c = 0
                 while c < row.len {
-                    s.push_str(row.get(c))
+                    s.push_str(row.get!(c))
                     s.push_str(" ")
                     c = c + 1
                 }
@@ -867,7 +867,7 @@ fn extract_headings(&MdDoc d) -> Vec(Str) {
     Vec(Str) out = {}
     int i = 0
     while i < d.blocks.len {
-        Str h = _heading_text(d.blocks.get(i))
+        Str h = _heading_text(d.blocks.get!(i))
         if h.len() > 0 { out.push(h) }
         i = i + 1
     }
@@ -879,9 +879,9 @@ fn extract_links(&MdDoc d) -> Vec(Str) {
     Vec(Str) out = {}
     int i = 0
     while i < d.blocks.len {
-        Vec(Str) ls = _block_links(d.blocks.get(i))
+        Vec(Str) ls = _block_links(d.blocks.get!(i))
         int j = 0
-        while j < ls.len { out.push(ls.get(j)); j = j + 1 }
+        while j < ls.len { out.push(ls.get!(j)); j = j + 1 }
         i = i + 1
     }
     return out
@@ -892,7 +892,7 @@ fn to_plain_text(&MdDoc d) -> Str {
     Str out = ""
     int i = 0
     while i < d.blocks.len {
-        out.push_str(_block_plain(d.blocks.get(i)))
+        out.push_str(_block_plain(d.blocks.get!(i)))
         out.push_str("\n")
         i = i + 1
     }
@@ -1003,7 +1003,7 @@ fn _html_inlines(Vec(MdInline) inls) -> Str {
     Str out = ""
     int i = 0
     while i < inls.len {
-        out.push_str(_html_inline(inls.get(i)))
+        out.push_str(_html_inline(inls.get!(i)))
         i = i + 1
     }
     return out
@@ -1014,19 +1014,19 @@ fn _html_table(Vec(Str) headers, Vec(Vec(Str)) rows) -> Str {
     int c = 0
     while c < headers.len {
         r.push_str("<th>")
-        r.push_str(_html_escape(headers.get(c)))
+        r.push_str(_html_escape(headers.get!(c)))
         r.push_str("</th>")
         c = c + 1
     }
     r.push_str("</tr>\n</thead>\n<tbody>\n")
     int rr = 0
     while rr < rows.len {
-        Vec(Str) row = rows.get(rr)
+        Vec(Str) row = rows.get!(rr)
         r.push_str("<tr>")
         int cc = 0
         while cc < headers.len {
             Str cell = ""
-            if cc < row.len { cell = row.get(cc) }
+            if cc < row.len { cell = row.get!(cc) }
             r.push_str("<td>")
             r.push_str(_html_escape(cell))
             r.push_str("</td>")
@@ -1071,7 +1071,7 @@ fn _html_block(MdBlock b) -> Str {
             int i = 0
             while i < items.len {
                 r.push_str("<li>")
-                r.push_str(_html_inlines(items.get(i)))
+                r.push_str(_html_inlines(items.get!(i)))
                 r.push_str("</li>\n")
                 i = i + 1
             }
@@ -1083,7 +1083,7 @@ fn _html_block(MdBlock b) -> Str {
             int i = 0
             while i < items.len {
                 r.push_str("<li>")
-                r.push_str(_html_inlines(items.get(i)))
+                r.push_str(_html_inlines(items.get!(i)))
                 r.push_str("</li>\n")
                 i = i + 1
             }
@@ -1094,7 +1094,7 @@ fn _html_block(MdBlock b) -> Str {
             Str r = "<blockquote>\n"
             int i = 0
             while i < children.len {
-                r.push_str(_html_block(children.get(i)))
+                r.push_str(_html_block(children.get!(i)))
                 i = i + 1
             }
             r.push_str("</blockquote>\n")
@@ -1115,7 +1115,7 @@ fn render_html(&MdDoc d) -> Str {
     Str out = ""
     int i = 0
     while i < d.blocks.len {
-        out.push_str(_html_block(d.blocks.get(i)))
+        out.push_str(_html_block(d.blocks.get!(i)))
         i = i + 1
     }
     return out

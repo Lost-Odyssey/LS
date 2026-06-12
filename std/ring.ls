@@ -89,7 +89,7 @@ impl(T) Ring(T) {
             return None
         }
         int i = self.cons & self.mask
-        Option(T) v = self.buf.get(i)   // clone the slot's Some(payload) out
+        Option(T) v = self.buf.get!(i)  // clone the slot's Some(payload) out (i in-range by mask)
         self.buf[i] = None              // drop the original, free the slot
         self.cons = self.cons + 1
         return v
@@ -102,7 +102,7 @@ impl(T) Ring(T) {
         int k = 0
         while k < n && self.prod != self.cons {
             int i = self.cons & self.mask
-            Option(T) v = self.buf.get(i)
+            Option(T) v = self.buf.get!(i)
             self.buf[i] = None
             self.cons = self.cons + 1
             match v {

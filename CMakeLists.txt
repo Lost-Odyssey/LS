@@ -2594,6 +2594,20 @@ set_tests_properties(test_vec_oob PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- Vec.get(i) -> Option(T): recoverable read, ownership sweep ----
+add_test(
+    NAME test_vec_get_option
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_get_option.cmake
+)
+set_tests_properties(test_vec_get_option PROPERTIES
+    DEPENDS "test_vec_oob"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- Bug #26: loop-body temp allocas → JIT stack overflow (entry-block fix) ----
 add_test(
     NAME test_string_loop

@@ -55,11 +55,11 @@ fn attrs(Vec(Vec(Str)) pairs) -> Vec(Attr) {
     Vec(Attr) out = {}
     int i = 0
     while i < pairs.len {
-        Vec(Str) p = pairs.get(i)
+        Vec(Str) p = pairs.get!(i)
         if p.len >= 2 {
-            out.push(Attr { key: p.get(0), val: p.get(1) })
+            out.push(Attr { key: p.get!(0), val: p.get!(1) })
         } else if p.len == 1 {
-            out.push(Attr { key: p.get(0), val: "" })   // boolean attribute
+            out.push(Attr { key: p.get!(0), val: "" })   // boolean attribute
         }
         i = i + 1
     }
@@ -192,7 +192,7 @@ fn _render_node(HtmlNode n) -> Str {
             r.push_str(tag)
             int j = 0
             while j < attrs.len {
-                Attr at = attrs.get(j)
+                Attr at = attrs.get!(j)
                 r.push_str(" ")
                 r.push_str(at.key)
                 if at.val.len() > 0 {
@@ -209,7 +209,7 @@ fn _render_node(HtmlNode n) -> Str {
             r.push_str(">")
             int i = 0
             while i < children.len {
-                r.push_str(_render_node(children.get(i)))
+                r.push_str(_render_node(children.get!(i)))
                 i = i + 1
             }
             r.push_str("</")
@@ -233,7 +233,7 @@ fn render(&HtmlDoc d) -> Str {
     Str out = ""
     int i = 0
     while i < d.roots.len {
-        out.push_str(_render_node(d.roots.get(i)))
+        out.push_str(_render_node(d.roots.get!(i)))
         i = i + 1
     }
     return out
@@ -262,7 +262,7 @@ fn _render_node_pretty(HtmlNode n, int depth, int step) -> Str {
             r.push_str(tag)
             int j = 0
             while j < attrs.len {
-                Attr at = attrs.get(j)
+                Attr at = attrs.get!(j)
                 r.push_str(" ")
                 r.push_str(at.key)
                 if at.val.len() > 0 {
@@ -279,7 +279,7 @@ fn _render_node_pretty(HtmlNode n, int depth, int step) -> Str {
             r.push_str(">\n")
             int i = 0
             while i < children.len {
-                r.push_str(_render_node_pretty(children.get(i), depth + 1, step))
+                r.push_str(_render_node_pretty(children.get!(i), depth + 1, step))
                 i = i + 1
             }
             r.push_str(pad)
@@ -318,7 +318,7 @@ fn render_pretty(&HtmlDoc d, int step) -> Str {
     Str out = ""
     int i = 0
     while i < d.roots.len {
-        out.push_str(_render_node_pretty(d.roots.get(i), 0, step))
+        out.push_str(_render_node_pretty(d.roots.get!(i), 0, step))
         i = i + 1
     }
     return out
@@ -332,13 +332,13 @@ fn fmt_tag(Str tag, Vec(Vec(Str)) attr_pairs, Str inner) -> Str {
     r.push_str(tag)
     int i = 0
     while i < attr_pairs.len {
-        Vec(Str) pr = attr_pairs.get(i)
+        Vec(Str) pr = attr_pairs.get!(i)
         if pr.len >= 1 {
             r.push_str(" ")
-            r.push_str(pr.get(0))
+            r.push_str(pr.get!(0))
             if pr.len >= 2 {
                 r.push_str("=\"")
-                r.push_str(_escape_attr(pr.get(1)))
+                r.push_str(_escape_attr(pr.get!(1)))
                 r.push_str("\"")
             }
         }
@@ -717,7 +717,7 @@ fn get_attr(HtmlNode n, Str key) -> Str {
         Element(tag, attrs, children) => {
             int i = 0
             while i < attrs.len {
-                Attr at = attrs.get(i)
+                Attr at = attrs.get!(i)
                 if at.key == key { return at.val }
                 i = i + 1
             }
@@ -734,7 +734,7 @@ fn _node_text(HtmlNode n) -> Str {
             Str r = ""
             int i = 0
             while i < children.len {
-                r.push_str(_node_text(children.get(i)))
+                r.push_str(_node_text(children.get!(i)))
                 i = i + 1
             }
             return r
@@ -749,7 +749,7 @@ fn to_text(&HtmlDoc d) -> Str {
     Str r = ""
     int i = 0
     while i < d.roots.len {
-        r.push_str(_node_text(d.roots.get(i)))
+        r.push_str(_node_text(d.roots.get!(i)))
         i = i + 1
     }
     return r
@@ -763,16 +763,16 @@ fn _collect_links(HtmlNode n) -> Vec(Str) {
             if tag == "a" {
                 int j = 0
                 while j < attrs.len {
-                    Attr at = attrs.get(j)
+                    Attr at = attrs.get!(j)
                     if at.key == "href" { acc.push(at.val) }
                     j = j + 1
                 }
             }
             int i = 0
             while i < children.len {
-                Vec(Str) sub = _collect_links(children.get(i))
+                Vec(Str) sub = _collect_links(children.get!(i))
                 int k = 0
-                while k < sub.len { acc.push(sub.get(k)); k = k + 1 }
+                while k < sub.len { acc.push(sub.get!(k)); k = k + 1 }
                 i = i + 1
             }
             return acc
@@ -785,9 +785,9 @@ fn extract_links(&HtmlDoc d) -> Vec(Str) {
     Vec(Str) acc = {}
     int i = 0
     while i < d.roots.len {
-        Vec(Str) sub = _collect_links(d.roots.get(i))
+        Vec(Str) sub = _collect_links(d.roots.get!(i))
         int k = 0
-        while k < sub.len { acc.push(sub.get(k)); k = k + 1 }
+        while k < sub.len { acc.push(sub.get!(k)); k = k + 1 }
         i = i + 1
     }
     return acc
@@ -806,22 +806,22 @@ fn _collect_by_tag(HtmlNode n, Str tag) -> Vec(HtmlNode) {
                 Vec(Attr) acopy = {}
                 int a = 0
                 while a < attrs.len {
-                    acopy.push(attrs.get(a))
+                    acopy.push(attrs.get!(a))
                     a = a + 1
                 }
                 Vec(HtmlNode) ccopy = {}
                 int cc = 0
                 while cc < children.len {
-                    ccopy.push(children.get(cc))
+                    ccopy.push(children.get!(cc))
                     cc = cc + 1
                 }
                 acc.push(Element(t.copy(), acopy, ccopy))
             }
             int i = 0
             while i < children.len {
-                Vec(HtmlNode) sub = _collect_by_tag(children.get(i), tag)
+                Vec(HtmlNode) sub = _collect_by_tag(children.get!(i), tag)
                 int k = 0
-                while k < sub.len { acc.push(sub.get(k)); k = k + 1 }
+                while k < sub.len { acc.push(sub.get!(k)); k = k + 1 }
                 i = i + 1
             }
             return acc
@@ -834,9 +834,9 @@ fn find_by_tag(&HtmlDoc d, Str tag) -> Vec(HtmlNode) {
     Vec(HtmlNode) acc = {}
     int i = 0
     while i < d.roots.len {
-        Vec(HtmlNode) sub = _collect_by_tag(d.roots.get(i), tag)
+        Vec(HtmlNode) sub = _collect_by_tag(d.roots.get!(i), tag)
         int k = 0
-        while k < sub.len { acc.push(sub.get(k)); k = k + 1 }
+        while k < sub.len { acc.push(sub.get!(k)); k = k + 1 }
         i = i + 1
     }
     return acc

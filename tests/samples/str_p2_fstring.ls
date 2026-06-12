@@ -51,7 +51,7 @@ fn main() {
     v.push(f"e{n}")
     v.push(f"q")
     check(v.len() == 2, "fstr vec len")
-    check(v.get(0).eq?("e42"), "fstr vec elem")
+    check(v.get!(0).eq?("e42"), "fstr vec elem")
 
     // mixing static-literal Str and owned f-string Str in the same scope
     Str lit = "static"

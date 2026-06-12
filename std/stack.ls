@@ -39,7 +39,7 @@ impl(T) Stack(T) {
     fn pop(&!self) -> T {
         match self.data.pop() {
             Some(x) => { return x }
-            None => { return self.data.get(0) }
+            None => { return self.data[0] }
         }
     }
 
@@ -47,7 +47,7 @@ impl(T) Stack(T) {
     fn peek(&self) -> T {
         match self.data.last() {
             Some(x) => { return x }
-            None => { return self.data.get(0) }
+            None => { return self.data[0] }
         }
     }
 

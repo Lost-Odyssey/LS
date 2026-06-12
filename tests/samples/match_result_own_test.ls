@@ -67,7 +67,7 @@ fn main() {
     Option(Vec(int)) ov = Some(vsrc)
     Vec(int) w = match ov { Some(v) => v  None => vfb }
     check(w.len() == 3, "vec payload move-out")
-    check(w.get(1) == 20, "vec payload contents")
+    check(w.get!(1) == 20, "vec payload contents")
 
     // ---- nested match yielding inner owned result ----
     Option(Str) a = Some("A".copy())

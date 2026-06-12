@@ -32,9 +32,9 @@ fn check(bool c, Str label) -> bool {
 fn main() {
     fill_globals()
     bool ok = true
-    ok = check(gi.len() == 2 && gi.get(1) == 20, "global Vec(int)") && ok
-    ok = check(gs.len() == 2 && gs.get(0).eq?("ALPHA"), "global Vec(Str)") && ok
-    Item item = gitems.get(1)
+    ok = check(gi.len() == 2 && gi.get!(1) == 20, "global Vec(int)") && ok
+    ok = check(gs.len() == 2 && gs.get!(0).eq?("ALPHA"), "global Vec(Str)") && ok
+    Item item = gitems.get!(1)
     ok = check(gitems.len() == 2 && item.name.eq?("TWO"), "global Vec(Item)") && ok
     if ok { print("VEC_GLOBAL_DROP PASS") }
 }

@@ -12,7 +12,7 @@ enum Node {
 fn collect(Vec(Str) xs) -> Vec(Str) {
     Vec(Str) out = {}
     int i = 0
-    while i < xs.len() { out.push(xs.get(i)); i = i + 1 }
+    while i < xs.len() { out.push(xs.get!(i)); i = i + 1 }
     return out
 }
 

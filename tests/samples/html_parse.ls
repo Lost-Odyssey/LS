@@ -57,14 +57,14 @@ fn main() {
     html.HtmlDoc d10 = html.parse("<a href=\"a&amp;b\">t</a>")
     Vec(html.HtmlNode) a10 = html.find_by_tag(d10, "a")
     if !check(a10.len == 1, 10) { ok = false }
-    if !check(html.get_attr(a10.get(0), "href") == "a&b", 11) { ok = false }
+    if !check(html.get_attr(a10.get!(0), "href") == "a&b", 11) { ok = false }
 
     // --- extract_links across nesting ---
     html.HtmlDoc d12 = html.parse("<a href=\"u1\">x</a><div><a href=\"u2\">y</a></div>")
     Vec(Str) links = html.extract_links(d12)
     if !check(links.len == 2, 12) { ok = false }
-    if !check(links.get(0) == "u1", 13) { ok = false }
-    if !check(links.get(1) == "u2", 14) { ok = false }
+    if !check(links.get!(0) == "u1", 13) { ok = false }
+    if !check(links.get!(1) == "u2", 14) { ok = false }
 
     // --- find_by_tag collects all matches (pre-order) ---
     html.HtmlDoc d15 = html.parse("<ul><li>a</li><li>b</li><li>c</li></ul>")

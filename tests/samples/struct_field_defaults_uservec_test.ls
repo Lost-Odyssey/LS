@@ -33,16 +33,16 @@ fn check(bool c, Str label) -> bool {
 fn main() {
     Bag b = Bag{}
     bool ok = true
-    ok = check(b.nums.len() == 3 && b.nums.get(0) == 1 && b.nums.get(2) == 3, "Vec(int) default") && ok
-    ok = check(b.names.len() == 2 && b.names.get(1).eq?("bea"), "Vec(Str) default") && ok
+    ok = check(b.nums.len() == 3 && b.nums.get!(0) == 1 && b.nums.get!(2) == 3, "Vec(int) default") && ok
+    ok = check(b.names.len() == 2 && b.names.get!(1).eq?("bea"), "Vec(Str) default") && ok
     ok = check(b.empty.len() == 0, "Vec(f64) empty default") && ok
-    Kid k = b.kids.get(0)
+    Kid k = b.kids.get!(0)
     ok = check(b.kids.len() == 2 && k.name.eq?("IVY"), "Vec(Kid) default") && ok
-    Vec(int) row1 = b.rows.get(1)
-    ok = check(b.rows.len() == 2 && row1.len() == 3 && row1.get(2) == 5, "nested Vec default") && ok
+    Vec(int) row1 = b.rows.get!(1)
+    ok = check(b.rows.len() == 2 && row1.len() == 3 && row1.get!(2) == 5, "nested Vec default") && ok
 
     Bag c = Bag{ names: [f"zed"] }
-    ok = check(c.nums.len() == 3 && c.names.len() == 1 && c.names.get(0).eq?("zed"), "override one field") && ok
+    ok = check(c.nums.len() == 3 && c.names.len() == 1 && c.names.get!(0).eq?("zed"), "override one field") && ok
 
     if ok { print("USERVEC_FIELD_DEFAULTS PASS") }
 }

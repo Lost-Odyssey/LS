@@ -16,12 +16,12 @@ fn main() {
     print("---HEADINGS---")
     Vec(Str) hs = md.extract_headings(doc)
     int i = 0
-    while i < hs.len { print(hs.get(i)); i = i + 1 }
+    while i < hs.len { print(hs.get!(i)); i = i + 1 }
 
     print("---LINKS---")
     Vec(Str) ls = md.extract_links(doc)
     i = 0
-    while i < ls.len { print(ls.get(i)); i = i + 1 }
+    while i < ls.len { print(ls.get!(i)); i = i + 1 }
 
     print("---PLAIN---")
     print(md.to_plain_text(doc))

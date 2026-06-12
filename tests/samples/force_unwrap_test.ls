@@ -87,7 +87,7 @@ fn main() {
     Option(Vec(int)) ov = mk_owned_vec(40)
     Vec(int) wv = (ov)!
     check_int(wv.len(), 2, "owned.vec.var")
-    check_int(wv.get(0), 40, "owned.vec.elem")
+    check_int(wv.get!(0), 40, "owned.vec.elem")
     Vec(int) rv = mk_owned_vec(7)!
     check_int(rv.len(), 2, "owned.vec.rvalue")
 

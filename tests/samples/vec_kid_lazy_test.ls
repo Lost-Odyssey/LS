@@ -16,7 +16,7 @@ fn main() {
     ps.push(__move(b))
 
     check(ps.len() == 2, "len")
-    Pt got = ps.get(1)
+    Pt got = ps.get!(1)
     check(got.tag.eq?("b") && got.v == 20, "get clone")
 
     print("KID LAZY PASS")
