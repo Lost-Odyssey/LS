@@ -2673,3 +2673,30 @@ set_tests_properties(test_enum_borrow_b PROPERTIES
     DEPENDS "test_enum_borrow"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# std.array 堆 Tensor 阶段 0 地基探针（plan_ndarray_stdlib.md §-1）
+add_test(
+    NAME test_tensor_phase0
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_phase0.cmake
+)
+set_tests_properties(test_tensor_phase0 PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# std.array 阶段 1：泛型 Tensor(T) + 运行时 shape/strides（plan_ndarray_stdlib.md §-1）
+add_test(
+    NAME test_tensor_phase1
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_phase1.cmake
+)
+set_tests_properties(test_tensor_phase1 PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_phase0"
+)

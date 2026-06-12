@@ -4465,6 +4465,33 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
     case AST_UNARY:
     {
+        /* Address-of must NOT evaluate the operand as a value (that would load
+           the pointed-to element, not take its address). Handle it before the
+           eager value-eval below: &ident is the alloca itself; any other lvalue
+           — struct field, or a pointer/array element like &self.data[off] (used
+           to get a *T base for a sub-block / view) — goes through
+           codegen_lvalue_ptr, which handles pointer-index and &self/&!self
+           reference auto-deref. */
+        if (node->as.unary.op == TOKEN_AMP)
+        {
+            AstNode *opd = node->as.unary.operand;
+            if (opd->kind == AST_IDENT)
+            {
+                CgSymbol *sym = cg_scope_resolve(ctx->current_scope, opd->as.ident.name);
+                if (sym)
+                    return sym->value; /* alloca IS the address */
+                cg_error(ctx, node->line, node->column, "cannot take address of expression");
+                return NULL;
+            }
+            LLVMValueRef addr = codegen_lvalue_ptr(ctx, opd);
+            if (addr == NULL)
+            {
+                cg_error(ctx, node->line, node->column, "cannot take address of expression");
+                return NULL;
+            }
+            return addr;
+        }
+
         LLVMValueRef operand = codegen_expr(ctx, node->as.unary.operand);
         if (operand == NULL)
             return NULL;
@@ -4481,20 +4508,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
         case TOKEN_TILDE:
             return LLVMBuildNot(ctx->builder, operand, "bitnot");
-
-        case TOKEN_AMP:
-        {
-            /* &x — get the alloca address of x */
-            if (node->as.unary.operand->kind == AST_IDENT)
-            {
-                CgSymbol *sym = cg_scope_resolve(ctx->current_scope,
-                                                 node->as.unary.operand->as.ident.name);
-                if (sym)
-                    return sym->value; /* alloca IS the address */
-            }
-            cg_error(ctx, node->line, node->column, "cannot take address of expression");
-            return NULL;
-        }
 
         case TOKEN_STAR:
         {
