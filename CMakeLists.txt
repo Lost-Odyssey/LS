@@ -1219,6 +1219,20 @@ add_test(
 )
 set_tests_properties(test_match_concat_temp PROPERTIES DEPENDS "test_forward_ref_struct_reject")
 
+# B-3 (docs/bugs_deferred_p5_4.md §B-3): user `impl` on an imported struct emits
+# method symbols under the struct's prefixed llvm_name. JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_impl_imported_struct
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/impl_imported_struct_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=impl_imported_struct
+        -DMARKER=IMPLIMP
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+set_tests_properties(test_impl_imported_struct PROPERTIES DEPENDS "test_match_concat_temp")
+
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(

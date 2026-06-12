@@ -10440,6 +10440,27 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
                             ctx->current_emit_module, bare_name);
         struct_name = prefixed_name_buf;
     }
+    /* B-3 (docs/bugs_deferred_p5_4.md §B-3): a USER `impl ImportedStruct` (e.g.
+       `impl Str` in the main file) is emitted with current_emit_module == NULL,
+       so the branch above doesn't fire and struct_name stays bare ("Str"). But
+       method DISPATCH resolves through the struct's prefixed llvm_name
+       ("std_str__Str") — see the call-site resolution near line 5017. Mirror that
+       here: when struct_name is still bare, look the struct/enum up by bare name
+       and adopt its llvm_name so emitted symbol == dispatched symbol. */
+    if (!is_builtin_impl && struct_name == bare_name)
+    {
+        for (int si = 0; si < ctx->struct_type_count; si++)
+        {
+            Type *slt = ctx->struct_types[si].ls_type;
+            if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.name &&
+                strcmp(slt->as.strukt.name, bare_name) == 0 &&
+                slt->as.strukt.llvm_name != NULL)
+            {
+                struct_name = slt->as.strukt.llvm_name;
+                break;
+            }
+        }
+    }
     bool is_enum_impl = (find_enum_llvm(ctx, struct_name) != NULL);
 
     for (int i = 0; i < node->as.impl_decl.method_count; i++)
