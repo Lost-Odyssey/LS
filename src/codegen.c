@@ -1077,6 +1077,30 @@ static LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const c
     return slot;
 }
 
+/* Like cg_entry_alloca, but also zero-initialises the slot in the entry block.
+   Use for has_drop temporaries whose initialising store happens in a CONDITIONAL
+   block but whose drop may be reached on a fall-through path that skipped the
+   store (e.g. a chained-operator receiver spill inside a match-arm `if` body).
+   The entry-block zeroinit makes such a stray drop a safe no-op (cap=0/data=NULL),
+   the same defense the match result_alloca uses. */
+static LLVMValueRef cg_entry_alloca_zeroed(CodegenContext *ctx, LLVMTypeRef ty,
+                                           const char *name)
+{
+    LLVMValueRef slot = cg_entry_alloca(ctx, ty, name);
+    /* Insert the zero store in the entry block, right after the alloca, so it
+       dominates every use and never lands in a conditional block. */
+    LLVMBuilderRef eb = LLVMCreateBuilderInContext(ctx->context);
+    LLVMValueRef nexti = LLVMGetNextInstruction(slot);
+    if (nexti) LLVMPositionBuilderBefore(eb, nexti);
+    else {
+        LLVMBasicBlockRef abb = LLVMGetInstructionParent(slot);
+        LLVMPositionBuilderAtEnd(eb, abb);
+    }
+    LLVMBuildStore(eb, LLVMConstNull(ty), slot);
+    LLVMDisposeBuilder(eb);
+    return slot;
+}
+
 /* Emit a user-container list literal: `StructWithFromList v = [a, b]`.
    The checker guarantees `lit->resolved_type == struct_type` and that the
    struct has `__from_list(&!self, E)`. */
@@ -4253,7 +4277,10 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
         if (val == NULL)
             return NULL;
         LLVMTypeRef rllvm = type_to_llvm(ctx, rtype);
-        LLVMValueRef tmp = cg_entry_alloca(ctx, rllvm, "tmp.rval.self");
+        /* Zero-init in entry block: this spill's drop may be reached on a path
+           that skipped the store below (chained-op receiver inside a match-arm
+           conditional). Stray drop then no-ops instead of freeing stack garbage. */
+        LLVMValueRef tmp = cg_entry_alloca_zeroed(ctx, rllvm, "tmp.rval.self");
         LLVMBuildStore(ctx->builder, val, tmp);
         cg_push_temp_drop(ctx, tmp, rtype);
         return tmp;

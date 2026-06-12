@@ -1204,6 +1204,21 @@ add_test(
 )
 set_tests_properties(test_forward_ref_struct_reject PROPERTIES DEPENDS "test_explicit_drop_reject")
 
+# A-4 (docs/bugs_deferred_p5_4.md §4): chained-op receiver spill inside a
+# match-arm `if` body must not free uninitialized stack on the fall-through path.
+# JIT + AOT correctness + memcheck 0/0/0.
+add_test(
+    NAME test_match_concat_temp
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/match_concat_temp_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=match_concat_temp
+        -DMARKER=MATCHCAT
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+set_tests_properties(test_match_concat_temp PROPERTIES DEPENDS "test_forward_ref_struct_reject")
+
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(
