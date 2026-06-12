@@ -6824,6 +6824,12 @@ static void check_struct_decl(Checker *c, AstNode *node)
     for (int i = 0; i < n && !needs_drop; i++)
     {
         Type *ft = st->as.strukt.fields[i].type;
+        /* A-3 (docs/bugs_deferred_p5_4.md §3): an unresolved field type (e.g. a
+           forward reference to a not-yet-defined struct) leaves ft == NULL and
+           resolve_type_node already reported the error. Skip rather than deref
+           NULL (which segfaulted instead of exiting gracefully). */
+        if (ft == NULL)
+            continue;
         if (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop)
         {
             needs_drop = true;

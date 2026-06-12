@@ -1193,6 +1193,17 @@ add_test(
 )
 set_tests_properties(test_explicit_drop_reject PROPERTIES DEPENDS "test_nested_decl_reject")
 
+# A-3 (docs/bugs_deferred_p5_4.md §3): forward struct field reference must error
+# gracefully (clean "unknown type"), not segfault.
+add_test(
+    NAME test_forward_ref_struct_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/forward_ref_struct_reject.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_forward_ref_struct_reject.cmake
+)
+set_tests_properties(test_forward_ref_struct_reject PROPERTIES DEPENDS "test_explicit_drop_reject")
+
 # A-FLIP (docs/plan_runtime_primitives.md): bare malloc/free/realloc/abort are no
 # longer global builtins (moved to std.c) — a bare malloc(...) must be rejected.
 add_test(
