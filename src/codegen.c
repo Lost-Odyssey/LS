@@ -294,13 +294,10 @@ static LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_v
 /* Unified value/element deep-clone dispatcher (string/vec/has_drop struct/enum). */
 static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
                                      LLVMTypeRef llvm_type, Type *type);
-static void mark_string_moved(CodegenContext *ctx, LLVMValueRef str_alloca,
-                              const char *reason);
-static void cg_mark_last_temp_moved(CodegenContext *ctx, int mark, const char *reason);
 static AstNode *cg_match_arm_tail(AstNode *arm_body);
 static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
                                           LLVMValueRef body_val, LLVMTypeRef res_llvm,
-                                          Type *result_type, int str_mark, int drop_floor,
+                                          Type *result_type, int drop_floor,
                                           bool did_move_out_binder);
 static void cg_match_arm_encapsulate(CodegenContext *ctx, int str_mark, int drop_floor,
                                      Type *result_type);
@@ -351,7 +348,6 @@ static void cg_store_owned(CodegenContext *ctx,
                            LLVMValueRef val,
                            Type *type,
                            AstNode *source,
-                           int temp_mark,
                            CgTransferKind kind);
 
 static LLVMValueRef cg_declare_pending_generic_method(CodegenContext *ctx,
@@ -1336,51 +1332,6 @@ static bool needs_string_cleanup(CodegenContext *ctx, LLVMValueRef str_alloca)
    and skips free, and so does scope cleanup — no double-free risk, no mark needed.
    Already-moved strings (cap == -1) are left unchanged.
    reason: short C string for CG_DEBUG output. */
-static void mark_string_moved(CodegenContext *ctx, LLVMValueRef str_alloca,
-                              const char *reason)
-{
-    LLVMTypeRef str_type = ls_string_type(ctx);
-    LLVMTypeRef i32_type = LLVMInt32TypeInContext(ctx->context);
-
-    LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
-    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(cur_bb);
-
-    /* Load current cap to decide whether a mark is needed at all */
-    LLVMValueRef str_val = LLVMBuildLoad2(ctx->builder, str_type, str_alloca, "msm.val");
-    LLVMValueRef cap = LLVMBuildExtractValue(ctx->builder, str_val, 2, "msm.cap");
-    LLVMValueRef zero32 = LLVMConstInt(i32_type, 0, 0);
-
-    /* Only mark if cap > 0 (heap-owned); skip static (cap==0) and already-moved (cap==-1) */
-    LLVMValueRef is_owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap, zero32, "msm.owned");
-
-    LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "msm.do");
-    LLVMBasicBlockRef skip_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "msm.skip");
-    LLVMBuildCondBr(ctx->builder, is_owned, do_bb, skip_bb);
-
-    /* --- mark path: heap-owned, set cap = -1 --- */
-    LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-    LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, str_val, 0, "msm.data");
-    LLVMValueRef len = LLVMBuildExtractValue(ctx->builder, str_val, 1, "msm.len");
-    LLVMValueRef neg1 = LLVMConstInt(i32_type, (unsigned long long)-1, 1);
-    LLVMValueRef undef = LLVMGetUndef(str_type);
-    LLVMValueRef new_str = LLVMBuildInsertValue(ctx->builder, undef, data, 0, "msm.d");
-    new_str = LLVMBuildInsertValue(ctx->builder, new_str, len, 1, "msm.l");
-    new_str = LLVMBuildInsertValue(ctx->builder, new_str, neg1, 2, "msm.c");
-    LLVMBuildStore(ctx->builder, new_str, str_alloca);
-#if CG_DEBUG
-    {
-        char fmt[128];
-        snprintf(fmt, sizeof(fmt), "[cg] str.moved  cap=-1  (%s)\n",
-                 reason ? reason : "?");
-        cg_emit_debug_printf(ctx, fmt, NULL, 0);
-    }
-#endif
-    LLVMBuildBr(ctx->builder, skip_bb);
-
-    /* --- skip path: static or already-moved, nothing to do --- */
-    LLVMPositionBuilderAtEnd(ctx->builder, skip_bb);
-    /* builder left here for callers to continue emitting IR */
-}
 
 /* Emit string cleanup - creates a complete cleanup block with its own continuation.
    var_name: optional variable name for CG_DEBUG output (may be NULL).
@@ -1519,38 +1470,6 @@ static LLVMBasicBlockRef emit_string_free_separate(CodegenContext *ctx, LLVMValu
    This is used when an expression returns a dynamic string that isn't
    assigned to a variable (e.g., "hello".upper() as a statement).
    str_val: the LsString struct value (not an alloca). */
-static void emit_temp_string_cleanup(CodegenContext *ctx, LLVMValueRef str_val)
-{
-    LLVMTypeRef i32_type = LLVMInt32TypeInContext(ctx->context);
-
-    /* Extract cap (field 2) */
-    LLVMValueRef cap = LLVMBuildExtractValue(ctx->builder, str_val, 2, "tsc.cap");
-
-    /* Check if cap > 0 (owned) */
-    LLVMValueRef zero = LLVMConstInt(i32_type, 0, 0);
-    LLVMValueRef is_owned = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap,
-                                          zero, "tsc.owned");
-
-    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-    LLVMBasicBlockRef skip_bb = LLVMAppendBasicBlockInContext(
-        ctx->context, cur_fn, "tsc.skip");
-    LLVMBasicBlockRef free_bb = LLVMAppendBasicBlockInContext(
-        ctx->context, cur_fn, "tsc.free");
-    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(
-        ctx->context, cur_fn, "tsc.cont");
-
-    LLVMBuildCondBr(ctx->builder, is_owned, free_bb, skip_bb);
-
-    LLVMPositionBuilderAtEnd(ctx->builder, skip_bb);
-    LLVMBuildBr(ctx->builder, cont_bb);
-
-    LLVMPositionBuilderAtEnd(ctx->builder, free_bb);
-    LLVMValueRef data = LLVMBuildExtractValue(ctx->builder, str_val, 0, "tsc.data");
-    cg_emit_free(ctx, data, "string.temp", CG_LINE(ctx), CG_COL(ctx));
-    LLVMBuildBr(ctx->builder, cont_bb);
-
-    LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
-}
 
 /* ---- Deep clone helpers for vec[i] reads ----
    When reading an element from a vec, the loaded struct/string value shares
@@ -2028,65 +1947,14 @@ static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
    Creates an alloca in the function entry block, stores str_val there,
    and registers the alloca for statement-level cleanup.
    Returns str_val unchanged (the SSA value, not a reload). */
-static LLVMValueRef cg_push_temp_string(CodegenContext *ctx, LLVMValueRef str_val)
-{
-    if (ctx->current_fn == NULL)
-        return str_val; /* global context: no alloca */
-    LLVMTypeRef str_type = ls_string_type(ctx);
-
-    /* Create alloca in entry block so it dominates all uses */
-    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
-    LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx->context);
-    LLVMValueRef first = LLVMGetFirstInstruction(entry);
-    if (first)
-        LLVMPositionBuilderBefore(tmp, first);
-    else
-        LLVMPositionBuilderAtEnd(tmp, entry);
-    LLVMValueRef slot = LLVMBuildAlloca(tmp, str_type, "tmp.str");
-    /* Zero-initialize the slot so that if cleanup runs on a code path
-       where this temp was never populated (e.g. a different match arm),
-       cap=0 causes the free to be safely skipped. */
-    LLVMBuildStore(tmp, LLVMConstNull(str_type), slot);
-    LLVMDisposeBuilder(tmp);
-
-    /* Store current value into the slot */
-    LLVMBuildStore(ctx->builder, str_val, slot);
-
-    /* Grow and register */
-    if (ctx->temp_string_count >= ctx->temp_string_cap)
-    {
-        ctx->temp_string_cap = GROW_CAPACITY(ctx->temp_string_cap);
-        ctx->temp_string_slots = GROW_ARRAY(LLVMValueRef,
-                                            ctx->temp_string_slots, ctx->temp_string_cap);
-    }
-    ctx->temp_string_slots[ctx->temp_string_count++] = slot;
-#if CG_DEBUG
-    {
-        char dbg_fmt[64];
-        snprintf(dbg_fmt, sizeof(dbg_fmt),
-                 "[cg] tmp.push    slot=%d\n",
-                 ctx->temp_string_count - 1);
-        cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
-    }
-#endif
-    return str_val;
-}
 
 /* Mark the last temp slot (if any created since mark) as moved (cap = -1).
    Used after a dynamic string is stored into a variable: prevents double-free
    when both the temp slot and the variable's alloca are cleaned up. */
-static void cg_mark_last_temp_moved(CodegenContext *ctx, int mark, const char *reason)
-{
-    if (ctx->temp_string_count > mark)
-    {
-        mark_string_moved(ctx, ctx->temp_string_slots[ctx->temp_string_count - 1], reason);
-    }
-}
 
 /* M-4.5: register a statement-level temporary has_drop struct/enum value.
    `slot` is the alloca holding the deep-cloned value (e.g. result of vec[i]);
    `type` is its LS type (TYPE_STRUCT has_drop or TYPE_ENUM has_drop).
-   assoc mark = current temp_string_count, so cg_flush_temps releases exactly
    the slots produced since a given mark (aligned with string-temp semantics). */
 static void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type)
 {
@@ -2108,11 +1976,9 @@ static void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type
         ctx->temp_drop_cap   = GROW_CAPACITY(ctx->temp_drop_cap);
         ctx->temp_drop_slots = GROW_ARRAY(LLVMValueRef, ctx->temp_drop_slots, ctx->temp_drop_cap);
         ctx->temp_drop_types = GROW_ARRAY(Type *,       ctx->temp_drop_types, ctx->temp_drop_cap);
-        ctx->temp_drop_marks = GROW_ARRAY(int,          ctx->temp_drop_marks, ctx->temp_drop_cap);
     }
     ctx->temp_drop_slots[ctx->temp_drop_count] = slot;
     ctx->temp_drop_types[ctx->temp_drop_count] = type;
-    ctx->temp_drop_marks[ctx->temp_drop_count] = ctx->temp_string_count;
     ctx->temp_drop_count++;
 #if CG_DEBUG
     {
@@ -2141,7 +2007,6 @@ static void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot)
             continue; /* drop the entry (already handled) */
         ctx->temp_drop_slots[keep] = ctx->temp_drop_slots[i];
         ctx->temp_drop_types[keep] = ctx->temp_drop_types[i];
-        ctx->temp_drop_marks[keep] = ctx->temp_drop_marks[i];
         keep++;
     }
     ctx->temp_drop_count = keep;
@@ -2175,7 +2040,7 @@ static AstNode *cg_match_arm_tail(AstNode *arm_body)
    borrowed this arm (enum path only; always false for non-enum patterns). */
 static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
                                           LLVMValueRef body_val, LLVMTypeRef res_llvm,
-                                          Type *result_type, int str_mark, int drop_floor,
+                                          Type *result_type, int drop_floor,
                                           bool did_move_out_binder)
 {
     if (body_val == NULL || result_type == NULL)
@@ -2186,7 +2051,7 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
     if (!owned_heap)
         return body_val;
     /* Fresh owned temp produced by this body → an rvalue we will transfer (no clone). */
-    if (ctx->temp_string_count > str_mark || ctx->temp_drop_count > drop_floor)
+    if (ctx->temp_drop_count > drop_floor)
         return body_val;
     /* A binder we just moved out already owns an independent clone (no clone). */
     if (did_move_out_binder)
@@ -2209,15 +2074,13 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
    arm yields is transferred to the result (which is registered as the lone result
    temp at the merge block); every OTHER arm-body temp is freed/dropped here so it
    does not leak into the outer statement temp tables.
-   - str_mark / drop_floor = temp_string_count / temp_drop_count captured just before
-     the body was evaluated. Pre-body temps (the subject drop at index < drop_floor,
-     and outer string temps below str_mark) are untouched.
-   - The tail temp matching result_type is neutralized (string: mark moved so its free
-     is skipped; has_drop: removed from the drop list) — the result owns its buffer. */
-static void cg_match_arm_encapsulate(CodegenContext *ctx, int str_mark, int drop_floor,
+   - drop_floor = temp_drop_count captured just before the body was evaluated.
+     Pre-body temps (the subject drop at index < drop_floor) are untouched.
+   - The tail temp matching result_type is neutralized (removed from the drop
+     list) — the result owns its buffer. */
+static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
                                      Type *result_type)
 {
-    bool res_is_string = result_type && result_type->kind == TYPE_STRING;
     bool res_is_drop =
         result_type &&
         ((result_type->kind == TYPE_STRUCT && result_type->as.strukt.has_drop) ||
@@ -2225,16 +2088,6 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int str_mark, int drop
 
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
     bool terminated = cur && LLVMGetBasicBlockTerminator(cur) != NULL;
-
-    /* Transfer the tail string temp into the result (its free is skipped below). */
-    if (res_is_string && ctx->temp_string_count > str_mark)
-        cg_mark_last_temp_moved(ctx, str_mark, "match arm: tail string -> result");
-    /* Free the arm-body string temps in [str_mark, count); the transferred tail
-       (cap=-1) is skipped by emit_string_free. */
-    if (!terminated)
-        for (int i = str_mark; i < ctx->temp_string_count; i++)
-            emit_string_free(ctx, ctx->temp_string_slots[i]);
-    ctx->temp_string_count = str_mark;
 
     /* Transfer the tail has_drop temp into the result: remove the last body-registered
        drop entry without emitting its drop (the result owns that buffer). */
@@ -2252,38 +2105,25 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int str_mark, int drop
 }
 
 
-/* M-4.5: drop and release all temp_drop slots whose assoc mark >= `mark`.
-   Compacts surviving (mark < flush-mark) entries to the front. */
-static void cg_flush_temp_drops(CodegenContext *ctx, int mark)
+
+/* M-4.5: drop and release all statement-level temp_drop slots. Marks were
+   full flush (which has been the runtime behavior since literals went Str). */
+static void cg_flush_temp_drops(CodegenContext *ctx)
 {
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
     if (getenv("LS_DEBUG_TEMPS") && ctx->temp_drop_count > 0)
-        fprintf(stderr, "[tmp] flush fn=%s mark=%d n=%d term=%d\n",
+        fprintf(stderr, "[tmp] flush fn=%s n=%d term=%d\n",
                 ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
-                mark, ctx->temp_drop_count,
+                ctx->temp_drop_count,
                 (int)(cur && LLVMGetBasicBlockTerminator(cur) != NULL));
     if (cur && LLVMGetBasicBlockTerminator(cur) != NULL)
     {
-        /* terminated block: just discard the high-water slots */
-        int keep0 = 0;
-        for (int i = 0; i < ctx->temp_drop_count; i++)
-            if (ctx->temp_drop_marks[i] < mark)
-                keep0++;
-        ctx->temp_drop_count = keep0;
+        /* terminated block: just discard the slots */
+        ctx->temp_drop_count = 0;
         return;
     }
-    int keep = 0;
     for (int i = 0; i < ctx->temp_drop_count; i++)
     {
-        if (ctx->temp_drop_marks[i] < mark)
-        {
-            /* survives this flush — compact toward the front */
-            ctx->temp_drop_slots[keep] = ctx->temp_drop_slots[i];
-            ctx->temp_drop_types[keep] = ctx->temp_drop_types[i];
-            ctx->temp_drop_marks[keep] = ctx->temp_drop_marks[i];
-            keep++;
-            continue;
-        }
         Type *t = ctx->temp_drop_types[i];
         LLVMValueRef slot = ctx->temp_drop_slots[i];
         if (t->kind == TYPE_STRUCT)
@@ -2291,7 +2131,7 @@ static void cg_flush_temp_drops(CodegenContext *ctx, int mark)
         else if (t->kind == TYPE_ENUM)
             emit_enum_drop(ctx, slot, t);
     }
-    ctx->temp_drop_count = keep;
+    ctx->temp_drop_count = 0;
 }
 
 /* Phase C.5: register a closure literal's env_ptr as a temporary owned by
@@ -2651,9 +2491,6 @@ static bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Typ
 
     switch (type->kind)
     {
-    case TYPE_STRING:
-        mark_string_moved(ctx, sym->value, "move-elision: string moved into dst");
-        return true;
     case TYPE_STRUCT:
         if (!type->as.strukt.has_drop) return false;
         /* No moved_flag → the invalidation would be a NO-OP, so returning true
@@ -2681,7 +2518,6 @@ static bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Typ
 
 /* M-3: 统一所有权转移 API
    将 val 存入 dst_ptr，根据类型和来源节点自动选择 move/clone/store 语义。
-   temp_mark: codegen_expr(source) 调用之前的 ctx->temp_string_count 快照。
    kind:      CG_XFER_INTO_CONTAINER — 存入容器（move 语义，source 被消耗）
               CG_XFER_ASSIGN_VAR     — 变量赋值（clone 语义，string source 保持有效）
               CG_XFER_RETURN         — return（同 INTO_CONTAINER，move 语义）
@@ -2691,7 +2527,6 @@ static void cg_store_owned(CodegenContext *ctx,
                            LLVMValueRef val,
                            Type *type,
                            AstNode *source,
-                           int temp_mark,
                            CgTransferKind kind)
 {
     if (!val || !dst_ptr || !type) {
@@ -2701,6 +2536,7 @@ static void cg_store_owned(CodegenContext *ctx,
     }
 
     AstNode *src = source ? ast_unwrap_move(source) : NULL;
+    (void)kind;
 
     /* 解析 source 是否是命名变量 IDENT */
     CgSymbol *src_sym = NULL;
@@ -2717,76 +2553,6 @@ static void cg_store_owned(CodegenContext *ctx,
                              src->kind == AST_FORCE_UNWRAP  ||
                              src->kind == AST_FORMAT_STRING);
 
-    /* ------------------------------------------------------------------ */
-    /* STRING                                                               */
-    /* ------------------------------------------------------------------ */
-    if (type->kind == TYPE_STRING)
-    {
-        if (is_rvalue)
-        {
-            /* 右值：已有堆缓冲，直接存入。弹出 temp slot 防止 double-free。 */
-            LLVMBuildStore(ctx->builder, val, dst_ptr);
-            cg_mark_last_temp_moved(ctx, temp_mark, "xfer: rvalue string into dst");
-        }
-        else if (src_sym && !src_sym->is_borrowed)
-        {
-            if (kind == CG_XFER_ASSIGN_VAR)
-            {
-                /* a = b：clone 语义，b 保留所有权 */
-                LLVMValueRef cloned = emit_string_clone_val(ctx, val);
-                LLVMBuildStore(ctx->builder, cloned, dst_ptr);
-            }
-            else
-            {
-                /* INTO_CONTAINER / RETURN：运行时检查 cap。
-                   cap > 0  → owned（来自 rvalue/__move 实参）：move 语义
-                   cap == LS_CAP_BORROWED (-2) → 借用（来自命名变量实参）：clone */
-                LLVMValueRef cap_xfer = LLVMBuildExtractValue(ctx->builder, val, 2, "xfer.str.cap");
-                LLVMValueRef zero32 = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0);
-                LLVMValueRef is_owned_xfer = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cap_xfer, zero32, "xfer.str.owned");
-                LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-                LLVMBasicBlockRef owned_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "xfer.str.owned");
-                LLVMBasicBlockRef borrow_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "xfer.str.borrow");
-                LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "xfer.str.merge");
-                LLVMBuildCondBr(ctx->builder, is_owned_xfer, owned_bb, borrow_bb);
-
-                /* Owned: move 语义 */
-                LLVMPositionBuilderAtEnd(ctx->builder, owned_bb);
-                LLVMBuildStore(ctx->builder, val, dst_ptr);
-                mark_string_moved(ctx, src_sym->value, "xfer: owned string moved into container");
-                LLVMBuildBr(ctx->builder, merge_bb);
-
-                /* Borrowed: clone 语义 */
-                LLVMPositionBuilderAtEnd(ctx->builder, borrow_bb);
-                LLVMValueRef cloned = emit_string_clone_val(ctx, val);
-                LLVMBuildStore(ctx->builder, cloned, dst_ptr);
-                LLVMBuildBr(ctx->builder, merge_bb);
-
-                LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-            }
-        }
-        else
-        {
-            /* borrowed (cap=-2) / static (cap=0) / 其他：
-               emit_string_clone_val 在运行时按 cap 值决定是否克隆 */
-            LLVMValueRef cloned = emit_string_clone_val(ctx, val);
-            LLVMBuildStore(ctx->builder, cloned, dst_ptr);
-        }
-#if CG_DEBUG
-        {
-            const char *src_kind = is_rvalue ? "rvalue" :
-                                   (src_sym && src_sym->is_borrowed) ? "borrowed" :
-                                   src_sym ? "ident" : "other";
-            const char *xfer_kind = (kind == CG_XFER_ASSIGN_VAR) ? "assign" :
-                                    (kind == CG_XFER_RETURN)      ? "return" : "container";
-            char fmt[128];
-            snprintf(fmt, sizeof(fmt),
-                     "[cg] xfer.string src=%-8s kind=%-9s\n", src_kind, xfer_kind);
-            cg_emit_debug_printf(ctx, fmt, NULL, 0);
-        }
-#endif
-        return;
-    }
 
     /* ------------------------------------------------------------------ */
     /* STRUCT (has_drop)                                                   */
@@ -2809,13 +2575,6 @@ static void cg_store_owned(CodegenContext *ctx,
                 LLVMBuildStore(ctx->builder,
                     LLVMConstInt(LLVMInt1TypeInContext(ctx->context), 1, 0),
                     src_sym->moved_flag);
-            }
-            else
-            {
-                /* 表达式结果：将求值期间产生的所有 string temp 标记为 moved */
-                for (int t = temp_mark; t < ctx->temp_string_count; t++)
-                    mark_string_moved(ctx, ctx->temp_string_slots[t],
-                                      "xfer: struct temp owned by container");
             }
         }
 #if CG_DEBUG
@@ -2885,53 +2644,24 @@ static void cg_store_owned(CodegenContext *ctx,
     LLVMBuildStore(ctx->builder, val, dst_ptr);
 }
 
-/* Free temp string slots in [mark, count) and reset count to mark.
-   skip_last: if true, skip the last slot (it was moved to a named variable).
-   All non-skipped slots are conditionally freed (cap > 0 check). */
-static void cg_flush_temps(CodegenContext *ctx, int mark, bool skip_last)
+
+/* Statement-boundary temp flush: drain temporary closure envs (literals
+   consumed as rvalues this statement) and statement-level has_drop temps. */
+static void cg_flush_temps(CodegenContext *ctx)
 {
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
     if (cur && LLVMGetBasicBlockTerminator(cur) != NULL)
     {
-        /* Block already terminated (e.g. after a break/continue): skip flush */
-        ctx->temp_string_count = mark;
         ctx->temp_block_env_count = 0;
-        cg_flush_temp_drops(ctx, mark); /* M-4.5: discard high-water drop slots */
+        cg_flush_temp_drops(ctx);
         return;
     }
-    int end = ctx->temp_string_count;
-    if (skip_last && end > mark)
-        end--;
-#if CG_DEBUG
-    if (end > mark)
-    {
-        char dbg_fmt[64];
-        snprintf(dbg_fmt, sizeof(dbg_fmt),
-                 "[cg] tmp.flush   mark=%d end=%d skip_last=%d\n",
-                 mark, end, (int)skip_last);
-        cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
-    }
-#endif
-    for (int i = mark; i < end; i++)
-    {
-        emit_string_free(ctx, ctx->temp_string_slots[i]);
-    }
-    ctx->temp_string_count = mark;
-
-    /* Phase C.5: drain any temporary closure envs (literals consumed as
-       rvalues this statement). They're not associated with the string
-       mark — always full-flush since closure literals don't compose. */
-    for (int i = 0; i < ctx->temp_block_env_count; i++) {
+    for (int i = 0; i < ctx->temp_block_env_count; i++)
         cg_emit_block_env_drop(ctx, ctx->temp_block_envs[i]);
-    }
     ctx->temp_block_env_count = 0;
-
-    /* M-4.5: drop statement-level temporary has_drop struct/enum values
-       (e.g. vec[i] / map.get clones not transferred to a named variable). */
-    cg_flush_temp_drops(ctx, mark);
+    cg_flush_temp_drops(ctx);
 }
 
-/* ---- String Move Semantics ---- */
 
 /* Check if an expression is a variable (identifier) of string type.
    If so, return the symbol; otherwise return NULL. */
@@ -2951,20 +2681,6 @@ static CgSymbol *get_string_var_symbol(AstNode *expr, CodegenContext *ctx)
    dst_alloca: destination variable's alloca
    src_alloca: source variable's alloca
    dst and src are LsString structs (by value). */
-static void emit_string_move(CodegenContext *ctx, LLVMValueRef dst_alloca,
-                             LLVMValueRef src_alloca)
-{
-    LLVMTypeRef str_type = ls_string_type(ctx);
-
-    /* Load source string struct */
-    LLVMValueRef src_val = LLVMBuildLoad2(ctx->builder, str_type, src_alloca, "move.src");
-
-    /* Store to destination (struct copy) */
-    LLVMBuildStore(ctx->builder, src_val, dst_alloca);
-
-    /* Mark source as moved (cap = -1) */
-    mark_string_moved(ctx, src_alloca, "assign: src moved to dst");
-}
 
 /* Forward declaration for struct drop */
 static LLVMBasicBlockRef emit_struct_drop_separate(CodegenContext *ctx, LLVMValueRef drop_ptr,
@@ -4616,7 +4332,6 @@ static LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
         }
 
         /* Dynamic string temps (upper/lower/concat/f-string/…) are already
-           registered via cg_push_temp_string and freed by cg_flush_temps at
            statement end — no separate __argtmp scope registration needed. */
 
         if (i > 0)
@@ -4985,7 +4700,7 @@ static LLVMValueRef codegen_from_cstr(CodegenContext *ctx, AstNode *node)
 
     /* phi the two paths. The result is an owned has_drop Str rvalue — the
        generic struct rvalue protocol (var-decl transfer / call-arg spill /
-       expr-stmt drop) takes it from here; no temp_string registration. */
+       expr-stmt drop) takes it from here. */
     LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
     LLVMValueRef phi = LLVMBuildPhi(ctx->builder, str_t, "fromcstr.r");
     LLVMValueRef vals[2] = { empty_str, ok_str };
@@ -6939,18 +6654,17 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     /* Wildcard → fill in the default block */
                     LLVMPositionBuilderAtEnd(ctx->builder, default_bb);
                     default_used = true;
-                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
                     int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
                     {
                         body_val = cg_match_arm_own_tail(
                             ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_str_mark, arm_drop_floor,
+                            result_type, arm_drop_floor,
                             /*did_move_out_binder=*/false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
                     }
-                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
+                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
                     continue;
@@ -7080,7 +6794,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     }
                 }
 
-                int arm_str_mark = ctx->temp_string_count;   /* L-013 */
                 int arm_drop_floor = ctx->temp_drop_count;
                 LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                 bool did_move_out_binder = false;
@@ -7123,7 +6836,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    scope is still alive so the tail IDENT resolves to the binder). */
                 if (result_alloca && body_val)
                     body_val = cg_match_arm_own_tail(ctx, tail, body_val, res_llvm,
-                                                     result_type, arm_str_mark,
+                                                     result_type,
                                                      arm_drop_floor, did_move_out_binder);
                 if (result_alloca && body_val)
                     LLVMBuildStore(ctx->builder, body_val, result_alloca);
@@ -7131,8 +6844,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 pop_scope(ctx);
                 /* L-013: encapsulate arm-body temps (transfer the tail temp into the
                    result, free the rest). Subject drop (index < arm_drop_floor) and
-                   outer temps (< arm_str_mark) are preserved. */
-                cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
+                   outer temps are preserved. */
+                cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
                 /* Guard: arm body may end with 'return', which already terminates
                    the block.  Only emit the merge-branch when the block is still
                    open (no terminator yet). */
@@ -7278,17 +6991,16 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     /* Wildcard → default block */
                     LLVMPositionBuilderAtEnd(ctx->builder, default_bb);
                     default_used = true;
-                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
                     int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
                     {
                         body_val = cg_match_arm_own_tail(
                             ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_str_mark, arm_drop_floor, false);
+                            result_type, arm_drop_floor, false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
                     }
-                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
+                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
                 }
@@ -7309,17 +7021,16 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     }
 
                     LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
                     int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
                     {
                         body_val = cg_match_arm_own_tail(
                             ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_str_mark, arm_drop_floor, false);
+                            result_type, arm_drop_floor, false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
                     }
-                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
+                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
                 }
@@ -7343,17 +7054,16 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
                 if (is_wildcard)
                 {
-                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
                     int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
                     {
                         body_val = cg_match_arm_own_tail(
                             ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_str_mark, arm_drop_floor, false);
+                            result_type, arm_drop_floor, false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
                     }
-                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
+                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
                 }
@@ -7414,17 +7124,16 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     LLVMBuildCondBr(ctx->builder, combined_cmp, then_bb, next_bb);
 
                     LLVMPositionBuilderAtEnd(ctx->builder, then_bb);
-                    int arm_str_mark = ctx->temp_string_count;   /* L-013 */
                     int arm_drop_floor = ctx->temp_drop_count;
                     LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                     if (result_alloca && body_val)
                     {
                         body_val = cg_match_arm_own_tail(
                             ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_str_mark, arm_drop_floor, false);
+                            result_type, arm_drop_floor, false);
                         LLVMBuildStore(ctx->builder, body_val, result_alloca);
                     }
-                    cg_match_arm_encapsulate(ctx, arm_str_mark, arm_drop_floor, result_type);
+                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
                     /* Guard: arm body may end with 'return'. */
                     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
                         LLVMBuildBr(ctx->builder, merge_bb);
@@ -7478,7 +7187,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
         /* Save temp mark: inner_expr eval may create temps (f-string, concat,
            upper, etc.) that aren't consumed by the try's payload extraction. */
-        int try_temp_mark = ctx->temp_string_count;
         LLVMValueRef inner_val = codegen_expr(ctx, inner_expr);
         if (inner_val == NULL) return NULL;
 
@@ -7586,7 +7294,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         }
 
         /* Flush temp strings from the inner expression before scope cleanup */
-        cg_flush_temps(ctx, try_temp_mark, false);
+        cg_flush_temps(ctx);
         /* RAII: drop all owned variables in scope before returning */
         emit_cleanup_to(ctx, NULL, NULL);
 
@@ -7599,7 +7307,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         /* Flush temp strings from inner expression before yielding the
            unwrapped value. These temps (e.g. f-string buffers, concat results)
            have been cloned into the Result payload and are safe to free. */
-        cg_flush_temps(ctx, try_temp_mark, false);
+        cg_flush_temps(ctx);
         if (result_alloca && success_llvm)
             return LLVMBuildLoad2(ctx->builder, success_llvm, result_alloca, "try.val");
         return NULL;
@@ -8183,7 +7891,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 continue;
 
             /* 记录本字段求值前的 temp mark，供 cg_store_owned 的 rvalue pop 使用 */
-            int field_temp_mark = ctx->temp_string_count;
             LLVMValueRef val = codegen_expr(ctx, node->as.new_expr.field_inits[i].value);
             if (val == NULL)
                 return NULL;
@@ -8196,7 +7903,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                struct/enum/vec/map move 标记，以及 POD 直接 store */
             cg_store_owned(ctx, field_ptr, val, field_type,
                            node->as.new_expr.field_inits[i].value,
-                           field_temp_mark, CG_XFER_INTO_CONTAINER);
+                           CG_XFER_INTO_CONTAINER);
         }
 
         /* Fill any field not explicitly initialized with its declared default
@@ -8220,7 +7927,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             if (deflt == NULL)
                 continue; /* checker already errored; leave zero-init */
 
-            int field_temp_mark = ctx->temp_string_count;
             Type *field_type = struct_type->as.strukt.fields[j].type;
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
                                                          storage, (unsigned)j,
@@ -8235,7 +7941,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             if (val == NULL)
                 return NULL;
             cg_store_owned(ctx, field_ptr, val, field_type, deflt,
-                           field_temp_mark, CG_XFER_INTO_CONTAINER);
+                           CG_XFER_INTO_CONTAINER);
         }
 
         if (on_stack)
@@ -8285,9 +7991,8 @@ static LLVMValueRef codegen_short_circuit(CodegenContext *ctx, AstNode *node)
        uses". The RHS result is a bool (i1), so it owns nothing; flushing all RHS
        temps is safe. LHS temps were created in the entry block (which dominates
        everything) and correctly flush at the outer statement boundary. */
-    int rhs_temp_mark = ctx->temp_string_count;
     LLVMValueRef right = codegen_expr(ctx, node->as.binary.right);
-    cg_flush_temps(ctx, rhs_temp_mark, false);
+    cg_flush_temps(ctx);
     LLVMBasicBlockRef rhs_end = LLVMGetInsertBlock(ctx->builder);
     LLVMBuildBr(ctx->builder, merge_bb);
 
@@ -8372,7 +8077,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         if (node->as.var_decl.init)
         {
             /* Track temp slots created during init expression evaluation */
-            int temp_mark = ctx->temp_string_count;
 
             /* Collection-literal init for a user container (the `__from_list`
                protocol, checked above): zero-init the struct, then call its
@@ -8409,7 +8113,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         LLVMBuildCall2(ctx->builder, fl_ft, fl_fn, fl_args, 2, "");
                     }
                 }
-                ctx->temp_string_count = temp_mark;
             }
             /* M-LIT: key-value literal init for a user container (the
                `__from_pairs` protocol, checked above): zero-init the struct, then
@@ -8440,7 +8143,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         LLVMBuildCall2(ctx->builder, fp_ft, fp_fn, fp_args, 3, "");
                     }
                 }
-                ctx->temp_string_count = temp_mark;
             }
             /* Special handling for array literal initialization */
             else if (var_type->kind == TYPE_ARRAY &&
@@ -8472,7 +8174,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         LLVMBuildStore(ctx->builder, elem_val, gep);
                     }
                 }
-                ctx->temp_string_count = temp_mark;
             }
             else
             {
@@ -8560,7 +8261,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     LLVMBuildStore(ctx->builder, init, alloca);
                 }
 
-                cg_flush_temps(ctx, temp_mark, false);
+                cg_flush_temps(ctx);
             }
         }
 
@@ -8576,7 +8277,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
            pre-statement registration (e.g. an enclosing match's owned-rvalue
            subject) from an RHS-created spill when no string temps intervene —
            flushing by mark would double-drop the subject. */
-        int temp_mark = ctx->temp_string_count;
         int assign_drop_floor = ctx->temp_drop_count;
         LLVMValueRef val = codegen_expr(ctx, node->as.assign.value);
         if (val == NULL)
@@ -8670,9 +8370,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     ctx->temp_drop_count = assign_drop_floor;
                     /* String temps from the RHS are garbage here (result is a
                        struct): free them as before. */
-                    for (int ti = temp_mark; ti < ctx->temp_string_count; ti++)
-                        emit_string_free(ctx, ctx->temp_string_slots[ti]);
-                    ctx->temp_string_count = temp_mark;
                 }
                 else if (sym->type && sym->type->kind == TYPE_ENUM &&
                          sym->type->as.enom.has_drop)
@@ -8736,9 +8433,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                             emit_enum_drop(ctx, ctx->temp_drop_slots[ti], tt);
                     }
                     ctx->temp_drop_count = assign_drop_floor;
-                    for (int ti = temp_mark; ti < ctx->temp_string_count; ti++)
-                        emit_string_free(ctx, ctx->temp_string_slots[ti]);
-                    ctx->temp_string_count = temp_mark;
                 }
                 else if (sym->type && sym->type->kind == TYPE_BLOCK)
                 {
@@ -8769,7 +8463,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         /* Closure literal on RHS — pop temp env; dst now owns it */
                         ctx->temp_block_env_count--;
                     }
-                    ctx->temp_string_count = temp_mark;
                 }
                 else
                 {
@@ -8785,9 +8478,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                        here would double-free, e.g. by-value struct args in
                        `acc = f(x) && f(x) && acc`). */
                     LLVMBuildStore(ctx->builder, val, sym->value);
-                    for (int ti = temp_mark; ti < ctx->temp_string_count; ti++)
-                        emit_string_free(ctx, ctx->temp_string_slots[ti]);
-                    ctx->temp_string_count = temp_mark;
                 }
             }
             else
@@ -8822,7 +8512,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 }
                 if (result)
                     LLVMBuildStore(ctx->builder, result, sym->value);
-                ctx->temp_string_count = temp_mark;
             }
         }
         else if (node->as.assign.target->kind == AST_FIELD)
@@ -8855,23 +8544,16 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                             val = emit_clone_value(ctx, val, flt, field_type);
                         }
                     }
-                    else
-                    {
-                        cg_mark_last_temp_moved(ctx, temp_mark,
-                                                "assign: temp owned by struct field");
-                    }
                     LLVMBuildStore(ctx->builder, val, field_ptr);
-                    cg_flush_temps(ctx, temp_mark, true);
+                    cg_flush_temps(ctx);
                 }
                 else
                 {
                     LLVMBuildStore(ctx->builder, val, field_ptr);
-                    ctx->temp_string_count = temp_mark;
                 }
             }
             else
             {
-                ctx->temp_string_count = temp_mark;
             }
         }
         else if (node->as.assign.target->kind == AST_INDEX)
@@ -8902,9 +8584,9 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val,
                                                  &index, 1, "pis.ep");
                 cg_store_owned(ctx, gep, val, obj_type->as.pointer_to,
-                               node->as.assign.value, temp_mark,
+                               node->as.assign.value,
                                CG_XFER_INTO_CONTAINER);
-                cg_flush_temps(ctx, temp_mark, true);
+                cg_flush_temps(ctx);
             }
             else
             {
@@ -8939,7 +8621,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                                  indices, 2, "arr.store");
 
                 LLVMBuildStore(ctx->builder, val, gep);
-                ctx->temp_string_count = temp_mark;
             }
         }
         else if (node->as.assign.target->kind == AST_UNARY &&
@@ -8965,13 +8646,11 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     val = emit_struct_clone_val(ctx, val, llvm_st, target_type);
                 }
                 LLVMBuildStore(ctx->builder, val, ptr);
-                ctx->temp_string_count = temp_mark;
             }
             else
             {
                 /* Trivial type: just store */
                 LLVMBuildStore(ctx->builder, val, ptr);
-                ctx->temp_string_count = temp_mark;
             }
         }
         break;
@@ -9041,7 +8720,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
         if (node->as.return_stmt.value)
         {
-            int ret_temp_mark = ctx->temp_string_count;
             LLVMValueRef val = codegen_expr(ctx, node->as.return_stmt.value);
             if (val)
             {
@@ -9059,7 +8737,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     ctx->temp_block_env_count > 0) {
                     ctx->temp_block_env_count--;
                 }
-                cg_flush_temps(ctx, ret_temp_mark, false);
+                cg_flush_temps(ctx);
                 /* P1-3 fix: returning a GLOBAL string by name shares the global's
                    data pointer. The global is freed at exit by __ls_global_cleanup,
                    so transferring it to the caller (who also frees) double-frees.
@@ -9127,7 +8805,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
     case AST_IF:
     {
-        int cond_temp_mark = ctx->temp_string_count;
         LLVMValueRef cond = codegen_expr(ctx, node->as.if_stmt.cond);
         if (cond == NULL)
             return;
@@ -9135,7 +8812,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
            (e.g. f"..." interpolations, string concatenations used in
            comparisons).  The condition result is an i1 bool already
            materialised, so the strings are no longer needed. */
-        cg_flush_temps(ctx, cond_temp_mark, false);
+        cg_flush_temps(ctx);
 
         LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(
             ctx->context, ctx->current_fn, "if.then");
@@ -9197,11 +8874,10 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
         LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
         {
-            int cond_temp_mark = ctx->temp_string_count;
             LLVMValueRef cond = codegen_expr(ctx, node->as.while_stmt.cond);
             /* Free temporary strings from the condition before branching.
                They are re-created (and re-freed) on every loop iteration. */
-            cg_flush_temps(ctx, cond_temp_mark, false);
+            cg_flush_temps(ctx);
             if (cond)
                 LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
         }
@@ -9436,10 +9112,9 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
         if (node->as.for_c_stmt.cond)
         {
-            int cond_temp_mark = ctx->temp_string_count;
             LLVMValueRef cond = codegen_expr(ctx, node->as.for_c_stmt.cond);
             /* Free temporary strings produced by the condition expression. */
-            cg_flush_temps(ctx, cond_temp_mark, false);
+            cg_flush_temps(ctx);
             if (cond)
                 LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
         }
@@ -9501,7 +9176,6 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
            The unified temp slot mechanism handles all dynamic strings (method calls,
            concatenation, f-strings) — no need for the old expr_produces_dynamic_string
            heuristic. */
-        int temp_mark = ctx->temp_string_count;
         AstNode *estmt = node->as.expr_stmt.expr;
         LLVMValueRef ev = codegen_expr(ctx, estmt);
         /* F2 (VR-LIM-014): a discarded CALL returning an owned has_drop value by
@@ -9511,7 +9185,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
            only a call yields a fresh owned rvalue; a bare ident/field read is a
            borrow of a live binding and must NOT be dropped here. TYPE_STRING is
            excluded — discarded string-returning calls are already freed via the
-           temp-string mechanism (cg_push_temp_string). */
+           statement-temp mechanism. */
         if (ev != NULL && estmt->kind == AST_CALL && estmt->resolved_type)
         {
             Type *rt = estmt->resolved_type;
@@ -9527,7 +9201,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             }
         }
         /* Free all temps produced (none are moved/kept — this is a discarded result) */
-        cg_flush_temps(ctx, temp_mark, false);
+        cg_flush_temps(ctx);
         break;
     }
 
@@ -9775,7 +9449,6 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     LLVMValueRef saved_fn = ctx->current_fn;
     Type *saved_fn_ret = ctx->current_fn_return_type;
     CgScope *saved_scope = ctx->current_scope;
-    int saved_temp_count = ctx->temp_string_count;
     /* Isolate the body's statement-level temp stacks from the parent's. The
        closure body is a separate function: its own rvalue temporaries (has_drop
        struct/enum/vec drops + closure-env drops) must not be drained by — and
@@ -9783,7 +9456,7 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
        in the parent before this closure literal (e.g. the rvalue receiver of a
        chained method call `v.map(U)(...).reduce(U)(...)`) would be flushed
        INSIDE the closure body, referencing an alloca from another function
-       (LLVM "instruction does not dominate all uses"). Mirrors temp_string. */
+       (LLVM "instruction does not dominate all uses"). */
     int saved_temp_drop_count  = ctx->temp_drop_count;
     int saved_temp_block_env_count = ctx->temp_block_env_count;
 
@@ -9792,7 +9465,6 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     LLVMPositionBuilderAtEnd(ctx->builder, entry);
     ctx->current_fn = fn;
     ctx->current_fn_return_type = ret_lst;
-    ctx->temp_string_count = 0;
     ctx->temp_drop_count = 0;
     ctx->temp_block_env_count = 0;
 
@@ -9919,7 +9591,6 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     ctx->current_scope = saved_scope;
     ctx->current_fn = saved_fn;
     ctx->current_fn_return_type = saved_fn_ret;
-    ctx->temp_string_count = saved_temp_count;
     ctx->temp_drop_count = saved_temp_drop_count;
     ctx->temp_block_env_count = saved_temp_block_env_count;
     if (saved_block) LLVMPositionBuilderAtEnd(ctx->builder, saved_block);
@@ -10360,8 +10031,6 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
 
     /* Each function compiles in isolation: reset temp string slots so that
        temps from a previous function don't bleed into this one. */
-    int saved_temp_count = ctx->temp_string_count;
-    ctx->temp_string_count = 0;
     /* Same isolation for M-4.5 has_drop temp slots: a function whose last
        statement early-returns from every match arm can leave registered
        temp_drop entries unflushed; without this reset the NEXT function's
@@ -10691,7 +10360,6 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
     ctx->is_main_void = saved_is_main_void;
 
     /* Restore temp string count to what it was before compiling this function */
-    ctx->temp_string_count = saved_temp_count;
     ctx->temp_drop_count = saved_temp_drop_count;
 
     /* Verify function */
@@ -11283,9 +10951,8 @@ static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
         LLVMBuildCall2(ctx->builder, memset_ty, memset_fn, ms_args, 3, "");
     }
 
-    /* temp_string mark hoisted to the function scope so the post-loop flush
+    /* statement-temp flush hoisted to the function scope so the post-loop flush
        still has access to it even when arg_count == 0. */
-    int enum_temp_mark = ctx->temp_string_count;
 
     /* Store discriminant byte */
     LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, ealloca, 0, "disc.p");
@@ -11340,7 +11007,7 @@ static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                    enum_temp_mark 记录了本次 codegen_expr(args[i]) 前的
                    temp count，用于 rvalue string 的 pop-temp 操作。 */
                 cg_store_owned(ctx, field_ptr, v, pt,
-                               args[i], enum_temp_mark,
+                               args[i],
                                CG_XFER_INTO_CONTAINER);
             }
             else
@@ -11353,7 +11020,7 @@ static LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
     /* Flush temp strings created by argument evaluation (e.g. f-string inside
        Ok(f"got {x}")). The enum constructor clones string arguments into the
        payload, so the originals are safe to free here. */
-    cg_flush_temps(ctx, enum_temp_mark, false);
+    cg_flush_temps(ctx);
 
     /* Return the loaded enum value */
     return LLVMBuildLoad2(ctx->builder, enum_llvm, ealloca, "enum.val");
@@ -13118,18 +12785,12 @@ void codegen_destroy(CodegenContext *ctx)
         cg_scope_free(old);
     }
     free(ctx->struct_types);
-    free(ctx->temp_string_slots);
-    ctx->temp_string_slots = NULL;
-    ctx->temp_string_count = 0;
-    ctx->temp_string_cap = 0;
 
     /* M-4.5: release temp has_drop slot arrays */
     free(ctx->temp_drop_slots);
     free(ctx->temp_drop_types);
-    free(ctx->temp_drop_marks);
     ctx->temp_drop_slots = NULL;
     ctx->temp_drop_types = NULL;
-    ctx->temp_drop_marks = NULL;
     ctx->temp_drop_count = 0;
     ctx->temp_drop_cap = 0;
 
@@ -13554,8 +13215,6 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
 
             LLVMValueRef saved_fn = ctx->current_fn;
             ctx->current_fn = gs_fn;
-            int saved_temp_count = ctx->temp_string_count;
-            ctx->temp_string_count = 0;
 
             /* Push a local scope so any variables declared inside top-level statements
                live in their own scope and get cleaned up on return.
@@ -13636,7 +13295,6 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
 
             pop_scope(ctx);
             ctx->current_fn = saved_fn;
-            ctx->temp_string_count = saved_temp_count;
         }
     }
 
@@ -13685,8 +13343,6 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
 
             LLVMValueRef saved_fn2 = ctx->current_fn;
             ctx->current_fn = cleanup_fn;
-            int saved_tc2 = ctx->temp_string_count;
-            ctx->temp_string_count = 0;
 /* Helper macro: emit cleanup for one global var decl.
    P1-3: gname is the LLVM global name (prefixed for module globals, bare for root). */
 #define EMIT_GLOBAL_CLEANUP(decl, gname)                                                                 \
@@ -13766,7 +13422,6 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
 
             LLVMBuildRetVoid(ctx->builder);
             ctx->current_fn = saved_fn2;
-            ctx->temp_string_count = saved_tc2;
         }
     }
 
