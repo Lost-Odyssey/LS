@@ -3448,7 +3448,7 @@ static Type *check_expr(Checker *c, AstNode *node)
 
     case AST_STRING_LIT:
         /* P5-4 S-2: a string literal IS a (static) Str — the builtin string
-           type is gone. Codegen keys off coerce_str_lit_to_str. */
+           type is gone. Codegen emits a static Str struct value. */
         {
             Type *strt = str_target_of_expected(c->expected_type);
             if (strt == NULL) strt = checker_str_type(c);
@@ -3460,7 +3460,6 @@ static Type *check_expr(Checker *c, AstNode *node)
                 result = NULL;
                 break;
             }
-            node->coerce_str_lit_to_str = true;
             result = strt;
         }
         break;

@@ -61,7 +61,6 @@ static int jit_eval(const char *source) {
     LLVMModuleRef module = cg.module;
     LLVMDisposeBuilder(cg.builder);
     free(cg.struct_types);
-    free(cg.temp_string_slots);
 
     ASSERT_EQ(jit_add_module(&engine, module), 0);
 

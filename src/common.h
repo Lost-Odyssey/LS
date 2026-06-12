@@ -14,21 +14,6 @@
 #define GROW_ARRAY(type, ptr, new_count) \
     (type *)realloc_safe((ptr), sizeof(type) * (new_count))
 
-/* LsString minimum capacity — all dynamic strings allocate at least this many bytes */
-#define LS_MIN_STR_CAP 16
-
-/* LsString cap sentinel values (stored in the i32 cap field).
-   These must be kept in sync with the cap checks in codegen.c and runtime/builtins.c.
-
-   LS_CAP_STATIC   (0)  — points to .rodata / string literal; never free, never clone.
-   LS_CAP_MOVED    (-1) — ownership was transferred; skip drop (the new owner frees it).
-   LS_CAP_BORROWED (-2) — caller-owned, callee borrows; must clone before storing into
-                           owned structures (enum/struct field), must NOT free on scope exit.
-                           Introduced in M-2 to disambiguate static-literal from borrowed. */
-#define LS_CAP_STATIC   0
-#define LS_CAP_MOVED    (-1)
-#define LS_CAP_BORROWED (-2)
-
 /* CG_DEBUG: compile-time flag for *codegen-internal* memory tracing.
    When enabled (=1), the codegen layer injects runtime printf calls into the
    generated LLVM IR at every automatic alloc / clone / free / drop point.

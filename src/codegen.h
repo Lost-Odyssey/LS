@@ -18,7 +18,7 @@ typedef struct {
     Type *type;
     LLVMValueRef moved_flag; /* i1 flag: true if value has been moved (for struct) */
     bool is_borrowed;        /* true for vec/struct params passed by ptr — no cleanup ownership */
-    bool is_mut_borrow;      /* true for &!string params: `value` is LsString* supplied by
+    bool is_mut_borrow;      /* true for &! params: `value` is a pointer supplied by
                                 caller (not a local alloca). Load/store go through the pointer,
                                 scope cleanup skips it entirely. */
 } CgSymbol;
@@ -65,7 +65,7 @@ typedef struct {
     bool profile_enabled;   /* --profile: inject ls_prof_enter/leave for function profiling */
 
     /* The AST node currently being lowered. Set on entry to codegen_expr and
-       restored on exit. Helpers (emit_string_clone_val, vec/map mallocs that
+       restored on exit. Helpers (clone/drop emitters, vec/map mallocs that
        lack a direct node) read this for memcheck site labelling. NULL means
        no current expression — use 0/0 line/col. */
     AstNode *current_node;
@@ -156,16 +156,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node);
 
 /* Map an LS Type to its LLVM type. Exposed for built-in stdlib codegen. */
 LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t);
-
-/* LsString helpers — exposed for built-in stdlib codegen (io, future fs/...).
-   ls_string_type:   the named LLVM struct {i8* data, i32 len, i32 cap}.
-   ls_string_make:   build a value from {data, len, cap} components.
-   ls_string_from_literal: build a static (cap=0) LsString from a C string. */
-LLVMTypeRef ls_string_type(CodegenContext *ctx);
-LLVMValueRef ls_string_make(CodegenContext *ctx, LLVMValueRef data,
-                            LLVMValueRef len, LLVMValueRef cap);
-LLVMValueRef ls_string_from_literal(CodegenContext *ctx,
-                                    const char *text, const char *name);
 
 /* Memcheck-aware allocator. When ctx->memcheck_enabled is true the call
    routes through ls_mc_alloc with a fresh LsMcSite global tagged with

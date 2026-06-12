@@ -174,25 +174,6 @@ struct AstNode
        env-ignoring thunk and returns the usual {fn, env} Block value. */
     bool coerce_fn_to_block;
     Type *coerce_block_type; /* owned clone of the expected Block type */
-    /* string-literal -> Str coercion (docs/plan_string_to_stdlib.md §5.1, P1):
-       set by the checker on an AST_STRING_LIT when it appears where a `Str`
-       struct is expected. Codegen then emits a static Str struct value
-       {data, len, cap:0} (layout-identical to LsString) instead of a builtin
-       LsString. resolved_type carries the concrete Str struct type. */
-    bool coerce_str_lit_to_str;
-    /* builtin-string VALUE -> Str coercion (docs/plan_string_to_stdlib.md, B-step
-       migration bridge): set by the checker when a non-literal string expression
-       flows into a `Str` slot (var-decl init / return). Codegen deep-copies the
-       LsString into an owned Str (reusing emit_string_clone_val + reinterpret).
-       Localized (not opened globally in type_assignable) so only flagged nodes
-       convert. resolved_type stays `string`; the target type is known at the site. */
-    bool coerce_string_to_str;
-    /* Reverse migration bridge (B-3): set by the checker when a `Str` value flows
-       into a builtin-string slot (var-decl init / call-arg / return). Codegen
-       reinterprets the layout-identical Str into an LsString; ownership per site:
-       IDENT source → clone (source keeps ownership), rvalue → raw transfer,
-       call-arg → cap=-2 borrow (zero-copy). resolved_type stays `Str`. */
-    bool coerce_str_to_string;
     union
     {
         struct
