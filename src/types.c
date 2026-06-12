@@ -18,7 +18,6 @@ static Type PRIM_F32    = { TYPE_F32,    false, {{0}} };
 static Type PRIM_F64    = { TYPE_F64,    false, {{0}} };
 static Type PRIM_BOOL   = { TYPE_BOOL,   false, {{0}} };
 static Type PRIM_CHAR   = { TYPE_CHAR,   false, {{0}} };
-static Type PRIM_STRING = { TYPE_STRING, false, {{0}} };
 static Type PRIM_VOID   = { TYPE_VOID,   false, {{0}} };
 static Type PRIM_NIL    = { TYPE_NIL,    false, {{0}} };
 static Type PRIM_LIB    = { TYPE_LIB,    false, {{0}} };
@@ -37,7 +36,6 @@ Type *type_f32(void)    { return &PRIM_F32; }
 Type *type_f64(void)    { return &PRIM_F64; }
 Type *type_bool(void)   { return &PRIM_BOOL; }
 Type *type_char(void)   { return &PRIM_CHAR; }
-Type *type_string(void) { return &PRIM_STRING; }
 Type *type_void(void)   { return &PRIM_VOID; }
 Type *type_nil(void)    { return &PRIM_NIL; }
 Type *type_lib(void)    { return &PRIM_LIB; }
@@ -50,7 +48,7 @@ static bool is_singleton(const Type *t) {
            t == &PRIM_I32  || t == &PRIM_I64 || t == &PRIM_U8  ||
            t == &PRIM_U16  || t == &PRIM_U32 || t == &PRIM_U64 ||
            t == &PRIM_F32  || t == &PRIM_F64 || t == &PRIM_BOOL ||
-           t == &PRIM_CHAR || t == &PRIM_STRING || t == &PRIM_VOID ||
+           t == &PRIM_CHAR || t == &PRIM_VOID ||
            t == &PRIM_NIL || t == &PRIM_LIB || t == &PRIM_OBJECT;
 }
 
@@ -534,7 +532,6 @@ const char *type_name(const Type *t) {
     case TYPE_F64:    return "f64";
     case TYPE_BOOL:   return "bool";
     case TYPE_CHAR:   return "char";
-    case TYPE_STRING: return "string";
     case TYPE_VOID:   return "void";
     case TYPE_NIL:    return "nil";
     case TYPE_LIB:    return "lib";

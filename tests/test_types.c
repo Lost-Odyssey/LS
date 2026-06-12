@@ -34,7 +34,6 @@ static void test_primitive_singletons(void) {
     ASSERT_TRUE(type_int() == type_int());
     ASSERT_TRUE(type_f64() == type_f64());
     ASSERT_TRUE(type_bool() == type_bool());
-    ASSERT_TRUE(type_string() == type_string());
     ASSERT_TRUE(type_void() == type_void());
     ASSERT_TRUE(type_nil() == type_nil());
     ASSERT_TRUE(type_int() != type_f64());
@@ -90,7 +89,7 @@ static void test_type_queries(void) {
     ASSERT_TRUE(type_is_numeric(type_int()));
     ASSERT_TRUE(type_is_numeric(type_f64()));
     ASSERT_FALSE(type_is_numeric(type_bool()));
-    ASSERT_FALSE(type_is_numeric(type_string()));
+    ASSERT_FALSE(type_is_numeric(type_void()));
 
     ASSERT_TRUE(type_is_signed(type_int()));
     ASSERT_TRUE(type_is_signed(type_i32()));
@@ -108,7 +107,6 @@ static void test_type_name(void) {
     ASSERT_STR_EQ(type_name(type_int()), "int");
     ASSERT_STR_EQ(type_name(type_f64()), "f64");
     ASSERT_STR_EQ(type_name(type_bool()), "bool");
-    ASSERT_STR_EQ(type_name(type_string()), "string");
     ASSERT_STR_EQ(type_name(type_void()), "void");
     ASSERT_STR_EQ(type_name(NULL), "void");
     printf(" ok\n");
@@ -152,7 +150,7 @@ static void test_type_enum(void) {
     t->as.enom.variants[1].payload_count = 1;
     t->as.enom.variants[1].payload_types =
         (Type **)malloc_safe(sizeof(Type *));
-    t->as.enom.variants[1].payload_types[0] = type_string();
+    t->as.enom.variants[1].payload_types[0] = type_i64();
     t->as.enom.has_drop = true;  /* contains string */
 
     /* Equality by mangled name */

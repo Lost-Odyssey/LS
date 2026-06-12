@@ -10393,12 +10393,12 @@ static void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
     if (node->as.impl_decl.type_param_count > 0) return;
 
     const char *bare_name = node->as.impl_decl.name;
-    /* Phase 2.5: `impl <builtin type>` (e.g. string). Builtin types are global,
-       not owned by any module — their methods use the bare name `string.split`
+    /* Phase 2.5: `impl <builtin type>` (e.g. int). Builtin types are global,
+       not owned by any module — their methods use the bare name `int.hash`
        so callers in any importing file resolve the same symbol (§2.4). Skip the
        B-3 module prefixing applied to struct/enum impls. */
     bool is_builtin_impl =
-        strcmp(bare_name, "string") == 0 || strcmp(bare_name, "int") == 0 ||
+        strcmp(bare_name, "int") == 0 ||
         strcmp(bare_name, "i64") == 0    || strcmp(bare_name, "f64") == 0 ||
         strcmp(bare_name, "bool") == 0   || strcmp(bare_name, "char") == 0;
     /* B-3: when emitting inside a module, prefix the struct/enum LLVM name so
@@ -10548,7 +10548,7 @@ static void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
        bare name `int.hash` so callers in any importing file resolve the same
        symbol (mirrors codegen_impl_decl's is_builtin_impl). Skip B-3 prefixing. */
     bool is_builtin_impl =
-        strcmp(bare_name, "string") == 0 || strcmp(bare_name, "int") == 0 ||
+        strcmp(bare_name, "int") == 0 ||
         strcmp(bare_name, "i64") == 0    || strcmp(bare_name, "f64") == 0 ||
         strcmp(bare_name, "bool") == 0   || strcmp(bare_name, "char") == 0;
     /* B-3: prefix trait impl method names for module-defined types */

@@ -1657,8 +1657,8 @@ static void test_vec_reverse_ir(void) {
 
 /* Regression: vec(string) pop() as a top-level statement used to crash with
    "Terminator found in the middle of a basic block! label %sf.skip0"
-   because emit_vec_elem_drop_at called emit_string_free (which emits ret void)
-   instead of emit_string_free_with_cont (which emits a continuation block). */
+   because emit_vec_elem_drop_at used a string-free that emitted ret void
+   instead of the with-continuation variant (which emits a continuation block). */
 static void test_vec_string_pop_top_level(void) {
     printf("  test_vec_string_pop_top_level...");
     char *ir = compile_to_ir(

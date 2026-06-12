@@ -10,7 +10,7 @@ typedef enum {
     TYPE_INT, TYPE_I8, TYPE_I16, TYPE_I32, TYPE_I64,
     TYPE_U8, TYPE_U16, TYPE_U32, TYPE_U64,
     TYPE_F32, TYPE_F64,
-    TYPE_BOOL, TYPE_CHAR, TYPE_STRING, TYPE_VOID, TYPE_NIL,
+    TYPE_BOOL, TYPE_CHAR, TYPE_VOID, TYPE_NIL,
     TYPE_OBJECT,        /* object — type-erased pointer (void*) */
     TYPE_POINTER,       /* *T */
     TYPE_REFERENCE,     /* &T (is_mut=false) / &!T (is_mut=true) — function parameters only */
@@ -100,7 +100,6 @@ Type *type_f32(void);
 Type *type_f64(void);
 Type *type_bool(void);
 Type *type_char(void);
-Type *type_string(void);
 Type *type_void(void);
 Type *type_nil(void);
 Type *type_lib(void);

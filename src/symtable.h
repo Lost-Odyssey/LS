@@ -13,7 +13,7 @@ typedef struct Symbol {
     bool is_maybe_moved;    /* Phase B: true if value moved on SOME path (MAYBE_MOVED = death) */
     bool is_returning;      /* true if variable is in a return expression (skip drop) */
     bool is_borrow;         /* true for &T function parameters — cannot be moved, reassigned,
-                               or mutated. Sym->type holds the pointee (e.g. TYPE_STRING),
+                               or mutated. Sym->type holds the pointee,
                                NOT TYPE_REFERENCE — this flag is the sole marker. */
     bool is_mut_borrow;     /* true for &!T function parameters — cannot be moved, but
                                CAN be reassigned and mutated. Same type-unwrap convention

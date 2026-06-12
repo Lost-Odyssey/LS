@@ -178,7 +178,7 @@ static Type *find_struct_type(Checker *c, const char *name)
     return NULL;
 }
 
-/* Step 11: Resolve a builtin type name ("int", "i64", "f64", "bool", "string", "char")
+/* Step 11: Resolve a builtin type name ("int", "i64", "f64", "bool", "char")
    to its Type*.  Returns NULL for non-builtin names. */
 static Type *resolve_builtin_type_by_name(const char *name)
 {
@@ -251,7 +251,6 @@ static const char *type_impl_name(Type *t)
     case TYPE_I64:    return "i64";
     case TYPE_F64:    return "f64";
     case TYPE_BOOL:   return "bool";
-    case TYPE_STRING: return "string";
     case TYPE_CHAR:   return "char";
     default:          return NULL;
     }
