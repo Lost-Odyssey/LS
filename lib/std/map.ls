@@ -220,7 +220,7 @@ impl(K, V) Map(K, V) {
     // Slot index of key k (hash h precomputed), or -1 if absent. Early-terminates
     // on the Robin Hood invariant: once our PSL exceeds the resident's, k cannot
     // be further along.
-    fn _find(&self, K k, u64 h) -> int where K: Eq {
+    fn _find(&self, &K k, u64 h) -> int where K: Eq {
         if self.cap == 0 { return -1 }
         int mask = self.cap - 1
         int idx = self._home(h)
@@ -237,7 +237,7 @@ impl(K, V) Map(K, V) {
     }
 
     // Clone of the value for k, or None when absent.
-    fn get(&self, K k) -> Option(V) where K: Hash + Eq {
+    fn get(&self, &K k) -> Option(V) where K: Hash + Eq {
         u64 h = k.hash()
         int idx = self._find(k, h)
         if idx < 0 { return None }
@@ -245,7 +245,7 @@ impl(K, V) Map(K, V) {
         return Some(v)
     }
 
-    fn has?(&self, K k) -> bool where K: Hash + Eq {
+    fn has?(&self, &K k) -> bool where K: Hash + Eq {
         u64 h = k.hash()
         return self._find(k, h) >= 0
     }
@@ -283,7 +283,7 @@ impl(K, V) Map(K, V) {
     // following entry back one position and decrement its PSL, until the next slot
     // is empty or already at its home (PSL 0). This keeps the Robin Hood invariant
     // intact so the table never degrades under churn. See docs/plan_std_map.md §5.4.
-    fn remove(&!self, K k) -> Option(V) where K: Hash + Eq {
+    fn remove(&!self, &K k) -> Option(V) where K: Hash + Eq {
         u64 h = k.hash()
         int i = self._find(k, h)
         if i < 0 { return None }

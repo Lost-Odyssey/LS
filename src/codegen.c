@@ -3001,6 +3001,28 @@ static void emit_struct_drop(CodegenContext *ctx, LLVMValueRef drop_ptr,
 
 /* ---- Type mapping: LS Type -> LLVMTypeRef ---- */
 
+/* A read-only `&T` reference degrades to the by-value ABI of T when T is a
+   scalar (int/i64/char/bool/float/object/pointer/...): borrowing a scalar IS
+   its value, and the pointer-borrow ABI is only meaningful for aggregates
+   (struct/enum/array) whose buffers must not be copied. This keeps a generic
+   `&K` parameter valid when K instantiates to a POD type — e.g. a Map(int,int)
+   lookup whose method takes `&K k` — instead of emitting an `int*` param that
+   the body then uses as an `int` value (a verifier error). &!T (writable) is
+   always a pointer; this only affects read-only refs. */
+static bool cg_ref_pointee_is_byval(Type *p)
+{
+    if (p == NULL) return false;
+    switch (p->kind)
+    {
+    case TYPE_STRUCT:
+    case TYPE_ENUM:
+    case TYPE_ARRAY:
+        return false;
+    default:
+        return true;
+    }
+}
+
 LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
 {
     if (t == NULL)
@@ -3037,12 +3059,14 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
     case TYPE_POINTER:
         return LLVMPointerTypeInContext(ctx->context, 0);
     case TYPE_REFERENCE:
-        /* ABI policy for reference types: uniform pointer ABI.
-           P4(string→Str) removed the sole by-value specialisation
-           (read-only &string, 16-byte POD with cap=0 marker); the checker
-           now only admits &struct / &!struct / &enum pointees, all pointer.
+        /* ABI policy for reference types: aggregate (struct/enum/array)
+           pointees use a uniform pointer borrow ABI; read-only references to
+           a scalar pointee degrade to the scalar's by-value ABI (see
+           cg_ref_pointee_is_byval — needed for generic `&K` over POD K).
            emit_scope_cleanup honours is_borrowed on the CgSymbol so
            borrowed slots are never freed. */
+        if (!t->is_mut && cg_ref_pointee_is_byval(t->as.pointer_to))
+            return type_to_llvm(ctx, t->as.pointer_to);
         return LLVMPointerTypeInContext(ctx->context, 0);
     case TYPE_LIB:
         return LLVMPointerTypeInContext(ctx->context, 0);
@@ -9615,7 +9639,8 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
            paths treat sym->value as a pointer.
            Checker statically forbids mutating calls on this symbol. */
         if (param_type && param_type->kind == TYPE_REFERENCE &&
-            !param_type->is_mut)
+            !param_type->is_mut &&
+            !cg_ref_pointee_is_byval(param_type->as.pointer_to))
         {
             param_type = param_type->as.pointer_to;
             LLVMValueRef ptr = LLVMGetParam(fn, (unsigned)llvm_idx);
@@ -9630,6 +9655,14 @@ static void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             }
             continue;
         }
+        /* Read-only `&scalar` (a generic `&K` instantiated over POD K) uses the
+           by-value ABI: unwrap to the pointee so the param is registered as a
+           plain value (alloca + store below), matching type_to_llvm's scalar
+           reference degrade and the call site (which passes the value, not an
+           address, for non-aggregate args). */
+        if (param_type && param_type->kind == TYPE_REFERENCE &&
+            !param_type->is_mut)
+            param_type = param_type->as.pointer_to;
         LLVMTypeRef param_llvm = type_to_llvm(ctx, param_type);
         LLVMValueRef alloca = cg_entry_alloca(ctx, param_llvm,
                                               node->as.fn_decl.param_names[i]);
