@@ -316,8 +316,10 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
         }
     }
 #else
+    /* -lpthread for os_posix.c's ls_thread_* (std.task). Harmless on modern
+       glibc (≥2.34, pthread folded into libc); required on older glibc / musl. */
     snprintf(link_cmd, sizeof(link_cmd),
-             "cc \"%s\" -o \"%s\" %s %s %s -lm", obj_path, exe_path, mc_lib, prof_lib, os_lib);
+             "cc \"%s\" -o \"%s\" %s %s %s -lm -lpthread", obj_path, exe_path, mc_lib, prof_lib, os_lib);
 #endif
 
     printf("Linking: %s\n", link_cmd);

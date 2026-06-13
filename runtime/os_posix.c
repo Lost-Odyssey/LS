@@ -454,3 +454,68 @@ void ls_os_sleep_us(long long us) {
     req.tv_nsec = (long)((us % 1000000LL) * 1000L);
     nanosleep(&req, NULL);
 }
+
+/* =========================================================================
+ * Threads — run an LS `Block()->T` on an OS thread, join for the result.
+ * POSIX counterpart of the os_win32.c section (see there for the full model).
+ * GENERIC over T: the runtime is DUMB — codegen synthesises a per-T `thunk`
+ *   thunk(fn, env, box):  *box = ((T(*)(void*))fn)(env)
+ * that stores the closure's by-value result into a `*T` box the LS Task owns;
+ * the runtime only runs the thunk on a worker and NEVER touches the result
+ * bytes (single-owner root for has_drop results — join() moves it out via
+ * __take). The env owns any MOVE-captured heap; its field 0 is the codegen-
+ * emitted drop_fn, which we run once on the worker after the body, then free
+ * the env — single-owner across the thread boundary. glibc/musl malloc/free is
+ * thread-safe, so concurrent container alloc/free is fine.
+ * ========================================================================= */
+
+#include <pthread.h>
+
+typedef void (*ls_task_thunk)(void *fn, void *env, void *box);
+
+typedef struct {
+    ls_task_thunk thunk;
+    void         *fn;
+    void         *env;
+    void         *box;      /* result slot, OWNED by the LS Task; runtime never frees it */
+    pthread_t     handle;
+} LsThreadCtx;
+
+static void *ls_thread_trampoline(void *p) {
+    LsThreadCtx *c = (LsThreadCtx *)p;
+    c->thunk(c->fn, c->env, c->box);            /* run the body; result -> box */
+    /* Drop the closure env once, after the body ran (see header). */
+    void *env = c->env;
+    if (env != NULL) {
+        void *drop_fn = *(void **)env;          /* env field 0 = drop_fn */
+        if (drop_fn != NULL)
+            ((void (*)(void *))drop_fn)(env);
+        free(env);
+    }
+    return NULL;
+}
+
+/* Spawn: per-T thunk + the closure's raw {code_fn, env} + the result box.
+   Returns an opaque handle. The box is owned by the LS Task; we never free it. */
+void *ls_thread_spawn(void *thunk, void *fn, void *env, void *box) {
+    LsThreadCtx *c = (LsThreadCtx *)malloc(sizeof(LsThreadCtx));
+    if (c == NULL) return NULL;
+    c->thunk = (ls_task_thunk)thunk;
+    c->fn    = fn;
+    c->env   = env;
+    c->box   = box;
+    if (pthread_create(&c->handle, NULL, ls_thread_trampoline, c) != 0) {
+        free(c);
+        return NULL;
+    }
+    return c;
+}
+
+/* Join: wait for the worker, free the handle. The result is in the box (LS
+   reads it via __take); the box itself is the Task's to free, not ours. */
+void ls_thread_join(void *h) {
+    LsThreadCtx *c = (LsThreadCtx *)h;
+    if (c == NULL) return;
+    pthread_join(c->handle, NULL);
+    free(c);
+}
