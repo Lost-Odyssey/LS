@@ -17,6 +17,7 @@
 
 import std.vec
 import std.complex
+import std.tensor
 import math
 
 // n is a power of two (n >= 1)
@@ -251,3 +252,65 @@ fn idct(Vec(f64) y) -> Vec(f64) {
     }
     return x
 }
+
+// ---- multi-dimensional FFT (multi-pass / separable) ----
+//
+// fftn transforms a Tensor(Complex(f64)) along every axis: for each axis, gather
+// each line (the strided run along that axis) into a contiguous Vec, run the 1D
+// fft, scatter back. One pass per dimension. Reuses the arbitrary-N 1D kernel, so
+// each axis length can be any N. fft2 is the rank-2 convenience name.
+//
+// Line enumeration relies on contiguous row-major strides (strides[a] = product of
+// shape[a+1..]) — true for any owned Tensor. For axis a with stride sa and length
+// na, the line bases are outer*(na*sa) + inner for outer in [0,size/(na*sa)) and
+// inner in [0,sa).
+
+fn _fft_1d(Vec(Complex(f64)) line, bool inverse) -> Vec(Complex(f64)) {
+    if inverse { return ifft(line) }
+    return fft(line)
+}
+
+// transform every line along `axis` of `t` in place (1D fft or ifft)
+fn _fft_axis(&!Tensor(Complex(f64)) t, int axis, bool inverse) {
+    Vec(int) strd = t.strides()
+    int na = t.dim(axis)
+    int sa = strd.get!(axis)
+    int total = t.size()
+    int block = na * sa
+    int num_outer = total / block
+    int outer = 0
+    while outer < num_outer {
+        int inner = 0
+        while inner < sa {
+            int base = outer * block + inner
+            Vec(Complex(f64)) line = []
+            int j = 0
+            while j < na { line.push(t.get!(base + j * sa)); j = j + 1 }
+            Vec(Complex(f64)) tr = _fft_1d(line, inverse)
+            int q = 0
+            while q < na { t.set!(base + q * sa, tr.get!(q)); q = q + 1 }
+            inner = inner + 1
+        }
+        outer = outer + 1
+    }
+}
+
+// N-dimensional forward FFT (all axes). Input cloned by value; result is new.
+fn fftn(Tensor(Complex(f64)) t) -> Tensor(Complex(f64)) {
+    int r = t.rank()
+    int a = 0
+    while a < r { _fft_axis(&!t, a, false); a = a + 1 }
+    return t
+}
+
+// N-dimensional inverse FFT (1/N per axis = 1/total overall, NumPy).
+fn ifftn(Tensor(Complex(f64)) t) -> Tensor(Complex(f64)) {
+    int r = t.rank()
+    int a = 0
+    while a < r { _fft_axis(&!t, a, true); a = a + 1 }
+    return t
+}
+
+// rank-2 convenience names
+fn fft2(Tensor(Complex(f64)) t) -> Tensor(Complex(f64)) { return fftn(t) }
+fn ifft2(Tensor(Complex(f64)) t) -> Tensor(Complex(f64)) { return ifftn(t) }

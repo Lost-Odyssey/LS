@@ -2873,3 +2873,18 @@ set_tests_properties(test_fft_real_dct PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_fft_arbitrary"
 )
+
+# std.fft Phase 5: multi-dimensional fft2/fftn over Tensor(Complex(f64)) via
+# multi-pass gather/scatter (plan_fft_stdlib.md §2.5).
+add_test(
+    NAME test_fft_nd
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_fft_nd.cmake
+)
+set_tests_properties(test_fft_nd PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_fft_real_dct"
+)
