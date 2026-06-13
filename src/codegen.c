@@ -4220,6 +4220,17 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
         /* arr[index] — get pointer to array element */
         AstNode *arr_obj = node->as.index_expr.object;
         Type *arr_type = arr_obj->resolved_type;
+
+        /* Raw *T pointer index: borrow the element in place via a typed GEP (the
+           same address codegen_lvalue_ptr computes). Without this, a &self/&T
+           method receiver or operator operand on a `*T` slot — e.g. Map's
+           `self.keys[idx] == k` probe compare — fell through to the rvalue-self
+           spill in the method-call path and DEEP-CLONED the has_drop slot on
+           every probe (the alloc benchmark's dominant Str churn). Mirrors the
+           array case below; same realloc escape constraint as vec. */
+        if (arr_type && arr_type->kind == TYPE_POINTER && arr_type->as.pointer_to)
+            return codegen_lvalue_ptr(ctx, node);
+
         if (arr_type == NULL || arr_type->kind != TYPE_ARRAY)
         {
             return NULL;

@@ -249,6 +249,24 @@ void __ls_bytecopy(void *dst, int doff, const void *src, int soff, int n) {
     memcpy((char *)dst + doff, (const char *)src + soff, (size_t)n);
 }
 
+/* __ls_fxhash_bytes(data, len) -> u64  — byte-wise FxHash over a raw ptr+len
+   buffer. Bit-identical to std.str's `impl Hash for Str` (the LS loop
+   h = rotate_left(h ^ byte, 5) * 0x517cc1b727220a95, one byte per word): this
+   replaces 2.5M+ per-byte LS `fx_mix` calls in the Map(Str,_) hot path with a
+   single C call. SAME hash values by construction, so Map bucket layout /
+   iteration order are unchanged. SEED is rustc FxHasher's multiplier. No NUL
+   assumed; len <= 0 returns 0 (data may be nil for an empty Str). */
+unsigned long long __ls_fxhash_bytes(const char *data, int len) {
+    unsigned long long h = 0;
+    const unsigned long long SEED = 0x517cc1b727220a95ULL;
+    for (int i = 0; i < len; i++) {
+        unsigned long long x = h ^ (unsigned long long)(unsigned char)data[i];
+        unsigned long long r = (x << 5) | (x >> 59);
+        h = r * SEED;
+    }
+    return h;
+}
+
 /* Flush all CRT output streams. Codegen injects a call to this before every
    `ret` in main so buffered stdout/stderr is written WHILE this translation unit's
    CRT is still live — not left to the process-teardown path. On Windows the AOT

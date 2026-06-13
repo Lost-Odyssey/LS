@@ -675,15 +675,10 @@ impl Eq for Str {
 // this module's type prefix (std_str__Str.hash); see the note in std/hash.ls.
 impl Hash for Str {
     fn hash(&self) -> u64 {
-        u64 h = 0 as u64
-        int n = self.len
-        int i = 0
-        while i < n {
-            u64 b = self.data[i] as u64
-            h = _hash.fx_mix(h, b)
-            i = i + 1
-        }
-        return h
+        // One C call (runtime/builtins.c) over the raw buffer instead of a
+        // per-byte LS fx_mix loop — same FxHash values, but the Map(Str,_) hot
+        // path no longer pays 2.5M+ LS call frames. See alloc_analysis.md.
+        return c.__ls_fxhash_bytes(self.data, self.len)
     }
 }
 

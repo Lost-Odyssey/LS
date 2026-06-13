@@ -51,6 +51,11 @@ extern fn __ls_str_find(*u8 hay, int hlen, *u8 needle, int nlen, int start) -> i
 // offsets because LS has no pointer arithmetic. n <= 0 is a no-op.
 extern fn __ls_bytecopy(*u8 dst, int doff, *u8 src, int soff, int n)
 
+// Byte-wise FxHash over a raw ptr+len buffer (one C loop, no NUL assumed).
+// Bit-identical to the old per-byte LS hash loop; replaces 2.5M+ per-byte
+// fx_mix calls in the Map(Str,_) hot path. len <= 0 returns 0.
+extern fn __ls_fxhash_bytes(*u8 data, int len) -> u64
+
 // ---- stdin readline (runtime/builtins.c) ----
 
 extern fn __ls_readline_exec()

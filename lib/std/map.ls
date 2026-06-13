@@ -152,8 +152,11 @@ impl(K, V) Map(K, V) {
         while true {
             int c = self.ctrl[idx] as int
             if c == 255 { break }            // empty → place here
-            K existing = self.keys[idx]
-            if existing == k {
+            // Borrow the slot key in place for the compare — `==` takes &self, so
+            // the receiver auto-borrows via codegen_lvalue_ptr's pointer-index GEP
+            // (no clone). Materializing `K existing = self.keys[idx]` here used to
+            // deep-copy the slot on every probe (the alloc benchmark's #1 churn).
+            if self.keys[idx] == k {
                 // Update in place: drop the old value, move the new one in.
                 // k is unused here and is dropped at scope exit (RAII).
                 __drop_at(self.vals[idx])
@@ -226,8 +229,8 @@ impl(K, V) Map(K, V) {
             int c = self.ctrl[idx] as int
             if c == 255 { return -1 }
             if c < psl { return -1 }
-            K existing = self.keys[idx]
-            if existing == k { return idx }
+            // Borrow the slot in place (see _insert_no_grow) — no per-probe clone.
+            if self.keys[idx] == k { return idx }
             psl = psl + 1
             idx = (idx + 1) & mask
         }
