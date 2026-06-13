@@ -1970,6 +1970,21 @@ add_test(
 )
 set_tests_properties(test_sync PROPERTIES DEPENDS "test_atomic")
 
+# Closure-foundation Phase A — capture another Block by-clone (deep-copy its env
+# into the capturing closure's env; source stays live). Single-threaded
+# capture-and-call (JIT+AOT+memcheck 0/0/0 for env clone/drop balance) +
+# std.par.par_for data-parallel loop on top (JIT + repeated AOT, no memcheck —
+# tracker not thread-safe, same as task/sync).
+add_test(
+    NAME test_par_for
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_par_for.cmake
+)
+set_tests_properties(test_par_for PROPERTIES DEPENDS "test_sync")
+
 # M-DEF (std.map prereq): implicit empty/default init — `T v` ≡ `T v = {}` for
 # any type whose `= {}` is already legal (docs/plan_std_map.md §F2). JIT+AOT+memcheck.
 add_test(

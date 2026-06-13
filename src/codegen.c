@@ -450,6 +450,16 @@ static inline bool capture_type_is_by_move_cg(const Type *t) {
     switch (t->kind) {
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;  /* F.5: has_drop enum → by-move */
+    /* Closure-foundation Phase A: a captured Block is by-CLONE at the source
+       (the outer Block stays live, see checker capture_type_supported), but the
+       env field holds an OWNED clone that must be dropped. This predicate governs
+       env ownership/drop (counts toward has_drop_n, gets an env_drop entry, env
+       field stores a value not a by-ref pointer) — so it returns true here even
+       though the checker's capture_type_is_by_move stays false. The two predicates
+       are DELIBERATELY ASYMMETRIC: checker = source-move semantics (Block: no),
+       codegen = env-ownership/drop semantics (Block: yes). Do not "unify" them.
+       See docs/plan_closure_foundation.md §2.4. */
+    case TYPE_BLOCK:  return true;
     default:          return false;
     }
 }
@@ -9427,6 +9437,17 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                     LLVMBuildCall2(ctx->builder, eft, edfn, &slot, 1, "");
                 }
             }
+            else if (ct->kind == TYPE_BLOCK) {
+                /* Closure-foundation Phase A: the env owns a cloned Block. Load
+                   the Block value, extract its env_ptr (field 1), and free it via
+                   the shared helper (drop_fn + free env). NULL-env safe. */
+                LLVMTypeRef bptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+                LLVMTypeRef bfields[2] = { bptr_t, bptr_t };
+                LLVMTypeRef blk_t = LLVMStructTypeInContext(ctx->context, bfields, 2, 0);
+                LLVMValueRef blk = LLVMBuildLoad2(ctx->builder, blk_t, slot, "cap.blk");
+                LLVMValueRef benv = LLVMBuildExtractValue(ctx->builder, blk, 1, "cap.blk.env");
+                cg_emit_block_env_drop(ctx, benv);
+            }
         }
         LLVMBuildRetVoid(ctx->builder);
 
@@ -9497,6 +9518,17 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef p = LLVMBuildLoad2(ctx->builder, ptr_t, s_slot,
                                                 "cl.refp");
                 LLVMBuildStore(ctx->builder, p, d_slot);
+            } else if (ct->kind == TYPE_BLOCK) {
+                /* Closure-foundation Phase A: when this whole env is copied-out
+                   (outer closure becomes a value elsewhere), the Block nested in
+                   it must also deep-clone its env one more layer, else both envs
+                   would free the same inner env. emit_clone_value falls through to
+                   a shallow copy for Block, so handle it explicitly here. */
+                LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
+                LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, ct_llvm, s_slot,
+                                                 "cl.sv.blk");
+                LLVMValueRef cv = cg_emit_block_env_clone(ctx, sv);
+                LLVMBuildStore(ctx->builder, cv, d_slot);
             } else {
                 LLVMTypeRef ct_llvm = type_to_llvm(ctx, ct);
                 LLVMValueRef sv = LLVMBuildLoad2(ctx->builder, ct_llvm, s_slot,
@@ -9552,8 +9584,15 @@ static LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                   so we're storing a pointer-to-alloca into the ptr-typed slot.
                  No ownership transfer; outer remains live.
                - by-move (string/struct/POD): cap_outer_vals[i] is a loaded
-                 value; env takes ownership of the heap data. */
-            LLVMBuildStore(ctx->builder, cap_outer_vals[i], field_ptr);
+                 value; env takes ownership of the heap data.
+               - by-clone (Block): deep-copy the captured Block's env so the
+                 source Block stays live (par_for captures a Block param P
+                 times); the env owns this independent clone and env_drop frees
+                 it. See docs/plan_closure_foundation.md §2.4. */
+            LLVMValueRef store_val = cap_outer_vals[i];
+            if (ct->kind == TYPE_BLOCK)
+                store_val = cg_emit_block_env_clone(ctx, cap_outer_vals[i]);
+            LLVMBuildStore(ctx->builder, store_val, field_ptr);
 
             /* By-move marker on the outer alloca:
                  string: cap field gets -1 when currently > 0 (skip .rodata).

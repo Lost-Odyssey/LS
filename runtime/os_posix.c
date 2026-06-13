@@ -575,3 +575,9 @@ void ls_cpu_relax(void) {
 void ls_cpu_yield(void) {
     sched_yield();
 }
+
+/* Number of logical processors — par_for's default worker fan-out. */
+int __ls_cpu_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int)n : 1;
+}

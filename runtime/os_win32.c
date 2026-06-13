@@ -774,3 +774,11 @@ void ls_cpu_relax(void) {
 void ls_cpu_yield(void) {
     SwitchToThread();
 }
+
+/* Number of logical processors — par_for's default worker fan-out. */
+int __ls_cpu_count(void) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    int n = (int)si.dwNumberOfProcessors;
+    return n > 0 ? n : 1;
+}

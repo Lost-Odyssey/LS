@@ -56,6 +56,9 @@ extern fn __ls_bytecopy(*u8 dst, int doff, *u8 src, int soff, int n)
 // fx_mix calls in the Map(Str,_) hot path. len <= 0 returns 0.
 extern fn __ls_fxhash_bytes(*u8 data, int len) -> u64
 
+// Number of logical processors (par_for default worker fan-out). >= 1.
+extern fn __ls_cpu_count() -> int
+
 // ---- stdin readline (runtime/builtins.c) ----
 
 extern fn __ls_readline_exec()

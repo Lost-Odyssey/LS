@@ -3047,6 +3047,12 @@ static bool capture_type_supported(const Type *t) {
     if (t == NULL) return false;
     /* F.5: non-has_drop enum (disc-only or POD payloads) is by-copy — no drop. */
     if (t->kind == TYPE_ENUM && !t->as.enom.has_drop) return true;
+    /* Closure-foundation Phase A: capture another Block by-clone (deep-copy its
+       env into this closure's env; source Block stays live). Deliberately NOT
+       added to capture_type_is_by_move — the source is not moved, so it does not
+       go through the by-move outer-mark / borrow-reject path below; it falls into
+       the plain-record path like POD. See docs/plan_closure_foundation.md §2.3. */
+    if (t->kind == TYPE_BLOCK) return true;
     return capture_type_is_pod(t) ||
            capture_type_is_pod_array(t) ||
            capture_type_is_by_move(t);
