@@ -2829,3 +2829,18 @@ set_tests_properties(test_tensor_complex PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_complex"
 )
+
+# std.fft Phase 2: radix-2 Cooley-Tukey FFT/ifft over Vec(Complex(f64)),
+# round-trip identity (plan_fft_stdlib.md §2.2).
+add_test(
+    NAME test_fft
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_fft.cmake
+)
+set_tests_properties(test_fft PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_complex"
+)
