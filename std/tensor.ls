@@ -154,6 +154,212 @@ impl(T) Tensor(T) {
         self.data[i * self.strides.get!(0) + j * self.strides.get!(1) + k * self.strides.get!(2)] = v
     }
 
+    // ---- numerical ops (phase 3a) — all build on flat access + strides ----
+    //
+    // Element type T must support the arithmetic used (+ - * / on numeric T,
+    // and > for max/argmax/relu). These are generic methods, monomorphized per
+    // element type, so the requirement is only enforced when actually used with
+    // a given T (lazy, like Vec's where T: Ord). v1 has NO broadcasting: binary
+    // elementwise ops require identical shapes (use scalar variants otherwise).
+
+    fn _shape_eq(&self, &Tensor(T) o) -> bool {
+        if self.shape.len() != o.shape.len() { return false }
+        int k = 0
+        while k < self.shape.len() {
+            if self.shape.get!(k) != o.shape.get!(k) { return false }
+            k = k + 1
+        }
+        return true
+    }
+    fn _ew_check(&self, &Tensor(T) o) {
+        if !self._shape_eq(o) {
+            print(f"Tensor elementwise shape mismatch (no broadcasting): size {self.size} vs {o.size}")
+            std.c.abort()
+        }
+    }
+
+    // Elementwise (Hadamard) tensor ⊗ tensor → new Tensor of the same shape.
+    fn add(&self, &Tensor(T) o) -> Tensor(T) {
+        self._ew_check(o)
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = self.data[i] + o.data[i]; i = i + 1 }
+        out.data = p
+        return out
+    }
+    fn sub(&self, &Tensor(T) o) -> Tensor(T) {
+        self._ew_check(o)
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = self.data[i] - o.data[i]; i = i + 1 }
+        out.data = p
+        return out
+    }
+    fn mul(&self, &Tensor(T) o) -> Tensor(T) {     // elementwise, NOT matmul
+        self._ew_check(o)
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = self.data[i] * o.data[i]; i = i + 1 }
+        out.data = p
+        return out
+    }
+    fn div(&self, &Tensor(T) o) -> Tensor(T) {
+        self._ew_check(o)
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = self.data[i] / o.data[i]; i = i + 1 }
+        out.data = p
+        return out
+    }
+
+    // Scalar broadcast: every element OP s → new Tensor of the same shape.
+    fn add_scalar(&self, T s) -> Tensor(T) {
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = self.data[i] + s; i = i + 1 }
+        out.data = p
+        return out
+    }
+    fn scale(&self, T s) -> Tensor(T) {            // multiply every element by s
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = self.data[i] * s; i = i + 1 }
+        out.data = p
+        return out
+    }
+
+    // Reductions over all elements (flat).
+    fn sum(&self) -> T {
+        T acc = 0 as T
+        int i = 0
+        while i < self.size { acc = acc + self.data[i]; i = i + 1 }
+        return acc
+    }
+    fn mean(&self) -> T { return self.sum() / (self.size as T) }
+    fn max(&self) -> T {                            // assumes size >= 1
+        T m = self.data[0]
+        int i = 1
+        while i < self.size {
+            T v = self.data[i]
+            if v > m { m = v }
+            i = i + 1
+        }
+        return m
+    }
+    fn argmax(&self) -> int {                       // flat index of the max element
+        int idx = 0
+        T m = self.data[0]
+        int i = 1
+        while i < self.size {
+            T v = self.data[i]
+            if v > m { m = v; idx = i }
+            i = i + 1
+        }
+        return idx
+    }
+
+    // ReLU: max(0, x) elementwise → new Tensor of the same shape.
+    fn relu(&self) -> Tensor(T) {
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        T z = 0 as T
+        int i = 0
+        while i < n {
+            T v = self.data[i]
+            if v > z { p[i] = v } else { p[i] = z }
+            i = i + 1
+        }
+        out.data = p
+        return out
+    }
+
+    // 2-D matrix multiply: self [m,k] @ o [k,n] → [m,n]. Strided reads on the
+    // operands (works on reshaped / future strided views); the result is fresh
+    // contiguous row-major.
+    fn matmul(&self, &Tensor(T) o) -> Tensor(T) {
+        if self.shape.len() != 2 || o.shape.len() != 2 {
+            print(f"Tensor.matmul requires 2-D operands (got rank {self.shape.len()} and {o.shape.len()})")
+            std.c.abort()
+        }
+        int m = self.shape.get!(0)
+        int k = self.shape.get!(1)
+        int k2 = o.shape.get!(0)
+        int nn = o.shape.get!(1)
+        if k != k2 {
+            print(f"Tensor.matmul inner dim mismatch: {k} vs {k2}")
+            std.c.abort()
+        }
+        int sa0 = self.strides.get!(0)
+        int sa1 = self.strides.get!(1)
+        int sb0 = o.strides.get!(0)
+        int sb1 = o.strides.get!(1)
+        Tensor(T) out = {}
+        Vec(int) osh = {}
+        osh.push(m)
+        osh.push(nn)
+        int total = out._setup(osh);
+        *T p = std.c.malloc(total * sizeof(T)) as *T
+        int r = 0
+        while r < m {
+            int cc = 0
+            while cc < nn {
+                T acc = 0 as T
+                int t = 0
+                while t < k {
+                    T av = self.data[r * sa0 + t * sa1]
+                    T bv = o.data[t * sb0 + cc * sb1]
+                    acc = acc + av * bv
+                    t = t + 1
+                }
+                p[r * nn + cc] = acc
+                cc = cc + 1
+            }
+            r = r + 1
+        }
+        out.data = p
+        return out
+    }
+
+    // 2-D transpose [m,n] → [n,m] (materialized copy; a strided view comes in phase 2).
+    fn transpose(&self) -> Tensor(T) {
+        if self.shape.len() != 2 {
+            print(f"Tensor.transpose requires 2-D (got rank {self.shape.len()})")
+            std.c.abort()
+        }
+        int m = self.shape.get!(0)
+        int nn = self.shape.get!(1)
+        Tensor(T) out = {}
+        Vec(int) osh = {}
+        osh.push(nn)
+        osh.push(m)
+        int total = out._setup(osh);
+        *T p = std.c.malloc(total * sizeof(T)) as *T
+        int i = 0
+        while i < m {
+            int j = 0
+            while j < nn {
+                p[j * m + i] = self.at2(i, j)     // out[j,i] = self[i,j]
+                j = j + 1
+            }
+            i = i + 1
+        }
+        out.data = p
+        return out
+    }
+
     // ---- reshape: same total size, recompute strides; NO data move ----
     fn reshape(&!self, &Vec(int) newshape) {
         int r = newshape.len()

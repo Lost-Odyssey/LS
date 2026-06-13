@@ -2700,3 +2700,17 @@ set_tests_properties(test_tensor_phase1 PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_tensor_phase0"
 )
+
+# std.tensor 阶段 3a：数值核心（elementwise/reduction/matmul/transpose/relu）
+add_test(
+    NAME test_tensor_phase3
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_phase3.cmake
+)
+set_tests_properties(test_tensor_phase3 PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_phase1"
+)
