@@ -2844,3 +2844,18 @@ set_tests_properties(test_fft PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_tensor_complex"
 )
+
+# std.fft Phase 3: arbitrary-N FFT via Bluestein (chirp-z), validated against a
+# naive O(N^2) DFT for prime/composite N (plan_fft_stdlib.md §2.2 Bluestein).
+add_test(
+    NAME test_fft_arbitrary
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_fft_arbitrary.cmake
+)
+set_tests_properties(test_fft_arbitrary PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_fft"
+)

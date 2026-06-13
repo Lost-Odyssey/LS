@@ -1,15 +1,19 @@
 // std/fft.ls — Fast Fourier Transform over Complex(f64).
 //
-// Phase 2: radix-2 Cooley-Tukey (decimation-in-time), N must be a power of 2.
-// Mixed-radix (3/4/5) + Bluestein (arbitrary N) come in Phase 3; multi-dim in
-// Phase 5. The whole module is NON-generic (every value is Complex(f64)) — FFT is
-// only meaningful for floats, so there is no type parameter and internal helpers
-// call each other freely.
+// Phase 2: radix-2 Cooley-Tukey (decimation-in-time) for N = 2^k.
+// Phase 3: Bluestein (chirp-z) for ARBITRARY N (incl. large primes) — any DFT of
+//          length N is turned into a convolution evaluated by a power-of-2 FFT.
+// (Mixed-radix 3/4/5 kernels are a perf optimization for composite N; Bluestein
+//  already handles every N correctly, so they are deferred. Multi-dim is Phase 5.)
+//
+// The whole module is NON-generic (every value is Complex(f64)) — FFT is only
+// meaningful for floats, so there is no type parameter and helpers call each other
+// freely. Call qualified: `import std.fft as ft` then `ft.fft(...)`.
 //
 //   fft(Vec(Complex(f64)))  -> Vec(Complex(f64))   forward, unscaled
 //   ifft(Vec(Complex(f64))) -> Vec(Complex(f64))   inverse, scaled by 1/N (NumPy)
 //
-// Convention: forward uses W_N^k = exp(-2*pi*i*k/N); inverse uses +sign and 1/N.
+// Convention: forward W_N^k = exp(-2*pi*i*k/N); inverse +sign and 1/N.
 
 import std.vec
 import std.complex
@@ -17,6 +21,13 @@ import math
 
 // n is a power of two (n >= 1)
 fn _is_pow2(int n) -> bool { return n > 0 && (n & (n - 1)) == 0 }
+
+// smallest power of two >= n (n >= 1)
+fn _next_pow2(int n) -> int {
+    int p = 1
+    while p < n { p = p * 2 }
+    return p
+}
 
 // In-place bit-reversal permutation of `a` (length n = 2^k).
 fn _bitrev(&!Vec(Complex(f64)) a, int n) {
@@ -45,7 +56,6 @@ fn _bitrev(&!Vec(Complex(f64)) a, int n) {
 fn _butterfly(&!Vec(Complex(f64)) a, int n, f64 sign) {
     int len = 2
     while len <= n {
-        // twiddle step wlen = exp(sign * 2*pi*i / len)
         f64 ang = sign * 2.0 * math.PI / (len as f64)
         Complex(f64) wlen = c(f64)(math.cos(ang), math.sin(ang))
         int half = len / 2
@@ -67,32 +77,91 @@ fn _butterfly(&!Vec(Complex(f64)) a, int n, f64 sign) {
     }
 }
 
-// Forward FFT (unscaled). Input taken by value (cloned); the result is a new Vec.
-fn fft(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
-    int n = x.len()
-    if !_is_pow2(n) {
-        print("fft: length must be a power of 2")
-        std.c.abort()
-    }
-    _bitrev(&!x, n)
-    _butterfly(&!x, n, 0.0 - 1.0)
-    return x
+// Bluestein chirp factor exp(sign * i*pi*n^2/N). n^2 reduced mod 2N (the period of
+// exp(-i*pi*n^2/N)) in i64 to avoid overflow and keep precision for large N.
+fn _chirp(int n, int bigN, f64 sign) -> Complex(f64) {
+    i64 nn = (n as i64) * (n as i64)
+    i64 period = 2 * (bigN as i64)
+    i64 m = nn % period
+    f64 ang = sign * math.PI * (m as f64) / (bigN as f64)
+    return c(f64)(math.cos(ang), math.sin(ang))
 }
 
-// Inverse FFT, scaled by 1/N (NumPy convention).
+// Bluestein forward DFT for arbitrary N (used by fft when N is not a power of 2).
+//   X_k = chirp_neg[k] * (a (*) b)_k,  a_n = x_n*chirp_neg[n],  b = symmetric chirp_pos
+// where the circular convolution (length M = next_pow2(2N-1)) is done with radix-2.
+fn _bluestein(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
+    int bigN = x.len()
+    int m = _next_pow2(2 * bigN - 1)
+
+    // a[n] = x[n] * exp(-i*pi*n^2/N), zero-padded to length m
+    Vec(Complex(f64)) a = []
+    int n = 0
+    while n < m {
+        if n < bigN {
+            a.push(x.get!(n) * _chirp(n, bigN, 0.0 - 1.0))
+        } else {
+            a.push(c(f64)(0.0, 0.0))
+        }
+        n = n + 1
+    }
+
+    // b: filter with b[k] = b[m-k] = exp(+i*pi*k^2/N) for k in [0,N), else 0
+    Vec(Complex(f64)) b = []
+    int z = 0
+    while z < m { b.push(c(f64)(0.0, 0.0)); z = z + 1 }
+    int k = 0
+    while k < bigN {
+        Complex(f64) bp = _chirp(k, bigN, 1.0)
+        b.set!(k, bp)
+        if k > 0 { b.set!(m - k, bp) }
+        k = k + 1
+    }
+
+    // circular convolution via radix-2: conv = ifft(fft(a) .* fft(b))
+    _bitrev(&!a, m)
+    _butterfly(&!a, m, 0.0 - 1.0)
+    _bitrev(&!b, m)
+    _butterfly(&!b, m, 0.0 - 1.0)
+    Vec(Complex(f64)) cc = []
+    int j = 0
+    while j < m { cc.push(a.get!(j) * b.get!(j)); j = j + 1 }
+    _bitrev(&!cc, m)
+    _butterfly(&!cc, m, 1.0)             // inverse butterfly (scale 1/m below)
+
+    f64 invm = 1.0 / (m as f64)
+    Vec(Complex(f64)) out = []
+    int p = 0
+    while p < bigN {
+        Complex(f64) ck = cc.get!(p).scale(invm)
+        out.push(ck * _chirp(p, bigN, 0.0 - 1.0))
+        p = p + 1
+    }
+    return out
+}
+
+// Forward FFT (unscaled). Power-of-2 N uses radix-2; any other N uses Bluestein.
+fn fft(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
+    int n = x.len()
+    if n <= 1 { return x }
+    if _is_pow2(n) {
+        _bitrev(&!x, n)
+        _butterfly(&!x, n, 0.0 - 1.0)
+        return x
+    }
+    return _bluestein(x)
+}
+
+// Inverse FFT (1/N scaling, NumPy). Works for ANY N via the conjugate identity
+// ifft(X) = conj(fft(conj(X))) / N, reusing the arbitrary-N forward transform.
 fn ifft(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
     int n = x.len()
-    if !_is_pow2(n) {
-        print("ifft: length must be a power of 2")
-        std.c.abort()
-    }
-    _bitrev(&!x, n)
-    _butterfly(&!x, n, 1.0)
-    f64 inv = 1.0 / (n as f64)
+    if n <= 1 { return x }
     int i = 0
-    while i < n {
-        x.set!(i, x.get!(i).scale(inv))
-        i = i + 1
-    }
-    return x
+    while i < n { x.set!(i, x.get!(i).conj()); i = i + 1 }
+    Vec(Complex(f64)) y = fft(x)
+    f64 inv = 1.0 / (n as f64)
+    int j = 0
+    while j < n { y.set!(j, y.get!(j).conj().scale(inv)); j = j + 1 }
+    return y
 }
