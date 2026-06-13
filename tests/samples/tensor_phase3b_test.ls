@@ -7,7 +7,6 @@
 import std.str
 import std.vec
 import std.tensor
-import math
 
 fn check(bool ok, Str l) { if ok { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 

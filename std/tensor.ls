@@ -421,15 +421,12 @@ impl(T) Tensor(T) {
         return out
     }
 
-    // ---- float activations (require math.exp/tanh; element type must be float) ----
+    // ---- float activations (use math.exp/tanh; element type must be float) ----
     //
-    // IMPORTANT: exp / sigmoid / softmax_rows use math.exp. Because these are
-    // generic methods instantiated in the CALLER's module, the `math` import is
-    // resolved there, not here — so a file that calls them must itself
-    // `import math` (otherwise: "undefined variable 'math'" pointing into this
-    // file). Same root cause as the std.c alias note above; a compiler fix to
-    // carry a generic's defining-module imports into instantiation would remove
-    // this requirement (recorded in plan_ndarray_stdlib.md §-1).
+    // exp / sigmoid / tanh / softmax_rows call into math.*. These are generic
+    // methods instantiated in the CALLER's module, but the caller need NOT
+    // `import math`: the compiler resolves `math` as an ambient builtin module
+    // when it is not shadowed by a local (mirroring the ambient std.c.* path).
 
     // Elementwise e^x → new Tensor of the same shape.
     fn exp(&self) -> Tensor(T) {

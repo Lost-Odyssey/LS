@@ -2,13 +2,13 @@
 //
 // 覆盖 std.rand（seed/unit/between/normal 决定性 + 范围）、随机张量初始化
 // （uniforms/normals -> init_from）、tanh 激活、mean_axis/max_axis。
-// import math 是 tanh 的前提（泛型方法在调用方实例化）。JIT+AOT+memcheck 0/0/0。
+// 注意：tanh 内部用 math.exp/math.tanh 但调用方无需 import math（编译器把
+// math 作 ambient builtin 模块解析）。JIT+AOT+memcheck 0/0/0。
 
 import std.str
 import std.vec
 import std.tensor
 import std.rand as rand
-import math
 
 fn check(bool ok, Str l) { if ok { print(f"ok {l}") } else { print(f"FAIL {l}") } }
 

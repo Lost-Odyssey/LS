@@ -3869,6 +3869,26 @@ static Type *check_expr(Checker *c, AstNode *node)
         Symbol *sym = scope_resolve(c->current_scope, node->as.ident.name);
         if (sym == NULL)
         {
+            /* Ambient builtin module: a generic method body (e.g. std.tensor's
+               exp/sigmoid/tanh using `math.exp`) is re-checked at the CONSUMER
+               site, where an `import math` alias is not in scope — it would
+               otherwise fail with "undefined variable 'math'". A builtin module
+               name (math/perf/...) that is NOT shadowed by a local symbol and
+               has no overriding user .ls file resolves on demand here, mirroring
+               the ambient std.c.* canonical path (match_stdc_prim). A user
+               variable of the same name is found by scope_resolve above, so it
+               always wins. */
+            if (builtin_module_exists(node->as.ident.name) &&
+                !module_user_file_exists(node->as.ident.name, c->source_path))
+            {
+                Type *mt = builtin_module_make_type(c, node->as.ident.name);
+                if (mt)
+                {
+                    node->resolved_type = mt;
+                    result = mt;
+                    break;
+                }
+            }
             /* Try variant-ctor recognition for no-payload variants (e.g. `Red`, `None`) */
             Type *enum_type = NULL;
             int variant_idx = -1;
