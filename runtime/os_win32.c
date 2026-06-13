@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <process.h>   /* _beginthreadex (CRT-aware thread start) */
 #include "os_backend.h"
 
 /* Forward-declare env-string helpers to avoid WIN32_LEAN_AND_MEAN issues */
@@ -649,4 +650,62 @@ void ls_os_sleep_us(long long us) {
        NtDelayExecution.  Round up to ms — acceptable for v1. */
     long long ms = (us + 999) / 1000;
     Sleep((DWORD)(ms < 0 ? 0 : ms));
+}
+
+/* =========================================================================
+ * Threads (spike) — run an LS `Block()->int` on an OS thread, join for the
+ * result. A Block value is {code_fn, env}; the closure ABI is
+ *   int code_fn(void *env)     (env passed first)
+ * The env owns any MOVE-captured heap (Vec/Str/struct/...); its field 0 is the
+ * codegen-emitted drop_fn. We run the body, then drop the env exactly ONCE here
+ * on the worker — replicating cg_emit_block_env_drop — so move-capture is
+ * single-owner across the thread boundary: the spawning scope marked its
+ * sources MOVED and will not drop them, and only the worker frees them. CRT
+ * malloc/free (ucrt) is thread-safe, so concurrent container alloc/free is fine.
+ * _beginthreadex (not CreateThread) so the worker gets CRT per-thread state.
+ * ========================================================================= */
+
+typedef int (*ls_thread_body)(void *env);
+
+typedef struct {
+    ls_thread_body fn;
+    void          *env;
+    int            result;
+    uintptr_t      handle;
+} LsThreadCtx;
+
+static unsigned __stdcall ls_thread_trampoline(void *p) {
+    LsThreadCtx *c = (LsThreadCtx *)p;
+    c->result = c->fn(c->env);
+    /* Drop the closure env once, after the body ran (see header). */
+    void *env = c->env;
+    if (env != NULL) {
+        void *drop_fn = *(void **)env;          /* env field 0 = drop_fn */
+        if (drop_fn != NULL)
+            ((void (*)(void *))drop_fn)(env);
+        free(env);
+    }
+    return 0;
+}
+
+/* Spawn: takes the closure's raw {code_fn, env}. Returns an opaque handle. */
+void *ls_thread_spawn(void *fn, void *env) {
+    LsThreadCtx *c = (LsThreadCtx *)malloc(sizeof(LsThreadCtx));
+    if (c == NULL) return NULL;
+    c->fn     = (ls_thread_body)fn;
+    c->env    = env;
+    c->result = 0;
+    c->handle = _beginthreadex(NULL, 0, ls_thread_trampoline, c, 0, NULL);
+    return c;
+}
+
+/* Join: wait for the worker, return its int result, free the handle. */
+int ls_thread_join(void *h) {
+    LsThreadCtx *c = (LsThreadCtx *)h;
+    if (c == NULL) return 0;
+    WaitForSingleObject((HANDLE)c->handle, INFINITE);
+    CloseHandle((HANDLE)c->handle);
+    int r = c->result;
+    free(c);
+    return r;
 }

@@ -4951,6 +4951,56 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return NULL; /* void */
         }
 
+        /* Structured concurrency: __task_spawn(Block()->int) -> object  /
+           __task_join(object) -> int. __task_spawn extracts the closure's
+           {code_fn, env} and MOVES the env into the worker (suppresses the
+           caller-scope env drop — the worker frees it once after the body runs,
+           see ls_thread_trampoline). This is the whole point: a Vec move-
+           captured into the closure is dropped exactly once, by the worker; the
+           spawning scope already marked its source MOVED. */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "__task_spawn") == 0 &&
+            node->as.call.arg_count == 1)
+        {
+            AstNode *blk = node->as.call.args[0];
+            LLVMValueRef closure_val = codegen_expr(ctx, blk);
+            if (closure_val == NULL) return NULL;
+            LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "go.fn");
+            LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "go.env");
+            /* Move the env into the thread (mirror the container-store Block
+               handling): a named Block var is nulled; a literal's temp env is
+               consumed so the caller scope does not also free it. */
+            if (blk->kind == AST_IDENT)
+            {
+                CgSymbol *bsym = cg_scope_resolve(ctx->current_scope, blk->as.ident.name);
+                if (bsym && !bsym->is_borrowed)
+                    cg_null_block_env(ctx, bsym->value);
+            }
+            else if (ctx->temp_block_env_count > 0)
+                ctx->temp_block_env_count--;
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+            LLVMValueRef spawn_fn = LLVMGetNamedFunction(ctx->module, "ls_thread_spawn");
+            LLVMTypeRef spawn_ty = LLVMFunctionType(ptr_t, (LLVMTypeRef[]){ptr_t, ptr_t}, 2, 0);
+            if (spawn_fn == NULL)
+                spawn_fn = LLVMAddFunction(ctx->module, "ls_thread_spawn", spawn_ty);
+            LLVMValueRef sargs[2] = { fn_ptr, env_ptr };
+            return LLVMBuildCall2(ctx->builder, spawn_ty, spawn_fn, sargs, 2, "go.handle");
+        }
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "__task_join") == 0 &&
+            node->as.call.arg_count == 1)
+        {
+            LLVMValueRef h = codegen_expr(ctx, node->as.call.args[0]);
+            if (h == NULL) return NULL;
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+            LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+            LLVMValueRef join_fn = LLVMGetNamedFunction(ctx->module, "ls_thread_join");
+            LLVMTypeRef join_ty = LLVMFunctionType(i32_t, &ptr_t, 1, 0);
+            if (join_fn == NULL)
+                join_fn = LLVMAddFunction(ctx->module, "ls_thread_join", join_ty);
+            return LLVMBuildCall2(ctx->builder, join_ty, join_fn, &h, 1, "join.r");
+        }
+
         /* Intercept __drop_at(place) — run the recursive destructor on the value
            stored at an lvalue place (raw pointer slot p[i], field, *p) WITHOUT
            freeing any backing buffer. No-op for POD. Returns void. The nested
@@ -5598,7 +5648,12 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     bool stores = mname &&
                         (strcmp(mname, "push") == 0 || strcmp(mname, "insert") == 0 ||
                          strcmp(mname, "set") == 0 || strcmp(mname, "__index_set") == 0 ||
-                         strcmp(mname, "__from_list") == 0 || strcmp(mname, "extend") == 0);
+                         strcmp(mname, "__from_list") == 0 || strcmp(mname, "extend") == 0 ||
+                         /* a `.new` constructor takes ownership of a Block argument
+                            (e.g. std.task's `Task.new { }` forwards the closure into
+                            the worker thread via __task_spawn) — consume the caller's
+                            temp env so it is freed once, on the worker, not twice. */
+                         strcmp(mname, "new") == 0);
                     if (stores)
                     {
                         AstNode *raw = node->as.call.args[i];

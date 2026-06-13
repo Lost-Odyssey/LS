@@ -190,6 +190,9 @@ int jit_init(JitEngine *engine) {
         extern int         __ls_str_find(const char *, int, const char *, int, int);
         extern void        __ls_bytecopy(void *, int, const void *, int, int);
         extern unsigned long long __ls_fxhash_bytes(const char *, int);
+        /* threads (spike) */
+        extern void       *ls_thread_spawn(void *, void *);
+        extern int         ls_thread_join(void *);
         /* regex engine (runtime/ls_regex.c) — used by std.regex via std.c FFI */
         extern int         __ls_regex_compile(const char *, int);
         extern void        __ls_regex_free(int);
@@ -214,7 +217,7 @@ int jit_init(JitEngine *engine) {
     pairs[i].Sym.Flags.TargetFlags = 0; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[93];
+        LLVMOrcCSymbolMapPair pairs[95];
         /* 0-5: memcheck */
         REG( 0, ls_mc_alloc);
         REG( 1, ls_mc_free);
@@ -320,9 +323,11 @@ int jit_init(JitEngine *engine) {
         REG(90, __ls_str_find);
         REG(91, __ls_bytecopy);
         REG(92, __ls_fxhash_bytes);
+        REG(93, ls_thread_spawn);
+        REG(94, ls_thread_join);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 93);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 95);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */

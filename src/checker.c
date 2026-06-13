@@ -9246,6 +9246,26 @@ static void register_builtins(Checker *c)
         scope_define(c->current_scope, "sqrt", ft);
     }
     /* abort: see the A-FLIP note above — now std.c.abort() / std_c__abort. */
+
+    /* Structured concurrency primitives (used by std.task's `Task`):
+         __task_spawn(Block()->int) -> object   run the closure on an OS thread
+         __task_join(object)        -> int       wait + return its result
+       Internal plumbing — users go through `Task.new { } / task.join()`. The
+       closure is MOVE-captured, so each task is isolated (no shared mutable
+       state) and sound without a lifetime system. `Thread` (raw, you-manage)
+       is reserved for later. */
+    {
+        Type **p = (Type **)malloc_safe(sizeof(Type *));
+        p[0] = type_block(NULL, 0, type_int());
+        scope_define(c->current_scope, "__task_spawn",
+                     type_function(p, 1, type_object(), false));
+    }
+    {
+        Type **p = (Type **)malloc_safe(sizeof(Type *));
+        p[0] = type_object();
+        scope_define(c->current_scope, "__task_join",
+                     type_function(p, 1, type_int(), false));
+    }
 }
 
 /* B-MAP-M5-004: has_drop fixpoint. Generic struct/enum instantiations cache

@@ -1925,6 +1925,20 @@ add_test(
 )
 set_tests_properties(test_iter_protocol PROPERTIES DEPENDS "test_vec_owndrop")
 
+# std.task — structured concurrency: `Task.new(|| body)` runs the body on an OS
+# worker thread; `task.join()` waits + returns its result. MOVE-capture isolates
+# each task (single owner, no auto-drop double-free across the thread boundary).
+# JIT + repeated AOT (soundness); no memcheck (tracker not thread-safe yet).
+add_test(
+    NAME test_task
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_task.cmake
+)
+set_tests_properties(test_task PROPERTIES DEPENDS "test_iter_protocol")
+
 # M-DEF (std.map prereq): implicit empty/default init — `T v` ≡ `T v = {}` for
 # any type whose `= {}` is already legal (docs/plan_std_map.md §F2). JIT+AOT+memcheck.
 add_test(

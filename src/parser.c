@@ -1500,10 +1500,12 @@ static AstNode *infix_force_unwrap(Parser *p, AstNode *left) {
 /* Field access: left.field or lib.call(:fn, ...) */
 static AstNode *infix_field(Parser *p, AstNode *left) {
     Token dot_tok = p->previous;
-    /* Field names can be identifiers, 'self', or type-keywords used as method names
-       (e.g. array is a keyword for types but also a valid method name). */
+    /* Field names can be identifiers, 'self', or keywords used as method names
+       (e.g. `array` is a type keyword but a valid method name; `new` is reserved
+       for allocation but `Task.new`/`X.new` reads as a Ruby-style constructor —
+       unambiguous in member position). */
     if (!check(p, TOKEN_IDENTIFIER) && !check(p, TOKEN_SELF) &&
-        !check(p, TOKEN_ARRAY))
+        !check(p, TOKEN_ARRAY) && !check(p, TOKEN_NEW))
     {
         error_at_current(p, "expected field name after '.'");
         ast_free(left);
@@ -2431,6 +2433,11 @@ static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     if (check(p, TOKEN_IDENTIFIER)) {
         advance(p);
         name = str_dup_n(p->previous.start, p->previous.length);
+    } else if (check(p, TOKEN_NEW)) {
+        /* `new` is reserved for the allocation prefix, but is a valid method
+           name (Ruby-style `Task.new` constructor); unambiguous after `fn`. */
+        advance(p);
+        name = str_dup_n(p->previous.start, p->previous.length); /* "new" */
     } else if (allow_operator_name &&
                (name = operator_method_name(p->current.type)) != NULL) {
         advance(p);  /* consume the operator token used as the method name */
