@@ -165,3 +165,89 @@ fn ifft(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
     while j < n { y.set!(j, y.get!(j).conj().scale(inv)); j = j + 1 }
     return y
 }
+
+// ---- real-input transforms (rfft / irfft) ----
+//
+// A real signal's spectrum is Hermitian (X[N-k] = conj(X[k])), so only the first
+// N/2+1 bins are independent. rfft returns just those (NumPy np.fft.rfft). v1 is
+// the simple form (full complex FFT + truncate); the ~2x packed-real optimization
+// is deferred (perf path goes through FFI like mixed-radix).
+
+// rfft(real x of length N) -> Vec(Complex(f64)) of length N/2+1
+fn rfft(Vec(f64) x) -> Vec(Complex(f64)) {
+    int n = x.len()
+    Vec(Complex(f64)) cx = []
+    int i = 0
+    while i < n { cx.push(c(f64)(x.get!(i), 0.0)); i = i + 1 }
+    Vec(Complex(f64)) full = fft(cx)
+    int half = n / 2 + 1
+    Vec(Complex(f64)) out = []
+    int k = 0
+    while k < half { out.push(full.get!(k)); k = k + 1 }
+    return out
+}
+
+// irfft(half-spectrum X of length N/2+1, original length n) -> real Vec(f64)
+fn irfft(Vec(Complex(f64)) x, int n) -> Vec(f64) {
+    int hl = x.len()                          // n/2 + 1
+    Vec(Complex(f64)) full = []
+    int z = 0
+    while z < n { full.push(c(f64)(0.0, 0.0)); z = z + 1 }
+    int k = 0
+    while k < hl { full.set!(k, x.get!(k)); k = k + 1 }
+    // mirror the conjugate-symmetric upper half: full[k] = conj(x[n-k])
+    k = hl
+    while k < n { full.set!(k, x.get!(n - k).conj()); k = k + 1 }
+    Vec(Complex(f64)) t = ifft(full)
+    Vec(f64) out = []
+    int p = 0
+    while p < n { out.push(t.get!(p).re); p = p + 1 }
+    return out
+}
+
+// ---- DCT (discrete cosine transform), scipy norm=None convention ----
+//
+// v1 is the direct O(N^2) definition (guaranteed correct; the Makhoul FFT-based
+// O(N log N) form is deferred to the perf path). idct is normalized by 1/(2N) so
+// that idct(dct(x)) == x.
+
+// DCT-II: y_k = 2 * sum_n x_n cos(pi*(2n+1)*k / (2N))
+fn dct(Vec(f64) x) -> Vec(f64) {
+    int bigN = x.len()
+    f64 denom = 2.0 * (bigN as f64)
+    Vec(f64) y = []
+    int k = 0
+    while k < bigN {
+        f64 s = 0.0
+        int n = 0
+        while n < bigN {
+            f64 ang = math.PI * ((2 * n + 1) as f64) * (k as f64) / denom
+            s = s + x.get!(n) * math.cos(ang)
+            n = n + 1
+        }
+        y.push(2.0 * s)
+        k = k + 1
+    }
+    return y
+}
+
+// DCT-III scaled to be the exact inverse of dct:
+//   x_n = (1/(2N)) * ( y_0 + 2 * sum_{k>=1} y_k cos(pi*(2n+1)*k / (2N)) )
+fn idct(Vec(f64) y) -> Vec(f64) {
+    int bigN = y.len()
+    f64 denom = 2.0 * (bigN as f64)
+    Vec(f64) x = []
+    int n = 0
+    while n < bigN {
+        f64 s = y.get!(0)
+        int k = 1
+        while k < bigN {
+            f64 ang = math.PI * ((2 * n + 1) as f64) * (k as f64) / denom
+            s = s + 2.0 * y.get!(k) * math.cos(ang)
+            k = k + 1
+        }
+        x.push(s / denom)
+        n = n + 1
+    }
+    return x
+}

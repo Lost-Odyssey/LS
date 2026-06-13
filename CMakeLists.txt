@@ -2859,3 +2859,17 @@ set_tests_properties(test_fft_arbitrary PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_fft"
 )
+
+# std.fft Phase 4: rfft/irfft (real-input) + DCT-II/III (plan_fft_stdlib.md §2.3/§2.4).
+add_test(
+    NAME test_fft_real_dct
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_fft_real_dct.cmake
+)
+set_tests_properties(test_fft_real_dct PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_fft_arbitrary"
+)
