@@ -2714,3 +2714,17 @@ set_tests_properties(test_tensor_phase3 PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_tensor_phase1"
 )
+
+# std.tensor 阶段 3b：broadcasting + 按轴 reduction + float 激活
+add_test(
+    NAME test_tensor_phase3b
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_phase3b.cmake
+)
+set_tests_properties(test_tensor_phase3b PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_phase3"
+)
