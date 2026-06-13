@@ -255,7 +255,9 @@ struct AstNode
         struct
         {
             AstNode *object;
-            AstNode *index;
+            AstNode *index;       /* single-subscript v[i]: the index (indices==NULL) */
+            AstNode **indices;    /* multi-subscript t[i,j,..]: count>=2 (index==NULL) */
+            int index_count;      /* number of subscripts; 1 for legacy single index */
         } index_expr;
         struct
         {

@@ -237,7 +237,13 @@ void ast_free(AstNode *node) {
         break;
     case AST_INDEX:
         ast_free(node->as.index_expr.object);
-        ast_free(node->as.index_expr.index);
+        if (node->as.index_expr.indices) {
+            for (int i = 0; i < node->as.index_expr.index_count; i++)
+                ast_free(node->as.index_expr.indices[i]);
+            free(node->as.index_expr.indices);
+        } else {
+            ast_free(node->as.index_expr.index);
+        }
         break;
     case AST_FIELD:
         ast_free(node->as.field_access.object);
@@ -694,7 +700,17 @@ AstNode *ast_clone_deep(const AstNode *src) {
         break;
     case AST_INDEX:
         n->as.index_expr.object = ast_clone_deep(src->as.index_expr.object);
-        n->as.index_expr.index  = ast_clone_deep(src->as.index_expr.index);
+        n->as.index_expr.index_count = src->as.index_expr.index_count;
+        if (src->as.index_expr.indices) {
+            int ic = src->as.index_expr.index_count;
+            n->as.index_expr.indices = (AstNode **)malloc_safe((size_t)ic * sizeof(AstNode *));
+            for (int i = 0; i < ic; i++)
+                n->as.index_expr.indices[i] = ast_clone_deep(src->as.index_expr.indices[i]);
+            n->as.index_expr.index = NULL;
+        } else {
+            n->as.index_expr.index = ast_clone_deep(src->as.index_expr.index);
+            n->as.index_expr.indices = NULL;
+        }
         break;
     case AST_FIELD:
         n->as.field_access.object = ast_clone_deep(src->as.field_access.object);
@@ -1019,7 +1035,12 @@ void ast_print(AstNode *node, int indent) {
     case AST_INDEX:
         printf("INDEX\n");
         ast_print(node->as.index_expr.object, indent + 1);
-        ast_print(node->as.index_expr.index, indent + 1);
+        if (node->as.index_expr.indices) {
+            for (int i = 0; i < node->as.index_expr.index_count; i++)
+                ast_print(node->as.index_expr.indices[i], indent + 1);
+        } else {
+            ast_print(node->as.index_expr.index, indent + 1);
+        }
         break;
     case AST_FIELD:
         printf("FIELD(.%s)\n", node->as.field_access.field);

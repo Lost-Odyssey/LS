@@ -1459,11 +1459,33 @@ static AstNode *prefix_array_lit(Parser *p) {
 /* Index: left[index] */
 static AstNode *infix_index(Parser *p, AstNode *left) {
     Token tok = p->previous;
-    AstNode *index = parse_expr_prec(p, PREC_NONE);
-    consume(p, TOKEN_RBRACKET, "expected ']' after index");
+    AstNode *first = parse_expr_prec(p, PREC_NONE);
     AstNode *n = new_node(AST_INDEX, tok.line, tok.column);
     n->as.index_expr.object = left;
-    n->as.index_expr.index = index;
+    /* Multi-subscript t[i, j, k] -> collect all indices; the checker lowers it to
+       the arity-specific reserved protocol method __index{N} (a generalization of
+       single-subscript v[i] -> __index). Single-subscript keeps the legacy shape
+       (index set, indices == NULL) so all existing consumers are byte-unchanged. */
+    if (match_tok(p, TOKEN_COMMA)) {
+        int cap = 4, cnt = 1;
+        AstNode **arr = (AstNode **)malloc_safe((size_t)cap * sizeof(AstNode *));
+        arr[0] = first;
+        do {
+            if (cnt == cap) {
+                cap *= 2;
+                arr = (AstNode **)realloc_safe(arr, (size_t)cap * sizeof(AstNode *));
+            }
+            arr[cnt++] = parse_expr_prec(p, PREC_NONE);
+        } while (match_tok(p, TOKEN_COMMA));
+        n->as.index_expr.index = NULL;
+        n->as.index_expr.indices = arr;
+        n->as.index_expr.index_count = cnt;
+    } else {
+        n->as.index_expr.index = first;
+        n->as.index_expr.indices = NULL;
+        n->as.index_expr.index_count = 1;
+    }
+    consume(p, TOKEN_RBRACKET, "expected ']' after index");
     return n;
 }
 

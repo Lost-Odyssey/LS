@@ -158,6 +158,34 @@ impl(T) Tensor(T) {
         self._ckdim(2, k)
         self.data[i * self.strides.get!(0) + j * self.strides.get!(1) + k * self.strides.get!(2)] = v
     }
+    fn at4(&self, int i, int j, int k, int l) -> T {
+        self._ckdim(0, i)
+        self._ckdim(1, j)
+        self._ckdim(2, k)
+        self._ckdim(3, l)
+        return self.data[i * self.strides.get!(0) + j * self.strides.get!(1)
+                       + k * self.strides.get!(2) + l * self.strides.get!(3)]
+    }
+    fn set4(&!self, int i, int j, int k, int l, T v) {
+        self._ckdim(0, i)
+        self._ckdim(1, j)
+        self._ckdim(2, k)
+        self._ckdim(3, l)
+        self.data[i * self.strides.get!(0) + j * self.strides.get!(1)
+                + k * self.strides.get!(2) + l * self.strides.get!(3)] = v
+    }
+
+    // Multi-subscript index protocol (reserved methods, arity-dispatched by the
+    // compiler): `t[i,j]` -> __index2, `t[i,j,k]` -> __index3, `t[i,j,k,l]` ->
+    // __index4 (and the __index_set{N} mirror for `t[...] = v`). Thin wrappers over
+    // atN/setN — fixed arity, scalar args, no container, so the offset arithmetic
+    // inlines. >4-D uses the flat get!/set! escape hatch. Bounds-checked (atN).
+    fn __index2(&self, int i, int j) -> T { return self.at2(i, j) }
+    fn __index3(&self, int i, int j, int k) -> T { return self.at3(i, j, k) }
+    fn __index4(&self, int i, int j, int k, int l) -> T { return self.at4(i, j, k, l) }
+    fn __index_set2(&!self, int i, int j, T v) { self.set2(i, j, v) }
+    fn __index_set3(&!self, int i, int j, int k, T v) { self.set3(i, j, k, v) }
+    fn __index_set4(&!self, int i, int j, int k, int l, T v) { self.set4(i, j, k, l, v) }
 
     // ---- numerical ops (phase 3a) — all build on flat access + strides ----
     //

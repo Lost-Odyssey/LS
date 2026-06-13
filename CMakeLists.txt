@@ -2742,3 +2742,17 @@ set_tests_properties(test_tensor_phase3c PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_tensor_phase3b"
 )
+
+# std.tensor 阶段 2：多下标 t[i,j,k]（arity 派发协议 __index{N}/__index_set{N}）
+add_test(
+    NAME test_tensor_phase2
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_phase2.cmake
+)
+set_tests_properties(test_tensor_phase2 PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_phase3c"
+)

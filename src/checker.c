@@ -855,6 +855,29 @@ static AstNode *make_index_protocol_call(int line, int column,
     return call;
 }
 
+/* Build `obj.method(indices[0], .., indices[n-1] [, val])` for multi-subscript
+   t[i,j,..] -> __index{N} / t[i,j,..]=v -> __index_set{N}. The index nodes are
+   transferred (not cloned) into the call args. */
+static AstNode *make_multi_index_call(int line, int column, AstNode *obj,
+                                      AstNode **indices, int n, AstNode *val,
+                                      const char *method)
+{
+    AstNode *call = ast_new(AST_CALL, line, column);
+    AstNode *callee = ast_new(AST_FIELD, line, column);
+    callee->as.field_access.object = obj;
+    callee->as.field_access.field  = chk_strdup(method);
+    int argc = val ? n + 1 : n;
+    AstNode **args = (AstNode **)malloc_safe((size_t)argc * sizeof(AstNode *));
+    for (int i = 0; i < n; i++) args[i] = indices[i];
+    if (val) args[n] = val;
+    call->as.call.callee = callee;
+    call->as.call.args = args;
+    call->as.call.arg_count = argc;
+    call->as.call.type_args = NULL;
+    call->as.call.type_arg_count = 0;
+    return call;
+}
+
 /* Rewrite an expression AST_INDEX node in place into an AST_CALL. */
 static void rewrite_index_to_call(AstNode *node, AstNode *obj, AstNode *idx,
                                   const char *method)
@@ -5182,6 +5205,40 @@ static Type *check_expr(Checker *c, AstNode *node)
 
     case AST_INDEX:
     {
+        /* Multi-subscript t[i, j, ...] -> the arity-specific reserved protocol
+           method __index{N} (a generalization of v[i] -> __index). Resolved by
+           subscript count, known at parse time; each __index{N} is a fixed-arity
+           method (scalar args, no container) so the offset arithmetic inlines —
+           the low-overhead, container-free path (cf. Julia's per-arity getindex).
+           Single-subscript (count<=1) falls through to the legacy logic below,
+           byte-unchanged. */
+        if (node->as.index_expr.index_count >= 2)
+        {
+            AstNode *objn = node->as.index_expr.object;
+            Type *obj = check_expr(c, objn);
+            if (obj == NULL) { result = NULL; break; }
+            int nidx = node->as.index_expr.index_count;
+            char mname[24];
+            snprintf(mname, sizeof(mname), "__index%d", nidx);
+            if (obj->kind == TYPE_STRUCT && find_method_ensured(c, obj, mname) != NULL)
+            {
+                AstNode *call = make_multi_index_call(node->line, node->column,
+                    objn, node->as.index_expr.indices, nidx, NULL, mname);
+                node->kind = AST_CALL;
+                node->as.call = call->as.call;
+                free(call);
+                result = check_expr(c, node);
+            }
+            else
+            {
+                checker_error(c, node->line, node->column,
+                    "type '%s' does not support %d-D indexing (no method '%s')",
+                    type_name(obj), nidx, mname);
+                result = NULL;
+            }
+            break;
+        }
+
         Type *obj = check_expr(c, node->as.index_expr.object);
         Type *idx = check_expr(c, node->as.index_expr.index);
         if (obj == NULL || idx == NULL)
@@ -6520,6 +6577,31 @@ static void check_stmt(Checker *c, AstNode *node)
            `__index_set(&!self, int, E)` desugars to `v.__index_set(i, x)`. Must
            run BEFORE check_expr(target) (which would read-rewrite v[i] to
            __index). Reuses tobj/idxn/valn; rewrites the assign node into a call. */
+        if (node->as.assign.target->kind == AST_INDEX &&
+            node->as.assign.target->as.index_expr.index_count >= 2)
+        {
+            /* Multi-subscript store t[i,j,..] = v -> __index_set{N}(i,j,..,v). */
+            AstNode *tgt = node->as.assign.target;
+            AstNode *tobj = tgt->as.index_expr.object;
+            Type *to = check_expr(c, tobj);
+            int nidx = tgt->as.index_expr.index_count;
+            char mname[28];
+            snprintf(mname, sizeof(mname), "__index_set%d", nidx);
+            if (to && to->kind == TYPE_STRUCT && find_method_ensured(c, to, mname) != NULL)
+            {
+                AstNode *valn = node->as.assign.value;
+                AstNode *call = make_multi_index_call(node->line, node->column,
+                    tobj, tgt->as.index_expr.indices, nidx, valn, mname);
+                node->kind = AST_EXPR_STMT;
+                node->as.expr_stmt.expr = call;
+                check_expr(c, call);
+                break;
+            }
+            checker_error(c, node->line, node->column,
+                "type '%s' does not support %d-D index assignment (no method '%s')",
+                to ? type_name(to) : "?", nidx, mname);
+            break;
+        }
         if (node->as.assign.target->kind == AST_INDEX)
         {
             AstNode *tobj = node->as.assign.target->as.index_expr.object;
