@@ -365,7 +365,63 @@ impl(T) Tensor(T) {
         return out
     }
 
-    // ---- float activations (require math.exp; element type must be float) ----
+    // Mean over one axis (= sum_axis / axis-length). For integer T this is an
+    // integer (truncating) mean, matching int division elsewhere.
+    fn mean_axis(&self, int axis) -> Tensor(T) {
+        Tensor(T) s = self.sum_axis(axis)
+        T al = self.dim(axis) as T
+        int i = 0
+        while i < s.size { s.set!(i, s.get!(i) / al); i = i + 1 }
+        return s
+    }
+
+    // Max over one axis → a tensor of rank-1 lower (the `axis` dim removed).
+    fn max_axis(&self, int axis) -> Tensor(T) {
+        int r = self.shape.len()
+        if axis < 0 || axis >= r {
+            print(f"Tensor.max_axis bad axis {axis} for rank {r}")
+            std.c.abort()
+        }
+        Vec(int) osh = {}
+        int k0 = 0
+        while k0 < r { if k0 != axis { osh.push(self.shape.get!(k0)) } k0 = k0 + 1 }
+        Tensor(T) out = {}
+        int total = out._setup(osh);
+        *T p = std.c.malloc(total * sizeof(T)) as *T
+        Vec(bool) seen = {}
+        int zz = 0
+        while zz < total { seen.push(false); p[zz] = 0 as T; zz = zz + 1 }
+        int n = self.size
+        int i = 0
+        while i < n {
+            int rem = i
+            int outflat = 0
+            int kk = r - 1
+            while kk >= 0 {
+                int dimk = self.shape.get!(kk)
+                int idx = rem % dimk
+                rem = rem / dimk
+                if kk != axis {
+                    int oaxis = kk
+                    if kk > axis { oaxis = kk - 1 }
+                    outflat = outflat + idx * out.strides.get!(oaxis)
+                }
+                kk = kk - 1
+            }
+            T v = self.data[i]
+            if seen.get!(outflat) {
+                if v > p[outflat] { p[outflat] = v }
+            } else {
+                p[outflat] = v
+                seen.set!(outflat, true)
+            }
+            i = i + 1
+        }
+        out.data = p
+        return out
+    }
+
+    // ---- float activations (require math.exp/tanh; element type must be float) ----
     //
     // IMPORTANT: exp / sigmoid / softmax_rows use math.exp. Because these are
     // generic methods instantiated in the CALLER's module, the `math` import is
@@ -399,6 +455,17 @@ impl(T) Tensor(T) {
             p[i] = one / (one + math.exp(zero - x))
             i = i + 1
         }
+        out.data = p
+        return out
+    }
+
+    // Hyperbolic tangent elementwise.
+    fn tanh(&self) -> Tensor(T) {
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = math.tanh(self.data[i]); i = i + 1 }
         out.data = p
         return out
     }

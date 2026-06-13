@@ -2728,3 +2728,17 @@ set_tests_properties(test_tensor_phase3b PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_tensor_phase3"
 )
+
+# std.tensor 阶段 3c：std.rand + 随机初始化 + tanh + 按轴 mean/max
+add_test(
+    NAME test_tensor_phase3c
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_phase3c.cmake
+)
+set_tests_properties(test_tensor_phase3c PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_phase3b"
+)
