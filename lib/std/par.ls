@@ -20,6 +20,11 @@ import std.task
 import std.vec
 import std.c as c
 
+// Number of logical processors par_for fans out to by default (>= 1).
+fn cpu_count() -> int {
+    return c.__ls_cpu_count()
+}
+
 fn par_for(int start, int stop, Block(int) body) {
     int n = stop - start
     if n <= 0 { return }
