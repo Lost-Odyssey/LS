@@ -44,6 +44,31 @@ fn dct_naive(Vec(f64) x) -> Vec(f64) {
     return y
 }
 
+// compare rfft(x) against full fft(complex(x))[0..n/2] for length n
+fn check_rfft(int n) {
+    Vec(f64) x = rsig(n)
+    Vec(Complex(f64)) R = ft.rfft(x)
+    Vec(Complex(f64)) F = ft.fft(cplxify(x))
+    bool ok = R.len() == n / 2 + 1
+    int k = 0
+    while k < n / 2 + 1 {
+        Complex(f64) a = R.get!(k)
+        Complex(f64) b = F.get!(k)
+        if !(near(a.re, b.re) && near(a.im, b.im)) { ok = false }
+        k = k + 1
+    }
+    check(ok, f"rfft(N={n}) matches fft front half")
+    // round-trip
+    Vec(f64) xr = ft.irfft(R, n)
+    bool rt = true
+    int i = 0
+    while i < n {
+        if !near(xr.get!(i), x.get!(i)) { rt = false }
+        i = i + 1
+    }
+    check(rt, f"irfft(rfft(N={n})) round-trip")
+}
+
 // compare Makhoul dct against the naive DCT for length n
 fn check_dct(int n) {
     Vec(f64) x = rsig(n)
@@ -111,6 +136,12 @@ fn main() {
         m = m + 1
     }
     check(dctrt, "idct(dct(x)) round-trip N=6")
+
+    // packed rfft (even N, incl. non-pow2 -> half-length Bluestein) + odd fallback
+    check_rfft(6)
+    check_rfft(10)
+    check_rfft(12)
+    check_rfft(9)
 
     // Makhoul dct matches naive DCT across sizes (incl. odd N)
     check_dct(5)

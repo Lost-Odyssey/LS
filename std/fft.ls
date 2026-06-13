@@ -170,21 +170,48 @@ fn ifft(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
 // ---- real-input transforms (rfft / irfft) ----
 //
 // A real signal's spectrum is Hermitian (X[N-k] = conj(X[k])), so only the first
-// N/2+1 bins are independent. rfft returns just those (NumPy np.fft.rfft). v1 is
-// the simple form (full complex FFT + truncate); the ~2x packed-real optimization
-// is deferred (perf path goes through FFI like mixed-radix).
+// N/2+1 bins are independent. rfft returns just those (NumPy np.fft.rfft).
+//
+// For even N, the ~2x packed-real trick is used: pack the N reals into N/2 complex
+// (even index -> re, odd -> im), run a HALF-length (N/2) FFT, then unpack via the
+// conjugate-symmetric even/odd split. For odd N (where packing doesn't apply) it
+// falls back to a full complex FFT + truncate.
 
-// rfft(real x of length N) -> Vec(Complex(f64)) of length N/2+1
 fn rfft(Vec(f64) x) -> Vec(Complex(f64)) {
     int n = x.len()
-    Vec(Complex(f64)) cx = []
-    int i = 0
-    while i < n { cx.push(c(f64)(x.get!(i), 0.0)); i = i + 1 }
-    Vec(Complex(f64)) full = fft(cx)
-    int half = n / 2 + 1
     Vec(Complex(f64)) out = []
+    if n == 0 { return out }
+    if n % 2 == 1 {
+        // odd N: full complex FFT + truncate to N/2+1
+        Vec(Complex(f64)) cx = []
+        int i = 0
+        while i < n { cx.push(c(f64)(x.get!(i), 0.0)); i = i + 1 }
+        Vec(Complex(f64)) full = fft(cx)
+        int half = n / 2 + 1
+        int k = 0
+        while k < half { out.push(full.get!(k)); k = k + 1 }
+        return out
+    }
+    // even N: packed half-length FFT
+    int m = n / 2
+    Vec(Complex(f64)) z = []
+    int j = 0
+    while j < m { z.push(c(f64)(x.get!(2 * j), x.get!(2 * j + 1))); j = j + 1 }
+    Vec(Complex(f64)) zf = fft(z)                 // length m
+    Complex(f64) neg_i_half = c(f64)(0.0, 0.0 - 0.5)
     int k = 0
-    while k < half { out.push(full.get!(k)); k = k + 1 }
+    while k <= m {
+        int kk = k % m                            // Z periodic: Z[m] = Z[0]
+        int mk = (m - k) % m
+        Complex(f64) zk = zf.get!(kk)
+        Complex(f64) zc = zf.get!(mk).conj()
+        Complex(f64) xe = (zk + zc).scale(0.5)    // even-sample DFT
+        Complex(f64) xo = (zk - zc) * neg_i_half  // odd-sample DFT / (2i)
+        f64 ang = 0.0 - 2.0 * math.PI * (k as f64) / (n as f64)
+        Complex(f64) w = c(f64)(math.cos(ang), math.sin(ang))
+        out.push(xe + w * xo)
+        k = k + 1
+    }
     return out
 }
 
