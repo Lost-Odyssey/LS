@@ -2832,6 +2832,73 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return type_void();
     }
 
+    /* Atomic intrinsics (std.atomic) — place-based, SeqCst. arg0 is an lvalue
+       place (e.g. self.value); codegen takes its address and emits a single
+       inline LLVM atomic instruction. T is the place's scalar type. The
+       lock-free-scalar restriction on T is enforced at codegen (a clean
+       cg_error pointing users at Mutex for larger types). */
+    if (strncmp(name, "__atomic_", 9) == 0)
+    {
+        if (strcmp(name, "__atomic_fence") == 0)
+        {
+            if (argc != 0)
+            {
+                checker_error(c, call_node->line, call_node->column,
+                              "__atomic_fence() takes no arguments, got %d", argc);
+                return NULL;
+            }
+            return type_void();
+        }
+        if (argc < 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "%s() requires a place expression argument", name);
+            return NULL;
+        }
+        Type *pt = check_expr(c, args[0]);
+        if (pt == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "%s() requires a place expression (p[i], field, or *p)", name);
+            return NULL;
+        }
+        for (int i = 1; i < argc; i++)
+            if (check_expr(c, args[i]) == NULL) return NULL;
+
+        if (strcmp(name, "__atomic_load") == 0)
+        {
+            if (argc != 1) { checker_error(c, call_node->line, call_node->column,
+                "__atomic_load() takes exactly 1 argument, got %d", argc); return NULL; }
+            return pt;
+        }
+        if (strcmp(name, "__atomic_store") == 0)
+        {
+            if (argc != 2) { checker_error(c, call_node->line, call_node->column,
+                "__atomic_store() takes exactly 2 arguments, got %d", argc); return NULL; }
+            return type_void();
+        }
+        if (strcmp(name, "__atomic_add") == 0 ||
+            strcmp(name, "__atomic_sub") == 0 ||
+            strcmp(name, "__atomic_swap") == 0)
+        {
+            if (argc != 2) { checker_error(c, call_node->line, call_node->column,
+                "%s() takes exactly 2 arguments, got %d", name, argc); return NULL; }
+            return pt; /* the prior value */
+        }
+        if (strcmp(name, "__atomic_cas") == 0)
+        {
+            if (argc != 3) { checker_error(c, call_node->line, call_node->column,
+                "__atomic_cas() takes exactly 3 arguments, got %d", argc); return NULL; }
+            return type_bool(); /* success */
+        }
+        checker_error(c, call_node->line, call_node->column,
+                      "unknown atomic intrinsic '%s'", name);
+        return NULL;
+    }
+
     return NULL;
 }
 
@@ -2844,7 +2911,8 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "__drop_at") == 0 ||
            strcmp(name, "__take") == 0 ||
            strcmp(name, "__task_spawn") == 0 ||
-           strcmp(name, "__task_join") == 0;
+           strcmp(name, "__task_join") == 0 ||
+           strncmp(name, "__atomic_", 9) == 0;
 }
 
 /* ---- Phase C closure capture analysis ----
@@ -3046,6 +3114,14 @@ static void capture_walk(CaptureScan *s, AstNode *node) {
            they are accessed directly by the lifted closure body just like
            any top-level name in a normal function. */
         if (sym->type && sym->type->kind == TYPE_FUNCTION) return;
+        /* Global variables (scope depth 0) are likewise NOT captured: they have
+           a fixed program-lifetime address, so the lifted closure body names
+           them directly — exactly like a global function. This is what makes a
+           global Atomic/Mutex shareable across worker threads: every closure
+           references the SAME global, instead of each capturing a private
+           by-copy snapshot (which would be both wrong for shared mutation and,
+           for owned globals, a spurious move of the global). */
+        if (sym->scope_depth == 0) return;
         cap_record(s, node, name, sym->type);
         return;
     }

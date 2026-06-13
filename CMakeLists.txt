@@ -1941,6 +1941,20 @@ add_test(
 )
 set_tests_properties(test_task_generic PROPERTIES DEPENDS "test_iter_protocol")
 
+# std.atomic — lock-free atomic scalars (Atomic(T)). Single-threaded method
+# correctness (JIT+AOT+memcheck 0/0/0) + N-worker shared-global counter proving
+# real cross-thread atomicity (JIT + repeated AOT; no memcheck — tracker not
+# thread-safe). Atomic methods lower to one inline LLVM atomic instruction.
+add_test(
+    NAME test_atomic
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_atomic.cmake
+)
+set_tests_properties(test_atomic PROPERTIES DEPENDS "test_task_generic")
+
 # M-DEF (std.map prereq): implicit empty/default init — `T v` ≡ `T v = {}` for
 # any type whose `= {}` is already legal (docs/plan_std_map.md §F2). JIT+AOT+memcheck.
 add_test(

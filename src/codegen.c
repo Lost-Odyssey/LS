@@ -3191,7 +3191,11 @@ static LLVMValueRef codegen_lvalue_ptr(CodegenContext *ctx, AstNode *node)
     if (node->kind == AST_IDENT)
     {
         CgSymbol *sym = cg_scope_resolve(ctx->current_scope, node->as.ident.name);
-        return sym ? sym->value : NULL;
+        if (sym) return sym->value;
+        /* Module-level global: a lifted closure body's scope does not chain to
+           the global scope, so a global named inside a closure (e.g. a shared
+           Atomic/Mutex) resolves to its global variable address here. */
+        return LLVMGetNamedGlobal(ctx->module, node->as.ident.name);
     }
 
     if (node->kind == AST_FIELD)
@@ -4225,18 +4229,29 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
     if (node->kind == AST_IDENT)
     {
         CgSymbol *sym = cg_scope_resolve(ctx->current_scope, node->as.ident.name);
-        if (!sym)
-            return NULL;
+        LLVMValueRef storage = sym ? sym->value : NULL;
+        if (!storage)
+        {
+            /* Module-level global: a lifted closure body's scope does not chain
+               to the global scope, so the address of a global named inside a
+               closure (e.g. a shared Atomic/Mutex method receiver) resolves to
+               its global variable here. Without this the method-call path fell
+               through to the rvalue-self spill and mutated a private COPY — the
+               shared global stayed untouched across worker threads. */
+            storage = LLVMGetNamedGlobal(ctx->module, node->as.ident.name);
+            if (!storage)
+                return NULL;
+        }
         Type *rtype = node->resolved_type;
         /* *Struct variable: alloca holds a pointer value; load it to get the heap address */
         if (rtype && rtype->kind == TYPE_POINTER &&
             rtype->as.pointer_to && rtype->as.pointer_to->kind == TYPE_STRUCT)
         {
             LLVMTypeRef ptr_llvm = LLVMPointerTypeInContext(ctx->context, 0);
-            return LLVMBuildLoad2(ctx->builder, ptr_llvm, sym->value, "self.deref");
+            return LLVMBuildLoad2(ctx->builder, ptr_llvm, storage, "self.deref");
         }
         /* Stack struct: alloca IS the struct storage */
-        return sym->value;
+        return storage;
     }
 
     if (node->kind == AST_INDEX)
@@ -4516,6 +4531,19 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, node->as.ident.name);
             if (fn)
                 return fn;
+            /* Try a module-level global variable. A lifted closure body's scope
+               does not chain to the global scope, so a global referenced inside
+               a closure (now NOT captured — see capture_walk) resolves here.
+               Arrays return the global pointer directly; scalars load. */
+            LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, node->as.ident.name);
+            if (gv)
+            {
+                Type *rt = node->resolved_type;
+                if (rt && rt->kind == TYPE_ARRAY)
+                    return gv;
+                LLVMTypeRef gload = type_to_llvm(ctx, rt);
+                return LLVMBuildLoad2(ctx->builder, gload, gv, node->as.ident.name);
+            }
             cg_error(ctx, node->line, node->column,
                      "undefined variable '%s'", node->as.ident.name);
             return NULL;
@@ -5096,6 +5124,104 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             Type *et = place->resolved_type;
             LLVMTypeRef elt = type_to_llvm(ctx, et);
             return LLVMBuildLoad2(ctx->builder, elt, ptr, "take");
+        }
+
+        /* Atomic intrinsics (std.atomic) — emit a single inline LLVM atomic
+           instruction, SequentiallyConsistent (full barrier). arg0 is an lvalue
+           place (self.value); the rest are by-value operands. T must be a
+           lock-free scalar (≤8 bytes) — larger types get a clean error pointing
+           at Mutex. This is the whole point of Atomic: one machine instruction,
+           no lock, no call. */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strncmp(node->as.call.callee->as.ident.name, "__atomic_", 9) == 0)
+        {
+            const char *aname = node->as.call.callee->as.ident.name;
+            LLVMAtomicOrdering ord = LLVMAtomicOrderingSequentiallyConsistent;
+
+            if (strcmp(aname, "__atomic_fence") == 0)
+            {
+                LLVMBuildFence(ctx->builder, ord, 0, "");
+                return NULL; /* void */
+            }
+
+            AstNode *place = node->as.call.args[0];
+            LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
+            if (ptr == NULL)
+            {
+                cg_error(ctx, node->line, node->column,
+                         "%s: argument is not an addressable place", aname);
+                return NULL;
+            }
+            Type *at = place->resolved_type;
+            /* Lock-free byte-sized scalars only. bool (i1) is excluded: LLVM
+               atomics must be byte-sized — use Atomic(int) for flags. Anything
+               larger than a scalar goes through Mutex. */
+            bool scalar_ok = at && (at->kind == TYPE_INT || at->kind == TYPE_I8 ||
+                at->kind == TYPE_I16 || at->kind == TYPE_I32 || at->kind == TYPE_I64 ||
+                at->kind == TYPE_U8 || at->kind == TYPE_U16 || at->kind == TYPE_U32 ||
+                at->kind == TYPE_U64 || at->kind == TYPE_F32 || at->kind == TYPE_F64 ||
+                at->kind == TYPE_CHAR ||
+                at->kind == TYPE_POINTER || at->kind == TYPE_OBJECT);
+            if (!scalar_ok)
+            {
+                cg_error(ctx, node->line, node->column,
+                         "atomic requires a lock-free byte-sized scalar "
+                         "(int/i64/u64/f64/char/pointer); use Atomic(int) for a "
+                         "flag, or Mutex for larger types");
+                return NULL;
+            }
+            LLVMTypeRef elt = type_to_llvm(ctx, at);
+            LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
+            unsigned align = LLVMABIAlignmentOfType(td, elt);
+            bool is_float = (at->kind == TYPE_F32 || at->kind == TYPE_F64);
+
+            if (strcmp(aname, "__atomic_load") == 0)
+            {
+                LLVMValueRef ld = LLVMBuildLoad2(ctx->builder, elt, ptr, "atom.load");
+                LLVMSetOrdering(ld, ord);
+                LLVMSetAlignment(ld, align);
+                return ld;
+            }
+            if (strcmp(aname, "__atomic_store") == 0)
+            {
+                LLVMValueRef v = codegen_expr(ctx, node->as.call.args[1]);
+                if (v == NULL) return NULL;
+                LLVMValueRef st = LLVMBuildStore(ctx->builder, v, ptr);
+                LLVMSetOrdering(st, ord);
+                LLVMSetAlignment(st, align);
+                return NULL; /* void */
+            }
+            if (strcmp(aname, "__atomic_add") == 0 || strcmp(aname, "__atomic_sub") == 0)
+            {
+                LLVMValueRef v = codegen_expr(ctx, node->as.call.args[1]);
+                if (v == NULL) return NULL;
+                LLVMAtomicRMWBinOp op;
+                if (strcmp(aname, "__atomic_add") == 0)
+                    op = is_float ? LLVMAtomicRMWBinOpFAdd : LLVMAtomicRMWBinOpAdd;
+                else
+                    op = is_float ? LLVMAtomicRMWBinOpFSub : LLVMAtomicRMWBinOpSub;
+                return LLVMBuildAtomicRMW(ctx->builder, op, ptr, v, ord, 0); /* old value */
+            }
+            if (strcmp(aname, "__atomic_swap") == 0)
+            {
+                LLVMValueRef v = codegen_expr(ctx, node->as.call.args[1]);
+                if (v == NULL) return NULL;
+                return LLVMBuildAtomicRMW(ctx->builder, LLVMAtomicRMWBinOpXchg,
+                                          ptr, v, ord, 0); /* old value */
+            }
+            if (strcmp(aname, "__atomic_cas") == 0)
+            {
+                LLVMValueRef expected = codegen_expr(ctx, node->as.call.args[1]);
+                LLVMValueRef desired = codegen_expr(ctx, node->as.call.args[2]);
+                if (expected == NULL || desired == NULL) return NULL;
+                /* strong CAS; SeqCst on both success and failure paths */
+                LLVMValueRef cx = LLVMBuildAtomicCmpXchg(ctx->builder, ptr,
+                                          expected, desired, ord, ord, 0);
+                return LLVMBuildExtractValue(ctx->builder, cx, 1, "cas.ok"); /* i1 success */
+            }
+            cg_error(ctx, node->line, node->column,
+                     "internal: unknown atomic intrinsic '%s'", aname);
+            return NULL;
         }
 
         /* Detect struct method calls: obj.method(args) or StructName.method(args).
