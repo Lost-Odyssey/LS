@@ -2770,3 +2770,17 @@ set_tests_properties(test_tensor_phase3d PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_tensor_phase2"
 )
+
+# std.tensor 端到端 MLP demo（集成 showcase：随机初始化 + 一行构造 + 前向 + softmax 分类）
+add_test(
+    NAME test_tensor_mlp
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_mlp.cmake
+)
+set_tests_properties(test_tensor_mlp PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_phase3d"
+)

@@ -46,6 +46,56 @@ struct Tensor(T) {
 // (0 on stretched axes) + result element count. Produced by Tensor._bcast_plan.
 struct BCast { Vec(int) shape; Vec(int) sa; Vec(int) sb; int size }
 
+// ---- one-line generic constructors (free fns) ----
+//
+// These are the ergonomic counterpart to the `{}` + init_* methods: a single
+// expression `zeros(f64)(sh)`. They are GENERIC FREE FUNCTIONS — `import std.tensor`
+// registers them into the caller's fn-template registry, so they are called by
+// BARE name with an explicit element type: `zeros(f64)(sh)`, NOT `tensor.zeros(...)`
+// (generic free fns are not module-qualified; that is how LS cross-module generic
+// fns work — see the import path in src/checker.c). Each is self-contained (it only
+// calls the cross-module-safe _setup method + std.c.malloc), so it instantiates
+// cleanly in any importer.
+
+// zeros(T)(sh): a sh-shaped tensor of 0.
+fn zeros(T)(Vec(int) shape) -> Tensor(T) {
+    Tensor(T) out = {}
+    int n = out._setup(shape);
+    *T p = std.c.malloc(n * sizeof(T)) as *T
+    int i = 0
+    while i < n { p[i] = 0 as T; i = i + 1 }
+    out.data = p
+    return out
+}
+
+// full(T)(sh, v): a sh-shaped tensor with every element = v.
+fn full(T)(Vec(int) shape, T fill) -> Tensor(T) {
+    Tensor(T) out = {}
+    int n = out._setup(shape);
+    *T p = std.c.malloc(n * sizeof(T)) as *T
+    int i = 0
+    while i < n { p[i] = fill; i = i + 1 }
+    out.data = p
+    return out
+}
+
+// from_vec(T)(sh, data): a sh-shaped tensor from a flat row-major Vec(T). `src`
+// is taken by value (cloned once) — a by-value Vec param avoids a method-on-&Vec
+// resolution gap in generic-free-fn instantiation, at the cost of one copy.
+fn from_vec(T)(Vec(int) shape, Vec(T) src) -> Tensor(T) {
+    Tensor(T) out = {}
+    int n = out._setup(shape);
+    if src.len() != n {
+        print(f"Tensor from_vec size mismatch: data len={src.len()} shape prod={n}")
+        std.c.abort()
+    }
+    *T p = std.c.malloc(n * sizeof(T)) as *T
+    int i = 0
+    while i < n { p[i] = src.get!(i); i = i + 1 }
+    out.data = p
+    return out
+}
+
 impl(T) Tensor(T) {
     // ---- internal: set shape/strides/size from `shape`; return element count n.
     // Does NOT allocate data — the caller allocates data[n] next. Call on a fresh
