@@ -4951,22 +4951,43 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return NULL; /* void */
         }
 
-        /* Structured concurrency: __task_spawn(Block()->int) -> object  /
-           __task_join(object) -> int. __task_spawn extracts the closure's
-           {code_fn, env} and MOVES the env into the worker (suppresses the
-           caller-scope env drop — the worker frees it once after the body runs,
-           see ls_thread_trampoline). This is the whole point: a Vec move-
-           captured into the closure is dropped exactly once, by the worker; the
-           spawning scope already marked its source MOVED. */
+        /* Structured concurrency (generic Task(T)):
+             __task_spawn(Block()->T, *T box) -> object
+             __task_join(object)              -> void
+           __task_spawn extracts the closure's {code_fn, env}, synthesises a
+           per-T `thunk` that calls the closure and stores its by-value result
+           into the `*T box` slot, then hands {thunk, fn, env, box} to the
+           worker. It MOVES the env into the worker (suppresses the caller-scope
+           env drop — the worker frees it once after the body runs, see
+           ls_thread_trampoline). This is the whole point: a Vec move-captured
+           into the closure is dropped exactly once, by the worker; the spawning
+           scope already marked its source MOVED. The closure returns T by value
+           (LLVM handles sret/register ABI), so `*box = closure(env)` is uniform
+           over POD and aggregate, and the store IS the move (no clone, no drop).
+           The runtime never touches the result bytes — single owner across the
+           boundary; join() moves it out via __take. */
         if (node->as.call.callee->kind == AST_IDENT &&
             strcmp(node->as.call.callee->as.ident.name, "__task_spawn") == 0 &&
-            node->as.call.arg_count == 1)
+            node->as.call.arg_count == 2)
         {
             AstNode *blk = node->as.call.args[0];
+            AstNode *boxarg = node->as.call.args[1];
+            /* T = the Block's return type (checker validated arg0 is a Block). */
+            Type *blk_t = blk->resolved_type;
+            if (blk_t == NULL || blk_t->kind != TYPE_BLOCK)
+            {
+                cg_error(ctx, node->line, node->column,
+                         "internal: __task_spawn arg0 is not a Block");
+                return NULL;
+            }
+            LLVMTypeRef res_llvm =
+                type_to_llvm(ctx, blk_t->as.function.return_type);
             LLVMValueRef closure_val = codegen_expr(ctx, blk);
             if (closure_val == NULL) return NULL;
-            LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "go.fn");
-            LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "go.env");
+            LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "task.fn");
+            LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "task.env");
+            LLVMValueRef box_ptr = codegen_expr(ctx, boxarg);
+            if (box_ptr == NULL) return NULL;
             /* Move the env into the thread (mirror the container-store Block
                handling): a named Block var is nulled; a literal's temp env is
                consumed so the caller scope does not also free it. */
@@ -4978,13 +4999,44 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             }
             else if (ctx->temp_block_env_count > 0)
                 ctx->temp_block_env_count--;
+
             LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+            LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
+
+            /* Synthesise the per-T thunk:
+                 void __task_thunk_<id>(ptr fn, ptr env, ptr box):
+                     T r = ((T(*)(ptr))fn)(env)
+                     store r -> box
+                     ret void
+               (save/restore builder, mirroring __env_drop_<id>.) */
+            int tid = ctx->closure_id_counter++;
+            char thunk_name[64];
+            snprintf(thunk_name, sizeof(thunk_name), "__task_thunk_%d", tid);
+            LLVMTypeRef thunk_param_t[3] = { ptr_t, ptr_t, ptr_t };
+            LLVMTypeRef thunk_ty = LLVMFunctionType(void_t, thunk_param_t, 3, 0);
+            LLVMValueRef thunk_fn = LLVMAddFunction(ctx->module, thunk_name, thunk_ty);
+
+            LLVMBasicBlockRef t_saved = LLVMGetInsertBlock(ctx->builder);
+            LLVMBasicBlockRef t_entry =
+                LLVMAppendBasicBlockInContext(ctx->context, thunk_fn, "entry");
+            LLVMPositionBuilderAtEnd(ctx->builder, t_entry);
+            LLVMValueRef t_fn  = LLVMGetParam(thunk_fn, 0);
+            LLVMValueRef t_env = LLVMGetParam(thunk_fn, 1);
+            LLVMValueRef t_box = LLVMGetParam(thunk_fn, 2);
+            LLVMTypeRef clo_ty = LLVMFunctionType(res_llvm, &ptr_t, 1, 0);
+            LLVMValueRef r =
+                LLVMBuildCall2(ctx->builder, clo_ty, t_fn, &t_env, 1, "task.r");
+            LLVMBuildStore(ctx->builder, r, t_box);   /* store IS the move */
+            LLVMBuildRetVoid(ctx->builder);
+            if (t_saved) LLVMPositionBuilderAtEnd(ctx->builder, t_saved);
+
             LLVMValueRef spawn_fn = LLVMGetNamedFunction(ctx->module, "ls_thread_spawn");
-            LLVMTypeRef spawn_ty = LLVMFunctionType(ptr_t, (LLVMTypeRef[]){ptr_t, ptr_t}, 2, 0);
+            LLVMTypeRef spawn_ty = LLVMFunctionType(
+                ptr_t, (LLVMTypeRef[]){ptr_t, ptr_t, ptr_t, ptr_t}, 4, 0);
             if (spawn_fn == NULL)
                 spawn_fn = LLVMAddFunction(ctx->module, "ls_thread_spawn", spawn_ty);
-            LLVMValueRef sargs[2] = { fn_ptr, env_ptr };
-            return LLVMBuildCall2(ctx->builder, spawn_ty, spawn_fn, sargs, 2, "go.handle");
+            LLVMValueRef sargs[4] = { thunk_fn, fn_ptr, env_ptr, box_ptr };
+            return LLVMBuildCall2(ctx->builder, spawn_ty, spawn_fn, sargs, 4, "task.handle");
         }
         if (node->as.call.callee->kind == AST_IDENT &&
             strcmp(node->as.call.callee->as.ident.name, "__task_join") == 0 &&
@@ -4993,12 +5045,13 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMValueRef h = codegen_expr(ctx, node->as.call.args[0]);
             if (h == NULL) return NULL;
             LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-            LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+            LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
             LLVMValueRef join_fn = LLVMGetNamedFunction(ctx->module, "ls_thread_join");
-            LLVMTypeRef join_ty = LLVMFunctionType(i32_t, &ptr_t, 1, 0);
+            LLVMTypeRef join_ty = LLVMFunctionType(void_t, &ptr_t, 1, 0);
             if (join_fn == NULL)
                 join_fn = LLVMAddFunction(ctx->module, "ls_thread_join", join_ty);
-            return LLVMBuildCall2(ctx->builder, join_ty, join_fn, &h, 1, "join.r");
+            LLVMBuildCall2(ctx->builder, join_ty, join_fn, &h, 1, "");
+            return NULL; /* void */
         }
 
         /* Intercept __drop_at(place) — run the recursive destructor on the value
@@ -5648,12 +5701,21 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     bool stores = mname &&
                         (strcmp(mname, "push") == 0 || strcmp(mname, "insert") == 0 ||
                          strcmp(mname, "set") == 0 || strcmp(mname, "__index_set") == 0 ||
-                         strcmp(mname, "__from_list") == 0 || strcmp(mname, "extend") == 0 ||
-                         /* a `.new` constructor takes ownership of a Block argument
-                            (e.g. std.task's `Task.new { }` forwards the closure into
-                            the worker thread via __task_spawn) — consume the caller's
-                            temp env so it is freed once, on the worker, not twice. */
-                         strcmp(mname, "new") == 0);
+                         strcmp(mname, "__from_list") == 0 || strcmp(mname, "extend") == 0);
+                    /* std.task: `t.run(|| ..)` forwards the closure into the worker
+                       thread (via __task_spawn), which frees the env once the body
+                       runs — so the caller must NOT also free it. Consume the temp
+                       env here, but ONLY for a Task receiver, so an unrelated method
+                       named `run` that merely BORROWS a closure is unaffected. */
+                    if (!stores && mname && strcmp(mname, "run") == 0)
+                    {
+                        AstNode *recv = node->as.call.callee->as.field_access.object;
+                        Type *rt = recv ? recv->resolved_type : NULL;
+                        if (rt && rt->kind == TYPE_STRUCT &&
+                            rt->as.strukt.generic_base &&
+                            strcmp(rt->as.strukt.generic_base, "Task") == 0)
+                            stores = true;
+                    }
                     if (stores)
                     {
                         AstNode *raw = node->as.call.args[i];

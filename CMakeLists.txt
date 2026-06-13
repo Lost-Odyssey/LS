@@ -1925,19 +1925,21 @@ add_test(
 )
 set_tests_properties(test_iter_protocol PROPERTIES DEPENDS "test_vec_owndrop")
 
-# std.task — structured concurrency: `Task.new(|| body)` runs the body on an OS
-# worker thread; `task.join()` waits + returns its result. MOVE-capture isolates
-# each task (single owner, no auto-drop double-free across the thread boundary).
+# std.task — generic structured concurrency: `spawn.task(T)(|| body)` runs the
+# body on an OS worker thread; `t.join()` waits + MOVEs the T result back.
+# MOVE-capture isolates each task (single owner, no auto-drop double-free across
+# the thread boundary). Covers POD + aggregate results, fork/join over
+# Vec(Task(Vec(f64))), and Task as a first-class field.
 # JIT + repeated AOT (soundness); no memcheck (tracker not thread-safe yet).
 add_test(
-    NAME test_task
+    NAME test_task_generic
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_task.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_task_generic.cmake
 )
-set_tests_properties(test_task PROPERTIES DEPENDS "test_iter_protocol")
+set_tests_properties(test_task_generic PROPERTIES DEPENDS "test_iter_protocol")
 
 # M-DEF (std.map prereq): implicit empty/default init — `T v` ≡ `T v = {}` for
 # any type whose `= {}` is already legal (docs/plan_std_map.md §F2). JIT+AOT+memcheck.

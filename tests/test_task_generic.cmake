@@ -1,7 +1,7 @@
-# std.task — structured concurrency. `Task.new(|| body)` runs the body on an OS
-# worker thread; `task.join()` waits and returns its result. The body MOVE-
-# captures owned heap (Vec), so each task is single-owner and sound across the
-# thread boundary (no auto-drop double-free).
+# std.task — generic structured concurrency. `spawn.task(T)(|| body)` runs the
+# body on an OS worker thread; `t.join()` waits and MOVEs the T result back. The
+# body MOVE-captures owned heap (Vec/Str), so each task is single-owner and
+# sound across the thread boundary (no auto-drop double-free).
 #
 # NO --memcheck here: the memcheck tracker is process-global and not yet
 # thread-safe (the worker frees its closure env concurrently with the main

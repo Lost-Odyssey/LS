@@ -190,9 +190,9 @@ int jit_init(JitEngine *engine) {
         extern int         __ls_str_find(const char *, int, const char *, int, int);
         extern void        __ls_bytecopy(void *, int, const void *, int, int);
         extern unsigned long long __ls_fxhash_bytes(const char *, int);
-        /* threads (spike) */
-        extern void       *ls_thread_spawn(void *, void *);
-        extern int         ls_thread_join(void *);
+        /* threads — generic Task(T): per-T thunk + result box (std.task) */
+        extern void       *ls_thread_spawn(void *, void *, void *, void *);
+        extern void        ls_thread_join(void *);
         /* regex engine (runtime/ls_regex.c) — used by std.regex via std.c FFI */
         extern int         __ls_regex_compile(const char *, int);
         extern void        __ls_regex_free(int);

@@ -2783,6 +2783,55 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return arg_type; /* the element type read out of the slot */
     }
 
+    /* __task_spawn(Block()->T, *T box) -> object — GENERIC structured-concurrency
+       intrinsic (std.task). Runs the closure on a worker; codegen synthesises a
+       per-T thunk that stores the by-value result into the `*T box` slot. T is
+       read by codegen from arg0's Block return type; checker only validates the
+       arg shapes and returns the opaque handle type. */
+    if (strcmp(name, "__task_spawn") == 0)
+    {
+        if (argc != 2)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__task_spawn() takes exactly 2 arguments, got %d", argc);
+            return NULL;
+        }
+        Type *bt = check_expr(c, args[0]);
+        if (bt == NULL) return NULL;
+        if (bt->kind != TYPE_BLOCK)
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__task_spawn() requires a Block argument, got '%s'",
+                          type_name(bt));
+            return NULL;
+        }
+        Type *boxt = check_expr(c, args[1]);
+        if (boxt == NULL) return NULL;
+        if (boxt->kind != TYPE_POINTER)
+        {
+            checker_error(c, args[1]->line, args[1]->column,
+                          "__task_spawn() requires a pointer box argument, got '%s'",
+                          type_name(boxt));
+            return NULL;
+        }
+        return type_object();
+    }
+
+    /* __task_join(object) -> void — wait for the worker. The result is read out
+       of the Task's box by the LS join() via __take; this only joins the thread. */
+    if (strcmp(name, "__task_join") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__task_join() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *h = check_expr(c, args[0]);
+        if (h == NULL) return NULL;
+        return type_void();
+    }
+
     return NULL;
 }
 
@@ -2793,7 +2842,9 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "errno") == 0 ||
            strcmp(name, "__move") == 0 ||
            strcmp(name, "__drop_at") == 0 ||
-           strcmp(name, "__take") == 0;
+           strcmp(name, "__take") == 0 ||
+           strcmp(name, "__task_spawn") == 0 ||
+           strcmp(name, "__task_join") == 0;
 }
 
 /* ---- Phase C closure capture analysis ----
@@ -9247,25 +9298,15 @@ static void register_builtins(Checker *c)
     }
     /* abort: see the A-FLIP note above — now std.c.abort() / std_c__abort. */
 
-    /* Structured concurrency primitives (used by std.task's `Task`):
-         __task_spawn(Block()->int) -> object   run the closure on an OS thread
-         __task_join(object)        -> int       wait + return its result
-       Internal plumbing — users go through `Task.new { } / task.join()`. The
+    /* Structured concurrency primitives (std.task's generic `Task(T)`):
+         __task_spawn(Block()->T, *T box) -> object   run the closure, result -> box
+         __task_join(object)              -> void       wait for the worker
+       These are GENERIC in the result type T, so they cannot be a fixed
+       scope_define — they are intercepted by name in check_builtin_call (like
+       __take/__drop_at). T is read by codegen from arg0's Block return type.
+       Internal plumbing — users go through std.task's constructor / join(). The
        closure is MOVE-captured, so each task is isolated (no shared mutable
-       state) and sound without a lifetime system. `Thread` (raw, you-manage)
-       is reserved for later. */
-    {
-        Type **p = (Type **)malloc_safe(sizeof(Type *));
-        p[0] = type_block(NULL, 0, type_int());
-        scope_define(c->current_scope, "__task_spawn",
-                     type_function(p, 1, type_object(), false));
-    }
-    {
-        Type **p = (Type **)malloc_safe(sizeof(Type *));
-        p[0] = type_object();
-        scope_define(c->current_scope, "__task_join",
-                     type_function(p, 1, type_int(), false));
-    }
+       state) and sound without a lifetime system. */
 }
 
 /* B-MAP-M5-004: has_drop fixpoint. Generic struct/enum instantiations cache

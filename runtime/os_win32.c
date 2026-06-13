@@ -653,9 +653,17 @@ void ls_os_sleep_us(long long us) {
 }
 
 /* =========================================================================
- * Threads (spike) — run an LS `Block()->int` on an OS thread, join for the
- * result. A Block value is {code_fn, env}; the closure ABI is
- *   int code_fn(void *env)     (env passed first)
+ * Threads — run an LS `Block()->T` on an OS thread, join for the result.
+ * GENERIC over the result type T (std.task's `Task(T)`). The runtime is DUMB:
+ * it knows nothing about T. codegen synthesises a per-T `thunk` that calls the
+ * closure and stores the by-value result into a `*T box` slot owned by the LS
+ * `Task`; the runtime only runs the thunk on a worker and never touches the
+ * result bytes (this is the single-owner root for has_drop results — the box
+ * is moved out by `join`/`__take`, never memcpy'd by the runtime).
+ *
+ *   thunk(fn, env, box):  *box = ((T(*)(void*))fn)(env)
+ *
+ * A Block value is {code_fn, env}; the closure ABI is `T code_fn(void *env)`.
  * The env owns any MOVE-captured heap (Vec/Str/struct/...); its field 0 is the
  * codegen-emitted drop_fn. We run the body, then drop the env exactly ONCE here
  * on the worker — replicating cg_emit_block_env_drop — so move-capture is
@@ -665,18 +673,19 @@ void ls_os_sleep_us(long long us) {
  * _beginthreadex (not CreateThread) so the worker gets CRT per-thread state.
  * ========================================================================= */
 
-typedef int (*ls_thread_body)(void *env);
+typedef void (*ls_task_thunk)(void *fn, void *env, void *box);
 
 typedef struct {
-    ls_thread_body fn;
-    void          *env;
-    int            result;
-    uintptr_t      handle;
+    ls_task_thunk thunk;
+    void         *fn;
+    void         *env;
+    void         *box;      /* result slot, OWNED by the LS Task; runtime never frees it */
+    uintptr_t     handle;
 } LsThreadCtx;
 
 static unsigned __stdcall ls_thread_trampoline(void *p) {
     LsThreadCtx *c = (LsThreadCtx *)p;
-    c->result = c->fn(c->env);
+    c->thunk(c->fn, c->env, c->box);            /* run the body; result -> box */
     /* Drop the closure env once, after the body ran (see header). */
     void *env = c->env;
     if (env != NULL) {
@@ -688,24 +697,25 @@ static unsigned __stdcall ls_thread_trampoline(void *p) {
     return 0;
 }
 
-/* Spawn: takes the closure's raw {code_fn, env}. Returns an opaque handle. */
-void *ls_thread_spawn(void *fn, void *env) {
+/* Spawn: per-T thunk + the closure's raw {code_fn, env} + the result box.
+   Returns an opaque handle. The box is owned by the LS Task; we never free it. */
+void *ls_thread_spawn(void *thunk, void *fn, void *env, void *box) {
     LsThreadCtx *c = (LsThreadCtx *)malloc(sizeof(LsThreadCtx));
     if (c == NULL) return NULL;
-    c->fn     = (ls_thread_body)fn;
+    c->thunk  = (ls_task_thunk)thunk;
+    c->fn     = fn;
     c->env    = env;
-    c->result = 0;
+    c->box    = box;
     c->handle = _beginthreadex(NULL, 0, ls_thread_trampoline, c, 0, NULL);
     return c;
 }
 
-/* Join: wait for the worker, return its int result, free the handle. */
-int ls_thread_join(void *h) {
+/* Join: wait for the worker, free the handle. The result is in the box (LS
+   reads it via __take); the box itself is the Task's to free, not ours. */
+void ls_thread_join(void *h) {
     LsThreadCtx *c = (LsThreadCtx *)h;
-    if (c == NULL) return 0;
+    if (c == NULL) return;
     WaitForSingleObject((HANDLE)c->handle, INFINITE);
     CloseHandle((HANDLE)c->handle);
-    int r = c->result;
     free(c);
-    return r;
 }
