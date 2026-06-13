@@ -3408,10 +3408,11 @@ static AstNode *parse_if_stmt(Parser *p) {
     int line = p->previous.line;
     int col  = p->previous.column;
 
-    /* Optional parentheses around condition */
-    bool has_paren = match_tok(p, TOKEN_LPAREN);
+    /* Parse the condition as a full expression. A leading '(' is handled as a
+       normal grouping expression (so `if (a) {` and `if (a & b) != 0 {` both parse
+       correctly) — do NOT special-case it as a whole-condition wrapper, which would
+       stop after the first parenthesized sub-term (`(a&b)` then choke on `!= 0`). */
     AstNode *cond = parse_expr_prec(p, PREC_NONE);
-    if (has_paren) consume(p, TOKEN_RPAREN, "expected ')' after if condition");
 
     AstNode *then_block = parse_block(p);
     AstNode *else_block = NULL;
@@ -3436,9 +3437,9 @@ static AstNode *parse_while_stmt(Parser *p) {
     int line = p->previous.line;
     int col  = p->previous.column;
 
-    bool has_paren = match_tok(p, TOKEN_LPAREN);
+    /* Full-expression condition; a leading '(' is a normal grouping (see
+       parse_if_stmt) so `while (a & b) != 0 {` parses correctly. */
     AstNode *cond = parse_expr_prec(p, PREC_NONE);
-    if (has_paren) consume(p, TOKEN_RPAREN, "expected ')' after while condition");
 
     AstNode *body = parse_block(p);
 

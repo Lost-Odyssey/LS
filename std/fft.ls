@@ -36,12 +36,9 @@ fn _bitrev(&!Vec(Complex(f64)) a, int n) {
     int i = 1
     while i < n {
         int bit = n >> 1
-        // `while (expr) != x {` mis-parses (std.map M-0 gotcha) — use a temp.
-        int masked = j & bit
-        while masked != 0 {
+        while (j & bit) != 0 {
             j = j ^ bit            // clear the set high bit
             bit = bit >> 1
-            masked = j & bit
         }
         j = j | bit
         if i < j {
