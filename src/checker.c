@@ -4711,6 +4711,46 @@ static Type *check_expr(Checker *c, AstNode *node)
                     }
                 }
 
+                /* Static call via a generic type parameter: `T.zero()` where T is a
+                   type alias bound during monomorphization (T → Complex(f64) / int).
+                   find_struct_type/find_enum_type miss on the bare param name; resolve
+                   it through the type-alias table, then dispatch the static method on
+                   the concrete type. Stamp obj_node->resolved_type so codegen derives
+                   the right symbol (Struct.llvm_name.method / int.method). */
+                if (obj_node->kind == AST_IDENT && !is_static_call)
+                {
+                    Type *al = find_type_alias(c, obj_node->as.ident.name);
+                    if (al)
+                    {
+                        const char *al_key = (al->kind == TYPE_STRUCT || al->kind == TYPE_ENUM)
+                                                 ? impl_key_of_type(al)
+                                                 : type_impl_name(al);
+                        if (al_key)
+                        {
+                            int si = method_is_static(c, al_key, method_name);
+                            if (si < 0 && al->kind == TYPE_STRUCT && al->as.strukt.generic_base)
+                            {
+                                ensure_generic_struct_impls_local(c, al);
+                                si = method_is_static(c, al_key, method_name);
+                            }
+                            if (si >= 0)
+                            {
+                                method_struct = al_key;
+                                is_static_call = true;
+                                obj_node->resolved_type = al; /* codegen symbol source */
+                                if (si == 0)
+                                {
+                                    checker_error(c, node->line, node->column,
+                                                  "cannot call instance method '%s' on type parameter; use an instance",
+                                                  method_name);
+                                    result = NULL;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 /* If not a struct-type static call, resolve the object expression */
             if (!is_static_call)
             {
@@ -7904,6 +7944,7 @@ static void add_builtin_op_trait(Checker *c, const char *name,
         Type *ret = ret_is_bool ? type_bool() : &g_self_placeholder_type; /* bool | Self */
         c->trait_registry[idx].methods[i].name = ndup;
         c->trait_registry[idx].methods[i].type = type_function(params, 1, ret, false);
+        c->trait_registry[idx].methods[i].is_static = false;
         c->trait_registry[idx].methods[i].self_borrow_kind = 1; /* &self */
     }
 }
@@ -8066,10 +8107,16 @@ static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *tra
             return true;
     }
     const char *tname = type_name(type);
+    /* A generic trait impl (`impl(T) Add for Complex(T)`) is recorded under the
+       generic BASE name ("Complex"); a concrete instance's type_name is the
+       mangled "Complex(f64)". Match either. */
+    const char *tbase = (type->kind == TYPE_STRUCT) ? type->as.strukt.generic_base : NULL;
     for (int i = 0; i < c->trait_impl_count; i++)
     {
-        if (strcmp(c->trait_impls[i].trait_name, trait_name) == 0 &&
-            strcmp(c->trait_impls[i].struct_name, tname) == 0)
+        if (strcmp(c->trait_impls[i].trait_name, trait_name) != 0)
+            continue;
+        if (strcmp(c->trait_impls[i].struct_name, tname) == 0 ||
+            (tbase != NULL && strcmp(c->trait_impls[i].struct_name, tbase) == 0))
         {
             return true;
         }
@@ -8151,6 +8198,7 @@ static void check_trait_decl(Checker *c, AstNode *node)
             c->trait_registry[idx].methods[mi].name = ndup;
         }
         c->trait_registry[idx].methods[mi].type = fn_type;
+        c->trait_registry[idx].methods[mi].is_static = sig->as.fn_decl.is_static;
         c->trait_registry[idx].methods[mi].self_borrow_kind = sig->as.fn_decl.self_borrow_kind;
     }
 
@@ -8165,6 +8213,69 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
 {
     const char *trait_name  = node->as.impl_trait_decl.trait_name;
     const char *struct_name = node->as.impl_trait_decl.struct_name;
+
+    /* Generic trait impl: `impl(T) Add for Complex(T)`. The struct is generic, so
+       its methods are monomorphized per concrete instance. Rather than build a
+       parallel instantiation path, FOLD this impl's method nodes into the struct's
+       generic inherent impl_node (stamped on the struct template); the existing
+       instantiate_impl_method_types then emits them for every Complex(U). Record
+       the (trait, base) pair so operator dispatch / satisfies_trait recognize any
+       Complex(U). Methods already carry $op_* (operator) / static (zero) shapes. */
+    if (node->as.impl_trait_decl.type_param_count > 0)
+    {
+        /* Idempotent: the impl_node AST is shared across module checkers, so guard
+           against re-folding (re-recording the pair would also dup-append). */
+        for (int ii = 0; ii < c->trait_impl_count; ii++)
+            if (strcmp(c->trait_impls[ii].trait_name, trait_name) == 0 &&
+                strcmp(c->trait_impls[ii].struct_name, struct_name) == 0)
+                return;
+
+        if (find_trait(c, trait_name) < 0 && !is_builtin_operator_trait(trait_name))
+        {
+            checker_error(c, node->line, node->column, "unknown trait '%s'", trait_name);
+            return;
+        }
+        int gtidx = find_struct_template_idx(c, struct_name);
+        if (gtidx < 0)
+        {
+            checker_error(c, node->line, node->column,
+                          "generic trait impl for undefined generic struct '%s'", struct_name);
+            return;
+        }
+        AstNode *impl_node = c->struct_templates[gtidx].impl_node;
+        if (impl_node == NULL)
+        {
+            checker_error(c, node->line, node->column,
+                          "generic trait impl '%s for %s' requires an inherent "
+                          "'impl(T) %s(T)' block before it", trait_name, struct_name, struct_name);
+            return;
+        }
+        int old_n = impl_node->as.impl_decl.method_count;
+        int add_n = node->as.impl_trait_decl.method_count;
+        impl_node->as.impl_decl.methods = realloc_safe(
+            impl_node->as.impl_decl.methods,
+            (size_t)(old_n + add_n) * sizeof(AstNode *));
+        for (int i = 0; i < add_n; i++)
+            impl_node->as.impl_decl.methods[old_n + i] = node->as.impl_trait_decl.methods[i];
+        impl_node->as.impl_decl.method_count = old_n + add_n;
+        /* Transfer ownership of the method NODES to the inherent impl_node: free
+           only the (now-empty) trait-decl array and detach it, so ast_free does not
+           double-free the nodes (they are referenced from both arrays otherwise). */
+        free(node->as.impl_trait_decl.methods);
+        node->as.impl_trait_decl.methods = NULL;
+        node->as.impl_trait_decl.method_count = 0;
+
+        if (c->trait_impl_count >= c->trait_impl_cap)
+        {
+            c->trait_impl_cap = GROW_CAPACITY(c->trait_impl_cap);
+            c->trait_impls = realloc_safe(c->trait_impls,
+                (size_t)c->trait_impl_cap * sizeof(c->trait_impls[0]));
+        }
+        int gti = c->trait_impl_count++;
+        c->trait_impls[gti].trait_name = trait_name;   /* points into AST (base) */
+        c->trait_impls[gti].struct_name = struct_name; /* generic base name */
+        return;
+    }
 
     /* 1. Find the trait */
     int tidx = find_trait(c, trait_name);
@@ -8244,14 +8355,6 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
             }
         }
 
-        /* Static methods are not allowed in trait impls */
-        if (is_static)
-        {
-            checker_error(c, method->line, method->column,
-                          "static method '%s' not allowed in trait impl", mname);
-            continue;
-        }
-
         /* Find matching trait method by name */
         int trait_mi = -1;
         for (int j = 0; j < trait_method_count; j++)
@@ -8277,15 +8380,27 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
         }
         matched[trait_mi] = true;
 
-        /* Check self_borrow_kind matches */
-        int trait_sbk = c->trait_registry[tidx].methods[trait_mi].self_borrow_kind;
-        if (user_sbk != trait_sbk)
+        /* Static-ness must match the trait declaration */
+        bool trait_static = c->trait_registry[tidx].methods[trait_mi].is_static;
+        if (is_static != trait_static)
         {
-            const char *expected_str = trait_sbk == 1 ? "&self" : (trait_sbk == 2 ? "&!self" : "no self");
-            const char *got_str = user_sbk == 1 ? "&self" : (user_sbk == 2 ? "&!self" : "no self");
             checker_error(c, method->line, method->column,
-                          "method '%s' self parameter mismatch: trait '%s' requires %s, got %s",
-                          mname, trait_name, expected_str, got_str);
+                          "method '%s' static mismatch: trait '%s' declares it %s",
+                          mname, trait_name, trait_static ? "static" : "non-static");
+        }
+
+        /* Check self_borrow_kind matches (instance methods only) */
+        if (!is_static)
+        {
+            int trait_sbk = c->trait_registry[tidx].methods[trait_mi].self_borrow_kind;
+            if (user_sbk != trait_sbk)
+            {
+                const char *expected_str = trait_sbk == 1 ? "&self" : (trait_sbk == 2 ? "&!self" : "no self");
+                const char *got_str = user_sbk == 1 ? "&self" : (user_sbk == 2 ? "&!self" : "no self");
+                checker_error(c, method->line, method->column,
+                              "method '%s' self parameter mismatch: trait '%s' requires %s, got %s",
+                              mname, trait_name, expected_str, got_str);
+            }
         }
 
         /* Resolve user parameter types */
@@ -8337,18 +8452,27 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
                           mname, trait_name);
         }
 
-        /* Build the internal function type with *Self prepended (instance method) */
-        int total_n = user_n + 1;
-        Type **all_params = (Type **)malloc_safe((size_t)total_n * sizeof(Type *));
-        all_params[0] = type_pointer(st); /* implicit *Self */
-        for (int j = 0; j < user_n; j++)
-            all_params[j + 1] = user_params[j];
-        free(user_params);
-
-        Type *method_type = type_function(all_params, total_n, ret, false);
+        /* Build the internal function type. Instance methods get *Self prepended
+           as the implicit self param; static methods take only the user params. */
+        Type *method_type;
+        if (is_static)
+        {
+            /* user_params is handed to (and owned by) the function type. */
+            method_type = type_function(user_params, user_n, ret, false);
+        }
+        else
+        {
+            int total_n = user_n + 1;
+            Type **all_params = (Type **)malloc_safe((size_t)total_n * sizeof(Type *));
+            all_params[0] = type_pointer(st); /* implicit *Self */
+            for (int j = 0; j < user_n; j++)
+                all_params[j + 1] = user_params[j];
+            free(user_params);
+            method_type = type_function(all_params, total_n, ret, false);
+        }
 
         /* Register in impl_registry (same as check_impl_decl) */
-        if (!register_method(c, impl_idx, mname, method_type, false, user_sbk,
+        if (!register_method(c, impl_idx, mname, method_type, is_static, user_sbk,
                            method->line, method->column))
             continue;
 
@@ -8357,6 +8481,7 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
 
         /* Check body (same pattern as check_impl_decl) */
         push_scope(c);
+        if (!is_static)
         {
             int sbk = method->as.fn_decl.self_borrow_kind;
             if (sbk == 0)
@@ -8375,7 +8500,7 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
         }
         for (int j = 0; j < user_n; j++)
         {
-            Type *pt = all_params[j + 1];
+            Type *pt = method_type->as.function.params[is_static ? j : j + 1];
             if (pt)
             {
                 bool is_borrow = false;

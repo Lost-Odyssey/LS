@@ -33,6 +33,7 @@
 // when a generic method is instantiated in the consumer module, same as std.vec).
 
 import std.vec
+import std.num
 import math
 
 struct Tensor(T) {
@@ -63,7 +64,7 @@ fn zeros(T)(Vec(int) shape) -> Tensor(T) {
     int n = out._setup(shape);
     *T p = std.c.malloc(n * sizeof(T)) as *T
     int i = 0
-    while i < n { p[i] = 0 as T; i = i + 1 }
+    while i < n { p[i] = T.zero(); i = i + 1 }
     out.data = p
     return out
 }
@@ -132,8 +133,8 @@ impl(T) Tensor(T) {
         while i < n { p[i] = fill; i = i + 1 }
         self.data = p
     }
-    // Allocate shape-shaped zeros (0 as T per element).
-    fn init_zeros(&!self, &Vec(int) shape) { self.init(shape, 0 as T) }
+    // Allocate shape-shaped zeros (T.zero() per element).
+    fn init_zeros(&!self, &Vec(int) shape) { self.init(shape, T.zero()) }
 
     // Allocate from a flat row-major Vec(T); src.len() must equal prod(shape).
     fn init_from(&!self, &Vec(int) shape, &Vec(T) src) {
@@ -316,7 +317,7 @@ impl(T) Tensor(T) {
             }
             T av = self.data[oa]
             T bv = o.data[ob]
-            T rv = 0 as T
+            T rv = T.zero()
             if opcode == 0 { rv = av + bv }
             if opcode == 1 { rv = av - bv }
             if opcode == 2 { rv = av * bv }
@@ -358,7 +359,7 @@ impl(T) Tensor(T) {
 
     // Reductions over all elements (flat).
     fn sum(&self) -> T {
-        T acc = 0 as T
+        T acc = T.zero()
         int i = 0
         while i < self.size { acc = acc + self.data[i]; i = i + 1 }
         return acc
@@ -391,7 +392,7 @@ impl(T) Tensor(T) {
         Tensor(T) out = {}
         int n = out._setup(self.shape);
         *T p = std.c.malloc(n * sizeof(T)) as *T
-        T z = 0 as T
+        T z = T.zero()
         int i = 0
         while i < n {
             T v = self.data[i]
@@ -418,7 +419,7 @@ impl(T) Tensor(T) {
         int total = out._setup(osh);
         *T p = std.c.malloc(total * sizeof(T)) as *T
         int zz = 0
-        while zz < total { p[zz] = 0 as T; zz = zz + 1 }
+        while zz < total { p[zz] = T.zero(); zz = zz + 1 }
         int n = self.size
         int i = 0
         while i < n {
@@ -468,7 +469,7 @@ impl(T) Tensor(T) {
         *T p = std.c.malloc(total * sizeof(T)) as *T
         Vec(bool) seen = {}
         int zz = 0
-        while zz < total { seen.push(false); p[zz] = 0 as T; zz = zz + 1 }
+        while zz < total { seen.push(false); p[zz] = T.zero(); zz = zz + 1 }
         int n = self.size
         int i = 0
         while i < n {
@@ -523,7 +524,7 @@ impl(T) Tensor(T) {
         int n = out._setup(self.shape);
         *T p = std.c.malloc(n * sizeof(T)) as *T
         T one = 1 as T
-        T zero = 0 as T
+        T zero = T.zero()
         int i = 0
         while i < n {
             T x = self.data[i]
@@ -568,7 +569,7 @@ impl(T) Tensor(T) {
                 if v > mx { mx = v }
                 c = c + 1
             }
-            T acc = 0 as T
+            T acc = T.zero()
             c = 0
             while c < n {
                 T e = math.exp(self.data[r * s0 + c * s1] - mx)
@@ -614,7 +615,7 @@ impl(T) Tensor(T) {
         while r < m {
             int cc = 0
             while cc < nn {
-                T acc = 0 as T
+                T acc = T.zero()
                 int t = 0
                 while t < k {
                     T av = self.data[r * sa0 + t * sa1]
@@ -776,7 +777,7 @@ impl(T) Tensor(T) {
         Tensor(T) out = {}
         int n = out._setup(self.shape);
         *T p = std.c.malloc(n * sizeof(T)) as *T
-        T z = 0 as T
+        T z = T.zero()
         int i = 0
         while i < n { p[i] = z - self.data[i]; i = i + 1 }
         out.data = p
@@ -786,7 +787,7 @@ impl(T) Tensor(T) {
         Tensor(T) out = {}
         int n = out._setup(self.shape);
         *T p = std.c.malloc(n * sizeof(T)) as *T
-        T z = 0 as T
+        T z = T.zero()
         int i = 0
         while i < n {
             T v = self.data[i]
@@ -835,7 +836,7 @@ impl(T) Tensor(T) {
     // mean((self - o)^2). A basic regression loss.
     fn mse(&self, &Tensor(T) o) -> T {
         Tensor(T) d = self.sub(o)
-        T acc = 0 as T
+        T acc = T.zero()
         int n = d.size
         int i = 0
         while i < n { T x = d.data[i]; acc = acc + x * x; i = i + 1 }

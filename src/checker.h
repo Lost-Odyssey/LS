@@ -106,6 +106,7 @@ typedef struct Checker {
         struct {
             const char *name;       /* method name, owned */
             Type *type;             /* TYPE_FUNCTION: full method signature */
+            bool is_static;         /* true = static (no self) trait method */
             int self_borrow_kind;   /* 0=none, 1=&self, 2=&!self */
         } *methods;
         int method_count;

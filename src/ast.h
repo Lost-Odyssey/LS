@@ -477,6 +477,8 @@ struct AstNode
         {
             char *trait_name;
             char *struct_name;
+            char **type_params;        /* generic `impl(T) Trait for Struct(T)`; NULL if non-generic */
+            int   type_param_count;    /* 0 for non-generic trait impls */
             AstNode **methods;         /* fn implementations (with body) */
             int method_count;
         } impl_trait_decl;

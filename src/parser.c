@@ -2904,6 +2904,10 @@ static AstNode *parse_trait_decl(Parser *p) {
     int sig_cap = 0;
 
     while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
+        bool sig_static = false;
+        if (match_tok(p, TOKEN_STATIC)) {
+            sig_static = true;
+        }
         if (!match_tok(p, TOKEN_FN)) {
             error_at_current(p, "expected 'fn' in trait body");
             synchronize(p);
@@ -2914,6 +2918,7 @@ static AstNode *parse_trait_decl(Parser *p) {
             synchronize(p);
             continue;
         }
+        sig->as.fn_decl.is_static = sig_static;
         if (sig_count >= sig_cap) {
             sig_cap = GROW_CAPACITY(sig_cap);
             sigs = GROW_ARRAY(AstNode *, sigs, sig_cap);
@@ -2936,13 +2941,39 @@ static AstNode *parse_impl_decl(Parser *p) {
     int line = p->previous.line;
     int col  = p->previous.column;
 
-    /* Trait impl detection: impl TraitName for StructName { ... }
-       Disambiguate: if current is IDENTIFIER and next is TOKEN_FOR,
-       this is a trait impl (not generic impl(T) which starts with '('). */
+    /* G1.5: optional type param list — impl(T, U) ... { ... }. Parsed FIRST so it
+       applies to both inherent impls (impl(T) Stack(T)) and generic trait impls
+       (impl(T) Add for Complex(T)). */
+    char **type_params = NULL;
+    int type_param_count = 0;
+    int type_param_cap = 0;
+
+    if (check(p, TOKEN_LPAREN)) {
+        advance(p); /* consume '(' */
+        if (!check(p, TOKEN_RPAREN)) {
+            do {
+                if (!check(p, TOKEN_IDENTIFIER)) {
+                    error_at_current(p, "expected type parameter name in impl(...)");
+                    break;
+                }
+                advance(p);
+                char *tpname = str_dup_n(p->previous.start, p->previous.length);
+                if (type_param_count >= type_param_cap) {
+                    type_param_cap = GROW_CAPACITY(type_param_cap);
+                    type_params = GROW_ARRAY(char *, type_params, type_param_cap);
+                }
+                type_params[type_param_count++] = tpname;
+            } while (match_tok(p, TOKEN_COMMA));
+        }
+        consume(p, TOKEN_RPAREN, "expected ')' after impl type params");
+    }
+
+    /* Trait impl detection: impl[(T...)] TraitName for StructName[(T...)] { ... }.
+       Disambiguate: current is IDENTIFIER and next is TOKEN_FOR. The optional
+       leading (T...) was already consumed above (generic trait impl). */
     if (check(p, TOKEN_IDENTIFIER)) {
         Token peek = scanner_peek(&p->scanner);
         if (peek.type == TOKEN_FOR) {
-            /* impl Trait for Struct { ... } */
             advance(p); /* consume trait name */
             char *trait_name = str_dup_n(p->previous.start, p->previous.length);
             advance(p); /* consume 'for' */
@@ -2954,10 +2985,20 @@ static AstNode *parse_impl_decl(Parser *p) {
                 !check(p, TOKEN_TYPE_CHAR)) {
                 error_at_current(p, "expected type name after 'for' in impl");
                 free(trait_name);
+                for (int i = 0; i < type_param_count; i++) free(type_params[i]);
+                free(type_params);
                 return NULL;
             }
             advance(p);
             char *struct_name = str_dup_n(p->previous.start, p->previous.length);
+
+            /* generic target args — impl(T) Trait for Complex(T): consume the (T) */
+            if (check(p, TOKEN_LPAREN)) {
+                advance(p); /* consume '(' */
+                while (!check(p, TOKEN_RPAREN) && !check(p, TOKEN_EOF))
+                    advance(p);
+                consume(p, TOKEN_RPAREN, "expected ')' after impl target type params");
+            }
 
             consume(p, TOKEN_LBRACE, "expected '{' after struct name in trait impl");
 
@@ -2994,35 +3035,12 @@ static AstNode *parse_impl_decl(Parser *p) {
             AstNode *n = new_node(AST_IMPL_TRAIT_DECL, line, col);
             n->as.impl_trait_decl.trait_name = trait_name;
             n->as.impl_trait_decl.struct_name = struct_name;
+            n->as.impl_trait_decl.type_params = type_params;
+            n->as.impl_trait_decl.type_param_count = type_param_count;
             n->as.impl_trait_decl.methods = methods;
             n->as.impl_trait_decl.method_count = method_count;
             return n;
         }
-    }
-
-    /* G1.5: optional type param list — impl(T, U) StructName(T, U) { ... } */
-    char **type_params = NULL;
-    int type_param_count = 0;
-    int type_param_cap = 0;
-
-    if (check(p, TOKEN_LPAREN)) {
-        advance(p); /* consume '(' */
-        if (!check(p, TOKEN_RPAREN)) {
-            do {
-                if (!check(p, TOKEN_IDENTIFIER)) {
-                    error_at_current(p, "expected type parameter name in impl(...)");
-                    break;
-                }
-                advance(p);
-                char *tpname = str_dup_n(p->previous.start, p->previous.length);
-                if (type_param_count >= type_param_cap) {
-                    type_param_cap = GROW_CAPACITY(type_param_cap);
-                    type_params = GROW_ARRAY(char *, type_params, type_param_cap);
-                }
-                type_params[type_param_count++] = tpname;
-            } while (match_tok(p, TOKEN_COMMA));
-        }
-        consume(p, TOKEN_RPAREN, "expected ')' after impl type params");
     }
 
     if (!check(p, TOKEN_IDENTIFIER)) {

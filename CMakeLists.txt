@@ -2784,3 +2784,48 @@ set_tests_properties(test_tensor_mlp PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_tensor_phase3d"
 )
+
+# std.complex/std.fft Phase 0: compiler foundation for `T.zero()` — static trait
+# methods + static dispatch on a generic type parameter (plan_fft_stdlib.md §1).
+add_test(
+    NAME test_zero_trait
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_zero_trait.cmake
+)
+set_tests_properties(test_zero_trait PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_mlp"
+)
+
+# std.complex Phase 1: generic Complex(T) + operator overloads (generic trait
+# impls) + conj/norm/abs/exp + free-fn constructors (plan_fft_stdlib.md §1).
+add_test(
+    NAME test_complex
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_complex.cmake
+)
+set_tests_properties(test_complex PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_zero_trait"
+)
+
+# Tensor(Complex(f64)) integration: nested generics + T.zero() dispatch to
+# Complex(f64).zero() + Complex operators inside tensor elementwise.
+add_test(
+    NAME test_tensor_complex
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_complex.cmake
+)
+set_tests_properties(test_tensor_complex PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_complex"
+)

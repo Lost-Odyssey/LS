@@ -444,6 +444,9 @@ void ast_free(AstNode *node) {
     case AST_IMPL_TRAIT_DECL:
         free(node->as.impl_trait_decl.trait_name);
         free(node->as.impl_trait_decl.struct_name);
+        for (int i = 0; i < node->as.impl_trait_decl.type_param_count; i++)
+            free(node->as.impl_trait_decl.type_params[i]);
+        free(node->as.impl_trait_decl.type_params);
         for (int i = 0; i < node->as.impl_trait_decl.method_count; i++) {
             ast_free(node->as.impl_trait_decl.methods[i]);
         }
