@@ -4,7 +4,7 @@
 #                             (POD-env and has_drop/Str-env) and calls it
 #                             repeatedly; the source Block stays live. Run under
 #                             --memcheck (0/0/0) to prove env clone/drop balance.
-#   par_for_test.ls           threaded: std.par.par_for runs a Block(int) body in
+#   par_for_test.ls           threaded: std.thread.parallel_for runs a Block(int) body in
 #                             parallel; each chunk closure captures the body
 #                             by-clone. Workers write disjoint slots; join then
 #                             verify. NO --memcheck (tracker not thread-safe —

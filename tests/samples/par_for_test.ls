@@ -4,7 +4,7 @@
 // (no overlap → no synchronisation needed), then we join and check every slot.
 // Self-verifying: prints "PAR PASS" only if all N results are correct.
 
-import std.par as par
+import std.thread as thread
 import std.vec
 
 int N = 2000
@@ -27,7 +27,7 @@ fn main() {
     for z in 0..N { g_out.push(0) }
 
     // run compute(i) -> slot i in parallel
-    par.par_for(0, N, |i| { g_out.set!(i, compute(i)) })
+    thread.parallel_for(0, N, |i| { g_out.set!(i, compute(i)) })
 
     // verify every slot against the sequential result
     int k = 0

@@ -1,9 +1,9 @@
-// std/par.ls — data-parallel for-loop over OS worker threads.
+// std/thread.ls — data-parallel for-loop over OS worker threads.
 //
-//   import std.par
-//   par_for(0, n, |i| { g_out.set!(i, f(i)) })   // body runs in parallel
+//   import std.thread as thread
+//   thread.parallel_for(0, n, |i| { g_out.set!(i, f(i)) })   // body runs in parallel
 //
-// par_for splits [start, end) into chunks (one per logical CPU, capped at the
+// parallel_for splits [start, end) into chunks (one per logical CPU, capped at the
 // iteration count) and runs each chunk on its own Task(int) worker. The chunk
 // closure captures `body` BY-CLONE (closure-foundation Phase A): each worker
 // gets an independent deep copy of the body's env, so the source `body` stays
@@ -20,12 +20,13 @@ import std.task
 import std.vec
 import std.c as c
 
-// Number of logical processors par_for fans out to by default (>= 1).
+// Number of logical processors parallel_for fans out to by default (>= 1).
 fn cpu_count() -> int {
     return c.__ls_cpu_count()
 }
 
-fn par_for(int start, int stop, Block(int) body) {
+// Run `body(i)` for every i in [start, stop) across worker threads.
+fn parallel_for(int start, int stop, Block(int) body) {
     int n = stop - start
     if n <= 0 { return }
 
