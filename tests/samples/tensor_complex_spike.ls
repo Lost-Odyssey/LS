@@ -14,23 +14,21 @@ fn near(f64 a, f64 b) -> bool { f64 d = a - b; if d < 0.0 { d = 0.0 - d } return
 fn main() {
     Vec(int) sh = [2]
 
-    // init_zeros — T.zero() dispatch inside a generic METHOD (the real tensor path)
-    Tensor(Complex(f64)) z = {}
-    z.init_zeros(sh)
+    // zeros(Complex(f64)) — T.zero() dispatch inside a generic FREE fn (exercises
+    // the nested-type-arg mangling fix: zeros(Complex(f64)) resolves correctly).
+    Tensor(Complex(f64)) z = zeros(Complex(f64))(sh)
     Complex(f64) z0 = z.get!(0)
-    check(near(z0.re, 0.0) && near(z0.im, 0.0), "init_zeros -> Complex(0,0)")
+    check(near(z0.re, 0.0) && near(z0.im, 0.0), "zeros(Complex(f64)) -> Complex(0,0)")
 
-    // two complex tensors from flat Vec(Complex) via init_from method
+    // two complex tensors from a flat Vec(Complex) via from_vec(Complex(f64))
     Vec(Complex(f64)) av = []
     av.push(c(f64)(1.0, 2.0))
     av.push(c(f64)(3.0, 4.0))
     Vec(Complex(f64)) bv = []
     bv.push(c(f64)(5.0, 6.0))
     bv.push(c(f64)(7.0, 8.0))
-    Tensor(Complex(f64)) a = {}
-    a.init_from(sh, av)
-    Tensor(Complex(f64)) b = {}
-    b.init_from(sh, bv)
+    Tensor(Complex(f64)) a = from_vec(Complex(f64))(sh, av)
+    Tensor(Complex(f64)) b = from_vec(Complex(f64))(sh, bv)
 
     // elementwise add — Complex `+` operator inside tensor's generic method
     Tensor(Complex(f64)) s = a.add(b)

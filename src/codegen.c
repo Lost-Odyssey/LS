@@ -336,6 +336,60 @@ static void cg_store_owned(CodegenContext *ctx,
                            AstNode *source,
                            CgTransferKind kind);
 
+/* Append the canonical mangled name of a TypeNode to buf at *pos, matching the
+   checker's type_name(resolve(tn)) so generic-call symbol lookups agree. Handles
+   primitives, named generics WITH their args (Complex(f64), Vec(Complex(f64))),
+   and pointers — the cases that appear as generic type arguments. */
+static void cg_append_type_node_name(TypeNode *tn, char *buf, int *pos, int cap)
+{
+    if (tn == NULL) { *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "?"); return; }
+    if (tn->kind == TYPE_NODE_PRIMITIVE)
+    {
+        const char *tname = "?";
+        switch (tn->as.primitive)
+        {
+        case TOKEN_TYPE_INT:    tname = "int";    break;
+        case TOKEN_TYPE_I8:     tname = "i8";     break;
+        case TOKEN_TYPE_I16:    tname = "i16";    break;
+        case TOKEN_TYPE_I32:    tname = "i32";    break;
+        case TOKEN_TYPE_I64:    tname = "i64";    break;
+        case TOKEN_TYPE_U8:     tname = "u8";     break;
+        case TOKEN_TYPE_U16:    tname = "u16";    break;
+        case TOKEN_TYPE_U32:    tname = "u32";    break;
+        case TOKEN_TYPE_U64:    tname = "u64";    break;
+        case TOKEN_TYPE_F32:    tname = "f32";    break;
+        case TOKEN_TYPE_F64:    tname = "f64";    break;
+        case TOKEN_TYPE_BOOL:   tname = "bool";   break;
+        case TOKEN_TYPE_CHAR:   tname = "char";   break;
+        default:                tname = "?";      break;
+        }
+        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "%s", tname);
+    }
+    else if (tn->kind == TYPE_NODE_NAMED)
+    {
+        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "%s", tn->as.named.name);
+        if (tn->as.named.arg_count > 0)
+        {
+            *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "(");
+            for (int i = 0; i < tn->as.named.arg_count; i++)
+            {
+                if (i > 0) *pos += snprintf(buf + *pos, (size_t)(cap - *pos), ",");
+                cg_append_type_node_name(tn->as.named.args[i], buf, pos, cap);
+            }
+            *pos += snprintf(buf + *pos, (size_t)(cap - *pos), ")");
+        }
+    }
+    else if (tn->kind == TYPE_NODE_POINTER)
+    {
+        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "*");
+        cg_append_type_node_name(tn->as.pointee, buf, pos, cap);
+    }
+    else
+    {
+        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "?");
+    }
+}
+
 static LLVMValueRef cg_declare_pending_generic_method(CodegenContext *ctx,
                                                       const char *name)
 {
@@ -5068,33 +5122,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     {
                         if (ti > 0)
                             npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, ",");
-                        TypeNode *tn = node->as.call.type_args[ti];
-                        const char *tname = "?";
-                        if (tn->kind == TYPE_NODE_PRIMITIVE)
-                        {
-                            switch (tn->as.primitive)
-                            {
-                            case TOKEN_TYPE_INT:    tname = "int";    break;
-                            case TOKEN_TYPE_I8:     tname = "i8";     break;
-                            case TOKEN_TYPE_I16:    tname = "i16";    break;
-                            case TOKEN_TYPE_I32:    tname = "i32";    break;
-                            case TOKEN_TYPE_I64:    tname = "i64";    break;
-                            case TOKEN_TYPE_U8:     tname = "u8";     break;
-                            case TOKEN_TYPE_U16:    tname = "u16";    break;
-                            case TOKEN_TYPE_U32:    tname = "u32";    break;
-                            case TOKEN_TYPE_U64:    tname = "u64";    break;
-                            case TOKEN_TYPE_F32:    tname = "f32";    break;
-                            case TOKEN_TYPE_F64:    tname = "f64";    break;
-                            case TOKEN_TYPE_BOOL:   tname = "bool";   break;
-                            case TOKEN_TYPE_CHAR:   tname = "char";   break;
-                            default:                tname = "?";      break;
-                            }
-                        }
-                        else if (tn->kind == TYPE_NODE_NAMED)
-                        {
-                            tname = tn->as.named.name;
-                        }
-                        npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, "%s", tname);
+                        cg_append_type_node_name(node->as.call.type_args[ti],
+                                                 qualified_name, &npos, (int)sizeof(qualified_name));
                     }
                     snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, ")");
                 }
@@ -5162,33 +5191,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     for (int ti = 0; ti < node->as.call.type_arg_count; ti++)
                     {
                         if (ti > 0) g2_mangled[pos++] = ',';
-                        TypeNode *tn = node->as.call.type_args[ti];
-                        const char *tname = "?";
-                        if (tn->kind == TYPE_NODE_PRIMITIVE)
-                        {
-                            switch (tn->as.primitive)
-                            {
-                            case TOKEN_TYPE_INT:    tname = "int";    break;
-                            case TOKEN_TYPE_I8:     tname = "i8";     break;
-                            case TOKEN_TYPE_I16:    tname = "i16";    break;
-                            case TOKEN_TYPE_I32:    tname = "i32";    break;
-                            case TOKEN_TYPE_I64:    tname = "i64";    break;
-                            case TOKEN_TYPE_U8:     tname = "u8";     break;
-                            case TOKEN_TYPE_U16:    tname = "u16";    break;
-                            case TOKEN_TYPE_U32:    tname = "u32";    break;
-                            case TOKEN_TYPE_U64:    tname = "u64";    break;
-                            case TOKEN_TYPE_F32:    tname = "f32";    break;
-                            case TOKEN_TYPE_F64:    tname = "f64";    break;
-                            case TOKEN_TYPE_BOOL:   tname = "bool";   break;
-                            case TOKEN_TYPE_CHAR:   tname = "char";   break;
-                            default:                tname = "?";      break;
-                            }
-                        }
-                        else if (tn->kind == TYPE_NODE_NAMED)
-                        {
-                            tname = tn->as.named.name;
-                        }
-                        pos += snprintf(g2_mangled + pos, sizeof(g2_mangled) - (size_t)pos, "%s", tname);
+                        cg_append_type_node_name(node->as.call.type_args[ti],
+                                                 g2_mangled, &pos, (int)sizeof(g2_mangled));
                     }
                     g2_mangled[pos++] = ')';
                     g2_mangled[pos] = '\0';
