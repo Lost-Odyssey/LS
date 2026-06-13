@@ -2832,6 +2832,36 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return type_void();
     }
 
+    /* Mutex + spin runtime intrinsics (std.sync) — opaque-handle FFI to the OS
+       backend. Global intrinsics (like __task_*) so they survive generic-method
+       instantiation in a consumer module without an `import std.c` alias. They
+       know nothing about Mutex(T): a handle in/out. */
+    if (strncmp(name, "__mutex_", 8) == 0 || strcmp(name, "__cpu_relax") == 0)
+    {
+        int want = 1; /* handle arg */
+        Type *ret = type_void();
+        if (strcmp(name, "__mutex_init") == 0)         { want = 0; ret = type_object(); }
+        else if (strcmp(name, "__mutex_lock") == 0)    { ret = type_int(); }
+        else if (strcmp(name, "__mutex_trylock") == 0) { ret = type_int(); }
+        else if (strcmp(name, "__mutex_unlock") == 0)  { ret = type_int(); }
+        else if (strcmp(name, "__mutex_destroy") == 0) { ret = type_void(); }
+        else if (strcmp(name, "__cpu_relax") == 0)     { want = 0; ret = type_void(); }
+        else
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "unknown sync intrinsic '%s'", name);
+            return NULL;
+        }
+        if (argc != want)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "%s() takes %d argument(s), got %d", name, want, argc);
+            return NULL;
+        }
+        if (want == 1 && check_expr(c, args[0]) == NULL) return NULL;
+        return ret;
+    }
+
     /* Atomic intrinsics (std.atomic) — place-based, SeqCst. arg0 is an lvalue
        place (e.g. self.value); codegen takes its address and emits a single
        inline LLVM atomic instruction. T is the place's scalar type. The
@@ -2912,7 +2942,9 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "__take") == 0 ||
            strcmp(name, "__task_spawn") == 0 ||
            strcmp(name, "__task_join") == 0 ||
-           strncmp(name, "__atomic_", 9) == 0;
+           strncmp(name, "__atomic_", 9) == 0 ||
+           strncmp(name, "__mutex_", 8) == 0 ||
+           strcmp(name, "__cpu_relax") == 0;
 }
 
 /* ---- Phase C closure capture analysis ----

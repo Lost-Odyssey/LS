@@ -1955,6 +1955,21 @@ add_test(
 )
 set_tests_properties(test_atomic PROPERTIES DEPENDS "test_task_generic")
 
+# std.sync — Mutex(T) (OS lock behind opaque handle) + SpinLock(T) (Atomic flag
+# + pause hint). Single-threaded with/raw/trylock + clean teardown (JIT+AOT+
+# memcheck 0/0/0) + N-worker mutual-exclusion (non-atomic RMW serialised to the
+# exact count; JIT + repeated AOT, no memcheck). Mutex/spin runtime reached via
+# __mutex_*/__cpu_relax intrinsics (survive generic-method instantiation).
+add_test(
+    NAME test_sync
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_sync.cmake
+)
+set_tests_properties(test_sync PROPERTIES DEPENDS "test_atomic")
+
 # M-DEF (std.map prereq): implicit empty/default init — `T v` ≡ `T v = {}` for
 # any type whose `= {}` is already legal (docs/plan_std_map.md §F2). JIT+AOT+memcheck.
 add_test(

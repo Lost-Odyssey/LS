@@ -719,3 +719,48 @@ void ls_thread_join(void *h) {
     CloseHandle((HANDLE)c->handle);
     free(c);
 }
+
+/* =========================================================================
+ * Mutexes (std.sync). The OS lock lives behind an opaque heap HANDLE so LS's
+ * move semantics never relocate it (a moved pthread_mutex_t / SRWLOCK is UB).
+ * Windows: a heap SRWLOCK — pointer-sized, faster and smaller than
+ * CRITICAL_SECTION, and it needs NO destroy call (we just free the block).
+ * Non-recursive: re-locking on the same thread deadlocks (documented). lock/
+ * unlock/trylock are thin pass-throughs; destroy is null-safe so a Mutex built
+ * `= {}` and never init'd still drops cleanly.
+ * ========================================================================= */
+
+void *ls_mutex_init(void) {
+    SRWLOCK *m = (SRWLOCK *)malloc(sizeof(SRWLOCK));
+    if (m == NULL) return NULL;
+    InitializeSRWLock(m);
+    return m;
+}
+
+int ls_mutex_lock(void *h) {
+    if (h == NULL) return -1;
+    AcquireSRWLockExclusive((SRWLOCK *)h);
+    return 0;
+}
+
+int ls_mutex_trylock(void *h) {
+    if (h == NULL) return 0;
+    return TryAcquireSRWLockExclusive((SRWLOCK *)h) ? 1 : 0;
+}
+
+int ls_mutex_unlock(void *h) {
+    if (h == NULL) return -1;
+    ReleaseSRWLockExclusive((SRWLOCK *)h);
+    return 0;
+}
+
+void ls_mutex_destroy(void *h) {
+    if (h != NULL) free(h);   /* SRWLOCK has no destroy function */
+}
+
+/* Spin-wait CPU hint (SpinLock). YieldProcessor() is `pause` on x64 / `yield`
+ * on ARM64 — relaxes the pipeline and eases cache-line contention WITHOUT
+ * yielding the core (the whole point of a spinlock vs a mutex). */
+void ls_cpu_relax(void) {
+    YieldProcessor();
+}

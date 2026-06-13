@@ -193,6 +193,13 @@ int jit_init(JitEngine *engine) {
         /* threads — generic Task(T): per-T thunk + result box (std.task) */
         extern void       *ls_thread_spawn(void *, void *, void *, void *);
         extern void        ls_thread_join(void *);
+        /* mutexes + spin hint (std.sync) */
+        extern void       *ls_mutex_init(void);
+        extern int         ls_mutex_lock(void *);
+        extern int         ls_mutex_trylock(void *);
+        extern int         ls_mutex_unlock(void *);
+        extern void        ls_mutex_destroy(void *);
+        extern void        ls_cpu_relax(void);
         /* regex engine (runtime/ls_regex.c) — used by std.regex via std.c FFI */
         extern int         __ls_regex_compile(const char *, int);
         extern void        __ls_regex_free(int);
@@ -217,7 +224,7 @@ int jit_init(JitEngine *engine) {
     pairs[i].Sym.Flags.TargetFlags = 0; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[95];
+        LLVMOrcCSymbolMapPair pairs[101];
         /* 0-5: memcheck */
         REG( 0, ls_mc_alloc);
         REG( 1, ls_mc_free);
@@ -325,9 +332,15 @@ int jit_init(JitEngine *engine) {
         REG(92, __ls_fxhash_bytes);
         REG(93, ls_thread_spawn);
         REG(94, ls_thread_join);
+        REG(95, ls_mutex_init);
+        REG(96, ls_mutex_lock);
+        REG(97, ls_mutex_trylock);
+        REG(98, ls_mutex_unlock);
+        REG(99, ls_mutex_destroy);
+        REG(100, ls_cpu_relax);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 95);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 101);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */

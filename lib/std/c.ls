@@ -64,6 +64,11 @@ extern fn __ls_readline_len() -> i64
 extern fn __ls_readline_take() -> object
 extern fn __ls_readline_ptr() -> object
 
+// Note: std.sync's mutex/spin primitives (ls_mutex_*, ls_cpu_relax) are NOT
+// declared here — they are reached as compiler intrinsics (__mutex_*/__cpu_relax)
+// so they survive generic-method instantiation without an import alias, the same
+// way std.task uses __task_*. See src/codegen.c and docs/plan_atomic_mutex.md.
+
 // ---- regex engine (runtime/ls_regex.c) ----
 
 extern fn __ls_regex_compile(*u8 pattern, int flags) -> int

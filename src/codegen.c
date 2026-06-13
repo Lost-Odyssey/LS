@@ -5082,6 +5082,64 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return NULL; /* void */
         }
 
+        /* Mutex + spin runtime intrinsics (std.sync). Emit a call to the OS-
+           backend runtime function on an opaque handle. These are GLOBAL
+           intrinsics (not import aliases), so — like __task_* — they survive
+           generic-method instantiation in a consumer module that hasn't imported
+           std.c. They know nothing about Mutex(T): an opaque handle in/out is the
+           whole interface (the same clean boundary as __atomic_* over scalars). */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            (strncmp(node->as.call.callee->as.ident.name, "__mutex_", 8) == 0 ||
+             strcmp(node->as.call.callee->as.ident.name, "__cpu_relax") == 0))
+        {
+            const char *mname = node->as.call.callee->as.ident.name;
+            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+            LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
+            LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+
+            const char *sym = NULL;
+            LLVMTypeRef ret_t = void_t;
+            int nargs = 1; /* default: one opaque handle argument */
+            if (strcmp(mname, "__mutex_init") == 0)
+                { sym = "ls_mutex_init"; ret_t = ptr_t; nargs = 0; }
+            else if (strcmp(mname, "__mutex_lock") == 0)
+                { sym = "ls_mutex_lock"; ret_t = i32_t; }
+            else if (strcmp(mname, "__mutex_trylock") == 0)
+                { sym = "ls_mutex_trylock"; ret_t = i32_t; }
+            else if (strcmp(mname, "__mutex_unlock") == 0)
+                { sym = "ls_mutex_unlock"; ret_t = i32_t; }
+            else if (strcmp(mname, "__mutex_destroy") == 0)
+                { sym = "ls_mutex_destroy"; ret_t = void_t; }
+            else if (strcmp(mname, "__cpu_relax") == 0)
+                { sym = "ls_cpu_relax"; ret_t = void_t; nargs = 0; }
+            else
+            {
+                cg_error(ctx, node->line, node->column,
+                         "internal: unknown sync intrinsic '%s'", mname);
+                return NULL;
+            }
+
+            LLVMValueRef arg1[1];
+            LLVMTypeRef fn_ty;
+            if (nargs == 1)
+            {
+                LLVMValueRef h = codegen_expr(ctx, node->as.call.args[0]);
+                if (h == NULL) return NULL;
+                arg1[0] = h;
+                fn_ty = LLVMFunctionType(ret_t, &ptr_t, 1, 0);
+            }
+            else
+                fn_ty = LLVMFunctionType(ret_t, NULL, 0, 0);
+
+            LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, sym);
+            if (fn == NULL) fn = LLVMAddFunction(ctx->module, sym, fn_ty);
+            bool is_void = (ret_t == void_t);
+            LLVMValueRef rv = LLVMBuildCall2(ctx->builder, fn_ty, fn,
+                                             nargs ? arg1 : NULL, nargs,
+                                             is_void ? "" : mname);
+            return is_void ? NULL : rv;
+        }
+
         /* Intercept __drop_at(place) — run the recursive destructor on the value
            stored at an lvalue place (raw pointer slot p[i], field, *p) WITHOUT
            freeing any backing buffer. No-op for POD. Returns void. The nested

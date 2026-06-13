@@ -519,3 +519,52 @@ void ls_thread_join(void *h) {
     pthread_join(c->handle, NULL);
     free(c);
 }
+
+/* =========================================================================
+ * Mutexes (std.sync) — a heap pthread_mutex_t behind an opaque handle so LS's
+ * move semantics never relocate it (a moved pthread_mutex_t is UB). lock/unlock/
+ * trylock pass through; destroy is null-safe (a Mutex built `= {}` and never
+ * init'd drops cleanly). Non-recursive default (re-lock on same thread = UB).
+ * ========================================================================= */
+
+#include <sched.h>
+
+void *ls_mutex_init(void) {
+    pthread_mutex_t *m = (pthread_mutex_t *)malloc(sizeof(pthread_mutex_t));
+    if (m == NULL) return NULL;
+    if (pthread_mutex_init(m, NULL) != 0) { free(m); return NULL; }
+    return m;
+}
+
+int ls_mutex_lock(void *h) {
+    if (h == NULL) return -1;
+    return pthread_mutex_lock((pthread_mutex_t *)h);
+}
+
+int ls_mutex_trylock(void *h) {
+    if (h == NULL) return 0;
+    return pthread_mutex_trylock((pthread_mutex_t *)h) == 0 ? 1 : 0;
+}
+
+int ls_mutex_unlock(void *h) {
+    if (h == NULL) return -1;
+    return pthread_mutex_unlock((pthread_mutex_t *)h);
+}
+
+void ls_mutex_destroy(void *h) {
+    if (h != NULL) {
+        pthread_mutex_destroy((pthread_mutex_t *)h);
+        free(h);
+    }
+}
+
+/* Spin-wait CPU hint (SpinLock) — relax the pipeline without yielding the core. */
+void ls_cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield");
+#else
+    sched_yield();
+#endif
+}
