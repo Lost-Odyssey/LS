@@ -71,4 +71,32 @@ foreach(i RANGE 1 8)
     endif()
 endforeach()
 
+# ===================== SpinLock heavy contention (yield path) =====================
+# More workers than cores + a long critical section → waiters spin past the
+# pause-only threshold and fall through to __cpu_yield. Must stay exact AND
+# terminate (no priority-inversion deadlock under the adaptive backoff).
+set(SC "${SDIR}/spin_contend_test.ls")
+
+execute_process(COMMAND "${LS}" run "${SC}"
+    OUTPUT_VARIABLE co ERROR_VARIABLE ce2 RESULT_VARIABLE cr2 TIMEOUT 60)
+if(NOT cr2 EQUAL 0)
+    message(FATAL_ERROR "spin-contend JIT failed (rc=${cr2}):\n${ce2}\n${co}")
+endif()
+if(NOT co MATCHES "SPIN OK" OR co MATCHES "SPIN FAIL")
+    message(FATAL_ERROR "spin-contend JIT: bad output (lost updates? deadlock?):\n${co}")
+endif()
+
+set(SC_EXE "${CMAKE_BINARY_DIR}/spin_contend_test.exe")
+execute_process(COMMAND "${LS}" compile "${SC}" -o "${SC_EXE}"
+    RESULT_VARIABLE scr ERROR_VARIABLE sce TIMEOUT 30)
+if(NOT scr EQUAL 0)
+    message(FATAL_ERROR "spin-contend AOT compile failed:\n${sce}")
+endif()
+foreach(i RANGE 1 6)
+    execute_process(COMMAND "${SC_EXE}" OUTPUT_VARIABLE sco RESULT_VARIABLE scar TIMEOUT 60)
+    if(NOT scar EQUAL 0 OR NOT sco MATCHES "SPIN OK" OR sco MATCHES "SPIN FAIL")
+        message(FATAL_ERROR "spin-contend AOT run ${i}: rc=${scar} output:\n${sco}")
+    endif()
+endforeach()
+
 message(STATUS "test_sync: ALL PASSED")

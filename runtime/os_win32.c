@@ -764,3 +764,13 @@ void ls_mutex_destroy(void *h) {
 void ls_cpu_relax(void) {
     YieldProcessor();
 }
+
+/* Yield the core to another ready thread when a spin has run too long. Bounds
+ * CPU burn under contention AND breaks priority inversion: a LOW-priority lock
+ * holder can be scheduled to release the lock instead of a high-priority spinner
+ * starving it forever. SwitchToThread yields to any ready thread on this
+ * processor INCLUDING lower-priority ones (unlike Sleep(0), which only yields to
+ * equal/higher priority — useless against inversion). */
+void ls_cpu_yield(void) {
+    SwitchToThread();
+}

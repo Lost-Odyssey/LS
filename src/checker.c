@@ -2836,7 +2836,8 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
        backend. Global intrinsics (like __task_*) so they survive generic-method
        instantiation in a consumer module without an `import std.c` alias. They
        know nothing about Mutex(T): a handle in/out. */
-    if (strncmp(name, "__mutex_", 8) == 0 || strcmp(name, "__cpu_relax") == 0)
+    if (strncmp(name, "__mutex_", 8) == 0 || strcmp(name, "__cpu_relax") == 0 ||
+        strcmp(name, "__cpu_yield") == 0)
     {
         int want = 1; /* handle arg */
         Type *ret = type_void();
@@ -2846,6 +2847,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         else if (strcmp(name, "__mutex_unlock") == 0)  { ret = type_int(); }
         else if (strcmp(name, "__mutex_destroy") == 0) { ret = type_void(); }
         else if (strcmp(name, "__cpu_relax") == 0)     { want = 0; ret = type_void(); }
+        else if (strcmp(name, "__cpu_yield") == 0)     { want = 0; ret = type_void(); }
         else
         {
             checker_error(c, call_node->line, call_node->column,
@@ -2944,7 +2946,8 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "__task_join") == 0 ||
            strncmp(name, "__atomic_", 9) == 0 ||
            strncmp(name, "__mutex_", 8) == 0 ||
-           strcmp(name, "__cpu_relax") == 0;
+           strcmp(name, "__cpu_relax") == 0 ||
+           strcmp(name, "__cpu_yield") == 0;
 }
 
 /* ---- Phase C closure capture analysis ----

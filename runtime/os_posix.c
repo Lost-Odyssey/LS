@@ -568,3 +568,10 @@ void ls_cpu_relax(void) {
     sched_yield();
 #endif
 }
+
+/* Yield the core when a spin has run too long — bounds CPU burn under contention
+ * and breaks priority inversion (lets a low-priority lock holder be scheduled to
+ * release). sched_yield moves the caller to the end of its priority run-queue. */
+void ls_cpu_yield(void) {
+    sched_yield();
+}

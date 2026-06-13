@@ -5090,7 +5090,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            whole interface (the same clean boundary as __atomic_* over scalars). */
         if (node->as.call.callee->kind == AST_IDENT &&
             (strncmp(node->as.call.callee->as.ident.name, "__mutex_", 8) == 0 ||
-             strcmp(node->as.call.callee->as.ident.name, "__cpu_relax") == 0))
+             strcmp(node->as.call.callee->as.ident.name, "__cpu_relax") == 0 ||
+             strcmp(node->as.call.callee->as.ident.name, "__cpu_yield") == 0))
         {
             const char *mname = node->as.call.callee->as.ident.name;
             LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
@@ -5112,6 +5113,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 { sym = "ls_mutex_destroy"; ret_t = void_t; }
             else if (strcmp(mname, "__cpu_relax") == 0)
                 { sym = "ls_cpu_relax"; ret_t = void_t; nargs = 0; }
+            else if (strcmp(mname, "__cpu_yield") == 0)
+                { sym = "ls_cpu_yield"; ret_t = void_t; nargs = 0; }
             else
             {
                 cg_error(ctx, node->line, node->column,
