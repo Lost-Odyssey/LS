@@ -77,10 +77,12 @@ fn main() {
     check_n(7)      // prime  -> Bluestein
     check_n(11)     // prime  -> Bluestein
     check_n(13)     // prime  -> Bluestein
-    check_n(6)      // 2*3    -> Bluestein
-    check_n(9)      // 3*3    -> Bluestein
-    check_n(10)     // 2*5    -> Bluestein
-    check_n(12)     // 4*3    -> Bluestein
+    check_n(6)      // 2*3    -> mixed-radix
+    check_n(9)      // 3*3    -> mixed-radix
+    check_n(10)     // 2*5    -> mixed-radix
+    check_n(12)     // 4*3    -> mixed-radix
+    check_n(15)     // 3*5    -> mixed-radix (radix-3 + radix-5)
+    check_n(20)     // 4*5    -> mixed-radix
     check_n(8)      // 2^3    -> radix-2 (dispatch check)
     check_n(1)      // trivial
     print("FFT_ARB PASS")

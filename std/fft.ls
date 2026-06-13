@@ -141,7 +141,76 @@ fn _bluestein(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
     return out
 }
 
-// Forward FFT (unscaled). Power-of-2 N uses radix-2; any other N uses Bluestein.
+// smallest prime factor of n (n >= 2); returns n itself if n is prime
+fn _smallest_factor(int n) -> int {
+    int f = 2
+    while f * f <= n {
+        if n % f == 0 { return f }
+        f = f + 1
+    }
+    return n
+}
+
+// n is "smooth" — all prime factors <= 7, so recursive mixed-radix is efficient
+fn _is_smooth(int n) -> bool {
+    int m = n
+    while m % 2 == 0 { m = m / 2 }
+    while m % 3 == 0 { m = m / 3 }
+    while m % 5 == 0 { m = m / 5 }
+    while m % 7 == 0 { m = m / 7 }
+    return m == 1
+}
+
+// Recursive mixed-radix Cooley-Tukey (decimation-in-time), unscaled. At each level
+// it splits N = p*q on the smallest prime factor p: FFT the p length-q subsequences
+// x_r[m] = x[p*m+r], then combine X[k] = sum_r W_N^{sign*r*k} * Xr[k mod q]. O(N log N)
+// for smooth N; degrades to O(N^2) at a large prime factor (callers route those to
+// Bluestein instead). sign = -1 forward, +1 inverse.
+fn _fft_mixed(Vec(Complex(f64)) x, f64 sign) -> Vec(Complex(f64)) {
+    int n = x.len()
+    if n <= 1 { return x }
+    if _is_pow2(n) {
+        _bitrev(&!x, n)
+        _butterfly(&!x, n, sign)
+        return x
+    }
+    int p = _smallest_factor(n)
+    int q = n / p
+    // FFT each of the p subsequences; pack results flat: sub[r*q + j]
+    Vec(Complex(f64)) sub = []
+    int r = 0
+    while r < p {
+        Vec(Complex(f64)) xr = []
+        int m = 0
+        while m < q { xr.push(x.get!(p * m + r)); m = m + 1 }
+        Vec(Complex(f64)) xrf = _fft_mixed(xr, sign)
+        int j = 0
+        while j < q { sub.push(xrf.get!(j)); j = j + 1 }
+        r = r + 1
+    }
+    // combine
+    Vec(Complex(f64)) out = []
+    int z = 0
+    while z < n { out.push(c(f64)(0.0, 0.0)); z = z + 1 }
+    int k = 0
+    while k < n {
+        int kq = k % q
+        Complex(f64) acc = c(f64)(0.0, 0.0)
+        int rr = 0
+        while rr < p {
+            f64 ang = sign * 2.0 * math.PI * (rr as f64) * (k as f64) / (n as f64)
+            Complex(f64) w = c(f64)(math.cos(ang), math.sin(ang))
+            acc = acc + w * sub.get!(rr * q + kq)
+            rr = rr + 1
+        }
+        out.set!(k, acc)
+        k = k + 1
+    }
+    return out
+}
+
+// Forward FFT (unscaled). Power-of-2 -> radix-2; other smooth N -> mixed-radix;
+// N with a large prime factor -> Bluestein.
 fn fft(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
     int n = x.len()
     if n <= 1 { return x }
@@ -150,6 +219,7 @@ fn fft(Vec(Complex(f64)) x) -> Vec(Complex(f64)) {
         _butterfly(&!x, n, 0.0 - 1.0)
         return x
     }
+    if _is_smooth(n) { return _fft_mixed(x, 0.0 - 1.0) }
     return _bluestein(x)
 }
 
