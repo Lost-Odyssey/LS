@@ -2756,3 +2756,17 @@ set_tests_properties(test_tensor_phase2 PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     DEPENDS "test_tensor_phase3c"
 )
+
+# std.tensor 阶段 3d：安全拷贝切片 row/col/slice + argmax_rows/min/neg/abs/sqrt/log/clamp/mse
+add_test(
+    NAME test_tensor_phase3d
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_tensor_phase3d.cmake
+)
+set_tests_properties(test_tensor_phase3d PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    DEPENDS "test_tensor_phase2"
+)

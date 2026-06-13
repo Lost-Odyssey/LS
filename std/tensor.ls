@@ -608,6 +608,190 @@ impl(T) Tensor(T) {
         return out
     }
 
+    // ---- safe copying slices (own the result; no view/lifetime footgun) ----
+
+    // Copy row i of a 2-D tensor → a fresh 1-D [cols] tensor.
+    fn row(&self, int i) -> Tensor(T) {
+        if self.shape.len() != 2 { print(f"Tensor.row requires 2-D"); std.c.abort() }
+        self._ckdim(0, i)
+        int n = self.shape.get!(1)
+        int s0 = self.strides.get!(0)
+        int s1 = self.strides.get!(1)
+        Vec(int) osh = {}
+        osh.push(n)
+        Tensor(T) out = {}
+        int total = out._setup(osh);
+        *T p = std.c.malloc(total * sizeof(T)) as *T
+        int j = 0
+        while j < n { p[j] = self.data[i * s0 + j * s1]; j = j + 1 }
+        out.data = p
+        return out
+    }
+
+    // Copy column j of a 2-D tensor → a fresh 1-D [rows] tensor.
+    fn col(&self, int j) -> Tensor(T) {
+        if self.shape.len() != 2 { print(f"Tensor.col requires 2-D"); std.c.abort() }
+        self._ckdim(1, j)
+        int m = self.shape.get!(0)
+        int s0 = self.strides.get!(0)
+        int s1 = self.strides.get!(1)
+        Vec(int) osh = {}
+        osh.push(m)
+        Tensor(T) out = {}
+        int total = out._setup(osh);
+        *T p = std.c.malloc(total * sizeof(T)) as *T
+        int i = 0
+        while i < m { p[i] = self.data[i * s0 + j * s1]; i = i + 1 }
+        out.data = p
+        return out
+    }
+
+    // Copy [lo, hi) along `axis` → a fresh tensor of the same rank (axis dim = hi-lo).
+    fn slice(&self, int axis, int lo, int hi) -> Tensor(T) {
+        int r = self.shape.len()
+        if axis < 0 || axis >= r { print(f"Tensor.slice bad axis {axis}"); std.c.abort() }
+        int alen = self.shape.get!(axis)
+        if lo < 0 || hi > alen || lo >= hi {
+            print(f"Tensor.slice bad range [{lo},{hi}) for axis len {alen}")
+            std.c.abort()
+        }
+        Vec(int) osh = {}
+        int k = 0
+        while k < r {
+            if k == axis { osh.push(hi - lo) } else { osh.push(self.shape.get!(k)) }
+            k = k + 1
+        }
+        Tensor(T) out = {}
+        int total = out._setup(osh);
+        *T p = std.c.malloc(total * sizeof(T)) as *T
+        int i = 0
+        while i < total {
+            int rem = i
+            int inoff = 0
+            int kk = r - 1
+            while kk >= 0 {
+                int odim = osh.get!(kk)
+                int idx = rem % odim
+                rem = rem / odim
+                int incoord = idx
+                if kk == axis { incoord = idx + lo }
+                inoff = inoff + incoord * self.strides.get!(kk)
+                kk = kk - 1
+            }
+            p[i] = self.data[inoff]
+            i = i + 1
+        }
+        out.data = p
+        return out
+    }
+
+    // Per-row argmax of a 2-D tensor → Vec(int) of m class indices (classifier head).
+    fn argmax_rows(&self) -> Vec(int) {
+        if self.shape.len() != 2 { print(f"Tensor.argmax_rows requires 2-D"); std.c.abort() }
+        int m = self.shape.get!(0)
+        int n = self.shape.get!(1)
+        int s0 = self.strides.get!(0)
+        int s1 = self.strides.get!(1)
+        Vec(int) out = {}
+        int r = 0
+        while r < m {
+            int best = 0
+            T bv = self.data[r * s0]
+            int c = 1
+            while c < n {
+                T v = self.data[r * s0 + c * s1]
+                if v > bv { bv = v; best = c }
+                c = c + 1
+            }
+            out.push(best)
+            r = r + 1
+        }
+        return out
+    }
+
+    // Min over all elements (flat); complement to max.
+    fn min(&self) -> T {
+        T m = self.data[0]
+        int i = 1
+        while i < self.size {
+            T v = self.data[i]
+            if v < m { m = v }
+            i = i + 1
+        }
+        return m
+    }
+
+    // ---- elementwise unary → new Tensor of the same shape ----
+    fn neg(&self) -> Tensor(T) {
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        T z = 0 as T
+        int i = 0
+        while i < n { p[i] = z - self.data[i]; i = i + 1 }
+        out.data = p
+        return out
+    }
+    fn abs(&self) -> Tensor(T) {
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        T z = 0 as T
+        int i = 0
+        while i < n {
+            T v = self.data[i]
+            if v < z { p[i] = z - v } else { p[i] = v }
+            i = i + 1
+        }
+        out.data = p
+        return out
+    }
+    fn sqrt(&self) -> Tensor(T) {          // float only (math.sqrt)
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = math.sqrt(self.data[i]); i = i + 1 }
+        out.data = p
+        return out
+    }
+    fn log(&self) -> Tensor(T) {           // natural log, float only (math.log)
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n { p[i] = math.log(self.data[i]); i = i + 1 }
+        out.data = p
+        return out
+    }
+    // Clamp every element to [lo, hi].
+    fn clamp(&self, T lo, T hi) -> Tensor(T) {
+        Tensor(T) out = {}
+        int n = out._setup(self.shape);
+        *T p = std.c.malloc(n * sizeof(T)) as *T
+        int i = 0
+        while i < n {
+            T v = self.data[i]
+            if v < lo { v = lo }
+            if v > hi { v = hi }
+            p[i] = v
+            i = i + 1
+        }
+        out.data = p
+        return out
+    }
+
+    // Mean squared error against another tensor (same shape or broadcastable):
+    // mean((self - o)^2). A basic regression loss.
+    fn mse(&self, &Tensor(T) o) -> T {
+        Tensor(T) d = self.sub(o)
+        T acc = 0 as T
+        int n = d.size
+        int i = 0
+        while i < n { T x = d.data[i]; acc = acc + x * x; i = i + 1 }
+        return acc / (n as T)
+    }
+
     // ---- reshape: same total size, recompute strides; NO data move ----
     fn reshape(&!self, &Vec(int) newshape) {
         int r = newshape.len()
