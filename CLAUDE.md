@@ -71,7 +71,8 @@ runtime/memcheck.c    内存检查器
 runtime/os_win32.c    平台 C 后端（time/sleep/...）
 tests/test_*.c        单元测试
 tests/samples/*.ls    端到端测试
-std/                  纯 LS 标准库（json.ls, time.ls, ...）
+lib/std/*.ls          纯 LS 标准库（json.ls, time.ls, ...）；import 仍为 `import std.xxx`
+                      编译器在 <LS_HOME>/lib/ 下解析（std.time → lib/std/time.ls）
 docs/                 设计文档
 ```
 

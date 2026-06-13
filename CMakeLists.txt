@@ -104,14 +104,14 @@ add_executable(ls ${LS_SOURCES})
 target_include_directories(ls PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(ls ${LLVM_LIBS})
 
-# Keep the std/ directory in the output folder up-to-date with the source tree.
+# Keep the lib/std/ directory in the output folder up-to-date with the source tree.
 # CMake's file(COPY) only runs at configure time; POST_BUILD runs every build.
-# We copy the whole std/ tree so ls.exe can find std/*.ls when LS_HOME is not set.
+# We copy the whole lib/ tree so ls.exe can find lib/std/*.ls when LS_HOME is not set.
 add_custom_command(TARGET ls POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/std"
-        "$<TARGET_FILE_DIR:ls>/std"
-    COMMENT "Copying std/ -> output/std/"
+        "${CMAKE_SOURCE_DIR}/lib"
+        "$<TARGET_FILE_DIR:ls>/lib"
+    COMMENT "Copying lib/ -> output/lib/"
 )
 
 # ls_memcheck — standalone static library for AOT-compiled user programs.

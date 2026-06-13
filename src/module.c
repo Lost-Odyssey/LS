@@ -118,9 +118,9 @@ static int ls_executable_dir(char *out, size_t out_sz) {
 }
 
 /* Resolve an import path to an absolute .ls file path under LS_HOME.
-   Resolution order:
-     1. <LS_HOME>/<rel_path>.ls   — dotted std imports: std.time → std/time.ls
-     2. <LS_HOME>/std/<rel>.ls    — short names: io → std/io.ls, hello → std/hello.ls
+   Resolution order (stdlib lives under <LS_HOME>/lib/, Zig-style):
+     1. <LS_HOME>/lib/<rel_path>.ls   — dotted std imports: std.time → lib/std/time.ls
+     2. <LS_HOME>/lib/std/<rel>.ls    — short names: io → lib/std/io.ls, path → lib/std/path.ls
    LS_HOME defaults to the directory containing ls.exe.
    Returns NULL if no file is found. Caller owns the returned string. */
 static char *resolve_stdlib_path(const char *import_path) {
@@ -145,19 +145,20 @@ static char *resolve_stdlib_path(const char *import_path) {
         return NULL;
     }
 
-    /* Try 1: <root>/<rel_path>.ls  (std.time → std/time.ls) */
-    size_t full_len = strlen(root) + 1 + strlen(rel_path) + 3 + 1;
+    /* Try 1: <root>/lib/<rel_path>.ls  (std.time → lib/std/time.ls) */
+    size_t full_len = strlen(root) + 1 + 4 /*"lib/"*/ + strlen(rel_path) + 3 + 1;
     char *full = (char *)malloc_safe(full_len);
-    snprintf(full, full_len, "%s%s%s.ls", root, PATH_SEP_STR, rel_path);
+    snprintf(full, full_len, "%s%slib%s%s.ls",
+             root, PATH_SEP_STR, PATH_SEP_STR, rel_path);
     FILE *f = fopen_retry(full, "rb");
     if (f != NULL) { fclose(f); free(rel_path); return full; }
     free(full);
 
-    /* Try 2: <root>/std/<rel_path>.ls  (io → std/io.ls, hello → std/hello.ls) */
-    size_t full2_len = strlen(root) + 1 + 4 /*"std/"*/ + strlen(rel_path) + 3 + 1;
+    /* Try 2: <root>/lib/std/<rel_path>.ls  (io → lib/std/io.ls, path → lib/std/path.ls) */
+    size_t full2_len = strlen(root) + 1 + 8 /*"lib/std/"*/ + strlen(rel_path) + 3 + 1;
     char *full2 = (char *)malloc_safe(full2_len);
-    snprintf(full2, full2_len, "%s%sstd%s%s.ls",
-             root, PATH_SEP_STR, PATH_SEP_STR, rel_path);
+    snprintf(full2, full2_len, "%s%slib%sstd%s%s.ls",
+             root, PATH_SEP_STR, PATH_SEP_STR, PATH_SEP_STR, rel_path);
     free(rel_path);
     f = fopen_retry(full2, "rb");
     if (f != NULL) { fclose(f); return full2; }

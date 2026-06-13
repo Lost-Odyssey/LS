@@ -1,26 +1,29 @@
 // Phase E.3.4 — stdlib path resolution
-// Imports `hello` which has no user-relative file but is provided by
-// <LS_HOME>/std/hello.ls. Verifies the two-level lookup
-// (user dir → LS_HOME/std/) works.
+// `import path` uses a SHORT name with no user-relative file, so it must
+// resolve via the stdlib fallback <LS_HOME>/lib/std/path.ls (Try 2).
+// `import std.str` uses a DOTTED name resolving to <LS_HOME>/lib/std/str.ls
+// (Try 1). Together they cover both stdlib lookup paths after the
+// std/ -> lib/std/ relocation. std.path is pure-LS and deterministic.
 
-import hello
+import path
 import std.str
 
 fn main() {
-    int a = hello.answer()
-    if a != 42 {
-        print("FAIL: stdlib hello.answer expected 42")
+    Str base = path.basename("a/b/c")
+    if !base.eq?("c") {
+        print("FAIL: stdlib path.basename expected 'c'")
+        print(base)
         return
     }
-    print("PASS: stdlib hello.answer() = 42")
+    print("PASS: stdlib path.basename() = c")
 
-    Str g = hello.greet("LS")
-    if !g.eq?("Hello from stdlib, LS!") {
-        print("FAIL: stdlib hello.greet wrong text")
-        print(g)
+    Str e = path.ext("file.txt")
+    if !e.eq?(".txt") {
+        print("FAIL: stdlib path.ext expected '.txt'")
+        print(e)
         return
     }
-    print("PASS: stdlib hello.greet")
+    print("PASS: stdlib path.ext")
 
     print("ALL PASS")
 }
