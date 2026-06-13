@@ -208,47 +208,67 @@ fn irfft(Vec(Complex(f64)) x, int n) -> Vec(f64) {
 
 // ---- DCT (discrete cosine transform), scipy norm=None convention ----
 //
-// v1 is the direct O(N^2) definition (guaranteed correct; the Makhoul FFT-based
-// O(N log N) form is deferred to the perf path). idct is normalized by 1/(2N) so
-// that idct(dct(x)) == x.
+// Makhoul's method: O(N log N) via one length-N FFT (was O(N^2) direct). DCT-II
+// reorders the input (evens ascending, odds descending), FFTs, then applies a
+// half-sample twiddle and takes the real part. idct is the exact inverse (so
+// idct(dct(x)) == x), reconstructed from the conjugate-symmetric structure.
+//
+//   dct (DCT-II):   y_k = 2 * sum_n x_n cos(pi*(2n+1)*k / (2N))
 
-// DCT-II: y_k = 2 * sum_n x_n cos(pi*(2n+1)*k / (2N))
+// even-odd reorder index used by both dct and idct:
+//   i < (N+1)/2 -> 2i      (even samples, ascending)
+//   else        -> 2N-1-2i (odd samples, descending)
+fn _dct_reorder_src(int i, int bigN) -> int {
+    if i < (bigN + 1) / 2 { return 2 * i }
+    return 2 * bigN - 1 - 2 * i
+}
+
 fn dct(Vec(f64) x) -> Vec(f64) {
     int bigN = x.len()
-    f64 denom = 2.0 * (bigN as f64)
+    Vec(Complex(f64)) v = []
+    int i = 0
+    while i < bigN {
+        v.push(c(f64)(x.get!(_dct_reorder_src(i, bigN)), 0.0))
+        i = i + 1
+    }
+    Vec(Complex(f64)) cap_v = fft(v)
+    f64 d2n = 2.0 * (bigN as f64)
     Vec(f64) y = []
     int k = 0
     while k < bigN {
-        f64 s = 0.0
-        int n = 0
-        while n < bigN {
-            f64 ang = math.PI * ((2 * n + 1) as f64) * (k as f64) / denom
-            s = s + x.get!(n) * math.cos(ang)
-            n = n + 1
-        }
-        y.push(2.0 * s)
+        f64 ang = 0.0 - math.PI * (k as f64) / d2n     // exp(-i*pi*k/(2N))
+        Complex(f64) w = c(f64)(math.cos(ang), math.sin(ang))
+        Complex(f64) a = w * cap_v.get!(k)
+        y.push(2.0 * a.re)
         k = k + 1
     }
     return y
 }
 
-// DCT-III scaled to be the exact inverse of dct:
-//   x_n = (1/(2N)) * ( y_0 + 2 * sum_{k>=1} y_k cos(pi*(2n+1)*k / (2N)) )
+// inverse DCT-II (exact inverse of dct): reconstruct the FFT spectrum from y,
+// ifft, then undo the even-odd reorder. A[k] = (y[k] - i*y[N-k]) / 2 (y[N]=0).
 fn idct(Vec(f64) y) -> Vec(f64) {
     int bigN = y.len()
-    f64 denom = 2.0 * (bigN as f64)
+    f64 d2n = 2.0 * (bigN as f64)
+    Vec(Complex(f64)) cap_v = []
+    int k = 0
+    while k < bigN {
+        f64 ynk = 0.0
+        if k > 0 { ynk = y.get!(bigN - k) }
+        Complex(f64) a = c(f64)(0.5 * y.get!(k), 0.0 - 0.5 * ynk)
+        f64 ang = math.PI * (k as f64) / d2n           // exp(+i*pi*k/(2N))
+        Complex(f64) w = c(f64)(math.cos(ang), math.sin(ang))
+        cap_v.push(w * a)
+        k = k + 1
+    }
+    Vec(Complex(f64)) v = ifft(cap_v)
     Vec(f64) x = []
-    int n = 0
-    while n < bigN {
-        f64 s = y.get!(0)
-        int k = 1
-        while k < bigN {
-            f64 ang = math.PI * ((2 * n + 1) as f64) * (k as f64) / denom
-            s = s + 2.0 * y.get!(k) * math.cos(ang)
-            k = k + 1
-        }
-        x.push(s / denom)
-        n = n + 1
+    int z = 0
+    while z < bigN { x.push(0.0); z = z + 1 }
+    int i = 0
+    while i < bigN {
+        x.set!(_dct_reorder_src(i, bigN), v.get!(i).re)
+        i = i + 1
     }
     return x
 }

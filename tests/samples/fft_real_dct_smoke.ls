@@ -25,6 +25,39 @@ fn cplxify(Vec(f64) r) -> Vec(Complex(f64)) {
     return v
 }
 
+// naive O(N^2) DCT-II reference: y_k = 2 sum_n x_n cos(pi(2n+1)k/(2N))
+fn dct_naive(Vec(f64) x) -> Vec(f64) {
+    int bigN = x.len()
+    f64 d = 2.0 * (bigN as f64)
+    Vec(f64) y = []
+    int k = 0
+    while k < bigN {
+        f64 s = 0.0
+        int n = 0
+        while n < bigN {
+            s = s + x.get!(n) * math.cos(math.PI * ((2 * n + 1) as f64) * (k as f64) / d)
+            n = n + 1
+        }
+        y.push(2.0 * s)
+        k = k + 1
+    }
+    return y
+}
+
+// compare Makhoul dct against the naive DCT for length n
+fn check_dct(int n) {
+    Vec(f64) x = rsig(n)
+    Vec(f64) fast = ft.dct(x)
+    Vec(f64) ref = dct_naive(x)
+    bool ok = true
+    int k = 0
+    while k < n {
+        if !near(fast.get!(k), ref.get!(k)) { ok = false }
+        k = k + 1
+    }
+    check(ok, f"dct(N={n}) matches naive DCT")
+}
+
 fn main() {
     // rfft(x) == fft(complex(x))[0 .. N/2]  (N=8)
     Vec(f64) x = rsig(8)
@@ -78,6 +111,12 @@ fn main() {
         m = m + 1
     }
     check(dctrt, "idct(dct(x)) round-trip N=6")
+
+    // Makhoul dct matches naive DCT across sizes (incl. odd N)
+    check_dct(5)
+    check_dct(6)
+    check_dct(7)
+    check_dct(8)
 
     print("FFT_REAL_DCT PASS")
 }
