@@ -563,7 +563,7 @@ const char *type_name(const Type *t) {
         snprintf(buf, 256, "array(%s, %d)", type_name(t->as.array.elem), t->as.array.size);
         return buf;
     case TYPE_SLICE:
-        snprintf(buf, 256, "&%s[%s]", t->is_mut ? "!" : "", type_name(t->as.array.elem));
+        snprintf(buf, 256, "&%sarray(%s)", t->is_mut ? "!" : "", type_name(t->as.array.elem));
         return buf;
     case TYPE_FUNCTION:
     case TYPE_BLOCK: {

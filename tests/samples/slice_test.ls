@@ -1,4 +1,4 @@
-// Borrowed slices `&[T]` (docs/plan_borrow_extension.md): a {ptr,len} view over
+// Borrowed slices `&array(T)` (docs/plan_borrow_extension.md): a {ptr,len} view over
 // a contiguous Vec(T) range, created by `v[a..b]`. Non-owning, bounds-checked,
 // governed by the borrow escape analysis. Covers creation, index, len(), for-in,
 // slice-as-parameter (zero-copy), sub-slicing, and has_drop (Str) elements.
@@ -6,7 +6,7 @@
 import std.vec
 import std.str
 
-fn sum(&[int] s) -> int {
+fn sum(&array(int) s) -> int {
     int t = 0
     for x in s { t = t + x }
     return t

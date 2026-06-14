@@ -31,7 +31,7 @@ typedef enum
     TYPE_NODE_POINTER,   /* *T */
     TYPE_NODE_REFERENCE, /* &T (is_mut=false) / &!T (is_mut=true) */
     TYPE_NODE_ARRAY,     /* array(T, N) — fixed-size */
-    TYPE_NODE_SLICE,     /* &[T] (is_mut=false) / &![T] (is_mut=true) — borrowed slice */
+    TYPE_NODE_SLICE,     /* &array(T) (is_mut=false) / &!array(T) (is_mut=true) — borrowed slice */
     TYPE_NODE_VECTOR,    /* vec(T)      — dynamic array */
     TYPE_NODE_MAP,       /* map(K, V)   — chained hash map */
     TYPE_NODE_FN,        /* fn(A, B) -> R */

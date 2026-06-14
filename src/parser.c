@@ -1873,11 +1873,24 @@ static TypeNode *parse_type(Parser *p) {
        at the start of a type). */
     if (match_tok(p, TOKEN_AMP)) {
         bool is_mut = match_tok(p, TOKEN_BANG);  /* &! => writable reference/slice */
-        /* &[T] / &![T] — borrowed slice (a {ptr,len} view over a Vec(T) range). */
-        if (match_tok(p, TOKEN_LBRACKET)) {
+        /* &array(T) / &!array(T) — borrowed slice: a {ptr,len} view over a
+           contiguous range. Mirrors LS's `array(T, N)` (owned, fixed) minus the
+           size: a slice is a "borrowed unsized array". Distinguished from
+           `array(T, N)` by the `&` and the absence of `, N`. */
+        if (check(p, TOKEN_ARRAY)) {
+            advance(p);  /* consume 'array' */
+            if (!consume(p, TOKEN_LPAREN, "expected '(' after 'array' in slice type"))
+                return NULL;
             TypeNode *elem = parse_type(p);
             if (elem == NULL) return NULL;
-            if (!consume(p, TOKEN_RBRACKET, "expected ']' to close slice type '&[T]'")) {
+            if (check(p, TOKEN_COMMA)) {
+                error_at_current(p, "a slice `&array(T)` has no size; write "
+                                    "`array(T, N)` for an owned fixed array "
+                                    "(borrowing a fixed array is not supported)");
+                type_node_free(elem);
+                return NULL;
+            }
+            if (!consume(p, TOKEN_RPAREN, "expected ')' to close slice type '&array(T)'")) {
                 type_node_free(elem);
                 return NULL;
             }

@@ -2,7 +2,7 @@
 // Storing a borrowed view must be a clean compile-time reject.
 import std.vec
 
-struct Holder { &[int] s }
+struct Holder { &array(int) s }
 
 fn main() -> int {
     print(1)

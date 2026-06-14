@@ -618,9 +618,9 @@ void type_node_print(TypeNode *type) {
         printf(", %d)", type->as.array.size);
         break;
     case TYPE_NODE_SLICE:
-        printf(type->is_mut ? "&![" : "&[");
+        printf(type->is_mut ? "&!array(" : "&array(");
         type_node_print(type->as.array.elem);
-        printf("]");
+        printf(")");
         break;
     case TYPE_NODE_VECTOR:
         printf("vec(");
