@@ -6155,11 +6155,19 @@ static Type *check_expr(Checker *c, AstNode *node)
                 elem = obj->as.strukt.generic_args[0];
             else if (obj->kind == TYPE_SLICE)
                 elem = obj->as.array.elem;  /* sub-slice of a slice */
+            else if (obj->kind == TYPE_STRUCT && obj->as.strukt.name &&
+                     strcmp(obj->as.strukt.name, "Str") == 0 &&
+                     obj->as.strukt.field_count >= 1 &&
+                     obj->as.strukt.fields[0].type &&
+                     obj->as.strukt.fields[0].type->kind == TYPE_POINTER)
+                /* Str `{*u8 data; int len; int cap}` → a byte view `&array(u8)`
+                   (same SoA layout as Vec: field0=data ptr, field1=len). */
+                elem = obj->as.strukt.fields[0].type->as.pointer_to;
             if (elem == NULL)
             {
                 checker_error(c, node->line, node->column,
-                    "slice `v[a..b]` requires a Vec(T) or &[T] source (got '%s')",
-                    type_name(obj));
+                    "slice `v[a..b]` requires a Vec(T), Str, or &array(T) source "
+                    "(got '%s')", type_name(obj));
                 result = NULL;
                 break;
             }
@@ -6169,7 +6177,25 @@ static Type *check_expr(Checker *c, AstNode *node)
             if ((lo && !type_is_integer(lo)) || (hi && !type_is_integer(hi)))
                 checker_error(c, node->line, node->column,
                               "slice bounds must be integers");
-            result = type_slice(elem, false);  /* &[T] read-only view */
+            /* Mutability is driven by the expected type (a `&!array(T)` target /
+               parameter), so a fresh `v[a..b]` can be passed directly to a
+               writable-slice parameter. A writable view needs a writable source. */
+            bool want_mut = (c->expected_type &&
+                             c->expected_type->kind == TYPE_SLICE &&
+                             c->expected_type->is_mut &&
+                             type_equals(c->expected_type->as.array.elem, elem));
+            if (want_mut)
+            {
+                Symbol *root = checker_place_root_symbol(c, objn);
+                if (root != NULL && root->is_borrow)
+                {
+                    checker_error(c, node->line, node->column,
+                        "cannot take a writable slice of read-only borrow '%s'",
+                        root->name);
+                    want_mut = false;
+                }
+            }
+            result = type_slice(elem, want_mut);
             break;
         }
 
@@ -7680,14 +7706,6 @@ static void check_stmt(Checker *c, AstNode *node)
                     break;
                 }
                 Type *et = to->as.array.elem;
-                if (et && ((et->kind == TYPE_STRUCT && et->as.strukt.has_drop) ||
-                           (et->kind == TYPE_ENUM && et->as.enom.has_drop)))
-                {
-                    checker_error(c, node->line, node->column,
-                        "writable slices of has_drop elements ('%s') are not "
-                        "supported yet", type_name(et));
-                    break;
-                }
                 Type *idxt = check_expr(c, node->as.assign.target->as.index_expr.index);
                 if (idxt && !type_is_integer(idxt))
                     checker_error(c, node->line, node->column,

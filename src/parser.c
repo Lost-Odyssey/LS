@@ -1125,17 +1125,45 @@ static AstNode *infix_binary_real(Parser *p, AstNode *left) {
     return n;
 }
 
-/* Range expression: a..b — creates AST_RANGE */
+/* True when no expression follows `..` (an open-ended range like `a..` or `..`),
+   detected by an immediate closer. Enables slice open ranges `v[a..]`/`v[..b]`. */
+static bool range_bound_absent(TokenType t) {
+    return t == TOKEN_RBRACKET || t == TOKEN_RPAREN || t == TOKEN_COMMA ||
+           t == TOKEN_SEMICOLON || t == TOKEN_EOF ||
+           t == TOKEN_LBRACE || t == TOKEN_RBRACE;
+}
+
+/* Range expression: a..b — creates AST_RANGE. Open forms `a..` (end=NULL) are
+   produced when no expression follows the `..` (e.g. `v[a..]`). */
 static AstNode *infix_range(Parser *p, AstNode *left) {
     Token op = p->previous;
-    AstNode *right = parse_expr_prec(p, PREC_COMPARISON);
-    if (right == NULL) {
-        ast_free(left);
-        return NULL;
+    AstNode *right = NULL;
+    if (!range_bound_absent(p->current.type)) {
+        right = parse_expr_prec(p, PREC_COMPARISON);
+        if (right == NULL) {
+            ast_free(left);
+            return NULL;
+        }
     }
     AstNode *n = new_node(AST_RANGE, op.line, op.column);
     n->as.range.start = left;
     n->as.range.end = right;
+    return n;
+}
+
+/* Prefix range `..b` (start=NULL) / `..` (both NULL) — for slice open ranges
+   `v[..b]` / `v[..]`. */
+static AstNode *prefix_range(Parser *p) {
+    Token op = p->previous;
+    AstNode *end = NULL;
+    if (!range_bound_absent(p->current.type)) {
+        end = parse_expr_prec(p, PREC_COMPARISON);
+        if (end == NULL)
+            return NULL;
+    }
+    AstNode *n = new_node(AST_RANGE, op.line, op.column);
+    n->as.range.start = NULL;
+    n->as.range.end = end;
     return n;
 }
 
@@ -1729,7 +1757,7 @@ static void init_parse_rules(void) {
     rules[TOKEN_OR]         = (ParseRule){ prefix_no_arg_closure, infix_binary_real, PREC_OR };
 
     /* Comparison */
-    rules[TOKEN_DOTDOT]     = (ParseRule){ NULL,             infix_range,       PREC_COMPARISON };
+    rules[TOKEN_DOTDOT]     = (ParseRule){ prefix_range,     infix_range,       PREC_COMPARISON };
     rules[TOKEN_EQ]         = (ParseRule){ NULL,             infix_binary_real, PREC_EQUALITY };
     rules[TOKEN_NEQ]        = (ParseRule){ NULL,             infix_binary_real, PREC_EQUALITY };
     rules[TOKEN_LT]         = (ParseRule){ NULL,             infix_binary_real, PREC_COMPARISON };

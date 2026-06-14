@@ -8752,9 +8752,19 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef lt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, index, slen, "ss.lt");
                 cg_emit_bounds_guard(ctx, LLVMBuildAnd(ctx->builder, ge, lt, "ss.ok"),
                                      "Slice index out of bounds", node->line, node->column);
-                LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.array.elem);
+                Type *elem_ty = obj_type->as.array.elem;
+                LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_ty);
                 LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, sptr, &index, 1, "ss.ep");
-                LLVMBuildStore(ctx->builder, val, gep);
+                /* The slot holds a live element — drop the old value before moving
+                   the new one in (has_drop elements), mirroring vec[i]=. POD: the
+                   drop is a no-op and cg_store_owned is a plain store. */
+                bool elem_has_drop = elem_ty &&
+                    ((elem_ty->kind == TYPE_STRUCT && elem_ty->as.strukt.has_drop) ||
+                     (elem_ty->kind == TYPE_ENUM && elem_ty->as.enom.has_drop));
+                if (elem_has_drop)
+                    emit_drop_value(ctx, gep, elem_ty);
+                cg_store_owned(ctx, gep, val, elem_ty, node->as.assign.value,
+                               CG_XFER_INTO_CONTAINER);
                 cg_flush_temps(ctx);
             }
             else if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)

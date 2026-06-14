@@ -77,6 +77,30 @@ fn main() -> int {
     for n in names[1..4] { total = total + n.len() }
     if (total == 12) { print("SL PASS strforin") } else { print("SL FAIL strforin") }
 
+    // Open ranges: v[a..] (to end), v[..b] (from start), v[..] (whole).
+    Vec(int) r = [10, 20, 30, 40, 50]
+    if (r[2..].len() == 3 && r[2..][0] == 30) { print("SL PASS openhi") } else { print("SL FAIL openhi") }
+    if (r[..3].len() == 3 && r[..3][2] == 30) { print("SL PASS openlo") } else { print("SL FAIL openlo") }
+    if (r[..].len() == 5) { print("SL PASS openfull") } else { print("SL FAIL openfull") }
+
+    // Direct `v[a..b]` passed to a writable-slice parameter (no intermediate bind).
+    Vec(int) d = [1, 2, 3, 4]
+    double_all(d[0..4])
+    if (d[0] == 2 && d[3] == 8) { print("SL PASS directmut") } else { print("SL FAIL directmut") }
+
+    // Str byte slice: a `&array(u8)` view over the string's bytes.
+    Str txt = "hello"
+    int bsum = 0
+    for b in txt[1..4] { bsum = bsum + (b as int) }   // 'e'+'l'+'l' = 317
+    if (txt[1..4].len() == 3 && bsum == 317 && (txt[2..][0] as int) == 108) { print("SL PASS strbytes") } else { print("SL FAIL strbytes") }
+
+    // has_drop (Str) writable slice: store drops the old element, moves the new in.
+    Vec(Str) ws = ["alice", "bob", "carol", "dave"]
+    &!array(Str) wss = ws[1..3]
+    wss[0] = "BOByes"
+    wss[1] = "X"
+    if (ws[1].len() == 6 && ws[2].len() == 1 && ws[0].len() == 5 && ws[3].len() == 4) { print("SL PASS hdmut") } else { print("SL FAIL hdmut") }
+
     print("SL PASS")
     return 0
 }
