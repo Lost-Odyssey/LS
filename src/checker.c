@@ -1253,6 +1253,9 @@ Type *checker_instantiate_struct(Checker *c,
            ASTs (not owned). */
         st->as.strukt.generic_impl_node = c->struct_templates[tmpl_idx].impl_node;
         st->as.strukt.generic_tp_names  = tp_names;
+        /* Phase 2: remember the defining module so its import aliases can be bound
+           when this instance's generic method bodies are checked in a consumer. */
+        st->as.strukt.generic_module    = c->struct_templates[tmpl_idx].module_name;
     }
     register_struct_type(c, st->as.strukt.name, st);
 
@@ -1348,6 +1351,63 @@ static bool check_method_where_bounds(Checker *c, AstNode *method,
     return true;
 }
 
+/* Phase 2 (docs/plan_module_fn_resolution.md): build a module type with its
+   exported fn/struct/enum/extern symbols for an already-checked module on `path`.
+   Mirrors the import handler's export-collection; used to bind a generic template's
+   defining-module imports during method-body instantiation. NULL if unloadable. */
+static Type *build_module_type_with_exports(Checker *c, const char *path)
+{
+    if (path == NULL) return NULL;
+    if (builtin_module_exists(path) &&
+        !module_user_file_exists(path, c->source_path))
+        return builtin_module_make_type(c, path);
+    ModuleInfo *mod = module_load(c->registry, path, c->source_path);
+    if (mod == NULL || mod->ast == NULL) return NULL;
+    Type *mt = type_module_new(path);
+    AstNode *ma = mod->ast;
+    for (int j = 0; j < ma->as.program.decl_count; j++) {
+        AstNode *d = ma->as.program.decls[j];
+        if (d->kind == AST_FN_DECL && d->resolved_type)
+            type_module_add_export(mt, d->as.fn_decl.name, d->resolved_type);
+        else if (d->kind == AST_STRUCT_DECL && d->resolved_type)
+            type_module_add_export(mt, d->as.struct_decl.name, d->resolved_type);
+        else if (d->kind == AST_ENUM_DECL && d->resolved_type)
+            type_module_add_export(mt, d->as.enum_decl.name, d->resolved_type);
+        else if (d->kind == AST_EXTERN_FN && d->resolved_type)
+            type_module_add_export(mt, d->as.extern_fn.name, d->resolved_type);
+    }
+    return mt;
+}
+
+/* Phase 2: when checking a generic method body whose template was DEFINED in
+   module `module_path`, bind that module's import aliases into the current scope
+   so qualified calls in the body (`sc.fn(...)`, `std.x.fn(...)`) resolve even
+   though the consumer checker never imported them. Additive: only DEFINES extra
+   module symbols (guarded against clobbering ones already in scope), never alters
+   existing resolution. NULL module_path (root/same-file) is a no-op. */
+static void bind_generic_defining_module_imports(Checker *c, const char *module_path)
+{
+    if (module_path == NULL || c->registry == NULL) return;
+    ModuleInfo *mod = module_load(c->registry, module_path, c->source_path);
+    if (mod == NULL || mod->ast == NULL) return;
+    AstNode *ma = mod->ast;
+    for (int j = 0; j < ma->as.program.decl_count; j++) {
+        AstNode *d = ma->as.program.decls[j];
+        if (d->kind != AST_IMPORT_DECL) continue;
+        const char *ip = d->as.import_decl.path;
+        const char *alias = d->as.import_decl.alias ? d->as.import_decl.alias : ip;
+        if (alias == NULL) continue;
+        if (scope_resolve_local(c->current_scope, alias) != NULL) continue;
+        Type *mt = build_module_type_with_exports(c, ip);
+        if (mt == NULL) continue;
+        scope_define(c->current_scope, alias, mt);
+        /* Phase 1 parity: also bind the full dotted path for `std.x.fn()` form. */
+        if (d->as.import_decl.alias &&
+            scope_resolve_local(c->current_scope, ip) == NULL)
+            scope_define(c->current_scope, ip, mt);
+    }
+}
+
 static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
                                            const char *mangled_name,
                                            AstNode *method, Type *mtype,
@@ -1423,6 +1483,11 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
             }
         }
     }
+    /* Phase 2: bind the defining module's import aliases so qualified calls in the
+       body resolve in this (consumer) checker. No-op for root/same-file generics. */
+    if (struct_type && struct_type->kind == TYPE_STRUCT)
+        bind_generic_defining_module_imports(c, struct_type->as.strukt.generic_module);
+
     Type *saved_ret = c->current_fn_return;
     c->current_fn_return = mtype->as.function.return_type;
     check_stmt(c, cloned->as.fn_decl.body);

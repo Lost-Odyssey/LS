@@ -63,6 +63,13 @@ struct Type {
                shared Type, no local template lookup needed. */
             void *generic_impl_node;    /* AstNode* — the impl(T) Base(T) decl */
             char **generic_tp_names;    /* template type-param names ["T"] */
+            /* Phase 2 (docs/plan_module_fn_resolution.md): the import path of the
+               module that DEFINED this generic template (NULL = root/same-file).
+               At method-body instantiation in a consumer checker, this lets the
+               defining module's import aliases be bound so qualified calls in the
+               body (e.g. `sc.int_to_hex(...)`) resolve even though the consumer
+               never imported that alias. Points into a persistent template entry. */
+            const char *generic_module;
         } strukt;
         struct {                                        /* TYPE_ENUM */
             const char *name;        /* mangled when instantiated, e.g. "Option(int)" */

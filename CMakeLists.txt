@@ -589,6 +589,22 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# 通用 mod.fn 解析 Phase 2 (docs/plan_module_fn_resolution.md): a generic struct
+# defined in module A, whose methods call module functions via alias / canonical
+# path, instantiated in consumer B that never imported those modules. A's import
+# env is bound when the generic method bodies are checked in B. main.ls imports a
+# sibling defmod.ls (resolved relative to the source dir). JIT + AOT + memcheck.
+add_test(
+    NAME test_modfn_generic
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modfn_generic/main.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=modfn_generic
+        -DMARKER=MODFN2
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # L-013 match-result-ownership: a match yielding an owned heap payload (string /
 # Vec / has_drop struct·enum) has exactly one owner across every consumer
 # (var-decl / call-arg / return / nested / discard). JIT+AOT correctness +

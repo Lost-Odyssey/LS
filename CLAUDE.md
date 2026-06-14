@@ -318,7 +318,7 @@ cd build && ctest -j 5 --output-on-failure -C Release
 - ~~**模块命名空间收尾 B-4~B-6**（类型命名空间 B-full）~~ ✅ 已完成（2026-05-30）：类型位置限定语法 `mod.Type`/`alias.Type`（B-4）+ enum 跨模块变体经类型上下文解析（B-5）+ has_drop 同名 struct/enum 综合 memcheck（B-6）。同名 struct/enum 跨模块各自独立可用，裸名歧义报错并提示限定。`test_modtype_conflict`/`test_modtype_ns`/`test_modtype_qualified`。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md)（抬头：B-1~B-6 全 ✅）
 - **通用 `mod.fn` 限定函数调用解析**（另一个被称作 "B-full" 的真挂账）→ [docs/plan_module_fn_resolution.md](docs/plan_module_fn_resolution.md)
   - ~~Phase 1（通用规范路径）~~ ✅ 已完成（2026-06-14）：`std.x.fn()` 全路径调用无需别名即可解析。checker 在 AST_CALL 把规范路径前缀 FIELD 链折叠成单个 IDENT（持点分路径串），结构上等同别名调用 → 复用既有 module-call checker+codegen **零特殊处理**；import 额外把完整点分路径也绑入 scope（别名与规范两种拼写统一可用）。`std.c.*` 仍由 `match_stdc_prim` 先行特判（特殊 CRT lowering）。`test_modfn_canonical`（JIT+AOT+memcheck）。
-  - Phase 2（泛型方法实例化下别名/路径可见）待做：核心难点＝消费方 checker 拿不到定义方 import 别名（故 sync/task 走全局 intrinsic `__atomic_*`/`__mutex_*`/`__task_*`、std.c 走字面匹配）。方案＝给泛型模板 stamp 定义方 import 别名表、实例化前 push 进 scope。优先级中，待真实用例驱动。
+  - ~~Phase 2（泛型方法实例化下别名/路径可见）~~ ✅ 已完成（2026-06-14）：模块 A 定义的泛型 struct，其方法经别名/规范路径调用模块函数，在从未 import 那些模块的消费方 B 实例化时，A 的 import 别名现会在 B 检查方法体时被绑定。机制＝泛型实例 stamp 定义方模块路径（`Type.strukt.generic_module`），body-check 唯一汇聚点 `check_and_queue_generic_method` 在 `check_stmt` 前调 `bind_generic_defining_module_imports`（载入定义方模块 AST、按其 import 决议各子模块 mod_type、scope_define 到方法体作用域；纯增量、guard 防 clobber）。`std.c`/sync/task 的字面匹配/intrinsic 变通可保留（不强制迁移）。`test_modfn_generic`（跨模块泛型 + 别名/规范调用 JIT+AOT+memcheck）。
 - 正则表达式 builtin；f16 半精度浮点
 
 > 已完成特性的详细实现记录见 [docs/features_history.md](docs/features_history.md)
