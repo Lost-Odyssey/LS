@@ -17,6 +17,7 @@ void type_node_free(TypeNode *type) {
         type_node_free(type->as.pointee);
         break;
     case TYPE_NODE_ARRAY:
+    case TYPE_NODE_SLICE:
         type_node_free(type->as.array.elem);
         break;
     case TYPE_NODE_VECTOR:
@@ -78,8 +79,9 @@ TypeNode *type_node_clone(const TypeNode *src) {
         break;
 
     case TYPE_NODE_ARRAY:
+    case TYPE_NODE_SLICE:
         dst->as.array.elem = type_node_clone(src->as.array.elem);
-        /* .size is int, already copied by shallow copy */
+        /* .size is int / .is_mut already copied by shallow copy */
         break;
 
     case TYPE_NODE_VECTOR:
@@ -614,6 +616,11 @@ void type_node_print(TypeNode *type) {
         printf("array(");
         type_node_print(type->as.array.elem);
         printf(", %d)", type->as.array.size);
+        break;
+    case TYPE_NODE_SLICE:
+        printf(type->is_mut ? "&![" : "&[");
+        type_node_print(type->as.array.elem);
+        printf("]");
         break;
     case TYPE_NODE_VECTOR:
         printf("vec(");

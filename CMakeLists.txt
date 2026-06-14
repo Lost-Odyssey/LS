@@ -1505,6 +1505,36 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 
+# Borrowed slices `&[T]` — {ptr,len} views over a Vec(T) range. Positive:
+# creation / index / len / for-in / slice-as-param / sub-slice / has_drop elems,
+# JIT+AOT+memcheck 0/0/0. Negative: return / struct-field would dangle → reject.
+add_test(
+    NAME test_slice
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=slice
+        -DMARKER=SL
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+add_test(
+    NAME test_slice_return_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_return_reject.ls
+        "-DEXPECT=cannot return a slice"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_slice_field_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_field_reject.ls
+        "-DEXPECT=cannot be slices"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(
     NAME test_mem_overhaul_jit

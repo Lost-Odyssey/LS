@@ -1523,6 +1523,59 @@ static LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_v
    shallow behavior). Centralizes the clone logic that was inlined at many vec
    element-read sites, where a vec element previously fell through to a shallow
    copy → double-free on nested vec(vec(...)). */
+/* Slice bounds guard: if `ok_cond` (i1) is false, print `msg at L:C` and
+   exit(1). Leaves the builder positioned in the ok-continuation block. Mirrors
+   the force-unwrap abort path (printf + __ls_proc_exit + unreachable). */
+static void cg_emit_bounds_guard(CodegenContext *ctx, LLVMValueRef ok_cond,
+                                 const char *msg, int line, int col)
+{
+    LLVMBasicBlockRef bad = LLVMAppendBasicBlockInContext(ctx->context,
+                                                          ctx->current_fn, "sl.oob");
+    LLVMBasicBlockRef ok = LLVMAppendBasicBlockInContext(ctx->context,
+                                                         ctx->current_fn, "sl.ok");
+    LLVMBuildCondBr(ctx->builder, ok_cond, ok, bad);
+    LLVMPositionBuilderAtEnd(ctx->builder, bad);
+    LLVMValueRef printf_fn = LLVMGetNamedFunction(ctx->module, "printf");
+    if (printf_fn == NULL)
+    {
+        LLVMTypeRef pty = LLVMFunctionType(LLVMInt32TypeInContext(ctx->context),
+            (LLVMTypeRef[]){ LLVMPointerTypeInContext(ctx->context, 0) }, 1, 1);
+        printf_fn = LLVMAddFunction(ctx->module, "printf", pty);
+    }
+    LLVMTypeRef printf_ty = LLVMGlobalGetValueType(printf_fn);
+    char fmt[160];
+    snprintf(fmt, sizeof fmt, "%s at %%d:%%d\n", msg);
+    LLVMValueRef f = LLVMBuildGlobalStringPtr(ctx->builder, fmt, "sl.fmt");
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+    LLVMValueRef pa[3] = { f, LLVMConstInt(i32, (unsigned)line, 0),
+                              LLVMConstInt(i32, (unsigned)col, 0) };
+    LLVMBuildCall2(ctx->builder, printf_ty, printf_fn, pa, 3, "");
+    LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
+    LLVMTypeRef exit_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+        (LLVMTypeRef[]){ i32 }, 1, 0);
+    if (exit_fn == NULL)
+        exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
+    LLVMBuildCall2(ctx->builder, exit_ty, exit_fn,
+                   (LLVMValueRef[]){ LLVMConstInt(i32, 1, 0) }, 1, "");
+    LLVMBuildUnreachable(ctx->builder);
+    LLVMPositionBuilderAtEnd(ctx->builder, ok);
+}
+
+/* Phase: build a borrowed slice value {ptr, len} from a base *T pointer, a
+   start index, and a length (both i64). */
+static LLVMValueRef cg_make_slice(CodegenContext *ctx, LLVMTypeRef elem_llvm,
+                                  LLVMValueRef base_ptr, LLVMValueRef start_i64,
+                                  LLVMValueRef len_i64, Type *slice_type)
+{
+    LLVMValueRef sptr = LLVMBuildGEP2(ctx->builder, elem_llvm, base_ptr,
+                                      &start_i64, 1, "slice.base");
+    LLVMTypeRef slice_llvm = type_to_llvm(ctx, slice_type);
+    LLVMValueRef sv = LLVMGetUndef(slice_llvm);
+    sv = LLVMBuildInsertValue(ctx->builder, sv, sptr, 0, "slice.ptr");
+    sv = LLVMBuildInsertValue(ctx->builder, sv, len_i64, 1, "slice.len");
+    return sv;
+}
+
 static LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
                                      LLVMTypeRef llvm_type, Type *type)
 {
@@ -3084,6 +3137,14 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
     case TYPE_ARRAY:
         return LLVMArrayType2(type_to_llvm(ctx, t->as.array.elem),
                               (unsigned)t->as.array.size);
+    case TYPE_SLICE:
+    {
+        /* Borrowed slice &[T] = { *T ptr; i64 len } fat pointer (non-owning). */
+        LLVMTypeRef fields[2];
+        fields[0] = LLVMPointerTypeInContext(ctx->context, 0);
+        fields[1] = LLVMInt64TypeInContext(ctx->context);
+        return LLVMStructTypeInContext(ctx->context, fields, 2, 0);
+    }
     case TYPE_FUNCTION:
     {
         int n = t->as.function.param_count;
@@ -4857,6 +4918,20 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
     case AST_CALL:
     {
+        /* Slice builtin `s.len()` — extract field 1 of the {ptr,len} view,
+           truncated to i32 (LS `int`). */
+        if (node->as.call.callee && node->as.call.callee->kind == AST_FIELD &&
+            node->as.call.callee->as.field_access.field &&
+            strcmp(node->as.call.callee->as.field_access.field, "len") == 0 &&
+            node->as.call.callee->as.field_access.object->resolved_type &&
+            node->as.call.callee->as.field_access.object->resolved_type->kind == TYPE_SLICE)
+        {
+            LLVMValueRef sv = codegen_expr(ctx, node->as.call.callee->as.field_access.object);
+            LLVMValueRef len64 = LLVMBuildExtractValue(ctx->builder, sv, 1, "slen");
+            return LLVMBuildTrunc(ctx->builder, len64,
+                                  LLVMInt32TypeInContext(ctx->context), "slen32");
+        }
+
         /* A-1: canonical-path call to a std.c primitive (std.c.malloc/realloc/
            free/abort). Lower identically to the bare-name builtins. Must come
            before the generic field/method dispatch, which can't resolve the
@@ -7665,6 +7740,72 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         AstNode *obj = node->as.index_expr.object;
         AstNode *idx_node = node->as.index_expr.index;
         Type *obj_type = obj->resolved_type;
+        LLVMTypeRef i64_t0 = LLVMInt64TypeInContext(ctx->context);
+        LLVMValueRef zero64 = LLVMConstInt(i64_t0, 0, 0);
+
+        /* Slice creation `v[a..b]` — build a {ptr,len} view over a Vec(T) (or a
+           sub-slice of a slice), bounds-checked: 0 <= a <= b <= len. */
+        if (node->resolved_type && node->resolved_type->kind == TYPE_SLICE &&
+            idx_node && idx_node->kind == AST_RANGE)
+        {
+            Type *slice_t = node->resolved_type;
+            LLVMTypeRef elem_llvm = type_to_llvm(ctx, slice_t->as.array.elem);
+            LLVMValueRef base_ptr = NULL, src_len = NULL;
+            if (obj_type && obj_type->kind == TYPE_SLICE)
+            {
+                LLVMValueRef sv = codegen_expr(ctx, obj);
+                base_ptr = LLVMBuildExtractValue(ctx->builder, sv, 0, "src.ptr");
+                src_len  = LLVMBuildExtractValue(ctx->builder, sv, 1, "src.len");
+            }
+            else
+            {
+                /* Vec(T): field 0 = *T data, field 1 = i32 len. */
+                LLVMValueRef vec_ptr = codegen_lvalue_ptr(ctx, obj);
+                if (vec_ptr == NULL) { cg_error(ctx, node->line, node->column,
+                    "cannot take address of slice source"); return NULL; }
+                LLVMTypeRef vec_llvm = type_to_llvm(ctx, obj_type);
+                LLVMValueRef dgep = LLVMBuildStructGEP2(ctx->builder, vec_llvm, vec_ptr, 0, "v.data.p");
+                base_ptr = LLVMBuildLoad2(ctx->builder,
+                    LLVMPointerTypeInContext(ctx->context, 0), dgep, "v.data");
+                LLVMValueRef lgep = LLVMBuildStructGEP2(ctx->builder, vec_llvm, vec_ptr, 1, "v.len.p");
+                LLVMValueRef len32 = LLVMBuildLoad2(ctx->builder,
+                    LLVMInt32TypeInContext(ctx->context), lgep, "v.len");
+                src_len = LLVMBuildSExt(ctx->builder, len32, i64_t0, "v.len64");
+            }
+            AstNode *rng = idx_node;
+            LLVMValueRef lo = rng->as.range.start ? codegen_expr(ctx, rng->as.range.start) : zero64;
+            LLVMValueRef hi = rng->as.range.end   ? codegen_expr(ctx, rng->as.range.end)   : src_len;
+            if (LLVMTypeOf(lo) != i64_t0) lo = LLVMBuildSExtOrBitCast(ctx->builder, lo, i64_t0, "lo64");
+            if (LLVMTypeOf(hi) != i64_t0) hi = LLVMBuildSExtOrBitCast(ctx->builder, hi, i64_t0, "hi64");
+            /* 0 <= lo && lo <= hi && hi <= len */
+            LLVMValueRef c1 = LLVMBuildICmp(ctx->builder, LLVMIntSGE, lo, zero64, "c1");
+            LLVMValueRef c2 = LLVMBuildICmp(ctx->builder, LLVMIntSLE, lo, hi, "c2");
+            LLVMValueRef c3 = LLVMBuildICmp(ctx->builder, LLVMIntSLE, hi, src_len, "c3");
+            LLVMValueRef ok = LLVMBuildAnd(ctx->builder,
+                LLVMBuildAnd(ctx->builder, c1, c2, "ok12"), c3, "ok");
+            cg_emit_bounds_guard(ctx, ok, "Slice range out of bounds", node->line, node->column);
+            LLVMValueRef slen = LLVMBuildSub(ctx->builder, hi, lo, "slice.length");
+            return cg_make_slice(ctx, elem_llvm, base_ptr, lo, slen, slice_t);
+        }
+
+        /* `slice[i]` — bounds-checked element read of a borrowed slice. */
+        if (obj_type && obj_type->kind == TYPE_SLICE)
+        {
+            LLVMValueRef sv = codegen_expr(ctx, obj);
+            LLVMValueRef sptr = LLVMBuildExtractValue(ctx->builder, sv, 0, "s.ptr");
+            LLVMValueRef slen = LLVMBuildExtractValue(ctx->builder, sv, 1, "s.len");
+            LLVMValueRef index = codegen_expr(ctx, idx_node);
+            if (LLVMTypeOf(index) != i64_t0)
+                index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t0, "si.idx");
+            LLVMValueRef ge = LLVMBuildICmp(ctx->builder, LLVMIntSGE, index, zero64, "sge");
+            LLVMValueRef lt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, index, slen, "slt");
+            LLVMValueRef ok = LLVMBuildAnd(ctx->builder, ge, lt, "sok");
+            cg_emit_bounds_guard(ctx, ok, "Slice index out of bounds", node->line, node->column);
+            LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.array.elem);
+            LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, sptr, &index, 1, "s.elem.p");
+            LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "s.elem");
+            return emit_clone_value(ctx, elem, elem_llvm, obj_type->as.array.elem);
+        }
 
         /* p[i] on a raw *T pointer — load the pointer value, typed-GEP element,
            load it, then DEEP-CLONE owned element data — matching vec[i]/array[i]
@@ -8975,10 +9116,22 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         AstNode *iter_node = node->as.for_stmt.iter;
         Type *iter_type = iter_node->resolved_type;
         bool is_array_iter = (iter_type && iter_type->kind == TYPE_ARRAY);
+        bool is_slice_iter = (iter_type && iter_type->kind == TYPE_SLICE);
         LLVMValueRef start_val = NULL, end_val = NULL;
         LLVMValueRef arr_ptr = NULL;    /* for fixed-array iter: alloca of array */
+        LLVMValueRef slice_ptr = NULL;  /* for slice iter: base *T (SSA, dominates body) */
 
-        if (is_array_iter)
+        if (is_slice_iter)
+        {
+            /* Evaluate the slice ONCE, keep base ptr + length (i32). */
+            LLVMValueRef sv = codegen_expr(ctx, iter_node);
+            slice_ptr = LLVMBuildExtractValue(ctx->builder, sv, 0, "it.ptr");
+            LLVMValueRef len64 = LLVMBuildExtractValue(ctx->builder, sv, 1, "it.len");
+            start_val = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, false);
+            end_val = LLVMBuildTrunc(ctx->builder, len64,
+                                     LLVMInt32TypeInContext(ctx->context), "it.len32");
+        }
+        else if (is_array_iter)
         {
             /* Array iteration: index from 0..size */
             start_val = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, false);
@@ -9030,7 +9183,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             else
                 LLVMPositionBuilderAtEnd(tmp, entry);
 
-            if (is_array_iter)
+            if (is_array_iter || is_slice_iter)
             {
                 idx_var = LLVMBuildAlloca(tmp, i32_ty, "foreach.idx");
                 Type *elem_type = iter_type->as.array.elem;
@@ -9044,13 +9197,13 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             LLVMDisposeBuilder(tmp);
         }
 
-        if (is_array_iter)
+        if (is_array_iter || is_slice_iter)
         {
             LLVMBuildStore(ctx->builder, start_val, idx_var);
             {
                 CgSymbol *lvsym = cg_scope_define(ctx->current_scope, node->as.for_stmt.var,
                                                   loop_var, iter_type->as.array.elem, NULL);
-                /* Array loop variable is a copy of the element; mark borrowed so scope
+                /* Loop variable is a copy of the element; mark borrowed so scope
                    cleanup doesn't drop it (the container still owns the data). */
                 if (lvsym)
                     lvsym->is_borrowed = true;
@@ -9085,7 +9238,7 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
         /* Condition: idx < end */
         LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef cmp_var = is_array_iter ? idx_var : loop_var;
+        LLVMValueRef cmp_var = (is_array_iter || is_slice_iter) ? idx_var : loop_var;
         LLVMValueRef cur = LLVMBuildLoad2(ctx->builder, i32_ty, cmp_var, "cur");
         LLVMValueRef cond = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur, end_val, "foreach.lt");
         LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
@@ -9108,13 +9261,26 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "foreach.elem");
             LLVMBuildStore(ctx->builder, elem_val, loop_var);
         }
+        else if (is_slice_iter)
+        {
+            /* loop_var = slice.ptr[idx] (slice borrows the source; loop var is a
+               non-owning copy, mirroring the array path). */
+            LLVMValueRef cur_idx = LLVMBuildLoad2(ctx->builder, i32_ty, idx_var, "sl.i");
+            LLVMValueRef idx64 = LLVMBuildSExtOrBitCast(ctx->builder, cur_idx,
+                LLVMInt64TypeInContext(ctx->context), "sl.i64");
+            LLVMTypeRef elem_llvm = type_to_llvm(ctx, iter_type->as.array.elem);
+            LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, slice_ptr,
+                                             &idx64, 1, "sl.gep");
+            LLVMValueRef elem_val = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "sl.elem");
+            LLVMBuildStore(ctx->builder, elem_val, loop_var);
+        }
         codegen_stmt(ctx, node->as.for_stmt.body);
         LLVMBasicBlockRef body_end = LLVMGetInsertBlock(ctx->builder);
         if (body_end && LLVMGetBasicBlockTerminator(body_end) == NULL)
             LLVMBuildBr(ctx->builder, update_bb);
 
         LLVMPositionBuilderAtEnd(ctx->builder, update_bb);
-        LLVMValueRef inc_var = is_array_iter ? idx_var : loop_var;
+        LLVMValueRef inc_var = (is_array_iter || is_slice_iter) ? idx_var : loop_var;
         LLVMValueRef cur2 = LLVMBuildLoad2(ctx->builder, i32_ty, inc_var, "cur2");
         LLVMValueRef next = LLVMBuildAdd(ctx->builder, cur2,
                                          LLVMConstInt(i32_ty, 1, false), "next");

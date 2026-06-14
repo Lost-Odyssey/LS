@@ -15,6 +15,9 @@ typedef enum {
     TYPE_POINTER,       /* *T */
     TYPE_REFERENCE,     /* &T (is_mut=false) / &!T (is_mut=true) — function parameters only */
     TYPE_ARRAY,         /* array(T, N) — fixed-size */
+    TYPE_SLICE,         /* &[T] (is_mut=false) / &![T] (is_mut=true) — borrowed
+                           {ptr,len} view over a contiguous Vec(T) range. Non-owning,
+                           non-escaping (borrow-governed). Elem in as.array.elem. */
     TYPE_FUNCTION,      /* fn(A, B) -> R */
     TYPE_BLOCK,         /* Block(A, B) -> R — heap closure fat pointer (Phase A: type only) */
     TYPE_STRUCT,        /* struct { ... } */
@@ -120,6 +123,7 @@ Type *type_pointer(Type *pointee);
 Type *type_reference(Type *pointee);           /* &T  — read-only borrow */
 Type *type_mut_reference(Type *pointee);       /* &!T — writable borrow (no move) */
 Type *type_array(Type *elem, int size);
+Type *type_slice(Type *elem, bool is_mut);     /* &[T] / &![T] — borrowed slice view */
 Type *type_function(Type **params, int param_count, Type *return_type, bool is_vararg);
 Type *type_block(Type **params, int param_count, Type *return_type);
 Type *type_struct(const char *name, int field_count);

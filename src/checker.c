@@ -1102,6 +1102,12 @@ static Type *resolve_type_node_with_substitution(
         return type_array(elem, node->as.array.size);
     }
 
+    case TYPE_NODE_SLICE: {
+        Type *elem = resolve_type_node_with_substitution(
+            c, node->as.array.elem, tp_names, type_args, tp_count);
+        return type_slice(elem, node->is_mut);
+    }
+
     case TYPE_NODE_POINTER: {
         Type *pointee = resolve_type_node_with_substitution(
             c, node->as.pointee, tp_names, type_args, tp_count);
@@ -1290,6 +1296,13 @@ Type *checker_instantiate_struct(Checker *c,
                           decl->as.struct_decl.field_names[i], buf,
                           ft->is_mut ? "!" : "",
                           ft->as.pointer_to ? type_name(ft->as.pointer_to) : "T");
+        }
+        if (ft->kind == TYPE_SLICE) {
+            checker_error(c, ft_node ? ft_node->line : line,
+                          ft_node ? ft_node->column : col,
+                          "struct fields cannot be slices: field '%s' of '%s' "
+                          "has slice type '%s' (a borrowed view cannot be stored)",
+                          decl->as.struct_decl.field_names[i], buf, type_name(ft));
         }
         st->as.strukt.fields[i].name = decl->as.struct_decl.field_names[i];
         st->as.strukt.fields[i].type = ft;
@@ -2115,6 +2128,9 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
     case TYPE_NODE_ARRAY:
         return type_array(resolve_type_node(c, tn->as.array.elem, line, col),
                           tn->as.array.size);
+    case TYPE_NODE_SLICE:
+        return type_slice(resolve_type_node(c, tn->as.array.elem, line, col),
+                          tn->is_mut);
     case TYPE_NODE_FN:
     {
         int n = tn->as.fn.param_count;
@@ -5041,6 +5057,24 @@ static Type *check_expr(Checker *c, AstNode *node)
 
     case AST_CALL:
     {
+        /* Slice builtin `s.len()` — the borrowed view's element count. Intercept
+           before struct/method dispatch (slices are not structs). */
+        if (node->as.call.callee && node->as.call.callee->kind == AST_FIELD &&
+            node->as.call.callee->as.field_access.field &&
+            strcmp(node->as.call.callee->as.field_access.field, "len") == 0)
+        {
+            Type *recv = check_expr(c, node->as.call.callee->as.field_access.object);
+            if (recv && recv->kind == TYPE_SLICE)
+            {
+                if (node->as.call.arg_count != 0)
+                    checker_error(c, node->line, node->column,
+                                  "slice 'len' takes no arguments");
+                result = type_int();
+                node->resolved_type = result;
+                break;
+            }
+        }
+
         /* A-1: canonical-path call to a std.c primitive — std.c.malloc/realloc/
            free/abort. Resolved by spelling (not via a local import), so it works
            inside generic method bodies re-checked at the consumer site. Validate
@@ -6028,11 +6062,61 @@ static Type *check_expr(Checker *c, AstNode *node)
             break;
         }
 
+        /* Slice creation `v[a..b]` — a borrowed &[T] view over a Vec(T) range.
+           Intercept the AST_RANGE index before check_expr (ranges are not
+           stand-alone expressions). Spike scope: source is a Vec(T). */
+        if (node->as.index_expr.index &&
+            node->as.index_expr.index->kind == AST_RANGE)
+        {
+            AstNode *objn = node->as.index_expr.object;
+            Type *obj = check_expr(c, objn);
+            if (obj == NULL) { result = NULL; break; }
+            Type *elem = NULL;
+            if (obj->kind == TYPE_STRUCT && obj->as.strukt.generic_base &&
+                strcmp(obj->as.strukt.generic_base, "Vec") == 0 &&
+                obj->as.strukt.generic_arg_count >= 1)
+                elem = obj->as.strukt.generic_args[0];
+            else if (obj->kind == TYPE_SLICE)
+                elem = obj->as.array.elem;  /* sub-slice of a slice */
+            if (elem == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                    "slice `v[a..b]` requires a Vec(T) or &[T] source (got '%s')",
+                    type_name(obj));
+                result = NULL;
+                break;
+            }
+            AstNode *rng = node->as.index_expr.index;
+            Type *lo = rng->as.range.start ? check_expr(c, rng->as.range.start) : NULL;
+            Type *hi = rng->as.range.end   ? check_expr(c, rng->as.range.end)   : NULL;
+            if ((lo && !type_is_integer(lo)) || (hi && !type_is_integer(hi)))
+                checker_error(c, node->line, node->column,
+                              "slice bounds must be integers");
+            result = type_slice(elem, false);  /* &[T] read-only view */
+            break;
+        }
+
         Type *obj = check_expr(c, node->as.index_expr.object);
         Type *idx = check_expr(c, node->as.index_expr.index);
         if (obj == NULL || idx == NULL)
         {
             result = NULL;
+            break;
+        }
+
+        /* `slice[i]` — element read of a borrowed slice (bounds-checked in codegen). */
+        if (obj->kind == TYPE_SLICE)
+        {
+            if (!type_is_integer(idx))
+            {
+                checker_error(c, node->line, node->column,
+                              "slice index must be integer, got '%s'", type_name(idx));
+                result = NULL;
+            }
+            else
+            {
+                result = obj->as.array.elem;
+            }
             break;
         }
 
@@ -7825,6 +7909,11 @@ static void check_stmt(Checker *c, AstNode *node)
                 /* Array iteration: loop variable is element type */
                 scope_define(c->current_scope, node->as.for_stmt.var, iter->as.array.elem);
             }
+            else if (iter->kind == TYPE_SLICE)
+            {
+                /* Slice iteration: loop variable is the element type. */
+                scope_define(c->current_scope, node->as.for_stmt.var, iter->as.array.elem);
+            }
             else if (type_is_integer(iter))
             {
                 /* Single integer: iterate 0..n */
@@ -8034,6 +8123,16 @@ static bool fn_decl_borrow_return_eligible(AstNode *fn)
 static void checker_reject_borrow_return(Checker *c, Type *ret, AstNode *fn,
                                          int line, int col)
 {
+    /* A slice result (&[T]) carries a borrowed *T — returning it would dangle.
+       Slice returns under single-input elision are not yet supported; reject. */
+    if (ret != NULL && ret->kind == TYPE_SLICE)
+    {
+        checker_error(c, line, col,
+                      "cannot return a slice '%s' yet: a borrowed view cannot "
+                      "escape the function (return a Vec(%s) to own the data)",
+                      type_name(ret), type_name(ret->as.array.elem));
+        return;
+    }
     if (ret != NULL && ret->kind == TYPE_REFERENCE)
     {
         if (fn_decl_borrow_return_eligible(fn))
@@ -8206,6 +8305,16 @@ static void check_struct_decl(Checker *c, AstNode *node)
                           ft->is_mut ? "!" : "",
                           ft->as.pointer_to ? type_name(ft->as.pointer_to) : "T");
         }
+        /* A slice field would equally dangle (it carries a borrowed *T). */
+        if (ft != NULL && ft->kind == TYPE_SLICE)
+        {
+            checker_error(c, node->line, node->column,
+                          "struct fields cannot be slices: field '%s' of struct "
+                          "'%s' has slice type '%s' (a borrowed view cannot be "
+                          "stored; copy into a Vec(%s) to own it)",
+                          node->as.struct_decl.field_names[i], name,
+                          type_name(ft), type_name(ft->as.array.elem));
+        }
         /* Copy field name */
         const char *fn = node->as.struct_decl.field_names[i];
         size_t len = strlen(fn);
@@ -8371,6 +8480,13 @@ static void check_enum_decl(Checker *c, AstNode *node)
                         et->as.enom.variants[i].name, name,
                         pt->is_mut ? "!" : "",
                         pt->as.pointer_to ? type_name(pt->as.pointer_to) : "T");
+                }
+                if (pt != NULL && pt->kind == TYPE_SLICE)
+                {
+                    checker_error(c, node->line, node->column,
+                        "enum payloads cannot be slices: variant '%s' of '%s' "
+                        "has slice payload '%s' (a borrowed view cannot be stored)",
+                        et->as.enom.variants[i].name, name, type_name(pt));
                 }
                 et->as.enom.variants[i].payload_types[j] = pt;
                 if (type_owns_heap_for_enum(pt))

@@ -1872,7 +1872,20 @@ static TypeNode *parse_type(Parser *p) {
        position, so unambiguous vs. infix bitwise '&' (which never appears
        at the start of a type). */
     if (match_tok(p, TOKEN_AMP)) {
-        bool is_mut = match_tok(p, TOKEN_BANG);  /* &! => writable reference */
+        bool is_mut = match_tok(p, TOKEN_BANG);  /* &! => writable reference/slice */
+        /* &[T] / &![T] — borrowed slice (a {ptr,len} view over a Vec(T) range). */
+        if (match_tok(p, TOKEN_LBRACKET)) {
+            TypeNode *elem = parse_type(p);
+            if (elem == NULL) return NULL;
+            if (!consume(p, TOKEN_RBRACKET, "expected ']' to close slice type '&[T]'")) {
+                type_node_free(elem);
+                return NULL;
+            }
+            TypeNode *tn = new_type_node(TYPE_NODE_SLICE, line, col);
+            tn->is_mut = is_mut;
+            tn->as.array.elem = elem;
+            return tn;
+        }
         TypeNode *pointee = parse_type(p);
         if (pointee == NULL) return NULL;
         TypeNode *tn = new_type_node(TYPE_NODE_REFERENCE, line, col);

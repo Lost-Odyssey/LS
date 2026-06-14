@@ -89,6 +89,17 @@ Type *type_array(Type *elem, int size) {
     return t;
 }
 
+/* &[T] (is_mut=false) / &![T] (is_mut=true): a borrowed {ptr,len} slice over a
+   contiguous range. Element type stored in as.array.elem (size unused). */
+Type *type_slice(Type *elem, bool is_mut) {
+    Type *t = (Type *)malloc_safe(sizeof(Type));
+    memset(t, 0, sizeof(Type));
+    t->kind = TYPE_SLICE;
+    t->is_mut = is_mut;
+    t->as.array.elem = elem;
+    return t;
+}
+
 Type *type_function(Type **params, int param_count, Type *return_type, bool is_vararg) {
     Type *t = (Type *)malloc_safe(sizeof(Type));
     memset(t, 0, sizeof(Type));
@@ -195,6 +206,7 @@ Type *type_clone(const Type *t) {
         c->as.pointer_to = type_clone(t->as.pointer_to);
         break;
     case TYPE_ARRAY:
+    case TYPE_SLICE:
         c->as.array.elem = type_clone(t->as.array.elem);
         c->as.array.size = t->as.array.size;
         break;
@@ -305,6 +317,7 @@ void type_free(Type *t) {
         type_free(t->as.pointer_to);
         break;
     case TYPE_ARRAY:
+    case TYPE_SLICE:
         type_free(t->as.array.elem);
         break;
     case TYPE_FUNCTION:
@@ -360,6 +373,10 @@ bool type_equals(const Type *a, const Type *b) {
         return type_equals(a->as.pointer_to, b->as.pointer_to);
     case TYPE_ARRAY:
         return a->as.array.size == b->as.array.size &&
+               type_equals(a->as.array.elem, b->as.array.elem);
+    case TYPE_SLICE:
+        /* &[T] and &![T] are distinct (mut differs). */
+        return a->is_mut == b->is_mut &&
                type_equals(a->as.array.elem, b->as.array.elem);
     case TYPE_FUNCTION:
     case TYPE_BLOCK:
@@ -544,6 +561,9 @@ const char *type_name(const Type *t) {
         return buf;
     case TYPE_ARRAY:
         snprintf(buf, 256, "array(%s, %d)", type_name(t->as.array.elem), t->as.array.size);
+        return buf;
+    case TYPE_SLICE:
+        snprintf(buf, 256, "&%s[%s]", t->is_mut ? "!" : "", type_name(t->as.array.elem));
         return buf;
     case TYPE_FUNCTION:
     case TYPE_BLOCK: {
