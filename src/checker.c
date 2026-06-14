@@ -2983,6 +2983,15 @@ typedef struct {
     Scope   *outer_scope;
     AstNode *closure_node;
     bool     had_error;
+    /* Closure-foundation Phase B: depth of nested closure literals currently
+       being walked, relative to the closure this scan belongs to. 0 = walking
+       the closure's own body; >0 = inside one or more nested `|x| ...` literals.
+       At depth>0, any cap_record is a "transitive" capture — a free variable
+       referenced from an inner closure that resolves BEYOND the enclosing
+       closure (function scope). v1 propagates transitive POD (by-copy) / Block
+       (by-clone) into this closure's env but rejects by-move transitive captures
+       (see cap_record + docs/plan_closure_foundation.md §4.4). */
+    int      nested_depth;
 } CaptureScan;
 
 static bool cap_is_bound(CaptureScan *s, const char *name) {
@@ -3059,6 +3068,30 @@ static bool capture_type_supported(const Type *t) {
 }
 
 static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t) {
+    /* Closure-foundation Phase B: transitive by-move capture is rejected in v1.
+       When nested_depth>0 we are recording a free variable referenced from inside
+       a nested closure that resolves to a function-scope symbol BEYOND the
+       enclosing closure (cap_record at depth>0 is only reached for names not bound
+       within the enclosing closure — its params/locals are in `bound` and short-
+       circuit in AST_IDENT). Propagating such a variable means threading its
+       ownership through MULTIPLE env layers (outer env → inner env), a transfer
+       chain that is error-prone (double-free) and deferred to v2. Only by-copy
+       (POD) and by-clone (Block, capture_type_is_by_move==false) may cross a
+       closure layer. Check the TYPE before cap_already so the both-referenced
+       case (a by-move var used directly in the outer body AND in a nested closure)
+       is still caught rather than silently double-moved.
+       See docs/plan_closure_foundation.md §4.4. */
+    if (s->nested_depth > 0 && capture_type_is_by_move(t)) {
+        checker_move_error(s->c, site->line, site->column,
+            "cannot capture '%s' (type '%s') from a nested closure: transitive "
+            "by-move capture across closure layers is not yet supported (v1). "
+            "Only POD (by-copy) and Block (by-clone) variables may be referenced "
+            "from an inner closure across the enclosing closure. Workaround: pass "
+            "it in as a closure parameter, or restructure to avoid the nesting.",
+            name, type_name(t));
+        s->had_error = true;
+        return;
+    }
     if (cap_already(s, name)) return;
     if (!capture_type_supported(t)) {
         checker_error(s->c, site->line, site->column,
@@ -3285,14 +3318,35 @@ static void capture_walk(CaptureScan *s, AstNode *node) {
     case AST_MATCH:
         capture_walk_arms(s, node);
         return;
-    case AST_CLOSURE:
-        /* Phase C v1: nested closures are not supported — they would need
-           transitive capture propagation. */
-        checker_error(s->c, node->line, node->column,
-                      "nested closure literals are not yet supported "
-                      "(Phase C v1 limitation)");
-        s->had_error = true;
+    case AST_CLOSURE: {
+        /* Closure-foundation Phase B: transitive capture propagation.
+           An inner closure literal `|x| ...` may reference variables from
+           beyond the ENCLOSING closure (function scope). Those must be captured
+           by the enclosing closure too (threaded through its env), so the inner
+           closure can later resolve them from the enclosing closure's body scope.
+
+           We walk the inner closure's body with the SAME scan (so any beyond-
+           closure free variable is recorded onto THIS closure's captures via
+           cap_record), seeding `bound` with the inner closure's own parameters
+           so they are not mistaken for captures. Names already bound in the
+           enclosing closure (its params/locals, tracked in `bound`) short-circuit
+           in AST_IDENT and are NOT re-propagated — the inner closure captures
+           those directly from the enclosing closure when its own capture scan
+           runs later (during the enclosing body's type-check).
+
+           nested_depth marks cap_record calls as transitive so by-move transitive
+           captures are rejected (v1 limit, §4.4). The recursion handles arbitrary
+           nesting depth uniformly: each enclosing layer propagates the beyond-its-
+           scope vars referenced anywhere in its body, including deeper closures. */
+        int saved_bound = s->bound_count;
+        for (int i = 0; i < node->as.closure.param_count; i++)
+            cap_push_bound(s, node->as.closure.param_names[i]);
+        s->nested_depth++;
+        capture_walk(s, node->as.closure.body);
+        s->nested_depth--;
+        s->bound_count = saved_bound;
         return;
+    }
     default:
         /* Decls / FFI / module nodes — should not appear inside closure body
            in well-formed input; just skip. */

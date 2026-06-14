@@ -1985,6 +1985,19 @@ add_test(
 )
 set_tests_properties(test_par_for PROPERTIES DEPENDS "test_sync")
 
+# Closure-foundation Phase B: nested closure literals (transitive capture).
+# Single-threaded JIT+AOT+memcheck (0/0/0) + threaded Task integration (repeated
+# AOT, no memcheck — tracker not thread-safe) + negative transitive-by-move reject.
+add_test(
+    NAME test_nested_closure
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_nested_closure.cmake
+)
+set_tests_properties(test_nested_closure PROPERTIES DEPENDS "test_par_for")
+
 # M-DEF (std.map prereq): implicit empty/default init — `T v` ≡ `T v = {}` for
 # any type whose `= {}` is already legal (docs/plan_std_map.md §F2). JIT+AOT+memcheck.
 add_test(
