@@ -1146,7 +1146,9 @@ static void push_scope(Checker *c);
 static void pop_scope(Checker *c);
 static void check_stmt(Checker *c, AstNode *node);
 static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name);
-static void checker_reject_borrow_return(Checker *c, Type *ret, int line, int col);
+static void checker_reject_borrow_return(Checker *c, Type *ret, AstNode *fn,
+                                         int line, int col);
+static Symbol *checker_place_root_symbol(Checker *c, AstNode *e);
 static bool checker_reject_borrow_type_arg(Checker *c, Type *arg, const char *base,
                                            int line, int col);
 static void instantiate_impl_method_types(
@@ -1703,7 +1705,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
             c, method_ast->as.fn_decl.return_type,
             all_tp_names, all_tp_types, total_tp_count)
         : type_void();
-    checker_reject_borrow_return(c, ret, method_ast->line, method_ast->column);  /* Phase 0 */
+    checker_reject_borrow_return(c, ret, NULL, method_ast->line, method_ast->column);  /* Phase 0/2: generic, defer */
 
     Type *concrete_type = type_function(params, total_param_count, ret, false);
 
@@ -1960,7 +1962,7 @@ static void instantiate_impl_method_types(
                 c, method->as.fn_decl.return_type,
                 tp_names, type_args, tp_count)
             : type_void();
-        checker_reject_borrow_return(c, ret, method->line, method->column);  /* Phase 0 */
+        checker_reject_borrow_return(c, ret, NULL, method->line, method->column);  /* Phase 0/2: generic, defer */
 
         Type *mtype = type_function(params, total, ret, false);
 
@@ -2563,6 +2565,70 @@ static void check_local_borrow_decl(Checker *c, AstNode *node, Type *declared)
     /* Type-check the initializer (also reports use-of-moved on the source). */
     (void)check_expr(c, init);
 
+    /* Phase 2 (borrow extension): the initializer is a borrow-returning call
+       `recv.method()` whose result is &T (single-input lifetime elision). The
+       result borrows the receiver, so pin the receiver's root (it must outlive
+       the borrow). Register the local with the call's pointee type. */
+    if (init->resolved_type && init->resolved_type->kind == TYPE_REFERENCE &&
+        init->kind == AST_CALL)
+    {
+        Type *rt = init->resolved_type;
+        if (!type_equals(rt->as.pointer_to, pointee))
+        {
+            checker_error(c, node->line, node->column,
+                "named local borrow '%s': call returns '%s', expected '&%s%s'",
+                vname, type_name(rt), want_mut ? "!" : "", type_name(pointee));
+            return;
+        }
+        if (want_mut && !rt->is_mut)
+        {
+            checker_error(c, node->line, node->column,
+                "named writable borrow '%s' cannot bind a read-only borrow result",
+                vname);
+            return;
+        }
+        /* The result borrows the receiver, which must be a STABLE named place
+           that outlives the borrow. A temporary receiver (`make().get()`) would
+           be dropped at statement end, dangling the bound borrow — reject it
+           (immediate use `make().get().field` is fine; only binding escapes). */
+        AstNode *recv = (init->as.call.callee &&
+                         init->as.call.callee->kind == AST_FIELD)
+                            ? init->as.call.callee->as.field_access.object
+                            : NULL;
+        Symbol *rsym = recv ? checker_place_root_symbol(c, recv) : NULL;
+        if (rsym == NULL)
+        {
+            checker_error(c, node->line, node->column,
+                "named local borrow '%s': cannot bind a borrow whose receiver is "
+                "a temporary (it would dangle); call the borrow on a named "
+                "variable, or use the result immediately", vname);
+            return;
+        }
+        if (rsym->is_moved || rsym->is_maybe_moved)
+        {
+            checker_error(c, node->line, node->column,
+                "named local borrow '%s': receiver '%s' has been moved",
+                vname, rsym->name);
+            return;
+        }
+        if (scope_resolve_local(c->current_scope, vname))
+        {
+            checker_error(c, node->line, node->column,
+                "variable '%s' already defined in this scope", vname);
+            return;
+        }
+        Symbol *bsym = scope_define(c->current_scope, vname, pointee);
+        if (bsym)
+        {
+            if (want_mut) bsym->is_mut_borrow = true;
+            else          bsym->is_borrow = true;
+        }
+        /* Pin the receiver root (the borrow's provenance). */
+        if (!rsym->is_borrow && !rsym->is_mut_borrow)
+            rsym->is_borrow_src = true;
+        return;
+    }
+
     /* Identify the source IDENT. Accepted initializer shapes:
        - `&x`  → AST_UNARY(TOKEN_AMP, IDENT)   (read-only borrow of owned/borrow)
        - `&!x` → AST_MUT_BORROW(IDENT)         (writable borrow of owned struct)
@@ -2668,6 +2734,37 @@ static void check_local_borrow_decl(Checker *c, AstNode *node, Type *declared)
        A re-borrow's source is already a non-movable borrow, so nothing to mark. */
     if (!src_is_borrow)
         src->is_borrow_src = true;
+}
+
+/* Phase 2 (borrow extension): walk a place expression (IDENT / field / index /
+   &place / &!place chain) to its root symbol. Returns NULL for non-place
+   expressions (calls, literals, arithmetic). Used to prove a returned borrow
+   derives from a borrow input parameter (single-input lifetime elision). */
+static Symbol *checker_place_root_symbol(Checker *c, AstNode *e)
+{
+    while (e != NULL)
+    {
+        switch (e->kind)
+        {
+        case AST_IDENT:
+            return scope_resolve(c->current_scope, e->as.ident.name);
+        case AST_FIELD:
+            e = e->as.field_access.object;
+            break;
+        case AST_INDEX:
+            e = e->as.index_expr.object;
+            break;
+        case AST_MUT_BORROW:
+            e = e->as.mut_borrow.operand;
+            break;
+        case AST_UNARY:
+            if (e->as.unary.op == TOKEN_AMP) { e = e->as.unary.operand; break; }
+            return NULL;
+        default:
+            return NULL;
+        }
+    }
+    return NULL;
 }
 
 /* F.2: reject moving a Block parameter (is_borrow=true).
@@ -5076,7 +5173,7 @@ static Type *check_expr(Checker *c, AstNode *node)
                 ? resolve_type_node(c, tmpl_decl->as.fn_decl.return_type,
                     node->line, node->column)
                 : type_void();
-            checker_reject_borrow_return(c, ret, node->line, node->column);  /* Phase 0 */
+            checker_reject_borrow_return(c, ret, NULL, node->line, node->column);  /* Phase 0/2: generic, defer */
             Type *fn_type = type_function(params, pc, ret, false);
 
             /* Register in scope so subsequent calls reuse */
@@ -5964,6 +6061,13 @@ static Type *check_expr(Checker *c, AstNode *node)
             result = NULL;
             break;
         }
+        /* Phase 2 (borrow extension): field access auto-dereferences a borrow
+           result (&T → T), e.g. `obj.get_ref().field` where get_ref returns &T.
+           (Borrow *parameters* already register their symbol with the pointee
+           type, so `self.field` needs no unwrap; this covers reference-typed
+           sub-expressions like a borrow-returning call result.) */
+        if (obj->kind == TYPE_REFERENCE && obj->as.pointer_to)
+            obj = obj->as.pointer_to;
 
         const char *field_name = node->as.field_access.field;
 
@@ -6110,7 +6214,7 @@ static Type *check_expr(Checker *c, AstNode *node)
             }
             ret = resolve_type_node(c, node->as.closure.return_type,
                                     node->line, node->column);
-            checker_reject_borrow_return(c, ret, node->line, node->column);  /* Phase 0 */
+            checker_reject_borrow_return(c, ret, NULL, node->line, node->column);  /* Phase 0/2: closure, defer */
         }
 
         /* Phase C: scan body for free variables → record captures on the
@@ -7257,7 +7361,21 @@ static void check_stmt(Checker *c, AstNode *node)
                 c->expected_type = declared;
                 Type *init_type = check_expr(c, node->as.var_decl.init);
                 c->expected_type = saved_expected;
-                if (init_type != NULL && !type_assignable(declared, init_type))
+                /* Phase 2 (borrow extension): forbid silently copying a
+                   borrow-returning call result into an OWNED variable
+                   (`Inner b = o.get()`). The `T ← &T` auto-reborrow would store
+                   the pointer as a value / alias a has_drop referent. Bind a
+                   borrow (`&Inner r = o.get()`) or copy a specific field. */
+                if (init_type != NULL && init_type->kind == TYPE_REFERENCE &&
+                    declared->kind != TYPE_REFERENCE &&
+                    node->as.var_decl.init->kind == AST_CALL)
+                {
+                    checker_error(c, node->line, node->column,
+                        "cannot copy a value out of a borrow result; bind it to "
+                        "a borrow (`&%s %s = ...`) to alias it instead",
+                        type_name(declared), node->as.var_decl.name);
+                }
+                else if (init_type != NULL && !type_assignable(declared, init_type))
                 {
                     checker_error(c, node->line, node->column,
                                   "cannot initialize '%s' (type '%s') with value of type '%s'",
@@ -7481,7 +7599,42 @@ static void check_stmt(Checker *c, AstNode *node)
             c->expected_type = c->current_fn_return;
             Type *val = check_expr(c, node->as.return_stmt.value);
             c->expected_type = saved_expected;
-            if (val != NULL && !type_assignable(c->current_fn_return, val))
+            if (c->current_fn_return->kind == TYPE_REFERENCE)
+            {
+                /* Phase 2 (borrow extension): the function returns a borrow (&T
+                   / &!T). The returned expression must be a PLACE rooted at the
+                   single borrow input (`self` / a borrow parameter) whose pointee
+                   matches — escape analysis: a borrow of a LOCAL or temporary
+                   would dangle once the function returns. The generic
+                   type_assignable path is skipped here: `&!T ← T` is not a normal
+                   auto-borrow, but returning the place of a `&!self` IS sound. */
+                Type *pointee = c->current_fn_return->as.pointer_to;
+                Type *vp = (val && val->kind == TYPE_REFERENCE)
+                               ? val->as.pointer_to : val;
+                if (vp != NULL && pointee != NULL && !type_equals(vp, pointee))
+                {
+                    checker_error(c, node->line, node->column,
+                                  "return type mismatch: expected '%s', got '%s'",
+                                  type_name(c->current_fn_return), type_name(val));
+                }
+                Symbol *root = node->as.return_stmt.value
+                    ? checker_place_root_symbol(c, node->as.return_stmt.value) : NULL;
+                if (root == NULL || !(root->is_borrow || root->is_mut_borrow))
+                {
+                    checker_error(c, node->line, node->column,
+                        "a returned borrow must derive from the `&self` / borrow "
+                        "parameter (a place like `self` or `self.field`); cannot "
+                        "return a borrow of a local or temporary — it would dangle");
+                }
+                else if (c->current_fn_return->is_mut && root->is_borrow)
+                {
+                    /* Returning &!T but the input is only a read-only borrow. */
+                    checker_error(c, node->line, node->column,
+                        "cannot return a writable borrow `&!` derived from the "
+                        "read-only borrow '%s'", root->name);
+                }
+            }
+            else if (val != NULL && !type_assignable(c->current_fn_return, val))
             {
                 checker_error(c, node->line, node->column,
                               "return type mismatch: expected '%s', got '%s'",
@@ -7811,19 +7964,45 @@ static void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type
     }
 }
 
-/* Phase 0 (borrow extension, docs/plan_borrow_extension.md §3): returning a
-   borrow (&T / &!T) is not yet implemented. Previously checker silently
-   accepted it and codegen emitted invalid IR ("ret type mismatch": the LLVM
-   signature returns the value type but the body returns a pointer). Reject it
-   clearly here until Phase 2 (return-borrow with single-input lifetime
-   elision) lands. `ret` is the already-resolved return Type. */
-static void checker_reject_borrow_return(Checker *c, Type *ret, int line, int col)
+/* Phase 2 (borrow extension): a function may return a borrow (&T) only under
+   single-input lifetime elision — there must be exactly ONE borrow input whose
+   lifetime the result unambiguously inherits. Spike scope: an `&self`/`&!self`
+   method with NO other borrow parameter. (Free-function `fn(&U x) -> &T` and
+   multi-borrow-input elision are deferred.) The body's AST_RETURN then proves
+   the returned place actually derives from that input (checker_place_root_symbol). */
+static bool fn_decl_borrow_return_eligible(AstNode *fn)
+{
+    if (fn == NULL || fn->kind != AST_FN_DECL)
+        return false;
+    if (fn->as.fn_decl.self_borrow_kind == 0)
+        return false;  /* need &self / &!self as the single borrow input */
+    /* Reject if any explicit parameter is also a borrow (ambiguous elision). */
+    for (int i = 0; i < fn->as.fn_decl.param_count; i++)
+    {
+        TypeNode *pt = fn->as.fn_decl.param_types[i];
+        if (pt && pt->kind == TYPE_NODE_REFERENCE)
+            return false;
+    }
+    return true;
+}
+
+/* Phase 0/2 (borrow extension, docs/plan_borrow_extension.md §3): returning a
+   borrow (&T / &!T). Previously (Phase 0) ALL `-> &T` were rejected because the
+   checker silently accepted them and codegen emitted invalid IR. Phase 2 carves
+   out the sound case: an eligible `&self` method (single-input elision). For any
+   other shape (free fn, multi-borrow input, generic instantiation — `fn`==NULL),
+   keep rejecting clearly. `ret` is the already-resolved return Type. */
+static void checker_reject_borrow_return(Checker *c, Type *ret, AstNode *fn,
+                                         int line, int col)
 {
     if (ret != NULL && ret->kind == TYPE_REFERENCE)
     {
+        if (fn_decl_borrow_return_eligible(fn))
+            return;  /* Phase 2: allowed; body proves provenance at AST_RETURN. */
         checker_error(c, line, col,
-                      "borrows cannot escape via return yet: cannot return "
-                      "&%s%s (returning a borrow is not implemented)",
+                      "borrows cannot escape via return here: cannot return "
+                      "&%s%s (only an `&self`/`&!self` method with no other "
+                      "borrow parameter may return a borrow)",
                       ret->is_mut ? "!" : "",
                       ret->as.pointer_to ? type_name(ret->as.pointer_to) : "T");
     }
@@ -7890,7 +8069,7 @@ static void check_fn_decl(Checker *c, AstNode *node)
     }
     Type *ret = resolve_type_node(c, node->as.fn_decl.return_type,
                                   node->line, node->column);
-    checker_reject_borrow_return(c, ret, node->line, node->column);  /* Phase 0 */
+    checker_reject_borrow_return(c, ret, node, node->line, node->column);  /* Phase 0/2 */
     Type *fn_type = type_function(params, n, ret, false);
     /* param defaults already attached in forward_pass (the type calls resolve to). */
 
@@ -8336,7 +8515,7 @@ static void check_impl_decl(Checker *c, AstNode *node)
         }
         Type *ret = resolve_type_node(c, method->as.fn_decl.return_type,
                                       method->line, method->column);
-        checker_reject_borrow_return(c, ret, method->line, method->column);  /* Phase 0 */
+        checker_reject_borrow_return(c, ret, method, method->line, method->column);  /* Phase 0/2 */
 
         /* For instance methods: internal function type has an extra first param (*Struct).
            The user doesn't write 'self' — the compiler injects it. */
@@ -9179,7 +9358,7 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
         }
         Type *ret = resolve_type_node(c, method->as.fn_decl.return_type,
                                         method->line, method->column);
-        checker_reject_borrow_return(c, ret, method->line, method->column);  /* Phase 0 */
+        checker_reject_borrow_return(c, ret, method, method->line, method->column);  /* Phase 0/2 */
 
         /* Compare parameter count and types against trait signature.
            The trait signature does NOT include the implicit *Self param —
@@ -9561,7 +9740,7 @@ static void forward_pass(Checker *c, AstNode *program)
             }
             Type *ret = resolve_type_node(c, decl->as.fn_decl.return_type,
                                           decl->line, decl->column);
-            checker_reject_borrow_return(c, ret, decl->line, decl->column);  /* Phase 0 */
+            checker_reject_borrow_return(c, ret, decl, decl->line, decl->column);  /* Phase 0/2 */
             Type *fn_type = type_function(params, n, ret, false);
             attach_param_defaults(c, decl, fn_type, params);
             scope_define(c->current_scope, decl->as.fn_decl.name, fn_type);

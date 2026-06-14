@@ -1,15 +1,19 @@
-// Phase 0 (borrow extension): a method returning a borrow of a field
-// (`fn(&self) -> &T { return self.field }`) must be rejected cleanly. This is
-// the Phase 2 target (single-input lifetime elision) — until then it is a
-// latent IR crash and must be a clean "borrows cannot escape via return".
+// Phase 2 (borrow extension): single-input lifetime elision lets an `&self`
+// method return a borrow DERIVED FROM self (`return self.field`). But returning
+// a borrow of a LOCAL must still be rejected — it would dangle once the method
+// returns. This is the core escape-analysis negative.
 struct Inner { int v }
 struct Outer { Inner inner }
 
 impl Outer {
-    fn get(&self) -> &Inner { return self.inner }
+    fn bad(&self) -> &Inner {
+        Inner local = Inner{v: 9}
+        return &local            // borrow of a local → must reject (dangling)
+    }
 }
 
 fn main() -> int {
-    print(1)
+    Outer o = Outer{inner: Inner{v: 1}}
+    print(o.bad().v)
     return 0
 }

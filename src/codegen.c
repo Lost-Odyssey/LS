@@ -6231,12 +6231,22 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
         /* Auto-dereference pointer-to-struct for field access (self.x where self is *Struct) */
         bool is_ptr_deref = false;
+        /* Phase 2 (borrow extension): obj is a borrow result (&Struct), e.g.
+           `obj.get_ref().field`. The evaluated value IS the struct pointer (the
+           pointer ABI of &T), so GEP it directly — no alloca spill. */
+        bool is_ref_value = false;
         Type *struct_type = obj_type;
         if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to &&
             obj_type->as.pointer_to->kind == TYPE_STRUCT)
         {
             struct_type = obj_type->as.pointer_to;
             is_ptr_deref = true;
+        }
+        else if (obj_type && obj_type->kind == TYPE_REFERENCE && obj_type->as.pointer_to &&
+                 obj_type->as.pointer_to->kind == TYPE_STRUCT)
+        {
+            struct_type = obj_type->as.pointer_to;
+            is_ref_value = true;
         }
 
         /* obj.field — struct field access */
@@ -6266,7 +6276,12 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
         /* Get the pointer to the struct for GEP */
         LLVMValueRef struct_ptr = NULL;
-        if (obj_node->kind == AST_IDENT)
+        if (is_ref_value)
+        {
+            /* Phase 2: the borrow result evaluates to the struct pointer. */
+            struct_ptr = codegen_expr(ctx, obj_node);
+        }
+        else if (obj_node->kind == AST_IDENT)
         {
             CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj_node->as.ident.name);
             if (sym)
@@ -8004,16 +8019,27 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         {
             Type *pointee = var_type->as.pointer_to;
             AstNode *init = node->as.var_decl.init;
-            AstNode *src_ident = NULL;
-            if (init && init->kind == AST_UNARY && init->as.unary.op == TOKEN_AMP)
-                src_ident = init->as.unary.operand;     /* &x */
-            else if (init && init->kind == AST_MUT_BORROW)
-                src_ident = init->as.mut_borrow.operand; /* &!x */
-            else if (init && init->kind == AST_IDENT)
-                src_ident = init;                        /* re-borrow r1 */
-            if (src_ident == NULL)
-                return;
-            LLVMValueRef ptr = codegen_lvalue_ptr(ctx, src_ident);
+            LLVMValueRef ptr = NULL;
+            /* Phase 2: borrow-returning call init `&T r = obj.get()` — the call
+               evaluates to the borrow pointer directly. */
+            if (init && init->kind == AST_CALL &&
+                init->resolved_type && init->resolved_type->kind == TYPE_REFERENCE)
+            {
+                ptr = codegen_expr(ctx, init);
+            }
+            else
+            {
+                AstNode *src_ident = NULL;
+                if (init && init->kind == AST_UNARY && init->as.unary.op == TOKEN_AMP)
+                    src_ident = init->as.unary.operand;     /* &x */
+                else if (init && init->kind == AST_MUT_BORROW)
+                    src_ident = init->as.mut_borrow.operand; /* &!x */
+                else if (init && init->kind == AST_IDENT)
+                    src_ident = init;                        /* re-borrow r1 */
+                if (src_ident == NULL)
+                    return;
+                ptr = codegen_lvalue_ptr(ctx, src_ident);
+            }
             if (ptr == NULL)
                 return;
             CgSymbol *bsym = cg_scope_define(ctx->current_scope,
@@ -8721,6 +8747,24 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         return_alloca = sym->value; /* local: transfer + skip */
                 }
             }
+        }
+
+        /* Phase 2 (borrow extension): returning a borrow (&T). The LLVM return
+           type is a pointer; emit the ADDRESS of the derived place (self /
+           self.field) rather than loading its value. No ownership transfer, no
+           clone — the checker proved the place derives from a borrow input that
+           outlives the call (checker_place_root_symbol). */
+        if (node->as.return_stmt.value &&
+            ctx->current_fn_return_type &&
+            ctx->current_fn_return_type->kind == TYPE_REFERENCE)
+        {
+            LLVMValueRef ptr = codegen_lvalue_ptr(ctx, node->as.return_stmt.value);
+            cg_flush_temps(ctx);
+            emit_cleanup_to(ctx, NULL, NULL);
+            cg_emit_mc_leave(ctx);
+            cg_emit_prof_leave(ctx);
+            LLVMBuildRet(ctx->builder, ptr);
+            break;
         }
 
         if (node->as.return_stmt.value)

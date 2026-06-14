@@ -1376,7 +1376,7 @@ add_test(
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_method_return_reject.ls
-        "-DEXPECT=borrows cannot escape via return"
+        "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 add_test(
@@ -1442,6 +1442,48 @@ add_test(
         -DLS_EXE=$<TARGET_FILE:ls>
         -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_capture_reject.ls
         "-DEXPECT=is borrowed by a live local borrow"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+
+# Phase 2 borrow-extension spike (docs/plan_borrow_extension.md §3): return
+# borrows under single-input lifetime elision (`fn(&self) -> &field`). Positive:
+# immediate use / bind to a Phase-1 local / writable-borrow return + mutate /
+# has_drop field, JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_borrow_return
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=borrow_return
+        -DMARKER=BR
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+# Negative: multi-borrow-input method (ambiguous elision) + moving the pinned
+# receiver of a bound borrow return (would dangle). (Returning a borrow of a
+# local is covered by test_borrow_method_return_reject above.)
+add_test(
+    NAME test_borrow_return_multiinput_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_multiinput_reject.ls
+        "-DEXPECT=only an"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_return_pin_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_pin_reject.ls
+        "-DEXPECT=is borrowed by a live local borrow"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_return_temp_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_temp_reject.ls
+        "-DEXPECT=receiver is a temporary"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 
