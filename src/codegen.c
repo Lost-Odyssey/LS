@@ -3042,6 +3042,7 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
     {
     case TYPE_INT:
     case TYPE_I32:
+    case TYPE_U32:
         return LLVMInt32TypeInContext(ctx->context);
     case TYPE_I8:
     case TYPE_U8:

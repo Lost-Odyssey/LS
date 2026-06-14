@@ -552,6 +552,29 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_bit_match_reject.cmake
 )
 
+# std.bytes (features/bit_pattern_match.md §10): byte-buffer load primitives +
+# stateful Reader cursor, feeding a bit-pattern match. Parses a synthetic O-RAN /
+# eCPRI fronthaul packet (be_u32/u16/u8 + le_u32 + owned of_bytes path).
+# JIT + AOT correctness + memcheck 0/0/0.
+add_test(
+    NAME test_bytes
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bytes_oran_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=bytes
+        -DMARKER=ORAN
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+# Reader bounds check: reading past the end of the buffer must abort.
+add_test(
+    NAME test_bytes_oob
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bytes_reader_oob.ls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_bytes_oob.cmake
+)
+
 # L-013 match-result-ownership: a match yielding an owned heap payload (string /
 # Vec / has_drop struct·enum) has exactly one owner across every consumer
 # (var-decl / call-arg / return / nested / discard). JIT+AOT correctness +

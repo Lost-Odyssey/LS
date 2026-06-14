@@ -59,6 +59,18 @@ extern fn __ls_fxhash_bytes(*u8 data, int len) -> u64
 // Number of logical processors (par_for default worker fan-out). >= 1.
 extern fn __ls_cpu_count() -> int
 
+// Byte-buffer integer loads (std.bytes — V2 bit-pattern parsing). Assemble an
+// N-byte big/little-endian integer from p+off by byte shifts (host-endian
+// independent). All return u64 (value zero-extended); the std.bytes wrapper casts
+// down. NO bounds check here — std.bytes.Reader validates before calling.
+extern fn __ls_load_u8(*u8 p, i64 off) -> u64
+extern fn __ls_load_be_u16(*u8 p, i64 off) -> u64
+extern fn __ls_load_be_u32(*u8 p, i64 off) -> u64
+extern fn __ls_load_be_u64(*u8 p, i64 off) -> u64
+extern fn __ls_load_le_u16(*u8 p, i64 off) -> u64
+extern fn __ls_load_le_u32(*u8 p, i64 off) -> u64
+extern fn __ls_load_le_u64(*u8 p, i64 off) -> u64
+
 // ---- stdin readline (runtime/builtins.c) ----
 
 extern fn __ls_readline_exec()

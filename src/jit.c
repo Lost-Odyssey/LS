@@ -190,6 +190,14 @@ int jit_init(JitEngine *engine) {
         extern int         __ls_str_find(const char *, int, const char *, int, int);
         extern void        __ls_bytecopy(void *, int, const void *, int, int);
         extern unsigned long long __ls_fxhash_bytes(const char *, int);
+        /* byte-buffer integer loads (std.bytes — V2 bit-pattern parsing) */
+        extern unsigned long long __ls_load_u8(const unsigned char *, long long);
+        extern unsigned long long __ls_load_be_u16(const unsigned char *, long long);
+        extern unsigned long long __ls_load_be_u32(const unsigned char *, long long);
+        extern unsigned long long __ls_load_be_u64(const unsigned char *, long long);
+        extern unsigned long long __ls_load_le_u16(const unsigned char *, long long);
+        extern unsigned long long __ls_load_le_u32(const unsigned char *, long long);
+        extern unsigned long long __ls_load_le_u64(const unsigned char *, long long);
         /* threads — generic Task(T): per-T thunk + result box (std.task) */
         extern void       *ls_thread_spawn(void *, void *, void *, void *);
         extern void        ls_thread_join(void *);
@@ -226,7 +234,7 @@ int jit_init(JitEngine *engine) {
     pairs[i].Sym.Flags.TargetFlags = 0; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[103];
+        LLVMOrcCSymbolMapPair pairs[110];
         /* 0-5: memcheck */
         REG( 0, ls_mc_alloc);
         REG( 1, ls_mc_free);
@@ -342,9 +350,17 @@ int jit_init(JitEngine *engine) {
         REG(100, ls_cpu_relax);
         REG(101, ls_cpu_yield);
         REG(102, __ls_cpu_count);
+        /* 103-109: byte-buffer integer loads (std.bytes) */
+        REG(103, __ls_load_u8);
+        REG(104, __ls_load_be_u16);
+        REG(105, __ls_load_be_u32);
+        REG(106, __ls_load_be_u64);
+        REG(107, __ls_load_le_u16);
+        REG(108, __ls_load_le_u32);
+        REG(109, __ls_load_le_u64);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 103);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 110);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */

@@ -267,6 +267,43 @@ unsigned long long __ls_fxhash_bytes(const char *data, int len) {
     return h;
 }
 
+/* Byte-buffer integer loads for std.bytes (V2 bit-pattern parsing). Assemble an
+   N-byte big/little-endian integer from p+off via byte shifts — this is HOST-
+   ENDIAN INDEPENDENT (no `*(uint32_t*)` cast, no conditional bswap, no alignment
+   requirement): the same code is correct on LE and BE hosts. All return uint64_t
+   (the value zero-extended) so the FFI return ABI is uniform; the LS wrapper casts
+   down to u16/u32 as needed. Bounds checking is the caller's job (std.bytes.Reader
+   validates pos+N <= len before calling these). */
+unsigned long long __ls_load_u8(const unsigned char *p, long long off) {
+    return (unsigned long long)p[off];
+}
+unsigned long long __ls_load_be_u16(const unsigned char *p, long long off) {
+    return ((unsigned long long)p[off] << 8) | (unsigned long long)p[off + 1];
+}
+unsigned long long __ls_load_be_u32(const unsigned char *p, long long off) {
+    return ((unsigned long long)p[off]     << 24) | ((unsigned long long)p[off + 1] << 16) |
+           ((unsigned long long)p[off + 2] <<  8) |  (unsigned long long)p[off + 3];
+}
+unsigned long long __ls_load_be_u64(const unsigned char *p, long long off) {
+    return ((unsigned long long)p[off]     << 56) | ((unsigned long long)p[off + 1] << 48) |
+           ((unsigned long long)p[off + 2] << 40) | ((unsigned long long)p[off + 3] << 32) |
+           ((unsigned long long)p[off + 4] << 24) | ((unsigned long long)p[off + 5] << 16) |
+           ((unsigned long long)p[off + 6] <<  8) |  (unsigned long long)p[off + 7];
+}
+unsigned long long __ls_load_le_u16(const unsigned char *p, long long off) {
+    return (unsigned long long)p[off] | ((unsigned long long)p[off + 1] << 8);
+}
+unsigned long long __ls_load_le_u32(const unsigned char *p, long long off) {
+    return  (unsigned long long)p[off]            | ((unsigned long long)p[off + 1] <<  8) |
+           ((unsigned long long)p[off + 2] << 16) | ((unsigned long long)p[off + 3] << 24);
+}
+unsigned long long __ls_load_le_u64(const unsigned char *p, long long off) {
+    return  (unsigned long long)p[off]            | ((unsigned long long)p[off + 1] <<  8) |
+           ((unsigned long long)p[off + 2] << 16) | ((unsigned long long)p[off + 3] << 24) |
+           ((unsigned long long)p[off + 4] << 32) | ((unsigned long long)p[off + 5] << 40) |
+           ((unsigned long long)p[off + 6] << 48) | ((unsigned long long)p[off + 7] << 56);
+}
+
 /* Flush all CRT output streams. Codegen injects a call to this before every
    `ret` in main so buffered stdout/stderr is written WHILE this translation unit's
    CRT is still live — not left to the process-teardown path. On Windows the AOT
