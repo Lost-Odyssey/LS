@@ -2778,7 +2778,14 @@ static void check_local_slice_decl(Checker *c, AstNode *node, Type *declared)
             vname, type_name(declared), type_name(it));
         return;
     }
-    if (declared->is_mut && !it->is_mut)
+    /* A writable slice `&!array(T) s = v[a..b]` may be created from a fresh slice
+       expression over a MUTABLE source (the {ptr,len} value is identical; `&!`
+       is a checker-level write permission). Binding `&!` from an existing
+       read-only slice value is not allowed. */
+    bool fresh_creation = (init->kind == AST_INDEX &&
+                           init->as.index_expr.index &&
+                           init->as.index_expr.index->kind == AST_RANGE);
+    if (declared->is_mut && !it->is_mut && !fresh_creation)
     {
         checker_error(c, node->line, node->column,
             "writable slice '%s' cannot bind a read-only slice", vname);
@@ -2792,6 +2799,15 @@ static void check_local_slice_decl(Checker *c, AstNode *node, Type *declared)
         checker_error(c, node->line, node->column,
             "slice local '%s': cannot bind a view of a temporary (it would "
             "dangle); slice a named variable", vname);
+        return;
+    }
+    /* A writable slice requires a writable source: an owned local or an `&!`
+       borrow — never a read-only `&` borrow. */
+    if (declared->is_mut && src->is_borrow)
+    {
+        checker_error(c, node->line, node->column,
+            "writable slice '%s' needs a writable source; '%s' is a read-only "
+            "borrow", vname, src->name);
         return;
     }
     if (src->is_moved || src->is_maybe_moved)
@@ -7651,6 +7667,39 @@ static void check_stmt(Checker *c, AstNode *node)
         {
             AstNode *tobj = node->as.assign.target->as.index_expr.object;
             Type *to = check_expr(c, tobj);
+            /* `s[i] = x` on a writable slice — store into the borrowed range.
+               Read-only slices reject; has_drop elements deferred (the store
+               would need drop-old-element semantics). */
+            if (to && to->kind == TYPE_SLICE)
+            {
+                if (!to->is_mut)
+                {
+                    checker_error(c, node->line, node->column,
+                        "cannot assign through a read-only slice; bind it as "
+                        "`&!array(T)` for a writable view");
+                    break;
+                }
+                Type *et = to->as.array.elem;
+                if (et && ((et->kind == TYPE_STRUCT && et->as.strukt.has_drop) ||
+                           (et->kind == TYPE_ENUM && et->as.enom.has_drop)))
+                {
+                    checker_error(c, node->line, node->column,
+                        "writable slices of has_drop elements ('%s') are not "
+                        "supported yet", type_name(et));
+                    break;
+                }
+                Type *idxt = check_expr(c, node->as.assign.target->as.index_expr.index);
+                if (idxt && !type_is_integer(idxt))
+                    checker_error(c, node->line, node->column,
+                                  "slice index must be integer, got '%s'", type_name(idxt));
+                Type *valt = check_expr(c, node->as.assign.value);
+                if (valt && et && !type_assignable(et, valt))
+                    checker_error(c, node->line, node->column,
+                        "cannot store '%s' into slice of '%s'",
+                        type_name(valt), type_name(et));
+                node->resolved_type = type_void();
+                break;
+            }
             if (to && to->kind == TYPE_STRUCT &&
                 find_method_ensured(c, to, "__index_set") != NULL)
             {

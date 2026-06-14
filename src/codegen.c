@@ -8735,7 +8735,29 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             AstNode *obj = target->as.index_expr.object;
             Type *obj_type = obj->resolved_type;
 
-            if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
+            if (obj_type && obj_type->kind == TYPE_SLICE)
+            {
+                /* s[i] = val on a writable slice — bounds-checked store into the
+                   borrowed range (POD elements; has_drop deferred by the checker). */
+                LLVMValueRef sv = codegen_expr(ctx, obj);
+                LLVMValueRef sptr = LLVMBuildExtractValue(ctx->builder, sv, 0, "ss.ptr");
+                LLVMValueRef slen = LLVMBuildExtractValue(ctx->builder, sv, 1, "ss.len");
+                LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx->context);
+                LLVMValueRef index = codegen_expr(ctx, target->as.index_expr.index);
+                if (index == NULL) return;
+                if (LLVMTypeOf(index) != i64t)
+                    index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64t, "ss.idx");
+                LLVMValueRef ge = LLVMBuildICmp(ctx->builder, LLVMIntSGE, index,
+                                                LLVMConstInt(i64t, 0, 0), "ss.ge");
+                LLVMValueRef lt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, index, slen, "ss.lt");
+                cg_emit_bounds_guard(ctx, LLVMBuildAnd(ctx->builder, ge, lt, "ss.ok"),
+                                     "Slice index out of bounds", node->line, node->column);
+                LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.array.elem);
+                LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, sptr, &index, 1, "ss.ep");
+                LLVMBuildStore(ctx->builder, val, gep);
+                cg_flush_temps(ctx);
+            }
+            else if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
             {
                 /* p[i] = val on a raw *T pointer - RAW store: typed-GEP the
                    element address and store. Does NOT drop the old slot (it may

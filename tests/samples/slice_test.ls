@@ -12,6 +12,12 @@ fn sum(&array(int) s) -> int {
     return t
 }
 
+// Writable slice parameter: double each element of the borrowed range in place.
+fn double_all(&!array(int) s) {
+    int i = 0
+    for x in s { s[i] = s[i] * 2  i = i + 1 }
+}
+
 struct Buf { Vec(int) data }
 impl Buf {
     // Zero-copy view API: return a borrowed window into self's buffer (single-
@@ -52,6 +58,15 @@ fn main() -> int {
     int s3 = 0
     for x in w { s3 = s3 + x }
     if (s3 == 10) { print("SL PASS retbind") } else { print("SL FAIL retbind") }
+
+    // Writable slice: mutate a sub-range in place through `&!array(T)`.
+    Vec(int) m = [1, 2, 3, 4, 5]
+    &!array(int) ms = m[1..4]
+    ms[0] = 99
+    ms[2] = 77
+    if (m[1] == 99 && m[3] == 77 && m[0] == 1) { print("SL PASS mutstore") } else { print("SL FAIL mutstore") }
+    double_all(ms)
+    if (m[1] == 198 && m[2] == 6 && m[3] == 154) { print("SL PASS mutparam") } else { print("SL FAIL mutparam") }
 
     // has_drop (Str) elements: index read deep-clones (owned + dropped); for-in
     // reads in place. memcheck proves no leak / double-free.

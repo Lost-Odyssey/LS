@@ -1543,6 +1543,15 @@ add_test(
         "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# Storing through a read-only slice must be rejected (only &!array(T) is writable).
+add_test(
+    NAME test_slice_readonly_store_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_readonly_store_reject.ls
+        "-DEXPECT=read-only slice"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
 
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(
