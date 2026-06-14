@@ -575,6 +575,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_bytes_oob.cmake
 )
 
+# 通用 mod.fn 解析 Phase 1 (docs/plan_module_fn_resolution.md): canonical
+# module-path calls `std.x.fn()` resolve without an alias; aliased imports allow
+# both alias and canonical spellings. JIT + AOT + memcheck.
+add_test(
+    NAME test_modfn_canonical
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modfn_canonical_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=modfn_canonical
+        -DMARKER=MODFN
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+
 # L-013 match-result-ownership: a match yielding an owned heap payload (string /
 # Vec / has_drop struct·enum) has exactly one owner across every consumer
 # (var-decl / call-arg / return / nested / discard). JIT+AOT correctness +

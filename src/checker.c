@@ -3390,6 +3390,56 @@ static int match_stdc_prim(Checker *c, AstNode *callee)
     return -1;
 }
 
+/* Phase 1 (docs/plan_module_fn_resolution.md): build a dotted path string from a
+   FIELD/IDENT chain — FIELD(FIELD(IDENT"std"),"time") → "std.time". Returns false
+   on overflow or an unexpected node kind. */
+static bool cm_build_dotted_path(const AstNode *n, char *buf, size_t cap, size_t *pos)
+{
+    if (n == NULL) return false;
+    if (n->kind == AST_IDENT) {
+        size_t len = strlen(n->as.ident.name);
+        if (*pos + len + 1 > cap) return false;
+        memcpy(buf + *pos, n->as.ident.name, len);
+        *pos += len; buf[*pos] = '\0';
+        return true;
+    }
+    if (n->kind == AST_FIELD) {
+        if (!cm_build_dotted_path(n->as.field_access.object, buf, cap, pos)) return false;
+        const char *f = n->as.field_access.field;
+        size_t len = strlen(f);
+        if (*pos + 1 + len + 1 > cap) return false;
+        buf[(*pos)++] = '.';
+        memcpy(buf + *pos, f, len);
+        *pos += len; buf[*pos] = '\0';
+        return true;
+    }
+    return false;
+}
+
+/* Phase 1: canonical module-path call `mod.path.fn(...)`. If the dotted prefix
+   (everything but the last field) names an imported module bound under its full
+   path, collapse the prefix FIELD chain into ONE AST_IDENT holding the dotted path.
+   The rewritten callee `FIELD(IDENT"mod.path","fn")` is then structurally identical
+   to an alias call (`m.fn()`), so the normal module-call checker + codegen handle
+   it with zero special-casing. Returns true if it rewrote the callee.
+   No-op for alias calls (head IDENT already a bound symbol → prefix won't be a
+   2+ segment FIELD chain) and for std.c primitives (caught earlier). */
+static bool rewrite_canonical_module_call(Checker *c, AstNode *callee)
+{
+    if (callee == NULL || callee->kind != AST_FIELD) return false;
+    AstNode *obj = callee->as.field_access.object;
+    if (obj == NULL || obj->kind != AST_FIELD) return false;  /* need >=2 prefix segs */
+    char path[256]; size_t pos = 0;
+    if (!cm_build_dotted_path(obj, path, sizeof(path), &pos)) return false;
+    Symbol *s = scope_resolve(c->current_scope, path);
+    if (s == NULL || s->type == NULL || s->type->kind != TYPE_MODULE) return false;
+    AstNode *id = ast_new(AST_IDENT, obj->line, obj->column);
+    id->as.ident.name = chk_strdup(path);
+    ast_free(obj);
+    callee->as.field_access.object = id;
+    return true;
+}
+
 /* ---- C1: Option/Result combinators (docs/plan_container_access_safety.md §5.3) ----
    unwrap / expect / unwrap_or / is_some? / is_none? / is_ok? / is_err? are lowered
    by the compiler, mirroring `try` and force-unwrap `!` (which are also not library
@@ -4641,6 +4691,12 @@ static Type *check_expr(Checker *c, AstNode *node)
                 break;
             }
         }
+
+        /* Phase 1 (docs/plan_module_fn_resolution.md): canonical module-path call
+           `mod.path.fn(...)` (no alias). Collapse the prefix into a single IDENT so
+           the normal module-call path resolves + emits it. Mutates callee in place;
+           fall through to normal handling (which now sees an alias-shaped callee). */
+        rewrite_canonical_module_call(c, node->as.call.callee);
 
         /* G2: generic function call — identity(int)(42).
            When type_arg_count > 0 and callee is IDENT matching a fn_template,
@@ -9497,6 +9553,14 @@ static void forward_pass(Checker *c, AstNode *program)
                                     ? decl->as.import_decl.alias
                                     : import_path;
             scope_define(c->current_scope, bind_name, mod_type);
+            /* Phase 1 (docs/plan_module_fn_resolution.md): also bind the full
+               canonical dotted path (e.g. "std.time") so `std.time.fn()` resolves
+               without an alias, uniformly whether or not an alias was used. The
+               dotted name never collides with a real IDENT (no source identifier
+               contains '.'). Skip when bind_name already IS the path (no alias). */
+            if (decl->as.import_decl.alias &&
+                scope_resolve_local(c->current_scope, import_path) == NULL)
+                scope_define(c->current_scope, import_path, mod_type);
             break;
         }
         default:

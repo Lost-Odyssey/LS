@@ -316,7 +316,9 @@ cd build && ctest -j 5 --output-on-failure -C Release
 - ~~**模块命名空间收尾 B-2**（struct/enum LLVM 类型名前缀化）~~ ✅ 已完成（2026-05-30）：`Type.strukt/enom.llvm_name` 字段存前缀名，codegen 所有 LLVM 命名点用前缀名，checker 注册表仍用裸名（零破坏）。ctest 79/79。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-2
 - ~~**模块命名空间收尾 B-3**（impl 方法/drop/clone 名跟随前缀）~~ ✅ 已完成（2026-05-30）：`codegen_impl_decl`/`codegen_impl_trait_decl` 在 `current_emit_module != NULL` 时前缀化 struct 名，静态方法调用按 `llvm_name` 解析。ctest 79/79。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-3
 - ~~**模块命名空间收尾 B-4~B-6**（类型命名空间 B-full）~~ ✅ 已完成（2026-05-30）：类型位置限定语法 `mod.Type`/`alias.Type`（B-4）+ enum 跨模块变体经类型上下文解析（B-5）+ has_drop 同名 struct/enum 综合 memcheck（B-6）。同名 struct/enum 跨模块各自独立可用，裸名歧义报错并提示限定。`test_modtype_conflict`/`test_modtype_ns`/`test_modtype_qualified`。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md)（抬头：B-1~B-6 全 ✅）
-- **通用 `mod.fn` 限定函数调用解析**（另一个被称作 "B-full" 的真挂账）待做：任意 `模块.函数` 规范路径调用的通用解析 + 跨模块发射，且在泛型方法实例化到消费方时仍可见。现状靠针对性变通绕过（`std.c.malloc` 走字面结构匹配 `match_stdc_prim`、sync/task 走全局 intrinsic `__atomic_*`/`__mutex_*`/`__task_*`、别名 `c.fn()` 仅非泛型代码可用）。→ [docs/plan_module_fn_resolution.md](docs/plan_module_fn_resolution.md)
+- **通用 `mod.fn` 限定函数调用解析**（另一个被称作 "B-full" 的真挂账）→ [docs/plan_module_fn_resolution.md](docs/plan_module_fn_resolution.md)
+  - ~~Phase 1（通用规范路径）~~ ✅ 已完成（2026-06-14）：`std.x.fn()` 全路径调用无需别名即可解析。checker 在 AST_CALL 把规范路径前缀 FIELD 链折叠成单个 IDENT（持点分路径串），结构上等同别名调用 → 复用既有 module-call checker+codegen **零特殊处理**；import 额外把完整点分路径也绑入 scope（别名与规范两种拼写统一可用）。`std.c.*` 仍由 `match_stdc_prim` 先行特判（特殊 CRT lowering）。`test_modfn_canonical`（JIT+AOT+memcheck）。
+  - Phase 2（泛型方法实例化下别名/路径可见）待做：核心难点＝消费方 checker 拿不到定义方 import 别名（故 sync/task 走全局 intrinsic `__atomic_*`/`__mutex_*`/`__task_*`、std.c 走字面匹配）。方案＝给泛型模板 stamp 定义方 import 别名表、实例化前 push 进 scope。优先级中，待真实用例驱动。
 - 正则表达式 builtin；f16 半精度浮点
 
 > 已完成特性的详细实现记录见 [docs/features_history.md](docs/features_history.md)
