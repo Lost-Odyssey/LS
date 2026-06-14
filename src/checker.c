@@ -1149,6 +1149,7 @@ static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *tra
 static void checker_reject_borrow_return(Checker *c, Type *ret, AstNode *fn,
                                          int line, int col);
 static Symbol *checker_place_root_symbol(Checker *c, AstNode *e);
+static AstNode *borrow_call_provenance_node(AstNode *call);
 static bool checker_reject_borrow_type_arg(Checker *c, Type *arg, const char *base,
                                            int line, int col);
 static void instantiate_impl_method_types(
@@ -2587,21 +2588,19 @@ static void check_local_borrow_decl(Checker *c, AstNode *node, Type *declared)
                 vname);
             return;
         }
-        /* The result borrows the receiver, which must be a STABLE named place
-           that outlives the borrow. A temporary receiver (`make().get()`) would
-           be dropped at statement end, dangling the bound borrow — reject it
-           (immediate use `make().get().field` is fine; only binding escapes). */
-        AstNode *recv = (init->as.call.callee &&
-                         init->as.call.callee->kind == AST_FIELD)
-                            ? init->as.call.callee->as.field_access.object
-                            : NULL;
-        Symbol *rsym = recv ? checker_place_root_symbol(c, recv) : NULL;
+        /* The result borrows its provenance (method receiver / borrow argument),
+           which must be a STABLE named place that outlives the borrow. A
+           temporary provenance (`make().get()`) would be dropped at statement
+           end, dangling the bound borrow — reject it (immediate use
+           `make().get().field` is fine; only binding escapes). */
+        AstNode *prov = borrow_call_provenance_node(init);
+        Symbol *rsym = prov ? checker_place_root_symbol(c, prov) : NULL;
         if (rsym == NULL)
         {
             checker_error(c, node->line, node->column,
-                "named local borrow '%s': cannot bind a borrow whose receiver is "
-                "a temporary (it would dangle); call the borrow on a named "
-                "variable, or use the result immediately", vname);
+                "named local borrow '%s': cannot bind a borrow whose source is "
+                "a temporary (it would dangle); borrow from a named variable, "
+                "or use the result immediately", vname);
             return;
         }
         if (rsym->is_moved || rsym->is_maybe_moved)
@@ -2736,10 +2735,41 @@ static void check_local_borrow_decl(Checker *c, AstNode *node, Type *declared)
         src->is_borrow_src = true;
 }
 
+/* Phase 2 (borrow extension): given a borrow-returning call, return the AST
+   expression whose place the result borrows — the method receiver (`o` in
+   `o.get()`) or the single borrow argument (the arg passed to the one `&U`
+   parameter of an eligible free function). Returns NULL if it can't be
+   determined (conservatively treated as a non-place root → rejected). */
+static AstNode *borrow_call_provenance_node(AstNode *call)
+{
+    if (call == NULL || call->kind != AST_CALL)
+        return NULL;
+    AstNode *callee = call->as.call.callee;
+    if (callee == NULL)
+        return NULL;
+    if (callee->kind == AST_FIELD)
+        return callee->as.field_access.object;   /* method receiver */
+    /* Free function: the argument at the single reference-param index. */
+    Type *fty = callee->resolved_type;
+    if (fty && fty->kind == TYPE_FUNCTION)
+    {
+        for (int i = 0; i < fty->as.function.param_count &&
+                        i < call->as.call.arg_count; i++)
+        {
+            Type *pt = fty->as.function.params[i];
+            if (pt && pt->kind == TYPE_REFERENCE)
+                return call->as.call.args[i];
+        }
+    }
+    return NULL;
+}
+
 /* Phase 2 (borrow extension): walk a place expression (IDENT / field / index /
-   &place / &!place chain) to its root symbol. Returns NULL for non-place
-   expressions (calls, literals, arithmetic). Used to prove a returned borrow
-   derives from a borrow input parameter (single-input lifetime elision). */
+   &place / &!place chain) to its root symbol. Also recurses through a
+   borrow-returning call (`self.child.get()`) via its provenance node, so a
+   transitively-chained borrow return is rooted at the original borrow input.
+   Returns NULL for non-place expressions (owned-value calls, literals,
+   arithmetic). Used to prove a returned borrow derives from a borrow input. */
 static Symbol *checker_place_root_symbol(Checker *c, AstNode *e)
 {
     while (e != NULL)
@@ -2759,6 +2789,16 @@ static Symbol *checker_place_root_symbol(Checker *c, AstNode *e)
             break;
         case AST_UNARY:
             if (e->as.unary.op == TOKEN_AMP) { e = e->as.unary.operand; break; }
+            return NULL;
+        case AST_CALL:
+            /* A borrow-returning call: recurse into what it borrows. A call that
+               returns an OWNED value (resolved_type not a reference) is a fresh
+               temporary — not a place — so stop (NULL). */
+            if (e->resolved_type && e->resolved_type->kind == TYPE_REFERENCE)
+            {
+                e = borrow_call_provenance_node(e);
+                break;
+            }
             return NULL;
         default:
             return NULL;
@@ -7966,24 +8006,23 @@ static void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type
 
 /* Phase 2 (borrow extension): a function may return a borrow (&T) only under
    single-input lifetime elision — there must be exactly ONE borrow input whose
-   lifetime the result unambiguously inherits. Spike scope: an `&self`/`&!self`
-   method with NO other borrow parameter. (Free-function `fn(&U x) -> &T` and
-   multi-borrow-input elision are deferred.) The body's AST_RETURN then proves
-   the returned place actually derives from that input (checker_place_root_symbol). */
+   lifetime the result unambiguously inherits. Covered: an `&self`/`&!self`
+   method with no other borrow parameter, OR a free function with exactly one
+   `&U`/`&!U` parameter. (Multi-borrow-input elision, generics, and closures are
+   deferred.) The body's AST_RETURN then proves the returned place actually
+   derives from that input (checker_place_root_symbol). */
 static bool fn_decl_borrow_return_eligible(AstNode *fn)
 {
     if (fn == NULL || fn->kind != AST_FN_DECL)
         return false;
-    if (fn->as.fn_decl.self_borrow_kind == 0)
-        return false;  /* need &self / &!self as the single borrow input */
-    /* Reject if any explicit parameter is also a borrow (ambiguous elision). */
+    int borrow_inputs = (fn->as.fn_decl.self_borrow_kind != 0) ? 1 : 0;
     for (int i = 0; i < fn->as.fn_decl.param_count; i++)
     {
         TypeNode *pt = fn->as.fn_decl.param_types[i];
         if (pt && pt->kind == TYPE_NODE_REFERENCE)
-            return false;
+            borrow_inputs++;
     }
-    return true;
+    return borrow_inputs == 1;
 }
 
 /* Phase 0/2 (borrow extension, docs/plan_borrow_extension.md §3): returning a
@@ -8001,8 +8040,9 @@ static void checker_reject_borrow_return(Checker *c, Type *ret, AstNode *fn,
             return;  /* Phase 2: allowed; body proves provenance at AST_RETURN. */
         checker_error(c, line, col,
                       "borrows cannot escape via return here: cannot return "
-                      "&%s%s (only an `&self`/`&!self` method with no other "
-                      "borrow parameter may return a borrow)",
+                      "&%s%s (only a function with exactly one borrow input — an "
+                      "`&self`/`&!self` method, or a single `&T` parameter — may "
+                      "return a borrow)",
                       ret->is_mut ? "!" : "",
                       ret->as.pointer_to ? type_name(ret->as.pointer_to) : "T");
     }

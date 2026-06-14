@@ -8,10 +8,21 @@ import std.str
 struct Inner { int v; Str name }
 struct Outer { Inner inner }
 
+struct Top { Outer top_outer }
+
 impl Outer {
     fn get(&self) -> &Inner { return self.inner }
     fn get_mut(&!self) -> &!Inner { return self.inner }
 }
+
+// Transitively-chained borrow return: Top.deep() forwards the borrow from a
+// nested borrow-returning call (`self.top_outer.get()`), still rooted at self.
+impl Top {
+    fn deep(&self) -> &Inner { return self.top_outer.get() }
+}
+
+// Free function with exactly one borrow parameter — the result borrows `a`.
+fn pick(&Inner a) -> &Inner { return a }
 
 fn check_immediate() {
     Outer o = Outer{inner: Inner{v: 42, name: "hi"}}
@@ -33,10 +44,28 @@ fn check_write() {
     if (o.inner.v == 99) { print("BR PASS write") } else { print("BR FAIL write") }
 }
 
+fn check_free() {
+    Inner x = Inner{v: 5, name: "world"}
+    // Free-fn borrow return: immediate use + bind to a Phase-1 local (pins x).
+    if (pick(&x).v == 5) { print("BR PASS free-imm") } else { print("BR FAIL free-imm") }
+    &Inner r = pick(&x)
+    if (r.name.len() == 5) { print("BR PASS free-bind") } else { print("BR FAIL free-bind") }
+}
+
+fn check_chain() {
+    Top t = Top{top_outer: Outer{inner: Inner{v: 8, name: "z"}}}
+    // Transitively-chained borrow return through Outer.get().
+    if (t.deep().v == 8) { print("BR PASS chain-imm") } else { print("BR FAIL chain-imm") }
+    &Inner r = t.deep()
+    if (r.v == 8) { print("BR PASS chain-bind") } else { print("BR FAIL chain-bind") }
+}
+
 fn main() -> int {
     check_immediate()
     check_bind()
     check_write()
+    check_free()
+    check_chain()
     print("BR PASS")
     return 0
 }

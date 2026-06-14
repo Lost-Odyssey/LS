@@ -1467,7 +1467,7 @@ add_test(
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_multiinput_reject.ls
-        "-DEXPECT=only an"
+        "-DEXPECT=exactly one borrow input"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 add_test(
@@ -1483,7 +1483,25 @@ add_test(
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_temp_reject.ls
-        "-DEXPECT=receiver is a temporary"
+        "-DEXPECT=source is a temporary"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+# Phase 2 breadth: free-function `fn(&T) -> &T` returning a local (dangling) +
+# transitively-chained borrow return through a temporary receiver.
+add_test(
+    NAME test_borrow_return_freelocal_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_freelocal_reject.ls
+        "-DEXPECT=must derive from"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_return_chain_temp_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_chain_temp_reject.ls
+        "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 

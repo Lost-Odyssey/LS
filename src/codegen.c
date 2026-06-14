@@ -8758,7 +8758,14 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
             ctx->current_fn_return_type &&
             ctx->current_fn_return_type->kind == TYPE_REFERENCE)
         {
-            LLVMValueRef ptr = codegen_lvalue_ptr(ctx, node->as.return_stmt.value);
+            AstNode *rv = node->as.return_stmt.value;
+            /* A transitively-chained borrow return `return self.child.get()`:
+               the call already evaluates to the borrow pointer. Otherwise the
+               return expr is a place (self / self.field) — take its address. */
+            LLVMValueRef ptr = (rv->kind == AST_CALL && rv->resolved_type &&
+                                rv->resolved_type->kind == TYPE_REFERENCE)
+                                   ? codegen_expr(ctx, rv)
+                                   : codegen_lvalue_ptr(ctx, rv);
             cg_flush_temps(ctx);
             emit_cleanup_to(ctx, NULL, NULL);
             cg_emit_mc_leave(ctx);
