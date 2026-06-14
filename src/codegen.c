@@ -4471,6 +4471,82 @@ static int cg_match_stdc_prim(AstNode *callee)
     return -1;
 }
 
+/* True if a match-arm pattern is a bit pattern (a seq, or an OR-tree of seqs). */
+static bool cg_pattern_has_bit_seq(const AstNode *pat)
+{
+    if (pat == NULL) return false;
+    if (pat->kind == AST_MATCH_BIT_PATTERN_SEQ) return true;
+    if (pat->kind == AST_MATCH_OR_PATTERN)
+        return cg_pattern_has_bit_seq(pat->as.or_pattern.left) ||
+               cg_pattern_has_bit_seq(pat->as.or_pattern.right);
+    return false;
+}
+
+/* V1 bit-pattern: emit field extraction for one bits[...] sequence on `subject`
+   (an integer SSA value of type subj_llvm). Stores happen in the current insert
+   block. When `bind`, materialise binder allocas (int / i64 / bool) and define
+   them in the current scope so the arm body can read them. Returns the AND-combined
+   match-value condition (i1), or NULL when the sequence has no match-value
+   constraints (an unconditional match). */
+static LLVMValueRef cg_emit_bit_pattern_seq(CodegenContext *ctx, AstNode *seq,
+                                            LLVMValueRef subject, LLVMTypeRef subj_llvm,
+                                            bool bind)
+{
+    LLVMValueRef cond = NULL;
+    for (int i = 0; i < seq->as.bit_pattern_seq.count; i++)
+    {
+        AstNode *item = seq->as.bit_pattern_seq.items[i];
+        int width = item->as.bit_pattern.width;
+        int shift = item->as.bit_pattern.lsb_shift;
+        unsigned long long maskv = (width >= 64) ? ~0ULL : ((1ULL << width) - 1ULL);
+        LLVMValueRef mask = LLVMConstInt(subj_llvm, maskv, 0);
+
+        LLVMValueRef shifted = (shift != 0)
+            ? LLVMBuildLShr(ctx->builder, subject,
+                            LLVMConstInt(subj_llvm, (unsigned long long)shift, 0), "bit.shr")
+            : subject;
+        LLVMValueRef field = LLVMBuildAnd(ctx->builder, shifted, mask, "bit.val");
+
+        /* match-value constraint: (field == match_val) */
+        if (item->as.bit_pattern.match_value_set)
+        {
+            LLVMValueRef want = LLVMConstInt(subj_llvm,
+                (unsigned long long)item->as.bit_pattern.match_val, 0);
+            LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntEQ, field, want, "bit.cmp");
+            cond = cond ? LLVMBuildAnd(ctx->builder, cond, cmp, "bit.and") : cmp;
+        }
+
+        if (bind && item->as.bit_pattern.name != NULL)
+        {
+            Type *bt = (width == 1) ? type_bool()
+                                    : (width <= 32 ? type_int() : type_i64());
+            LLVMTypeRef slot_ty = type_to_llvm(ctx, bt);
+            unsigned dw = LLVMGetIntTypeWidth(slot_ty);
+            LLVMValueRef stored;
+            if (width == 1)
+            {
+                /* bool binder: field != 0, sized to bool's storage type */
+                LLVMValueRef b = LLVMBuildICmp(ctx->builder, LLVMIntNE, field,
+                                               LLVMConstInt(subj_llvm, 0, 0), "bit.bool");
+                stored = (dw == 1) ? b
+                                   : LLVMBuildZExt(ctx->builder, b, slot_ty, "bit.boolz");
+            }
+            else
+            {
+                /* resize the masked field from subj width to the binder width */
+                unsigned sw = LLVMGetIntTypeWidth(subj_llvm);
+                if (sw == dw)      stored = field;
+                else if (sw > dw)  stored = LLVMBuildTrunc(ctx->builder, field, slot_ty, "bit.trunc");
+                else               stored = LLVMBuildZExt(ctx->builder, field, slot_ty, "bit.zext");
+            }
+            LLVMValueRef slot = cg_entry_alloca(ctx, slot_ty, item->as.bit_pattern.name);
+            LLVMBuildStore(ctx->builder, stored, slot);
+            cg_scope_define(ctx->current_scope, item->as.bit_pattern.name, slot, bt, NULL);
+        }
+    }
+    return cond;
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -6717,7 +6793,114 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                that map multiple constants to one arm body.
            (B) CondBr chain: string, float, or patterns that contain variables.
                OR-patterns are supported by flattening the tree into leaves and
-               OR-ing the comparisons together before the CondBr. */
+               OR-ing the comparisons together before the CondBr.
+           (C) Bit-pattern chain (V1): arms use `bits[...]`. Each arm extracts
+               fields (shift/and), binds variables, and AND/OR-combines any
+               match-value constraints into a CondBr. */
+
+        bool cg_has_bit = false;
+        for (int i = 0; i < node->as.match.arm_count; i++)
+            if (cg_pattern_has_bit_seq(node->as.match.arms[i].pattern)) { cg_has_bit = true; break; }
+
+        if (cg_has_bit)
+        {
+            LLVMTypeRef subj_llvm = type_to_llvm(ctx, subj_type);
+            LLVMTypeRef i1_ty = LLVMInt1TypeInContext(ctx->context);
+
+            for (int i = 0; i < node->as.match.arm_count; i++)
+            {
+                MatchArm *arm = &node->as.match.arms[i];
+                AstNode  *pat = arm->pattern;
+                bool is_wild = pat->kind == AST_IDENT &&
+                               strcmp(pat->as.ident.name, "_") == 0;
+
+                if (is_wild)
+                {
+                    /* Wildcard runs in the current (last next_bb) block. */
+                    int arm_drop_floor = ctx->temp_drop_count;
+                    LLVMValueRef body_val = codegen_expr(ctx, arm->body);
+                    if (result_alloca && body_val)
+                    {
+                        body_val = cg_match_arm_own_tail(
+                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
+                            result_type, arm_drop_floor, false);
+                        LLVMBuildStore(ctx->builder, body_val, result_alloca);
+                    }
+                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
+                    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+                        LLVMBuildBr(ctx->builder, merge_bb);
+                    continue;
+                }
+
+                LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, ctx->current_fn, "match.then");
+                LLVMBasicBlockRef next_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, ctx->current_fn, "match.next");
+
+                /* Collect OR-tree leaves left-to-right (each is a bit seq). */
+                AstNode *leaves[64]; int nleaves = 0;
+                {
+                    AstNode *stk[64]; int sp = 0; stk[sp++] = pat;
+                    while (sp > 0 && nleaves < 64)
+                    {
+                        AstNode *cur = stk[--sp];
+                        if (cur->kind == AST_MATCH_OR_PATTERN)
+                        {
+                            if (sp + 2 <= 64) {
+                                stk[sp++] = cur->as.or_pattern.right;
+                                stk[sp++] = cur->as.or_pattern.left;
+                            }
+                        }
+                        else
+                            leaves[nleaves++] = cur;
+                    }
+                }
+
+                /* Extract + bind (first leaf binds) in the current block, build the
+                   OR-combined arm condition. A leaf with no match-value is an
+                   unconditional match → contributes constant-true. */
+                push_scope(ctx);
+                LLVMValueRef combined = NULL;
+                for (int L = 0; L < nleaves; L++)
+                {
+                    LLVMValueRef leaf_cond = cg_emit_bit_pattern_seq(
+                        ctx, leaves[L], subject, subj_llvm, /*bind=*/L == 0);
+                    if (leaf_cond == NULL)
+                        leaf_cond = LLVMConstInt(i1_ty, 1, 0);
+                    combined = combined
+                        ? LLVMBuildOr(ctx->builder, combined, leaf_cond, "bit.orleaf")
+                        : leaf_cond;
+                }
+                if (combined == NULL) combined = LLVMConstInt(i1_ty, 1, 0);
+                LLVMBuildCondBr(ctx->builder, combined, then_bb, next_bb);
+
+                LLVMPositionBuilderAtEnd(ctx->builder, then_bb);
+                int arm_drop_floor = ctx->temp_drop_count;
+                LLVMValueRef body_val = codegen_expr(ctx, arm->body);
+                if (result_alloca && body_val)
+                {
+                    body_val = cg_match_arm_own_tail(
+                        ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
+                        result_type, arm_drop_floor, false);
+                    LLVMBuildStore(ctx->builder, body_val, result_alloca);
+                }
+                cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
+                pop_scope(ctx);
+                if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+                    LLVMBuildBr(ctx->builder, merge_bb);
+
+                LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
+            }
+
+            /* Last next_bb (or wildcard block) falls through to merge. */
+            if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+                LLVMBuildBr(ctx->builder, merge_bb);
+
+            LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
+            if (result_alloca)
+                return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
+            return NULL;
+        }
 
         bool use_int_switch = false;
         if (subj_type && !is_fp)

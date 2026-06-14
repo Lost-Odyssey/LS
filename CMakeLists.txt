@@ -529,6 +529,29 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# V1 bit-pattern matching (features/bit_pattern_match.md): MSB-first field
+# extraction + binding, match-value arms, OR-pattern, wildcard, bool 1-bit field,
+# int/u16/u8/u64 subjects. JIT + AOT correctness + memcheck 0/0/0.
+add_test(
+    NAME test_bit_match
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bit_match_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=bit_match
+        -DMARKER=BITMATCH
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+# Bit-pattern negative checks: strict total-width mismatch and non-integer
+# subject must be rejected at compile time.
+add_test(
+    NAME test_bit_match_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -P ${CMAKE_SOURCE_DIR}/tests/test_bit_match_reject.cmake
+)
+
 # L-013 match-result-ownership: a match yielding an owned heap payload (string /
 # Vec / has_drop struct·enum) has exactly one owner across every consumer
 # (var-decl / call-arg / return / nested / discard). JIT+AOT correctness +

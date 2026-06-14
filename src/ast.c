@@ -278,6 +278,14 @@ void ast_free(AstNode *node) {
         ast_free(node->as.or_pattern.left);
         ast_free(node->as.or_pattern.right);
         break;
+    case AST_MATCH_BIT_PATTERN:
+        free(node->as.bit_pattern.name);
+        break;
+    case AST_MATCH_BIT_PATTERN_SEQ:
+        for (int i = 0; i < node->as.bit_pattern_seq.count; i++)
+            ast_free(node->as.bit_pattern_seq.items[i]);
+        free(node->as.bit_pattern_seq.items);
+        break;
     case AST_CAST:
         ast_free(node->as.cast.expr);
         type_node_free(node->as.cast.target_type);
@@ -541,6 +549,9 @@ const char *ast_kind_name(AstNodeType kind) {
     case AST_FIELD:        return "FIELD";
     case AST_CLOSURE:      return "CLOSURE";
     case AST_MATCH:        return "MATCH";
+    case AST_MATCH_OR_PATTERN:      return "MATCH_OR_PATTERN";
+    case AST_MATCH_BIT_PATTERN:     return "MATCH_BIT_PATTERN";
+    case AST_MATCH_BIT_PATTERN_SEQ: return "MATCH_BIT_PATTERN_SEQ";
     case AST_TRY:          return "TRY";
     case AST_FORCE_UNWRAP: return "FORCE_UNWRAP";
     case AST_CAST:         return "CAST";
@@ -943,6 +954,25 @@ AstNode *ast_clone_deep(const AstNode *src) {
         n->as.closure.move_count = 0;
         break;
     }
+    case AST_MATCH_OR_PATTERN:
+        n->as.or_pattern.left  = ast_clone_deep(src->as.or_pattern.left);
+        n->as.or_pattern.right = ast_clone_deep(src->as.or_pattern.right);
+        break;
+    case AST_MATCH_BIT_PATTERN:
+        /* scalar fields already shallow-copied; deep-copy the owned name */
+        n->as.bit_pattern.name = ast_strdup(src->as.bit_pattern.name);
+        break;
+    case AST_MATCH_BIT_PATTERN_SEQ: {
+        int bc = src->as.bit_pattern_seq.count;
+        if (bc > 0) {
+            n->as.bit_pattern_seq.items =
+                (AstNode **)malloc_safe((size_t)bc * sizeof(AstNode *));
+            for (int i = 0; i < bc; i++)
+                n->as.bit_pattern_seq.items[i] =
+                    ast_clone_deep(src->as.bit_pattern_seq.items[i]);
+        }
+        break;
+    }
     default:
         /* For any unhandled node types, the shallow copy is kept.
            This should not happen in method bodies. */
@@ -1076,6 +1106,25 @@ void ast_print(AstNode *node, int indent) {
             printf("arm[%d] body:\n", i);
             ast_print(node->as.match.arms[i].body, indent + 3);
         }
+        break;
+    case AST_MATCH_OR_PATTERN:
+        printf("OR_PATTERN\n");
+        ast_print(node->as.or_pattern.left, indent + 1);
+        ast_print(node->as.or_pattern.right, indent + 1);
+        break;
+    case AST_MATCH_BIT_PATTERN_SEQ:
+        printf("BIT_PATTERN_SEQ(%d fields)\n", node->as.bit_pattern_seq.count);
+        for (int i = 0; i < node->as.bit_pattern_seq.count; i++)
+            ast_print(node->as.bit_pattern_seq.items[i], indent + 1);
+        break;
+    case AST_MATCH_BIT_PATTERN:
+        if (node->as.bit_pattern.match_value_set)
+            printf("BIT[%d:0x%llx]\n", node->as.bit_pattern.width,
+                   (unsigned long long)node->as.bit_pattern.match_val);
+        else if (node->as.bit_pattern.name)
+            printf("BIT[%d:%s]\n", node->as.bit_pattern.width, node->as.bit_pattern.name);
+        else
+            printf("BIT[%d:_]\n", node->as.bit_pattern.width);
         break;
     case AST_CAST:
         printf("CAST as ");

@@ -943,6 +943,89 @@ static AstNode *prefix_closure(Parser *p) {
     return n;
 }
 
+/* V1 bit-pattern match: `bits` is a soft keyword recognized only at a match-arm
+   pattern position — current token is the identifier `bits` immediately followed
+   by `[`. Anywhere else `bits` remains an ordinary identifier. */
+static bool parser_at_bits_keyword(Parser *p) {
+    return p->current.type == TOKEN_IDENTIFIER &&
+           p->current.length == 4 &&
+           memcmp(p->current.start, "bits", 4) == 0 &&
+           scanner_peek(&p->scanner).type == TOKEN_LBRACKET;
+}
+
+/* Consume the current TOKEN_INT_LIT and return its value (10 / 0x / 0b). */
+static long long parse_int_lit_value(Parser *p) {
+    Token tok = p->current;
+    char buf[64];
+    int len = tok.length < 63 ? tok.length : 63;
+    memcpy(buf, tok.start, (size_t)len);
+    buf[len] = '\0';
+    long long val;
+    if (len > 2 && buf[0] == '0' && (buf[1] == 'x' || buf[1] == 'X'))
+        val = (long long)strtoll(buf + 2, NULL, 16);
+    else if (len > 2 && buf[0] == '0' && (buf[1] == 'b' || buf[1] == 'B'))
+        val = (long long)strtoll(buf + 2, NULL, 2);
+    else
+        val = (long long)strtoll(buf, NULL, 10);
+    advance(p);
+    return val;
+}
+
+/* bits[width:name] [width:0xVAL] [width:_] ...  (V1, MSB-first field extraction).
+   Returns an AST_MATCH_BIT_PATTERN_SEQ. 'bits' must be the current token. */
+static AstNode *parse_bit_pattern_seq(Parser *p) {
+    Token start = p->current;   /* 'bits' */
+    advance(p);                 /* consume 'bits' */
+
+    AstNode **items = NULL;
+    int count = 0, cap = 0;
+
+    while (check(p, TOKEN_LBRACKET)) {
+        Token lb = p->current;
+        advance(p);             /* consume '[' */
+
+        if (!check(p, TOKEN_INT_LIT)) {
+            error_at_current(p, "expected bit width (integer) after '['");
+            break;
+        }
+        long long w = parse_int_lit_value(p);
+        consume(p, TOKEN_COLON, "expected ':' after bit width");
+
+        AstNode *item = new_node(AST_MATCH_BIT_PATTERN, lb.line, lb.column);
+        item->as.bit_pattern.width = (int)w;
+        item->as.bit_pattern.name = NULL;
+        item->as.bit_pattern.match_value_set = false;
+        item->as.bit_pattern.match_val = 0;
+        item->as.bit_pattern.lsb_shift = 0;
+
+        if (check(p, TOKEN_INT_LIT)) {                 /* bits[4:0xA] — match value */
+            item->as.bit_pattern.match_value_set = true;
+            item->as.bit_pattern.match_val = parse_int_lit_value(p);
+        } else if (check(p, TOKEN_UNDERSCORE)) {       /* bits[4:_] — skip/wildcard */
+            advance(p);
+        } else if (check(p, TOKEN_IDENTIFIER)) {       /* bits[4:name] — bind */
+            item->as.bit_pattern.name = str_dup_n(p->current.start, p->current.length);
+            advance(p);
+        } else {
+            error_at_current(p, "expected name, integer literal, or '_' after ':'");
+        }
+
+        consume(p, TOKEN_RBRACKET, "expected ']' after bit field");
+
+        if (count >= cap) {
+            cap = GROW_CAPACITY(cap);
+            items = GROW_ARRAY(AstNode *, items, cap);
+        }
+        items[count++] = item;
+    }
+
+    AstNode *seq = new_node(AST_MATCH_BIT_PATTERN_SEQ, start.line, start.column);
+    seq->as.bit_pattern_seq.items = items;
+    seq->as.bit_pattern_seq.count = count;
+    seq->as.bit_pattern_seq.total_width = 0;
+    return seq;
+}
+
 /* match expr { pattern => body, ... } */
 static AstNode *prefix_match(Parser *p) {
     Token match_start = p->previous;
@@ -960,11 +1043,15 @@ static AstNode *prefix_match(Parser *p) {
            AST_MATCH_OR_PATTERN tree: `98 | 102 | 110 => body`
            If the user needs bitwise-OR in a pattern value, they can parenthesise:
            `(FLAG_A | FLAG_B) => body`. */
-        AstNode *pattern = parse_expr_prec(p, PREC_BITXOR);
+        AstNode *pattern = parser_at_bits_keyword(p)
+            ? parse_bit_pattern_seq(p)
+            : parse_expr_prec(p, PREC_BITXOR);
         while (check(p, TOKEN_PIPE)) {
             Token pipe_tok = p->current;
             advance(p); /* consume '|' */
-            AstNode *rhs = parse_expr_prec(p, PREC_BITXOR);
+            AstNode *rhs = parser_at_bits_keyword(p)
+                ? parse_bit_pattern_seq(p)
+                : parse_expr_prec(p, PREC_BITXOR);
             AstNode *or_node = new_node(AST_MATCH_OR_PATTERN, pipe_tok.line, pipe_tok.column);
             or_node->as.or_pattern.left  = pattern;
             or_node->as.or_pattern.right = rhs;

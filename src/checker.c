@@ -3941,6 +3941,81 @@ static int lower_opt_combinator(Checker *c, AstNode *node, AstNode *recv,
     return 1;
 }
 
+/* ---- V1 bit-pattern match helpers ---- */
+
+/* Bit width of an integer type for bit-pattern total-width validation.
+   Returns 0 for non-integer (or types we don't allow as bit-match subjects). */
+static int bit_pattern_type_bits(const Type *t) {
+    if (t == NULL) return 0;
+    switch (t->kind) {
+    case TYPE_I8:  case TYPE_U8:  return 8;
+    case TYPE_I16: case TYPE_U16: return 16;
+    case TYPE_I32: case TYPE_U32: case TYPE_INT: return 32;
+    case TYPE_I64: case TYPE_U64: return 64;
+    default: return 0;
+    }
+}
+
+/* True if `pat` is a bit-pattern (a seq, or an OR-tree whose leaves are seqs). */
+static bool pattern_has_bit_seq(const AstNode *pat) {
+    if (pat == NULL) return false;
+    if (pat->kind == AST_MATCH_BIT_PATTERN_SEQ) return true;
+    if (pat->kind == AST_MATCH_OR_PATTERN)
+        return pattern_has_bit_seq(pat->as.or_pattern.left) ||
+               pattern_has_bit_seq(pat->as.or_pattern.right);
+    return false;
+}
+
+/* Validate one bits[...] sequence against the subject bit width, compute each
+   field's MSB-first lsb_shift, and (when define_binders) define binder vars in
+   the current scope. Reports errors via the checker. */
+static void check_bit_pattern_seq(Checker *c, AstNode *seq, int subj_bits,
+                                  bool define_binders) {
+    int total = 0;
+    for (int i = 0; i < seq->as.bit_pattern_seq.count; i++) {
+        AstNode *item = seq->as.bit_pattern_seq.items[i];
+        int w = item->as.bit_pattern.width;
+        if (w < 1 || w > 64) {
+            checker_error(c, item->line, item->column,
+                          "bit field width must be between 1 and 64, got %d", w);
+            return;
+        }
+        if (item->as.bit_pattern.match_value_set) {
+            unsigned long long maxv = (w >= 64) ? ~0ULL : ((1ULL << w) - 1ULL);
+            if ((unsigned long long)item->as.bit_pattern.match_val > maxv) {
+                checker_error(c, item->line, item->column,
+                              "bit-match value 0x%llx does not fit in %d bit(s)",
+                              (unsigned long long)item->as.bit_pattern.match_val, w);
+            }
+        }
+        total += w;
+    }
+    if (total != subj_bits) {
+        checker_error(c, seq->line, seq->column,
+                      "bit-match total width %d does not match subject type (%d bits)",
+                      total, subj_bits);
+        return;
+    }
+    seq->as.bit_pattern_seq.total_width = total;
+
+    /* MSB-first: first field occupies the most-significant bits. */
+    int accumulated = 0;
+    for (int i = 0; i < seq->as.bit_pattern_seq.count; i++) {
+        AstNode *item = seq->as.bit_pattern_seq.items[i];
+        int w = item->as.bit_pattern.width;
+        item->as.bit_pattern.lsb_shift = subj_bits - accumulated - w;
+        accumulated += w;
+
+        if (define_binders && item->as.bit_pattern.name != NULL) {
+            /* w==1 → bool; w<=32 → int; w in 33..64 → i64 (avoid truncation). */
+            Type *ft = (w == 1) ? type_bool() : (w <= 32 ? type_int() : type_i64());
+            /* Skip if already bound in this arm scope (e.g. repeated in OR). */
+            if (scope_resolve_local(c->current_scope, item->as.bit_pattern.name) == NULL)
+                scope_define(c->current_scope, item->as.bit_pattern.name, ft);
+        }
+    }
+}
+
 static Type *check_expr(Checker *c, AstNode *node)
 {
     if (node == NULL)
@@ -5982,6 +6057,76 @@ static Type *check_expr(Checker *c, AstNode *node)
 
             free(covered);
             result = arm_type;
+            break;
+        }
+
+        /* V1 bit-pattern arms: `bits[w:name][w:0xVAL][w:_]...` Detect whether any
+           arm uses bit patterns; if so, take a dedicated path (integer subject +
+           strict total-width check + per-arm binder scope). */
+        bool match_has_bit = false;
+        for (int i = 0; i < node->as.match.arm_count; i++)
+            if (pattern_has_bit_seq(node->as.match.arms[i].pattern)) { match_has_bit = true; break; }
+
+        if (match_has_bit)
+        {
+            int subj_bits = bit_pattern_type_bits(subject);
+            if (subj_bits == 0)
+            {
+                checker_error(c, node->as.match.subject->line,
+                              node->as.match.subject->column,
+                              "bit-pattern match subject must be an integer type "
+                              "(int / i8-i64 / u8-u64), got '%s'", type_name(subject));
+                result = NULL;
+                break;
+            }
+            Type *bit_arm_type = NULL;
+            for (int i = 0; i < node->as.match.arm_count; i++)
+            {
+                MatchArm *arm = &node->as.match.arms[i];
+                AstNode *pat = arm->pattern;
+                bool is_wild = pat->kind == AST_IDENT &&
+                               strcmp(pat->as.ident.name, "_") == 0;
+
+                push_scope(c);
+                if (!is_wild)
+                {
+                    /* Collect OR-tree leaves left-to-right; binders come from the
+                       first leaf only (V1: OR branches should bind the same names). */
+                    AstNode *leaves[64]; int nleaves = 0;
+                    AstNode *stk[64]; int sp = 0;
+                    stk[sp++] = pat;
+                    while (sp > 0 && nleaves < 64)
+                    {
+                        AstNode *cur = stk[--sp];
+                        if (cur->kind == AST_MATCH_OR_PATTERN)
+                        {
+                            if (sp + 2 <= 64) {
+                                stk[sp++] = cur->as.or_pattern.right;
+                                stk[sp++] = cur->as.or_pattern.left;
+                            }
+                        }
+                        else if (cur->kind == AST_MATCH_BIT_PATTERN_SEQ)
+                            leaves[nleaves++] = cur;
+                        else
+                            checker_error(c, cur->line, cur->column,
+                                          "cannot mix bit-pattern with non-bit patterns "
+                                          "in the same match arm");
+                    }
+                    for (int L = 0; L < nleaves; L++)
+                        check_bit_pattern_seq(c, leaves[L], subj_bits,
+                                              /*define_binders=*/L == 0);
+                }
+
+                Type *body_type = check_expr(c, arm->body);
+                pop_scope(c);
+                if (body_type == NULL) continue;
+                if (bit_arm_type == NULL) bit_arm_type = body_type;
+                else if (!type_equals(bit_arm_type, body_type))
+                    checker_error(c, arm->body->line, arm->body->column,
+                                  "match arm type mismatch: expected '%s', got '%s'",
+                                  type_name(bit_arm_type), type_name(body_type));
+            }
+            result = bit_arm_type;
             break;
         }
 

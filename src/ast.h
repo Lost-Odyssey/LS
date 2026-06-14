@@ -111,6 +111,8 @@ typedef enum
     AST_CLOSURE,
     AST_MATCH,
     AST_MATCH_OR_PATTERN, /* A | B | C inside a match arm — OR-pattern */
+    AST_MATCH_BIT_PATTERN,     /* bits[width:name|literal|_] — one bit field (V1) */
+    AST_MATCH_BIT_PATTERN_SEQ, /* bits[..][..][..] — a sequence of bit fields (V1) */
     AST_TRY,          /* try expr — Zig-style early return for Result/Option */
     AST_FORCE_UNWRAP,  /* expr! — force-unwrap Option/Result, panic on None/Err */
     AST_CAST,
@@ -303,6 +305,25 @@ struct AstNode
             AstNode *left;   /* first alternative  */
             AstNode *right;  /* second alternative (may itself be AST_MATCH_OR_PATTERN) */
         } or_pattern;
+        /* Bit-pattern match (V1): `bits[w:name][w:0xVAL][w:_]...` as a match arm
+           pattern. One AST_MATCH_BIT_PATTERN per field; AST_MATCH_BIT_PATTERN_SEQ
+           holds the field list. Only appears as a match arm pattern (or an OR-tree
+           leaf), never as a general expression — so codegen/checker handle it from
+           the AST_MATCH path, not check_expr/codegen_expr. */
+        struct
+        {
+            int        width;            /* field bit width (1-64) */
+            char      *name;             /* binder name; NULL = literal or wildcard '_' */
+            long long  match_val;        /* literal value when match_value_set */
+            bool       match_value_set;  /* true for bits[4:0xA] form */
+            int        lsb_shift;        /* filled by checker (MSB-first offset from LSB) */
+        } bit_pattern;
+        struct
+        {
+            AstNode **items;        /* AST_MATCH_BIT_PATTERN nodes, MSB-first */
+            int       count;
+            int       total_width;  /* filled by checker (sum of field widths) */
+        } bit_pattern_seq;
         struct
         {
             AstNode *expr;
