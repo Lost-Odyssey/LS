@@ -1360,6 +1360,50 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_malloc_builtin_reject.cmake
 )
 
+# Phase 0 borrow-extension (docs/plan_borrow_extension.md §3): borrows escaping
+# the parameter position must be a clean compile-time rejection, never a latent
+# IR crash or a silently-accepted dangling landmine. One driver, five samples.
+add_test(
+    NAME test_borrow_return_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_reject.ls
+        "-DEXPECT=borrows cannot escape via return"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_method_return_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_method_return_reject.ls
+        "-DEXPECT=borrows cannot escape via return"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_field_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_field_reject.ls
+        "-DEXPECT=struct fields cannot be borrows yet"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_enum_payload_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_enum_payload_reject.ls
+        "-DEXPECT=enum payloads cannot be borrows yet"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_typearg_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_typearg_reject.ls
+        "-DEXPECT=a borrow type cannot be a generic type argument"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(
     NAME test_mem_overhaul_jit

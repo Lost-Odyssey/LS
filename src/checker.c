@@ -1146,6 +1146,9 @@ static void push_scope(Checker *c);
 static void pop_scope(Checker *c);
 static void check_stmt(Checker *c, AstNode *node);
 static bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name);
+static void checker_reject_borrow_return(Checker *c, Type *ret, int line, int col);
+static bool checker_reject_borrow_type_arg(Checker *c, Type *arg, const char *base,
+                                           int line, int col);
 static void instantiate_impl_method_types(
     Checker *c, Type *struct_type, const char *mangled_name,
     AstNode *impl_node,
@@ -1270,6 +1273,20 @@ Type *checker_instantiate_struct(Checker *c,
                           ft_node ? ft_node->column : col,
                           "cannot resolve field type in '%s'", buf);
             ft = type_int();
+        }
+        /* Phase 0 (borrow extension): borrow fields are a latent dangling
+           landmine. Non-generic structs are caught in check_struct_decl, but
+           generic templates skip field checking — catch the borrow here when
+           the template is instantiated (e.g. `Wrap(T){ &T item }`). */
+        if (ft->kind == TYPE_REFERENCE) {
+            checker_error(c, ft_node ? ft_node->line : line,
+                          ft_node ? ft_node->column : col,
+                          "struct fields cannot be borrows yet: field '%s' of "
+                          "'%s' has borrow type &%s%s (use a value-offset view "
+                          "instead)",
+                          decl->as.struct_decl.field_names[i], buf,
+                          ft->is_mut ? "!" : "",
+                          ft->as.pointer_to ? type_name(ft->as.pointer_to) : "T");
         }
         st->as.strukt.fields[i].name = decl->as.struct_decl.field_names[i];
         st->as.strukt.fields[i].type = ft;
@@ -1686,6 +1703,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
             c, method_ast->as.fn_decl.return_type,
             all_tp_names, all_tp_types, total_tp_count)
         : type_void();
+    checker_reject_borrow_return(c, ret, method_ast->line, method_ast->column);  /* Phase 0 */
 
     Type *concrete_type = type_function(params, total_param_count, ret, false);
 
@@ -1942,6 +1960,7 @@ static void instantiate_impl_method_types(
                 c, method->as.fn_decl.return_type,
                 tp_names, type_args, tp_count)
             : type_void();
+        checker_reject_borrow_return(c, ret, method->line, method->column);  /* Phase 0 */
 
         Type *mtype = type_function(params, total, ret, false);
 
@@ -2284,6 +2303,8 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
             {
                 ta[i] = resolve_type_node(c, tn->as.named.args[i], line, col);
                 if (ta[i] == NULL) { free(ta); return NULL; }
+                if (checker_reject_borrow_type_arg(c, ta[i], base, line, col))
+                    { free(ta); return NULL; }
             }
             Type *inst = checker_instantiate_struct(c, base, ta, n, line, col);
             free(ta);
@@ -2303,6 +2324,8 @@ static Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
                 {
                     ta[i] = resolve_type_node(c, tn->as.named.args[i], line, col);
                     if (ta[i] == NULL) { free(ta); return NULL; }
+                    if (checker_reject_borrow_type_arg(c, ta[i], base, line, col))
+                        { free(ta); return NULL; }
                 }
             }
             Type *inst = instantiate_template(c, tidx, ta, n, line, col);
@@ -4883,6 +4906,7 @@ static Type *check_expr(Checker *c, AstNode *node)
                 ? resolve_type_node(c, tmpl_decl->as.fn_decl.return_type,
                     node->line, node->column)
                 : type_void();
+            checker_reject_borrow_return(c, ret, node->line, node->column);  /* Phase 0 */
             Type *fn_type = type_function(params, pc, ret, false);
 
             /* Register in scope so subsequent calls reuse */
@@ -5916,6 +5940,7 @@ static Type *check_expr(Checker *c, AstNode *node)
             }
             ret = resolve_type_node(c, node->as.closure.return_type,
                                     node->line, node->column);
+            checker_reject_borrow_return(c, ret, node->line, node->column);  /* Phase 0 */
         }
 
         /* Phase C: scan body for free variables → record captures on the
@@ -7606,6 +7631,45 @@ static void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type
     }
 }
 
+/* Phase 0 (borrow extension, docs/plan_borrow_extension.md §3): returning a
+   borrow (&T / &!T) is not yet implemented. Previously checker silently
+   accepted it and codegen emitted invalid IR ("ret type mismatch": the LLVM
+   signature returns the value type but the body returns a pointer). Reject it
+   clearly here until Phase 2 (return-borrow with single-input lifetime
+   elision) lands. `ret` is the already-resolved return Type. */
+static void checker_reject_borrow_return(Checker *c, Type *ret, int line, int col)
+{
+    if (ret != NULL && ret->kind == TYPE_REFERENCE)
+    {
+        checker_error(c, line, col,
+                      "borrows cannot escape via return yet: cannot return "
+                      "&%s%s (returning a borrow is not implemented)",
+                      ret->is_mut ? "!" : "",
+                      ret->as.pointer_to ? type_name(ret->as.pointer_to) : "T");
+    }
+}
+
+/* Phase 0 (borrow extension): a borrow type (&T / &!T) cannot be used as a
+   generic type argument — it would let a borrow be stored inside a container /
+   Option / Result and outlive its referent (the same dangling landmine as a
+   borrow field). Borrows are "function parameters only" (types.h). Reject e.g.
+   Option(&Foo), Vec(&Foo). Returns true if it rejected. */
+static bool checker_reject_borrow_type_arg(Checker *c, Type *arg, const char *base,
+                                           int line, int col)
+{
+    if (arg != NULL && arg->kind == TYPE_REFERENCE)
+    {
+        checker_error(c, line, col,
+                      "a borrow type cannot be a generic type argument: '%s' was "
+                      "given &%s%s (borrows are function-parameter-only; use a "
+                      "value-offset view instead)",
+                      base, arg->is_mut ? "!" : "",
+                      arg->as.pointer_to ? type_name(arg->as.pointer_to) : "T");
+        return true;
+    }
+    return false;
+}
+
 static void check_fn_decl(Checker *c, AstNode *node)
 {
     /* G2: skip generic function templates — registered in forward_pass,
@@ -7646,6 +7710,7 @@ static void check_fn_decl(Checker *c, AstNode *node)
     }
     Type *ret = resolve_type_node(c, node->as.fn_decl.return_type,
                                   node->line, node->column);
+    checker_reject_borrow_return(c, ret, node->line, node->column);  /* Phase 0 */
     Type *fn_type = type_function(params, n, ret, false);
     /* param defaults already attached in forward_pass (the type calls resolve to). */
 
@@ -7727,6 +7792,21 @@ static void check_struct_decl(Checker *c, AstNode *node)
     {
         Type *ft = resolve_type_node(c, node->as.struct_decl.field_types[i],
                                      node->line, node->column);
+        /* Phase 0 (borrow extension, docs/plan_borrow_extension.md §3): a borrow
+           field (&T / &!T) was silently accepted with zero safety checks — a
+           latent dangling-pointer landmine (the Ref can outlive its referent).
+           Reject until a real region analysis (Phase 3) lands; until then use
+           a value-offset view (StrSlice{off,len}) over an owned buffer. */
+        if (ft != NULL && ft->kind == TYPE_REFERENCE)
+        {
+            checker_error(c, node->line, node->column,
+                          "struct fields cannot be borrows yet: field '%s' of "
+                          "struct '%s' has borrow type &%s%s (use a value-offset "
+                          "view instead)",
+                          node->as.struct_decl.field_names[i], name,
+                          ft->is_mut ? "!" : "",
+                          ft->as.pointer_to ? type_name(ft->as.pointer_to) : "T");
+        }
         /* Copy field name */
         const char *fn = node->as.struct_decl.field_names[i];
         size_t len = strlen(fn);
@@ -7879,6 +7959,19 @@ static void check_enum_decl(Checker *c, AstNode *node)
                 else
                 {
                     pt = resolve_type_node(c, ptn, node->line, node->column);
+                }
+                /* Phase 0 (borrow extension): a borrow payload is the same
+                   dangling landmine as a borrow struct field — the &T can
+                   outlive its referent. Reject until region analysis lands. */
+                if (pt != NULL && pt->kind == TYPE_REFERENCE)
+                {
+                    checker_error(c, node->line, node->column,
+                        "enum payloads cannot be borrows yet: variant '%s' of "
+                        "'%s' has borrow payload &%s%s (use a value-offset view "
+                        "instead)",
+                        et->as.enom.variants[i].name, name,
+                        pt->is_mut ? "!" : "",
+                        pt->as.pointer_to ? type_name(pt->as.pointer_to) : "T");
                 }
                 et->as.enom.variants[i].payload_types[j] = pt;
                 if (type_owns_heap_for_enum(pt))
@@ -8063,6 +8156,7 @@ static void check_impl_decl(Checker *c, AstNode *node)
         }
         Type *ret = resolve_type_node(c, method->as.fn_decl.return_type,
                                       method->line, method->column);
+        checker_reject_borrow_return(c, ret, method->line, method->column);  /* Phase 0 */
 
         /* For instance methods: internal function type has an extra first param (*Struct).
            The user doesn't write 'self' — the compiler injects it. */
@@ -8905,6 +8999,7 @@ static void check_impl_trait_decl(Checker *c, AstNode *node)
         }
         Type *ret = resolve_type_node(c, method->as.fn_decl.return_type,
                                         method->line, method->column);
+        checker_reject_borrow_return(c, ret, method->line, method->column);  /* Phase 0 */
 
         /* Compare parameter count and types against trait signature.
            The trait signature does NOT include the implicit *Self param —
@@ -9286,6 +9381,7 @@ static void forward_pass(Checker *c, AstNode *program)
             }
             Type *ret = resolve_type_node(c, decl->as.fn_decl.return_type,
                                           decl->line, decl->column);
+            checker_reject_borrow_return(c, ret, decl->line, decl->column);  /* Phase 0 */
             Type *fn_type = type_function(params, n, ret, false);
             attach_param_defaults(c, decl, fn_type, params);
             scope_define(c->current_scope, decl->as.fn_decl.name, fn_type);
