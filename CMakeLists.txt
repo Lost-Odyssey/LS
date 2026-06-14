@@ -1404,6 +1404,47 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 
+# Phase 1 borrow-extension (docs/plan_borrow_extension.md §3): named non-escaping
+# local borrows `&T r = &x`. Positive: read / writable-mutate / re-borrow /
+# has_drop referent, JIT+AOT+memcheck 0/0/0.
+add_test(
+    NAME test_borrow_local
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=borrow_local
+        -DMARKER=LB
+        -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
+)
+# Negative: every escape vector that would dangle the borrow must be a clean
+# compile-time rejection (move the referent / copy-out the borrow / capture the
+# referent by-move into a closure).
+add_test(
+    NAME test_borrow_local_move_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_move_reject.ls
+        "-DEXPECT=is borrowed by a live local borrow"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_local_copyout_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_copyout_reject.ls
+        "-DEXPECT=value cannot be copied out"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+add_test(
+    NAME test_borrow_local_capture_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_capture_reject.ls
+        "-DEXPECT=is borrowed by a live local borrow"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
+
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(
     NAME test_mem_overhaul_jit

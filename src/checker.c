@@ -2468,6 +2468,16 @@ static void checker_try_mark_moved(Checker *c, AstNode *arg)
     /* Borrow parameters (&T / &!T) hold no ownership — never marked moved.
        Move-site rejection is surfaced separately by checker_reject_borrow_move. */
     if (sym->is_borrow || sym->is_mut_borrow) return;
+    /* Phase 1 (borrow extension): the referent of a live named local borrow
+       cannot be moved out — that would dangle the borrow. Reject instead of
+       marking moved (conservative: the pin is never lifted within the function). */
+    if (sym->is_borrow_src)
+    {
+        checker_move_error(c, arg->line, arg->column,
+            "cannot move '%s': it is borrowed by a live local borrow",
+            arg->as.ident.name);
+        return;
+    }
     sym->is_moved = true;
     /* Move-elision (Q4): record on the node that this use transferred ownership,
        so codegen can move (not clone) the heap and invalidate the source.
@@ -2510,6 +2520,154 @@ static bool checker_reject_struct_borrow_copy_source(Checker *c, AstNode *src, c
                        what, src->as.ident.name,
                        sym->is_mut_borrow ? "writable " : "read-only ");
     return true;
+}
+
+/* Phase 1 (borrow extension, docs/plan_borrow_extension.md §3): check a named
+   local borrow declaration `&T r = &x` / `&!T r = &!x` / `&T r2 = r1` (re-borrow).
+   `declared` is the resolved TYPE_REFERENCE. The borrow local is registered with
+   the pointee type + is_borrow/is_mut_borrow (same convention as a borrow
+   parameter), so all existing escape rejections (copy-out, capture) apply
+   automatically. The unique new soundness concern — the referent lives in THIS
+   function and could be moved out from under the borrow — is closed by marking
+   the owned source `is_borrow_src` (checker_try_mark_moved then rejects moving
+   it). Borrows do not escape: return is blocked by Phase 0 (`-> &T` rejected)
+   and by struct-borrow copy-out; field/payload storage by Phase 0 + copy-out. */
+static void check_local_borrow_decl(Checker *c, AstNode *node, Type *declared)
+{
+    const char *vname = node->as.var_decl.name;
+    Type *pointee = declared->as.pointer_to;
+    bool want_mut = declared->is_mut;
+
+    if (pointee == NULL) return;  /* resolve_type_node already reported */
+
+    /* Phase 1 restriction: struct pointees only. The struct borrow-copy-out
+       machinery (checker_reject_struct_borrow_copy_source) is mature; enum local
+       borrows are deferred to keep the spike provably sound. */
+    if (pointee->kind != TYPE_STRUCT)
+    {
+        checker_error(c, node->line, node->column,
+            "named local borrow '%s': only &struct / &!struct are supported yet "
+            "(got &%s%s)", vname, want_mut ? "!" : "", type_name(pointee));
+        return;
+    }
+
+    AstNode *init = node->as.var_decl.init;
+    if (init == NULL)
+    {
+        checker_error(c, node->line, node->column,
+            "named local borrow '%s' must be initialized (e.g. `&%sFoo %s = &%sx`)",
+            vname, want_mut ? "!" : "", vname, want_mut ? "!" : "");
+        return;
+    }
+
+    /* Type-check the initializer (also reports use-of-moved on the source). */
+    (void)check_expr(c, init);
+
+    /* Identify the source IDENT. Accepted initializer shapes:
+       - `&x`  → AST_UNARY(TOKEN_AMP, IDENT)   (read-only borrow of owned/borrow)
+       - `&!x` → AST_MUT_BORROW(IDENT)         (writable borrow of owned struct)
+       - `r1`  → AST_IDENT that is itself a borrow (re-borrow). */
+    AstNode *src_ident = NULL;
+    bool init_via_amp = false;       /* `&x`  read-only address-of */
+    bool init_via_mutamp = false;    /* `&!x` writable borrow */
+    if (init->kind == AST_UNARY && init->as.unary.op == TOKEN_AMP &&
+        init->as.unary.operand && init->as.unary.operand->kind == AST_IDENT)
+    {
+        src_ident = init->as.unary.operand;
+        init_via_amp = true;
+    }
+    else if (init->kind == AST_MUT_BORROW &&
+             init->as.mut_borrow.operand &&
+             init->as.mut_borrow.operand->kind == AST_IDENT)
+    {
+        src_ident = init->as.mut_borrow.operand;
+        init_via_mutamp = true;
+    }
+    else if (init->kind == AST_IDENT)
+    {
+        src_ident = init;  /* candidate re-borrow */
+    }
+    else
+    {
+        checker_error(c, node->line, node->column,
+            "named local borrow '%s' must be initialized from `&var` / `&!var` "
+            "or another borrow variable", vname);
+        return;
+    }
+
+    Symbol *src = scope_resolve(c->current_scope, src_ident->as.ident.name);
+    if (src == NULL)
+    {
+        checker_error(c, src_ident->line, src_ident->column,
+            "borrow source '%s' is not defined", src_ident->as.ident.name);
+        return;
+    }
+    bool src_is_borrow = src->is_borrow || src->is_mut_borrow;
+
+    if (src->is_moved || src->is_maybe_moved)
+    {
+        checker_error(c, src_ident->line, src_ident->column,
+            "cannot borrow '%s': it has been moved", src_ident->as.ident.name);
+        return;
+    }
+
+    /* A bare IDENT initializer is only valid as a re-borrow (source already a
+       borrow). Borrowing an owned variable must be explicit (`&x` / `&!x`) so the
+       intent — and the read-only vs writable kind — is visible. */
+    if (!init_via_amp && !init_via_mutamp && !src_is_borrow)
+    {
+        checker_error(c, node->line, node->column,
+            "named local borrow '%s': use `&%s` to borrow owned variable '%s'",
+            vname, src_ident->as.ident.name, src_ident->as.ident.name);
+        return;
+    }
+
+    /* Pointee type must match the source's effective type. */
+    if (src->type == NULL || !type_equals(src->type, pointee))
+    {
+        checker_error(c, node->line, node->column,
+            "named local borrow '%s': source '%s' has type '%s', expected '%s'",
+            vname, src_ident->as.ident.name,
+            src->type ? type_name(src->type) : "?", type_name(pointee));
+        return;
+    }
+
+    /* Writable borrow requires a writable source and an explicit `&!`. */
+    if (want_mut)
+    {
+        if (src->is_borrow)
+        {
+            checker_error(c, node->line, node->column,
+                "cannot take writable borrow '%s' of read-only borrow '%s'",
+                vname, src_ident->as.ident.name);
+            return;
+        }
+        if (init_via_amp)
+        {
+            checker_error(c, node->line, node->column,
+                "named writable borrow '%s' must use `&!%s`, not `&%s`",
+                vname, src_ident->as.ident.name, src_ident->as.ident.name);
+            return;
+        }
+    }
+
+    /* Register the borrow local (effective type = pointee). */
+    if (scope_resolve_local(c->current_scope, vname))
+    {
+        checker_error(c, node->line, node->column,
+            "variable '%s' already defined in this scope", vname);
+        return;
+    }
+    Symbol *bsym = scope_define(c->current_scope, vname, pointee);
+    if (bsym)
+    {
+        if (want_mut) bsym->is_mut_borrow = true;
+        else          bsym->is_borrow = true;
+    }
+    /* Pin the owned referent: it must not be moved while the borrow is alive.
+       A re-borrow's source is already a non-movable borrow, so nothing to mark. */
+    if (!src_is_borrow)
+        src->is_borrow_src = true;
 }
 
 /* F.2: reject moving a Block parameter (is_borrow=true).
@@ -3207,6 +3365,18 @@ static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t)
             checker_move_error(s->c, site->line, site->column,
                 "cannot capture '%s' by-move into a closure: it is a "
                 "borrow parameter (no transferable ownership)", name);
+            s->had_error = true;
+            return;
+        }
+        /* Phase 1 (borrow extension): moving the referent of a live named local
+           borrow into a closure env would dangle the borrow once the closure
+           (and its env) outlives or drops before the borrow's last use. The
+           generic move site goes through checker_try_mark_moved; closure
+           by-move capture is a separate path, so guard it here too. */
+        if (outer->is_borrow_src) {
+            checker_move_error(s->c, site->line, site->column,
+                "cannot capture '%s' by-move into a closure: it is borrowed by "
+                "a live local borrow", name);
             s->had_error = true;
             return;
         }
@@ -7004,6 +7174,16 @@ static void check_stmt(Checker *c, AstNode *node)
                                            node->line, node->column);
         if (declared == NULL)
             break;
+
+        /* Phase 1 (borrow extension): a named local borrow `&T r = &x`. Handled
+           in full by a dedicated path (registers the symbol with the pointee
+           type + is_borrow, pins the referent); skip the owned-value machinery. */
+        if (declared->kind == TYPE_REFERENCE)
+        {
+            check_local_borrow_decl(c, node, declared);
+            node->resolved_type = declared;
+            break;
+        }
 
         /* M-DEF: implicit empty/default init — `T v` ≡ `T v = {}` for any type
            where `= {}` is already a legal initializer (user containers like

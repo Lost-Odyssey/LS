@@ -7994,6 +7994,39 @@ static void codegen_stmt(CodegenContext *ctx, AstNode *node)
         Type *var_type = node->resolved_type;
         if (var_type == NULL)
             return;
+
+        /* Phase 1 (borrow extension): a named local borrow `&T r = &x` aliases
+           the referent's storage pointer (no alloca, no copy) — exactly like a
+           borrow parameter. Register the symbol with that pointer + is_borrowed
+           so scope cleanup leaves the referent's ownership untouched. The
+           checker (check_local_borrow_decl) already validated the source. */
+        if (var_type->kind == TYPE_REFERENCE)
+        {
+            Type *pointee = var_type->as.pointer_to;
+            AstNode *init = node->as.var_decl.init;
+            AstNode *src_ident = NULL;
+            if (init && init->kind == AST_UNARY && init->as.unary.op == TOKEN_AMP)
+                src_ident = init->as.unary.operand;     /* &x */
+            else if (init && init->kind == AST_MUT_BORROW)
+                src_ident = init->as.mut_borrow.operand; /* &!x */
+            else if (init && init->kind == AST_IDENT)
+                src_ident = init;                        /* re-borrow r1 */
+            if (src_ident == NULL)
+                return;
+            LLVMValueRef ptr = codegen_lvalue_ptr(ctx, src_ident);
+            if (ptr == NULL)
+                return;
+            CgSymbol *bsym = cg_scope_define(ctx->current_scope,
+                                             node->as.var_decl.name, ptr,
+                                             pointee, NULL);
+            if (bsym)
+            {
+                bsym->is_borrowed = true;  /* skip scope cleanup (referent owns) */
+                if (var_type->is_mut) bsym->is_mut_borrow = true;
+            }
+            return;
+        }
+
         LLVMTypeRef llvm_type = type_to_llvm(ctx, var_type);
 
         /* Alloca at function entry */

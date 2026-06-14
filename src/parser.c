@@ -1800,6 +1800,32 @@ static AstNode *parse_expr_prec(Parser *p, Precedence min_prec) {
                 if (after_ident.type == TOKEN_IDENTIFIER) break;
             }
         }
+        /* Phase 1 (borrow extension): TOKEN_AMP as infix would be bitwise-and.
+           But a borrow var decl `&T name` / `&!T name` starting the NEXT
+           statement also begins with `&`. Disambiguate by two signals that
+           never both hold for genuine infix `a & b` (operands always share the
+           operator's line): (1) the `&` opens a new line (newline since the
+           previous token), and (2) the tokens after it form a borrow decl
+           shape `& [!] (TypeKw|Ident) Ident`. If so, stop the expression so
+           parse_statement re-parses the `&...` as a declaration. */
+        if (p->current.type == TOKEN_AMP &&
+            p->current.line > p->previous.line) {
+            Scanner sc = p->scanner;
+            Token t1 = scanner_next(&sc);   /* token after & */
+            bool decl_shape = false;
+            if (t1.type == TOKEN_BANG) {                 /* &! Type name */
+                Token t2 = scanner_next(&sc);
+                Token t3 = scanner_next(&sc);
+                if ((is_type_keyword(t2.type) || t2.type == TOKEN_IDENTIFIER) &&
+                    t3.type == TOKEN_IDENTIFIER)
+                    decl_shape = true;
+            } else if (is_type_keyword(t1.type) || t1.type == TOKEN_IDENTIFIER) {
+                Token t2 = scanner_next(&sc);            /* & Type name */
+                if (t2.type == TOKEN_IDENTIFIER)
+                    decl_shape = true;
+            }
+            if (decl_shape) break;
+        }
         advance(p);
         AstNode *new_left = rule->infix(p, left);
         if (new_left == NULL) {
@@ -2063,6 +2089,26 @@ static bool starts_var_decl(Parser *p) {
 
     /* Direct built-in type keyword */
     if (is_type_keyword(cur)) return true;
+
+    /* Phase 1 (borrow extension): `&T name` / `&!T name` — a named local borrow
+       declaration. Disambiguate from the expression forms `&x` / `&!x`: strip
+       the borrow prefix and check whether the remainder looks like a typed var
+       decl (`T name <term>`). `&x` (address-of, IDENT NOT followed by another
+       type+name) stays an expression. */
+    if (cur == TOKEN_AMP) {
+        Scanner saved = p->scanner;
+        Token saved_cur = p->current;
+        Token saved_prev = p->previous;
+        advance(p);                              /* consume '&' */
+        if (p->current.type == TOKEN_BANG)       /* '&!' writable borrow */
+            advance(p);
+        /* Reuse the full type+name disambiguation on the remaining tokens. */
+        bool result = starts_var_decl(p);
+        p->scanner = saved;
+        p->current = saved_cur;
+        p->previous = saved_prev;
+        return result;
+    }
 
     /* *something — pointer type declaration */
     if (cur == TOKEN_STAR) {

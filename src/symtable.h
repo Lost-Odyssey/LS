@@ -19,6 +19,11 @@ typedef struct Symbol {
                                CAN be reassigned and mutated. Same type-unwrap convention
                                as is_borrow (type is the pointee T). Mutually exclusive
                                with is_borrow. */
+    bool is_borrow_src;     /* Phase 1 (borrow extension): true while this owned variable
+                               is the referent of a live named local borrow (`&T r = &x`).
+                               Moving it would dangle the borrow, so checker_try_mark_moved
+                               rejects moves of a borrow source. Conservative: set on the
+                               first borrow and never cleared within the function. */
 } Symbol;
 
 typedef struct Scope {
