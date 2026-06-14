@@ -93,12 +93,13 @@ fn main() {
         _ => { fail("FAIL bool nomatch") }
     }
 
-    // ---- 8. 64-bit subject, >32-bit field (i64 binder). Value fits in i64. ----
-    u64 big = 0x1122334455667788 as u64
+    // ---- 8. 64-bit subject, >32-bit field (i64 binder). bit63 set — exercises
+    //         the full-u64 literal parse (strtoull, not saturating strtoll). ----
+    u64 big = 0xAABBCCDDEE112233 as u64
     match big {
         bits[40:wide][24:tail] => {
-            i64 want_wide = 0x1122334455 as i64
-            i64 want_tail = 0x667788 as i64
+            i64 want_wide = 0xAABBCCDDEE as i64
+            i64 want_tail = 0x112233 as i64
             if (wide != want_wide) { fail("FAIL u64 wide") }
             if (tail != want_tail) { fail("FAIL u64 tail") }
         }

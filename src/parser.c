@@ -217,12 +217,16 @@ static AstNode *prefix_int_lit(Parser *p) {
     int len = tok.length < 63 ? tok.length : 63;
     memcpy(buf, tok.start, (size_t)len);
     buf[len] = '\0';
+    /* Use strtoull (not strtoll): an int literal is always a non-negative
+       magnitude (a leading '-' is a separate unary-minus token), so unsigned
+       parsing covers the full u64 range without saturating bit63-set values
+       like 0xAABBCCDDEE112233. The bits are stored verbatim into long long. */
     if (len > 2 && buf[0] == '0' && (buf[1] == 'x' || buf[1] == 'X')) {
-        val = (long long)strtoll(buf + 2, NULL, 16);
+        val = (long long)strtoull(buf + 2, NULL, 16);
     } else if (len > 2 && buf[0] == '0' && (buf[1] == 'b' || buf[1] == 'B')) {
-        val = (long long)strtoll(buf + 2, NULL, 2);
+        val = (long long)strtoull(buf + 2, NULL, 2);
     } else {
-        val = (long long)strtoll(buf, NULL, 10);
+        val = (long long)strtoull(buf, NULL, 10);
     }
     AstNode *n = new_node(AST_INT_LIT, tok.line, tok.column);
     n->as.int_lit.value = val;
@@ -961,12 +965,14 @@ static long long parse_int_lit_value(Parser *p) {
     memcpy(buf, tok.start, (size_t)len);
     buf[len] = '\0';
     long long val;
+    /* strtoull: int literals are non-negative magnitudes — full u64 range, no
+       bit63 saturation (see prefix_int_lit). */
     if (len > 2 && buf[0] == '0' && (buf[1] == 'x' || buf[1] == 'X'))
-        val = (long long)strtoll(buf + 2, NULL, 16);
+        val = (long long)strtoull(buf + 2, NULL, 16);
     else if (len > 2 && buf[0] == '0' && (buf[1] == 'b' || buf[1] == 'B'))
-        val = (long long)strtoll(buf + 2, NULL, 2);
+        val = (long long)strtoull(buf + 2, NULL, 2);
     else
-        val = (long long)strtoll(buf, NULL, 10);
+        val = (long long)strtoull(buf, NULL, 10);
     advance(p);
     return val;
 }
