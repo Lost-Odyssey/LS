@@ -315,7 +315,8 @@ cd build && ctest -j 5 --output-on-failure -C Release
 - ~~**模块命名空间收尾 B-1**（B-safe struct/enum 冲突检测）~~ ✅ 已完成（2026-05-30）：同名 struct/enum 来自多个模块 → 清晰 checker 错误 "multiple imported modules"，消除 GEP 崩溃/静默损坏。ctest 76/76。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-1
 - ~~**模块命名空间收尾 B-2**（struct/enum LLVM 类型名前缀化）~~ ✅ 已完成（2026-05-30）：`Type.strukt/enom.llvm_name` 字段存前缀名，codegen 所有 LLVM 命名点用前缀名，checker 注册表仍用裸名（零破坏）。ctest 79/79。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-2
 - ~~**模块命名空间收尾 B-3**（impl 方法/drop/clone 名跟随前缀）~~ ✅ 已完成（2026-05-30）：`codegen_impl_decl`/`codegen_impl_trait_decl` 在 `current_emit_module != NULL` 时前缀化 struct 名，静态方法调用按 `llvm_name` 解析。ctest 79/79。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-3
-- **模块命名空间收尾 B-4~B-6**（B-full 真命名空间）待做：类型位置限定语法 `mod.Type`（B-4）+ enum 跨模块变体（B-5）+ 综合 memcheck（B-6）。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md) Step B-4~B-6
+- ~~**模块命名空间收尾 B-4~B-6**（类型命名空间 B-full）~~ ✅ 已完成（2026-05-30）：类型位置限定语法 `mod.Type`/`alias.Type`（B-4）+ enum 跨模块变体经类型上下文解析（B-5）+ has_drop 同名 struct/enum 综合 memcheck（B-6）。同名 struct/enum 跨模块各自独立可用，裸名歧义报错并提示限定。`test_modtype_conflict`/`test_modtype_ns`/`test_modtype_qualified`。→ [docs/plan_module_namespace.md](docs/plan_module_namespace.md)（抬头：B-1~B-6 全 ✅）
+- **通用 `mod.fn` 限定函数调用解析**（另一个被称作 "B-full" 的真挂账）待做：任意 `模块.函数` 规范路径调用的通用解析 + 跨模块发射，且在泛型方法实例化到消费方时仍可见。现状靠针对性变通绕过（`std.c.malloc` 走字面结构匹配 `match_stdc_prim`、sync/task 走全局 intrinsic `__atomic_*`/`__mutex_*`/`__task_*`、别名 `c.fn()` 仅非泛型代码可用）。→ [docs/plan_module_fn_resolution.md](docs/plan_module_fn_resolution.md)
 - 正则表达式 builtin；f16 半精度浮点
 
 > 已完成特性的详细实现记录见 [docs/features_history.md](docs/features_history.md)
