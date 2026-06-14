@@ -1813,12 +1813,18 @@ static AstNode *parse_expr_prec(Parser *p, Precedence min_prec) {
             Scanner sc = p->scanner;
             Token t1 = scanner_next(&sc);   /* token after & */
             bool decl_shape = false;
-            if (t1.type == TOKEN_BANG) {                 /* &! Type name */
+            if (t1.type == TOKEN_BANG) {                 /* &! ... */
                 Token t2 = scanner_next(&sc);
-                Token t3 = scanner_next(&sc);
-                if ((is_type_keyword(t2.type) || t2.type == TOKEN_IDENTIFIER) &&
-                    t3.type == TOKEN_IDENTIFIER)
-                    decl_shape = true;
+                if (t2.type == TOKEN_ARRAY) {
+                    decl_shape = true;                   /* &!array(T) name — slice decl */
+                } else {
+                    Token t3 = scanner_next(&sc);
+                    if ((is_type_keyword(t2.type) || t2.type == TOKEN_IDENTIFIER) &&
+                        t3.type == TOKEN_IDENTIFIER)
+                        decl_shape = true;               /* &!Type name */
+                }
+            } else if (t1.type == TOKEN_ARRAY) {
+                decl_shape = true;                       /* &array(T) name — slice decl */
             } else if (is_type_keyword(t1.type) || t1.type == TOKEN_IDENTIFIER) {
                 Token t2 = scanner_next(&sc);            /* & Type name */
                 if (t2.type == TOKEN_IDENTIFIER)

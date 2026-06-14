@@ -2751,6 +2751,66 @@ static void check_local_borrow_decl(Checker *c, AstNode *node, Type *declared)
         src->is_borrow_src = true;
 }
 
+/* Slice local binding `&array(T) s = v[a..b]`: register the slice local (a
+   {ptr,len} value) and pin the source the view borrows, so it cannot be moved
+   while the slice is alive. Slice locals cannot escape (return / struct field /
+   enum payload / capture are all rejected by type), so no further marking is
+   needed. `declared` is the resolved TYPE_SLICE. */
+static void check_local_slice_decl(Checker *c, AstNode *node, Type *declared)
+{
+    const char *vname = node->as.var_decl.name;
+    AstNode *init = node->as.var_decl.init;
+    if (init == NULL)
+    {
+        checker_error(c, node->line, node->column,
+            "slice local '%s' must be initialized (e.g. `&array(T) %s = v[a..b]`)",
+            vname, vname);
+        return;
+    }
+    Type *it = check_expr(c, init);
+    if (it == NULL)
+        return;
+    if (it->kind != TYPE_SLICE ||
+        !type_equals(it->as.array.elem, declared->as.array.elem))
+    {
+        checker_error(c, node->line, node->column,
+            "cannot initialize slice '%s' (type '%s') with value of type '%s'",
+            vname, type_name(declared), type_name(it));
+        return;
+    }
+    if (declared->is_mut && !it->is_mut)
+    {
+        checker_error(c, node->line, node->column,
+            "writable slice '%s' cannot bind a read-only slice", vname);
+        return;
+    }
+    /* The view borrows a contiguous source; pin its root so it outlives the
+       slice. A temporary source (`make_vec()[a..b]`) has no root → reject. */
+    Symbol *src = checker_place_root_symbol(c, init);
+    if (src == NULL)
+    {
+        checker_error(c, node->line, node->column,
+            "slice local '%s': cannot bind a view of a temporary (it would "
+            "dangle); slice a named variable", vname);
+        return;
+    }
+    if (src->is_moved || src->is_maybe_moved)
+    {
+        checker_error(c, node->line, node->column,
+            "slice local '%s': source '%s' has been moved", vname, src->name);
+        return;
+    }
+    if (scope_resolve_local(c->current_scope, vname))
+    {
+        checker_error(c, node->line, node->column,
+            "variable '%s' already defined in this scope", vname);
+        return;
+    }
+    scope_define(c->current_scope, vname, declared);
+    if (!src->is_borrow && !src->is_mut_borrow)
+        src->is_borrow_src = true;
+}
+
 /* Phase 2 (borrow extension): given a borrow-returning call, return the AST
    expression whose place the result borrows — the method receiver (`o` in
    `o.get()`) or the single borrow argument (the arg passed to the one `&U`
@@ -2807,10 +2867,11 @@ static Symbol *checker_place_root_symbol(Checker *c, AstNode *e)
             if (e->as.unary.op == TOKEN_AMP) { e = e->as.unary.operand; break; }
             return NULL;
         case AST_CALL:
-            /* A borrow-returning call: recurse into what it borrows. A call that
-               returns an OWNED value (resolved_type not a reference) is a fresh
-               temporary — not a place — so stop (NULL). */
-            if (e->resolved_type && e->resolved_type->kind == TYPE_REFERENCE)
+            /* A borrow/slice-returning call: recurse into what it borrows. A call
+               that returns an OWNED value (resolved_type not a reference/slice) is
+               a fresh temporary — not a place — so stop (NULL). */
+            if (e->resolved_type && (e->resolved_type->kind == TYPE_REFERENCE ||
+                                     e->resolved_type->kind == TYPE_SLICE))
             {
                 e = borrow_call_provenance_node(e);
                 break;
@@ -7413,6 +7474,15 @@ static void check_stmt(Checker *c, AstNode *node)
             break;
         }
 
+        /* A slice local `&array(T) s = v[a..b]` — a borrowed {ptr,len} value that
+           pins its source. Handled by a dedicated path; skip owned machinery. */
+        if (declared->kind == TYPE_SLICE)
+        {
+            check_local_slice_decl(c, node, declared);
+            node->resolved_type = declared;
+            break;
+        }
+
         /* M-DEF: implicit empty/default init — `T v` ≡ `T v = {}` for any type
            where `= {}` is already a legal initializer (user containers like
            Vec/Map and struct zero-init via the empty-brace branch below).
@@ -7723,7 +7793,31 @@ static void check_stmt(Checker *c, AstNode *node)
             c->expected_type = c->current_fn_return;
             Type *val = check_expr(c, node->as.return_stmt.value);
             c->expected_type = saved_expected;
-            if (c->current_fn_return->kind == TYPE_REFERENCE)
+            if (c->current_fn_return->kind == TYPE_SLICE)
+            {
+                /* Slice return under single-input elision: the returned view must
+                   be a slice of matching element type, rooted at the one borrow
+                   input (`self.field[a..b]` → self). A view of a local/temporary
+                   would dangle. */
+                Type *want = c->current_fn_return;
+                if (val != NULL && (val->kind != TYPE_SLICE ||
+                    !type_equals(val->as.array.elem, want->as.array.elem)))
+                {
+                    checker_error(c, node->line, node->column,
+                                  "return type mismatch: expected '%s', got '%s'",
+                                  type_name(want), type_name(val));
+                }
+                Symbol *root = node->as.return_stmt.value
+                    ? checker_place_root_symbol(c, node->as.return_stmt.value) : NULL;
+                if (root == NULL || !(root->is_borrow || root->is_mut_borrow))
+                {
+                    checker_error(c, node->line, node->column,
+                        "a returned slice must derive from the `&self` / borrow "
+                        "parameter (e.g. `self.field[a..b]`); cannot return a view "
+                        "of a local or temporary — it would dangle");
+                }
+            }
+            else if (c->current_fn_return->kind == TYPE_REFERENCE)
             {
                 /* Phase 2 (borrow extension): the function returns a borrow (&T
                    / &!T). The returned expression must be a PLACE rooted at the
@@ -8123,14 +8217,19 @@ static bool fn_decl_borrow_return_eligible(AstNode *fn)
 static void checker_reject_borrow_return(Checker *c, Type *ret, AstNode *fn,
                                          int line, int col)
 {
-    /* A slice result (&[T]) carries a borrowed *T — returning it would dangle.
-       Slice returns under single-input elision are not yet supported; reject. */
+    /* A slice result (&array(T)) carries a borrowed *T — it may only escape via
+       return under single-input lifetime elision (same rule as &T), so the
+       result borrows the one input. The body's AST_RETURN proves the returned
+       view is rooted at that input. Otherwise it would dangle → reject. */
     if (ret != NULL && ret->kind == TYPE_SLICE)
     {
+        if (fn_decl_borrow_return_eligible(fn))
+            return;
         checker_error(c, line, col,
-                      "cannot return a slice '%s' yet: a borrowed view cannot "
-                      "escape the function (return a Vec(%s) to own the data)",
-                      type_name(ret), type_name(ret->as.array.elem));
+                      "cannot return a slice '%s' here: only a function with "
+                      "exactly one borrow input (an `&self` method, or a single "
+                      "`&T` parameter) may return a borrowed view",
+                      type_name(ret));
         return;
     }
     if (ret != NULL && ret->kind == TYPE_REFERENCE)

@@ -1534,6 +1534,15 @@ add_test(
         "-DEXPECT=cannot be slices"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# Slice return under single-input elision: a view of a LOCAL still dangles → reject.
+add_test(
+    NAME test_slice_return_local_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_return_local_reject.ls
+        "-DEXPECT=must derive from"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
+)
 
 # M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
 add_test(

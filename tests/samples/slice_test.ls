@@ -12,6 +12,13 @@ fn sum(&array(int) s) -> int {
     return t
 }
 
+struct Buf { Vec(int) data }
+impl Buf {
+    // Zero-copy view API: return a borrowed window into self's buffer (single-
+    // input lifetime elision — the view borrows self).
+    fn window(&self, int a, int b) -> &array(int) { return self.data[a..b] }
+}
+
 fn main() -> int {
     Vec(int) v = [10, 20, 30, 40, 50]
 
@@ -31,6 +38,20 @@ fn main() -> int {
 
     // Sub-slice of a slice.
     if (v[1..5][1..3].len() == 2 && v[1..5][1..3][0] == 30) { print("SL PASS subslice") } else { print("SL FAIL subslice") }
+
+    // Bind a slice to a named local (pins the source v while it is alive).
+    &array(int) sl = v[1..4]
+    int s2 = 0
+    for x in sl { s2 = s2 + x }
+    if (sl.len() == 3 && sl[0] == 20 && s2 == 90) { print("SL PASS bind") } else { print("SL FAIL bind") }
+
+    // Slice-returning method (zero-copy window), used immediately and bound.
+    Buf bf = Buf{data: [1, 2, 3, 4, 5, 6]}
+    if (bf.window(2, 5).len() == 3 && bf.window(2, 5)[0] == 3) { print("SL PASS retimm") } else { print("SL FAIL retimm") }
+    &array(int) w = bf.window(0, 4)
+    int s3 = 0
+    for x in w { s3 = s3 + x }
+    if (s3 == 10) { print("SL PASS retbind") } else { print("SL FAIL retbind") }
 
     // has_drop (Str) elements: index read deep-clones (owned + dropped); for-in
     // reads in place. memcheck proves no leak / double-free.
