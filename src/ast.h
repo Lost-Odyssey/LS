@@ -1,0 +1,685 @@
+/* ast.h — AST node definitions, constructors, and interface */
+#ifndef LS_AST_H
+#define LS_AST_H
+
+#include "token.h"
+#include "common.h"
+
+typedef struct AstNode AstNode;
+typedef struct TypeNode TypeNode;
+typedef struct Type Type;
+
+/* Trait bounds for a single type parameter (e.g. T: Printable + Comparable). */
+typedef struct {
+    char **trait_names;  /* ["Printable", "Comparable"] — owned */
+    int    count;        /* 0 if no bounds */
+} TypeParamBound;
+
+/* Method/function-level where clauses, e.g. `where T: Equal + Order`.
+   The type parameter name may come from the function itself or from an
+   enclosing generic impl. */
+typedef struct {
+    char *type_param_name;   /* owned */
+    TypeParamBound bounds;   /* owned trait_names */
+} WhereBound;
+
+/* ---- TypeNode ---- */
+
+typedef enum
+{
+    TYPE_NODE_PRIMITIVE, /* built-in keyword type */
+    TYPE_NODE_POINTER,   /* *T */
+    TYPE_NODE_REFERENCE, /* &T (is_mut=false) / &!T (is_mut=true) */
+    TYPE_NODE_ARRAY,     /* array(T, N) — fixed-size */
+    TYPE_NODE_SIMD,      /* Simd(T, N) — SIMD vector (reuses the array union: elem + size=lanes) */
+    TYPE_NODE_SLICE,     /* &array(T) (is_mut=false) / &!array(T) (is_mut=true) — borrowed slice */
+    TYPE_NODE_VECTOR,    /* vec(T)      — dynamic array */
+    TYPE_NODE_MAP,       /* map(K, V)   — chained hash map */
+    TYPE_NODE_FN,        /* fn(A, B) -> R */
+    TYPE_NODE_BLOCK,     /* Block(A, B) -> R — closure type (Phase A) */
+    TYPE_NODE_NAMED,     /* user-defined struct name */
+} TypeNodeKind;
+
+struct TypeNode
+{
+    TypeNodeKind kind;
+    int line, column;
+    bool is_mut;  /* TYPE_NODE_REFERENCE only: false => &T, true => &!T */
+    union
+    {
+        TokenType primitive; /* TYPE_NODE_PRIMITIVE: which keyword */
+        TypeNode *pointee;   /* TYPE_NODE_POINTER */
+        struct
+        {
+            TypeNode *elem;
+            int size;
+        } array; /* TYPE_NODE_ARRAY — size > 0 for fixed */
+        struct
+        {
+            TypeNode *elem;
+        } vec; /* TYPE_NODE_VECTOR */
+        struct
+        {
+            TypeNode *key;
+            TypeNode *val;
+        } map; /* TYPE_NODE_MAP */
+        struct
+        {
+            TypeNode **params;
+            int param_count;
+            TypeNode *ret; /* NULL == void */
+        } fn;
+        struct
+        {
+            char *name;
+            char *module;        /* B-4: module qualifier for `mod.Type` / `std.json.Value`;
+                                    NULL for unqualified types. Holds the module path
+                                    (dots preserved, e.g. "std.json") or import alias. */
+            TypeNode **args;     /* NULL when arg_count == 0 (plain named type) */
+            int arg_count;       /* generic-like instantiation: e.g. Option(int) */
+        } named; /* TYPE_NODE_NAMED */
+    } as;
+};
+
+/* ---- MatchArm ---- */
+
+typedef struct
+{
+    AstNode *pattern; /* literal, identifier, or wildcard */
+    AstNode *body;    /* expression or block */
+} MatchArm;
+
+/* ---- AstNodeType ---- */
+
+typedef enum
+{
+    /* Literals */
+    AST_INT_LIT,
+    AST_FLOAT_LIT,
+    AST_STRING_LIT,
+    AST_BOOL_LIT,
+    AST_NIL_LIT,
+    AST_FORMAT_STRING, /* f"text {expr} text" — interpolated string */
+    AST_ARRAY_LIT,     /* [expr, expr, ...] — array literal */
+    AST_MAP_LIT,       /* { key -> val, ... } — map literal */
+    /* Expressions */
+    AST_IDENT,
+    AST_UNARY,
+    AST_MUT_BORROW,   /* &!ident — explicit writable-borrow at call site */
+    AST_BINARY,
+    AST_CALL,
+    AST_INDEX,
+    AST_FIELD,
+    AST_CLOSURE,
+    AST_MATCH,
+    AST_MATCH_OR_PATTERN, /* A | B | C inside a match arm — OR-pattern */
+    AST_MATCH_BIT_PATTERN,     /* bits[width:name|literal|_] — one bit field (V1) */
+    AST_MATCH_BIT_PATTERN_SEQ, /* bits[..][..][..] — a sequence of bit fields (V1) */
+    AST_TRY,          /* try expr — Zig-style early return for Result/Option */
+    AST_FORCE_UNWRAP,  /* expr! — force-unwrap Option/Result, panic on None/Err */
+    AST_CAST,
+    AST_SIZEOF,       /* sizeof(Type) — compile-time byte size as i64 */
+    AST_TYPENAME,     /* __type_name(Type) — compile-time type name as a Str */
+    AST_RANGE,
+    /* Statements */
+    AST_VAR_DECL,
+    AST_ASSIGN,
+    AST_RETURN,
+    AST_BREAK,
+    AST_CONTINUE,
+    AST_IF,
+    AST_WHILE,
+    AST_FOR,
+    AST_FOR_C,
+    AST_COMPTIME_FOR,  /* comptime for f in fields(T) { ... } — compile-time field iteration */
+    AST_COMPTIME_IF,   /* comptime if <const cond> { } [else { }] — compile-time branch */
+    AST_COMPTIME_FIELD,/* v.(f) — field access by comptime handle, lowered during unroll */
+    AST_COMPTIME_MATCH,/* comptime match v { vr(p) => ... } — expands to a per-variant match */
+    AST_COMPTIME_CONST,/* comptime <type> <name> = <const-expr> — compile-time constant value */
+    AST_COMPTIME_BLOCK,/* comptime { ... return v } — block-form compile-time computation */
+    AST_BLOCK,
+    AST_EXPR_STMT,
+    /* Declarations */
+    AST_FN_DECL,
+    AST_STRUCT_DECL,
+    AST_ENUM_DECL,
+    AST_IMPL_DECL,
+    AST_MODULE_DECL,
+    AST_IMPORT_DECL,
+    AST_TYPE_ALIAS_DECL, /* type Name = Type — Phase A closure prerequisite */
+    AST_TRAIT_DECL,      /* trait Name { fn sig(); fn sig(); } */
+    AST_IMPL_TRAIT_DECL, /* impl Trait for Struct { fn ... } */
+    /* Heap allocation */
+    AST_NEW_EXPR, /* new StructName { field: val, ... } */
+    /* Annotations */
+    AST_AT_TIME,  /* @time expr — returns expr value, prints elapsed time */
+    AST_AT_BENCH, /* @bench(N) expr — runs expr N times, returns mean ns as f64 */
+    /* FFI */
+    AST_LOAD_LIB,
+    AST_FFI_CALL,
+    AST_EXTERN_FN,
+    AST_EXTERN_STRUCT_DECL, /* extern struct Name { fields } */
+    AST_EXTERN_BLOCK,       /* extern { struct/fn decls... } */
+    /* Root */
+    AST_PROGRAM,
+} AstNodeType;
+
+/* ---- AstNode ---- */
+
+struct AstNode
+{
+    AstNodeType kind;
+    int line, column;
+    Type *resolved_type; /* Filled by type checker (not owned by AST) */
+    /* Move-elision (Q4): set by the checker on a source IDENT node when that
+       use actually transferred ownership (the source variable was marked MOVED
+       and any later use is rejected). Codegen reads this to elide the defensive
+       deep-clone at var_decl / assignment sites — moving the heap and
+       invalidating the source instead. Only ever true on AST_IDENT nodes whose
+       symbol is owned (not a borrow, not a static string). Defaults to false
+       (ast_new zero-inits), so any node the checker does not touch keeps the
+       conservative clone behavior. */
+    bool moved_out;
+    /* fn -> Block coercion: set by checker when a named function value appears
+       where a Block(P...)->R is expected. Codegen wraps the raw function in an
+       env-ignoring thunk and returns the usual {fn, env} Block value. */
+    bool coerce_fn_to_block;
+    Type *coerce_block_type; /* owned clone of the expected Block type */
+    union
+    {
+        struct
+        {
+            long long value;
+            bool is_char; /* true when created from a char literal 'x' */
+        } int_lit;
+        struct
+        {
+            double value;
+        } float_lit;
+        struct
+        {
+            char *value;
+            int length;
+        } string_lit;
+        struct
+        {
+            bool value;
+        } bool_lit;
+        /* nil has no data */
+        struct
+        {
+            /* Alternating: parts[0] is text, exprs[0] is first {expr},
+               parts[1] is text after first expr, etc.
+               part_count == expr_count + 1 always. */
+            char **parts;    /* text segments (part_count items) */
+            AstNode **exprs; /* interpolated expressions (expr_count items) */
+            char **specs;    /* format specifiers (expr_count items; NULL = none) */
+            int part_count;
+            int expr_count;
+        } format_string;
+        struct
+        {
+            AstNode **elements;
+            int count;
+        } array_lit;
+        struct
+        {
+            AstNode **keys;
+            AstNode **vals;
+            int pair_count;
+        } map_lit;
+        struct
+        {
+            char *name;
+            /* Parameterized-type name used as an expression, for a static call on a
+               generic instance: `Box(int).reflect()` / `Box(int).from_value(v)`.
+               The parser fills these for `IDENT(typeargs).` where the args are
+               unambiguously types (contain a type keyword). NULL/0 for an ordinary
+               identifier — so normal IDENTs are unaffected. The checker instantiates
+               name(type_args) and dispatches the static method on the concrete type
+               (mirrors the `type BI = Box(int); BI.method()` alias path). */
+            TypeNode **type_args;
+            int type_arg_count;
+        } ident;
+        struct
+        {
+            TokenType op;
+            AstNode *operand;
+        } unary;
+        struct
+        {
+            AstNode *operand;  /* must be an IDENT at parse time */
+        } mut_borrow;
+        struct
+        {
+            TokenType op;
+            AstNode *left;
+            AstNode *right;
+            /* Operator overloading: when the checker detects that `left OP right`
+               resolves to a user-defined operator method (struct/enum impl of a
+               built-in operator trait), it synthesizes the equivalent method-call
+               (or derived) expression here and stores it. left/right are
+               deep-cloned into `lowered`, so `lowered` owns its subtrees and is
+               freed by ordinary ast_free recursion (no aliasing). codegen emits
+               `lowered` instead of the builtin binary op when non-NULL. */
+            AstNode *lowered;
+        } binary;
+        struct
+        {
+            AstNode *callee;
+            AstNode **args;
+            int arg_count;
+            TypeNode **type_args;    /* G2: explicit type args, e.g. identity(int)(42) */
+            int type_arg_count;      /* G2: 0 for non-generic calls */
+            char *resolved_type_args; /* method-generic type args inferred from a
+                                         closure return (e.g. "int" for v.map(|x|x+1));
+                                         codegen mangles `.map(int)` when type_args
+                                         is empty. NULL otherwise. */
+        } call;
+        struct
+        {
+            AstNode *object;
+            AstNode *index;       /* single-subscript v[i]: the index (indices==NULL) */
+            AstNode **indices;    /* multi-subscript t[i,j,..]: count>=2 (index==NULL) */
+            int index_count;      /* number of subscripts; 1 for legacy single index */
+        } index_expr;
+        struct
+        {
+            AstNode *object;
+            char *field;
+        } field_access;
+        struct
+        {
+            TypeNode **param_types;
+            char **param_names;
+            int param_count;
+            TypeNode *return_type;
+            AstNode *body;
+            /* Phase B: true for Ruby-form `|x| body` literals (param types
+               and return type inferred from call-site expected Block(...));
+               false for the legacy `fn(int x) -> R { ... }` form (explicit
+               types in the AST). */
+            bool is_ruby_form;
+            /* Phase C captures (filled in by the checker via free-variable
+               scan over the body). Each capture is a name+type pair owned
+               by the AST node — codegen reads this to build the env struct
+               and emit per-capture loads at body entry. */
+            struct {
+                char *name;
+                Type *type;            /* shared, not owned */
+                bool  is_explicit_move; /* F.1: user wrote [move v] for this */
+            } *captures;
+            int capture_count;
+            /* F.1: [move v1, v2] capture spec from parser.
+               Checker resolves these into captures[i].is_explicit_move.
+               Owned; freed by ast_free. */
+            char **move_names;
+            int    move_count;
+        } closure;
+        struct
+        {
+            AstNode *subject;
+            MatchArm *arms;
+            int arm_count;
+        } match;
+        struct
+        {
+            AstNode *left;   /* first alternative  */
+            AstNode *right;  /* second alternative (may itself be AST_MATCH_OR_PATTERN) */
+        } or_pattern;
+        /* Bit-pattern match (V1): `bits[w:name][w:0xVAL][w:_]...` as a match arm
+           pattern. One AST_MATCH_BIT_PATTERN per field; AST_MATCH_BIT_PATTERN_SEQ
+           holds the field list. Only appears as a match arm pattern (or an OR-tree
+           leaf), never as a general expression — so codegen/checker handle it from
+           the AST_MATCH path, not check_expr/codegen_expr. */
+        struct
+        {
+            int        width;            /* field bit width (1-64) */
+            char      *name;             /* binder name; NULL = literal or wildcard '_' */
+            long long  match_val;        /* literal value when match_value_set */
+            bool       match_value_set;  /* true for bits[4:0xA] form */
+            int        lsb_shift;        /* filled by checker (MSB-first offset from LSB) */
+        } bit_pattern;
+        struct
+        {
+            AstNode **items;        /* AST_MATCH_BIT_PATTERN nodes, MSB-first */
+            int       count;
+            int       total_width;  /* filled by checker (sum of field widths) */
+        } bit_pattern_seq;
+        struct
+        {
+            AstNode *expr;
+            TypeNode *target_type;
+        } cast;
+        struct
+        {
+            TypeNode *type_node;  /* the parsed operand type, e.g. sizeof(T) */
+            Type     *sized_type; /* filled by checker: resolved concrete type */
+        } sizeof_expr;
+        struct
+        {
+            TypeNode *type_node;  /* the parsed operand type, e.g. __type_name(T) */
+            Type     *named_type; /* filled by checker: resolved concrete type */
+        } typename_expr;
+        struct
+        {
+            AstNode *expr;     /* Result/Option expression to unwrap */
+            /* Filled by the type-checker — the enclosing function's return type
+               (Result(_,E) or Option(_)). Codegen uses this to construct the
+               propagated enum value, since it may differ from inner expr's type. */
+            Type *fn_return_type;
+        } try_expr;
+        struct
+        {
+            AstNode *expr;     /* Option/Result expression to force-unwrap.
+                                  Result type T is on node->resolved_type; the
+                                  operand enum is read via expr->resolved_type,
+                                  so no extra field is needed here. */
+            AstNode *message;  /* C1: optional panic message (string expr) for the
+                                  `.expect(msg)` combinator, which the checker
+                                  rewrites to a force-unwrap. NULL for bare `!` and
+                                  `.unwrap()` (default diagnostic). */
+        } force_unwrap;
+        struct
+        {
+            AstNode *start;
+            AstNode *end;
+        } range;
+        struct
+        {
+            TypeNode *var_type;
+            char *name;
+            AstNode *init;
+            bool is_repl_extern; /* REPL Phase 2: a replayed pre-existing global
+                                    (container/has_drop). The checker registers the
+                                    symbol but skips M-DEF/init/move-tracking; codegen
+                                    emits a storage-less external (jit.c strips it to
+                                    reference the introducing snippet's definition).
+                                    Always false outside the REPL — AOT/JIT file
+                                    execution never sets it, so their paths are
+                                    unaffected. */
+        } var_decl;
+        struct
+        {
+            AstNode *target;
+            TokenType op;
+            AstNode *value;
+        } assign;
+        struct
+        {
+            AstNode *value;
+        } return_stmt;
+        struct
+        {
+            AstNode *cond;
+            AstNode *then_block;
+            AstNode *else_block;
+        } if_stmt;
+        struct
+        {
+            AstNode *cond;
+            AstNode *body;
+        } while_stmt;
+        struct
+        {
+            char *var;
+            AstNode *iter;
+            AstNode *body;
+            /* Iterator-protocol desugaring (for x in <struct with iter()/next()>):
+               filled by the checker with the equivalent
+                 { [Iter __it = src.iter()]  while true {
+                       match __it.next() { Some(x) => {BODY}  None => break } } }
+               AST subtree. When non-NULL, codegen emits this block instead of the
+               builtin range/array/vec foreach. `body` is moved into the Some arm
+               (left NULL here). NULL for builtin iterables. See
+               docs/plan_userdef_for_in.md. */
+            AstNode *desugared;
+        } for_stmt;
+        struct
+        {
+            AstNode *init;
+            AstNode *cond;
+            AstNode *update;
+            AstNode *body;
+        } for_c_stmt;
+        struct
+        {
+            char *var;            /* comptime loop variable, e.g. "f" (field) / "vr" (variant) */
+            TypeNode *over_type;  /* the T in fields(T)/variants(T) — resolved per monomorphization */
+            AstNode *body;        /* loop body block; cloned + substituted once per field/variant */
+            bool over_variants;   /* false = fields(T) [struct]; true = variants(T) [enum] */
+        } comptime_for;
+        struct
+        {
+            AstNode *cond;        /* compile-time-constant predicate over f.name/f.index/f.type_name */
+            AstNode *then_block;
+            AstNode *else_block;  /* NULL, an AST_BLOCK, or a chained AST_COMPTIME_IF */
+        } comptime_if;
+        struct
+        {
+            AstNode *object;      /* v in v.(f) */
+            char *handle;         /* comptime field handle name, e.g. "f"; lowered to v.<name> */
+        } comptime_field;
+        struct
+        {
+            AstNode *subject;     /* the v in `comptime match v { ... }` */
+            char *handle;         /* variant handle, e.g. "vr" → vr.name/index/has_payload/... */
+            char *binder;         /* payload binding name, e.g. "p" (NULL = no binder) */
+            AstNode *body;        /* arm body, expanded once per enum variant */
+        } comptime_match;
+        struct
+        {
+            TypeNode *decl_type;  /* declared type: scalar (int/f64/...) or array(T,N) */
+            char *name;
+            AstNode *value;       /* RHS: a const expr, or an AST_COMPTIME_BLOCK */
+            bool is_global;       /* true = top-level (.rodata global); set by checker from scope depth */
+        } comptime_const;
+        struct
+        {
+            AstNode *block;       /* AST_BLOCK that computes a value via `return` */
+        } comptime_block;
+        struct
+        {
+            AstNode **stmts;
+            int stmt_count;
+        } block;
+        struct
+        {
+            AstNode *expr;
+        } expr_stmt;
+        struct
+        {
+            char *name;
+            char **type_params;      /* G2: ["T"] for fn id(T)(...); NULL if non-generic */
+            int   type_param_count;  /* G2: 0 for non-generic functions */
+            /* Trait bounds per type param (parallel to type_params). NULL if no bounds.
+               e.g. fn f(T: Printable + Comparable, U)(T x, U y) */
+            TypeParamBound *type_param_bounds;  /* NULL if no bounds on any param */
+            WhereBound *where_bounds;           /* method/function-level `where T: Trait` */
+            int where_bound_count;
+            TypeNode **param_types;
+            char **param_names;
+            AstNode **param_defaults;     /* parallel to param_names; literal default or NULL */
+            int param_count;
+            TypeNode *return_type;
+            AstNode *body;
+            bool is_static;               /* true for 'static fn' in impl block */
+            const char *impl_struct_name; /* non-NULL if this fn is inside an impl block */
+            /* Phase A1 (&!self): self borrow kind for instance methods.
+                 0 = none / implicit (legacy: self is *Struct pseudo-pointer)
+                 1 = &self  (read-only borrow, Phase A2 — not yet implemented)
+                 2 = &!self (writable borrow) */
+            int self_borrow_kind;
+        } fn_decl;
+        struct
+        {
+            char *name;
+            char **type_params;      /* G1: ["T", "U"] for struct Pair(T, U); NULL if non-generic */
+            int   type_param_count;  /* G1: 0 for non-generic structs */
+            /* Trait bounds per type param (parallel to type_params). NULL if no bounds. */
+            TypeParamBound *type_param_bounds;
+            TypeNode **field_types;
+            char **field_names;
+            AstNode **field_defaults; /* parallel to field_names; literal default value or NULL */
+            bool *field_private;      /* parallel to field_names; `priv` modifier (NULL → none private) */
+            int field_count;
+            char **derives;           /* @derive(...) trait names; NULL if none */
+            int derive_count;
+        } struct_decl;
+        struct
+        {
+            char *name;
+            /* Variants: parallel arrays. Each variant has its own payload
+               sub-arrays (payload_count == 0 means no payload). */
+            struct
+            {
+                char *name;
+                TypeNode **payload_types;  /* NULL if payload_count == 0 */
+                char **payload_names;      /* parallel; element may be NULL if unnamed */
+                int payload_count;
+            } *variants;
+            int variant_count;
+            char **derives;           /* @derive(...) trait names; NULL if none */
+            int derive_count;
+        } enum_decl;
+        struct
+        {
+            char *name;
+            char **type_params;      /* G1.5: ["T","U"] for impl(T,U) Pair(T,U); NULL if non-generic */
+            int   type_param_count;  /* G1.5: 0 for non-generic */
+            AstNode **methods;
+            int method_count;
+        } impl_decl;
+        struct
+        {
+            char *name;
+        } module_decl;
+        struct
+        {
+            char *path;
+            char *alias; /* optional: `import foo.bar as alias` → "alias"; NULL if absent */
+        } import_decl;
+        struct
+        {
+            char *name;
+            TypeNode *target;
+        } type_alias_decl;
+        struct
+        {
+            char *name;
+            AstNode **method_sigs;     /* fn signatures (no body) */
+            int method_sig_count;
+        } trait_decl;
+        struct
+        {
+            char *trait_name;
+            char *struct_name;
+            char **type_params;        /* generic `impl(T) Trait for Struct(T)`; NULL if non-generic */
+            int   type_param_count;    /* 0 for non-generic trait impls */
+            AstNode **methods;         /* fn implementations (with body) */
+            int method_count;
+        } impl_trait_decl;
+        struct
+        {
+            char *struct_name;
+            char *module;            /* B-4: module qualifier for `mod.Type{...}`; NULL if unqualified */
+            struct
+            {
+                char *name;
+                AstNode *value;
+            } *field_inits;
+            int field_init_count;
+            bool on_stack; /* true = struct value literal (StructName{...}), false = new (heap) */
+            TypeNode **type_args;    /* G1: generic type args, e.g. Pair(int,string){...} */
+            int type_arg_count;      /* G1: 0 for non-generic struct literals */
+        } new_expr;
+        struct
+        {
+            AstNode *expr;
+        } at_time;
+        struct
+        {
+            AstNode *expr;
+            int iterations;
+        } at_bench;
+        struct
+        {
+            char *var_name;
+            char *lib_path;
+        } load_lib;
+        struct
+        {
+            AstNode *lib_expr;
+            char *fn_name;
+            AstNode **args;
+            int arg_count;
+        } ffi_call;
+        struct
+        {
+            char *name;
+            TypeNode **param_types;
+            char **param_names;
+            int param_count;
+            TypeNode *return_type;
+            bool is_vararg;
+            char *lib_name;
+        } extern_fn;
+        struct
+        {
+            char *name;
+            TypeNode **field_types;
+            char **field_names;
+            int field_count;
+        } extern_struct_decl;
+        struct
+        {
+            AstNode **decls; /* AST_EXTERN_STRUCT_DECL / AST_EXTERN_FN nodes */
+            int decl_count;
+        } extern_block;
+        struct
+        {
+            AstNode **decls;
+            int decl_count;
+        } program;
+    } as;
+};
+
+/* ---- Public API ---- */
+
+/* Allocate a zero-initialized AstNode of the given kind (line/col for diags).
+   Used by the parser and by the checker when synthesizing nodes (e.g. the
+   operator-overload lowering of `a OP b` into a method call). */
+AstNode *ast_new(AstNodeType kind, int line, int col);
+
+/* Recursively free an AST node and all its children */
+void ast_free(AstNode *node);
+
+/* P5-2 dry-run (LS_STR_DEFAULT=1): prepend `import std.str` to a root program
+   so the flipped default literal type (Str) resolves. No-op when the flag is
+   off or std.str is already imported. Call on ROOT files only (not modules). */
+void ast_inject_std_str_import(AstNode *program);
+
+/* Recursively free a TypeNode */
+void type_node_free(TypeNode *type);
+
+/* Deep-clone a TypeNode tree (all strings strdup'd, all children cloned).
+   The clone is fully independent — type_node_free(clone) + type_node_free(orig)
+   is safe with no double-free.  Returns NULL if src is NULL. */
+TypeNode *type_node_clone(const TypeNode *src);
+
+/* G1.5: Deep-clone an AST subtree.  Every pointer field (char*, TypeNode*,
+   AstNode*) is recursively duplicated so the clone is fully independent.
+   resolved_type is NOT copied (set to NULL) — the clone must be type-checked.
+   Returns NULL if src is NULL. */
+AstNode *ast_clone_deep(const AstNode *src);
+
+/* Print a human-readable indented tree of the AST */
+void ast_print(AstNode *node, int indent);
+
+/* Print a type node inline */
+void type_node_print(TypeNode *type);
+
+/* Return the string name of an AstNodeType */
+const char *ast_kind_name(AstNodeType kind);
+
+#endif /* LS_AST_H */

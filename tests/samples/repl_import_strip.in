@@ -1,0 +1,7 @@
+import std.core.vec
+@print(100)
+Vec(int) v = [7, 8, 9]
+v.push(10)
+@print(v.len())
+@print(200)
+exit

@@ -1,0 +1,55 @@
+# test_tensor_mlp.cmake — std.tensor 端到端 MLP demo（集成测试 + showcase）
+# 两层分类器前向：随机初始化 → from_vec/normals → matmul+广播 bias → relu → softmax
+# → argmax_rows 预测。seed 决定性，断言形状/概率分布合法/预测在类别范围内。
+# JIT + AOT + memcheck 0/0/0。
+cmake_minimum_required(VERSION 3.20)
+get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
+set(ENV{LS_HOME} "${_ls_stdlib_root}")
+set(POS "${SAMPLE_DIR}/tensor_mlp_demo.ls")
+set(_expected "TENSOR_MLP PASS")
+
+execute_process(COMMAND "${LS_EXE}" run "${POS}"
+    OUTPUT_VARIABLE jit_out ERROR_VARIABLE jit_err RESULT_VARIABLE jit_rc)
+if(NOT jit_rc EQUAL 0)
+    message(FATAL_ERROR "tensor_mlp JIT FAILED (rc=${jit_rc})\n${jit_out}\n${jit_err}")
+endif()
+if(NOT "${jit_out}" MATCHES "${_expected}")
+    message(FATAL_ERROR "tensor_mlp JIT missing '${_expected}'\n${jit_out}")
+endif()
+if("${jit_out}" MATCHES "FAIL")
+    message(FATAL_ERROR "tensor_mlp JIT has FAIL lines\n${jit_out}")
+endif()
+message(STATUS "tensor_mlp JIT: OK")
+
+set(aot_bin "${WORK_DIR}/tensor_mlp_aot")
+if(WIN32)
+    set(aot_bin "${aot_bin}.exe")
+endif()
+execute_process(COMMAND "${LS_EXE}" compile "${POS}" -o "${aot_bin}"
+    RESULT_VARIABLE aot_rc ERROR_VARIABLE aot_err)
+if(NOT aot_rc EQUAL 0)
+    message(FATAL_ERROR "tensor_mlp AOT compile FAILED:\n${aot_err}")
+endif()
+execute_process(COMMAND "${aot_bin}" OUTPUT_VARIABLE aot_out RESULT_VARIABLE aot_run_rc)
+if(NOT aot_run_rc EQUAL 0)
+    message(FATAL_ERROR "tensor_mlp AOT run FAILED (rc=${aot_run_rc})\n${aot_out}")
+endif()
+if(NOT "${aot_out}" MATCHES "${_expected}")
+    message(FATAL_ERROR "tensor_mlp AOT missing '${_expected}'\n${aot_out}")
+endif()
+if("${aot_out}" MATCHES "FAIL")
+    message(FATAL_ERROR "tensor_mlp AOT has FAIL lines\n${aot_out}")
+endif()
+file(REMOVE "${aot_bin}")
+message(STATUS "tensor_mlp AOT: OK")
+
+execute_process(COMMAND "${LS_EXE}" run --memcheck "${POS}"
+    OUTPUT_VARIABLE mc_out ERROR_VARIABLE mc_err RESULT_VARIABLE mc_rc)
+if(NOT mc_rc EQUAL 0)
+    message(FATAL_ERROR "tensor_mlp memcheck FAILED (rc=${mc_rc})\n${mc_err}")
+endif()
+if(NOT "${mc_err}" MATCHES "OK clean")
+    message(FATAL_ERROR "tensor_mlp memcheck leak\n${mc_err}")
+endif()
+message(STATUS "tensor_mlp memcheck: OK clean")
+message(STATUS "test_tensor_mlp: ALL PASSED")

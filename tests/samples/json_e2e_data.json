@@ -1,0 +1,17 @@
+{
+  "name": "LS Language",
+  "version": "1.0",
+  "active": true,
+  "count": 42,
+  "nothing": null,
+  "tags": ["compiler", "llvm", "jit"],
+  "author": {
+    "name": "miosa",
+    "year": 2026
+  },
+  "features": {
+    "jit": true,
+    "aot": true,
+    "memcheck": true
+  }
+}

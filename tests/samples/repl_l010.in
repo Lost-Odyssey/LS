@@ -1,0 +1,8 @@
+import std.text.json as json
+JsonValue a = json.array_new()
+JsonValue b = a
+@print(json.stringify(b))
+JsonValue c = json.object_new()
+JsonValue d = c
+@print(json.stringify(d))
+exit

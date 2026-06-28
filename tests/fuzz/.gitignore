@@ -1,0 +1,4 @@
+# Fuzzer working output (transient crash/hang findings + current-input scratch).
+# The curated regression corpus lives in regress/ and IS tracked.
+crashes/
+_*.ls

@@ -1,0 +1,4 @@
+struct P { int a; Str b }
+methods P { def get(&self) -> int { return self.a } }
+:methods P
+exit

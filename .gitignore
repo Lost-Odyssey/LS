@@ -1,0 +1,127 @@
+# Build output
+build/
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Test artifacts
+Testing/
+CTestCostData.txt
+LastTest.log
+LastTestsFailed.log
+
+# IDE / editor
+.kilo/
+.vs/
+*.user
+
+# Scratch files at repo root — all root-level *.ls are scratch (real .ls live in lib/ & tests/)
+/*.ls
+make_ls.bat
+output.exe.obj
+test_output.exe
+test_output.exe.obj
+
+# Python venvs
+.venv/
+
+# claude local config / worktrees — never tracked
+.claude/
+CLAUDE.md
+
+# tool metadata
+.codegraph/
+.deepseek/
+.opencode/
+
+# bugs notes — local only, not tracked
+bugs/
+
+# paper / features notes — local only, not tracked
+paper/
+features/
+
+# agent instructions — local only, not tracked
+AGENTS.md
+
+# Default-ignore docs / markup / data files everywhere going forward.
+# Only the explicitly un-ignored files below stay tracked; any NEW *.md / *.html
+# (and the doc-type files under docs/) are local-only unless added with `git add -f`.
+*.md
+*.html
+docs/*
+# Already-tracked exceptions that remain in the repo:
+!README.md
+!docs/build.md
+!docs/linux_deployment.md
+!docs/stdlib.html
+!docs/syntax.html
+
+# scratch outputs at repo root
+cpu_timeline_demo.png
+cpu_timeline_demo.svg
+cpu_timeline_scroll.html
+cpu_timeline_zoom.html
+json_e2e_out.json
+string.cod
+
+# benchmarks: untracked, kept local only (temporarily)
+benchmarks/
+
+# benchmark build artifacts
+benchmarks/**/target/
+benchmarks/json/rust/Cargo.lock
+
+# benchmark scratch / early probe files at benchmarks/ root (not part of suites)
+benchmarks/*.ls
+benchmarks/*.c
+benchmarks/results/*_jit.txt
+benchmarks/results/*_aot.txt
+benchmarks/results/*_cpp.txt
+benchmarks/results/*_rs.txt
+benchmarks/results/*_py.txt
+benchmarks/results/*_rb.txt
+benchmarks/results/*_c.txt
+
+# test-run artifacts (samples executed from tests/samples cwd)
+*.tmp
+tmp_migrate_dtor.py
+
+# oran HTML report / screenshot scratch dir
+/tmp/
+
+# reference material + tooling scripts — local only, never tracked
+/references/
+/tools/
+
+# Intel SDM PDF + local extraction (IP-sensitive document material, large; the GENERATED
+# lib/sim/intel/{intrinsics,specdoc}.ls are committed, the source is not — re-run
+# tools/extract_sdm_vol2.py to regenerate). Never commit the PDF or the extracted prose.
+*.pdf
+# Compute-class C-like pseudocode, GENERATED from the Intel Intrinsics Guide operation text
+# (references/intrinsics/gen_pseudo.py). Derived from license-restricted source -> local-only,
+# NOT imported by the committed gallery. Never commit.
+/lib/sim/intel/pseudo.ls
+build-lc/
+
+# ls test transient driver files
+*.lstest.ls
+
+# local AI model-compiler demo (not part of the language/stdlib).
+# Root-anchored: ignores the top-level demo dir only, NOT lib/model/ (the
+# tracked .lsm toolchain library).
+/model/

@@ -1,0 +1,43 @@
+// Phase A end-to-end: build a document with every builder, render, print output.
+import std.core.vec
+import std.text.md as md
+import std.core.str
+import std.sys.io as io
+
+def main() {
+    md.MdDoc doc = md.document()
+
+    md.h1(&!doc, "Report")
+    md.h2(&!doc, "Intro")
+    md.paragraph(&!doc, "Plain text with **bold** kept verbatim.")
+    md.code_block(&!doc, "ls", "fn main() { @print(42) }")
+
+    Vec(Str) items = ["First", "Second", "Third"]
+    md.ul(&!doc, items)
+
+    Vec(Str) steps = ["Step one", "Step two"]
+    md.ol(&!doc, steps)
+
+    md.blockquote(&!doc, "A quoted line.")
+
+    Vec(Str) headers = ["Name", "Score"]
+    Vec(Vec(Str)) rows = {}
+    Vec(Str) row0 = ["Alice", "9.5"]
+    rows.push(row0)
+    Vec(Str) row1 = ["Bob", "8.1"]
+    rows.push(row1)
+    md.table(&!doc, headers, rows)
+
+    md.hr(&!doc)
+
+    Str out = md.render(doc)
+    @print(out)
+
+    @print("---FRAGMENTS---")
+    @print(md.fmt_heading(3, "Title"))
+    @print(md.fmt_bold("important"))
+    @print(md.fmt_italic("emphasis"))
+    @print(md.fmt_code("x + 1"))
+    @print(md.fmt_link("text", "url"))
+    @print(md.fmt_image("alt", "img.png"))
+}

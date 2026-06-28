@@ -1,0 +1,200 @@
+/* types.h — Semantic type representation and type utilities */
+#ifndef LS_TYPES_H
+#define LS_TYPES_H
+
+#include "common.h"
+
+typedef struct Type Type;
+
+typedef enum {
+    TYPE_INT, TYPE_I8, TYPE_I16, TYPE_I32, TYPE_I64,
+    TYPE_U8, TYPE_U16, TYPE_U32, TYPE_U64,
+    TYPE_F32, TYPE_F64,
+    TYPE_F16, TYPE_BF16,   /* half (IEEE binary16) / bfloat16 — storage + SIMD element
+                              types; native f16 arith needs +avx512fp16, else promoted;
+                              bf16 arith is rejected (storage/convert only). */
+    TYPE_BOOL, TYPE_CHAR, TYPE_VOID, TYPE_NIL,
+    TYPE_OBJECT,        /* object — type-erased pointer (void*) */
+    TYPE_POINTER,       /* *T */
+    TYPE_REFERENCE,     /* &T (is_mut=false) / &!T (is_mut=true) — function parameters only */
+    TYPE_ARRAY,         /* array(T, N) — fixed-size */
+    TYPE_SIMD,          /* Simd(T, N) — portable SIMD vector, lowers to <N x T>.
+                           A register-resident value primitive (not a container):
+                           POD, by-value, no destructor. T = numeric scalar, N =
+                           lane count. See docs/plan_simd.md. */
+    TYPE_SLICE,         /* &array(T) (is_mut=false) / &!array(T) (is_mut=true) —
+                           borrowed {ptr,len} view over a contiguous Vec(T) range.
+                           A "borrowed unsized array" (cf. owned fixed array(T,N)).
+                           Non-owning, non-escaping. Elem in as.array.elem. */
+    TYPE_FUNCTION,      /* fn(A, B) -> R */
+    TYPE_BLOCK,         /* Block(A, B) -> R — heap closure fat pointer (Phase A: type only) */
+    TYPE_STRUCT,        /* struct { ... } */
+    TYPE_ENUM,          /* enum { Variant, Variant(T, ...), ... } — tagged union */
+    TYPE_MODULE,        /* module reference */
+    TYPE_LIB,           /* FFI library handle */
+} TypeKind;
+
+struct Type {
+    TypeKind kind;
+    /* For TYPE_REFERENCE only: false => &T (read-only), true => &!T (writable).
+       Outside TYPE_REFERENCE this field is meaningless (zero-initialized). */
+    bool is_mut;
+    union {
+        Type *pointer_to;                               /* TYPE_POINTER */
+        struct { Type *elem; int size; } array;           /* TYPE_ARRAY — size > 0 for fixed */
+        struct { Type *elem; int lanes; } simd;           /* TYPE_SIMD — Simd(elem, lanes) -> <lanes x elem> */
+        struct {                                        /* TYPE_FUNCTION */
+            Type **params;
+            void **param_defaults;   /* parallel to params; AstNode* literal default or NULL */
+            int param_count;
+            Type *return_type;
+            bool is_vararg;
+        } function;
+        struct {                                        /* TYPE_STRUCT */
+            const char *name;
+            const char *llvm_name;   /* B-2: LLVM type name; prefixed for module types, NULL→use name */
+            struct { const char *name; Type *type; void *default_expr; bool is_private; } *fields;  /* default_expr: AstNode* literal or NULL */
+            int field_count;
+            bool has_drop;           /* true if struct has a __drop destructor */
+            bool has_user_drop;      /* true if __drop was user-defined (not auto-generated) */
+            bool has_user_clone;     /* true if __clone was user-defined (raw-pointer owners) */
+            void *drop_fn;           /* LLVMValueRef: complete __drop function (codegen use) */
+            bool is_extern_c;        /* true = declared via 'extern struct', C-ABI layout, no drop */
+            /* VR-LIM-018 / F6: generic-instantiation metadata (set by
+               checker_instantiate_struct). Lets a *consumer* module's checker
+               re-run impl-method registration locally when it meets this type
+               via an imported enum payload / function signature. NULL/0 for
+               non-generic structs. generic_args is an owned Type* array. */
+            const char *generic_base;   /* base template name, e.g. "Vec" */
+            Type **generic_args;        /* concrete type args, e.g. [int] */
+            int generic_arg_count;
+            /* The impl template AST + its type-param names, stamped so a
+               consumer checker that did NOT directly import the defining module
+               (e.g. uses Vec(JsonValue) via std.json without importing std.vec)
+               can still re-register impl methods — the metadata travels with the
+               shared Type, no local template lookup needed. */
+            void *generic_impl_node;    /* AstNode* — the impl(T) Base(T) decl */
+            char **generic_tp_names;    /* template type-param names ["T"] */
+            /* Phase 2 (docs/plan_module_fn_resolution.md): the import path of the
+               module that DEFINED this generic template (NULL = root/same-file).
+               At method-body instantiation in a consumer checker, this lets the
+               defining module's import aliases be bound so qualified calls in the
+               body (e.g. `sc.int_to_hex(...)`) resolve even though the consumer
+               never imported that alias. Points into a persistent template entry. */
+            const char *generic_module;
+        } strukt;
+        struct {                                        /* TYPE_ENUM */
+            const char *name;        /* mangled when instantiated, e.g. "Option(int)" */
+            const char *llvm_name;   /* B-2: LLVM type name; prefixed for module types, NULL→use name */
+            struct {
+                const char *name;
+                Type **payload_types;  /* NULL when payload_count == 0 */
+                int payload_count;
+            } *variants;
+            int variant_count;
+            bool has_drop;           /* true if any variant payload owns heap */
+            void *drop_fn;           /* LLVMValueRef: auto __drop function (codegen use) */
+            void *clone_fn;          /* LLVMValueRef: auto __clone function (codegen use) */
+        } enom;
+        struct {                                        /* TYPE_MODULE */
+            const char *name;
+            struct { const char *name; Type *type; } *exports;
+            int export_count;
+            bool is_builtin;  /* true for compiler stdlib modules (math, ...) */
+        } module;
+    } as;
+};
+
+/* Create primitive types (returns interned singletons, do NOT free) */
+Type *type_int(void);
+Type *type_i8(void);
+Type *type_i16(void);
+Type *type_i32(void);
+Type *type_i64(void);
+Type *type_u8(void);
+Type *type_u16(void);
+Type *type_u32(void);
+Type *type_u64(void);
+Type *type_f32(void);
+Type *type_f64(void);
+Type *type_f16(void);
+Type *type_bf16(void);
+Type *type_bool(void);
+Type *type_char(void);
+Type *type_void(void);
+Type *type_nil(void);
+Type *type_lib(void);
+Type *type_object(void);
+
+/* Check if a type is pointer-like (pointer, object, nil — can convert to object) */
+bool type_is_pointer_like(const Type *t);
+
+/* Create composite types (caller owns the returned Type) */
+Type *type_pointer(Type *pointee);
+Type *type_reference(Type *pointee);           /* &T  — read-only borrow */
+Type *type_mut_reference(Type *pointee);       /* &!T — writable borrow (no move) */
+Type *type_array(Type *elem, int size);
+Type *type_simd(Type *elem, int lanes);        /* Simd(T, N) — SIMD vector value */
+Type *type_slice(Type *elem, bool is_mut);     /* &[T] / &![T] — borrowed slice view */
+Type *type_function(Type **params, int param_count, Type *return_type, bool is_vararg);
+Type *type_block(Type **params, int param_count, Type *return_type);
+Type *type_struct(const char *name, int field_count);
+
+/* Create an enum type shell. Caller fills variants[i].{name, payload_types, payload_count}
+   and sets has_drop. The `name` argument is duplicated into the type. */
+Type *type_enum(const char *name, int variant_count);
+
+/* Create a module type with the given name (caller owns the Type) */
+Type *type_module_new(const char *name);
+
+/* Add an exported symbol to a module type */
+void type_module_add_export(Type *mod, const char *name, Type *type);
+/* B-4: look up an exported symbol's type by name in a TYPE_MODULE. NULL if absent. */
+Type *type_module_find_export(Type *mod, const char *name);
+
+/* Deep-copy a type */
+Type *type_clone(const Type *t);
+
+/* Free a non-singleton type (safe to call on singletons — does nothing) */
+void type_free(Type *t);
+
+/* Check structural equality of two types */
+bool type_equals(const Type *a, const Type *b);
+
+/* Check if a type is numeric (int, i8..i64, u8..u64, f32, f64) */
+bool type_is_numeric(const Type *t);
+
+/* Check if a type is integer (int, i8..i64, u8..u64) */
+bool type_is_integer(const Type *t);
+
+/* Check if a type is floating-point (f32, f64) */
+bool type_is_float(const Type *t);
+
+/* Check if a type is a signed integer (int, i8..i64) */
+bool type_is_signed(const Type *t);
+
+/* Check if a type is an unsigned integer (u8..u64) */
+bool type_is_unsigned(const Type *t);
+
+/* Bit width of an integer type (`int` = 32). Returns 0 for non-integer. */
+int type_int_bits(const Type *t);
+
+/* Bit width of a float type's mantissa (f32 = 24, f64 = 53). 0 otherwise. */
+int type_float_mantissa_bits(const Type *t);
+
+/* Returns true iff `src` can be losslessly (implicitly) widened to `dst`
+   per Zig-style rules: dst type must represent every value of src.
+   Widening covers: iN→iM (M>=N signed→signed), uN→uM, uN→iM (M>N),
+   iN/uN→fM (mantissa-fits), f32→f64. NEVER allows narrowing, signed↔
+   unsigned same-width, or float→int. */
+bool type_widens_to(const Type *src, const Type *dst);
+
+/* Common numeric type for a binary operation: if a == b returns a; if a
+   widens to b returns b; if b widens to a returns a; else NULL. Callers
+   must then widen each operand to the common type before emitting the op. */
+Type *type_numeric_common(Type *a, Type *b);
+
+/* Return a human-readable string for the type (static buffer, do NOT free) */
+const char *type_name(const Type *t);
+
+#endif /* LS_TYPES_H */

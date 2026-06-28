@@ -1,0 +1,8 @@
+# llvm-mca -mcpu=icelake-server -iterations=1000 dot_serial.s  (regen: tests/mca_oracle/regen_golden.sh)
+# ITERATIONS=1000
+Total Cycles:      4003
+Block RThroughput: 1.0
+# Resource pressure per iteration ([2]=Port0 [3]=Port1 [4]=P2ld [5]=P3ld [6]=P4st [7]=Port5 [9..11]=P7/8/9 st-AGU):
+Resource pressure per iteration:
+[0]    [1]    [2]    [3]    [4]    [5]    [6]    [7]    [8]    [9]    [10]   [11]   
+ -      -     1.00    -      -      -      -      -      -      -      -      -     

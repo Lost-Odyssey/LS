@@ -1,0 +1,52 @@
+struct Resource { int id; }
+
+methods Resource {
+}
+
+methods Resource: Destroy {
+    def ~(&!self) {
+        @print("Resource dropped")
+    }
+}
+
+def test_shadowed() -> Str {
+    Str outer = "outer string"
+    @print("outer created")
+    
+    {
+        Str inner = "inner string"
+        @print("inner created")
+        return inner
+    }
+    
+    @print("unreachable")
+    return outer
+}
+
+def test_struct_shadowed() -> Resource {
+    Resource outer_r
+    outer_r.id = 100
+    @print("outer_r created")
+    
+    {
+        Resource inner_r
+        inner_r.id = 200
+        @print("inner_r created")
+        return inner_r
+    }
+    
+    @print("unreachable")
+    return outer_r
+}
+
+def main() {
+    @print("=== Test 1: shadowed string ===")
+    Str result1 = test_shadowed()
+    @print("result1:")
+    @print(result1)
+    
+    @print("=== Test 2: shadowed struct ===")
+    Resource result2 = test_struct_shadowed()
+    @print("result2.id:")
+    @print(result2.id)
+}

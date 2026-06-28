@@ -1,0 +1,5 @@
+Vec(int) v = [1,2,3]
+v.push(4)
+v.push(5)
+@print(v.len())
+exit

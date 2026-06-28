@@ -1,0 +1,1477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LS Syntax Guide — Language Reference</title>
+<style>
+  :root {
+    --bg: #fbfbfd; --fg: #1d1d22; --muted: #6b6b76; --line: #e4e4ea;
+    --accent: #6d28d9; --accent-soft: #f1ecfb; --code-bg: #f4f4f8;
+    --sig-bg: #faf8ff; --sig-border: #e7defb; --sidebar: #f6f6f9;
+    --tag-mut: #b91c1c; --tag-own: #047857; --tag-new: #1d4ed8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --fg: #e6e6ec; --muted: #9a9aa6; --line: #2a2a32;
+      --accent: #a78bfa; --accent-soft: #241b3a; --code-bg: #1e1e26;
+      --sig-bg: #1c1830; --sig-border: #352a52; --sidebar: #1a1a20;
+      --tag-mut: #f87171; --tag-own: #34d399; --tag-new: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .sig { font-family: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace; }
+  .wrap { display: flex; max-width: 1280px; margin: 0 auto; }
+  nav {
+    width: 250px; flex: 0 0 250px; background: var(--sidebar);
+    border-right: 1px solid var(--line); height: 100vh; position: sticky; top: 0;
+    overflow-y: auto; padding: 18px 14px 60px;
+  }
+  main { flex: 1 1 auto; min-width: 0; padding: 28px 38px 120px; }
+  .brand { font-weight: 700; font-size: 17px; margin: 4px 6px 14px; letter-spacing: -.2px; }
+  .brand small { display:block; font-weight: 400; font-size: 11.5px; color: var(--muted); margin-top:2px;}
+  nav .group { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 16px 6px 5px; font-weight: 700; }
+  nav a.item { display: block; padding: 4px 8px; border-radius: 6px; color: var(--fg);
+    font-size: 13.5px; }
+  nav a.item:hover { background: var(--accent-soft); text-decoration: none; }
+  h1 { font-size: 30px; letter-spacing: -.5px; margin: 0 0 6px; }
+  .lede { color: var(--muted); font-size: 16px; margin: 0 0 26px; max-width: 70ch; }
+  section { scroll-margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--line);
+    margin-top: 34px; }
+  h2 { font-size: 23px; letter-spacing: -.3px; margin: 14px 0 4px; }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: var(--accent); }
+  .purpose { color: var(--muted); margin: 2px 0 14px; }
+  p { max-width: 78ch; }
+  table.api { width: 100%; border-collapse: collapse; margin: 10px 0 6px; font-size: 14px; }
+  table.api td, table.api th { vertical-align: top; padding: 7px 10px; border-top: 1px solid var(--line); text-align: left; }
+  table.api th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; border-top: none; }
+  table.api .sig { display: inline-block; background: var(--sig-bg); border: 1px solid var(--sig-border);
+    border-radius: 6px; padding: 2px 7px; font-size: 12.5px; white-space: pre-wrap; line-height: 1.5; }
+  .ex { background: var(--code-bg); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; overflow-x: auto; }
+  .ex pre { margin: 0; font-size: 13px; white-space: pre; }
+  .ex .k { color: #c026d3; } .ex .t { color: var(--accent); } .ex .c { color: var(--muted); font-style: italic; } .ex .s { color: var(--tag-own); } .ex .bad { color: var(--tag-mut); }
+  .note { background: var(--accent-soft); border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 13.5px; }
+  .note b { color: var(--accent); }
+  .warn { background: rgba(185,28,28,.10); border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 13.5px; }
+  .tag { display:inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 5px; vertical-align: middle; margin-left: 6px; }
+  .tag.ok { background: rgba(4,120,87,.12); color: var(--tag-own); }
+  .tag.no { background: rgba(185,28,28,.12); color: var(--tag-mut); }
+  ul.compact { margin: 6px 0; padding-left: 22px; } ul.compact li { margin: 4px 0; }
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 60px; border-top: 1px solid var(--line); padding-top: 16px; }
+  @media (max-width: 820px) { nav { display: none; } main { padding: 20px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="brand">LS Syntax<small>Language Guide</small></div>
+  <div class="group">Types &amp; Interfaces</div>
+  <a class="item" href="#ty-struct">struct &amp; methods</a>
+  <a class="item" href="#ty-self">self forms</a>
+  <a class="item" href="#ty-interface">interfaces</a>
+  <a class="item" href="#ty-operators">operator overloading</a>
+  <a class="item" href="#ty-destroy">Destroy / Clone</a>
+  <a class="item" href="#ty-generics">generic structs</a>
+  <div class="group">enum &amp; match</div>
+  <a class="item" href="#en-enum">enum (tagged union)</a>
+  <a class="item" href="#en-match">match</a>
+  <a class="item" href="#en-bits">bit-pattern match</a>
+  <div class="group">Errors</div>
+  <a class="item" href="#er-types">Option / Result</a>
+  <a class="item" href="#er-try">try operator</a>
+  <a class="item" href="#er-bang">force-unwrap !</a>
+  <a class="item" href="#er-combinators">combinators</a>
+  <a class="item" href="#er-access">3-tier access</a>
+  <div class="group">Ownership &amp; Move</div>
+  <a class="item" href="#ow-model">value &amp; move model</a>
+  <a class="item" href="#ow-bind">binding vs argument</a>
+  <a class="item" href="#ow-uam">use-after-move</a>
+  <a class="item" href="#ow-raii">destructors / RAII</a>
+  <div class="group">Borrowing</div>
+  <a class="item" href="#bo-ref">&amp;T / &amp;!T</a>
+  <a class="item" href="#bo-escape">non-escaping rule</a>
+  <a class="item" href="#bo-field">field &amp; element</a>
+  <a class="item" href="#bo-forin">for x in &amp;v</a>
+  <a class="item" href="#bo-slice">borrow slices</a>
+  <a class="item" href="#bo-return">returning a borrow</a>
+  <div class="group">Closures</div>
+  <a class="item" href="#overview">Overview</a>
+  <a class="item" href="#forms">The two body forms</a>
+  <a class="item" href="#args">As method arguments</a>
+  <a class="item" href="#trailing">Trailing-closure sugar</a>
+  <a class="item" href="#infer">Type inference</a>
+  <a class="item" href="#blocktype">The Block type</a>
+  <a class="item" href="#capture">Capture rules</a>
+  <a class="item" href="#void">void closures</a>
+  <a class="item" href="#gotchas">Caveats / gotchas</a>
+  <a class="item" href="#examples">Worked examples</a>
+  <div class="group">Modules · Numbers · FFI</div>
+  <a class="item" href="#mo-modules">modules &amp; import</a>
+  <a class="item" href="#mo-numbers">numbers &amp; widening</a>
+  <a class="item" href="#mo-ffi">C FFI</a>
+  <div class="group">Static Reflection</div>
+  <a class="item" href="#sr-overview">Overview &amp; @derive</a>
+  <a class="item" href="#sr-derives">Derivable interfaces</a>
+  <a class="item" href="#sr-generics">On generic structs</a>
+  <a class="item" href="#sr-serde">Serialize / Deserialize</a>
+  <a class="item" href="#sr-runtime">Runtime reflection</a>
+  <a class="item" href="#sr-comptime">comptime field iteration</a>
+  <a class="item" href="#sr-comptime-const">comptime constants</a>
+  <a class="item" href="#sr-tools">inspect · ir · asm</a>
+  <a class="item" href="#sr-gotchas">Caveats / gotchas</a>
+  <div class="group">More</div>
+  <a class="item" href="stdlib.html">Stdlib reference &rarr;</a>
+</nav>
+<main>
+  <h1>Types, Methods &amp; Interfaces</h1>
+  <p class="lede">The deeper half of LS: the type system
+  (<code>struct</code>&nbsp;/&nbsp;<code>interface</code>&nbsp;/&nbsp;generics), algebraic
+  data types and <code>match</code>, error handling with <code>Option</code>/<code>Result</code>,
+  and the ownership&nbsp;·&nbsp;move&nbsp;·&nbsp;borrow model that makes LS memory-safe
+  <b>without a garbage collector and without named lifetimes</b>. Closures and static
+  reflection have their own chapters further down. Examples are verified against the
+  compiler.</p>
+
+  <section id="ty-struct">
+    <h2><code>struct</code> &amp; <code>methods</code></h2>
+    <p>A <code>struct</code> is a product type; its <code>methods</code> block holds the
+    instance and static functions. Field separators (<code>;</code>, <code>,</code>, or a
+    newline) are interchangeable, and a trailing one is optional.</p>
+    <div class="ex"><pre><span class="k">struct</span> <span class="t">Point</span> { <span class="t">f64</span> x; <span class="t">f64</span> y }     <span class="c">// two fields</span>
+
+<span class="k">methods</span> <span class="t">Point</span> {
+    <span class="k">def</span> shifted(&amp;self, <span class="t">f64</span> dx, <span class="t">f64</span> dy) -&gt; <span class="t">Point</span> {   <span class="c">// instance method (&amp;self)</span>
+        <span class="k">return</span> <span class="t">Point</span> { x: self.x + dx, y: self.y + dy }
+    }
+    <span class="k">static</span> <span class="k">def</span> origin() -&gt; <span class="t">Point</span> {                  <span class="c">// static: no self</span>
+        <span class="k">return</span> <span class="t">Point</span> { x: 0.0, y: 0.0 }
+    }
+}
+
+<span class="t">Point</span> p = <span class="t">Point</span> { x: 3.0, y: 4.0 }      <span class="c">// struct literal: Type { field: value, ... }</span>
+<span class="t">Point</span> q = p.shifted(1.0, -1.0)         <span class="c">// q = (4, 3)</span>
+<span class="t">Point</span> o = <span class="t">Point</span>.origin()              <span class="c">// static call goes through the type name</span></pre></div>
+    <div class="note"><b>Struct literals fill every field.</b> Write
+    <code>Type { a: .., b: .. }</code> with all fields, or <code>Type {}</code> for the
+    zero/empty value (each field defaulted — <code>0</code>, empty <code>Vec</code>/<code>Str</code>,
+    etc.). A bare <code>{}</code> is the idiomatic way to start an empty container field.</div>
+  </section>
+
+  <section id="ty-self">
+    <h2><code>self</code> forms — how a method borrows its receiver</h2>
+    <p>An instance method declares, in its first parameter slot, how it takes the
+    receiver. This is the same <code>&amp;T</code>/<code>&amp;!T</code> borrow distinction
+    as everywhere else (see <a href="#bo-ref">Borrowing</a>), applied to <code>self</code>.</p>
+    <table class="api">
+      <tr><th>Form</th><th><code>self</code> is</th><th>Callable on</th></tr>
+      <tr><td><span class="sig">def m(&amp;self, …)</span></td><td>a read-only borrow; <code>self.f = …</code> is rejected</td><td>owned · <code>&amp;T</code> · <code>&amp;!T</code></td></tr>
+      <tr><td><span class="sig">def m(&amp;!self, …)</span></td><td>a mutable borrow; <code>self.f = …</code> allowed</td><td>owned · <code>&amp;!T</code></td></tr>
+      <tr><td><span class="sig">static def m(…)</span></td><td>absent — called as <code>Type.m(…)</code></td><td>the type itself</td></tr>
+      <tr><td><span class="sig">def m(…)</span> <span class="tag no">legacy</span></td><td>a <code>*Type</code> pseudo-pointer</td><td>owned only</td></tr>
+    </table>
+    <div class="ex"><pre><span class="k">methods</span> <span class="t">Point</span> {
+    <span class="k">def</span> show(&amp;self)          { <span class="k">@print</span>(f<span class="s">"({self.x}, {self.y})"</span>) }   <span class="c">// read-only</span>
+    <span class="k">def</span> shift(&amp;!self, <span class="t">f64</span> d) { self.x = self.x + d }            <span class="c">// mutating</span>
+}
+<span class="t">Point</span> p = <span class="t">Point</span> { x: 1.0, y: 2.0 }
+p.show()         <span class="c">// owned receiver → &amp;self ok</span>
+p.shift(10.0)    <span class="c">// owned receiver → &amp;!self ok; p.x is now 11</span></pre></div>
+    <div class="note">Prefer <code>&amp;self</code>/<code>&amp;!self</code>. The receiver-less
+    legacy <code>def m()</code> form still parses, but a method written that way can't be
+    called on a borrow (<code>&amp;T</code>/<code>&amp;!T</code>), which is limiting.</div>
+  </section>
+
+  <section id="ty-interface">
+    <h2>Interfaces (<code>interface</code> + <code>methods Type: Interface</code>)</h2>
+    <p>An <code>interface</code> is a named set of method signatures (LS's "trait"). A
+    type implements one with the merged form <code>methods Type: Interface { … }</code> —
+    one keyword instead of Rust's <code>impl Trait for Type</code>.</p>
+    <div class="ex"><pre><span class="k">import</span> std.core.str
+
+<span class="k">interface</span> <span class="t">Describable</span> {
+    <span class="k">def</span> describe(&amp;self) -&gt; <span class="t">Str</span>
+}
+
+<span class="k">struct</span> <span class="t">Circle</span> { <span class="t">f64</span> radius }
+
+<span class="k">methods</span> <span class="t">Circle</span>: <span class="t">Describable</span> {            <span class="c">// "methods Type: Interface" = implement it</span>
+    <span class="k">def</span> describe(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> f<span class="s">"Circle(r={self.radius})"</span> }
+}
+
+<span class="c">// a generic function constrained on the interface — see Generic structs below</span>
+<span class="k">def</span> announce(<span class="t">T</span>: <span class="t">Describable</span>)(<span class="t">T</span> x) { <span class="k">@print</span>(x.describe()) }
+announce(<span class="t">Circle</span>)(<span class="t">Circle</span> { radius: 2.0 })   <span class="c">// Circle(r=2)</span></pre></div>
+    <div class="note">A plain <code>methods Type { … }</code> block (no <code>:</code>) adds
+    <b>inherent</b> methods. <code>methods Type: Interface { … }</code> additionally records
+    that <code>Type</code> satisfies <code>Interface</code>, so it can be used wherever a
+    <code>T: Interface</code> bound is required.</div>
+  </section>
+
+  <section id="ty-operators">
+    <h2>Operator overloading</h2>
+    <p>Operators are built-in interfaces. Implement the interface and write the operator
+    <em>as</em> the method name (Ruby-style <code>def +</code>). Comparison operators come
+    in families — define one, get the rest for free.</p>
+    <table class="api">
+      <tr><th>Interface</th><th>Define</th><th>You also get</th></tr>
+      <tr><td><code>Add Sub Mul Div Rem</code></td><td><code>def + - * / %</code></td><td>—</td></tr>
+      <tr><td><code>Equal</code></td><td><code>def ==</code></td><td><code>!=</code> (auto)</td></tr>
+      <tr><td><code>Order</code></td><td><code>def &lt;</code></td><td><code>&gt; &lt;= &gt;=</code> (auto)</td></tr>
+    </table>
+    <div class="ex"><pre><span class="k">struct</span> <span class="t">Vec2</span> { <span class="t">f64</span> x; <span class="t">f64</span> y }
+
+<span class="k">methods</span> <span class="t">Vec2</span>: <span class="t">Add</span>   { <span class="k">def</span> +(&amp;self, &amp;<span class="t">Vec2</span> r) -&gt; <span class="t">Vec2</span> { <span class="k">return</span> <span class="t">Vec2</span>{ x: self.x+r.x, y: self.y+r.y } } }
+<span class="k">methods</span> <span class="t">Vec2</span>: <span class="t">Equal</span> { <span class="k">def</span> ==(&amp;self, &amp;<span class="t">Vec2</span> r) -&gt; <span class="t">bool</span> { <span class="k">return</span> self.x==r.x &amp;&amp; self.y==r.y } }
+<span class="k">methods</span> <span class="t">Vec2</span>: <span class="t">Order</span> { <span class="k">def</span> &lt;(&amp;self, &amp;<span class="t">Vec2</span> r) -&gt; <span class="t">bool</span> { <span class="k">return</span> self.x &lt; r.x } }
+
+<span class="t">Vec2</span> a = <span class="t">Vec2</span>{ x: 1.0, y: 2.0 }
+<span class="t">Vec2</span> b = <span class="t">Vec2</span>{ x: 3.0, y: 4.0 }
+<span class="t">Vec2</span> c = a + b      <span class="c">// (4, 6)   via Add</span>
+<span class="k">@print</span>(a != b)      <span class="c">// true     != derived from Equal</span>
+<span class="k">@print</span>(a &gt;= b)      <span class="c">// false    &gt;= derived from Order</span></pre></div>
+    <div class="note">These are the same interfaces <code>@derive(Equal, Order)</code>
+    generates automatically (see <a href="#sr-derives">Static Reflection</a>). Hand-write
+    the operator only when the default field-wise behaviour isn't what you want — e.g. the
+    <code>Order</code> above compares by <code>x</code> alone.</div>
+  </section>
+
+  <section id="ty-destroy">
+    <h2>Lifecycle interfaces — <code>Destroy</code> &amp; <code>Clone</code></h2>
+    <p>Destruction and deep-copy are two built-in interfaces. A struct whose fields
+    themselves own heap memory (<code>Str</code>/<code>Vec</code>/<code>Map</code>/a nested
+    such struct) gets <b>both generated automatically</b>, field by field — you write
+    nothing. Only a type holding a <b>raw resource</b> (a <code>*T</code> buffer, an
+    <code>object</code> handle, an OS lock) needs a hand-written one.</p>
+    <div class="ex"><pre><span class="k">struct</span> <span class="t">Person</span> { <span class="t">Str</span> name; <span class="t">int</span> age }
+<span class="c">// Person owns a Str → destructor + deep-copy are synthesised. Nothing to write.</span>
+
+<span class="k">import</span> std.sys.c <span class="k">as</span> c
+<span class="k">struct</span> <span class="t">Buf</span> { <span class="t">*u8</span> data; <span class="t">int</span> n }            <span class="c">// owns a raw heap buffer</span>
+
+<span class="k">methods</span> <span class="t">Buf</span>: <span class="t">Destroy</span> { <span class="k">def</span> ~(&amp;!self) { c.free(self.data) } }   <span class="c">// `~` = destructor</span>
+<span class="k">methods</span> <span class="t">Buf</span>: <span class="t">Clone</span>   { <span class="k">def</span> clone(&amp;self) -&gt; <span class="t">Buf</span> { <span class="c">/* deep-copy data */</span> ... } }</pre></div>
+    <p>The destructor <code>~(&amp;!self)</code> runs <b>automatically</b> at end of scope —
+    you never call it by hand (an explicit <code>x.~()</code> / a manual destructor call is
+    a compile error). <code>clone</code> is invoked by the compiler at every copy point.</p>
+    <div class="warn"><b>Move-only safety.</b> A type with a destructor and a raw
+    (<code>*T</code>/<code>object</code>) field but <b>no <code>Clone</code></b> is
+    <em>move-only</em>: copying it is a <b>compile error</b>
+    (<code>cannot copy 'X' … it is move-only</code>), never a silent shallow-copy /
+    double-free. Implement <code>Clone</code> (deep-copy the buffer) to make it copyable.
+    This is exactly why lock/guard types (<code>Mutex</code>, <code>Guard</code>, …) can't
+    be accidentally duplicated.</div>
+    <div class="note"><b>Terminology.</b> LS says <i>destructor</i> / <code>~</code> /
+    "destroyed", and <i>deep-copy</i> / <code>clone</code> — the old magic
+    <code>__drop</code>/<code>__clone</code> names are retired and rejected.</div>
+  </section>
+
+  <section id="ty-generics">
+    <h2>Generic structs &amp; trait bounds</h2>
+    <p>A type parameter goes in parentheses after the name: <code>struct Box(T)</code>.
+    The parameter is in scope across the <code>methods</code> block. Instantiate by naming
+    the concrete type — <code>Box(int)</code>, <code>Box(Str)</code> — and each
+    instantiation is monomorphized (no boxing).</p>
+    <div class="ex"><pre><span class="k">struct</span> <span class="t">Box</span>(<span class="t">T</span>) { <span class="t">T</span> value; <span class="t">Str</span> label }
+
+<span class="k">methods</span> <span class="t">Box</span> {                          <span class="c">// T is in scope here</span>
+    <span class="k">def</span> get(&amp;self) -&gt; <span class="t">T</span> { <span class="k">return</span> self.value }
+}
+
+<span class="t">Box</span>(<span class="t">int</span>) bi = <span class="t">Box</span>(<span class="t">int</span>) { value: 5,  label: <span class="s">"k"</span> }
+<span class="t">Box</span>(<span class="t">Str</span>) bs = <span class="t">Box</span>(<span class="t">Str</span>) { value: <span class="s">"hi"</span>, label: <span class="s">"m"</span> }</pre></div>
+    <p>A <b>trait bound</b> restricts the type parameter to types that implement an
+    interface. The syntax differs by where the parameter is declared:</p>
+    <div class="ex"><pre><span class="c">// on a generic FREE FUNCTION: the bound rides in the type-param list (T: Interface)</span>
+<span class="k">def</span> sum_all(<span class="t">T</span>: <span class="t">Add</span>)(<span class="t">Vec</span>(<span class="t">T</span>) xs, <span class="t">T</span> zero) -&gt; <span class="t">T</span> {
+    <span class="t">T</span> acc = zero
+    <span class="k">for</span> x <span class="k">in</span> xs { acc = acc + x }      <span class="c">// `+` is available because of T: Add</span>
+    <span class="k">return</span> acc
+}
+
+<span class="c">// on a generic METHOD: a `where` clause after the signature</span>
+<span class="k">methods</span> <span class="t">Box</span> {
+    <span class="k">def</span> hashed(&amp;self) -&gt; <span class="t">u64</span> <span class="k">where</span> <span class="t">T</span>: <span class="t">Hash</span> { <span class="k">return</span> self.value.hash() }
+}</pre></div>
+    <div class="note"><b>Bounds are checked at monomorphization.</b> Instantiating with a
+    <code>T</code> that lacks the required interface is a clear missing-method compile error
+    at the use site — never a silent wrong value. (A method-level type parameter that is a
+    closure's return type, like <code>def map(U)(…)</code>, is covered in the
+    <a href="#args">Closures</a> chapter.)</div>
+  </section>
+
+  <h1 style="margin-top:3.5rem">enum &amp; pattern matching</h1>
+  <p class="lede">An <code>enum</code> is a tagged union (algebraic data type): a value is
+  exactly one of its variants, each optionally carrying a payload. <code>match</code>
+  destructures it with compiler-enforced exhaustiveness — the combination that makes
+  illegal states unrepresentable and "forgot a case" a compile error.</p>
+
+  <section id="en-enum">
+    <h2><code>enum</code> — tagged unions</h2>
+    <p>Variants are written one per line (or <code>;</code>/<code>,</code> separated).
+    A variant may be a bare tag, or carry a typed payload. Variant names are
+    Capitalized.</p>
+    <div class="ex"><pre><span class="k">enum</span> <span class="t">Shape</span> {
+    <span class="t">Empty</span>                  <span class="c">// bare tag, no payload</span>
+    <span class="t">Circle</span>(<span class="t">int</span> r)          <span class="c">// one payload field</span>
+    <span class="t">Rect</span>(<span class="t">int</span> w, <span class="t">int</span> h)     <span class="c">// several payload fields</span>
+}
+
+<span class="t">Shape</span> a = <span class="t">Circle</span>(5)        <span class="c">// constructors are BARE — Circle(5), not Shape.Circle(5)</span>
+<span class="t">Shape</span> b = <span class="t">Rect</span>(3, 4)
+<span class="t">Shape</span> c = <span class="t">Empty</span></pre></div>
+    <p>An enum may refer to <b>itself</b> in a payload — the compiler heap-boxes the
+    recursive field automatically (and generates the destructor for the owned subtree):</p>
+    <div class="ex"><pre><span class="k">enum</span> <span class="t">Tree</span> {
+    <span class="t">Leaf</span>
+    <span class="t">Node</span>(<span class="t">int</span> value, <span class="t">Tree</span> left, <span class="t">Tree</span> right)   <span class="c">// self-recursive → auto-boxed</span>
+}</pre></div>
+    <div class="note">An enum carrying an owned payload (<code>Str</code>/<code>Vec</code>/a
+    recursive subtree …) owns heap memory, so it is destroyed at end of scope and
+    <b>moved</b> on binding — the same ownership rules as a <code>struct</code> with such
+    fields (see <a href="#ow-model">Ownership</a>).</div>
+  </section>
+
+  <section id="en-match">
+    <h2><code>match</code> — destructure with exhaustiveness</h2>
+    <p><code>match</code> is an <b>expression</b>: each arm yields a value, and the whole
+    <code>match</code> is that value. An arm pattern binds the variant's payload to fresh
+    names. Coverage must be <b>exhaustive</b> — every variant, or a wildcard <code>_</code>.</p>
+    <div class="ex"><pre><span class="k">def</span> area(<span class="t">Shape</span> s) -&gt; <span class="t">int</span> {
+    <span class="k">match</span> s {                       <span class="c">// missing a variant ⇒ compile error</span>
+        <span class="t">Empty</span>      =&gt; 0
+        <span class="t">Circle</span>(r)  =&gt; r * r * 3        <span class="c">// r binds the payload</span>
+        <span class="t">Rect</span>(w, h) =&gt; w * h
+    }
+}
+
+<span class="k">def</span> sum(<span class="t">Tree</span> t) -&gt; <span class="t">int</span> {
+    <span class="k">match</span> t {
+        <span class="t">Leaf</span>          =&gt; 0
+        <span class="t">Node</span>(v, l, r) =&gt; v + sum(l) + sum(r)   <span class="c">// recurse into boxed subtrees</span>
+    }
+}</pre></div>
+    <h3>OR-patterns &amp; wildcard</h3>
+    <p>Several patterns share one arm with <code>|</code>; <code>_</code> matches anything
+    (it also makes a non-enum <code>match</code> — e.g. over an <code>int</code> — total).</p>
+    <div class="ex"><pre><span class="k">match</span> n {
+    1 | 2 | 3 =&gt; <span class="k">@print</span>(<span class="s">"small"</span>)      <span class="c">// OR-pattern: any of these → this arm</span>
+    _         =&gt; <span class="k">@print</span>(<span class="s">"other"</span>)      <span class="c">// wildcard catch-all</span>
+}</pre></div>
+    <p>Arm bodies are an expression or a brace block; the separator between arms can be a
+    comma or just a newline. A block arm yields its value with <code>return</code> only when
+    inside a function whose value it is; as a sub-expression the last expression is the
+    arm's value.</p>
+    <div class="note"><b>Ownership across a <code>match</code> is handled for you.</b>
+    Matching on an <i>owned</i> enum value consumes it (payloads move into the binders);
+    matching on a <i>borrow</i> (<code>&amp;Shape</code>, or auto-borrowed) binds payloads
+    by reference, zero-copy, and leaves the value alive. This is one of LS's most-tested
+    paths — you write the <code>match</code>, the compiler gets the drops right.</div>
+  </section>
+
+  <section id="en-bits">
+    <h2>Bit-pattern <code>match</code> — <code>bits[width:field]</code></h2>
+    <p>A specialised arm pattern that slices an integer subject into bit-fields,
+    <b>MSB-first</b>. Built for binary/wire-format parsing (headers, protocols). The field
+    widths must sum to exactly the subject's bit width.</p>
+    <div class="ex"><pre><span class="c">// an eCPRI-ish 32-bit header: version=1, type=0x14, payload=256</span>
+<span class="t">int</span> raw = 0x10140100
+<span class="k">match</span> raw {
+    bits[4:version][3:rsv][1:concat][8:msg_type][16:payload] =&gt; {
+        <span class="c">// each name is bound here: version=1, msg_type=20, payload=256 …</span>
+        <span class="k">if</span> concat { ... }       <span class="c">// a 1-bit field binds as bool</span>
+        <span class="k">@print</span>(payload)          <span class="c">// 256</span>
+    }
+    _ =&gt; { }
+}</pre></div>
+    <ul class="compact">
+      <li><b>Match-value fields</b> constrain instead of bind: <code>bits[4:0x1]</code>
+      only matches when that 4-bit field equals <code>1</code> (else falls through to the
+      next arm), so you can dispatch on a version/type field.</li>
+      <li><b><code>_</code> skips</b> a field without binding: <code>bits[4:_][28:rest]</code>.</li>
+      <li><b>OR-patterns</b> work: <code>bits[4:0xA][4:_] | bits[4:0x5][4:_] =&gt; …</code>.</li>
+      <li><b>Subject types</b> are the integer family — <code>int</code> / <code>u8</code> /
+      <code>u16</code> / <code>u32</code> / <code>u64</code> / <code>i64</code>; a field wider
+      than 32 bits binds as <code>i64</code>.</li>
+    </ul>
+    <div class="note">For streaming binary input (a cursor over a byte buffer, endianness,
+    variable-width samples) reach for <a href="stdlib.html"><code>std.text.bytes</code></a>'s
+    <code>Reader</code>; <code>bits[…]</code> is the pattern-match primitive it builds on.</div>
+  </section>
+
+  <h1 style="margin-top:3.5rem">Option, Result &amp; error handling</h1>
+  <p class="lede">LS has no exceptions and no <code>null</code>. Absence is
+  <code>Option(T)</code> (<code>Some</code>/<code>None</code>); fallible results are
+  <code>Result(T, E)</code> (<code>Ok</code>/<code>Err</code>). Both are ordinary enums —
+  but they get first-class ergonomics: the <code>try</code> operator, the <code>!</code>
+  force-unwrap, and a family of combinators, so error handling stays terse without hiding
+  control flow.</p>
+
+  <section id="er-types">
+    <h2><code>Option(T)</code> / <code>Result(T, E)</code></h2>
+    <p>Constructors are bare (<code>Some</code>/<code>None</code>/<code>Ok</code>/<code>Err</code>);
+    the expected type disambiguates. Consume them by <code>match</code> like any enum.</p>
+    <div class="ex"><pre><span class="k">import</span> std.core.str
+
+<span class="t">Option</span>(<span class="t">int</span>) a = <span class="t">Some</span>(42)
+<span class="t">Option</span>(<span class="t">int</span>) b = <span class="t">None</span>
+<span class="t">Result</span>(<span class="t">int</span>, <span class="t">Str</span>) r = <span class="t">Ok</span>(100)
+<span class="t">Result</span>(<span class="t">int</span>, <span class="t">Str</span>) e = <span class="t">Err</span>(<span class="s">"not found"</span>)
+
+<span class="k">match</span> a {
+    <span class="t">Some</span>(x) =&gt; <span class="k">@print</span>(x)      <span class="c">// 42</span>
+    <span class="t">None</span>    =&gt; <span class="k">@print</span>(-1)
+}
+
+<span class="k">def</span> safe_div(<span class="t">int</span> n, <span class="t">int</span> d) -&gt; <span class="t">Result</span>(<span class="t">int</span>, <span class="t">Str</span>) {
+    <span class="k">match</span> d {
+        0 =&gt; <span class="t">Err</span>(<span class="s">"divide by zero"</span>)
+        _ =&gt; <span class="t">Ok</span>(n / d)
+    }
+}</pre></div>
+  </section>
+
+  <section id="er-try">
+    <h2><code>try</code> — propagate on failure (Zig-style)</h2>
+    <p>Inside a function that itself returns <code>Result</code>/<code>Option</code>,
+    <code>try expr</code> unwraps the success value, or <b>early-returns</b> the
+    <code>Err</code>/<code>None</code> from the enclosing function. It collapses the
+    match-and-rethrow boilerplate to one keyword.</p>
+    <div class="ex"><pre><span class="k">def</span> parse_pos(<span class="t">int</span> x) -&gt; <span class="t">Result</span>(<span class="t">int</span>, <span class="t">Str</span>) {
+    <span class="k">match</span> x { 0 =&gt; <span class="t">Err</span>(<span class="s">"zero"</span>)  _ =&gt; <span class="t">Ok</span>(x) }
+}
+
+<span class="k">def</span> chain(<span class="t">int</span> a, <span class="t">int</span> b, <span class="t">int</span> c) -&gt; <span class="t">Result</span>(<span class="t">int</span>, <span class="t">Str</span>) {
+    <span class="t">int</span> x = <span class="k">try</span> parse_pos(a)      <span class="c">// Ok → x; Err → return that Err now</span>
+    <span class="t">int</span> y = <span class="k">try</span> parse_pos(b)
+    <span class="t">int</span> z = <span class="k">try</span> parse_pos(c)
+    <span class="k">return</span> <span class="t">Ok</span>(x + y + z)
+}
+<span class="c">// chain(1,2,3) → Ok(6);  chain(1,0,3) → Err("zero")  (stops at the second try)</span></pre></div>
+  </section>
+
+  <section id="er-bang">
+    <h2><code>!</code> — force-unwrap (assert success)</h2>
+    <p>A trailing <code>!</code> extracts the success value, or <b>panics</b> (prints a
+    location + message, exits the process) on <code>None</code>/<code>Err</code>. Use it
+    when failure is a bug, not a recoverable case. It's the eager complement to
+    <code>try</code>'s propagation.</p>
+    <div class="ex"><pre><span class="t">Option</span>(<span class="t">int</span>) a = <span class="t">Some</span>(42)
+<span class="t">int</span> x = (a)!                  <span class="c">// 42</span>
+<span class="t">int</span> y = box.maybe()!          <span class="c">// directly on a call/method result</span>
+<span class="t">int</span> z = get_some(5)! + 10      <span class="c">// inside a larger expression</span></pre></div>
+    <div class="warn"><b>A bare variable must be parenthesized: <code>(a)!</code>.</b>
+    Lexically <code>!</code> and <code>?</code> are greedy identifier suffixes
+    (<code>value!</code> / <code>empty?</code> are no-arg method names), so the force-unwrap
+    <code>!</code> only fires after an expression ending in <code>)</code> or <code>]</code>.
+    Write <code>(a)!</code> for a plain variable; <code>f()!</code> / <code>v[i]!</code> need
+    no parentheses. An owned payload (<code>Str</code>/<code>Vec</code>/…) is <em>moved</em>
+    out by <code>!</code>, so the source becomes dead afterward.</div>
+  </section>
+
+  <section id="er-combinators">
+    <h2>Combinators</h2>
+    <p>For the common shapes that aren't worth a full <code>match</code>. The mutating ones
+    consume the receiver (moving any owned payload out); the <code>is_*?</code> predicates
+    only borrow, so the receiver stays usable.</p>
+    <table class="api">
+      <tr><th>Combinator</th><th>Meaning</th></tr>
+      <tr><td><span class="sig">.unwrap()</span></td><td>success value, else <b>panic</b></td></tr>
+      <tr><td><span class="sig">.expect(msg)</span></td><td>like <code>unwrap</code>, panic message is <code>msg</code></td></tr>
+      <tr><td><span class="sig">.unwrap_or(fb)</span></td><td>success value, else the fallback <code>fb</code></td></tr>
+      <tr><td><span class="sig">.unwrap_or_else(|| ..)</span></td><td>success value, else compute the fallback lazily</td></tr>
+      <tr><td><span class="sig">.is_some?() .is_none?()</span></td><td>Option predicates (borrow, don't consume)</td></tr>
+      <tr><td><span class="sig">.is_ok?() .is_err?()</span></td><td>Result predicates</td></tr>
+      <tr><td><span class="sig">.map(U)(|x| ..)</span></td><td>transform the success value → <code>Option(U)</code>/<code>Result(U,E)</code></td></tr>
+      <tr><td><span class="sig">.and_then(U)(|x| ..)</span></td><td>chain: the closure itself returns an Option/Result</td></tr>
+      <tr><td><span class="sig">.map_err(F)(|e| ..)</span></td><td>transform the <code>Err</code> payload</td></tr>
+      <tr><td><span class="sig">.ok() .err()</span></td><td><code>Result(T,E)</code> → <code>Option(T)</code> / <code>Option(E)</code></td></tr>
+      <tr><td><span class="sig">.ok_or(e)</span></td><td><code>Option(T)</code> → <code>Result(T, typeof e)</code></td></tr>
+    </table>
+    <div class="ex"><pre><span class="t">Option</span>(<span class="t">int</span>) none = <span class="t">None</span>
+<span class="k">@print</span>(none.unwrap_or(99))             <span class="c">// 99</span>
+<span class="k">@print</span>(<span class="t">Some</span>(7).is_some?())            <span class="c">// true  (Some(7) still usable after)</span>
+
+<span class="c">// headline: a missing Map key, recovered in one line</span>
+<span class="t">Map</span>(<span class="t">Str</span>, <span class="t">int</span>) m = {}
+m[<span class="s">"a"</span>] = 1
+<span class="k">@print</span>(m.get(<span class="s">"a"</span>).unwrap_or(0))       <span class="c">// 1</span>
+<span class="k">@print</span>(m.get(<span class="s">"z"</span>).unwrap_or(-1))      <span class="c">// -1   (no panic, no exception)</span>
+
+<span class="c">// map / and_then take an explicit result-type arg, like vec.map(U)</span>
+<span class="t">Option</span>(<span class="t">int</span>) r = <span class="t">Some</span>(4).map(<span class="t">int</span>)(|x| x + 1)   <span class="c">// Some(5)</span>
+
+<span class="c">// Option → Result, then propagate with try</span>
+<span class="k">def</span> pick(&amp;<span class="t">Vec</span>(<span class="t">Str</span>) v, <span class="t">int</span> i) -&gt; <span class="t">Result</span>(<span class="t">Str</span>, <span class="t">Str</span>) {
+    <span class="t">Str</span> s = <span class="k">try</span> v.get(i).ok_or(<span class="s">"index out of range"</span>)
+    <span class="k">return</span> <span class="t">Ok</span>(s)
+}</pre></div>
+    <div class="note"><code>try</code>, <code>!</code> and these combinators are all
+    <b>compiler-lowered</b> (to <code>match</code>), not library methods — so they reuse the
+    exact same ownership/move/drop machinery and never leak or double-free an owned
+    payload.</div>
+  </section>
+
+  <section id="er-access">
+    <h2>The three-tier container access model</h2>
+    <p><code>Option</code> underpins LS's deliberate split between <b>loud</b>,
+    <b>recoverable</b>, and <b>unchecked</b> element access. Same idea for <code>Vec</code>
+    and <code>Map</code>:</p>
+    <table class="api">
+      <tr><th>Tier</th><th>Vec</th><th>Behaviour on miss / OOB</th></tr>
+      <tr><td><b>loud</b> (default)</td><td><span class="sig">v[i]</span></td><td><b>panics</b> — the right default; a bad index is a bug</td></tr>
+      <tr><td><b>recoverable</b></td><td><span class="sig">v.get(i)</span></td><td>returns <code>Option(T)</code> — <code>None</code> on OOB</td></tr>
+      <tr><td><b>unchecked</b></td><td><span class="sig">v.get!(i)</span></td><td>raw load, no check — escape hatch, UB if OOB</td></tr>
+    </table>
+    <div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) v = [10, 20, 30]
+<span class="t">int</span> a = v[1]                         <span class="c">// 20      — panics if i is out of bounds</span>
+<span class="t">Option</span>(<span class="t">int</span>) b = v.get(5)            <span class="c">// None    — recover with match / unwrap_or</span>
+<span class="t">int</span> c = v.get!(0)                    <span class="c">// 10      — unchecked; only when i is provably valid</span>
+
+<span class="t">Map</span>(<span class="t">Str</span>, <span class="t">int</span>) m = {<span class="s">"x"</span>: 1}
+<span class="t">int</span> d = m[<span class="s">"x"</span>]                       <span class="c">// 1       — panics on a missing key</span>
+<span class="t">Option</span>(<span class="t">int</span>) e = m.get(<span class="s">"y"</span>)          <span class="c">// None    — recoverable</span></pre></div>
+    <div class="note"><code>v.set(i, x)</code> / <code>m.set(k, v)</code> (and
+    <code>v[i] = x</code> / <code>m[k] = v</code>) are the write side; <code>v.set!</code>
+    is the unchecked write. Pick the tier by whether an out-of-range index is a bug
+    (<code>[]</code>), an expected condition (<code>get</code>), or already proven safe
+    (<code>get!</code>).</div>
+  </section>
+
+  <h1 style="margin-top:3.5rem">Ownership &amp; move semantics</h1>
+  <p class="lede">LS is memory-safe with <b>no garbage collector</b>. Every value that owns
+  heap memory has exactly one owner; when the owner goes out of scope the value is
+  destroyed (RAII). Assigning or capturing such a value <b>moves</b> ownership, and the
+  compiler statically forbids using what you moved away — so there are no use-after-free,
+  double-free, or leaks, checked entirely at compile time. There are no named lifetimes
+  (<code>'a</code>); see <a href="#bo-escape">Borrowing</a> for how LS gets away without them.</p>
+
+  <section id="ow-model">
+    <h2>What owns heap — the value &amp; move model</h2>
+    <p>Types split into <b>plain</b> (copied freely, no tracking) and <b>owning</b> (a
+    single owner, moved on transfer, destroyed at scope end):</p>
+    <table class="api">
+      <tr><th>Category</th><th>Types</th><th>On transfer</th></tr>
+      <tr><td><b>plain</b></td><td><code>int</code> family · <code>f64</code>/<code>f32</code> · <code>bool</code> · <code>char</code> · <code>*T</code> · <code>object</code> · <code>array(POD,N)</code></td><td>copied (both usable)</td></tr>
+      <tr><td><b>owning</b></td><td><code>Str</code> · <code>Vec(T)</code> · <code>Map(K,V)</code> · any <code>struct</code>/<code>enum</code> with an owning field · a <code>Block</code> holding a captured env</td><td><b>moved</b> (source dies)</td></tr>
+    </table>
+    <p>An owning value is in one of three states. For <code>Str</code> these are visible as
+    its <code>cap</code>, but the idea generalises to every owning type:</p>
+    <table class="api">
+      <tr><th>State</th><th>Meaning</th><th>At scope end</th></tr>
+      <tr><td><b>static</b></td><td>points at a read-only literal (a <code>Str</code> literal, <code>cap==0</code>)</td><td>nothing to free</td></tr>
+      <tr><td><b>owned</b></td><td>holds a heap allocation it is responsible for</td><td>destroyed (freed)</td></tr>
+      <tr><td><b>moved</b></td><td>ownership already transferred away</td><td>skipped (the new owner frees)</td></tr>
+    </table>
+  </section>
+
+  <section id="ow-bind">
+    <h2>Binding moves · by-value arguments clone</h2>
+    <p>This is the distinction to internalise. Binding an owning value to a <b>new
+    variable</b> transfers ownership (a move). Passing one as a <b>by-value function
+    argument</b> makes an independent <b>deep copy</b> (a clone) — the argument stays alive.</p>
+    <div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) a = [1, 2, 3]
+<span class="t">Vec</span>(<span class="t">int</span>) b = a            <span class="c">// MOVE — b owns it now, a is dead</span>
+<span class="c">// @print(a.len())          // ❌ compile error: use after move</span>
+
+<span class="k">def</span> total(<span class="t">Vec</span>(<span class="t">int</span>) xs) -&gt; <span class="t">int</span> {     <span class="c">// by-value param</span>
+    <span class="t">int</span> s = 0
+    <span class="k">for</span> x <span class="k">in</span> xs { s = s + x }
+    <span class="k">return</span> s
+}
+<span class="t">Vec</span>(<span class="t">int</span>) c = [1, 2, 3]
+<span class="k">@print</span>(total(c))           <span class="c">// 6 — c is CLONED into the call</span>
+<span class="k">@print</span>(c.len())            <span class="c">// ✓ 3 — c is still alive afterward</span></pre></div>
+    <div class="note"><b>Want to pass without copying?</b> Borrow it — <code>total</code>
+    could take <code>&amp;Vec(int)</code> and read it zero-copy with the caller keeping
+    ownership. That's the whole point of the next chapter. Use a by-value parameter only
+    when the function genuinely needs its own copy.</div>
+    <p>Other points where ownership <b>moves</b> (source dies): capturing an owning value
+    <a href="#capture">by-move into a closure</a>, force-unwrapping an owned payload with
+    <a href="#er-bang"><code>!</code></a>, and passing an owned <em>temporary</em> into a
+    container (<code>v.push("x".upper())</code> — an rvalue, moved in; a named variable
+    there is cloned, not moved).</p>
+  </section>
+
+  <section id="ow-uam">
+    <h2>Use-after-move is a compile error</h2>
+    <p>Once a variable is moved away it is <b>dead</b> — any later read or write is rejected.
+    The state is monotonic: a move on <i>any</i> path (even one branch of an
+    <code>if</code>) marks the variable moved for everything after.</p>
+    <div class="ex"><pre><span class="t">Str</span> s = <span class="s">"hello"</span>.upper()      <span class="c">// owned</span>
+<span class="t">Str</span> t = s                     <span class="c">// move s → t</span>
+<span class="k">@print</span>(s)                      <span class="c">// ❌ compile error: use after move</span>
+
+<span class="t">Str</span> u = <span class="s">"hi"</span>.upper()
+<span class="k">if</span> cond { <span class="t">Str</span> w = u }         <span class="c">// u is MAYBE-moved here…</span>
+<span class="k">@print</span>(u)                      <span class="c">// ❌ still rejected — moved on at least one path</span></pre></div>
+    <div class="note">The progression is <code>LIVE → MAYBE_MOVED → MOVED</code>, one-way.
+    No control-flow fixed-point is needed: if any path could have moved the value, it's
+    treated as gone. This is conservative but predictable — and it's what guarantees no
+    double-free.</div>
+  </section>
+
+  <section id="ow-raii">
+    <h2>Destructors run automatically (RAII)</h2>
+    <p>An owning value is destroyed at the end of its scope — its destructor runs, freeing
+    the heap it holds, recursively for owning fields. You never write a free; the owner that
+    is still live at scope exit cleans up. (Globals are destroyed at program exit.)</p>
+    <div class="ex"><pre><span class="k">def</span> demo() {
+    <span class="t">Vec</span>(<span class="t">Str</span>) names = [<span class="s">"ann"</span>, <span class="s">"bob"</span>]   <span class="c">// owns a heap buffer + two owned Str</span>
+    names.push(<span class="s">"cat"</span>.upper())
+    <span class="c">// … use names …</span>
+}                                  <span class="c">// names destroyed here: each Str freed, then the buffer</span></pre></div>
+    <p>Custom destructors and deep-copy hooks for types holding <i>raw</i> resources are the
+    <a href="#ty-destroy"><code>Destroy</code> / <code>Clone</code></a> interfaces. For
+    everything built from <code>Str</code>/<code>Vec</code>/<code>Map</code>/nested structs,
+    both are generated — RAII is fully automatic.</p>
+  </section>
+
+  <h1 style="margin-top:3.5rem">Borrowing &amp; lifetimes-lite</h1>
+  <p class="lede">A borrow lets a function touch a value <b>without taking ownership</b> —
+  zero-copy, and the caller keeps the value alive. <code>&amp;T</code> is a read-only
+  borrow, <code>&amp;!T</code> a mutable one. LS has <b>no named lifetimes</b>: a borrow is
+  argument-only and cannot escape, which is exactly the invariant Rust's <code>'a</code>
+  enforces — LS gets it from a lightweight inferred escape analysis instead.</p>
+
+  <section id="bo-ref">
+    <h2><code>&amp;T</code> read-only · <code>&amp;!T</code> mutable</h2>
+    <p>A borrow parameter reads (and, for <code>&amp;!T</code>, writes) through a pointer to
+    the caller's value. A read-only borrow can be passed implicitly (<b>auto-borrow</b>); a
+    mutable borrow must be marked <code>&amp;!x</code> at the call site, so mutation is
+    always visible there.</p>
+    <div class="ex"><pre><span class="k">def</span> sum(&amp;<span class="t">Vec</span>(<span class="t">int</span>) v) -&gt; <span class="t">int</span> {       <span class="c">// read-only borrow</span>
+    <span class="t">int</span> s = 0
+    <span class="k">for</span> x <span class="k">in</span> v { s = s + x }
+    <span class="k">return</span> s
+}
+<span class="k">def</span> grow(&amp;!<span class="t">Vec</span>(<span class="t">int</span>) v) {           <span class="c">// mutable borrow</span>
+    v.push(99)
+}
+
+<span class="t">Vec</span>(<span class="t">int</span>) v = [3, 5]
+<span class="k">@print</span>(sum(v))        <span class="c">// 8  — auto-borrow: no &amp; needed for read-only</span>
+grow(&amp;!v)            <span class="c">// mutation MUST be explicit: &amp;!v</span>
+<span class="k">@print</span>(v.len())       <span class="c">// 3  — v is still owned by the caller</span></pre></div>
+    <ul class="compact">
+      <li>Borrowable types: <code>Str</code>, <code>Vec</code>, <code>Map</code>, any
+      <code>struct</code>/<code>enum</code> — all pass as a pointer.</li>
+      <li><code>&amp;!T</code> downgrades to <code>&amp;T</code> (a mutable borrow satisfies a
+      read-only parameter); the reverse is rejected.</li>
+      <li>The same variable can't be borrowed twice in one call
+      (<code>f(&amp;!x, x)</code> is an aliasing error).</li>
+      <li>On <code>self</code>, these are the <a href="#ty-self"><code>&amp;self</code> /
+      <code>&amp;!self</code></a> method forms.</li>
+    </ul>
+  </section>
+
+  <section id="bo-escape">
+    <h2>The non-escaping rule — why LS needs no lifetimes</h2>
+    <p>A borrow is <b>argument-only</b>. It lives for the duration of a call and cannot
+    outlive what it points at. The compiler rejects every way a borrow could escape:</p>
+    <ul class="compact">
+      <li>storing a borrow in a variable that outlives the borrowed value;</li>
+      <li>putting a borrow in a <code>struct</code> field or an <code>enum</code> payload;</li>
+      <li>capturing a borrow in a closure;</li>
+      <li>returning a borrow of a <em>local</em> (only <a href="#bo-return">elision of an
+      input borrow</a> is allowed).</li>
+    </ul>
+    <div class="note">Because a borrow physically <i>cannot</i> outlive its referent, there
+    is nothing for a named lifetime to express — this non-escaping rule <b>is</b> the
+    lifetime system. It's an inferred, conservative escape analysis, not Rust's explicit
+    <code>'a</code> annotations. The trade-off: a few advanced patterns (a borrow stored in
+    a struct, a view returned from multiple inputs) aren't expressible; LS offers
+    value-plus-offset <i>views</i> (e.g. <code>StrSlice</code>) for those instead.</div>
+  </section>
+
+  <section id="bo-field">
+    <h2>Field &amp; element borrows — <code>&amp;obj.field</code>, <code>&amp;v[i]</code></h2>
+    <p>You can borrow a single field or element and hand it to a <code>&amp;T</code>
+    parameter, zero-copy, while the container stays alive. The mutable form
+    <code>&amp;!obj.field</code> lends a writable field (the mechanism behind
+    <code>Guard.lock</code>).</p>
+    <div class="ex"><pre><span class="k">def</span> slen(&amp;<span class="t">Str</span> s) -&gt; <span class="t">int</span> { <span class="k">return</span> s.len() }
+
+<span class="k">struct</span> <span class="t">Person</span> { <span class="t">Str</span> name; <span class="t">int</span> age }
+<span class="t">Person</span> p = <span class="t">Person</span> { name: <span class="s">"ann"</span>, age: 7 }
+<span class="k">@print</span>(slen(&amp;p.name))         <span class="c">// borrow the field, zero-copy; p stays alive</span>
+
+<span class="t">Vec</span>(<span class="t">Str</span>) names = [<span class="s">"alpha"</span>, <span class="s">"be"</span>]
+<span class="k">@print</span>(slen(&amp;names[0]))        <span class="c">// borrow an element, zero-copy → 5</span></pre></div>
+  </section>
+
+  <section id="bo-forin">
+    <h2>Borrowing for-in — <code>for x in &amp;v</code></h2>
+    <p>Iterating <code>for x in v</code> over an owning <code>Vec</code> <b>clones</b> each
+    element. <code>for x in &amp;v</code> binds each element as a <code>&amp;T</code> borrow
+    instead — zero-copy reads, source untouched.</p>
+    <div class="ex"><pre><span class="t">Vec</span>(<span class="t">Str</span>) names = [<span class="s">"ann"</span>, <span class="s">"bob"</span>]
+<span class="t">i64</span> total = 0
+<span class="k">for</span> x <span class="k">in</span> &amp;names {            <span class="c">// x : &amp;Str — borrowed each iteration</span>
+    total = total + x.len() <span class="k">as</span> <span class="t">i64</span>   <span class="c">// auto-deref: use x like a value</span>
+}
+<span class="c">// names is still alive here (no elements were moved or cloned)</span></pre></div>
+    <div class="note">Reads auto-deref to a value; passing the borrowed <code>x</code> into a
+    parameter that wants an owned <code>T</code> (e.g. <code>out.push(x)</code>) makes an
+    independent clone — safe, never a dangling pointer. v1 covers <code>struct</code>
+    elements (<code>Str</code> included).</div>
+  </section>
+
+  <section id="bo-slice">
+    <h2>Borrowed slices — <code>&amp;array(T)</code> and <code>v[a..b]</code></h2>
+    <p>A borrowed slice is a <code>{ptr, len}</code> fat pointer over a contiguous
+    <code>Vec(T)</code> range. Make one with <code>v[a..b]</code> (half-open); its type is
+    <code>&amp;array(T)</code> (read-only) or <code>&amp;!array(T)</code> (writable). The
+    spelling reuses <code>&amp;</code>&nbsp;+&nbsp;<code>array(T)</code> — C+Ruby flavour, no
+    Rust <code>&amp;[T]</code>.</p>
+    <div class="ex"><pre><span class="k">def</span> sum(&amp;<span class="t">array</span>(<span class="t">int</span>) s) -&gt; <span class="t">int</span> {     <span class="c">// reusable over any sub-range, zero-copy</span>
+    <span class="t">int</span> t = 0
+    <span class="k">for</span> x <span class="k">in</span> s { t = t + x }
+    <span class="k">return</span> t
+}
+<span class="k">def</span> double_all(&amp;!<span class="t">array</span>(<span class="t">int</span>) s) {     <span class="c">// writable slice: writes hit the underlying Vec</span>
+    <span class="k">for</span> i <span class="k">in</span> 0..s.len() { s[i] = s[i] * 2 }
+}
+
+<span class="t">Vec</span>(<span class="t">int</span>) v = [10, 20, 30, 40, 50]
+<span class="k">@print</span>(sum(v[1..4]))            <span class="c">// elements [1,4) → 20+30+40 = 90</span>
+<span class="k">@print</span>(v[1..4].len())           <span class="c">// 3</span>
+&amp;<span class="t">array</span>(<span class="t">int</span>) sl = v[0..2]       <span class="c">// bind a slice to a local (pins v while sl lives)</span>
+double_all(&amp;!v[0..5])          <span class="c">// v becomes [20, 40, 60, 80, 100]</span></pre></div>
+    <div class="note">A slice is bounds-checked and governed by the escape rule (it can't
+    outlive <code>v</code>). It's distinct from <code>array(T, N)</code>, which is a
+    fixed-size <em>stack</em> array, not a borrow.</div>
+  </section>
+
+  <section id="bo-return">
+    <h2>Returning a borrow — single-input elision</h2>
+    <p>A method/function may <b>return</b> a borrow, as long as it borrows exactly <b>one</b>
+    input — that input's the only thing it can point at, so the lifetime is inferred (Rust
+    calls this elision). The canonical case is borrowing a field of <code>&amp;self</code>:</p>
+    <div class="ex"><pre><span class="k">struct</span> <span class="t">Inner</span> { <span class="t">int</span> v }
+<span class="k">struct</span> <span class="t">Box</span> { <span class="t">Inner</span> inner }
+
+<span class="k">methods</span> <span class="t">Box</span> {
+    <span class="k">def</span> get_ref(&amp;self) -&gt; &amp;<span class="t">Inner</span> { <span class="k">return</span> self.inner }   <span class="c">// borrow a field of self</span>
+}
+
+<span class="t">Box</span> b = <span class="t">Box</span> { inner: <span class="t">Inner</span> { v: 42 } }
+&amp;<span class="t">Inner</span> r = b.get_ref()
+<span class="k">@print</span>(r.v)                  <span class="c">// 42 — no copy of Inner was made</span></pre></div>
+    <p>This extends to generic methods: <code>Vec(T)</code>'s
+    <code>get_ref(&amp;self, i) -&gt; &amp;T</code> borrows an element zero-copy, so you can call
+    a method straight on the borrowed element:</p>
+    <div class="ex"><pre><span class="t">Vec</span>(<span class="t">Str</span>) words = [<span class="s">"alpha"</span>, <span class="s">"beta"</span>]
+<span class="k">@print</span>(words.get_ref(0).len())       <span class="c">// 5 — method on the borrowed element, no clone</span></pre></div>
+    <div class="warn"><b>v1 is aggregate-only.</b> A returned <code>&amp;T</code> must point
+    at a <code>struct</code>/<code>enum</code> (pointer ABI + field auto-deref). Returning a
+    borrow of a POD scalar (<code>&amp;int</code>) is a clear compile error — read a POD
+    element with <code>get!</code> instead. Borrows as <code>struct</code> fields, named
+    lifetimes, and multi-input returned borrows are deliberately <b>not</b> supported;
+    use a value-offset view (<code>StrSlice</code>) when you need a stored window.</div>
+  </section>
+
+  <h1 id="cl-top" style="margin-top:3.5rem">LS Closures</h1>
+  <p class="lede">LS closures are Ruby-flavoured: <code>|x| body</code> with a pipe-delimited
+  parameter list. This chapter covers every closure form, the trailing-closure and
+  type-inference sugar, capture semantics, and the sharp edges.</p>
+
+  <section id="overview">
+    <h2>Overview</h2>
+    <p>A closure is an anonymous function value written <code>|params| body</code>.
+    It can be passed to a method (the common case), and it can <em>capture</em>
+    variables from the enclosing scope. Parameter types are <b>inferred</b> from
+    the context — you never annotate them.</p>
+    <div class="ex"><pre><span class="k">import</span> std.core.vec
+<span class="t">Vec</span>(<span class="t">int</span>) v = [1, 2, 3]
+v.each(|x| <span class="k">@print</span>(x))              <span class="c">// |x| @print(x) — a closure passed to each</span>
+<span class="t">Vec</span>(<span class="t">int</span>) doubled = v.map(|x| x * 2)  <span class="c">// → [2, 4, 6]</span></pre></div>
+    <div class="note"><b>Mental model.</b> <code>|x| EXPR</code> is "one parameter
+    <code>x</code>, body is <code>EXPR</code>, whose value is returned". For more
+    than one statement, use a brace body <code>|x| { ... return v }</code>.</div>
+  </section>
+
+  <section id="forms">
+    <h2>The two body forms</h2>
+    <h3>Expression body — <code>|x| expr</code></h3>
+    <p>A single expression; its value is the return value. No <code>return</code>
+    keyword, no braces.</p>
+    <div class="ex"><pre>v.map(|x| x + 1)
+v.filter(|x| x &gt; 0)
+nums.sort_by(|a, b| a - b)</pre></div>
+
+    <h3>Block body — <code>|x| { ... }</code></h3>
+    <p>Use braces for multiple statements, conditionals, or an early
+    <code>return</code>. The value is produced by an explicit <code>return</code>.</p>
+    <div class="ex"><pre>v.map(|x| {
+    <span class="t">int</span> y = x * 10
+    <span class="k">return</span> y + 1
+})
+
+v.map(|x| {
+    <span class="k">if</span> x == 2 { <span class="k">return</span> 999 }
+    <span class="k">return</span> x
+})</pre></div>
+    <div class="note">The two forms are equivalent for a single expression:
+    <code>|x| x + 1</code> ≡ <code>|x| { return x + 1 }</code>. Reach for braces
+    only when you need more than one expression.</div>
+  </section>
+
+  <section id="args">
+    <h2>As method arguments</h2>
+    <p>The functional <code>Vec</code> / container methods take a closure. The
+    element is <b>borrowed</b> (<code>&amp;T</code>, zero-copy) into the closure;
+    inside, you use it like a value (auto-deref).</p>
+    <table class="api">
+      <tr><th>Method</th><th>Closure</th><th>Returns</th></tr>
+      <tr><td><span class="sig">v.each(f)</span></td><td><span class="sig">|x| &lt;void&gt;</span></td><td>nothing (side effects)</td></tr>
+      <tr><td><span class="sig">v.map(f)</span></td><td><span class="sig">|x| U</span></td><td><span class="sig">Vec(U)</span></td></tr>
+      <tr><td><span class="sig">v.filter(f)</span></td><td><span class="sig">|x| bool</span></td><td><span class="sig">Vec(T)</span></td></tr>
+      <tr><td><span class="sig">v.reduce(init, f)</span></td><td><span class="sig">|acc, x| U</span></td><td><span class="sig">U</span></td></tr>
+      <tr><td><span class="sig">v.any(f)/all(f)</span></td><td><span class="sig">|x| bool</span></td><td><span class="sig">bool</span></td></tr>
+      <tr><td><span class="sig">v.find(f)/pos(f)/count(f)</span></td><td><span class="sig">|x| bool</span></td><td>Option / int</td></tr>
+    </table>
+    <p>Full signatures live in the <a href="stdlib.html#vec">stdlib reference</a>.
+    The <code>map</code> declaration, for example:</p>
+    <div class="ex"><pre><span class="k">def</span> map(U)(&amp;self, <span class="t">Block</span>(&amp;T)-&gt;U f) -&gt; <span class="t">Vec</span>(U)</pre></div>
+    <ul class="compact">
+      <li><code>T</code> — input element type, from <code>Vec(T)</code>; inferred.</li>
+      <li><code>U</code> — the closure's return type = result element type.</li>
+    </ul>
+  </section>
+
+  <section id="trailing">
+    <h2>Trailing-closure sugar</h2>
+    <p>When the closure is the call's last argument, it can be written as a
+    trailing block instead of inside the parentheses — Ruby-style.</p>
+    <div class="ex"><pre><span class="c">// these are equivalent:</span>
+v.each(|x| <span class="k">@print</span>(x))
+v.each() { |x| <span class="k">@print</span>(x) }      <span class="c">// trailing closure (empty () then the block)</span>
+
+v.map(<span class="t">int</span>) { |x|              <span class="c">// type arg in (), closure trailing</span>
+    <span class="t">int</span> y = x * 10
+    <span class="k">return</span> y + 1
+}
+
+v.map() { |x|                  <span class="c">// no type arg either — U is inferred (closest to Ruby)</span>
+    <span class="t">int</span> y = x * 10
+    <span class="k">return</span> y + 1
+}</pre></div>
+    <div class="warn"><b>The <code>()</code> is required — you can't drop it
+    entirely.</b> The trailing <code>{</code> is only recognised as a closure
+    when it directly follows a <code>)</code> <em>and</em> starts with
+    <code>|</code>. The <code>)</code> is the signal "this is a call, and the
+    <code>{</code> is its closure". So <code>v.map() { |x| ... }</code> works
+    but <code class="ex" style="border:0;padding:0;background:none"><span class="bad">v.map { |x| ... }</span></code>
+    does not.
+    <br><br>Why the rule exists: a bare <code>EXPR { ... }</code> collides with
+    block syntax everywhere — most importantly the loop body in
+    <code>for i in 0..100 { ... }</code> (here the <code>{</code> is the body, not
+    a closure on the range), and <code>if</code>/<code>while</code> bodies and
+    struct literals (<code>Point { x: 1 }</code>). Requiring a preceding
+    <code>)</code> removes the ambiguity. If the empty <code>()</code> bothers
+    you, the in-parens form <code>v.map(|x| ...)</code> is just as short.</div>
+    <p>For a method with <b>more than one</b> value argument, the others stay in
+    the parens and the closure trails:</p>
+    <div class="ex"><pre>v.reduce(<span class="t">int</span>)(0) { |acc, x| acc + x }   <span class="c">// init in (), closure trailing</span></pre></div>
+    <p>The plain explicit form <code>v.map(int)(|x| ...)</code> always works too,
+    and is the most regular — pick whichever reads best.</p>
+  </section>
+
+  <section id="infer">
+    <h2>Type inference</h2>
+    <p>For methods whose result type differs from the input (<code>map(U)</code>,
+    <code>reduce(U)</code>), <code>U</code> is <b>inferred from the closure's
+    return type</b> — you can drop the explicit <code>(U)</code>.</p>
+    <div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) v = [1, 2, 3]
+<span class="t">Vec</span>(<span class="t">int</span>) a = v.map(|x| x + 1)        <span class="c">// U inferred = int</span>
+<span class="t">Vec</span>(<span class="t">Str</span>) b = v.map(|x| f<span class="s">"n{x}"</span>)      <span class="c">// U inferred = Str</span>
+<span class="t">Vec</span>(<span class="t">int</span>) c = v.map(|x| {            <span class="c">// block body, U inferred = int</span>
+    <span class="t">int</span> y = x * 10
+    <span class="k">return</span> y + 1
+})</pre></div>
+    <div class="note"><b>v1 limits.</b> Inference covers a <em>single</em> method
+    type parameter that is the return type of <em>one</em> closure argument
+    (exactly the <code>map</code>/<code>reduce</code> shape). When that doesn't
+    apply, give the type explicitly — e.g. <code>reduce</code>'s accumulator
+    seed sits in parens: <code>v.reduce(int)(0, |acc, x| acc + x)</code>.</div>
+    <div class="note">This trades a little of LS's explicit-typing convention for
+    Ruby-style brevity. Filter/each/any/all need no type parameter at all
+    (their result type is fixed), so they were always paren-free:
+    <code>v.filter(|x| x &gt; 0)</code>.</div>
+  </section>
+
+  <section id="blocktype">
+    <h2>The <code>Block</code> type</h2>
+    <p>A closure value has type <code>Block(ParamTypes...) -&gt; Ret</code>. You
+    mostly never write it — it is the type of a closure <em>parameter</em> in a
+    method/function signature, where it drives parameter-type inference for the
+    <code>|x|</code> you pass.</p>
+    <div class="ex"><pre><span class="c">// a function that takes a closure:</span>
+<span class="k">def</span> apply_twice(<span class="t">Block</span>(<span class="t">int</span>)-&gt;<span class="t">int</span> f, <span class="t">int</span> x) -&gt; <span class="t">int</span> {
+    <span class="k">return</span> f(f(x))
+}
+apply_twice(|n| n + 1, 10)            <span class="c">// → 12; n inferred int from Block(int)->int</span></pre></div>
+    <div class="warn"><b>Not an inline local-variable type.</b> You cannot declare
+    <code class="ex" style="border:0;padding:0;background:none"><span class="bad">Block()->int f = || ...</span></code>
+    as a local. Closures are written at the call site (or as a typed
+    <em>parameter</em>). To hold one, pass it through a function parameter.</div>
+  </section>
+
+  <section id="capture">
+    <h2>Capture rules</h2>
+    <p>A closure may reference variables from the enclosing scope ("free
+    variables"). How each is captured depends on its type:</p>
+    <table class="api">
+      <tr><th>Captured type</th><th>Strategy</th><th>Outer variable after</th></tr>
+      <tr><td><code>int / f64 / bool / char / *T</code></td><td>by-copy</td><td>still usable</td></tr>
+      <tr><td><code>array(POD, N)</code></td><td>by-copy (snapshot)</td><td>still usable</td></tr>
+      <tr><td><code>Str / Vec / Map / has_drop struct·enum</code></td><td><b>by-move</b></td><td><b>dead</b> (use-after-move = compile error)</td></tr>
+      <tr><td>another <code>Block</code></td><td>by-clone (deep copy of its env)</td><td>still usable</td></tr>
+    </table>
+    <div class="ex"><pre><span class="t">int</span> base = 10
+<span class="t">Vec</span>(<span class="t">int</span>) r = v.map(|x| x + base)   <span class="c">// base captured by-copy; base still usable</span>
+
+<span class="t">Str</span> prefix = <span class="s">"p-"</span>
+<span class="t">Vec</span>(<span class="t">int</span>) lens = v.map(|x| x + prefix.len())  <span class="c">// prefix MOVED into the closure;</span>
+<span class="c">// prefix is now dead — referencing it again is a compile error.</span></pre></div>
+    <div class="note"><b>Nested closures</b> are allowed: a closure body may
+    contain another <code>|y| ...</code>. A variable the inner closure uses from
+    outside the outer closure is captured transitively. v1: only POD (by-copy)
+    and <code>Block</code> (by-clone) may cross an outer closure boundary; a
+    by-move type crossing two levels is rejected.</div>
+  </section>
+
+  <section id="void">
+    <h2>void closures (<code>each</code>, <code>lock</code>, …)</h2>
+    <p><code>each</code> and the concurrency guards' <code>lock</code>/<code>write</code>
+    take a closure that returns <b>void</b> — it runs for side effects. An
+    expression body is fine as long as the expression itself is void:</p>
+    <div class="ex"><pre>v.each(|x| <span class="k">@print</span>(x))            <span class="c">// @print(x) is void → ok</span>
+g.lock(|w| w.push(1))             <span class="c">// push(...) is void → ok</span>
+rw.write(|b| b.nums.push(7))</pre></div>
+    <div class="warn"><b>A non-void value can't be silently discarded.</b>
+    <code class="ex" style="border:0;padding:0;background:none"><span class="bad">v.each(|x| x + 1)</span></code>
+    is a type error ("expected void, got int") — computing a value and throwing
+    it away in <code>each</code> is meaningless. If you want the values, use
+    <code>map</code>; if you want a side effect, call a void operation
+    (<code>print</code>, <code>push</code>, …).</div>
+  </section>
+
+  <section id="gotchas">
+    <h2>Caveats / gotchas</h2>
+    <ul class="compact">
+      <li><b>Param types are never annotated.</b> <code class="ex" style="border:0;padding:0;background:none"><span class="bad">|int x|</span></code>
+        is rejected — write <code>|x|</code>; the type is inferred. The
+        <code>(int)</code> in <code>v.map(int)</code> is the <em>result</em> type,
+        not <code>x</code>'s type.</li>
+      <li><b>Trailing closure needs the <code>()</code>.</b> <code>v.each() { |x| ... }</code>,
+        never <code>v.each { ... }</code> (see <a href="#trailing">above</a>).</li>
+      <li><b>Ranges are not objects.</b> <code class="ex" style="border:0;padding:0;background:none"><span class="bad">(0..100).each { ... }</span></code>
+        does not exist; iterate a range with <code>for i in 0..100 { ... }</code>.
+        Closures apply to containers (<code>Vec</code>/<code>Map</code>), not ranges.</li>
+      <li><b><code>each</code> borrows read-only.</b> The element is a
+        <code>&amp;T</code>; you can't mutate it through the closure. To rewrite
+        elements in place use indices: <code>for i in 0..v.len() { v.set(i, v.get!(i) + 1) }</code>.</li>
+      <li><b>by-move capture kills the source.</b> Capturing a <code>Str</code>/<code>Vec</code>/…
+        moves it into the closure; the outer variable is dead afterward.</li>
+      <li><b>Inference is single-type-param (v1).</b> If a method has a type
+        parameter that isn't a lone closure return, pass it explicitly.</li>
+    </ul>
+  </section>
+
+  <section id="examples">
+    <h2>Worked examples</h2>
+
+    <h3>Transform &amp; collect</h3>
+    <div class="ex"><pre><span class="k">import</span> std.core.vec
+<span class="k">import</span> std.core.str
+<span class="k">def</span> main() -&gt; <span class="t">int</span> {
+    <span class="t">Vec</span>(<span class="t">int</span>) v = [1, 2, 3, 4]
+    <span class="t">Vec</span>(<span class="t">int</span>) evens = v.filter(|x| x % 2 == 0)        <span class="c">// [2, 4]</span>
+    <span class="t">Vec</span>(<span class="t">int</span>) sq    = evens.map(|x| x * x)             <span class="c">// [4, 16]</span>
+    <span class="t">int</span> total      = v.reduce(<span class="t">int</span>)(0, |acc, x| acc + x)  <span class="c">// 10</span>
+    <span class="t">Vec</span>(<span class="t">Str</span>) tags = v.map(|x| f<span class="s">"#{x}"</span>)              <span class="c">// ["#1","#2","#3","#4"]</span>
+    <span class="k">@print</span>(total)
+    <span class="k">return</span> 0
+}</pre></div>
+
+    <h3>Capture an accumulator via a guard (concurrency-safe)</h3>
+    <div class="ex"><pre><span class="k">import</span> std.core.vec
+<span class="k">import</span> std.sync.lock
+<span class="k">def</span> main() -&gt; <span class="t">int</span> {
+    <span class="t">Guard</span>(<span class="t">Vec</span>(<span class="t">int</span>)) g = {}
+    g.init()
+    g.lock(|w| w.push(1))                  <span class="c">// void expression body</span>
+    g.lock(|w| w.push(2))
+    <span class="t">int</span> n = g.get(<span class="t">int</span>)(|w| { <span class="k">return</span> w.len() })   <span class="c">// get(R): R explicit</span>
+    <span class="k">@print</span>(n)                                <span class="c">// 2</span>
+    <span class="k">return</span> 0
+}</pre></div>
+
+    <h3>Closure as a function parameter (the Block type)</h3>
+    <div class="ex"><pre><span class="k">def</span> twice(<span class="t">Block</span>(<span class="t">int</span>)-&gt;<span class="t">int</span> f, <span class="t">int</span> x) -&gt; <span class="t">int</span> { <span class="k">return</span> f(f(x)) }
+<span class="k">def</span> main() -&gt; <span class="t">int</span> {
+    <span class="k">@print</span>(twice(|n| n * 3, 2))            <span class="c">// 18</span>
+    <span class="k">return</span> 0
+}</pre></div>
+  </section>
+
+  <h1 style="margin-top:3.5rem">Modules, Numbers &amp; FFI</h1>
+  <p class="lede">The plumbing around the type system: how files compose into a program,
+  the numeric types and their Zig-style implicit widening, and calling C through the
+  foreign-function interface.</p>
+
+  <section id="mo-modules">
+    <h2>Modules &amp; <code>import</code></h2>
+    <p>A file declares its module name with <code>module</code>; the entry file is
+    <code>module main</code> and defines <code>def main()</code>. Another file pulls it in
+    with <code>import</code> and calls across with a qualified <code>mod.name</code>.</p>
+    <div class="ex"><pre><span class="c">// geometry.ls</span>
+<span class="k">module</span> geometry
+<span class="k">def</span> area(<span class="t">int</span> w, <span class="t">int</span> h) -&gt; <span class="t">int</span> { <span class="k">return</span> w * h }
+<span class="t">int</span> UNIT = 1
+
+<span class="c">// main.ls</span>
+<span class="k">module</span> main
+<span class="k">import</span> geometry
+<span class="k">import</span> geometry <span class="k">as</span> g          <span class="c">// optional alias</span>
+
+<span class="k">def</span> main() {
+    <span class="k">@print</span>(geometry.area(3, 4))   <span class="c">// qualified call → 12</span>
+    <span class="k">@print</span>(geometry.UNIT)         <span class="c">// module global</span>
+    <span class="k">@print</span>(g.area(2, 2))          <span class="c">// via the alias → 4</span>
+}</pre></div>
+    <p>The standard library is a tree of modules; the <b>import path is the directory
+    path</b>. The compiler resolves it under <code>&lt;LS_HOME&gt;/lib/</code>:</p>
+    <div class="ex"><pre><span class="k">import</span> std.core.vec          <span class="c">// lib/std/core/vec.ls — Vec(T)</span>
+<span class="k">import</span> std.core.str          <span class="c">// Str  (auto-injected; rarely written by hand)</span>
+<span class="k">import</span> std.core.map          <span class="c">// Map(K,V)</span>
+<span class="k">import</span> std.sys.io            <span class="c">// file I/O</span>
+<span class="k">import</span> std.sys.c <span class="k">as</span> c         <span class="c">// C / CRT bindings, e.g. c.malloc, c.free</span></pre></div>
+    <div class="note">A type or container (<code>Vec</code>, <code>Map</code>, <code>Str</code>)
+    is named directly after import — <code>Vec(int)</code>. A module of <em>functions</em>
+    (<code>std.text.strconv</code>, a user module) is reached through its name or alias —
+    <code>strconv.to_int(...)</code>. The full qualified path
+    (<code>std.text.strconv.to_int</code>) also works without an alias.</div>
+  </section>
+
+  <section id="mo-numbers">
+    <h2>Numbers &amp; implicit widening</h2>
+    <p>The numeric types are the sized-integer family, the floats, plus <code>bool</code>
+    and <code>char</code>. Narrow values widen to wider ones <b>implicitly</b> (Zig-style);
+    narrowing or any lossy conversion needs an explicit <code>as</code>.</p>
+    <table class="api">
+      <tr><th>Group</th><th>Types</th></tr>
+      <tr><td>signed</td><td><code>int</code> (default) · <code>i8</code> · <code>i16</code> · <code>i32</code> · <code>i64</code></td></tr>
+      <tr><td>unsigned</td><td><code>u8</code> · <code>u16</code> · <code>u32</code> · <code>u64</code></td></tr>
+      <tr><td>float</td><td><code>f32</code> · <code>f64</code></td></tr>
+      <tr><td>other</td><td><code>bool</code> · <code>char</code></td></tr>
+    </table>
+    <div class="ex"><pre><span class="t">int</span> x = 42
+<span class="t">i64</span> big = x               <span class="c">// implicit widening: int → i64</span>
+<span class="t">f64</span> d   = x               <span class="c">// implicit: int → f64</span>
+
+<span class="t">u8</span>  b = 0xFF <span class="k">as</span> <span class="t">u8</span>       <span class="c">// narrowing needs `as`</span>
+<span class="t">i64</span> n = 0xAABBCCDDEE <span class="k">as</span> <span class="t">i64</span>
+<span class="t">i64</span> c = x <span class="k">as</span> <span class="t">i64</span>          <span class="c">// `as` is always allowed explicitly too</span></pre></div>
+    <div class="note">Integer literals default to <code>int</code>; for a value past
+    <code>int</code>'s range (a wide bit-pattern, a CRC table) declare the wider type so the
+    literal is read at that width. There is no implicit <em>narrowing</em> — it must be a
+    visible <code>as</code>.</div>
+  </section>
+
+  <section id="mo-ffi">
+    <h2>C FFI — <code>load</code> · <code>extern</code> · <code>call</code></h2>
+    <p>Load a shared library with <code>load</code>, then either declare a <b>typed</b>
+    binding with <code>extern def … from lib</code> (type-checked) or make an untyped
+    <code>lib.call(...)</code>. C <code>char*</code> parameters take a raw <code>*u8</code>;
+    pass a <code>Str</code> through <code>.c_str()</code> (which guarantees the NUL
+    terminator).</p>
+    <div class="ex"><pre><span class="k">lib</span> msvcrt = <span class="k">load</span>(<span class="s">"msvcrt.dll"</span>)
+
+<span class="k">extern</span> <span class="k">def</span> puts(<span class="t">*u8</span> s) -&gt; <span class="t">int</span> <span class="k">from</span> msvcrt    <span class="c">// typed binding</span>
+
+<span class="k">def</span> main() {
+    <span class="t">Str</span> b = <span class="s">"hello from FFI"</span>
+    puts(b.c_str())                      <span class="c">// Str → *u8 via c_str()</span>
+    msvcrt.call(<span class="s">"puts"</span>, b.c_str())        <span class="c">// or an untyped dynamic call</span>
+}</pre></div>
+    <p>Statically-linked C symbols (the CRT) are declared in an <code>extern</code> block
+    with no <code>from</code> — this is how <code>std.sys.c</code> binds <code>malloc</code> /
+    <code>free</code> / <code>fopen</code>:</p>
+    <div class="ex"><pre><span class="k">extern</span> {
+    <span class="k">def</span> malloc(<span class="t">i64</span> sz) -&gt; <span class="t">*u8</span>
+    <span class="k">def</span> free(<span class="t">*u8</span> p)
+    <span class="k">def</span> strlen(<span class="t">*u8</span> s) -&gt; <span class="t">i64</span>
+}</pre></div>
+    <div class="warn"><b>Never pass a <code>Str</code> directly to an <code>extern def</code>.</b>
+    A <code>Str</code> is a <code>{data, len, cap}</code> struct with no guaranteed NUL
+    terminator — always hand C a <code>*u8</code> via <code>.c_str()</code>. Likewise, a
+    pointer C <code>malloc</code>'d is not owned by LS; free it through the matching C
+    function, not by letting LS take it.</div>
+  </section>
+
+  <h1 id="sr-top" style="margin-top:3.5rem">Static Reflection</h1>
+  <p class="lede">LS reflects types at <b>compile time</b>: <code>@derive(...)</code>
+  asks the compiler to synthesise standard methods by walking a type's fields, and
+  <code>ls inspect</code> / <code>reflect()</code> expose that structure. No RTTI,
+  no runtime cost unless you opt in.</p>
+
+  <section id="sr-overview">
+    <h2>The <code>@derive(...)</code> attribute</h2>
+    <p>Put <code>@derive(...)</code> on a <code>struct</code> or <code>enum</code>
+    and the compiler generates the listed interface impls field-by-field — no boilerplate.</p>
+    <div class="ex"><pre><span class="k">@derive</span>(Hash, Equal, Order, Show)
+<span class="k">struct</span> <span class="t">Point</span> { <span class="t">int</span> x; <span class="t">int</span> y }
+
+<span class="t">Map</span>(<span class="t">Point</span>, <span class="t">int</span>) hist = {}       <span class="c">// Hash + Equal → usable as a Map key</span>
+<span class="k">if</span> a == b { ... }               <span class="c">// Equal → ==   (!= comes free)</span>
+<span class="k">if</span> a &lt; b  { ... }               <span class="c">// Order → &lt;    (&gt; &lt;= &gt;= come free)</span>
+<span class="k">@print</span>(p.show())                 <span class="c">// Show  → "Point { x: 3, y: 7 }"</span></pre></div>
+    <p><code>@</code> is LS's annotation sigil (cf. <code>@time</code>/<code>@bench</code>).
+    A derive lowers to an ordinary <code>methods Type: Interface { ... }</code> impl
+    that the compiler writes for you, so it <b>composes recursively</b> — a struct
+    whose fields themselves derive an interface just works.</p>
+    <div class="note"><b>If a field can't satisfy the interface, it's a compile error</b>
+    at that field (e.g. <code>@derive(Hash)</code> on a struct with an
+    <code>object</code> field). derive never recurses-and-derives fields for you;
+    each field type must already have the interface.</div>
+  </section>
+
+  <section id="sr-derives">
+    <h2>Derivable interfaces</h2>
+    <table class="api">
+      <tr><th>Interface</th><th>Generates</th><th>struct</th><th>enum</th></tr>
+      <tr><td><code>Equal</code></td><td><code>==</code> (field/variant-wise; <code>!=</code> auto)</td><td>✓</td><td>✓</td></tr>
+      <tr><td><code>Hash</code></td><td><code>hash() -&gt; u64</code> (→ Map key)</td><td>✓</td><td>✓</td></tr>
+      <tr><td><code>Order</code></td><td><code>&lt;</code> lexicographic (<code>&gt; &lt;= &gt;=</code> auto)</td><td>✓</td><td>✓</td></tr>
+      <tr><td><code>Show</code></td><td><code>show() -&gt; Str</code></td><td>✓</td><td>✓</td></tr>
+      <tr><td><code>Serialize</code></td><td><code>to_value() -&gt; Value</code></td><td>✓</td><td>—</td></tr>
+      <tr><td><code>Deserialize</code></td><td><code>static from_value(Value) -&gt; Self</code> (best-effort) <b>+</b> <code>try_from_value -&gt; Result</code> (strict)</td><td>✓</td><td>—</td></tr>
+      <tr><td><code>Reflect</code></td><td><code>static reflect() -&gt; TypeInfo</code></td><td>✓</td><td>—</td></tr>
+    </table>
+    <p>enum derives use a nested <code>match</code> over variants (including payloads).
+    Bare constructors mean enum variants are written <code>Circle(5)</code>, not
+    <code>Shape.Circle(5)</code>. enum <code>Order</code> compares by variant
+    declaration order first, then payloads; <code>Show</code> renders
+    <code>Variant(p0, p1)</code> (or just <code>Variant</code> with no payload). The "—"
+    cells (enum Serialize/Deserialize/Reflect) are not yet implemented (see caveats).</p>
+  </section>
+
+  <section id="sr-generics">
+    <h2>Deriving on generic structs</h2>
+    <p><b>All seven derives</b> work on user-defined generic structs:
+    <b>Equal / Hash / Order / Reflect</b> lower to uniform operations
+    (<code>==</code>, <code>.hash()</code>, <code>&lt;</code>), and
+    <b>Show / Serialize / Deserialize</b> lower a type-parameter field <code>T</code>
+    to <code>self.f.show()</code> / <code>self.f.to_value()</code> /
+    <code>T.from_value(...)</code>. The standard library impls those interfaces for
+    every primitive (int family, f32/f64, bool, char) and <code>Str</code>, so the
+    monomorphized <code>Box(int)</code> / <code>Box(Str)</code> / <code>Box(f64)</code>
+    all resolve.</p>
+    <div class="ex"><pre><span class="k">@derive</span>(Equal, Hash, Order, Reflect, Show, Serialize, Deserialize)
+<span class="k">struct</span> <span class="t">Box</span>(T) { <span class="t">T</span> value; <span class="t">Str</span> label }
+
+<span class="t">Box</span>(<span class="t">int</span>) a = <span class="t">Box</span>(<span class="t">int</span>) { value: 5, label: <span class="s">"k"</span> }
+<span class="k">if</span> a == b { ... }                       <span class="c">// Equal/Order/Hash work per instantiation</span>
+<span class="t">Map</span>(<span class="t">Box</span>(<span class="t">int</span>), <span class="t">int</span>) m = {}             <span class="c">// Box(int) as a Map key</span>
+a.show()                                <span class="c">// Box { value: 5, label: k }</span>
+a.to_value().to_json()                  <span class="c">// {"value":5,"label":"k"}</span>
+
+<span class="t">Box</span>(<span class="t">int</span>) r = <span class="t">Box</span>(<span class="t">int</span>).from_value(a.to_value())   <span class="c">// static call, direct (no alias)</span>
+<span class="t">Box</span>(<span class="t">Str</span>).reflect()                       <span class="c">// user-type args work too</span></pre></div>
+    <div class="warn"><b>Generic gotchas.</b>
+    <ul class="compact">
+      <li><b>No <code>where T</code> bound is added.</b> The derived body just calls
+      the operation on each field; instantiating with a <code>T</code> that lacks it
+      (e.g. a plain struct that didn't derive <code>Show</code> put in
+      <code>Box(T).show()</code>) fails at monomorphization with a clear
+      missing-method error — never a silent wrong value.</li>
+      <li><b>Static calls on a generic instance work directly</b> —
+      <code>Box(int).reflect()</code> / <code>Box(Str).from_value(...)</code>. (A type
+      keyword arg is resolved by the parser; a user-type arg like <code>Box(Str)</code>
+      parses as a call and the checker reinterprets it — a real
+      <code>make_box(cfg).render()</code> chain is untouched. A type alias
+      <code>type BI = Box(int)</code> still works too.)</li>
+      <li><b>Generic field types reflect their CONCRETE instantiated type</b>
+      (<code>BI = Box(int)</code> → <code>value: int</code>, <code>BS = Box(Str)</code>
+      → <code>value: Str</code>), resolved per monomorphization via the
+      <code>__type_name(T)</code> intrinsic the derive emits for type-parameter
+      fields. Concrete (non-parameter) fields report their literal type.</li>
+    </ul></div>
+  </section>
+
+  <section id="sr-serde">
+    <h2>Serialize / Deserialize</h2>
+    <p>Serialization goes through a <b>neutral value tree</b>
+    (<a href="stdlib.html#value"><code>std.core.value</code></a>): the derive never
+    knows the output format — the renderer does, so one derive feeds every format.</p>
+    <div class="ex"><pre><span class="k">@derive</span>(Serialize, Deserialize)
+<span class="k">struct</span> <span class="t">Config</span> { <span class="t">Str</span> host; <span class="t">int</span> port; <span class="t">bool</span> tls; <span class="t">Point</span> origin }
+
+cfg.to_value().to_json()                  <span class="c">// {"host":"...","port":8080,"tls":true,...}</span>
+<span class="t">Config</span> back = <span class="t">Config</span>.from_value(cfg.to_value())   <span class="c">// round-trip via the tree</span>
+
+<span class="c">// full TEXT round-trip: struct -> JSON string -> Value tree -> struct</span>
+<span class="k">import</span> std.core.value <span class="k">as</span> value
+<span class="t">Config</span> back2 = <span class="t">Config</span>.from_value(value.from_json(json_text).unwrap())
+
+<span class="c">// STRICT: try_from_value -> Result; a missing/mismatched field is an Err</span>
+<span class="k">match</span> <span class="t">Config</span>.try_from_value(value.from_json(json_text).unwrap()) {
+    Ok(cfg) =&gt; { ... }
+    Err(e) =&gt; { ... }      <span class="c">// e.g. "expected int"</span>
+}</pre></div>
+    <p><code>to_value()</code> builds the format-agnostic tree; <code>to_json()</code>
+    renders it (future <code>to_csv()</code>/<code>to_toml()</code> consume the same
+    tree). <code>from_json(Str) -&gt; Result(Value, Str)</code> parses JSON text back into
+    a tree, so a derived rebuilder reconstructs a struct straight from text.
+    Nested structs recurse both directions.</p>
+    <div class="note"><b>Two rebuilders.</b> <code>@derive(Deserialize)</code>
+    synthesizes <code>from_value -&gt; T</code> (BEST-EFFORT: missing/mismatched fields
+    fall back to a zero/empty default) AND <code>try_from_value -&gt; Result(T, Str)</code>
+    (STRICT: a missing field or type mismatch is an <code>Err</code>, propagated). Fields
+    must be primitive / <code>Str</code> / nested derived struct.</div>
+  </section>
+
+  <section id="sr-runtime">
+    <h2>Runtime reflection — <code>@derive(Reflect)</code></h2>
+    <p>For programs that inspect their own types at runtime (CLI binders, debug
+    dumps, generic tooling). opt-in — only reflected types carry the metadata.</p>
+    <div class="ex"><pre><span class="k">@derive</span>(Reflect)
+<span class="k">struct</span> <span class="t">Config</span> { <span class="t">Str</span> host; <span class="t">int</span> port; <span class="t">bool</span> tls }
+
+<span class="t">TypeInfo</span> ti = <span class="t">Config</span>.reflect()
+<span class="k">for</span> fi <span class="k">in</span> ti.fields { <span class="k">@print</span>(fi.name + <span class="s">": "</span> + fi.type_name) }   <span class="c">// host: Str ...</span>
+<span class="k">for</span> m  <span class="k">in</span> ti.funcs  { <span class="k">@print</span>(m.signature) }                  <span class="c">// def area(&self) -> int ...</span></pre></div>
+    <p>Fields come from the struct; method signatures are scanned from the type's
+    <code>methods</code> blocks (names, parameter types, return, static-ness). The
+    method list field is <code>funcs</code> — <code>methods</code> is a keyword.</p>
+  </section>
+
+  <section id="sr-comptime">
+    <h2><code>comptime</code> field iteration</h2>
+    <p>Write a generic function <b>once</b> and have it work over the fields of
+    <i>any</i> struct — including types you don't own and can't annotate with
+    <code>@derive</code>. <code>comptime for</code> unrolls at compile time (per
+    concrete <code>T</code>), so there is no runtime cost. Where <code>@derive</code>
+    gives compiler-fixed templates and runtime <code>reflect()</code> gives only
+    metadata, <code>comptime for</code> reaches each field's <b>value</b> with its
+    real static type via <code>v.(f)</code>.</p>
+
+    <div class="ex"><pre><span class="c">// one definition serializes ANY struct to a CSV row (zero-copy &amp;T borrow)</span>
+<span class="k">def</span> to_csv(<span class="t">T</span>)(<span class="t">&amp;T</span> v) -&gt; <span class="t">Str</span> {
+    <span class="t">Str</span> out = <span class="s">""</span>
+    <span class="k">comptime</span> <span class="k">for</span> f <span class="k">in</span> fields(<span class="t">T</span>) {
+        <span class="k">if</span> f.index &gt; 0 { out = out + <span class="s">","</span> }
+        out = out + f<span class="s">"{v.(f)}"</span>      <span class="c">// v.(f): the field's value, with its real type</span>
+    }
+    <span class="k">return</span> out
+}
+to_csv(p)                            <span class="c">// 3,7   — T inferred from p, unrolls over Point's fields</span></pre></div>
+
+    <p>Inside the loop the comptime handle <code>f</code> exposes
+    <code>f.name</code> (Str), <code>f.index</code> (int) and
+    <code>f.type_name</code> (Str) — all become literals after unroll — and
+    <code>v.(f)</code> is field access by that handle. The loop above expands, for
+    <code>Point { int x; int y }</code>, to <code>out + f"{v.x}"</code> then
+    <code>out + "," + f"{v.y}"</code> — ordinary code the compiler then checks and
+    emits (zero new codegen).</p>
+
+    <h3><code>comptime if</code> — type-directed branch pruning</h3>
+    <p>A <code>comptime if</code> predicate is evaluated at unroll time and the
+    branch <i>not</i> taken is <b>removed before type-checking</b>. So code that is
+    only valid for some fields does not poison the others:</p>
+    <div class="ex"><pre><span class="k">def</span> count_flags(<span class="t">T</span>)(<span class="t">T</span> v) -&gt; <span class="t">int</span> {
+    <span class="t">int</span> n = 0
+    <span class="k">comptime</span> <span class="k">for</span> f <span class="k">in</span> fields(<span class="t">T</span>) {
+        <span class="k">comptime</span> <span class="k">if</span> f.type_name == <span class="s">"bool"</span> {
+            <span class="k">if</span> v.(f) { n = n + 1 }     <span class="c">// only valid when v.(f) is bool —</span>
+        }                              <span class="c">// this block is dropped for Str/int fields</span>
+    }
+    <span class="k">return</span> n
+}</pre></div>
+    <p>Predicates compare <code>f.name</code> / <code>f.index</code> /
+    <code>f.type_name</code> against literals with
+    <code>== != &lt; &gt; &lt;= &gt;=</code> and combine with
+    <code>&amp;&amp; || !</code>; <code>else comptime if</code> chains work.</p>
+
+    <h3>Constructing &amp; writing — write-once builders</h3>
+    <p>Beyond reading, a comptime body can <b>construct</b> a value of a type
+    parameter and <b>write</b> its fields, so one definition can build/transform
+    any struct. <code>T{}</code> (or <code>T{a: .., b: ..}</code>) makes a value of
+    the type parameter; <code>v.(f) = x</code> writes a field (POD or owned — the
+    old value is destroyed). And <code>f.type</code> is the field's <i>concrete
+    type</i>, usable as a static-call receiver (<code>f.type.from_value(x)</code>),
+    giving write-once deserialize with no <code>@derive</code>:</p>
+    <div class="ex"><pre><span class="k">def</span> from_value(<span class="t">T</span>)(<span class="t">Value</span> v) -&gt; <span class="t">T</span> {
+    <span class="t">T</span> out = <span class="t">T</span>{}                          <span class="c">// construct a value of the type param</span>
+    <span class="k">comptime</span> <span class="k">for</span> f <span class="k">in</span> fields(<span class="t">T</span>) {
+        out.(f) = f.type.from_value(obj_get(v, f.name))   <span class="c">// f.type = Int / Str / ...</span>
+    }
+    <span class="k">return</span> out
+}</pre></div>
+
+    <h3>enum <code>variants(T)</code></h3>
+    <p>The enum analogue of <code>fields(T)</code>: unroll a body once per variant,
+    with <code>vr.name</code> (Str), <code>vr.index</code> (int) and
+    <code>vr.type_name</code> (the payload type, <code>""</code> when none):</p>
+    <div class="ex"><pre><span class="k">comptime</span> <span class="k">for</span> vr <span class="k">in</span> variants(<span class="t">T</span>) {
+    out = out + vr.name + <span class="s">" "</span>     <span class="c">// e.g. "Circle Square Empty"</span>
+}</pre></div>
+
+    <h3><code>comptime match</code> — value dispatch over the active variant</h3>
+    <p>Where <code>variants(T)</code> is metadata-only, <code>comptime match</code>
+    dispatches on the <i>active</i> variant of a runtime enum value and binds its
+    payload — write-once <code>show</code>/serialize/visitor for <b>any</b> enum, no
+    <code>@derive</code>. One generic arm <code>vr(p) =&gt;</code> expands to a real
+    <code>match</code> with one arm per variant (<code>vr</code> exposes
+    <code>vr.name</code> / <code>vr.index</code> / <code>vr.has_payload</code> /
+    <code>vr.payload_count</code>; <code>p</code> binds the active variant's first
+    payload):</p>
+    <div class="ex"><pre><span class="k">def</span> show_enum(<span class="t">T</span>)(<span class="t">&amp;T</span> v) -&gt; <span class="t">Str</span> {
+    <span class="k">comptime</span> <span class="k">match</span> v {
+        vr(p) =&gt; {
+            <span class="k">comptime</span> <span class="k">if</span> vr.has_payload { <span class="k">return</span> f<span class="s">"{vr.name}({p})"</span> }
+            <span class="k">else</span> { <span class="k">return</span> vr.name }
+        }
+    }
+}
+<span class="c">// show_enum(Circle(5)) -> "Circle(5)";  show_enum(Empty) -> "Empty"</span></pre></div>
+    <p>It expands to a real <code>match v { Circle(p) =&gt; ..., Empty =&gt; ..., ... }</code>
+    — exhaustive by construction, reusing the existing match drop/move/checking
+    (zero new ownership code). The no-binder form <code>vr =&gt;</code> is metadata-only.</p>
+
+    <ul class="compact">
+      <li><b>Generic free functions infer their type args</b> — write
+      <code>to_csv(p)</code> (T is unified from the argument type), or pass it
+      explicitly as <code>to_csv(Point)(p)</code>. They also take <code>&amp;T</code>
+      borrow params: <code>to_csv(p)</code> auto-borrows, <code>to_csv(&amp;p)</code>
+      is the explicit form — zero-copy either way.</li>
+      <li><b>The predicate must be a compile-time constant</b> over
+      <code>f.*</code> and literals — a runtime value is a clear compile error.
+      Use <code>f.type_name == "bool"</code> (string) for type predicates;
+      <code>f.type</code> is for type position (a static-call receiver).</li>
+      <li><b><code>fields(T)</code> requires a struct, <code>variants(T)</code> an
+      enum</b> — the wrong kind is a clear compile error.</li>
+      <li><b><code>variants(T)</code> is metadata-only</b> — it gives variant
+      names/indices/payload types; to dispatch on the <i>active</i> variant's value
+      use <code>comptime match</code> (above).</li>
+    </ul>
+  </section>
+
+  <section id="sr-comptime-const">
+    <h2><code>comptime</code> constants — compile-time values &amp; lookup tables</h2>
+    <p>The other flavour of <code>comptime</code>: compute a value <b>at compile
+    time</b> and bake it into the binary. A scalar constant is folded into a literal
+    at every use (no runtime storage); an array constant becomes a constant-initialized
+    global (lands in <code>.rodata</code> at <code>-O2</code>). Distinct from a plain
+    <code>int X = 9</code>, which is a mutable runtime variable.</p>
+
+    <div class="ex"><pre><span class="c">// scalar: evaluated once, folded to a literal everywhere it's used</span>
+comptime int  BITS = 9
+comptime int  MASK = (1 &lt;&lt; BITS) - 1          <span class="c">// 511 — can reference other comptime consts</span>
+comptime f64  INV2 = 1.0 / math.sqrt(2.0)     <span class="c">// math.* runs on the host at compile time</span>
+
+<span class="c">// block form: loops / if / locals, ending in `return`</span>
+comptime int FACT5 = comptime {
+    int f = 1
+    for i in 1..6 { f = f * i }               <span class="c">// 120</span>
+    return f
+}
+
+<span class="c">// array lookup table: 256 sin() calls run at COMPILE time, baked into .rodata</span>
+comptime array(f64, 256) SIN_LUT = comptime {
+    array(f64, 256) t = {}
+    for i in 0..256 { t[i] = math.sin(i as f64 * 2.0 * math.PI / 256.0) }
+    return t
+}
+def fast_sin(int k) -&gt; f64 { return SIN_LUT[k &amp; 255] }   <span class="c">// runtime: just a load</span></pre></div>
+
+    <p><b>What's evaluable</b> (v1): <code>int</code>/<code>f64</code>/<code>bool</code>/<code>char</code>
+    scalars and fixed <code>array(T,N)</code> of them; <code>+ - * / %</code>, comparisons,
+    <code>&amp;&amp; || !</code>, bitwise/shift, <code>as</code> casts; references to other
+    comptime constants; <code>math.*</code> constants and functions
+    (<code>sqrt</code>/<code>sin</code>/<code>pow</code>/<code>abs</code>/…) via the host
+    math library. Blocks add scalar/array locals, assignment, <code>if/else</code>, and
+    bounded <code>for i in 0..N</code>.</p>
+
+    <ul class="compact">
+      <li><b>Immutable.</b> Assigning to a comptime constant is a compile error.</li>
+      <li><b>Define before use</b> (same as ordinary globals) — a comptime constant must
+      appear earlier in the file than the code that reads it.</li>
+      <li><b>Array element types must match exactly.</b> Integer literals default to
+      <code>int</code>; for a wider table declare it (<code>array(i64, …)</code> for
+      values past <code>int</code>'s range, e.g. a CRC32 table).</li>
+      <li><b>Not a compile-time constant?</b> Referencing a runtime variable, an
+      unsupported operation, a non-scalar type, or division by zero is a clear compile
+      error — never a silent fallback to runtime.</li>
+      <li><b>Bounded.</b> Comptime loops run under a step budget; an unbounded
+      computation is a clear compile error, not a hung compiler.</li>
+    </ul>
+  </section>
+
+  <section id="sr-tools">
+    <h2>Tooling: <code>inspect</code> · <code>ir</code> · <code>asm</code></h2>
+    <p>Inspect a type's fields + methods without running it — handy for exploring
+    a type (incl. what a <code>@derive</code> produced, shown with tags):</p>
+    <div class="ex"><pre>$ ls inspect Point app.ls        <span class="c">// fields + method signatures + [static]/[Destroy] tags</span>
+ls&gt; :methods Vec                  <span class="c">// in the REPL — methods only</span>
+ls&gt; :fields Config               <span class="c">// fields only  (also :inspect)</span></pre></div>
+    <p>See one function's <b>optimised</b> LLVM IR or x64 assembly — the feedback
+    loop for hand-optimisation (e.g. checking SIMD actually got vectorised):</p>
+    <div class="ex"><pre>$ ls ir  myfn app.ls -O2          <span class="c">// that function's LLVM IR</span>
+$ ls asm myfn app.ls -O3 --native <span class="c">// its x64 asm (--native unlocks AVX)</span></pre></div>
+    <p>The function name matches exactly, else by unique substring
+    (<code>area</code> → <code>Point.area</code>); ambiguous names are listed.</p>
+    <p>Emit <b>reusable C with Intel intrinsics</b> for the numeric/SIMD kernel
+    subset (scalars · pointers · <code>Simd(T,N)</code> · POD structs · fixed
+    <code>array(T,N)</code> · control flow · <code>__simd_*</code>) — so an LS-authored
+    kernel or a pointer-based model <code>forward</code> drops into a C/C++ codebase
+    without the LS runtime.
+    <code>Simd(f32,16)</code> → <code>__m512</code>, ops → <code>_mm512_*</code>:</p>
+    <div class="ex"><pre>$ ls emit-c kernels.ls -o kernels.c   <span class="c">// every in-subset fn → self-contained .c</span>
+$ clang -march=graniterapids -O3 -c kernels.c   <span class="c">// compiles immediately</span></pre></div>
+    <p>Out-of-subset constructs (<code>Str</code>/<code>Vec</code>/<code>Map</code>/closures/enums/
+    methods) are reported with a source location and nothing is written. To pull the
+    kernels out of a mixed model file, restrict or relax the selection:</p>
+    <div class="ex"><pre>$ ls emit-c model.ls --only sgemm,relu16 -o k.c  <span class="c">// just these functions</span>
+$ ls emit-c model.ls --skip-unsupported -o k.c   <span class="c">// all in-subset fns; warn-skip the rest</span></pre></div>
+  </section>
+
+  <section id="sr-gotchas">
+    <h2>Caveats / gotchas</h2>
+    <ul class="compact">
+      <li><b><code>@derive(Clone)</code> is rejected.</b> has_drop structs are
+      deep-copied automatically and there is no user-callable <code>.clone()</code>
+      (the Clone hook is compiler-internal), so deriving it would be redundant.</li>
+      <li><b>enum derives are <code>Equal</code>/<code>Hash</code>/<code>Order</code>/<code>Show</code>.</b>
+      <code>Serialize</code>/<code>Deserialize</code>/<code>Reflect</code> on enums are
+      not yet implemented (clear compile error if you try).</li>
+      <li><b><code>methods</code> is a keyword</b> → it can't be a field name
+      (<code>ti.methods</code> won't parse). The reflected method list is
+      <code>ti.funcs</code>.</li>
+      <li><b>You don't import the derive support modules</b> —
+      <code>@derive(Serialize)</code> / <code>@derive(Reflect)</code> inject
+      <code>std.core.value</code> / <code>std.core.reflect</code> for you.</li>
+    </ul>
+  </section>
+
+  <footer>
+    LS Syntax Guide · Types &amp; Interfaces · enum/match · Option/Result · Ownership ·
+    Borrowing · Closures · Modules/Numbers/FFI · Static Reflection · style matches the
+    <a href="stdlib.html">stdlib API reference</a>. Examples are verified against
+    the compiler.
+  </footer>
+</main>
+</div>
+</body>
+</html>

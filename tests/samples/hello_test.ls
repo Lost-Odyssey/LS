@@ -1,0 +1,2 @@
+// Just print
+@print("hello")

@@ -1,0 +1,1742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LS Standard Library Reference</title>
+<style>
+  :root {
+    --bg: #fbfbfd; --fg: #1d1d22; --muted: #6b6b76; --line: #e4e4ea;
+    --accent: #6d28d9; --accent-soft: #f1ecfb; --code-bg: #f4f4f8;
+    --sig-bg: #faf8ff; --sig-border: #e7defb; --sidebar: #f6f6f9;
+    --tag-mut: #b91c1c; --tag-own: #047857; --tag-new: #1d4ed8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --fg: #e6e6ec; --muted: #9a9aa6; --line: #2a2a32;
+      --accent: #a78bfa; --accent-soft: #241b3a; --code-bg: #1e1e26;
+      --sig-bg: #1c1830; --sig-border: #352a52; --sidebar: #1a1a20;
+      --tag-mut: #f87171; --tag-own: #34d399; --tag-new: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .sig { font-family: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace; }
+
+  /* layout */
+  .wrap { display: flex; max-width: 1280px; margin: 0 auto; }
+  nav {
+    width: 250px; flex: 0 0 250px; background: var(--sidebar);
+    border-right: 1px solid var(--line); height: 100vh; position: sticky; top: 0;
+    overflow-y: auto; padding: 18px 14px 60px;
+  }
+  main { flex: 1 1 auto; min-width: 0; padding: 28px 38px 120px; }
+
+  /* sidebar */
+  .brand { font-weight: 700; font-size: 17px; margin: 4px 6px 14px; letter-spacing: -.2px; }
+  .brand small { display:block; font-weight: 400; font-size: 11.5px; color: var(--muted); margin-top:2px;}
+  #q {
+    width: 100%; padding: 8px 10px; margin-bottom: 14px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--bg); color: var(--fg); font-size: 13px;
+  }
+  nav .group { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 16px 6px 5px; font-weight: 700; }
+  nav a.item { display: block; padding: 4px 8px; border-radius: 6px; color: var(--fg);
+    font-size: 13.5px; }
+  nav a.item:hover { background: var(--accent-soft); text-decoration: none; }
+  nav a.item.hidden { display: none; }
+
+  /* content */
+  h1 { font-size: 30px; letter-spacing: -.5px; margin: 0 0 6px; }
+  .lede { color: var(--muted); font-size: 16px; margin: 0 0 26px; max-width: 70ch; }
+  section { scroll-margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--line);
+    margin-top: 34px; }
+  section.hidden { display: none; }
+  h2 { font-size: 23px; letter-spacing: -.3px; margin: 14px 0 4px; }
+  h2 .imp { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 10px;
+    font-family: monospace; }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: var(--accent); }
+  .purpose { color: var(--muted); margin: 2px 0 14px; }
+  .mut { color: var(--muted); }
+  p { max-width: 74ch; }
+
+  /* types block */
+  .types { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 16px; margin: 12px 0; overflow-x: auto; }
+  .types pre { margin: 0; font-size: 13px; white-space: pre; }
+
+  /* method table */
+  table.api { width: 100%; border-collapse: collapse; margin: 10px 0 6px; font-size: 14px; }
+  table.api td { vertical-align: top; padding: 7px 10px; border-top: 1px solid var(--line); }
+  table.api td.s { width: 47%; }
+  table.api .sig { display: inline-block; background: var(--sig-bg); border: 1px solid var(--sig-border);
+    border-radius: 6px; padding: 2px 7px; font-size: 12.5px; white-space: pre-wrap; line-height: 1.5; }
+  table.api td.d { color: var(--fg); }
+
+  /* example */
+  .ex { background: var(--code-bg); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 12px 16px; margin: 14px 0; overflow-x: auto; }
+  .ex pre { margin: 0; font-size: 13px; }
+  .ex .k { color: #c026d3; } /* keyword */
+  .ex .t { color: var(--accent); } /* type */
+  .ex .c { color: var(--muted); font-style: italic; } /* comment */
+  .ex .s { color: var(--tag-own); } /* string */
+
+  .note { background: var(--accent-soft); border-radius: 8px; padding: 10px 14px; margin: 14px 0;
+    font-size: 13.5px; }
+  .note b { color: var(--accent); }
+  .tag { display:inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 5px;
+    vertical-align: middle; margin-left: 6px; }
+  .tag.mut { background: rgba(185,28,28,.12); color: var(--tag-mut); }
+  .tag.own { background: rgba(4,120,87,.12); color: var(--tag-own); }
+  .tag.new { background: rgba(29,78,216,.12); color: var(--tag-new); }
+  /* module-overview table */
+  table.modmap { width: 100%; border-collapse: collapse; margin: 8px 0 6px; font-size: 14px; }
+  table.modmap td { padding: 5px 10px; border-top: 1px solid var(--line); vertical-align: baseline; }
+  table.modmap td.m { width: 120px; white-space: nowrap; }
+  table.modmap td.m a { font-weight: 600; font-family: monospace; }
+  table.modmap td.grp { background: var(--accent-soft); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--accent); padding: 5px 10px;
+    border-top: 1px solid var(--line); }
+  ul.compact { margin: 6px 0; padding-left: 20px; }
+  ul.compact li { margin: 3px 0; }
+  .nores { color: var(--muted); padding: 30px 6px; display:none; }
+  footer { color: var(--muted); font-size: 12.5px; margin-top: 60px; border-top: 1px solid var(--line);
+    padding-top: 16px; }
+  @media (max-width: 820px) {
+    nav { display: none; } main { padding: 20px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="brand">LS Stdlib<small>API Reference</small></div>
+  <input id="q" type="search" placeholder="Filter modules / functions…" autocomplete="off">
+  <div id="navlist">
+    <div class="group">Start</div>
+    <a class="item" href="#overview">Overview</a>
+    <a class="item" href="#imports">Imports &amp; resolution</a>
+    <a class="item" href="#errors">Error handling (Option/Result)</a>
+    <div class="group">Containers</div>
+    <a class="item" href="#vec">vec — Vec(T)</a>
+    <a class="item" href="#map">map — Map(K,V)</a>
+    <a class="item" href="#ring">ring — Ring(T)</a>
+    <a class="item" href="#stack">stack — Stack(T)</a>
+    <div class="group">Memory</div>
+    <a class="item" href="#arena">arena — Arena/Region</a>
+    <div class="group">Strings &amp; Text</div>
+    <a class="item" href="#str">str — Str</a>
+    <a class="item" href="#strconv">strconv</a>
+    <a class="item" href="#hash">hash</a>
+    <a class="item" href="#show">show — Show / to_str</a>
+    <a class="item" href="#sink">sink — print redirect</a>
+    <a class="item" href="#regex">regex</a>
+    <div class="group">I/O &amp; System</div>
+    <a class="item" href="#io">io</a>
+    <a class="item" href="#fs">fs</a>
+    <a class="item" href="#path">path</a>
+    <a class="item" href="#env">env</a>
+    <a class="item" href="#proc">proc</a>
+    <a class="item" href="#time">time</a>
+    <div class="group">Data Formats</div>
+    <a class="item" href="#json">json</a>
+    <a class="item" href="#html">html</a>
+    <a class="item" href="#md">md</a>
+    <a class="item" href="#bytes">bytes</a>
+    <a class="item" href="#csv">csv</a>
+    <div class="group">Math &amp; Science</div>
+    <a class="item" href="#math">math</a>
+    <a class="item" href="#num">num</a>
+    <a class="item" href="#complex">complex</a>
+    <a class="item" href="#fft">fft</a>
+    <a class="item" href="#tensor">tensor</a>
+    <a class="item" href="#rand">rand</a>
+    <a class="item" href="#simd">simd</a>
+    <a class="item" href="#nn">nn</a>
+    <div class="group">Concurrency</div>
+    <a class="item" href="#task">task — Task(T)</a>
+    <a class="item" href="#chan">chan — Chan(T)</a>
+    <a class="item" href="#atomic">atomic — Atomic(T)</a>
+    <a class="item" href="#sync">lock — Mutex/Guard/RwLock</a>
+    <a class="item" href="#thread">thread</a>
+    <div class="group">Low-level &amp; Tools</div>
+    <a class="item" href="#test">test — unit tests</a>
+    <a class="item" href="#misc">c · perf · plot*</a>
+  </div>
+</nav>
+
+<main>
+<h1>LS Standard Library</h1>
+<p class="lede">API reference for the LS (LLVM Script) standard library. Every module is
+written in pure LS and lives under <code>&lt;LS_HOME&gt;/lib/std/</code>. Signatures below are
+taken verbatim from source.</p>
+
+<p class="nores" id="nores">No module or function matches your filter.</p>
+
+<!-- ===================== OVERVIEW ===================== -->
+<section id="overview">
+<h2>Overview &amp; conventions</h2>
+<p class="purpose">How to read this reference and the language idioms it assumes.</p>
+
+<h3>All modules at a glance</h3>
+<p>34 modules. Most are pure LS under <code>&lt;LS_HOME&gt;/lib/std/</code>; two
+(<code>math</code>, <code>perf</code>) are compiler built-ins. <code>Option</code>/<code>Result</code>
+are built-in types, not a module.</p>
+<table class="modmap">
+<tr><td class="grp" colspan="2">Core (built-in)</td></tr>
+<tr><td class="m"><a href="#errors">Option/Result</a></td><td>Absence &amp; fallibility types + <code>try</code> / <code>!</code> / combinators</td></tr>
+<tr><td class="grp" colspan="2">Containers</td></tr>
+<tr><td class="m"><a href="#vec">vec</a></td><td>Generic dynamic array <code>Vec(T)</code> — the dynamic array</td></tr>
+<tr><td class="m"><a href="#map">map</a></td><td>Generic hash table <code>Map(K,V)</code></td></tr>
+<tr><td class="m"><a href="#ring">ring</a></td><td>Bounded FIFO ring buffer — lock-free SPSC &amp; MPMC</td></tr>
+<tr><td class="m"><a href="#stack">stack</a></td><td>LIFO stack</td></tr>
+<tr><td class="grp" colspan="2">Memory</td></tr>
+<tr><td class="m"><a href="#arena">arena</a></td><td>Bump allocators: typed <code>Arena(T)</code> pool + heterogeneous <code>Region</code> (string interning)</td></tr>
+<tr><td class="grp" colspan="2">Strings &amp; Text</td></tr>
+<tr><td class="m"><a href="#str">str</a></td><td>The <code>Str</code> string type (only string in LS)</td></tr>
+<tr><td class="m"><a href="#strconv">strconv</a></td><td>Number ↔ string formatting &amp; bases</td></tr>
+<tr><td class="m"><a href="#hash">hash</a></td><td><code>Hash</code> interface + FxHash primitive</td></tr>
+<tr><td class="m"><a href="#show">show</a></td><td><code>Show</code> interface (render into <code>Sink</code>) + <code>to_str(x)</code>; <code>@derive(Show)</code> target</td></tr>
+<tr><td class="m"><a href="#sink">sink</a></td><td><code>Sink</code> byte writer + <code>set_sink</code> (redirect <code>print</code> to file/stderr)</td></tr>
+<tr><td class="m"><a href="#value">value</a></td><td>Neutral value tree + <code>Serialize</code> (<code>@derive(Serialize)</code>)</td></tr>
+<tr><td class="m"><a href="#reflect">reflect</a></td><td>Runtime <code>TypeInfo</code> (<code>@derive(Reflect)</code>)</td></tr>
+<tr><td class="m"><a href="#test">test</a></td><td>Unit-test assertions + the <code>ls test</code> runner</td></tr>
+<tr><td class="m"><a href="#regex">regex</a></td><td>Regular expressions (Pike-VM)</td></tr>
+<tr><td class="grp" colspan="2">I/O &amp; System</td></tr>
+<tr><td class="m"><a href="#io">io</a></td><td>File I/O &amp; stdin lines</td></tr>
+<tr><td class="m"><a href="#fs">fs</a></td><td>Filesystem &amp; directories</td></tr>
+<tr><td class="m"><a href="#path">path</a></td><td>Path-string manipulation</td></tr>
+<tr><td class="m"><a href="#env">env</a></td><td>Environment variables</td></tr>
+<tr><td class="m"><a href="#proc">proc</a></td><td>Process args &amp; subprocesses</td></tr>
+<tr><td class="m"><a href="#time">time</a></td><td>Calendar time, format/parse, sleep</td></tr>
+<tr><td class="grp" colspan="2">Data Formats</td></tr>
+<tr><td class="m"><a href="#json">json</a></td><td>JSON parse / serialize</td></tr>
+<tr><td class="m"><a href="#html">html</a></td><td>HTML parse / build / render</td></tr>
+<tr><td class="m"><a href="#md">md</a></td><td>Markdown parse / render + → HTML</td></tr>
+<tr><td class="m"><a href="#bytes">bytes</a></td><td>Binary cursor <code>Reader</code> (big/little-endian)</td></tr>
+<tr><td class="m"><a href="#csv">csv</a></td><td>CSV parse / serialize (RFC 4180)</td></tr>
+<tr><td class="grp" colspan="2">Math &amp; Science</td></tr>
+<tr><td class="m"><a href="#math">math</a> <span class="tag new">built-in</span></td><td>Elementary math (LLVM intrinsics / libm)</td></tr>
+<tr><td class="m"><a href="#num">num</a></td><td><code>Zero</code> interface for generic arithmetic</td></tr>
+<tr><td class="m"><a href="#complex">complex</a></td><td>Generic complex numbers <code>Complex(T)</code></td></tr>
+<tr><td class="m"><a href="#fft">fft</a></td><td>Fast Fourier Transform (arbitrary N)</td></tr>
+<tr><td class="m"><a href="#tensor">tensor</a></td><td>N-D numeric array <code>Tensor(T)</code> (NumPy-like)</td></tr>
+<tr><td class="m"><a href="#rand">rand</a></td><td>Seeded PRNG (xorshift64*)</td></tr>
+<tr><td class="m"><a href="#simd">simd</a></td><td>Vectorized activations on <code>Simd(f32,16)</code> (tanh/sigmoid/silu/relu)</td></tr>
+<tr><td class="m"><a href="#nn">nn</a></td><td>FP32 neural-net kernels — blocked GEMM (<code>sgemm</code>)</td></tr>
+<tr><td class="grp" colspan="2">Concurrency</td></tr>
+<tr><td class="m"><a href="#task">task</a></td><td><code>Task(T)</code> structured concurrency</td></tr>
+<tr><td class="m"><a href="#chan">chan</a></td><td><code>Chan(T)</code> blocking channel (message passing)</td></tr>
+<tr><td class="m"><a href="#atomic">atomic</a></td><td><code>Atomic(T)</code> lock-free scalar</td></tr>
+<tr><td class="m"><a href="#sync">sync</a></td><td>Mutex / SpinLock / Guard / RwLock</td></tr>
+<tr><td class="m"><a href="#thread">thread</a></td><td><code>parallel_for</code>, <code>cpu_count</code></td></tr>
+<tr><td class="grp" colspan="2">Low-level &amp; Tools</td></tr>
+<tr><td class="m"><a href="#misc">c</a></td><td>C/CRT bindings &amp; runtime primitives</td></tr>
+<tr><td class="m"><a href="#misc">perf</a> <span class="tag new">built-in</span></td><td>High-resolution timing &amp; CPU counters</td></tr>
+<tr><td class="m"><a href="#misc">plot</a></td><td>Figure/axes plotting → SVG + ASCII</td></tr>
+<tr><td class="m"><a href="#misc">plotfmt</a></td><td>Number / color formatting helpers</td></tr>
+<tr><td class="m"><a href="#misc">plottl</a></td><td>Timeline / Gantt / CPU-schedule charts</td></tr>
+</table>
+
+<h3>Importing</h3>
+<p>Bring a module into scope with <code>import std.&lt;name&gt;</code>; an alias is optional:</p>
+<div class="ex"><pre><span class="k">import</span> std.core.vec
+<span class="k">import</span> std.text.regex <span class="k">as</span> re      <span class="c">// then call re.matches(...)</span></pre></div>
+<p>The compiler resolves <code>std.sys.time</code> to <code>&lt;LS_HOME&gt;/lib/std/time.ls</code>.
+<code>std.core.str</code> is auto-imported by the prelude, so string literals work without an explicit import.</p>
+
+<h3>Notation used below</h3>
+<ul class="compact">
+  <li><code>&amp;self</code> = read-only borrow of the receiver; <code>&amp;!self</code> = mutable borrow
+      <span class="tag mut">mutates</span>.</li>
+  <li><code>&amp;T</code> / <code>&amp;!T</code> = borrowed parameter (no copy, caller keeps ownership).</li>
+  <li><code>T value</code> by value = the argument is <b>moved in</b> for move-types
+      (Str, Vec, Map, structs/enums with a destructor), <b>copied</b> for POD.</li>
+  <li><code>name?</code> ends a predicate (returns <code>bool</code>); <code>name!</code> is an
+      <i>unsafe / unchecked</i> variant <span class="tag mut">unsafe</span> — you guarantee the precondition.</li>
+  <li><code>def map(U)(…)</code> = a method-level generic; pass the result type explicitly:
+      <code>v.map(int)(|x| …)</code>.</li>
+</ul>
+
+<h3>Variable declarations</h3>
+<p>LS uses C-style type-prefixed declarations (no <code>let</code>); semicolons are optional:</p>
+<div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) v = [1, 2, 3]
+<span class="t">Str</span> name = <span class="s">"hello"</span>
+<span class="t">Map</span>(<span class="t">Str</span>, <span class="t">int</span>) counts = {}     <span class="c">// {} = empty</span></pre></div>
+
+<div class="note"><b>Ownership in one line.</b> Move-types die on rebinding (<code>b = a</code> moves
+<code>a</code>); passing them <i>by value</i> to a function clones; passing <code>&amp;a</code> / <code>&amp;!a</code>
+borrows. Containers and strings are destroyed automatically at scope exit. See
+<a href="ownership.md">ownership.md</a>.</div>
+</section>
+
+<!-- ===================== IMPORTS ===================== -->
+<section id="imports">
+<h2>Imports &amp; name resolution</h2>
+<p class="purpose">How <code>import</code> finds a module, what the prelude gives you for free, and the
+exact rules for naming a type vs calling a function — bare, by alias, or by full path.</p>
+
+<h3>Import path = directory path</h3>
+<p>The standard library lives under <code>&lt;LS_HOME&gt;/lib/std/</code>, organised into category
+sub-directories. An import path maps <b>dot-for-slash</b> onto that tree:</p>
+<div class="ex"><pre><span class="k">import</span> std.core.vec       <span class="c">// → lib/std/core/vec.ls</span>
+<span class="k">import</span> std.sys.io         <span class="c">// → lib/std/sys/io.ls</span>
+<span class="k">import</span> std.sys.c <span class="k">as</span> c    <span class="c">// → lib/std/sys/c.ls</span></pre></div>
+<p>The seven categories: <code>core</code> (str·vec·map·hash·stack·num), <code>mem</code> (arena),
+<code>sync</code> (task·thread·atomic·lock·chan·ring), <code>sci</code> (complex·tensor·fft·rand),
+<code>text</code> (strconv·regex·json·html·md·bytes), <code>sys</code> (os·io·fs·path·env·proc·time·perf·c),
+<code>chart</code> (plot·plotfmt·plottl). A bare short name like <code>import io</code> does <b>not</b>
+resolve — always use the category path.</p>
+
+<h3>The prelude</h3>
+<p><code>std.core.str</code> is the <b>only</b> auto-imported module: the compiler injects
+<code>import std.core.str</code> at the top of every <i>root program</i> (never into library modules).
+So the <code>Str</code> type and string literals work with no import:</p>
+<div class="ex"><pre><span class="k">def</span> main() {
+    <span class="t">Str</span> s = <span class="s">"hello"</span>      <span class="c">// no import needed — prelude</span>
+    @print(s.len())
+}</pre></div>
+<p>Everything else is imported explicitly. Container <i>types</i> like <code>Vec</code> / <code>Map</code>
+frequently resolve without their own import too — the prelude pulls them in transitively through
+<code>str</code> — but write an explicit <code>import std.core.vec</code> for clarity.</p>
+
+<h3>Naming a type vs calling a function</h3>
+<p>This is the rule that catches people. A <b>type name</b> resolves through a global registry, so the
+bare name is the normal way to use it. A <b>module function</b> has no global name — it must be
+qualified by the module's namespace.</p>
+<table class="api">
+<tr><td><b>How you write the name</b></td>
+    <td><b>A type</b> — e.g. <code>Str</code></td>
+    <td><b>A module function</b> — e.g. <code>int_to_hex</code></td></tr>
+<tr><td>bare <span class="mut">(no prefix)</span></td>
+    <td><code>Str</code><br>✓ idiomatic</td>
+    <td><code>int_to_hex()</code><br>✗ <code>undefined variable</code></td></tr>
+<tr><td>alias <span class="mut">(after <code>import … as m</code>)</span></td>
+    <td><code>m.Str</code><br>✓ works</td>
+    <td><code>m.int_to_hex()</code><br>✓ works</td></tr>
+<tr><td>full path</td>
+    <td><code>std.core.str.Str</code><br>✓ works</td>
+    <td><code>std.text.strconv.int_to_hex()</code><br>✓ <span class="mut">(import must be present)</span></td></tr>
+</table>
+<p class="mut" style="margin:4px 0 0">Read each row across: the same way of writing the name, applied to a
+type vs to a module function. <code>m</code> = whatever alias you chose in <code>import … as m</code>.</p>
+<p>The one asymmetry: a <b>bare function call never works</b> — there are no global function builtins —
+whereas a <b>bare type name always does</b>.</p>
+
+<h3>The <code>as</code> rule for function namespaces</h3>
+<p>A plain dotted import binds <b>only the full path</b>, not the short namespace. To call
+<code>strconv.fn()</code> you must alias the import:</p>
+<div class="ex"><pre><span class="k">import</span> std.text.strconv
+<span class="t">Str</span> h = strconv.int_to_hex(255)            <span class="c">// ✗ undefined variable 'strconv'</span>
+<span class="t">Str</span> h = std.text.strconv.int_to_hex(255)  <span class="c">// ✓ full path works</span>
+
+<span class="k">import</span> std.text.strconv <span class="k">as</span> strconv     <span class="c">// ✓ now the short namespace is bound</span>
+<span class="t">Str</span> h = strconv.int_to_hex(255)            <span class="c">// ✓</span></pre></div>
+<p>An alias binds the name for both roles: <code>import std.text.json as j</code> gives you the
+function namespace (<code>j.parse(...)</code>) and a type qualifier (<code>j.JsonValue</code>).</p>
+
+<h3>Special cases</h3>
+<ul class="compact">
+  <li><b>No bare heap builtins.</b> <code>malloc</code> / <code>realloc</code> / <code>free</code> /
+      <code>abort</code> were removed as globals — a bare <code>malloc(16)</code> is
+      <code>undefined</code>. Reach them through <code>std.sys.c</code>.</li>
+  <li><b>The four C primitives are ambient by full path.</b> Those same four
+      (<code>std.sys.c.malloc/realloc/free/abort</code>) resolve by <b>full path with no import at all</b> —
+      the compiler special-cases the spelling. Any <i>other</i> <code>std.sys.c</code> function (e.g.
+      <code>c.fopen</code>) still needs the import. This is what lets generic library bodies allocate
+      without seeing the caller's import.</li>
+  <li><b>Qualified type names disambiguate.</b> <code>mod.Type</code> / <code>std.cat.mod.Type</code>
+      matter when two imported modules export the same type name — a bare <code>Value</code> would be
+      ambiguous, so write <code>mod_a.Value</code>. With a single source, the bare type name is enough.</li>
+  <li><b>Cross-module privacy.</b> Imported modules are namespaced; a module's free functions are
+      mangled per module, so same-named functions in two modules never collide.</li>
+</ul>
+</section>
+
+<!-- ===================== ERROR HANDLING ===================== -->
+<section id="errors">
+<h2>Error handling — Option / Result</h2>
+<p class="purpose">Built-in tagged-union types for absence and fallibility, plus the operators and
+combinators that consume them. These are compiler built-ins (no import needed).</p>
+
+<div class="types"><pre>enum Option(T) { None, Some(T) }
+enum Result(T, E) { Ok(T), Err(E) }</pre></div>
+
+<p>Most fallible stdlib functions return <code>Result(T, Str)</code> (the <code>Err</code> payload is a
+diagnostic message), and most container lookups return <code>Option(T)</code>. Consume them with
+<code>match</code>, the <code>try</code> operator, the <code>!</code> force-unwrap, or a combinator.</p>
+
+<h3>Operators</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">try expr</span></td>
+    <td class="d">Zig-style early return: unwrap <code>Ok</code>/<code>Some</code>, or <b>propagate</b>
+    the <code>Err</code>/<code>None</code> out of the current function. Requires the function to return a
+    compatible <code>Result</code>/<code>Option</code>.</td></tr>
+<tr><td class="s"><span class="sig">expr!</span></td>
+    <td class="d">Force-unwrap: take the success value, or <b>panic</b> (<code>[unwrap] line:col</code>)
+    and exit on <code>None</code>/<code>Err</code>. Bare variable form is <code>(x)!</code>.</td></tr>
+</table>
+
+<h3>Combinators (compiler-lowered, zero-cost)</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">.unwrap()</span></td><td class="d">Take the value or panic.</td></tr>
+<tr><td class="s"><span class="sig">.expect(Str msg)</span></td><td class="d">Take the value or panic with <code>msg</code>.</td></tr>
+<tr><td class="s"><span class="sig">.unwrap_or(T fallback)</span></td><td class="d">Take the value, or return <code>fallback</code>.</td></tr>
+<tr><td class="s"><span class="sig">.unwrap_or_else(|| body)</span></td><td class="d">Take the value, or compute the fallback (closure; <code>|e|</code> for Result).</td></tr>
+<tr><td class="s"><span class="sig">.is_some?() / .is_none?()</span></td><td class="d">Option predicates (borrow, don't consume).</td></tr>
+<tr><td class="s"><span class="sig">.is_ok?() / .is_err?()</span></td><td class="d">Result predicates.</td></tr>
+<tr><td class="s"><span class="sig">.map(U)(|x| body)</span></td><td class="d">Transform the success value → <code>Option(U)</code>/<code>Result(U,E)</code>.</td></tr>
+<tr><td class="s"><span class="sig">.and_then(U)(|x| body)</span></td><td class="d">Chain: body itself yields an <code>Option(U)</code>/<code>Result(U,E)</code>.</td></tr>
+<tr><td class="s"><span class="sig">.map_err(F)(|e| body)</span></td><td class="d">Transform the <code>Err</code> payload → <code>Result(T,F)</code>.</td></tr>
+<tr><td class="s"><span class="sig">res.ok() / res.err()</span></td><td class="d"><code>Result(T,E)</code> → <code>Option(T)</code> (discard err) / <code>Option(E)</code> (keep err).</td></tr>
+<tr><td class="s"><span class="sig">opt.ok_or(E e)</span></td><td class="d"><code>Option(T)</code> → <code>Result(T, typeof(e))</code>, attaching <code>e</code> on <code>None</code>.</td></tr>
+</table>
+
+<div class="ex"><pre><span class="c">// match — the explicit form</span>
+<span class="k">match</span> v.get(3) {
+    <span class="t">Some</span>(x) =&gt; { @print(x) }
+    <span class="t">None</span>    =&gt; { @print(<span class="s">"out of range"</span>) }
+}
+
+<span class="c">// combinators — concise</span>
+<span class="t">int</span> n = v.get(3).unwrap_or(0)
+<span class="t">Str</span> name = cfg.get(<span class="s">"name"</span>).map_err(<span class="t">Str</span>)(|e| f<span class="s">"missing: {e}"</span>).unwrap()
+
+<span class="c">// try — propagate the error upward</span>
+<span class="k">def</span> load(<span class="t">Str</span> p) -&gt; <span class="t">Result</span>(<span class="t">Str</span>, <span class="t">Str</span>) {
+    <span class="t">Str</span> raw = <span class="k">try</span> io.read_file(p)   <span class="c">// returns Err early on failure</span>
+    <span class="k">return</span> <span class="t">Ok</span>(raw.trim())
+}</pre></div>
+</section>
+
+<!-- ===================== VEC ===================== -->
+<section id="vec">
+<h2>vec<span class="imp">import std.core.vec</span></h2>
+<p class="purpose">Generic growable array — the only dynamic array type in LS.</p>
+
+<div class="types"><pre>struct Vec(T) { *T data; int len; int cap }   // has destructor</pre></div>
+
+<div class="note"><b>Three-tier element access.</b>
+<code>v[i]</code> &amp; <code>set(i,x)</code> — bounds-checked, <b>panic</b> on out-of-range ·
+<code>get(i)</code> — returns <code>Option(T)</code> (recoverable) ·
+<code>get!(i)</code> / <code>set!(i,x)</code> — unchecked, UB on OOB <span class="tag mut">unsafe</span>.
+For struct/enum elements, <code>get_ref(i)</code> borrows the element <b>zero-copy</b> (<code>&amp;T</code>, no clone) instead of any of the cloning reads above.
+Construct with a list literal: <code>Vec(int) v = [1,2,3]</code>.</div>
+
+<h3>Queries</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Element count.</td></tr>
+<tr><td class="s"><span class="sig">def cap(&amp;self) -&gt; int</span></td><td class="d">Allocated capacity.</td></tr>
+<tr><td class="s"><span class="sig">def empty?(&amp;self) -&gt; bool</span></td><td class="d">True when <code>len == 0</code>.</td></tr>
+<tr><td class="s"><span class="sig">def as_ptr(&amp;self) -&gt; object</span></td><td class="d">Raw buffer pointer (FFI).</td></tr>
+</table>
+
+<h3>Access</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def get(&amp;self, int i) -&gt; Option(T)</span></td><td class="d">Safe read: clone of element, or <code>None</code> if out of range.</td></tr>
+<tr><td class="s"><span class="sig">def get!(&amp;self, int i) -&gt; T</span><span class="tag mut">unsafe</span></td><td class="d">Unchecked read (UB if OOB).</td></tr>
+<tr><td class="s"><span class="sig">def get_ref(&amp;self, int i) -&gt; &amp;T</span></td><td class="d"><b>Zero-copy</b> read-only borrow of element <code>i</code> (bounds-checked, aborts on OOB) — no clone. <b>Aggregate (struct/enum) elements only</b>; POD elements use <code>v[i]</code>/<code>get!</code>. The borrow is non-escaping: use immediately (<code>v.get_ref(i).field</code>) or bind to a <code>&amp;T</code> local; it cannot be returned, stored, or outlive the Vec.</td></tr>
+<tr><td class="s"><span class="sig">def first(&amp;self) -&gt; Option(T)</span></td><td class="d">Clone of first element, or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def last(&amp;self) -&gt; Option(T)</span></td><td class="d">Clone of last element, or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">v[i]   (via __index)</span></td><td class="d">Indexing sugar; panics on OOB.</td></tr>
+</table>
+
+<h3>Mutation <span class="tag mut">&amp;!self</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def push(&amp;!self, T x)</span></td><td class="d">Append (moves <code>x</code> in).</td></tr>
+<tr><td class="s"><span class="sig">def insert(&amp;!self, int i, T x)</span></td><td class="d">Insert at <code>i</code>, shifting right; panics if <code>i ∉ [0,len]</code>.</td></tr>
+<tr><td class="s"><span class="sig">def pop(&amp;!self) -&gt; Option(T)</span></td><td class="d">Remove &amp; return last (moves out); <code>None</code> if empty.</td></tr>
+<tr><td class="s"><span class="sig">def remove(&amp;!self, int i) -&gt; T</span></td><td class="d">Remove &amp; return element at <code>i</code>, shifting left; panics if OOB.</td></tr>
+<tr><td class="s"><span class="sig">def set(&amp;!self, int i, T x)</span></td><td class="d">Bounds-checked write (destroys old, moves new).</td></tr>
+<tr><td class="s"><span class="sig">def set!(&amp;!self, int i, T x)</span><span class="tag mut">unsafe</span></td><td class="d">Unchecked write.</td></tr>
+<tr><td class="s"><span class="sig">def swap(&amp;!self, int i, int j)</span></td><td class="d">Exchange two elements (no clone); panics if OOB.</td></tr>
+<tr><td class="s"><span class="sig">def reverse(&amp;!self)</span></td><td class="d">Reverse in place.</td></tr>
+<tr><td class="s"><span class="sig">def truncate(&amp;!self, int n)</span></td><td class="d">Keep first <code>n</code>, destroy the rest.</td></tr>
+<tr><td class="s"><span class="sig">def resize(&amp;!self, int n, T fill)</span></td><td class="d">Grow (filling with <code>fill</code>) or shrink to <code>n</code>.</td></tr>
+<tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all elements (<code>len → 0</code>).</td></tr>
+<tr><td class="s"><span class="sig">def reserve(&amp;!self, int need)</span></td><td class="d">Pre-allocate capacity.</td></tr>
+<tr><td class="s"><span class="sig">def shrink_to_fit(&amp;!self)</span></td><td class="d">Release unused capacity.</td></tr>
+<tr><td class="s"><span class="sig">def extend(&amp;!self, &amp;Vec(T) src)</span></td><td class="d">Append deep clones of all of <code>src</code> (borrowed).</td></tr>
+</table>
+
+<h3>Copy &amp; search</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def copy(&amp;self) -&gt; Vec(T)</span></td><td class="d">Independent deep copy.</td></tr>
+<tr><td class="s"><span class="sig">def slice(&amp;self, int start, int stop) -&gt; Vec(T)</span></td><td class="d">Clone of <code>[start, stop)</code> (clamped).</td></tr>
+<tr><td class="s"><span class="sig">def index_of(&amp;self, T x) -&gt; int   where T: Equal</span></td><td class="d">First index of <code>x</code>, or <code>-1</code>.</td></tr>
+<tr><td class="s"><span class="sig">def has?(&amp;self, T x) -&gt; bool   where T: Equal</span></td><td class="d">Membership test.</td></tr>
+<tr><td class="s"><span class="sig">def count_eq(&amp;self, T x) -&gt; int   where T: Equal</span></td><td class="d">Count of elements equal to <code>x</code>.</td></tr>
+</table>
+
+<h3>Iteration &amp; functional</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def iter(&amp;self) -&gt; VecIter(T)</span></td><td class="d">Borrowing iterator; drives <code>for x in v</code>.</td></tr>
+<tr><td class="s"><span class="sig">def each(&amp;self, Block(&amp;T) f)</span></td><td class="d">Call <code>f</code> on each element (side effects).</td></tr>
+<tr><td class="s"><span class="sig">def map(U)(&amp;self, Block(&amp;T)-&gt;U f) -&gt; Vec(U)</span></td><td class="d">Transform each element → <code>Vec(U)</code>.</td></tr>
+<tr><td class="s"><span class="sig">def filter(&amp;self, Block(&amp;T)-&gt;bool p) -&gt; Vec(T)</span></td><td class="d">New vector of kept elements.</td></tr>
+<tr><td class="s"><span class="sig">def reduce(U)(&amp;self, U init, Block(U,&amp;T)-&gt;U f) -&gt; U</span></td><td class="d">Left fold.</td></tr>
+<tr><td class="s"><span class="sig">def find(&amp;self, Block(&amp;T)-&gt;bool p) -&gt; Option(T)</span></td><td class="d">First match, or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def pos(&amp;self, Block(&amp;T)-&gt;bool p) -&gt; int</span></td><td class="d">Index of first match, or <code>-1</code>.</td></tr>
+<tr><td class="s"><span class="sig">def any(&amp;self, Block(&amp;T)-&gt;bool p) -&gt; bool</span></td><td class="d">Any element satisfies <code>p</code>.</td></tr>
+<tr><td class="s"><span class="sig">def all(&amp;self, Block(&amp;T)-&gt;bool p) -&gt; bool</span></td><td class="d">All elements satisfy <code>p</code>.</td></tr>
+<tr><td class="s"><span class="sig">def count(&amp;self, Block(&amp;T)-&gt;bool p) -&gt; int</span></td><td class="d">Count satisfying <code>p</code>.</td></tr>
+<tr><td class="s"><span class="sig">def sort(&amp;!self)   where T: Order</span></td><td class="d">In-place stable merge sort by <code>&lt;</code>.</td></tr>
+<tr><td class="s"><span class="sig">def sort_by(&amp;!self, Block(&amp;T,&amp;T)-&gt;int cmp)</span></td><td class="d">In-place stable sort by comparator.</td></tr>
+</table>
+
+<div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) v = [3, 1, 2]
+v.push(4)
+v.sort()                              <span class="c">// [1,2,3,4]</span>
+<span class="t">Vec</span>(<span class="t">int</span>) evens = v.filter(|x| x % 2 == 0)
+<span class="t">int</span> total = v.reduce(<span class="t">int</span>)(0, |acc, x| acc + x)
+<span class="k">for</span> x <span class="k">in</span> v { @print(x) }            <span class="c">// borrows v, stays usable</span>
+<span class="k">match</span> v.pop() { <span class="t">Some</span>(last) =&gt; { @print(last) } <span class="t">None</span> =&gt; {} }</pre></div>
+</section>
+
+<!-- ===================== MAP ===================== -->
+<section id="map">
+<h2>map<span class="imp">import std.core.map</span></h2>
+<p class="purpose">Generic hash table (open addressing, Robin Hood probing, Fibonacci scatter).</p>
+
+<div class="types"><pre>struct Map(K, V) { *u8 ctrl; *K keys; *V vals; int len; int cap; int shift }  // has destructor
+struct Entry(K, V) { K key; V val }   // yielded by iteration</pre></div>
+
+<div class="note"><b>Keys need <code>K: Hash + Equal</code></b> (built-in for int/i64/char/bool/Str; implement
+<code>Hash</code>+<code>Equal</code> for your own). Construct empty with <code>{}</code> or a literal
+<code>{"a": 1, "b": 2}</code>. Iteration is in physical slot order, not insertion order.</div>
+
+<h3>Queries &amp; lookup</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Entry count.</td></tr>
+<tr><td class="s"><span class="sig">def empty?(&amp;self) -&gt; bool</span></td><td class="d">True when empty.</td></tr>
+<tr><td class="s"><span class="sig">def get(&amp;self, &amp;K k) -&gt; Option(V)</span></td><td class="d">Clone of value, or <code>None</code> if absent.</td></tr>
+<tr><td class="s"><span class="sig">def has?(&amp;self, &amp;K k) -&gt; bool</span></td><td class="d">Key-existence test.</td></tr>
+<tr><td class="s"><span class="sig">m[k]   (via __index)</span></td><td class="d">Indexing sugar; <b>panics</b> if key absent.</td></tr>
+</table>
+
+<h3>Mutation <span class="tag mut">&amp;!self</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def set(&amp;!self, K k, V v)</span></td><td class="d">Insert or update (moves <code>k</code>,<code>v</code> in; grows at 7/8 load).</td></tr>
+<tr><td class="s"><span class="sig">m[k] = v   (via __index_set)</span></td><td class="d">Insert/update sugar (same as <code>set</code>).</td></tr>
+<tr><td class="s"><span class="sig">def remove(&amp;!self, &amp;K k) -&gt; Option(V)</span></td><td class="d">Remove key, return its value (moved out), or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all entries (keep buffer).</td></tr>
+</table>
+
+<h3>Iteration</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def iter(&amp;self) -&gt; MapIter(K,V)</span></td><td class="d">Borrowing iterator; <code>for e in m</code> yields <code>Entry(K,V)</code> — use <code>e.key</code>/<code>e.val</code>.</td></tr>
+<tr><td class="s"><span class="sig">def keys(&amp;self) -&gt; Vec(K)</span></td><td class="d">New vector of all keys (cloned).</td></tr>
+<tr><td class="s"><span class="sig">def values(&amp;self) -&gt; Vec(V)</span></td><td class="d">New vector of all values (cloned).</td></tr>
+<tr><td class="s"><span class="sig">def each(&amp;self, Block(K,V) f)</span></td><td class="d">Call <code>f(k,v)</code> for each entry.</td></tr>
+<tr><td class="s"><span class="sig">def copy(&amp;self) -&gt; Map(K,V)</span></td><td class="d">Independent deep copy.</td></tr>
+</table>
+
+<div class="ex"><pre><span class="t">Map</span>(<span class="t">Str</span>, <span class="t">int</span>) counts = {<span class="s">"a"</span>: 1, <span class="s">"b"</span>: 2}
+counts.set(<span class="s">"c"</span>, 3)
+counts[<span class="s">"a"</span>] = 10
+<span class="k">for</span> e <span class="k">in</span> counts { @print(f<span class="s">"{e.key} = {e.val}"</span>) }
+<span class="k">match</span> counts.get(<span class="s">"b"</span>) { <span class="t">Some</span>(n) =&gt; { @print(n) } <span class="t">None</span> =&gt; {} }</pre></div>
+</section>
+
+<!-- ===================== RING ===================== -->
+<section id="ring">
+<h2>ring<span class="imp">import std.sync.ring</span></h2>
+<p class="purpose">Bounded FIFO ring buffer (rte_ring-style: power-of-2 sizing, <code>idx &amp; mask</code>,
+free-running <code>Atomic(i64)</code> cursors). <b>Lock-free</b> across threads — no mutex.
+Pick the mode at construction.</p>
+
+<div class="types"><pre>struct Ring(T) { *T data; int cap; int mask; bool mp; bool mc;
+                 Atomic(i64) prod_head; Atomic(i64) prod_tail;
+                 Atomic(i64) cons_head; Atomic(i64) cons_tail }   // has destructor
+def new_ring(T)(int capacity) -> Ring(T)        // SPSC: 1 producer + 1 consumer (no CAS, cheapest)
+def new_mpmc_ring(T)(int capacity) -> Ring(T)   // MPMC: many producers + many consumers (CAS reserve)
+                                               // capacity rounded UP to next power of 2</pre></div>
+
+<div class="note"><b>SPSC vs MPMC.</b> <code>new_ring</code> is single-producer/single-consumer —
+one thread enqueues, one dequeues (single-threaded use is the degenerate case). <code>new_mpmc_ring</code>
+allows any number of producers and consumers via CAS slot reservation. Non-blocking: <code>enqueue</code>
+returns <code>false</code> when full, <code>dequeue</code> returns <code>None</code> when empty (busy-poll or
+back off yourself). For <b>blocking</b> message passing use <a href="#chan"><code>Chan(T)</code></a> instead.</div>
+
+<table class="api">
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Buffered count (approximate under concurrency).</td></tr>
+<tr><td class="s"><span class="sig">def capacity(&amp;self) -&gt; int</span></td><td class="d">Usable capacity (power of 2).</td></tr>
+<tr><td class="s"><span class="sig">def is_empty(&amp;self) -&gt; bool</span></td><td class="d">True when no elements.</td></tr>
+<tr><td class="s"><span class="sig">def is_full(&amp;self) -&gt; bool</span></td><td class="d">True when at capacity.</td></tr>
+<tr><td class="s"><span class="sig">def free_space(&amp;self) -&gt; int</span></td><td class="d">Slots available for enqueue.</td></tr>
+<tr><td class="s"><span class="sig">def enqueue(&amp;!self, T x) -&gt; bool</span></td><td class="d">Enqueue (moves in); <code>false</code> (unchanged) when full.</td></tr>
+<tr><td class="s"><span class="sig">def dequeue(&amp;!self) -&gt; Option(T)</span></td><td class="d">Dequeue oldest (FIFO, moves out), or <code>None</code> if empty.</td></tr>
+<tr><td class="s"><span class="sig">def dequeue_burst(&amp;!self, int n) -&gt; Vec(T)</span></td><td class="d">Dequeue up to <code>n</code> into a new vector.</td></tr>
+<tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all, reset cursors. <span class="tag mut">single-threaded</span></td></tr>
+</table>
+
+<div class="ex"><pre><span class="c">// single-threaded ring buffer</span>
+<span class="t">Ring</span>(<span class="t">int</span>) r = new_ring(<span class="t">int</span>)(8)
+r.enqueue(1)  r.enqueue(2)
+<span class="k">match</span> r.dequeue() { <span class="t">Some</span>(x) =&gt; { @print(x) } <span class="t">None</span> =&gt; {} }   <span class="c">// 1 (FIFO)</span>
+
+<span class="c">// lock-free MPMC: many producers/consumers on a global, no mutex</span>
+<span class="t">Ring</span>(<span class="t">int</span>) q = new_mpmc_ring(<span class="t">int</span>)(1024)
+<span class="k">while</span> !q.enqueue(v) { __cpu_relax() }    <span class="c">// retry on full</span></pre></div>
+</section>
+
+<!-- ===================== STACK ===================== -->
+<section id="stack">
+<h2>stack<span class="imp">import std.core.stack</span></h2>
+<p class="purpose">Generic LIFO stack built on Vec.</p>
+
+<div class="types"><pre>struct Stack(T) { Vec(T) data }   // has destructor
+def new_stack(T)() -> Stack(T)</pre></div>
+
+<table class="api">
+<tr><td class="s"><span class="sig">def push(&amp;!self, T x)</span></td><td class="d">Push <code>x</code> onto the top (moves in).</td></tr>
+<tr><td class="s"><span class="sig">def pop(&amp;!self) -&gt; T</span></td><td class="d">Remove &amp; return top (moves out); caller must ensure non-empty.</td></tr>
+<tr><td class="s"><span class="sig">def peek(&amp;self) -&gt; T</span></td><td class="d">Clone of top without removing; caller must ensure non-empty.</td></tr>
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Element count.</td></tr>
+<tr><td class="s"><span class="sig">def is_empty(&amp;self) -&gt; bool</span></td><td class="d">True when empty.</td></tr>
+<tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all elements.</td></tr>
+</table>
+
+<div class="ex"><pre><span class="t">Stack</span>(<span class="t">int</span>) s = new_stack(<span class="t">int</span>)()
+s.push(1)  s.push(2)
+@print(s.peek())     <span class="c">// 2, still on stack</span>
+<span class="t">int</span> top = s.pop()    <span class="c">// 2, removed</span></pre></div>
+</section>
+
+<section id="arena">
+<h2>arena<span class="imp">import std.mem.arena</span></h2>
+<p class="purpose">Bump (region) allocators over raw malloc: pay 1 malloc (amortized) + N
+pointer-bumps + 1 free instead of N malloc/free. Two flavors — a typed pool and a
+heterogeneous byte region. POD-only by contract (a bulk reset/free runs NO per-element
+destructor, so an element owning a malloc'd buffer would leak).</p>
+
+<h3 style="margin:18px 0 6px">Arena(T) — typed pool, index handles</h3>
+<p class="purpose">A growable pool of one POD element type, addressed by stable <code>int</code>
+index handles (survive realloc — link nodes by storing handles, for graphs / trees / ECS).
+<code>O(1)</code> <code>reset()</code> reuses the block across rounds.</p>
+
+<div class="types"><pre>struct Arena(T) { *T data; int len; int cap }   // has a ~ destructor (frees its one block)</pre></div>
+
+<table class="api">
+<tr><td class="s"><span class="sig">def reserve(&amp;!self, int need)</span></td><td class="d">Pre-grow capacity (geometric); one malloc to <code>need</code> rounded up.</td></tr>
+<tr><td class="s"><span class="sig">def alloc(&amp;!self, T x) -&gt; int <span class="c">where T: Pod</span></span></td><td class="d">Bump-allocate one element; returns its stable index handle. <code>where T: Pod</code> rejects heap-owning (non-POD) element types at compile time.</td></tr>
+<tr><td class="s"><span class="sig">def get!(&amp;self, int i) -&gt; T</span></td><td class="d">Unchecked copy-out of the element at handle <code>i</code> (POD value copy).</td></tr>
+<tr><td class="s"><span class="sig">def get(&amp;self, int i) -&gt; Option(T)</span></td><td class="d">Bounds-checked copy: <code>Some(elem)</code> or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def set!(&amp;!self, int i, T x)</span></td><td class="d">Unchecked raw overwrite of slot <code>i</code> (POD — no destructor to run).</td></tr>
+<tr><td class="s"><span class="sig">def reset(&amp;!self)</span></td><td class="d">O(1) bulk reclaim, KEEP the buffer for reuse (per-frame pattern).</td></tr>
+<tr><td class="s"><span class="sig">def len/cap(&amp;self) -&gt; int · def empty?(&amp;self) -&gt; bool</span></td><td class="d">Queries.</td></tr>
+</table>
+
+<h3 style="margin:18px 0 6px">Region — heterogeneous byte region + string interning</h3>
+<p class="purpose">One <code>*u8</code> block; sub-allocate typed <code>*T</code> slices of MANY POD types
+sharing one lifetime (ASTs / mixed node graphs). FIXED capacity (hands out raw pointers →
+must NOT realloc). Also interns <code>Str</code> values with zero per-string malloc.</p>
+
+<div class="types"><pre>struct Region { *u8 base; i64 off; i64 cap }   // has a ~ destructor (frees its one block)</pre></div>
+
+<table class="api">
+<tr><td class="s"><span class="sig">def reserve(&amp;!self, i64 cap)</span></td><td class="d">Allocate the one fixed backing block (bytes). Call once before use.</td></tr>
+<tr><td class="s"><span class="sig">def alloc_bytes(&amp;!self, i64 size) -&gt; *u8</span></td><td class="d">Carve <code>size</code> bytes, 8-byte aligned; cast it (<code>r.alloc_bytes(sizeof(T)) as *T</code>). Aborts on overflow.</td></tr>
+<tr><td class="s"><span class="sig">def str(&amp;!self, &amp;Str src) -&gt; Str</span></td><td class="d">Intern a copy of the WHOLE <code>src</code> into the region; returns a region-backed <code>Str</code> (cap == -2 sentinel).</td></tr>
+<tr><td class="s"><span class="sig">def str_substr(&amp;!self, &amp;Str src, int start, int len) -&gt; Str</span></td><td class="d">Intern a SLICE <code>src[start, start+len)</code> — <strong>zero malloc</strong>: one region bump + one memcpy straight from <code>src</code> (no temporary <code>Str</code>, unlike <code>r.str(src.substr(a,b))</code>). The parser token pattern. Lenient clamping (matches <code>Str.substr</code>).</td></tr>
+<tr><td class="s"><span class="sig">def reset(&amp;!self)</span></td><td class="d">O(1) rewind, keep the block. Raw pointers / region <code>Str</code>s handed out before reset now dangle (caller's contract).</td></tr>
+<tr><td class="s"><span class="sig">def used/cap(&amp;self) -&gt; i64</span></td><td class="d">Bytes used / block capacity.</td></tr>
+</table>
+
+<p class="purpose"><strong>Region-backed Str (cap == -2):</strong> the destructor <code>~</code> is a no-op
+(region reclaims in bulk); <code>clone</code>/<code>copy</code> deep-copies to malloc (PROMOTES off the region →
+independent, safely outlives <code>reset()</code>); mutation (<code>push_str</code>/<code>+</code>) also
+promotes. Best for IMMUTABLE interned strings (tokens / AST keys).</p>
+
+<div class="note"><b>⚠ Pitfall: a region <code>Str</code> dangles after <code>reset()</code> or when the region is destroyed (not compiler-checked).</b>
+A region <code>Str</code>'s <code>data</code> points <em>into the region block</em>. Once that block is rewound by
+<code>reset()</code> or freed by the region's <code>~</code> destructor, <b>every region <code>Str</code> (and raw pointer) handed
+out before then dangles</b> — reads stale / overwritten bytes (UB). Two ways to get bitten:
+(1) <b>use-after-reset</b> — just holding one across a <code>reset()</code> in the same scope; (2) <b>move-escape</b>
+— moving one out past the region's life (a move only transfers the <code>{data, len, cap:-2}</code> handle
+as-is, still pointed into the region). The escape valve is <b>clone</b>: <code>.copy()</code> (or any auto
+deep-copy) PROMOTES to a fresh malloc → an independent owned <code>Str</code> (cap&gt;0) that survives. LS has
+no lifetime system, so the compiler does NOT catch this — it is contract-based unsafe, like a raw pointer.
+<b>Rule: any region <code>Str</code> that must outlive a <code>reset()</code> or the region itself must be <code>.copy()</code>'d first.</b>
+<pre><span class="c">// (1) use-after-reset — dangles even without moving anywhere</span>
+<span class="t">Region</span> r = {}
+r.reserve(64)
+<span class="t">Str</span> tok = r.str_substr(src, 0, 5)
+<span class="t">Str</span> keep = tok.copy()              <span class="c">// copy BEFORE reset -&gt; independent malloc</span>
+r.reset()                            <span class="c">// block rewound: tok now dangles, keep is fine</span>
+@print(tok)                           <span class="c">// ✗ DANGLING (stale / overwritten bytes)</span>
+@print(keep)                          <span class="c">// ✓ OK</span>
+
+<span class="c">// (2) move-escape — handle returned past the region's life</span>
+def first_token(&amp;<span class="t">Str</span> line) -> <span class="t">Str</span> {
+    <span class="t">Region</span> r = {}
+    r.reserve(256)
+    return r.str_substr(line, 0, 4)  <span class="c">// move-out: result points into r</span>
+}                                    <span class="c">// r destroyed here -&gt; block freed -&gt; result DANGLES; return tok.copy() instead</span></pre>
+(Note: many LS sites — named-variable bindings / returns / pushes — actually <em>clone</em> and thus
+promote, which can mask the bug; don't rely on it, just <code>.copy()</code> what must survive.)</div>
+
+<div class="ex"><pre><span class="c">// parser pattern: carve tokens straight out of the source, zero malloc</span>
+<span class="t">Region</span> r = {}
+r.reserve(1 &lt;&lt; 16)
+<span class="t">Str</span> src = <span class="s">"hello world"</span>
+<span class="t">Str</span> tok = r.str_substr(src, 0, 5)   <span class="c">// "hello", region-backed (cap -2)</span>
+<span class="t">Str</span> keep = tok.copy()               <span class="c">// PROMOTES to malloc → survives reset</span>
+r.reset()                            <span class="c">// O(1); tok now dangles, keep is fine</span>
+
+<span class="c">// typed pool with stable handles (graphs/trees/ECS)</span>
+<span class="t">Arena</span>(<span class="t">int</span>) a = {}
+<span class="t">int</span> h = a.alloc(42)
+@print(a.get!(h))                     <span class="c">// 42</span>
+a.reset()                            <span class="c">// O(1) reuse</span></pre></div>
+</section>
+
+<!-- ===================== STR ===================== -->
+<section id="str">
+<h2>str — Str<span class="imp">import std.core.str</span></h2>
+<p class="purpose">The string type. <code>Str</code> is the only string in LS; literals like
+<code>"hi"</code> are <code>Str</code> and the prelude imports this module automatically.</p>
+
+<div class="types"><pre>struct Str { *u8 data; int len; int cap }       // UTF-8 bytes; cap==0 static, cap&gt;0 owned (has destructor)
+struct StrSlice { *u8 ptr; int len }            // zero-copy borrowed view into a Str's bytes (POD)
+
+methods Equal  for Str   // ==      methods Hash for Str   // Map key
+methods Order for Str   // &lt; &lt;= &gt; &gt;=   methods Add  for Str   // +  (concat)</pre></div>
+
+<div class="note"><code>Str</code> implements <code>Hash</code>, <code>Equal</code>, <code>Order</code>, <code>Add</code> —
+so it works as a <code>Map</code> key, in comparisons, and with <code>+</code>. All lengths/offsets are
+<b>byte</b> counts (UTF-8), not character counts.</div>
+
+<h3>Queries</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Byte length (O(1)).</td></tr>
+<tr><td class="s"><span class="sig">def empty?(&amp;self) -&gt; bool</span></td><td class="d">True if <code>len == 0</code>.</td></tr>
+<tr><td class="s"><span class="sig">def byte_at(&amp;self, int i) -&gt; int</span></td><td class="d">Byte at <code>i</code> (bounds-checked, aborts on OOB).</td></tr>
+<tr><td class="s"><span class="sig">def byte_at!(&amp;self, int i) -&gt; int</span><span class="tag mut">unsafe</span></td><td class="d">Unchecked byte access.</td></tr>
+<tr><td class="s"><span class="sig">def c_str(&amp;!self) -&gt; *u8</span></td><td class="d">NUL-terminated view for C interop (zero-cost for static).</td></tr>
+</table>
+
+<h3>Search</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def find(&amp;self, &amp;Str needle) -&gt; int</span></td><td class="d">Index of first occurrence, or <code>-1</code>.</td></tr>
+<tr><td class="s"><span class="sig">def rfind(&amp;self, &amp;Str needle) -&gt; int</span></td><td class="d">Index of last occurrence, or <code>-1</code>.</td></tr>
+<tr><td class="s"><span class="sig">def contains?(&amp;self, &amp;Str needle) -&gt; bool</span></td><td class="d">Substring test.</td></tr>
+<tr><td class="s"><span class="sig">def starts_with?(&amp;self, &amp;Str prefix) -&gt; bool</span></td><td class="d">Prefix test.</td></tr>
+<tr><td class="s"><span class="sig">def ends_with?(&amp;self, &amp;Str suffix) -&gt; bool</span></td><td class="d">Suffix test.</td></tr>
+<tr><td class="s"><span class="sig">def count(&amp;self, &amp;Str needle) -&gt; int</span></td><td class="d">Non-overlapping occurrence count.</td></tr>
+</table>
+
+<h3>Transform (return owned Str)</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def substr(&amp;self, int start, int len) -&gt; Str</span></td><td class="d">Substring (lenient clamping).</td></tr>
+<tr><td class="s"><span class="sig">def upper(&amp;self) -&gt; Str</span> / <span class="sig">lower</span></td><td class="d">ASCII case conversion.</td></tr>
+<tr><td class="s"><span class="sig">def trim(&amp;self) -&gt; Str</span></td><td class="d">Strip leading/trailing ASCII whitespace.</td></tr>
+<tr><td class="s"><span class="sig">def concat(&amp;self, &amp;Str other) -&gt; Str</span></td><td class="d">Concatenate (also via <code>+</code>).</td></tr>
+<tr><td class="s"><span class="sig">def repeat(&amp;self, int times) -&gt; Str</span></td><td class="d">Repeat <code>times</code> times.</td></tr>
+<tr><td class="s"><span class="sig">def replace(&amp;self, &amp;Str old, &amp;Str rep) -&gt; Str</span></td><td class="d">Replace every occurrence.</td></tr>
+<tr><td class="s"><span class="sig">def pad_left/pad_right(&amp;self, int width, int fill) -&gt; Str</span></td><td class="d">Pad with a fill byte to <code>width</code>.</td></tr>
+<tr><td class="s"><span class="sig">def copy(&amp;self) -&gt; Str</span></td><td class="d">Explicit deep copy.</td></tr>
+</table>
+
+<h3>Split &amp; collect (return Vec)</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def split(&amp;self, &amp;Str sep) -&gt; Vec(Str)</span></td><td class="d">Split on <code>sep</code> (owned substrings).</td></tr>
+<tr><td class="s"><span class="sig">def as_slice(&amp;self) -&gt; StrSlice</span></td><td class="d">Zero-copy fat view over the whole Str (see StrSlice below).</td></tr>
+<tr><td class="s"><span class="sig">def subslice(&amp;self, int start, int len) -&gt; StrSlice</span></td><td class="d">Zero-copy fat view over a byte range (lenient clamp).</td></tr>
+<tr><td class="s"><span class="sig">def split_view(&amp;self, &amp;Str sep) -&gt; Vec(StrSlice)</span></td><td class="d">Zero-copy split → directly-readable fat views.</td></tr>
+<tr><td class="s"><span class="sig">def slice_str(&amp;self, StrSlice s) -&gt; Str</span></td><td class="d">Materialize a view into an owned Str (= <code>s.to_str()</code>).</td></tr>
+<tr><td class="s"><span class="sig">def lines(&amp;self) -&gt; Vec(Str)</span></td><td class="d">Split into lines (handles CRLF).</td></tr>
+<tr><td class="s"><span class="sig">def bytes(&amp;self) -&gt; Vec(int)</span></td><td class="d">Every byte as <code>int</code> (0–255).</td></tr>
+</table>
+
+<h3>Parse, compare, build</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def to_int(&amp;self) -&gt; Result(int, Str)</span></td><td class="d">Parse signed decimal (also <code>0x</code> hex).</td></tr>
+<tr><td class="s"><span class="sig">def to_i64(&amp;self) -&gt; Result(i64, Str)</span></td><td class="d">Parse 64-bit integer.</td></tr>
+<tr><td class="s"><span class="sig">def to_float(&amp;self) -&gt; Result(f64, Str)</span></td><td class="d">Parse decimal float (with exponent).</td></tr>
+<tr><td class="s"><span class="sig">def to_bool(&amp;self) -&gt; Result(bool, Str)</span></td><td class="d">Parse <code>"true"</code>/<code>"false"</code>.</td></tr>
+<tr><td class="s"><span class="sig">def eq?(&amp;self, &amp;Str other) -&gt; bool</span></td><td class="d">Byte-wise equality (also <code>==</code>).</td></tr>
+<tr><td class="s"><span class="sig">def compare(&amp;self, &amp;Str other) -&gt; int</span></td><td class="d"><code>-1</code>/<code>0</code>/<code>1</code> lexicographic (also <code>&lt;</code> etc.).</td></tr>
+<tr><td class="s"><span class="sig">def hash(&amp;self) -&gt; u64</span></td><td class="d">FxHash (enables Map key).</td></tr>
+<tr><td class="s"><span class="sig">def push_str(&amp;!self, &amp;Str other)</span></td><td class="d">Append another Str in place.</td></tr>
+<tr><td class="s"><span class="sig">def push_byte(&amp;!self, int b)</span></td><td class="d">Append a single byte.</td></tr>
+</table>
+
+<div class="ex"><pre><span class="t">Str</span> s = <span class="s">"hello world"</span>
+<span class="k">if</span> s.contains?(<span class="s">"world"</span>) { @print(s.upper()) }   <span class="c">// HELLO WORLD</span>
+<span class="t">Vec</span>(<span class="t">Str</span>) parts = s.split(<span class="s">" "</span>)            <span class="c">// ["hello", "world"]</span>
+<span class="t">Str</span> joined = parts.get!(0) + <span class="s">"-"</span> + parts.get!(1)
+<span class="k">match</span> <span class="s">"42"</span>.to_int() { <span class="t">Ok</span>(n) =&gt; { @print(n + 1) } <span class="t">Err</span>(e) =&gt; { @print(e) } }</pre></div>
+
+<h3>StrSlice — zero-copy borrowed view into a Str's bytes</h3>
+<p class="purpose">A <code>{ *u8 ptr; int len }</code> POD view into a <code>Str</code>'s bytes — self-contained,
+readable, storable in <code>Vec(StrSlice)</code>, usable as a <code>Map</code> key (via Hash/Equal) with NO
+materialization. Reads neither allocate nor copy: a parser/lexer carving tokens out of a live source
+buffer runs at the zero-copy ceiling (benchmark: <b>~20 ms</b>, vs
+<code>str_substr</code> arena ~230 ms / owned <code>substr</code> ~390 ms).</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def len/empty?(&amp;self)</span></td><td class="d">Length / emptiness (field reads).</td></tr>
+<tr><td class="s"><span class="sig">def at(&amp;self, int i) -&gt; int · def at!(&amp;self, int i)</span></td><td class="d">Byte at <code>i</code>: checked (abort) / unchecked.</td></tr>
+<tr><td class="s"><span class="sig">def eq(&amp;self, &amp;StrSlice) · def eq_str(&amp;self, &amp;Str)</span></td><td class="d">Equality vs another view / an owned Str or literal.</td></tr>
+<tr><td class="s"><span class="sig">def find/contains?/starts_with?/ends_with?(&amp;self, &amp;Str)</span></td><td class="d">Search (runtime memchr+memcmp over ptr+len).</td></tr>
+<tr><td class="s"><span class="sig">def sub(&amp;self, int start, int len) -&gt; StrSlice</span></td><td class="d">Sub-view of a view (zero-copy, lenient clamp).</td></tr>
+<tr><td class="s"><span class="sig">def compare(&amp;self, &amp;StrSlice) -&gt; int</span></td><td class="d"><code>-1</code>/<code>0</code>/<code>1</code> lexicographic (also <code>&lt;</code> etc. via Order).</td></tr>
+<tr><td class="s"><span class="sig">def hash(&amp;self) -&gt; u64</span></td><td class="d">FxHash — <b>same value as <code>Str.hash</code></b> → interchangeable Map keys.</td></tr>
+<tr><td class="s"><span class="sig">def to_str(&amp;self) -&gt; Str</span></td><td class="d">Materialize an independent owned <code>Str</code> (the deferred copy; safe to keep).</td></tr>
+<tr><td class="s"><span class="sig">methods StrSlice: Equal / Hash / Order</span></td><td class="d">→ usable as a <code>Map(StrSlice, V)</code> key and in sorts.</td></tr>
+</table>
+
+<div class="note"><b>⚠ UNSAFE BY CONTRACT — a StrSlice must not outlive its source (compiler-unchecked).</b>
+<code>ptr</code> points <em>into</em> a source <code>Str</code>'s buffer; it has no ownership and extends nothing.
+It <b>dangles</b> if the source is destroyed, is <b>mutated so its buffer reallocs</b> (<code>push_str</code>/
+<code>+</code>/<code>reserve</code>), or was a temporary. LS has no lifetime system, so the compiler does NOT
+catch this — like a raw pointer. <b>Safe</b> when the source outlives the view and is not mutated meanwhile
+(the parser/lexer pattern), or when slicing a string <b>literal</b> (.rodata — never freed or moved).
+<b>To keep a view past its source, materialize: <code>slice.to_str()</code>.</b> A <code>Map(StrSlice, V)</code>
+symbol table is zero-malloc and content-keyed, but the source buffer must outlive the Map.
+<pre><span class="t">Str</span> src = <span class="s">"the quick brown fox"</span>      <span class="c">// live for the whole parse</span>
+<span class="t">Vec</span>(<span class="t">StrSlice</span>) toks = src.split_view(<span class="s">" "</span>)
+<span class="k">if</span> toks.get!(0).eq_str(<span class="s">"the"</span>) { ... }      <span class="c">// zero-copy read, no malloc</span>
+<span class="t">Str</span> keep = toks.get!(2).to_str()        <span class="c">// materialize to outlive src</span></pre></div>
+</section>
+
+<!-- ===================== STRCONV ===================== -->
+<section id="strconv">
+<h2>strconv<span class="imp">import std.text.strconv</span></h2>
+<p class="purpose">String formatting and number-base conversion.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def format(Str fmt, Vec(Str) args) -&gt; Str</span></td><td class="d">Replace each <code>{}</code> in <code>fmt</code> with successive <code>args</code>.</td></tr>
+<tr><td class="s"><span class="sig">def int_to_hex(int n) -&gt; Str</span></td><td class="d">Lowercase hex (no <code>0x</code> prefix).</td></tr>
+<tr><td class="s"><span class="sig">def int_to_oct(int n) -&gt; Str</span> / <span class="sig">int_to_bin</span></td><td class="d">Octal / binary.</td></tr>
+<tr><td class="s"><span class="sig">def float_fixed(f64 n, int digits) -&gt; Str</span></td><td class="d">Fixed decimal places (printf rounding).</td></tr>
+<tr><td class="s"><span class="sig">def to_string(int n) -&gt; Str</span> / <span class="sig">to_string_f(f64)</span></td><td class="d">Default number → Str.</td></tr>
+</table>
+<div class="ex"><pre><span class="t">Str</span> hex = int_to_hex(255)        <span class="c">// "ff"</span>
+<span class="t">Str</span> pi = float_fixed(3.14159, 2) <span class="c">// "3.14"</span></pre></div>
+</section>
+
+<!-- ===================== HASH ===================== -->
+<section id="hash">
+<h2>hash<span class="imp">import std.core.hash</span></h2>
+<p class="purpose">The <code>Hash</code> interface and the FxHash mixing primitive (used by Map).</p>
+<div class="types"><pre>interface Hash { def hash(&amp;self) -&gt; u64 }
+methods Hash for int / i64 / char / bool     // (Str's methods lives in std.core.str)</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def fx_seed() -&gt; u64</span></td><td class="d">FxHash multiplier seed.</td></tr>
+<tr><td class="s"><span class="sig">def fx_mix(u64 h, u64 word) -&gt; u64</span></td><td class="d">Mix one 64-bit word into a running hash.</td></tr>
+</table>
+<p>Implement <code>Hash</code> for your own type to use it as a <code>Map</code> key (alongside <code>Equal</code>).</p>
+</section>
+
+<!-- ===================== SHOW ===================== -->
+<section id="show">
+<h2>show<span class="imp">import std.core.show</span></h2>
+<p class="purpose">The <code>Show</code> interface — render a value into a byte
+<a href="#sink"><code>Sink</code></a> (no intermediate <code>Str</code> per nested value).
+Primarily the target of <code>@derive(Show)</code>; rarely imported by hand
+(the derive injects the import for you).</p>
+<div class="types"><pre>interface Show { def show(&amp;self, &amp;!Sink out) }
+def to_str(T)(&amp;T x) -&gt; Str where T: Show          // render any Show value to an owned Str
+methods int: Show { … }   // + i8/i16/i32/i64, u8/u16/u32/u64, f32/f64, bool, char, Str</pre></div>
+<p><code>to_str(x)</code> is the <code>Str</code>-producing front (replaces the old
+<code>x.show() -&gt; Str</code>): <code>Str msg = "got " + to_str(p)</code>. <code>T</code> is
+inferred from the argument.</p>
+<p><code>@derive(Show)</code> on a struct synthesizes <code>def show(&amp;self, &amp;!Sink out)</code>
+that renders <code>Name { f: v, ... }</code>: every field via its own
+<code>self.f.show(&amp;!out)</code> (primitives, <code>Str</code> and nested struct/enum all
+impl Show — including the <b>generic</b> <code>Box(T)</code> case, resolved on the
+concrete <code>T</code> at monomorphization).</p>
+<p><code>@print(x)</code> and <code>f"{x}"</code> <b>honor Show</b>: a struct/enum with a
+Show impl renders via Show (<code>Name { f: v }</code>); a plain struct keeps the
+structural <code>Name{f=v}</code> form; POD/<code>Str</code> use the fast path.</p>
+</section>
+
+<!-- ===================== SINK ===================== -->
+<section id="sink">
+<h2>sink<span class="imp">import std.core.sink</span></h2>
+<p class="purpose">A byte <code>Sink</code> — the render destination for the
+<a href="#show"><code>Show</code></a> protocol — plus <code>set_sink</code> to redirect
+all <code>print</code> output to a file or stderr (default is stdout, byte-for-byte
+unchanged).</p>
+<div class="types"><pre>struct Sink { Str buf }
+enum SinkDest { Stdout; Stderr; Fp(object) }</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def set_sink(SinkDest d)</span></td><td class="d">Redirect <code>print</code>: <code>Stdout</code> / <code>Stderr</code> / a file (closes the previous redirect file on switch).</td></tr>
+<tr><td class="s"><span class="sig">def reset_sink()</span></td><td class="d">Back to <code>Stdout</code>.</td></tr>
+<tr><td class="s"><span class="sig">def write / write_int / write_i64 / write_u64 / write_byte / write_bool / write_f64(&amp;!self, …)</span></td><td class="d"><code>Sink</code> write helpers — POD never allocates a <code>Str</code>.</td></tr>
+</table>
+<p>Redirect to a file via the <a href="#io"><code>io.file</code></a> bridge, which
+transfers the file's ownership into the sink (closed on the next <code>set_sink</code>
+or at exit):</p>
+<div class="ex"><pre><span class="k">match</span> io.open(<span class="s">"log.txt"</span>, <span class="t">WriteBinary</span>) {
+  <span class="t">Ok</span>(f) =&gt; set_sink(io.file(&amp;!f))   <span class="c">// @print now writes to the file</span>
+  <span class="t">Err</span>(e) =&gt; { }
+}
+<span class="k">@print</span>(<span class="s">"goes to the log"</span>)
+reset_sink()                          <span class="c">// back to stdout (closes the file)</span></pre></div>
+</section>
+
+<!-- ===================== TEST ===================== -->
+<section id="test">
+<h2>test<span class="imp">import std.core.test</span></h2>
+<p class="purpose">Native unit testing. Write zero-arg <code>def test_*()</code> functions
+with assertions; run them with <code>ls test &lt;files&gt;</code>. A failing assertion makes
+the run exit non-zero (so CI catches it) and prints the offending values.</p>
+<div class="types"><pre>// example
+import std.core.test as t
+def test_add() {
+    t.expect(add(2, 3) == 5)        // universal: any boolean
+    t.expect_eq_int(add(2, 3), 5)   // typed: prints left/right on failure
+}</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def expect(bool cond)</span></td><td class="d">Fail if <code>cond</code> is false. Use for any comparison (<code>a == b</code>, <code>o.is_some?</code>, …).</td></tr>
+<tr><td class="s"><span class="sig">def expect_eq_int(int a, int b)</span></td><td class="d">Fail if <code>a != b</code>; prints <code>left</code>/<code>right</code>.</td></tr>
+<tr><td class="s"><span class="sig">def expect_eq_str(Str a, Str b)</span></td><td class="d">Fail if the strings differ; prints both.</td></tr>
+<tr><td class="s"><span class="sig">def expect_eq_f64(f64 a, f64 b)</span></td><td class="d">Exact float equality (use <code>expect_near</code> for tolerances).</td></tr>
+<tr><td class="s"><span class="sig">def expect_near(f64 a, f64 b, f64 eps)</span></td><td class="d">Fail if <code>|a - b| &gt; eps</code>.</td></tr>
+</table>
+<p>Run: <code>ls test tests/*.ls</code> — discovers <code>test_*</code>, runs each, prints a
+per-test <code>ok</code>/<code>FAIL</code> line and a summary; exits non-zero on any failure.
+Flags: <code>--filter &lt;substr&gt;</code> (run a subset), <code>--memcheck</code> (run under the
+leak checker).</p>
+<p>Assertions are intentionally <b>non-generic</b> (a generic <code>expect_eq(T)</code> can't
+yet be called across a module boundary). For arbitrary types use
+<code>expect(a == b)</code>; the typed helpers above just add nicer failure messages.</p>
+</section>
+
+<!-- ===================== VALUE ===================== -->
+<section id="value">
+<h2>value<span class="imp">import std.core.value</span></h2>
+<p class="purpose">A neutral, format-agnostic value tree for serialization, plus the
+<code>Serialize</code> interface — target of <code>@derive(Serialize)</code>.</p>
+<div class="types"><pre>enum Value { VNull; VBool(bool); VInt(i64); VFloat(f64);
+             VStr(Str); VList(Vec(Value)); VObj(Vec(Str), Vec(Value)) }
+interface Serialize      { def to_value(&amp;self) -&gt; Value }
+interface Deserialize    { static def from_value(Value v) -&gt; Self }              // best-effort
+interface TryDeserialize { static def try_from_value(Value v) -&gt; Result(Self, Str) } // strict
+methods Value { def to_json(&amp;self) -&gt; Str }
+def from_json(Str input) -&gt; Result(Value, Str)   // parse JSON text into a Value tree
+// + Serialize/Deserialize impls for every primitive scalar and Str (int family,
+//   f32/f64, bool, char) — these back @derive(Serialize/Deserialize) on generics.</pre></div>
+<p><code>@derive(Serialize)</code> synthesizes <code>def to_value(&amp;self) -&gt; Value</code>
+field-by-field (primitive/<code>Str</code> leaves; nested structs recurse). The tree itself
+knows no format — a renderer turns it into output: <code>cfg.to_value().to_json()</code>
+yields JSON; future <code>to_csv()</code>/<code>to_toml()</code> consume the same tree, so one
+derive feeds every format. <code>VObj</code> uses parallel keys/vals vectors to preserve
+field order (deterministic output).</p>
+<p><code>@derive(Deserialize)</code> synthesizes TWO rebuilders.
+<code>static def from_value(Value) -&gt; T</code> is BEST-EFFORT (missing/mismatched fields
+fall back to a default): <code>Config.from_value(cfg.to_value())</code>.
+<code>static def try_from_value(Value) -&gt; Result(T, Str)</code> is STRICT — a missing
+field or a type mismatch is an <code>Err</code> (the first bad field wins, propagated),
+e.g. <code>Config.try_from_value(from_json(text).unwrap())</code> validates input.
+Both recurse into nested derived structs / type-parameter fields.</p>
+<p><code>from_json(Str) -&gt; Result(Value, Str)</code> parses a JSON <b>string</b> into a
+<code>Value</code> tree (a self-contained recursive-descent parser: objects, arrays,
+strings with <code>\n \t \uXXXX</code> escapes, int/float numbers, true/false/null),
+completing the full text round-trip
+<code>struct → to_value() → to_json() → [text] → from_json() → from_value() → struct</code>:
+<code>Config.from_value(from_json(text).unwrap())</code>. Malformed input returns
+<code>Err</code>, never crashes.</p>
+<p>Both work on <b>generic</b> structs too: a type-parameter field <code>T</code> lowers
+to <code>self.f.to_value()</code> / <code>T.from_value(...)</code>, resolved on the
+concrete <code>T</code> at monomorphization (the scalar/<code>Str</code> impls above
+provide the leaves). Reach a generic's static <code>from_value</code> through a type
+alias: <code>type BI = Box(int)</code> then <code>BI.from_value(v)</code>.</p>
+</section>
+
+<!-- ===================== REFLECT ===================== -->
+<section id="reflect">
+<h2>reflect<span class="imp">import std.core.reflect</span></h2>
+<p class="purpose">Runtime reflection metadata — target of <code>@derive(Reflect)</code>.
+opt-in: only types that derive <code>Reflect</code> carry the metadata, so others pay nothing.</p>
+<div class="types"><pre>struct FieldInfo  { Str name; Str type_name }
+struct MethodInfo { Str name; Str signature; bool is_static }
+struct TypeInfo   { Str name; Vec(FieldInfo) fields; Vec(MethodInfo) funcs }  // `funcs`, not `methods` (keyword)
+interface Reflect { static def reflect() -&gt; TypeInfo }</pre></div>
+<p><code>@derive(Reflect)</code> synthesizes <code>static def reflect() -&gt; TypeInfo</code>
+returning a compile-time-baked description: <b>fields</b> (name + type, from the
+struct) and <b>funcs</b> (name + full signature + static-ness, scanned from the
+type's <code>methods</code> blocks). Lets a program inspect its own types at runtime
+(CLI binders, debug dumps, generic tooling):</p>
+<pre>TypeInfo ti = Config.reflect()
+for fi in ti.fields { @print(fi.name + ": " + fi.type_name) }
+for m in ti.funcs   { @print(m.signature) }</pre>
+<p>The foundational containers <b><code>Vec</code>, <code>Str</code> and <code>Map</code>
+are reflectable too</b> — <code>Vec(int).reflect()</code>, <code>Str.reflect()</code>,
+<code>Map(Str,int).reflect()</code> all return a <code>TypeInfo</code> with the full
+auto-scanned field and method list:</p>
+<pre>import std.core.vec
+import std.core.reflect
+TypeInfo v = Vec(int).reflect()      // name "Vec", fields data:*T/len/cap, all ~45 methods
+for m in v.funcs { @print(m.signature) }   // def push(&!self, T), def map(&self, ...), def ~(&!self), ...</pre>
+<p class="note">Vec and Str sit <i>below</i> the str/vec layer that <code>TypeInfo</code>
+itself is built from, so they cannot derive the friendly <code>Reflect</code>
+directly (it would import str&nbsp;→&nbsp;vec&nbsp;→&nbsp;itself). They derive the
+raw substrate interface <code>ReflectRaw</code> from the leaf module
+<code>std.core.reflect_core</code> (a <code>RawType</code> built from <code>*u8</code>
+pointers, no Str/Vec), and <code>reflect</code> grafts a friendly
+<code>reflect() = from_raw(reflect_raw())</code> on top. This is internal plumbing —
+just call <code>.reflect()</code>; the result is an ordinary <code>TypeInfo</code>.</p>
+</section>
+
+<!-- ===================== REGEX ===================== -->
+<section id="regex">
+<h2>regex<span class="imp">import std.text.regex as re</span></h2>
+<p class="purpose">Regular expressions (Pike-VM NFA backend). Invalid patterns return false/empty/0 — never crash.</p>
+<p>Flags (OR together, or inline <code>(?i)</code>/<code>(?m)</code>/<code>(?s)</code>):
+<code>LS_RE_IGNORECASE=1</code>, <code>LS_RE_MULTILINE=2</code>, <code>LS_RE_DOTALL=4</code>.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def matches(Str text, Str pattern) -&gt; bool</span></td><td class="d">True if pattern appears anywhere.</td></tr>
+<tr><td class="s"><span class="sig">def full_match(Str text, Str pattern) -&gt; bool</span></td><td class="d">True if the whole text matches (anchored).</td></tr>
+<tr><td class="s"><span class="sig">def find(Str text, Str pattern) -&gt; Option(Str)</span></td><td class="d">First match, or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def find_all(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d">All non-overlapping matches.</td></tr>
+<tr><td class="s"><span class="sig">def capture(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d"><code>[full, g1, g2, …]</code> for the first match.</td></tr>
+<tr><td class="s"><span class="sig">def capture_all(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d">All matches × all groups, flat (stride = groups+1).</td></tr>
+<tr><td class="s"><span class="sig">def capture_named(Str text, Str pattern) -&gt; Map(Str, Str)</span></td><td class="d">Named groups → values for first match.</td></tr>
+<tr><td class="s"><span class="sig">def group_count(Str pattern) -&gt; int</span></td><td class="d">Number of capture groups.</td></tr>
+<tr><td class="s"><span class="sig">def replace(Str text, Str pattern, Str rep) -&gt; Str</span></td><td class="d">Replace first match.</td></tr>
+<tr><td class="s"><span class="sig">def replace_all(Str text, Str pattern, Str rep) -&gt; Str</span></td><td class="d">Replace all matches.</td></tr>
+<tr><td class="s"><span class="sig">def split(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d">Split at each match (empties omitted).</td></tr>
+</table>
+<div class="ex"><pre><span class="k">import</span> std.text.regex <span class="k">as</span> re
+<span class="k">if</span> re.matches(<span class="s">"abc123"</span>, <span class="s">"[0-9]+"</span>) {
+    <span class="t">Vec</span>(<span class="t">Str</span>) caps = re.capture(<span class="s">"abc123"</span>, <span class="s">"([a-z]+)([0-9]+)"</span>)  <span class="c">// ["abc123","abc","123"]</span>
+}</pre></div>
+</section>
+
+<!-- ===================== IO ===================== -->
+<section id="io">
+<h2>io<span class="imp">import std.sys.io</span></h2>
+<p class="purpose">File I/O — read/write whole files, open handles, stdin lines. (<code>@print(...)</code> is a
+language built-in, no import.)</p>
+<div class="types"><pre>enum OpenMode { Read, Write, Append, ReadBinary, WriteBinary, AppendBinary }
+enum SeekFrom { Start, Current, End }
+struct File { object handle; bool is_binary }   // move-only RAII handle: auto-closes at scope exit</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def read_file(Str path) -&gt; Result(Str, Str)</span></td><td class="d">Read entire file into a Str.</td></tr>
+<tr><td class="s"><span class="sig">def write_file(Str path, Str content) -&gt; Result(int, Str)</span></td><td class="d">Write (overwrite); returns byte count.</td></tr>
+<tr><td class="s"><span class="sig">def append_file(Str path, Str content) -&gt; Result(int, Str)</span></td><td class="d">Append; returns byte count.</td></tr>
+<tr><td class="s"><span class="sig">def exists(Str path) -&gt; bool</span></td><td class="d">File exists?</td></tr>
+<tr><td class="s"><span class="sig">def remove(Str path) -&gt; Result(int, Str)</span></td><td class="d">Delete a file.</td></tr>
+<tr><td class="s"><span class="sig">def open(Str path, OpenMode m) -&gt; Result(File, Str)</span></td><td class="d">Open a file handle (RAII — auto-closes on scope exit).</td></tr>
+<tr><td class="s"><span class="sig">def close(&amp;!File f) -&gt; int</span></td><td class="d">Optional early close (0 = success). Idempotent; auto-close still safe.</td></tr>
+<tr><td class="s"><span class="sig">def read_all(&amp;File f) -&gt; Result(Str, Str)</span></td><td class="d">Read from current position.</td></tr>
+<tr><td class="s"><span class="sig">def write(&amp;File f, Str content) -&gt; Result(int, Str)</span></td><td class="d">Write to an open file.</td></tr>
+<tr><td class="s"><span class="sig">def flush(&amp;File f) -&gt; Result(int, Str)</span></td><td class="d">Flush buffered writes to the OS (without closing).</td></tr>
+<tr><td class="s"><span class="sig">def seek/tell/size/rewind(&amp;File f, …)</span></td><td class="d">Binary-mode positioning (each returns <code>Result</code>).</td></tr>
+<tr><td class="s"><span class="sig">def read_line() -&gt; Result(Str, Str)</span></td><td class="d">Read one line from stdin (newline stripped; <code>Err</code> at EOF).</td></tr>
+<tr><td class="s"><span class="sig">def file(&amp;!File f) -&gt; SinkDest</span></td><td class="d">Hand the file to <a href="#sink"><code>set_sink</code></a> as the <code>print</code> destination (steals the handle; source File becomes a husk).</td></tr>
+</table>
+<div class="ex"><pre><span class="k">match</span> io.read_file(<span class="s">"data.txt"</span>) {
+    <span class="t">Ok</span>(text) =&gt; { @print(text) }
+    <span class="t">Err</span>(e)   =&gt; { @print(e) }
+}
+
+<span class="c">// Handle style — File auto-closes when the arm scope ends (no manual close).</span>
+<span class="k">match</span> io.open(<span class="s">"data.txt"</span>, ReadBinary) {
+    <span class="t">Ok</span>(f)  =&gt; { <span class="k">match</span> io.read_all(f) { <span class="t">Ok</span>(s) =&gt; @print(s)  <span class="t">Err</span>(e) =&gt; @print(e) } }
+    <span class="t">Err</span>(e) =&gt; { @print(e) }
+}</pre></div>
+</section>
+
+<!-- ===================== FS ===================== -->
+<section id="fs">
+<h2>fs<span class="imp">import std.sys.fs</span></h2>
+<p class="purpose">Filesystem: directories, path predicates, working directory.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def list_dir(Str path) -&gt; Vec(Str)</span></td><td class="d">Directory entries (excludes <code>.</code>/<code>..</code>); empty on error.</td></tr>
+<tr><td class="s"><span class="sig">def exists(Str path) -&gt; bool</span></td><td class="d">Path exists?</td></tr>
+<tr><td class="s"><span class="sig">def is_dir(Str path) -&gt; bool</span> / <span class="sig">is_file</span></td><td class="d">Path type predicates.</td></tr>
+<tr><td class="s"><span class="sig">def mkdir(Str path) -&gt; Result(int, Str)</span></td><td class="d">Create one directory level.</td></tr>
+<tr><td class="s"><span class="sig">def mkdir_all(Str path) -&gt; Result(int, Str)</span></td><td class="d">Create dir + parents (<code>mkdir -p</code>).</td></tr>
+<tr><td class="s"><span class="sig">def rmdir(Str path) -&gt; Result(int, Str)</span></td><td class="d">Remove an empty directory.</td></tr>
+<tr><td class="s"><span class="sig">def rename(Str from, Str to) -&gt; Result(int, Str)</span></td><td class="d">Rename/move.</td></tr>
+<tr><td class="s"><span class="sig">def cwd() -&gt; Str</span></td><td class="d">Current working directory.</td></tr>
+<tr><td class="s"><span class="sig">def chdir(Str path) -&gt; Result(int, Str)</span></td><td class="d">Change working directory.</td></tr>
+</table>
+</section>
+
+<!-- ===================== PATH ===================== -->
+<section id="path">
+<h2>path<span class="imp">import std.sys.path</span></h2>
+<p class="purpose">Pure path-string manipulation (no filesystem access, no failure cases).</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def basename(Str p) -&gt; Str</span></td><td class="d">Final component (<code>"a/b/c" → "c"</code>).</td></tr>
+<tr><td class="s"><span class="sig">def dirname(Str p) -&gt; Str</span></td><td class="d">Directory part (<code>"a/b/c" → "a/b"</code>).</td></tr>
+<tr><td class="s"><span class="sig">def ext(Str p) -&gt; Str</span></td><td class="d">Extension incl. dot (<code>"f.txt" → ".txt"</code>).</td></tr>
+<tr><td class="s"><span class="sig">def stem(Str p) -&gt; Str</span></td><td class="d">Basename without extension.</td></tr>
+<tr><td class="s"><span class="sig">def join(Str a, Str b) -&gt; Str</span></td><td class="d">Join with <code>/</code>, avoiding doubles.</td></tr>
+<tr><td class="s"><span class="sig">def is_absolute(Str p) -&gt; bool</span></td><td class="d">Absolute path? (handles Windows drives).</td></tr>
+</table>
+</section>
+
+<!-- ===================== ENV ===================== -->
+<section id="env">
+<h2>env<span class="imp">import std.sys.env</span></h2>
+<p class="purpose">Environment variables.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def get(Str name) -&gt; Option(Str)</span></td><td class="d">Value, or <code>None</code> if unset.</td></tr>
+<tr><td class="s"><span class="sig">def get_or(Str name, Str default) -&gt; Str</span></td><td class="d">Value or <code>default</code>.</td></tr>
+<tr><td class="s"><span class="sig">def require(Str name) -&gt; Str</span></td><td class="d">Value, or print error + <code>exit(1)</code>.</td></tr>
+<tr><td class="s"><span class="sig">def has(Str name) -&gt; bool</span></td><td class="d">Variable exists (even if empty)?</td></tr>
+<tr><td class="s"><span class="sig">def set(Str name, Str value)</span> / <span class="sig">delete(Str name)</span></td><td class="d">Set / unset.</td></tr>
+<tr><td class="s"><span class="sig">def all() -&gt; Map(Str, Str)</span></td><td class="d">Snapshot of all variables.</td></tr>
+</table>
+</section>
+
+<!-- ===================== PROC ===================== -->
+<section id="proc">
+<h2>proc<span class="imp">import std.sys.proc</span></h2>
+<p class="purpose">Process arguments, exit, and subprocess execution.</p>
+<div class="types"><pre>struct ExecResult { Str stdout; Str stderr; int exit_code }</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def args() -&gt; Vec(Str)</span></td><td class="d">Command-line args (excludes argv[0]).</td></tr>
+<tr><td class="s"><span class="sig">def program() -&gt; Str</span></td><td class="d">Program path (argv[0]).</td></tr>
+<tr><td class="s"><span class="sig">def pid() -&gt; int</span></td><td class="d">Current process ID.</td></tr>
+<tr><td class="s"><span class="sig">def exit(int code)</span></td><td class="d">Exit with a status code.</td></tr>
+<tr><td class="s"><span class="sig">def run(Str cmd) -&gt; int</span></td><td class="d">Run via shell, stream to terminal; returns exit code.</td></tr>
+<tr><td class="s"><span class="sig">def exec(Str cmd) -&gt; Result(Str, Str)</span></td><td class="d">Capture merged stdout+stderr.</td></tr>
+<tr><td class="s"><span class="sig">def exec_full(Str cmd) -&gt; Result(ExecResult, Str)</span></td><td class="d">Capture stdout/stderr/exit code separately.</td></tr>
+</table>
+<div class="ex"><pre><span class="k">for</span> arg <span class="k">in</span> proc.args() { @print(arg) }
+<span class="k">match</span> proc.exec_full(<span class="s">"git status"</span>) {
+    <span class="t">Ok</span>(r)  =&gt; { @print(f<span class="s">"exit {r.exit_code}: {r.stdout}"</span>) }
+    <span class="t">Err</span>(e) =&gt; { @print(e) }
+}</pre></div>
+</section>
+
+<!-- ===================== TIME ===================== -->
+<section id="time">
+<h2>time<span class="imp">import std.sys.time</span></h2>
+<p class="purpose">Calendar time, formatting/parsing, durations, sleep.</p>
+<div class="types"><pre>struct DateTime { int year; int month; int day; int hour; int minute; int second;
+                  int weekday;  // 0=Mon..6=Sun
+                  int yday; int utcoff; i64 unix_s }</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def now_unix_ns() -&gt; i64</span> / <span class="sig">now_unix_ms() -&gt; i64</span></td><td class="d">Current Unix time (ns / ms).</td></tr>
+<tr><td class="s"><span class="sig">def now_local() -&gt; DateTime</span> / <span class="sig">now_utc() -&gt; DateTime</span></td><td class="d">Current broken-down time.</td></tr>
+<tr><td class="s"><span class="sig">def format(DateTime dt, Str fmt) -&gt; Str</span></td><td class="d">strftime-style formatting.</td></tr>
+<tr><td class="s"><span class="sig">def iso8601(DateTime dt) -&gt; Str</span></td><td class="d">ISO-8601 string.</td></tr>
+<tr><td class="s"><span class="sig">def parse(Str text, Str fmt) -&gt; Result(DateTime, Str)</span></td><td class="d">Parse with strftime format.</td></tr>
+<tr><td class="s"><span class="sig">def duration_ns/us/ms/s(i64) -&gt; i64</span></td><td class="d">Build a duration (nanoseconds).</td></tr>
+<tr><td class="s"><span class="sig">def add(DateTime dt, i64 dur_ns) -&gt; DateTime</span></td><td class="d">Add a duration.</td></tr>
+<tr><td class="s"><span class="sig">def diff_s(DateTime a, DateTime b) -&gt; i64</span></td><td class="d">Signed second difference (<code>b - a</code>).</td></tr>
+<tr><td class="s"><span class="sig">def sleep_ms(i64 ms)</span> / <span class="sig">sleep_us(i64 us)</span></td><td class="d">Sleep.</td></tr>
+</table>
+<div class="ex"><pre><span class="t">DateTime</span> now = time.now_utc()
+@print(time.iso8601(now))                       <span class="c">// 2026-06-15T12:30:45Z</span>
+<span class="t">DateTime</span> later = time.add(now, time.duration_s(3600))</pre></div>
+</section>
+
+<!-- ===================== JSON ===================== -->
+<section id="json">
+<h2>json<span class="imp">import std.text.json</span></h2>
+<p class="purpose">JSON parse / serialize (pure-LS recursive descent).</p>
+<div class="types"><pre>enum JsonValue {
+    Null, Bool(bool), Number(f64),
+    Text(Str),                            // NB: the string variant is "Text"
+    Array(Vec(JsonValue)),
+    Object(Vec(Str) keys, Map(Str, JsonValue) entries)
+}</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def parse(Str input) -&gt; Result(JsonValue, Str)</span></td><td class="d">Parse a JSON string.</td></tr>
+<tr><td class="s"><span class="sig">def stringify(JsonValue v) -&gt; Str</span></td><td class="d">Compact serialization.</td></tr>
+<tr><td class="s"><span class="sig">def stringify_pretty(JsonValue v, int indent) -&gt; Str</span></td><td class="d">Indented serialization.</td></tr>
+<tr><td class="s"><span class="sig">def load_file/save_file/save_compact(...)</span></td><td class="d">File round-trips (all <code>Result</code>).</td></tr>
+<tr><td class="s"><span class="sig">def null_val/bool_val/number/number_int/str_val/array_new/object_new</span></td><td class="d">Value constructors.</td></tr>
+<tr><td class="s"><span class="sig">def is_null/is_bool/is_number/is_string/is_array/is_object(JsonValue) -&gt; bool</span></td><td class="d">Type predicates.</td></tr>
+<tr><td class="s"><span class="sig">def as_bool/as_number/as_int/as_string(JsonValue) -&gt; Result(…, Str)</span></td><td class="d">Typed extraction.</td></tr>
+<tr><td class="s"><span class="sig">def array_len/object_len/object_has/object_keys(...)</span></td><td class="d">Container queries.</td></tr>
+</table>
+<p>Methods on a value: <code>v.push(item)</code>, <code>v.set(key, val)</code>, <code>v.is_object()</code>,
+<code>v.get_number()</code>, <code>v.get_bool()</code>, …</p>
+<div class="ex"><pre><span class="k">match</span> json.parse(<span class="s">"{\"age\": 30}"</span>) {
+    <span class="t">Ok</span>(v)  =&gt; { @print(v.object_len()) }
+    <span class="t">Err</span>(e) =&gt; { @print(e) }
+}</pre></div>
+</section>
+
+<!-- ===================== HTML ===================== -->
+<section id="html">
+<h2>html<span class="imp">import std.text.html</span></h2>
+<p class="purpose">Tolerant HTML parse / build / render.</p>
+<div class="types"><pre>struct Attr { Str key; Str val }              // val == "" for boolean attrs
+enum HtmlNode {
+    Element(Str tag, Vec(Attr) attrs, Vec(HtmlNode) children),
+    Text(Str), Comment(Str), RawText(Str)     // RawText = &lt;script&gt;/&lt;style&gt; body
+}
+struct HtmlDoc { Vec(HtmlNode) roots }</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def parse(Str input) -&gt; HtmlDoc</span></td><td class="d">Parse tolerant HTML into a forest.</td></tr>
+<tr><td class="s"><span class="sig">def render(&amp;HtmlDoc d) -&gt; Str</span></td><td class="d">Compact render.</td></tr>
+<tr><td class="s"><span class="sig">def render_pretty(&amp;HtmlDoc d, int step) -&gt; Str</span></td><td class="d">Indented render.</td></tr>
+<tr><td class="s"><span class="sig">def escape(Str s) -&gt; Str</span></td><td class="d">Escape <code>&amp; &lt; &gt;</code> to entities.</td></tr>
+<tr><td class="s"><span class="sig">def get_attr(HtmlNode n, Str key) -&gt; Str</span></td><td class="d">Read one attribute (<code>""</code> if absent).</td></tr>
+<tr><td class="s"><span class="sig">def to_text(&amp;HtmlDoc d) -&gt; Str</span></td><td class="d">Concatenate all text nodes.</td></tr>
+<tr><td class="s"><span class="sig">def extract_links(&amp;HtmlDoc d) -&gt; Vec(Str)</span></td><td class="d">All <code>&lt;a href&gt;</code> values.</td></tr>
+<tr><td class="s"><span class="sig">def find_by_tag(&amp;HtmlDoc d, Str tag) -&gt; Vec(HtmlNode)</span></td><td class="d">All elements with a tag.</td></tr>
+<tr><td class="s"><span class="sig">builders: elem, elem_attr, div, span, ul, li, h, p, a, img, br, hr, text, comment, attr</span></td><td class="d">Construct nodes programmatically.</td></tr>
+</table>
+<div class="ex"><pre><span class="t">HtmlDoc</span> doc = html.parse(<span class="s">"&lt;div&gt;&lt;a href=\"/x\"&gt;link&lt;/a&gt;&lt;/div&gt;"</span>)
+<span class="t">Vec</span>(<span class="t">Str</span>) links = doc.extract_links()       <span class="c">// ["/x"]</span></pre></div>
+</section>
+
+<!-- ===================== MD ===================== -->
+<section id="md">
+<h2>md<span class="imp">import std.text.md</span></h2>
+<p class="purpose">Markdown parse / build / render, plus Markdown → HTML.</p>
+<div class="types"><pre>enum MdInline { Text(Str), Bold(Str), Italic(Str), BoldItalic(Str),
+                Code(Str), Link(Str text, Str url), Image(Str alt, Str url) }
+enum MdBlock  { Heading(int, Vec(MdInline)), Paragraph(Vec(MdInline)),
+                CodeBlock(Str lang, Str code), UnorderedList(...), OrderedList(...),
+                Blockquote(Vec(MdBlock)), Table(...), HorizontalRule }
+struct MdDoc  { Vec(MdBlock) blocks }</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def parse(Str input) -&gt; MdDoc</span></td><td class="d">Parse Markdown.</td></tr>
+<tr><td class="s"><span class="sig">def render(&amp;MdDoc d) -&gt; Str</span></td><td class="d">Render back to Markdown.</td></tr>
+<tr><td class="s"><span class="sig">def render_html(&amp;MdDoc d) -&gt; Str</span></td><td class="d">Render to an HTML fragment.</td></tr>
+<tr><td class="s"><span class="sig">def to_html(Str source) -&gt; Str</span></td><td class="d">Markdown source → HTML fragment.</td></tr>
+<tr><td class="s"><span class="sig">def to_html_full(Str source, Str title) -&gt; Str</span></td><td class="d">Full HTML document.</td></tr>
+<tr><td class="s"><span class="sig">def to_plain_text/extract_headings/extract_links(&amp;MdDoc)</span></td><td class="d">Extraction helpers.</td></tr>
+<tr><td class="s"><span class="sig">builders: document(), h1..h6, paragraph, code_block, ul, ol, blockquote, table, hr</span></td><td class="d">Build a document programmatically (mutate <code>&amp;!MdDoc</code>).</td></tr>
+</table>
+<div class="ex"><pre><span class="t">MdDoc</span> doc = md.document()
+doc.h1(<span class="s">"Title"</span>)
+doc.paragraph(<span class="s">"Hello **world**"</span>)
+<span class="t">Str</span> out = doc.render_html()</pre></div>
+</section>
+
+<!-- ===================== BYTES ===================== -->
+<section id="bytes">
+<h2>bytes<span class="imp">import std.text.bytes as b</span></h2>
+<p class="purpose">Cursor <code>Reader</code> for fixed-width big/little-endian integers — pairs with bit-pattern
+<code>match</code> for binary protocols.</p>
+<div class="types"><pre>struct Reader { Str buf; int pos }
+def of_bytes(Str buf) -> Reader      // OWN (frees when destroyed)
+def borrow(*u8 p, int len) -> Reader // BORROW (no free)</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def pos/len/remaining(&amp;self) -&gt; int</span></td><td class="d">Cursor / buffer / bytes-left.</td></tr>
+<tr><td class="s"><span class="sig">def eof?(&amp;self) -&gt; bool</span> / <span class="sig">has?(&amp;self, int n)</span></td><td class="d">End / availability checks.</td></tr>
+<tr><td class="s"><span class="sig">def skip(&amp;!self, int n)</span> / <span class="sig">seek(&amp;!self, int off)</span></td><td class="d">Move the cursor.</td></tr>
+<tr><td class="s"><span class="sig">def be_u8/be_u16/be_u32/be_u64(&amp;!self)</span></td><td class="d">Read big-endian, advance (bounds-checked).</td></tr>
+<tr><td class="s"><span class="sig">def le_u16/le_u32/le_u64(&amp;!self)</span></td><td class="d">Read little-endian, advance.</td></tr>
+<tr><td class="s"><span class="sig">free: load_u8 / load_be_u16…u64 / load_le_u16…u64(*u8, int off)</span></td><td class="d">Stateless loads at an offset.</td></tr>
+</table>
+<div class="ex"><pre><span class="t">Reader</span> r = b.of_bytes(io.read_file(<span class="s">"f.bin"</span>)!)
+<span class="t">u32</span> magic = r.be_u32()
+<span class="t">u16</span> version = r.be_u16()</pre></div>
+</section>
+
+<!-- ===================== CSV ===================== -->
+<section id="csv">
+<h2>csv<span class="imp">import std.text.csv as csv</span></h2>
+<p class="purpose">CSV reader / writer (RFC 4180): quoted fields, embedded commas/newlines,
+<code>""</code> escaping, CRLF/LF, BOM. Pure-LS byte-level state machine.</p>
+<div class="types"><pre>struct Csv { Vec(Str) headers; Vec(Vec(Str)) rows }   // headers empty if no header row
+struct CsvOpts { int delimiter; int quote; bool has_header; bool trim }
+def CsvOpts.default() -> CsvOpts                      // ',' / '"' / no header / no trim</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def parse(&amp;Str text) -&gt; Result(Csv, Str)</span></td><td class="d">Parse, no header (all lines are rows).</td></tr>
+<tr><td class="s"><span class="sig">def parse_header(&amp;Str text) -&gt; Result(Csv, Str)</span></td><td class="d">First line becomes <code>headers</code>.</td></tr>
+<tr><td class="s"><span class="sig">def parse_opts(&amp;Str text, CsvOpts o) -&gt; Result(Csv, Str)</span></td><td class="d">Full control (delimiter / quote / header / trim).</td></tr>
+<tr><td class="s"><span class="sig">def read_file / read_file_header(Str path) -&gt; Result(Csv, Str)</span></td><td class="d">Read + parse a file.</td></tr>
+<tr><td class="s"><span class="sig">def write_file(Str path, &amp;Csv t) -&gt; Result(int, Str)</span></td><td class="d">Serialize + write a file.</td></tr>
+<tr><td class="s"><span class="sig">def from_rows(Vec(Vec(Str)) rows) / with_headers(Vec(Str) headers) -&gt; Csv</span></td><td class="d">Construct directly.</td></tr>
+</table>
+<p>Methods on a <code>Csv</code>: <code>nrows()</code>, <code>ncols()</code>, <code>has_header()</code>,
+<code>row(i)</code>/<code>cell(i,j)</code> → <code>Option</code>, <code>col_index(name)</code>,
+<code>get(i, name)</code> → <code>Option(Str)</code>, <code>col(name)</code> → <code>Option(Vec(Str))</code>,
+<code>push_row(r)</code>, <code>to_str()</code>.</p>
+<div class="ex"><pre><span class="t">Csv</span> t = csv.parse_header(&amp;text)!
+<span class="t">Str</span> city = t.get(0, <span class="s">"city"</span>)!          <span class="c">// column by name (bare literal → &amp;Str)</span>
+<span class="t">Vec</span>(<span class="t">Str</span>) ages = t.col(<span class="s">"age"</span>)!</pre></div>
+</section>
+
+<!-- ===================== MATH ===================== -->
+<section id="math">
+<h2>math<span class="imp">import std.core.math</span><span class="tag new">built-in + LS</span></h2>
+<p class="purpose">Elementary math — constants and float functions, lowered to LLVM intrinsics / libm
+(no function-call overhead for the intrinsic ones).</p>
+
+<div class="note"><b>Merged module.</b> The primitives (constants + intrinsic/libm functions
+below) are compiler built-ins; pure-arithmetic derived helpers (<code>radians</code>/<code>degrees</code>,
+…) live in <code>lib/std/core/math.ls</code> and are folded into the same namespace. Import as
+<code>import std.core.math as math</code>. Built-in primitives are also <i>ambient</i>: generic
+stdlib bodies (e.g. <code>Tensor</code> activations) may call <code>math.*</code> via the defining
+module's alias even when the caller didn't import it. Functions take/return <code>f64</code> unless
+noted; <code>abs/min/max</code> are polymorphic over <code>int</code> and <code>f64</code>.</p></div>
+
+<h3>Constants <span style="font-weight:400;color:var(--muted)">(f64)</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">math.PI</span></td><td class="d">3.14159265358979…</td></tr>
+<tr><td class="s"><span class="sig">math.E</span></td><td class="d">2.71828182845904…</td></tr>
+<tr><td class="s"><span class="sig">math.TAU</span></td><td class="d">6.28318530717958… (2π)</td></tr>
+</table>
+
+<h3>Polymorphic <span style="font-weight:400;color:var(--muted)">(int or f64)</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def abs(x) -&gt; (int|f64)</span></td><td class="d">Absolute value (preserves the argument's type).</td></tr>
+<tr><td class="s"><span class="sig">def min(a, b) -&gt; (int|f64)</span></td><td class="d">Smaller of two values.</td></tr>
+<tr><td class="s"><span class="sig">def max(a, b) -&gt; (int|f64)</span></td><td class="d">Larger of two values.</td></tr>
+</table>
+
+<h3>Rounding <span style="font-weight:400;color:var(--muted)">(f64 → f64)</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def floor(x) · ceil(x) · round(x) · trunc(x)</span></td><td class="d">Round down / up / to nearest / toward zero.</td></tr>
+</table>
+
+<h3>Powers &amp; logarithms <span style="font-weight:400;color:var(--muted)">(f64)</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def sqrt(x)</span></td><td class="d">Square root.</td></tr>
+<tr><td class="s"><span class="sig">def pow(a, b)</span></td><td class="d"><code>a</code> raised to the power <code>b</code>.</td></tr>
+<tr><td class="s"><span class="sig">def exp(x) · exp2(x)</span></td><td class="d"><code>e^x</code> · <code>2^x</code>.</td></tr>
+<tr><td class="s"><span class="sig">def log(x) · log2(x) · log10(x)</span></td><td class="d">Natural / base-2 / base-10 logarithm.</td></tr>
+</table>
+
+<h3>Trigonometry &amp; hyperbolic <span style="font-weight:400;color:var(--muted)">(f64, radians)</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def sin(x) · cos(x) · tan(x)</span></td><td class="d">Basic trig.</td></tr>
+<tr><td class="s"><span class="sig">def asin(x) · acos(x) · atan(x)</span></td><td class="d">Inverse trig.</td></tr>
+<tr><td class="s"><span class="sig">def atan2(y, x)</span></td><td class="d">Two-argument arctangent (correct quadrant).</td></tr>
+<tr><td class="s"><span class="sig">def sinh(x) · cosh(x) · tanh(x)</span></td><td class="d">Hyperbolic functions.</td></tr>
+</table>
+
+<h3>Angle conversion <span style="font-weight:400;color:var(--muted)">(f64 → f64, LS-derived)</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def radians(deg)</span></td><td class="d">Degrees → radians (<code>deg · π/180</code>).</td></tr>
+<tr><td class="s"><span class="sig">def degrees(rad)</span></td><td class="d">Radians → degrees (<code>rad · 180/π</code>).</td></tr>
+</table>
+
+<h3>Decibels <span style="font-weight:400;color:var(--muted)">(f64 → f64, LS-derived, power convention)</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def to_db(x)</span></td><td class="d">Linear power ratio → decibels (<code>10 · log10(x)</code>).</td></tr>
+<tr><td class="s"><span class="sig">def to_linear(db)</span></td><td class="d">Decibels → linear power ratio (<code>10^(db/10)</code>).</td></tr>
+</table>
+
+<div class="ex"><pre><span class="k">import</span> math
+<span class="t">f64</span> h = math.sqrt(3.0*3.0 + 4.0*4.0)   <span class="c">// 5.0</span>
+<span class="t">f64</span> a = math.atan2(1.0, 1.0)          <span class="c">// π/4</span>
+<span class="t">f64</span> r = math.radians(180.0)            <span class="c">// π</span>
+<span class="t">f64</span> d = math.degrees(math.PI)          <span class="c">// 180.0</span>
+<span class="t">int</span> m = math.max(7, 3)                 <span class="c">// 7 (stays int)</span>
+<span class="t">f64</span> circ = 2.0 * math.PI * 10.0</pre></div>
+</section>
+
+<!-- ===================== NUM ===================== -->
+<section id="num">
+<h2>num<span class="imp">import std.core.num</span></h2>
+<p class="purpose">The <code>Zero</code> interface (additive identity) for bound-free generic arithmetic.</p>
+<div class="types"><pre>interface Zero { static def zero() -> Self }
+methods Zero for int / i64 / f64</pre></div>
+<p>Inside a generic body, <code>T.zero()</code> dispatches on the type parameter — used by
+<code>Complex(T)</code> and <code>Tensor(T)</code> reductions.</p>
+</section>
+
+<!-- ===================== COMPLEX ===================== -->
+<section id="complex">
+<h2>complex<span class="imp">import std.sci.complex</span></h2>
+<p class="purpose">Generic complex number <code>Complex(T)</code> with operator overloads.</p>
+<div class="types"><pre>struct Complex(T) { T re; T im }
+methods(T) Add/Sub/Mul/Div for Complex(T)     // + - * /</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def c(T)(T re, T im) -&gt; Complex(T)</span></td><td class="d">Rectangular constructor.</td></tr>
+<tr><td class="s"><span class="sig">def real(T)(T re) -&gt; Complex(T)</span></td><td class="d">Real-axis constructor.</td></tr>
+<tr><td class="s"><span class="sig">def from_polar(T)(T r, T theta) -&gt; Complex(T)</span></td><td class="d">Polar constructor (float).</td></tr>
+<tr><td class="s"><span class="sig">def conj(&amp;self) -&gt; Complex(T)</span></td><td class="d">Complex conjugate.</td></tr>
+<tr><td class="s"><span class="sig">def norm(&amp;self) -&gt; T</span></td><td class="d">Squared magnitude.</td></tr>
+<tr><td class="s"><span class="sig">def abs(&amp;self) -&gt; f64</span> / <span class="sig">arg(&amp;self) -&gt; f64</span></td><td class="d">Magnitude / phase (float).</td></tr>
+<tr><td class="s"><span class="sig">def exp(&amp;self) -&gt; Complex(T)</span></td><td class="d">Exponential <code>e^z</code> (float).</td></tr>
+<tr><td class="s"><span class="sig">static zero() / one() / i_unit()</span></td><td class="d">Constants.</td></tr>
+</table>
+<div class="ex"><pre><span class="t">Complex</span>(<span class="t">f64</span>) z = c(<span class="t">f64</span>)(3.0, 4.0)
+<span class="t">f64</span> m = z.abs()                     <span class="c">// 5.0</span>
+<span class="t">Complex</span>(<span class="t">f64</span>) w = z * z.conj()</pre></div>
+</section>
+
+<!-- ===================== FFT ===================== -->
+<section id="fft">
+<h2>fft<span class="imp">import std.sci.fft as ft</span></h2>
+<p class="purpose">FFT over <code>Complex(f64)</code> — arbitrary N (mixed-radix + Bluestein), real input, DCT, N-D.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def fft(Vec(Complex(f64)) x) -&gt; Vec(Complex(f64))</span></td><td class="d">Forward FFT (unscaled).</td></tr>
+<tr><td class="s"><span class="sig">def ifft(Vec(Complex(f64)) x) -&gt; Vec(Complex(f64))</span></td><td class="d">Inverse FFT (1/N).</td></tr>
+<tr><td class="s"><span class="sig">def rfft(Vec(f64) x) -&gt; Vec(Complex(f64))</span></td><td class="d">Real FFT → N/2+1 bins.</td></tr>
+<tr><td class="s"><span class="sig">def irfft(Vec(Complex(f64)) x, int n) -&gt; Vec(f64)</span></td><td class="d">Inverse real FFT.</td></tr>
+<tr><td class="s"><span class="sig">def dct(Vec(f64) x) -&gt; Vec(f64)</span> / <span class="sig">idct</span></td><td class="d">DCT-II and its inverse.</td></tr>
+<tr><td class="s"><span class="sig">def fft2/ifft2/fftn/ifftn(Tensor(Complex(f64)))</span></td><td class="d">Multi-dimensional FFT.</td></tr>
+</table>
+</section>
+
+<!-- ===================== TENSOR ===================== -->
+<section id="tensor">
+<h2>tensor<span class="imp">import std.sci.tensor</span></h2>
+<p class="purpose">Heap-backed N-D numeric array (NumPy-like): row-major, strided, generic element type.</p>
+<div class="types"><pre>struct Tensor(T) { *T data; Vec(int) shape; Vec(int) strides; int size }   // move/has destructor
+def zeros(T)(Vec(int) shape) / full(T)(Vec(int) shape, T fill) / from_vec(T)(Vec(int) shape, Vec(T) src)</pre></div>
+<div class="note">Multi-subscript <code>t[i,j,k]</code> works via arity-dispatched index protocol. Slicing returns
+<b>copies</b> (views deferred — no lifetime footgun). Tensor is a move-type like Vec.</div>
+<h3>Construction &amp; queries</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def init(&amp;!self, &amp;Vec(int) shape, T fill)</span></td><td class="d">Allocate &amp; fill (the <code>{}</code>+<code>init</code> idiom).</td></tr>
+<tr><td class="s"><span class="sig">def rank/size(&amp;self) -&gt; int</span> · <span class="sig">dim(&amp;self, int k)</span></td><td class="d">Dimensionality / element count / axis length.</td></tr>
+<tr><td class="s"><span class="sig">def shape/strides(&amp;self) -&gt; Vec(int)</span></td><td class="d">Copies of metadata.</td></tr>
+<tr><td class="s"><span class="sig">def reshape(&amp;!self, &amp;Vec(int) newshape)</span></td><td class="d">In-place reshape (no data move).</td></tr>
+<tr><td class="s"><span class="sig">def as_ptr(&amp;self) -&gt; *T</span> / <span class="sig">as_mut_ptr(&amp;!self)</span></td><td class="d">Raw buffer (BLAS/FFI).</td></tr>
+</table>
+<h3>Indexing</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">t[i,j] / t[i,j,k]  (via __indexN)</span></td><td class="d">Bounds-checked multi-index access.</td></tr>
+<tr><td class="s"><span class="sig">def get(&amp;self, int f) -&gt; Option(T)</span> / <span class="sig">set(&amp;!self, int f, T v)</span></td><td class="d">Safe flat access.</td></tr>
+<tr><td class="s"><span class="sig">def get!/set!(…)</span><span class="tag mut">unsafe</span></td><td class="d">Unchecked flat access.</td></tr>
+<tr><td class="s"><span class="sig">def at2/at3/at4 · set2/set3/set4</span></td><td class="d">Explicit multi-index methods.</td></tr>
+</table>
+<h3>Math</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def add/sub/mul/div(&amp;self, &amp;Tensor(T) o) -&gt; Tensor(T)</span></td><td class="d">Elementwise (NumPy broadcasting).</td></tr>
+<tr><td class="s"><span class="sig">def add_scalar/scale(&amp;self, T s)</span></td><td class="d">Scalar broadcast.</td></tr>
+<tr><td class="s"><span class="sig">def matmul(&amp;self, &amp;Tensor(T) o)</span> · <span class="sig">transpose(&amp;self)</span></td><td class="d">2-D linear algebra.</td></tr>
+<tr><td class="s"><span class="sig">def sum/mean/max/min(&amp;self) -&gt; T</span> · <span class="sig">argmax(&amp;self) -&gt; int</span></td><td class="d">Whole-tensor reductions.</td></tr>
+<tr><td class="s"><span class="sig">def sum_axis/mean_axis/max_axis(&amp;self, int axis)</span></td><td class="d">Axis reductions (rank − 1).</td></tr>
+<tr><td class="s"><span class="sig">def relu/exp/sigmoid/tanh/softmax_rows(&amp;self)</span></td><td class="d">Activations (float).</td></tr>
+<tr><td class="s"><span class="sig">def neg/abs/sqrt/log/clamp(&amp;self, …)</span></td><td class="d">Unary elementwise.</td></tr>
+<tr><td class="s"><span class="sig">def row/col(&amp;self, int i)</span> · <span class="sig">slice(&amp;self, int axis, int lo, int hi)</span></td><td class="d">Copy-based slicing.</td></tr>
+<tr><td class="s"><span class="sig">def argmax_rows(&amp;self) -&gt; Vec(int)</span> · <span class="sig">mse(&amp;self, &amp;Tensor(T) o) -&gt; T</span></td><td class="d">Classifier head / loss.</td></tr>
+</table>
+<div class="ex"><pre><span class="t">Tensor</span>(<span class="t">f64</span>) a = full(<span class="t">f64</span>)([2, 3], 1.0)
+<span class="t">Tensor</span>(<span class="t">f64</span>) b = zeros(<span class="t">f64</span>)([3, 4])
+<span class="t">Tensor</span>(<span class="t">f64</span>) c = a.matmul(&amp;b)          <span class="c">// 2×4</span>
+@print(c.sum())</pre></div>
+</section>
+
+<!-- ===================== RAND ===================== -->
+<section id="rand">
+<h2>rand<span class="imp">import std.sci.rand</span></h2>
+<p class="purpose">Seeded PRNG (xorshift64*): uniform, bounded, and normal sampling.</p>
+<div class="types"><pre>struct Rng { u64 state }
+def seed(int s) -> Rng</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def next_u64(&amp;!self) -&gt; u64</span></td><td class="d">Raw step.</td></tr>
+<tr><td class="s"><span class="sig">def unit(&amp;!self) -&gt; f64</span></td><td class="d">Uniform <code>[0,1)</code>.</td></tr>
+<tr><td class="s"><span class="sig">def between(&amp;!self, int lo, int hi) -&gt; int</span></td><td class="d">Uniform <code>[lo, hi)</code>.</td></tr>
+<tr><td class="s"><span class="sig">def normal(&amp;!self) -&gt; f64</span></td><td class="d">Standard normal (Box-Muller).</td></tr>
+<tr><td class="s"><span class="sig">def uniforms/normals(&amp;!Rng r, int n) -&gt; Vec(f64)</span></td><td class="d">Bulk sampling.</td></tr>
+</table>
+<div class="ex"><pre><span class="t">Rng</span> r = seed(42)
+<span class="t">Vec</span>(<span class="t">f64</span>) data = normals(&amp;!r, 100)
+<span class="t">Tensor</span>(<span class="t">f64</span>) t = from_vec(<span class="t">f64</span>)([10, 10], data)</pre></div>
+</section>
+
+<!-- ===================== SIMD ===================== -->
+<section id="simd">
+<h2>simd<span class="imp">import std.sci.simd</span></h2>
+<p class="purpose">Vectorized neural-net activations on <code>Simd(f32, 16)</code>, built from
+portable <code>__simd_*</code> primitives (never libm) — for the AI physical-layer inference path.</p>
+<div class="note">Fixed to <code>Simd(f32, 16)</code> (the Granite Rapids AVX-512 f32 width; on AVX2 the
+backend splits into 2&times; ymm). LS has no const generics, so these cannot be written generically
+over the lane count (plan_simd.md §4.3). <code>tanh</code> is a rational minimax (Eigen coefficients);
+<code>sigmoid</code>/<code>silu</code> derive from it. <code>exp</code>/<code>rsqrt</code> deferred (need shift/bitcast/sqrt primitives).</div>
+<table class="api">
+<tr><td class="s"><span class="sig">def tanh(Simd(f32,16) x) -&gt; Simd(f32,16)</span></td><td class="d">Elementwise tanh (full-range rational minimax).</td></tr>
+<tr><td class="s"><span class="sig">def sigmoid(Simd(f32,16) x) -&gt; Simd(f32,16)</span></td><td class="d">Logistic <code>0.5 + 0.5*tanh(x/2)</code>.</td></tr>
+<tr><td class="s"><span class="sig">def silu(Simd(f32,16) x) -&gt; Simd(f32,16)</span></td><td class="d">SiLU / Swish: <code>x * sigmoid(x)</code>.</td></tr>
+<tr><td class="s"><span class="sig">def relu(Simd(f32,16) x) -&gt; Simd(f32,16)</span></td><td class="d">Rectified linear: <code>max(x, 0)</code>.</td></tr>
+</table>
+<div class="ex"><pre><span class="k">import</span> std.sci.simd <span class="k">as</span> act
+<span class="t">Simd</span>(<span class="t">f32</span>, 16) y = act.silu(x)        <span class="c">// x * sigmoid(x), elementwise</span></pre></div>
+</section>
+
+<!-- ===================== NN ===================== -->
+<section id="nn">
+<h2>nn<span class="imp">import std.sci.nn</span></h2>
+<p class="purpose">FP32 neural-net kernels on Simd. The core is a blocked single-precision GEMM —
+a register-resident micro-kernel written entirely in LS (no C/FFI), the engine every dense / conv /
+attention layer reduces to.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def sgemm(*f32 A, *f32 B, *f32 C, int M, int N, int K)</span></td><td class="d">C = A·B, row-major <code>A(M×K)·B(K×N)→C(M×N)</code>, overwrites C. M-blocks 12→6→1, N 32→16→scalar.</td></tr>
+<tr><td class="s"><span class="sig">def sgemm_f16(*f16 A, *f16 B, *f32 C, int M, int N, int K)</span></td><td class="d">C(f32) = A(f16)·B(f16), <b>f32 accumulate</b> (precision-safe). Half the memory of f32 — the win for memory-bound inference. A-broadcast/B-load widen via F16C vector ops (no scalar libcall); AOT needs an f16c target (<code>--target=graniterapids</code>/native).</td></tr>
+<tr><td class="s"><span class="sig">def conv1d(*f32 in, *f32 w, *f32 bias, *f32 out, *f32 col, int Cin, int Cout, int W, int K, int pad)</span></td><td class="d">1D conv (channel-major) via im2col + sgemm; <code>col</code> = caller scratch <code>Cin*K*Wout</code>, zero alloc.</td></tr>
+<tr><td class="s"><span class="sig">def conv2d(*f32 in, *f32 w, *f32 bias, *f32 out, *f32 col, int Cin, int Cout, int H, int W, int Kh, int Kw, int pad)</span></td><td class="d">2D conv via im2col + sgemm; <code>col</code> = caller scratch <code>Cin*Kh*Kw*Hout*Wout</code>.</td></tr>
+<tr><td class="s"><span class="sig">def conv1d_direct(…, *f32 pbuf, …)</span> · <span class="sig">conv2d_direct(…, *f32 pbuf, …)</span></td><td class="d">im2col-free conv: width-vectorized + register-blocked over output channels (one input load feeds 6 FMAs). <code>pbuf</code> = zero-padded input copy (<code>Cin·Hp·Wp</code> ≪ im2col col). Wins for small feature maps (no col blow-up); mature im2col+sgemm edges it at large Wout≥16.</td></tr>
+<tr><td class="s"><span class="sig">def relu_inplace(*f32 p, int n)</span></td><td class="d">Elementwise ReLU over n f32 (16-wide body + masked tail).</td></tr>
+<tr><td class="s"><span class="sig">def softmax_rows(*f32 p, int rows, int cols)</span></td><td class="d">Row-wise softmax (in place) of a <code>[rows, cols]</code> matrix; f64 max-shift + exp + normalize.</td></tr>
+<tr><td class="s"><span class="sig">def layernorm_rows(*f32 p, *f32 gamma, *f32 beta, int rows, int cols, f64 eps)</span></td><td class="d">Row-wise LayerNorm (in place) with affine; f64 mean/var.</td></tr>
+<tr><td class="s"><span class="sig">def gelu_inplace(*f32 p, int n)</span></td><td class="d">GeLU (tanh approximation) in place over n f32 (SIMD body + masked tail).</td></tr>
+<tr><td class="s"><span class="sig">def transpose(*f32 src, *f32 dst, int rows, int cols)</span></td><td class="d">Transpose a row-major <code>[rows, cols]</code> matrix into dst <code>[cols, rows]</code>.</td></tr>
+<tr><td class="s"><span class="sig">def add_inplace(*f32 a, *f32 b, int n)</span></td><td class="d">Elementwise <code>a += b</code> over n f32 (residual add; SIMD body + masked tail).</td></tr>
+</table>
+<div class="note">The Transformer kernels (softmax / layernorm / gelu / transpose / add) drive the encoder-block
+build path (<code>ls model build --real</code>). softmax &amp; layernorm reduce per row in f64
+(numerically-stable); a SIMD exp / rsqrt is a deferred perf win.</div>
+<div class="note">conv1d is the SRS-CNN Main_conv block: a conv is a GEMM after im2col, so it reuses the
+register-blocked sgemm kernel. <code>col</code> is caller-provided (carve it from a <code>Pool</code>) so
+conv1d allocates nothing on the hot path. Wout = W + 2·pad − K + 1 (stride 1). The
+<code>*_direct</code> variants skip im2col entirely (read the padded input directly, register-blocked
+over output channels) — measured (SDE) win on small feature maps; im2col still edges them at large
+Wout≥16. Full NWc16 channel-blocked layout (vectorize channels) is a further layout deferred.</div>
+<div class="note">sgemm blocks M as 12→6→1 and N as 32→16→scalar: the <b>12×32</b> kernel (24 zmm
+accumulators — the BLIS-family AVX-512 server tile) and <b>12×16</b> (12 acc) hold C-rows in registers
+across K (one B-load feeds 24/12 FMAs — fewer loads, and ≥8 accumulators hide the FMA-recurrence on a
+2-FMA-port core), falling to <b>6×16</b> and a <b>1×16</b> M-tail; the N tail is a scalar block.
+<b>Measured (llvm-mca GNR + SDE)</b>: the wide kernels keep the FMA count and cut B-loads. BLIS A/B
+packing + cache blocking and the full NWc16 conv layout are <i>not</i> wired into the hot path:
+llvm-mca shows these kernels are FMA-port-bound (load ports have headroom), so packing optimizes a
+non-bottleneck on in-cache shapes — pure overhead here; its cache benefit only appears on out-of-L2 /
+many-channel workloads and is unmeasurable without real GNR. AMX-FP16 (tile engine, f32-accumulate) is
+a separate reference kernel — see <code>model/amx/amx_sgemm_fp16.c</code> + the model manual.</div>
+<div class="ex"><pre><span class="c">// 201×201 weight · (201×256) features → (201×256), the SRS-CNN shared GEMM</span>
+nn.sgemm(W, X, Y, 201, 256, 201)</pre></div>
+<h3>Pool — static f32 activation arena</h3>
+<p class="purpose">Hard-real-time memory: one backing malloc up front, 64-byte (cache-line)
+aligned activation buffers carved per frame with zero hot-path allocation and abort-on-overflow.</p>
+<div class="types"><pre>struct Pool { *u8 raw; *u8 base; i64 off; i64 cap }   // has destructor (frees the block)</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def reserve(&amp;!self, int max_floats)</span></td><td class="d">One backing block sized for <code>max_floats</code> f32 (+64B align slack).</td></tr>
+<tr><td class="s"><span class="sig">def tensor(&amp;!self, int n) -&gt; *f32</span></td><td class="d">Carve <code>n</code> f32, 64-byte aligned (bump); aborts on overflow.</td></tr>
+<tr><td class="s"><span class="sig">def at(&amp;!self, int off_floats, int n) -&gt; *f32</span></td><td class="d">Carve <code>n</code> f32 at a planner-chosen offset (16-aligned) instead of bumping — lets a liveness planner reuse dead slots. Bounds-checked.</td></tr>
+<tr><td class="s"><span class="sig">def reset(&amp;!self)</span></td><td class="d">O(1) rewind — reuse the block next frame.</td></tr>
+<tr><td class="s"><span class="sig">def used_floats(&amp;self) -&gt; int</span> · <span class="sig">cap_floats()</span></td><td class="d">High-water mark / capacity (size <code>reserve</code> from a dry-run forward).</td></tr>
+</table>
+<div class="note">Raw pointers handed out before a <code>reset()</code> dangle afterwards (same contract as
+<a href="#arena">Region</a>). <code>tensor()</code> bump-allocates; <code>at()</code> lets a liveness planner
+place buffers at reusable offsets (the model toolchain's transformer emitter does this — peak
+instead of the sum of all activations). Manual <code>reset()</code> at dead-activation points also lowers the peak.</div>
+<div class="ex"><pre><span class="t">nn</span>.<span class="t">Pool</span> p = {}
+p.reserve(peak_floats)              <span class="c">// one malloc, up front</span>
+p.reset()                          <span class="c">// per frame</span>
+<span class="t">*f32</span> h1 = p.tensor(201 * 256)    <span class="c">// no malloc on the hot path</span></pre></div>
+</section>
+
+<!-- ===================== TASK ===================== -->
+<section id="task">
+<h2>task — Task(T)<span class="imp">import std.sync.task</span></h2>
+<p class="purpose">Structured concurrency: run a closure on a worker thread, join its typed result.</p>
+<div class="types"><pre>struct Task(T) { object h; *T box }</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def run(&amp;!self, Block()-&gt;T f)</span></td><td class="d">Start: run <code>f</code> on a worker, writing its result into an owned box.</td></tr>
+<tr><td class="s"><span class="sig">def join(&amp;self) -&gt; T</span></td><td class="d">Wait for the worker and move the result out (terminal).</td></tr>
+</table>
+<div class="note">Move-based isolation: the closure move-captures its inputs; the result moves back via the
+ownership machinery — sound without a lifetime system. An un-joined Task leaks (no auto-free).</div>
+<div class="ex"><pre><span class="t">Task</span>(<span class="t">int</span>) t = {}
+t.run(|| { <span class="k">return</span> expensive_compute() })
+<span class="t">int</span> result = t.join()</pre></div>
+</section>
+
+<!-- ===================== CHAN ===================== -->
+<section id="chan">
+<h2>chan — Chan(T)<span class="imp">import std.sync.chan</span></h2>
+<p class="purpose">Blocking bounded channel for message passing between threads — "don't communicate by
+sharing memory; share memory by communicating". MPMC-safe (a mutex + two condition variables).</p>
+
+<div class="types"><pre>struct Chan(T) { ... }                         // has destructor; opaque (private fields)
+def channel(T)(int capacity) -> Chan(T)         // capacity rounded UP to next power of 2</pre></div>
+
+<table class="api">
+<tr><td class="s"><span class="sig">def send(&amp;!self, T v) -&gt; bool</span></td><td class="d"><b>Blocks</b> while full; moves <code>v</code> in. <code>false</code> iff the channel is closed.</td></tr>
+<tr><td class="s"><span class="sig">def recv(&amp;!self) -&gt; Option(T)</span></td><td class="d"><b>Blocks</b> while empty; <code>None</code> once closed <b>and</b> drained.</td></tr>
+<tr><td class="s"><span class="sig">def try_send(&amp;!self, T v) -&gt; Option(T)</span></td><td class="d">Non-blocking. <code>None</code> = sent; <code>Some(v)</code> = full/closed (value handed back).</td></tr>
+<tr><td class="s"><span class="sig">def try_recv(&amp;!self) -&gt; Option(T)</span></td><td class="d">Non-blocking. <code>None</code> = empty (or closed &amp; drained).</td></tr>
+<tr><td class="s"><span class="sig">def close(&amp;!self)</span></td><td class="d">Close: wakes blocked receivers (drain → <code>None</code>) and senders (→ <code>false</code>). Idempotent.</td></tr>
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Buffered count (approximate under concurrency).</td></tr>
+<tr><td class="s"><span class="sig">def capacity(&amp;self) -&gt; int</span></td><td class="d">Usable capacity (power of 2).</td></tr>
+<tr><td class="s"><span class="sig">def is_closed(&amp;self) -&gt; bool</span></td><td class="d">True after <code>close()</code>.</td></tr>
+<tr><td class="s"><span class="sig">for x in ch { ... }</span></td><td class="d">Iterate: drains the channel (blocking) until closed &amp; empty.</td></tr>
+</table>
+
+<div class="note">Share a <code>Chan</code> across threads via a <b>global</b> the worker closures name directly
+(globals are shared by reference, not captured); construct it in <code>main</code> before spawning. For a
+non-blocking lock-free queue (poll-loop, no syscalls) reach for <a href="#ring"><code>Ring(T)</code></a>;
+<code>Chan</code> is the blocking, ergonomic default.</div>
+
+<div class="ex"><pre><span class="t">Chan</span>(<span class="t">int</span>) g_ch = {}              <span class="c">// global, shared by name</span>
+
+<span class="k">def</span> main() {
+    g_ch = channel(<span class="t">int</span>)(<span class="t">64</span>)
+    <span class="t">Task</span>(<span class="t">int</span>) prod = {}
+    prod.run(|| {
+        <span class="k">for</span> i <span class="k">in</span> <span class="t">0</span>..<span class="t">1000</span> { g_ch.send(i) }   <span class="c">// blocks if full</span>
+        g_ch.close()
+        <span class="k">return</span> <span class="t">0</span>
+    })
+    <span class="k">for</span> x <span class="k">in</span> g_ch { @print(x) }            <span class="c">// drains until closed</span>
+    prod.join()
+}</pre></div>
+</section>
+
+<!-- ===================== ATOMIC ===================== -->
+<section id="atomic">
+<h2>atomic — Atomic(T)<span class="imp">import std.sync.atomic</span></h2>
+<p class="purpose">Lock-free atomic scalar (SeqCst). <code>T</code> ∈ int/i64/u64/f64/char/pointer (<b>not bool</b> —
+use <code>Atomic(int)</code> for flags).</p>
+<div class="types"><pre>struct Atomic(T) { T value }</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def get(&amp;self) -&gt; T</span></td><td class="d">Atomic load.</td></tr>
+<tr><td class="s"><span class="sig">def set(&amp;!self, T v)</span></td><td class="d">Atomic store.</td></tr>
+<tr><td class="s"><span class="sig">def fetch_add(&amp;!self, T d) -&gt; T</span> / <span class="sig">fetch_sub</span></td><td class="d">Add/sub, return prior value.</td></tr>
+<tr><td class="s"><span class="sig">def swap(&amp;!self, T v) -&gt; T</span></td><td class="d">Store, return prior value.</td></tr>
+<tr><td class="s"><span class="sig">def compare_set(&amp;!self, T expected, T desired) -&gt; bool</span></td><td class="d">CAS; true on success.</td></tr>
+<tr><td class="s"><span class="sig">def load_acquire(&amp;self) -&gt; T</span> / <span class="sig">load_relaxed</span></td><td class="d">Weaker-ordered load. <span class="tag mut">advanced</span></td></tr>
+<tr><td class="s"><span class="sig">def store_release(&amp;!self, T v)</span> / <span class="sig">store_relaxed</span></td><td class="d">Weaker-ordered store. <span class="tag mut">advanced</span></td></tr>
+<tr><td class="s"><span class="sig">def fence()</span></td><td class="d">Standalone full barrier.</td></tr>
+</table>
+<div class="note"><b>Memory order.</b> <code>get</code>/<code>set</code>/RMW are SeqCst (the safe default).
+The <code>load_acquire</code>/<code>store_release</code>/<code>*_relaxed</code> variants are for hand-rolled
+lock-free code: a release store synchronizes-with an acquire load of the same location; relaxed gives
+no cross-thread ordering. On x64 acquire/release is a plain <code>mov</code> where SeqCst store is a locked
+<code>xchg</code> — <code>std.sync.ring</code>'s SPSC path uses these for ~3.6× throughput over SeqCst.</div>
+<div class="ex"><pre><span class="t">Atomic</span>(<span class="t">int</span>) ctr = {}
+ctr.set(0)
+<span class="t">int</span> old = ctr.fetch_add(1)</pre></div>
+</section>
+
+<!-- ===================== SYNC ===================== -->
+<section id="sync">
+<h2>lock — Mutex / Guard / RwLock<span class="imp">import std.sync.lock</span></h2>
+<p class="purpose">Bare locks (<code>Mutex</code>, <code>SpinLock</code>) and data <i>guards</i> (<code>Guard</code>,
+<code>RwLock</code>, <code>SpinGuard</code>) that make unlocked access a <b>compile error</b>.</p>
+
+<div class="note"><b>How guards turn data races into compile errors — without lifetimes.</b>
+A guard's <code>value</code> is <code>priv</code> (unreachable except through a closure), and the closure
+receives <code>&amp;!value</code> as an <i>arg-only, non-escaping</i> borrow — it can't be returned, stored,
+or captured out. So the borrow provably lives only inside the critical section.</div>
+
+<h3>Mutex / SpinLock (bare locks)</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">struct Mutex { object lock }</span></td><td class="d">OS mutex (blocks under contention).</td></tr>
+<tr><td class="s"><span class="sig">def init(&amp;!self)</span></td><td class="d">Create the OS lock once (after <code>{}</code>).</td></tr>
+<tr><td class="s"><span class="sig">def lock!(&amp;!self)</span> / <span class="sig">unlock!(&amp;!self)</span> / <span class="sig">trylock!(&amp;!self) -&gt; bool</span><span class="tag mut">unsafe</span></td><td class="d">Acquire / release / try (you pair them).</td></tr>
+<tr><td class="s"><span class="sig">struct SpinLock { Atomic(int) flag }</span></td><td class="d">Busy-wait lock (adaptive pause→yield); same <code>lock!/unlock!/trylock!</code>.</td></tr>
+</table>
+
+<h3>Guard(T) — exclusive data guard</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def init(&amp;!self)</span></td><td class="d">Create the lock once.</td></tr>
+<tr><td class="s"><span class="sig">def lock(&amp;!self, Block(&amp;!T) f)</span></td><td class="d">Run <code>f</code> holding <code>&amp;!value</code> exclusively.</td></tr>
+<tr><td class="s"><span class="sig">def get(R)(&amp;!self, Block(&amp;!T)-&gt;R f) -&gt; R</span></td><td class="d">Same, but return a value out (<code>R</code> must be owned).</td></tr>
+</table>
+
+<h3>RwLock(T) — many readers OR one writer</h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def read(R)(&amp;!self, Block(&amp;T)-&gt;R f) -&gt; R</span></td><td class="d">Shared read: closure gets read-only <code>&amp;T</code> (write is a compile error).</td></tr>
+<tr><td class="s"><span class="sig">def write(&amp;!self, Block(&amp;!T) f)</span></td><td class="d">Exclusive write: closure gets <code>&amp;!T</code>.</td></tr>
+</table>
+<p><code>SpinGuard(T)</code> has the same <code>lock</code>/<code>get</code> surface, backed by a SpinLock
+(no OS handle) for very short critical sections.</p>
+
+<div class="ex"><pre><span class="t">Guard</span>(<span class="t">Vec</span>(<span class="t">int</span>)) g = {}
+g.init()
+g.lock(|v| { v.push(1) })                    <span class="c">// exclusive write</span>
+<span class="t">int</span> len = g.get(<span class="t">int</span>)(|v| { <span class="k">return</span> v.len() })  <span class="c">// read a value out</span></pre></div>
+</section>
+
+<!-- ===================== THREAD ===================== -->
+<section id="thread">
+<h2>thread<span class="imp">import std.sync.thread</span></h2>
+<p class="purpose">Data-parallel loop across OS worker threads.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def cpu_count() -&gt; int</span></td><td class="d">Logical processor count (≥ 1).</td></tr>
+<tr><td class="s"><span class="sig">def parallel_for(int start, int stop, Block(int) body)</span></td><td class="d">Run <code>body(i)</code> for <code>i ∈ [start,stop)</code> across threads.</td></tr>
+</table>
+<div class="note"><b>Contract (not compiler-checked):</b> iterations must be independent — writes to distinct
+slots, or synchronized via <code>Atomic</code>/<code>sync</code>. Concurrent overlapping writes or growing a
+shared Vec is UB.</div>
+<div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) out = ... <span class="c">// pre-sized</span>
+parallel_for(0, n, |i| { out.set!(i, work(i)) })   <span class="c">// distinct indices</span></pre></div>
+</section>
+
+<!-- ===================== MISC ===================== -->
+<section id="misc">
+<h2>Low-level &amp; tools</h2>
+<p class="purpose">Modules you rarely call directly — listed for completeness.</p>
+
+<h3>c <span class="imp">import std.sys.c as c</span></h3>
+<p>Centralized C/CRT bindings and runtime primitives. <b>No memory-safety guarantees</b> — used
+internally by other stdlib modules. Surface includes <code>malloc</code>/<code>realloc</code>/<code>free</code>,
+<code>abort()</code>, file CRT functions (<code>fopen</code>/<code>fread</code>/…), and <code>__ls_*</code>
+runtime helpers (substring search, byte copy, FxHash, byte loads, readline, regex engine).
+Canonical primitives are also reachable as <code>std.sys.c.malloc</code> without an alias.</p>
+
+<h3>perf <span class="imp">import std.sys.perf</span></h3>
+<table class="api">
+<tr><td class="s"><span class="sig">def now() -&gt; i64</span></td><td class="d">Monotonic timestamp (ns).</td></tr>
+<tr><td class="s"><span class="sig">def rdtsc() -&gt; i64</span> / <span class="sig">rdtscp() -&gt; i64</span></td><td class="d">CPU cycle counters.</td></tr>
+<tr><td class="s"><span class="sig">def elapsed_ns/elapsed_ms/elapsed_s(i64 t0)</span></td><td class="d">Elapsed since <code>t0</code>.</td></tr>
+</table>
+
+<h3>plot · plotfmt · plottl <span class="imp">import std.chart.plot / std.chart.plotfmt / std.chart.plottl</span></h3>
+<ul class="compact">
+  <li><b>plot</b> — figure/axes builder API; line/scatter/bar series; SVG + ASCII rendering.
+      Key entry points: <code>figure()</code>, <code>axes()</code>, <code>plot()</code>, <code>line()</code>,
+      <code>bar()</code>, <code>to_svg()</code>, <code>to_text()</code>.</li>
+  <li><b>plotfmt</b> — formatting helpers: <code>fmt_fixed/fmt_auto/fmt_sci/fmt_time</code>,
+      padding, <code>rgb_to_hex</code>/<code>hsv_to_hex</code>.</li>
+  <li><b>plottl</b> — timeline / Gantt &amp; CPU-scheduling charts: <code>timeline_svg()</code>,
+      <code>cpu_timeline_svg()</code>, <code>cpu_timeline_html()</code> (with pan/zoom),
+      HT-aware coloring, windowed aggregation.</li>
+</ul>
+</section>
+
+<footer>
+LS Standard Library Reference · generated from <code>lib/std/*.ls</code> source.
+For language internals see <code>docs/architecture.md</code> &amp; <code>docs/internals_subsystems.md</code>;
+for ownership rules see <code>docs/ownership.md</code>.
+</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var q = document.getElementById('q');
+  var sections = Array.prototype.slice.call(document.querySelectorAll('main > section'));
+  var navItems = Array.prototype.slice.call(document.querySelectorAll('#navlist a.item'));
+  var nores = document.getElementById('nores');
+
+  function norm(s){ return s.toLowerCase(); }
+
+  function filter() {
+    var term = norm(q.value.trim());
+    var anyVisible = false;
+    sections.forEach(function (sec) {
+      var show = term === '' || norm(sec.textContent).indexOf(term) !== -1;
+      sec.classList.toggle('hidden', !show);
+      if (show) anyVisible = true;
+    });
+    navItems.forEach(function (a) {
+      var id = a.getAttribute('href').slice(1);
+      var sec = document.getElementById(id);
+      var show = term === '' || (sec && !sec.classList.contains('hidden'));
+      a.classList.toggle('hidden', !show);
+    });
+    nores.style.display = anyVisible ? 'none' : 'block';
+  }
+
+  q.addEventListener('input', filter);
+  q.addEventListener('keydown', function (e) { if (e.key === 'Escape') { q.value=''; filter(); } });
+
+  // active-section highlight in sidebar
+  var byId = {};
+  navItems.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      var a = byId[en.target.id];
+      if (!a) return;
+      if (en.isIntersecting) {
+        navItems.forEach(function (x){ x.style.background=''; x.style.fontWeight=''; });
+        a.style.background = 'var(--accent-soft)';
+        a.style.fontWeight = '600';
+      }
+    });
+  }, { rootMargin: '-10% 0px -80% 0px' });
+  sections.forEach(function (s){ obs.observe(s); });
+})();
+</script>
+</body>
+</html>

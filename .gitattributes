@@ -1,0 +1,8 @@
+# Windows .bat / .cmd files MUST use CRLF — cmd.exe misparses LF-only files,
+# eating characters at line boundaries and producing nonsense errors like
+# "'tlocal' is not recognized". Force CRLF on checkout regardless of platform.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# PowerShell scripts also expect CRLF historically; keep them consistent.
+*.ps1   text eol=crlf

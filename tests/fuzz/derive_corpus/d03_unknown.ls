@@ -1,0 +1,3 @@
+@derive(Bogus)
+struct X { int a }
+def main() { @print(1) }
