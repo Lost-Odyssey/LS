@@ -2,6 +2,7 @@ import std.core.vec
 import std.core.map
 import std.core.str
 import std.sync.lock
+import std.mem.arena
 
 struct Box {
     Str name
@@ -24,17 +25,10 @@ def mk_veci(int k) -> Vec(int) { Vec(int) r = [k, k] return r }
 def mk_leaf(int k) -> Tree { return Leaf(k) }
 
 def main() -> int {
-    SpinGuard(Str) v1 = {}
-    int v2 = 2
-    Vec(Str) v3 = ["zzz", "gamma", "zzz"]
-    Str v4 = v3.get(v2 * 2).unwrap_or("hi")
-    Guard(Map(Str,int)) v5 = {}
-    v5.init()
-    int v6 = v2 + 1
-    SpinGuard(Str) v7 = {}
-    Box v8 = Box{ name: "", nums: [v6 * 2, 5] }
-    int v9 = v6 * 2
-    int v10 = v1.get(int)(|w| { return w.len() })
-    @print(v8.name.len())
+    Box v1 = Box{ name: "hi", nums: [0] }
+    Map(Str,int) v2 = {}
+    Vec(int) v3 = [8, 3, 7, -3]
+    Map(Str,Vec(int)) v4 = {}
+    Map(Str,Vec(int)) v5 = {}
     return 0
 }

@@ -2,6 +2,7 @@ import std.core.vec
 import std.core.map
 import std.core.str
 import std.sync.lock
+import std.mem.arena
 
 struct Box {
     Str name
@@ -24,20 +25,15 @@ def mk_veci(int k) -> Vec(int) { Vec(int) r = [k, k] return r }
 def mk_leaf(int k) -> Tree { return Leaf(k) }
 
 def main() -> int {
-    Tag v1 = C
-    Vec(Vec(int)) v2 = []
-    Vec(Vec(int)) v3 = []
-    match v1 { A(s) => { @print(s.len()) } B(n) => { @print(n) } C => {} }
-    int v4 = 0
-    Guard(Str) v5 = {}
-    v5.init()
-    Str v6 = match v1 { A(s) => s  B(k) => f"{k}"  C => "c" }
-    @print(v2.len())
-    Vec(int) v7 = [6]
-    Guard(Str) v8 = {}
-    v8.init()
-    Str v9 = match v1 { A(s) => s  B(k) => f"{k}"  C => "c" }
-    Str v10 = match v1 { A(s) => s  B(k) => f"{k}"  C => "c" }
-    int v11 = v7.get(v4).unwrap_or(v4 * 2)
+    Tag v1 = B(-3)
+    Str v2 = f"{6}"
+    Str v3 = match 1.5 { 1.5 => "hi"  2.5 => f"two"  _ => "1" }
+    Vec(Str) v4 = ["-5", "1"]
+    Box v5 = Box{ name: "gamma", nums: [3, 5, 8] }
+    Str v6 = match v1 { A(inner) => match 4 { 0 => f"z" _ => inner } B(k) => f"{k}" C => "c" }
+    Str v7 = match v4.get(3) { Some(x) => x  None => "0" }
+    Str v8 = v4.get(0).unwrap_or("-5")
+    for v9 in 0..3 { v2 = v2 + f"{v9}" }
+    Vec(Vec(int)) v10 = []
     return 0
 }

@@ -33,6 +33,7 @@ import std.core.vec
 import std.core.map
 import std.core.str
 import std.sync.lock
+import std.mem.arena
 
 struct Box {
     Str name
@@ -433,25 +434,128 @@ class Gen:
             self.emit("bool %s = %s.get(%s).is_none?()" % (n, v, self.intexpr()))
             self.env[n] = "bool"
 
+    # ---- match deepening: exercise the int-switch & cond-chain storage points
+    #      (the enum path is already heavily covered; these two were not).
+    #      See docs/match_codegen_guide.md §1 (6 arm-body storage points). ----
+    def match_int_switch_str(self):
+        # int subject + int-const patterns + OR-pattern + wildcard, OWNED result.
+        # Covers int-switch case + wildcard storage points yielding an owned Str
+        # (L-013 shape on the LLVM-switch path — previously never fuzzed).
+        n = self.fresh(); subj = self.intexpr()
+        self.emit('Str %s = match %s { 0 => f"z"  1 | 2 => %s  _ => %s }' %
+                  (n, subj, self.strexpr(), self.strlit()))
+        self.env[n] = "Str"
+
+    def match_int_switch_int(self):
+        n = self.fresh(); subj = self.intexpr()
+        self.emit("int %s = match %s { 0 => 0  1 | 2 | 3 => 1  _ => %s }" %
+                  (n, subj, self.intexpr()))
+        self.env[n] = "int"
+
+    def match_int_switch_veci(self):
+        # owned Vec(int) result on the int-switch path (has_drop result, no temp reg)
+        n = self.fresh(); subj = self.intexpr()
+        self.emit("Vec(int) %s = match %s { 0 => [] 1 | 2 => mk_veci(%s) _ => [%s] }" %
+                  (n, subj, self.intexpr(), self.intexpr()))
+        self.env[n] = "Vec(int)"
+
+    def match_float_condchain(self):
+        # float subject -> cond-chain (if-else) lowering, OWNED Str result.
+        # Covers cond-chain then + wildcard storage points (never fuzzed before).
+        n = self.fresh()
+        f = self.rng.choice(["0.0", "1.5", "2.5", "-1.0", "3.5"])
+        self.emit('Str %s = match %s { 1.5 => %s  2.5 => f"two"  _ => %s }' %
+                  (n, f, self.strexpr(), self.strlit()))
+        self.env[n] = "Str"
+
+    def match_nested_owned(self):
+        # nested match: outer enum arm yields the result of an INNER match that
+        # itself moves out an owned binder — the deepest L-013 nesting.
+        v = self.pick("Tag")
+        if not v: return
+        n = self.fresh(); subj = self.intexpr()
+        self.emit('Str %s = match %s { A(inner) => match %s { 0 => f"z" _ => inner } '
+                  'B(k) => f"{k}" C => "c" }' % (n, v, subj))
+        self.env[n] = "Str"
+        del self.env[v]                       # Tag consumed (payload moved out)
+
+    # ---- memory deepening: loop-accumulation of owned temps (the L-014 class:
+    #      a spilled owned temp per iteration — historically leaked) ----
+    def loop_accum_str(self):
+        v = self.pick("Str")
+        if not v: return
+        it = self.fresh(); k = self.rng.randint(2, 6)
+        self.emit('for %s in 0..%d { %s = %s + f"{%s}" }' % (it, k, v, v, it))
+
+    def loop_accum_vec(self):
+        v = self.pick("Vec(int)")
+        if not v: return
+        it = self.fresh(); k = self.rng.randint(2, 6)
+        self.emit("for %s in 0..%d { %s.push(%s) }" % (it, k, v, it))
+
+    def loop_accum_map(self):
+        v = self.pick("Map(Str,int)")
+        if not v: return
+        it = self.fresh(); k = self.rng.randint(2, 6)
+        self.emit('for %s in 0..%d { %s.set(f"k{%s}", %s) }' % (it, k, v, it, it))
+
+    def loop_match_owned(self):
+        # owned match result produced & dropped every iteration (spill stress)
+        v = self.pick("Vec(Str)")
+        if not v: return
+        it = self.fresh(); k = self.rng.randint(2, 5)
+        self.emit('for %s in 0..%d { Str _m = match %s.get(%s) '
+                  '{ Some(x) => x None => f"d{%s}" } print(_m.len()) }' %
+                  (it, k, v, it, it))
+
+    # ---- memory: arena / bump allocator (reset-reuse path) ----
+    def decl_arena(self):
+        n = self.fresh(); self.emit("Arena(int) %s = {}" % n)
+        self.env[n] = "Arena(int)"
+
+    def op_arena(self):
+        v = self.pick("Arena(int)")
+        if not v: return
+        op = self.rng.choice(["alloc", "alloc", "reset", "get"])
+        if op == "alloc":
+            h = self.fresh()
+            self.emit("int %s = %s.alloc(%s)" % (h, v, self.intexpr()))
+            self.env[h] = "int"
+        elif op == "reset":
+            self.emit("%s.reset()" % v)         # O(1) reuse — bump pointer reset
+        else:
+            self.emit("print(%s.get(0).unwrap_or(-1))" % v)
+
     def build(self, nstmts):
         self.lines = ["def main() -> int {"]
         decls = [self.decl_int, self.decl_str, self.decl_veci, self.decl_vecs,
                  self.decl_map, self.decl_box, self.decl_tag,
                  self.decl_vecveci, self.decl_map_vec, self.decl_tree,
                  self.decl_guard_vec, self.decl_guard_str, self.decl_guard_map,
-                 self.decl_spinguard_str, self.decl_rwlock_box]
+                 self.decl_spinguard_str, self.decl_rwlock_box,
+                 self.decl_arena]
         ops = [self.op_veci, self.op_vecs, self.op_map, self.op_box, self.op_tag,
                self.op_vecveci, self.op_map_vec, self.op_tree,
                # concurrency data guards (single-threaded) + closure deepening
                self.op_guard_vec, self.op_guard_str, self.op_guard_map,
                self.op_spinguard_str, self.op_rwlock_box,
                self.op_closure_capture_pod, self.op_closure_capture_move,
-               self.op_closure_chain,
+               self.op_closure_chain, self.op_arena,
+               # match deepening: int-switch + cond-chain storage points
+               self.match_int_switch_str, self.match_int_switch_int,
+               self.match_int_switch_veci, self.match_float_condchain,
+               self.match_nested_owned,
+               # memory deepening: loop-accumulation of owned temps (L-014 class)
+               self.loop_accum_str, self.loop_accum_vec, self.loop_accum_map,
+               self.loop_match_owned,
                # high-risk owned-result patterns weighted in by listing twice
                self.match_to_var_str, self.match_tag_to_var_str,
                self.match_to_var_veci, self.combinator_str, self.combinator_int,
                self.match_to_var_str, self.match_tag_to_var_str,
-               self.combinator_str]
+               self.combinator_str,
+               # new owned-result match paths weighted in (historically buggy)
+               self.match_int_switch_str, self.match_nested_owned,
+               self.match_float_condchain, self.loop_accum_str]
         # seed a few decls first
         for _ in range(self.rng.randint(2, 4)):
             self.rng.choice(decls)()
@@ -487,6 +591,10 @@ def main():
                          "(curated regression corpus) instead of bug-hunting")
     ap.add_argument("--count", type=int, default=30,
                     help="number of clean programs to emit with --emit-corpus")
+    ap.add_argument("--aot-diff", action="store_true",
+                    help="for each program that runs clean, ALSO AOT-compile + run "
+                         "it and diff stdout vs JIT — catches codegen-path "
+                         "divergence and AOT-only drop/flush bugs")
     args = ap.parse_args()
 
     if args.emit_corpus:
@@ -523,8 +631,9 @@ def main():
     env = dict(os.environ); env["LS_HOME"] = ROOT
     tmp = os.path.join(args.keep_dir, "_gen.ls")
 
-    findings = {"crash": 0, "memcheck": 0}
+    findings = {"crash": 0, "memcheck": 0, "aotdiff": 0}
     compiled = 0
+    aot_exe = os.path.join(args.keep_dir, "_gen_aot.exe")
     t0 = time.time()
     for it in range(args.iters):
         rng = random.Random(args.seed * 1000000 + it)
@@ -545,6 +654,29 @@ def main():
             kind = classify(rc, err)
             if rc == 0:
                 compiled += 1
+        # ---- AOT differential: clean program must produce identical stdout via
+        #      JIT and AOT (different drop-emission + CRT flush paths) ----
+        if args.aot_diff and kind is None and rc == 0:
+            try:
+                j = subprocess.run([LS, "run", tmp], stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, timeout=args.timeout,
+                                   env=env)
+                c = subprocess.run([LS, "compile", tmp, "-o", aot_exe],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   timeout=args.timeout, env=env)
+                if c.returncode == 0:
+                    a = subprocess.run([aot_exe], stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, timeout=args.timeout,
+                                       env=env)
+                    if a.returncode != 0 or a.stdout != j.stdout:
+                        kind = "aotdiff"; err = (
+                            "JIT rc=%d AOT rc=%d\n--- JIT stdout ---\n%s\n"
+                            "--- AOT stdout ---\n%s\n" %
+                            (j.returncode, a.returncode,
+                             j.stdout.decode("utf-8", "replace"),
+                             a.stdout.decode("utf-8", "replace")))
+            except subprocess.TimeoutExpired:
+                pass
         if kind:
             findings[kind] += 1
             tag = "%s_seed%d_it%d" % (kind, args.seed, it)
@@ -553,15 +685,18 @@ def main():
             with open(os.path.join(args.keep_dir, tag + ".err.txt"), "wb") as f:
                 f.write(err.encode("utf-8", "replace"))
         if (it + 1) % 100 == 0:
-            print("  %d/%d  crash=%d memcheck=%d  compile-ok=%.0f%%  (%.1f/s)" %
+            print("  %d/%d  crash=%d memcheck=%d aotdiff=%d  compile-ok=%.0f%%  (%.1f/s)" %
                   (it+1, args.iters, findings["crash"], findings["memcheck"],
-                   100.0*compiled/(it+1), (it+1)/(time.time()-t0)))
+                   findings["aotdiff"], 100.0*compiled/(it+1), (it+1)/(time.time()-t0)))
 
+    if os.path.exists(aot_exe):
+        try: os.remove(aot_exe)
+        except OSError: pass
     print("\n=== %d iters in %.1fs ===" % (args.iters, time.time()-t0))
-    print("compile-ok: %d (%.0f%%)  crashes: %d  memcheck-violations: %d" %
+    print("compile-ok: %d (%.0f%%)  crashes: %d  memcheck: %d  aotdiff: %d" %
           (compiled, 100.0*compiled/max(1,args.iters),
-           findings["crash"], findings["memcheck"]))
-    return 1 if (findings["crash"] or findings["memcheck"]) else 0
+           findings["crash"], findings["memcheck"], findings["aotdiff"]))
+    return 1 if any(findings.values()) else 0
 
 if __name__ == "__main__":
     sys.exit(main())
