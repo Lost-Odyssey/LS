@@ -2961,6 +2961,30 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 return v;
             }
 
+            if (strcmp(sname, "__simd_floor") == 0)
+            {
+                LLVMValueRef v = codegen_expr(ctx, sa[0]);
+                if (v == NULL) return NULL;
+                LLVMTypeRef vt = type_to_llvm(ctx, rt);
+                char mg[24], nm[40];
+                cg_simd_mangle(rt, mg, sizeof mg);
+                snprintf(nm, sizeof nm, "llvm.floor.%s", mg);
+                LLVMTypeRef ps[1] = { vt };
+                LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, vt, ps, 1);
+                LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+                LLVMValueRef av[1] = { v };
+                return LLVMBuildCall2(ctx->builder, fty, fn, av, 1, "simd.floor");
+            }
+
+            if (strcmp(sname, "__simd_bitcast") == 0)
+            {
+                /* Reinterpret the lane bits (i32 <-> f32, same total width). */
+                LLVMValueRef v = codegen_expr(ctx, sa[0]);
+                if (v == NULL) return NULL;
+                LLVMTypeRef vt = type_to_llvm(ctx, rt);  /* <N x U> */
+                return LLVMBuildBitCast(ctx->builder, v, vt, "simd.bitcast");
+            }
+
             cg_error(ctx, node->line, node->column,
                      "internal: unknown simd intrinsic '%s'", sname);
             return NULL;

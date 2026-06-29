@@ -3180,6 +3180,41 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
             return type_simd(type_clone(exp->as.simd.elem), exp->as.simd.lanes);
         }
 
+        /* __simd_floor(v) -> same Simd(float, N) (round toward -inf). */
+        if (strcmp(name, "__simd_floor") == 0)
+        {
+            if (argc != 1) { checker_error(c, call_node->line, call_node->column,
+                "__simd_floor() takes exactly 1 argument, got %d", argc); return NULL; }
+            Type *vt = args[0]->resolved_type;
+            if (vt == NULL || vt->kind != TYPE_SIMD || !type_is_float(vt->as.simd.elem)) {
+                checker_error(c, args[0]->line, args[0]->column,
+                    "__simd_floor() requires a float Simd value"); return NULL; }
+            return type_simd(type_clone(vt->as.simd.elem), vt->as.simd.lanes);
+        }
+
+        /* __simd_bitcast(v) -> Simd(U, N): reinterpret bits, same lane count and
+           same element bit-width (e.g. i32 <-> f32). Result type from expected. */
+        if (strcmp(name, "__simd_bitcast") == 0)
+        {
+            if (argc != 1) { checker_error(c, call_node->line, call_node->column,
+                "__simd_bitcast() takes exactly 1 argument, got %d", argc); return NULL; }
+            Type *vt = args[0]->resolved_type;
+            if (vt == NULL || vt->kind != TYPE_SIMD) {
+                checker_error(c, args[0]->line, args[0]->column,
+                    "__simd_bitcast() requires a Simd value"); return NULL; }
+            Type *exp = c->expected_type;
+            if (exp == NULL || exp->kind != TYPE_SIMD) {
+                checker_error(c, call_node->line, call_node->column,
+                    "__simd_bitcast() result type cannot be inferred here; use it where "
+                    "a Simd(U, N) is expected (e.g. `Simd(f32, 16) f = __simd_bitcast(i)`)");
+                return NULL; }
+            if (exp->as.simd.lanes != vt->as.simd.lanes) {
+                checker_error(c, call_node->line, call_node->column,
+                    "__simd_bitcast() cannot change the lane count (%d -> %d)",
+                    vt->as.simd.lanes, exp->as.simd.lanes); return NULL; }
+            return type_simd(type_clone(exp->as.simd.elem), exp->as.simd.lanes);
+        }
+
         checker_error(c, call_node->line, call_node->column,
                       "unknown simd intrinsic '%s'", name);
         return NULL;

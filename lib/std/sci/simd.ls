@@ -13,9 +13,12 @@
 //   silu(v)     x * sigmoid(x)   (a.k.a. Swish; the target CNN's activation)
 //   relu(v)     max(x, 0)
 //
-// exp / rsqrt are deferred: a polynomial exp needs integer shift + bitcast +
-// floor primitives (range reduction / 2^n scaling), rsqrt needs __simd_sqrt.
-// Both serve Transformer softmax / LayerNorm, which are Tier 2 (plan §12).
+//   exp(v)      elementwise exp,  Cephes poly + 2^n (range reduction)
+//   atan(v)     elementwise atan, branchless full-range minimax
+//
+// exp uses the __simd_floor + __simd_bitcast primitives (added for it); atan is
+// pure min/max/div/fma (no select needed). Both serve Transformer softmax /
+// LayerNorm and the PHY timing head. rsqrt is still deferred (needs __simd_sqrt).
 
 // Elementwise tanh via a degree-13 / degree-6 rational minimax (the Eigen
 // `ptanh` coefficients): tanh(x) ~= P(x)/Q(x) after clamping |x| to the range
@@ -97,4 +100,60 @@ def silu(Simd(f32, 16) x) -> Simd(f32, 16) {
 def relu(Simd(f32, 16) x) -> Simd(f32, 16) {
     Simd(f32, 16) z = __simd_zero()
     return __simd_max(x, z)
+}
+
+// Elementwise exp (Cephes single-precision, rel err ~1e-7). Range-reduce
+// x = n*ln2 + r, |r|<=ln2/2, exp(r) by a degree-6 poly, then *2^n built from the
+// integer exponent field. Needs __simd_floor + integer convert/mul + __simd_bitcast
+// (the primitives the old "deferred" note called for). For softmax / LayerNorm.
+def exp(Simd(f32, 16) x) -> Simd(f32, 16) {
+    Simd(f32, 16) hi = __simd_splat(88.3762626647949)
+    Simd(f32, 16) lo = __simd_splat(-88.3762626647949)
+    Simd(f32, 16) xc = __simd_max(__simd_min(x, hi), lo)
+    Simd(f32, 16) LOG2EF = __simd_splat(1.44269504088896341)
+    Simd(f32, 16) half   = __simd_splat(0.5)
+    Simd(f32, 16) fx = __simd_floor(__simd_fma(xc, LOG2EF, half))   // n = floor(x*log2e + 0.5)
+    // r = x - n*ln2 (two-part ln2 for accuracy)
+    xc = xc - fx * __simd_splat(0.693359375)
+    xc = xc - fx * __simd_splat(-2.12194440e-4)
+    Simd(f32, 16) x2 = xc * xc
+    Simd(f32, 16) p = __simd_splat(1.9875691500e-4)
+    p = __simd_fma(p, xc, __simd_splat(1.3981999507e-3))
+    p = __simd_fma(p, xc, __simd_splat(8.3334519073e-3))
+    p = __simd_fma(p, xc, __simd_splat(4.1665795894e-2))
+    p = __simd_fma(p, xc, __simd_splat(1.6666665459e-1))
+    p = __simd_fma(p, xc, __simd_splat(5.0000001201e-1))
+    p = __simd_fma(p, x2, xc)            // p = p*r^2 + r
+    p = p + __simd_splat(1.0)
+    // 2^n : emm = (int(n)+127) * 2^23, reinterpreted as f32 (clamp keeps n in [-127,127]).
+    Simd(i32, 16) emm   = __simd_cast(fx)         // f32 -> i32 (n is integer-valued)
+    Simd(i32, 16) c127  = __simd_splat(127)
+    Simd(i32, 16) c2p23 = __simd_splat(8388608)   // 2^23  (int * = exponent shift, no <<)
+    emm = (emm + c127) * c2p23
+    Simd(f32, 16) pow2 = __simd_bitcast(emm)
+    return p * pow2
+}
+
+// Elementwise atan (abs err ~1e-4). Branchless full-range: reduce the argument to
+// z = min(|x|,1)/max(|x|,1) in [0,1] (= |x| if |x|<=1 else 1/|x|), degree-9 odd
+// minimax poly, fold the |x|>1 correction (pi/2 - p) with a clamp-step, re-sign.
+// No select/compare intrinsic needed — only min/max/mul/div/fma.
+def atan(Simd(f32, 16) x) -> Simd(f32, 16) {
+    Simd(f32, 16) zero = __simd_zero()
+    Simd(f32, 16) one  = __simd_splat(1.0)
+    Simd(f32, 16) ax = __simd_max(x, zero - x)               // |x|
+    Simd(f32, 16) z  = __simd_min(ax, one) / __simd_max(ax, one)
+    Simd(f32, 16) z2 = z * z
+    Simd(f32, 16) p = __simd_splat(0.0208351)
+    p = __simd_fma(p, z2, __simd_splat(-0.0851330))
+    p = __simd_fma(p, z2, __simd_splat(0.1801410))
+    p = __simd_fma(p, z2, __simd_splat(-0.3302995))
+    p = __simd_fma(p, z2, __simd_splat(0.9998660))
+    p = p * z                                                // atan(z), z in [0,1]
+    // step s = 1 if |x|>1 else 0  (clamp((|x|-1)*BIG, 0, 1))
+    Simd(f32, 16) s = __simd_min(__simd_max((ax - one) * __simd_splat(1.0e9), zero), one)
+    Simd(f32, 16) halfpi = __simd_splat(1.57079637)
+    Simd(f32, 16) r = p + s * (halfpi - p - p)               // |x|<=1: p ; |x|>1: pi/2 - p
+    Simd(f32, 16) sign = x / (ax + __simd_splat(1.0e-30))    // +-1 (0 at x=0)
+    return sign * r
 }

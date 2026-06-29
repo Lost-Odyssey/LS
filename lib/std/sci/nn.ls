@@ -1066,29 +1066,46 @@ def dwconv1d_strided(*f32 inp, *f32 w, *f32 out, *f32 pbuf,
 // bn_f32 epilogue pattern from the MLP/CNN path.
 
 // Row-wise softmax over a row-major [rows, cols] f32 matrix, in place. Each row:
-// subtract row-max (numerical stability), exp, normalize by the row sum (f64 accum).
+// subtract row-max (numerical stability), exp, normalize by the row sum.
+// Vectorized: exp via smd.exp over 16-wide column chunks (+ scalar f64 tail for
+// cols % 16). Rows with cols < 16 fall fully into the scalar path (== old f64
+// behavior). f32 vector accumulation is fine for typical softmax widths.
 def softmax_rows(*f32 p, int rows, int cols) {
     int i = 0
     while i < rows {
         int base = i * cols
-        f64 mx = p[base] as f64
+        // row max (f32)
+        f32 mx = p[base]
         int j = 1
-        while j < cols {
-            f64 v = p[base + j] as f64
-            if v > mx { mx = v }
-            j = j + 1
+        while j < cols { if p[base + j] > mx { mx = p[base + j] } j = j + 1 }
+        // exp(x - mx) in place + row sum; SIMD 16-wide chunks, scalar tail
+        Simd(f32, 16) vmx = __simd_splat(mx)
+        Simd(f32, 16) vsum = __simd_zero()
+        int c = 0
+        while c + 16 <= cols {
+            Simd(f32, 16) v = __simd_load(p, base + c)
+            v = smd.exp(v - vmx)
+            __simd_store(p, base + c, v)
+            vsum = vsum + v
+            c = c + 16
         }
-        f64 sum = 0.0
-        j = 0
-        while j < cols {
-            f64 e = math.exp((p[base + j] as f64) - mx)
-            p[base + j] = e as f32
+        f64 sum = __simd_reduce_add(vsum) as f64
+        while c < cols {
+            f64 e = math.exp((p[base + c] as f64) - (mx as f64))
+            p[base + c] = e as f32
             sum = sum + e
-            j = j + 1
+            c = c + 1
         }
-        f64 inv = 1.0 / sum
-        j = 0
-        while j < cols { p[base + j] = ((p[base + j] as f64) * inv) as f32; j = j + 1 }
+        // normalize by 1/sum
+        f32 inv = (1.0 / sum) as f32
+        Simd(f32, 16) vinv = __simd_splat(inv)
+        c = 0
+        while c + 16 <= cols {
+            Simd(f32, 16) v = __simd_load(p, base + c)
+            __simd_store(p, base + c, v * vinv)
+            c = c + 16
+        }
+        while c < cols { p[base + c] = p[base + c] * inv; c = c + 1 }
         i = i + 1
     }
 }

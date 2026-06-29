@@ -95,6 +95,58 @@ if(NOT acar EQUAL 0 OR NOT acao MATCHES "ACT OK" OR acao MATCHES "ACT FAIL")
     message(FATAL_ERROR "simd activation AOT run: rc=${acar} output:\n${acao}")
 endif()
 
+# ===== std.sci.simd: vectorized exp (__simd_floor/__simd_bitcast) + atan =====
+set(ET "${SDIR}/simd_exp_atan_test.ls")
+
+execute_process(COMMAND "${LS}" run "${ET}"
+    OUTPUT_VARIABLE eco ERROR_VARIABLE ece RESULT_VARIABLE ecr TIMEOUT 30)
+if(NOT ecr EQUAL 0 OR NOT eco MATCHES "EXPATAN OK" OR eco MATCHES "EXPATAN FAIL")
+    message(FATAL_ERROR "simd exp/atan JIT: rc=${ecr}\n${ece}\n${eco}")
+endif()
+
+execute_process(COMMAND "${LS}" run --memcheck "${ET}"
+    OUTPUT_VARIABLE ecmo ERROR_VARIABLE ecme RESULT_VARIABLE ecmr TIMEOUT 30)
+if(NOT ecmr EQUAL 0 OR NOT "${ecme}" MATCHES "OK clean")
+    message(FATAL_ERROR "simd exp/atan --memcheck not clean:\n${ecme}")
+endif()
+
+set(ET_EXE "${CMAKE_BINARY_DIR}/simd_exp_atan_test.exe")
+execute_process(COMMAND "${LS}" compile "${ET}" -o "${ET_EXE}"
+    RESULT_VARIABLE eccr ERROR_VARIABLE ecce TIMEOUT 30)
+if(NOT eccr EQUAL 0)
+    message(FATAL_ERROR "simd exp/atan AOT compile failed:\n${ecce}")
+endif()
+execute_process(COMMAND "${ET_EXE}" OUTPUT_VARIABLE ecao RESULT_VARIABLE ecar TIMEOUT 30)
+if(NOT ecar EQUAL 0 OR NOT ecao MATCHES "EXPATAN OK" OR ecao MATCHES "EXPATAN FAIL")
+    message(FATAL_ERROR "simd exp/atan AOT run: rc=${ecar} output:\n${ecao}")
+endif()
+
+# ===== std.sci.nn: vectorized softmax_rows (smd.exp) =====
+set(ST "${SDIR}/nn_softmax_test.ls")
+
+execute_process(COMMAND "${LS}" run "${ST}"
+    OUTPUT_VARIABLE sco ERROR_VARIABLE sce RESULT_VARIABLE scr TIMEOUT 30)
+if(NOT scr EQUAL 0 OR NOT sco MATCHES "SOFTMAX OK" OR sco MATCHES "SOFTMAX FAIL")
+    message(FATAL_ERROR "nn softmax JIT: rc=${scr}\n${sce}\n${sco}")
+endif()
+
+execute_process(COMMAND "${LS}" run --memcheck "${ST}"
+    OUTPUT_VARIABLE scmo ERROR_VARIABLE scme RESULT_VARIABLE scmr TIMEOUT 30)
+if(NOT scmr EQUAL 0 OR NOT "${scme}" MATCHES "OK clean")
+    message(FATAL_ERROR "nn softmax --memcheck not clean:\n${scme}")
+endif()
+
+set(ST_EXE "${CMAKE_BINARY_DIR}/nn_softmax_test.exe")
+execute_process(COMMAND "${LS}" compile "${ST}" -o "${ST_EXE}"
+    RESULT_VARIABLE sccr ERROR_VARIABLE scce TIMEOUT 30)
+if(NOT sccr EQUAL 0)
+    message(FATAL_ERROR "nn softmax AOT compile failed:\n${scce}")
+endif()
+execute_process(COMMAND "${ST_EXE}" OUTPUT_VARIABLE scao RESULT_VARIABLE scar TIMEOUT 30)
+if(NOT scar EQUAL 0 OR NOT scao MATCHES "SOFTMAX OK" OR scao MATCHES "SOFTMAX FAIL")
+    message(FATAL_ERROR "nn softmax AOT run: rc=${scar} output:\n${scao}")
+endif()
+
 # ===== std.sci.nn: blocked FP32 GEMM (register-resident 6x16 micro-kernel) =====
 set(GT "${SDIR}/simd_gemm_test.ls")
 
