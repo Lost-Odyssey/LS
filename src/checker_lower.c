@@ -1243,13 +1243,17 @@ void register_builtin_operator_traits(Checker *c)
     add_builtin_lifecycle_trait(c, "Clone",   "__clone", &g_self_placeholder_type, 1); /* def clone(&self) -> Self */
 }
 
-/* Build `obj.method(arg)` as a fresh AST_CALL. obj/arg are deep-cloned so the
-   synthesized tree owns its subtrees (freed by ordinary ast_free recursion). */
-static AstNode *op_make_call(AstNode *obj_src, const char *method,
-                             AstNode *arg_src, int line, int col)
+/* Build `obj.method(arg)` as a fresh AST_CALL. obj/arg are TAKEN BY OWNERSHIP
+   (not cloned): they are the already-type-checked operands of the binary node,
+   which is about to relinquish them (the caller nulls binary.left/right). Reusing
+   the checked subtrees — rather than cloning + re-checking — is what keeps an
+   `a + b + c + ...` operator chain linear instead of O(2^n). The lowered call now
+   owns obj/arg and frees them via ordinary ast_free recursion. */
+static AstNode *op_make_call(AstNode *obj, const char *method,
+                             AstNode *arg, int line, int col)
 {
     AstNode *fld = ast_new(AST_FIELD, line, col);
-    fld->as.field_access.object = ast_clone_deep(obj_src);
+    fld->as.field_access.object = obj;
     size_t mlen = strlen(method) + 1;
     char *mdup = (char *)malloc_safe(mlen);
     memcpy(mdup, method, mlen);
@@ -1258,7 +1262,7 @@ static AstNode *op_make_call(AstNode *obj_src, const char *method,
     AstNode *call = ast_new(AST_CALL, line, col);
     call->as.call.callee = fld;
     call->as.call.args = (AstNode **)malloc_safe(sizeof(AstNode *));
-    call->as.call.args[0] = ast_clone_deep(arg_src);
+    call->as.call.args[0] = arg;
     call->as.call.arg_count = 1;
     call->as.call.type_args = NULL;
     call->as.call.type_arg_count = 0;
@@ -1353,7 +1357,17 @@ bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *right,
         }
     }
 
-    /* Type-check the synthesized expression (resolves dispatch, borrows, sret). */
+    /* The lowered call now OWNS lhs/rhs (op_make_call took them by ownership).
+       Detach them from the binary node so ast_free(node) does not double-free —
+       node->as.binary.lowered is the sole owner. Readers that traversed
+       binary.left/right (capture analysis, AST hashing, C backend) now consult
+       binary.lowered when present (mirrors codegen). */
+    node->as.binary.left = NULL;
+    node->as.binary.right = NULL;
+
+    /* Type-check the synthesized expression (resolves dispatch, borrows, sret).
+       The reused operands are already resolved; AST_BINARY memoization makes their
+       re-check O(1), so this stays linear over operator chains. */
     Type *t = check_expr(c, lowered);
     if (t == NULL)
     {

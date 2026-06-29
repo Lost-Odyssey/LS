@@ -860,8 +860,15 @@ void capture_walk(CaptureScan *s, AstNode *node) {
         capture_walk(s, node->as.mut_borrow.operand);
         return;
     case AST_BINARY:
-        capture_walk(s, node->as.binary.left);
-        capture_walk(s, node->as.binary.right);
+        /* Operator-overloaded binaries move their operands into binary.lowered
+           (left/right become NULL). Walk lowered to reach those operands. */
+        if (node->as.binary.lowered)
+            capture_walk(s, node->as.binary.lowered);
+        else
+        {
+            capture_walk(s, node->as.binary.left);
+            capture_walk(s, node->as.binary.right);
+        }
         return;
     case AST_CALL:
         capture_walk(s, node->as.call.callee);

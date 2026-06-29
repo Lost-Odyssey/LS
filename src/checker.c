@@ -3882,6 +3882,18 @@ Type *check_expr(Checker *c, AstNode *node)
 
     case AST_BINARY:
     {
+        /* Memoize: a binary node is type-checked exactly once during the normal
+           tree walk. The only re-entry is operator-overload lowering, which REUSES
+           the already-checked operands as the lowered call's object/arg (see
+           try_operator_overload). Returning the cached type here makes that re-entry
+           O(1); without it, re-checking would re-lower and recurse into the left
+           subtree — O(2^n) over a `a + b + c + ...` chain. Generic-body re-checks are
+           unaffected (those run on freshly cloned, unresolved nodes). */
+        if (node->resolved_type != NULL)
+        {
+            result = node->resolved_type;
+            break;
+        }
         Type *left = check_expr(c, node->as.binary.left);
         Type *right = check_expr(c, node->as.binary.right);
         if (left == NULL || right == NULL)

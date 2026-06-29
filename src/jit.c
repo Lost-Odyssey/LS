@@ -554,8 +554,15 @@ static uint64_t hash_ast(uint64_t h, AstNode *node) {
         break;
     case AST_BINARY:
         h = fnv_hash(h, &node->as.binary.op, sizeof(node->as.binary.op));
-        h = hash_ast(h, node->as.binary.left);
-        h = hash_ast(h, node->as.binary.right);
+        /* Overloaded binaries hold their operands under binary.lowered (left/right
+           become NULL after lowering); hash that so the key reflects the operands. */
+        if (node->as.binary.lowered)
+            h = hash_ast(h, node->as.binary.lowered);
+        else
+        {
+            h = hash_ast(h, node->as.binary.left);
+            h = hash_ast(h, node->as.binary.right);
+        }
         break;
     case AST_CALL:
         h = hash_ast(h, node->as.call.callee);
