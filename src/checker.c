@@ -2984,6 +2984,34 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return arg_type; /* the element type read out of the slot */
     }
 
+    /* __dup(place) -> T — DEEP COPY of the value at a place, WITHOUT consuming it
+       (the source stays live). The generic value-duplication primitive: codegen
+       loads the value and runs emit_clone_value — a bit-copy for POD T, a deep
+       clone (__clone) for has_drop T (Str/Vec/Map/struct/enum). The counterpart of
+       __take (which moves out): use __dup when you need an independent copy of a
+       value you still own — e.g. Vec.fill(x) writes N copies of x; Map.get_or_insert
+       returns a copy of the default it also inserts. Returns the value type. */
+    if (strcmp(name, "__dup") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__dup() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__dup() requires a place expression (p[i], field, or *p)");
+            return NULL;
+        }
+        return arg_type; /* an independent copy of the value's type */
+    }
+
     /* __rawstr("literal") -> *u8 — a raw pointer to a baked .rodata string,
        WITHOUT going through Str. Needed by std.core.reflect_core (a leaf module
        below Str/Vec that cannot import str), whose RawType stores names/signatures
@@ -3413,6 +3441,7 @@ static bool is_builtin_function(const char *name)
            strcmp(name, "__move") == 0 ||
            strcmp(name, "__drop_at") == 0 ||
            strcmp(name, "__take") == 0 ||
+           strcmp(name, "__dup") == 0 ||
            strcmp(name, "__task_spawn") == 0 ||
            strcmp(name, "__task_join") == 0 ||
            strncmp(name, "__atomic_", 9) == 0 ||

@@ -2593,6 +2593,29 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return LLVMBuildLoad2(ctx->builder, elt, ptr, "take");
         }
 
+        /* Intercept __dup(place) — DEEP COPY without consuming: load the value at
+           the place and run it through emit_clone_value (POD → the loaded value
+           verbatim; has_drop → a deep clone via __clone). The source place is
+           untouched (stays live). The clone counterpart of __take; the generic
+           value-duplication primitive behind Vec.fill / Map.get_or_insert. */
+        if (node->as.call.callee->kind == AST_IDENT &&
+            strcmp(node->as.call.callee->as.ident.name, "__dup") == 0 &&
+            node->as.call.arg_count == 1)
+        {
+            AstNode *place = node->as.call.args[0];
+            LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
+            if (ptr == NULL)
+            {
+                cg_error(ctx, node->line, node->column,
+                         "__dup: argument is not an addressable place");
+                return NULL;
+            }
+            Type *et = place->resolved_type;
+            LLVMTypeRef elt = type_to_llvm(ctx, et);
+            LLVMValueRef loaded = LLVMBuildLoad2(ctx->builder, elt, ptr, "dup.src");
+            return emit_clone_value(ctx, loaded, elt, et);
+        }
+
         /* __rawstr("literal") -> *u8 : emit the literal's baked .rodata pointer
            directly (the same i8* Str's .data would hold), without constructing a
            Str. Used by std.core.reflect_core. */

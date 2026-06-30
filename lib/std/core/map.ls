@@ -251,6 +251,23 @@ methods(K, V) Map(K, V) {
         return v
     }
 
+    // Value for k (a CLONE) if present; otherwise insert (k, dflt) and return a
+    // copy of dflt. The get-family's mutating member (cf. `get_or` which never
+    // inserts, and `upsert` which transforms an existing value). Uses __dup to
+    // make the returned copy before moving dflt into the table, so POD and
+    // has_drop V both work. `freq.get_or_insert(k, mk_empty())`.
+    def get_or_insert(&!self, K k, V dflt) -> V where K: Hash + Equal {
+        u64 h = k.hash()
+        int idx = self._find(&k, h)
+        if idx >= 0 {
+            V v = self.vals[idx]      // clone existing; k,dflt unused → dropped
+            return v
+        }
+        V ret = __dup(dflt)           // independent copy to hand back
+        self.set(k, dflt)             // move k,dflt into the table
+        return ret
+    }
+
     // Insert every entry of `other` into self (CLONES — other is unchanged),
     // overwriting the value on a key collision. The bulk union/extend for maps.
     def merge(&!self, &Map(K, V) other) where K: Hash + Equal {

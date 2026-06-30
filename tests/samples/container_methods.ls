@@ -32,6 +32,14 @@ def main() {
     ws.retain(|s| s.len() == 5)        // alpha, gamma, delta
     check(ws.len() == 3, "retain Str by len -> 3")
 
+    // fill (via __dup): POD + has_drop
+    Vec(int) fi = [9, 9, 9, 9]
+    fi.fill(0)
+    check(fi[0] == 0 && fi[3] == 0, "fill int -> all 0")
+    Vec(Str) fs = ["x", "y", "z"]
+    fs.fill("dup")                     // each slot an independent clone of "dup"
+    check(fs.len() == 3 && fs[0].eq?("dup") && fs[2].eq?("dup"), "fill Str -> all 'dup'")
+
     // ===== B: Vec reductions =====
     Vec(int) n = [5, 3, 8, 1, 9, 2]
     check(n.min().unwrap() == 1, "min = 1")
@@ -70,6 +78,21 @@ def main() {
     check(m1.len() == 3, "merge -> 3 keys")
     check(m1.get_or("b", 0) == 20, "merge overwrites b -> 20")
     check(m1.get_or("c", 0) == 3, "merge adds c -> 3")
+
+    // get_or_insert (via __dup): present returns existing, absent inserts+returns
+    Map(Str, int) gi = {}
+    gi.set("a", 1)
+    check(gi.get_or_insert("a", 99) == 1, "get_or_insert present -> existing 1")
+    check(gi.get_or_insert("b", 99) == 99, "get_or_insert absent -> dflt 99")
+    check(gi.len() == 2, "get_or_insert inserted b")
+    check(gi.get_or("b", 0) == 99, "get_or_insert b persisted")
+    // has_drop value
+    Map(int, Str) gv = {}
+    Str ins = gv.get_or_insert(1, "made")
+    check(ins.eq?("made"), "get_or_insert Str value returned")
+    check(gv.has?(1), "get_or_insert Str key present")
+    Str ins2 = gv.get_or_insert(1, "other")   // present → returns stored "made"
+    check(ins2.eq?("made"), "get_or_insert Str present -> existing")
 
     // ===== D: Set retain =====
     Set(int) s = [1, 2, 3, 4, 5, 6]

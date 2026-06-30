@@ -494,6 +494,7 @@ Construct with a list literal: <code>Vec(int) v = [1,2,3]</code>.</div>
 <tr><td class="s"><span class="sig">def retain(&amp;!self, Block(&amp;T)-&gt;bool keep)</span></td><td class="d">In-place keep matching elements, drop the rest (O(n), order-preserving).</td></tr>
 <tr><td class="s"><span class="sig">def dedup(&amp;!self)   where T: Equal</span></td><td class="d">Drop consecutive duplicates (run <code>sort()</code> first to dedup globally).</td></tr>
 <tr><td class="s"><span class="sig">def swap_remove(&amp;!self, int i) -&gt; T</span></td><td class="d">Remove &amp; return element <code>i</code> in O(1) by moving the last into its slot (does not preserve order).</td></tr>
+<tr><td class="s"><span class="sig">def fill(&amp;!self, T x)</span></td><td class="d">Set every existing slot to an independent copy of <code>x</code> (POD copy / has_drop clone); does not change len.</td></tr>
 <tr><td class="s"><span class="sig">def min(&amp;self) -&gt; Option(T)   where T: Order</span></td><td class="d">Smallest element, or <code>None</code> if empty.</td></tr>
 <tr><td class="s"><span class="sig">def max(&amp;self) -&gt; Option(T)   where T: Order</span></td><td class="d">Largest element, or <code>None</code> if empty.</td></tr>
 <tr><td class="s"><span class="sig">def is_sorted(&amp;self) -&gt; bool   where T: Order</span></td><td class="d">True if non-descending.</td></tr>
@@ -537,6 +538,7 @@ struct Entry(K, V) { K key; V val }   // yielded by iteration</pre></div>
 <tr><td class="s"><span class="sig">def set(&amp;!self, K k, V v)</span></td><td class="d">Insert or update (moves <code>k</code>,<code>v</code> in; grows at 7/8 load).</td></tr>
 <tr><td class="s"><span class="sig">m[k] = v   (via __index_set)</span></td><td class="d">Insert/update sugar (same as <code>set</code>).</td></tr>
 <tr><td class="s"><span class="sig">def remove(&amp;!self, &amp;K k) -&gt; Option(V)</span></td><td class="d">Remove key, return its value (moved out), or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def get_or_insert(&amp;!self, K k, V dflt) -&gt; V</span></td><td class="d">Value for <code>k</code> (clone) if present; else insert <code>dflt</code> and return a copy of it.</td></tr>
 <tr><td class="s"><span class="sig">def merge(&amp;!self, &amp;Map(K,V) other)</span></td><td class="d">Insert every entry of <code>other</code> (clones), overwriting on collision.</td></tr>
 <tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all entries (keep buffer).</td></tr>
 </table>

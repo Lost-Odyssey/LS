@@ -459,6 +459,17 @@ methods(T) Vec(T) {
         self.len = w
     }
 
+    // Set every existing slot to an independent copy of `x` (old values dropped
+    // first); `x` itself is dropped once at scope exit. Uses __dup so it works for
+    // POD T (bit-copy) and has_drop T (deep clone) alike. Does NOT change len —
+    // fill an empty/short Vec with `resize` first if you need N slots.
+    def fill(&!self, T x) {
+        for (int i = 0; i < self.len; i = i + 1) {
+            __drop_at(self.data[i])
+            self.data[i] = __dup(x)
+        }
+    }
+
     // Remove and return element i by moving the LAST element into its slot — O(1),
     // but does NOT preserve order. Bounds-checked (aborts on out-of-range).
     def swap_remove(&!self, int i) -> T {
