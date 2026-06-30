@@ -39,6 +39,7 @@ static int method_is_static(Checker *c, const char *struct_name, const char *met
 static int method_self_borrow_kind(Checker *c, const char *struct_name, const char *method_name);
 static bool path_is_under_stdlib(const char *path);
 static void pending_generic_method_add(Checker *c, AstNode *cloned, char *owned_mangled, Type *struct_type);
+static void generic_method_symbol(char *buf, size_t sz, const char *mangled_name, AstNode *method);
 static void register_builtin_enums(Checker *c);
 static void register_builtins(Checker *c);
 static int register_imported_struct_template(Checker *c, const char *base_name, char **type_params, int type_param_count, AstNode *decl_node, const char *module_path);
@@ -847,34 +848,49 @@ int find_or_create_impl(Checker *c, const char *struct_name)
    Error already reported in that case. */
 bool register_method(Checker *c, int impl_idx, const char *name,
                             Type *type, bool is_static, int self_borrow_kind,
+                            const char *origin_iface, AstNode *decl_node,
                             int line, int col)
 {
     /* Reject duplicate method names -- LS does not support method overloading.
-       Exception: user-defined __drop overrides the compiler-generated one.
-       (The auto-generated __drop from struct declaration conflicts when the user
-       writes `impl Widget { fn __drop() { ... } }` — allow the replacement.) */
+       Two exceptions:
+       1. __drop is an origin-agnostic singleton: any __drop (auto-generated,
+          inherent, or Destroy's `~` lowered to __drop) REPLACES the existing one
+          rather than coexisting (a type has exactly one destructor).
+       2. L-002: same-name methods from DIFFERENT origins (inherent vs interface,
+          or two distinct interfaces) coexist. Only same-origin duplicates conflict
+          (two inherent `m`, or the same interface providing `m` twice). */
     for (int j = 0; j < c->impl_registry[impl_idx].method_count; j++) {
-        if (strcmp(c->impl_registry[impl_idx].methods[j].name, name) == 0) {
-            if (strcmp(name, "__drop") == 0) {
-                /* Replace the auto-generated __drop entry with user-defined one.
-                   Free the old compiler-generated function type and its param
-                   array + pointer type to avoid a compile-time leak. */
-                Type *old = c->impl_registry[impl_idx].methods[j].type;
-                if (old && old->kind == TYPE_FUNCTION) {
-                    free(old->as.function.params);
-                    /* The pointer param (old->as.function.params[0]) was created
-                       by type_pointer(st); it outlives use here so free it. */
-                    if (old->as.function.params &&
-                        old->as.function.params[0] &&
-                        old->as.function.params[0]->kind == TYPE_POINTER)
-                        free(old->as.function.params[0]);
-                    free(old);
-                }
-                c->impl_registry[impl_idx].methods[j].type = type;
-                c->impl_registry[impl_idx].methods[j].is_static = is_static;
-                c->impl_registry[impl_idx].methods[j].self_borrow_kind = self_borrow_kind;
-                return true;
+        if (strcmp(c->impl_registry[impl_idx].methods[j].name, name) != 0)
+            continue;
+
+        if (strcmp(name, "__drop") == 0) {
+            /* Replace the existing __drop entry. Free the old compiler-generated
+               function type and its param array + pointer type to avoid a
+               compile-time leak. */
+            Type *old = c->impl_registry[impl_idx].methods[j].type;
+            if (old && old->kind == TYPE_FUNCTION) {
+                free(old->as.function.params);
+                /* The pointer param (old->as.function.params[0]) was created
+                   by type_pointer(st); it outlives use here so free it. */
+                if (old->as.function.params &&
+                    old->as.function.params[0] &&
+                    old->as.function.params[0]->kind == TYPE_POINTER)
+                    free(old->as.function.params[0]);
+                free(old);
             }
+            c->impl_registry[impl_idx].methods[j].type = type;
+            c->impl_registry[impl_idx].methods[j].is_static = is_static;
+            c->impl_registry[impl_idx].methods[j].self_borrow_kind = self_borrow_kind;
+            c->impl_registry[impl_idx].methods[j].origin_iface = origin_iface;
+            c->impl_registry[impl_idx].methods[j].decl_node = decl_node;
+            return true;
+        }
+
+        const char *eo = c->impl_registry[impl_idx].methods[j].origin_iface;
+        bool same_origin = (eo == NULL && origin_iface == NULL) ||
+                           (eo != NULL && origin_iface != NULL &&
+                            strcmp(eo, origin_iface) == 0);
+        if (same_origin) {
             const char *tname = c->impl_registry[impl_idx].struct_name;
             bool is_enum = (find_enum_type(c, tname) != NULL);
             checker_error(c, line, col,
@@ -882,6 +898,16 @@ bool register_method(Checker *c, int impl_idx, const char *name,
                 name, is_enum ? "enum" : "struct", tname);
             return false;
         }
+        /* Cross-origin coexistence (L-002): both the existing and the new entry
+           are "contended". Mark the INTERFACE-origin nodes so codegen mangles them
+           to `T.<Iface>.m` (the inherent one — origin NULL — always stays `T.m`). */
+        AstNode *en = c->impl_registry[impl_idx].methods[j].decl_node;
+        if (eo != NULL && en != NULL && en->kind == AST_FN_DECL)
+            en->as.fn_decl.iface_method_contended = true;
+        if (origin_iface != NULL && decl_node != NULL &&
+            decl_node->kind == AST_FN_DECL)
+            decl_node->as.fn_decl.iface_method_contended = true;
+        /* keep scanning: a later entry may be a same-origin true duplicate */
     }
 
     int mc = c->impl_registry[impl_idx].method_count;
@@ -898,6 +924,8 @@ bool register_method(Checker *c, int impl_idx, const char *name,
     c->impl_registry[impl_idx].methods[mc].type = type;
     c->impl_registry[impl_idx].methods[mc].is_static = is_static;
     c->impl_registry[impl_idx].methods[mc].self_borrow_kind = self_borrow_kind;
+    c->impl_registry[impl_idx].methods[mc].origin_iface = origin_iface;
+    c->impl_registry[impl_idx].methods[mc].decl_node = decl_node;
     c->impl_registry[impl_idx].method_count++;
     return true;
 }
@@ -911,11 +939,16 @@ static int method_self_borrow_kind(Checker *c, const char *struct_name,
     {
         if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
             continue;
+        int fallback = 0; bool found = false;
         for (int j = 0; j < c->impl_registry[i].method_count; j++)
         {
-            if (strcmp(c->impl_registry[i].methods[j].name, method_name) == 0)
+            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
+                continue;
+            if (c->impl_registry[i].methods[j].origin_iface == NULL)  /* inherent */
                 return c->impl_registry[i].methods[j].self_borrow_kind;
+            if (!found) { fallback = c->impl_registry[i].methods[j].self_borrow_kind; found = true; }
         }
+        return fallback;
     }
     return 0;
 }
@@ -934,19 +967,92 @@ char *chk_strdup(const char *s)
 
 Type *find_method(Checker *c, const char *struct_name, const char *method_name)
 {
+    /* L-002: with same-name cross-origin coexistence, a (type, name) pair may have
+       multiple entries. Prefer the INHERENT one (origin == NULL) — "inherent
+       priority" for bare dispatch. Otherwise return the first (interface) match
+       (a bare call that is genuinely ambiguous is rejected earlier at the call
+       site; non-contended names have exactly one entry → unchanged). */
+    for (int i = 0; i < c->impl_count; i++)
+    {
+        if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
+            continue;
+        Type *fallback = NULL;
+        for (int j = 0; j < c->impl_registry[i].method_count; j++)
+        {
+            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
+                continue;
+            if (c->impl_registry[i].methods[j].origin_iface == NULL)
+                return c->impl_registry[i].methods[j].type;  /* inherent wins */
+            if (fallback == NULL)
+                fallback = c->impl_registry[i].methods[j].type;
+        }
+        return fallback;
+    }
+    return NULL;
+}
+
+/* L-002: find a method on `struct_name` whose origin matches `origin`
+   (NULL = inherent; else interface name). Returns its type or NULL. Used by the
+   interface-qualified call `Iface.method(recv)` to select the right overload. */
+Type *find_method_origin(Checker *c, const char *struct_name,
+                         const char *method_name, const char *origin)
+{
     for (int i = 0; i < c->impl_count; i++)
     {
         if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
             continue;
         for (int j = 0; j < c->impl_registry[i].method_count; j++)
         {
-            if (strcmp(c->impl_registry[i].methods[j].name, method_name) == 0)
-            {
+            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
+                continue;
+            const char *o = c->impl_registry[i].methods[j].origin_iface;
+            if (origin == NULL) {
+                if (o == NULL) return c->impl_registry[i].methods[j].type;
+            } else if (o != NULL && strcmp(o, origin) == 0) {
                 return c->impl_registry[i].methods[j].type;
             }
         }
+        return NULL;
     }
     return NULL;
+}
+
+/* L-002: count inherent (origin NULL) and interface (origin != NULL) providers of
+   `method_name` on `struct_name`. Optionally returns the first two interface names
+   (for the ambiguity diagnostic). */
+void method_providers(Checker *c, const char *struct_name, const char *method_name,
+                      int *inherent_count, int *iface_count,
+                      const char **ia, const char **ib)
+{
+    int inh = 0, ifc = 0; const char *a = NULL, *b = NULL;
+    for (int i = 0; i < c->impl_count; i++)
+    {
+        if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
+            continue;
+        for (int j = 0; j < c->impl_registry[i].method_count; j++)
+        {
+            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
+                continue;
+            const char *o = c->impl_registry[i].methods[j].origin_iface;
+            if (o == NULL) inh++;
+            else { ifc++; if (!a) a = o; else if (!b) b = o; }
+        }
+        break;
+    }
+    if (inherent_count) *inherent_count = inh;
+    if (iface_count)    *iface_count = ifc;
+    if (ia) *ia = a;
+    if (ib) *ib = b;
+}
+
+/* L-002: true if `name` is a known interface (user-declared trait or a builtin
+   operator trait). Used to recognize `Iface.method(recv)` qualified calls. */
+bool checker_is_known_interface(Checker *c, const char *name)
+{
+    for (int i = 0; i < c->trait_count; i++)
+        if (strcmp(c->trait_registry[i].name, name) == 0)
+            return true;
+    return is_builtin_operator_trait(name);
 }
 
 
@@ -958,13 +1064,16 @@ static int method_is_static(Checker *c, const char *struct_name, const char *met
     {
         if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
             continue;
+        int fallback = -1;
         for (int j = 0; j < c->impl_registry[i].method_count; j++)
         {
-            if (strcmp(c->impl_registry[i].methods[j].name, method_name) == 0)
-            {
+            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
+                continue;
+            if (c->impl_registry[i].methods[j].origin_iface == NULL)  /* inherent */
                 return c->impl_registry[i].methods[j].is_static ? 1 : 0;
-            }
+            if (fallback < 0) fallback = c->impl_registry[i].methods[j].is_static ? 1 : 0;
         }
+        return fallback;
     }
     return -1;
 }
@@ -1450,7 +1559,9 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
 {
     const char *mname = method->as.fn_decl.name;
     char mfn_name[512];
-    snprintf(mfn_name, sizeof(mfn_name), "%s.%s", mangled_name, mname);
+    /* L-002 v2: contended interface methods get `T.<Iface>.m` (the flag was
+       pre-set on `method` by the instantiation loop). */
+    generic_method_symbol(mfn_name, sizeof(mfn_name), mangled_name, method);
 
     if (!check_method_where_bounds(c, method, mfn_name, tp_names, type_args, tp_count))
         return false;
@@ -1580,13 +1691,14 @@ static void register_lazy_generic_method(Checker *c, const char *mfn_name,
     c->lazy_generic_methods[idx].state = 0;
 }
 
-static bool ensure_generic_method_instantiated(Checker *c,
-                                               const char *mangled_struct,
-                                               const char *method_name,
-                                               int line, int col)
+/* L-002 v2: instantiate by the FULL lazy symbol (e.g. "Box(int).Show3.tag" for a
+   contended interface method, or "Box(int).tag" otherwise). The plain-name wrapper
+   below builds "T.m"; the interface-qualified call path builds "T.<Iface>.m". */
+static bool ensure_generic_method_instantiated_sym(Checker *c,
+                                                   const char *mangled_struct,
+                                                   const char *mfn_name,
+                                                   int line, int col)
 {
-    char mfn_name[512];
-    snprintf(mfn_name, sizeof(mfn_name), "%s.%s", mangled_struct, method_name);
     for (int i = 0; i < c->lazy_gm_count; i++) {
         if (strcmp(c->lazy_generic_methods[i].mangled_name, mfn_name) != 0)
             continue;
@@ -1608,6 +1720,17 @@ static bool ensure_generic_method_instantiated(Checker *c,
         return ok;
     }
     return true;
+}
+
+static bool ensure_generic_method_instantiated(Checker *c,
+                                               const char *mangled_struct,
+                                               const char *method_name,
+                                               int line, int col)
+{
+    char mfn_name[512];
+    snprintf(mfn_name, sizeof(mfn_name), "%s.%s", mangled_struct, method_name);
+    return ensure_generic_method_instantiated_sym(c, mangled_struct, mfn_name,
+                                                  line, col);
 }
 
 /* Try to instantiate a method-level generic impl method.
@@ -1947,6 +2070,52 @@ static Type *try_infer_method_generic_from_closure(Checker *c,
     return concrete;
 }
 
+/* L-002 v2: count methods named `mname` in a (folded) generic impl_node. */
+static int impl_node_same_name_count(AstNode *impl_node, const char *mname)
+{
+    int n = 0;
+    for (int m = 0; m < impl_node->as.impl_decl.method_count; m++)
+    {
+        AstNode *mm = impl_node->as.impl_decl.methods[m];
+        if (mm && mm->kind == AST_FN_DECL && mm->as.fn_decl.name &&
+            strcmp(mm->as.fn_decl.name, mname) == 0)
+            n++;
+    }
+    return n;
+}
+
+/* L-002 v2: is this folded generic method an interface provider of a CONTENDED
+   name (>=2 providers on the type)? Compiler-reserved hooks (`__drop`/`__clone`/
+   `__from_*`, incl. Destroy's folded `~`→`__drop`) and operator methods (`$op_*`)
+   are singletons and NEVER mangled — they must keep the plain `T.m` symbol. */
+static bool generic_method_is_contended(AstNode *impl_node, AstNode *method)
+{
+    const char *mname = method->as.fn_decl.name;
+    if (method->as.fn_decl.origin_iface == NULL) return false;   /* inherent */
+    if (mname == NULL) return false;
+    if (mname[0] == '_' && mname[1] == '_') return false;        /* protocol hook */
+    if (mname[0] == '$') return false;                           /* operator */
+    return impl_node_same_name_count(impl_node, mname) >= 2;
+}
+
+/* L-002 v2: build the LLVM symbol for a generic instance method —
+   `T.<Iface>.m` for a contended interface provider, else `T.m`. Reads the
+   `iface_method_contended` flag pre-set on the method node by the instantiation
+   loop (so check_and_queue's clone carries it too). emit (codegen reads the
+   pending mangled_name) and dispatch (codegen_expr.c builds `T.<Iface>.m` from
+   node.qualified_iface) both land on this name. */
+static void generic_method_symbol(char *buf, size_t sz, const char *mangled_name,
+                                  AstNode *method)
+{
+    const char *mname = method->as.fn_decl.name;
+    if (method->as.fn_decl.iface_method_contended &&
+        method->as.fn_decl.origin_iface)
+        snprintf(buf, sz, "%s.%s.%s", mangled_name,
+                 method->as.fn_decl.origin_iface, mname);
+    else
+        snprintf(buf, sz, "%s.%s", mangled_name, mname);
+}
+
 /* G1.5: For each method in a generic impl, resolve its param/return types
    with the concrete type arguments and register the method signature. Ordinary
    method bodies are checked lazily at call sites; compiler-reserved hooks that
@@ -2017,6 +2186,15 @@ void instantiate_impl_method_types(
         int sbk = method->as.fn_decl.self_borrow_kind;
         int pc = method->as.fn_decl.param_count;
 
+        /* L-002 v2: which interface (if any) provided this folded method, and
+           whether its name is contended on this type. Pre-compute the flag now
+           (order-independent: scans the whole impl_node) so symbol construction
+           below — and check_and_queue's clone — agree regardless of which of the
+           same-name overloads registers first. */
+        const char *origin = method->as.fn_decl.origin_iface;
+        method->as.fn_decl.iface_method_contended =
+            generic_method_is_contended(impl_node, method);
+
         /* Method-level type parameters: skip eager/lazy registration.
            Store as template for on-demand instantiation at call site.
            Also register a placeholder in impl_registry so that
@@ -2045,6 +2223,7 @@ void instantiate_impl_method_types(
             c->generic_impl_method_templates[idx].impl_tp_count = tp_count;
             /* Register placeholder in impl_registry for borrow/static checks */
             register_method(c, impl_idx, mname, type_void(), is_static, sbk,
+                            origin, method,  /* L-002 v2: carry fold origin */
                             method->line, method->column);
             continue;
         }
@@ -2121,11 +2300,13 @@ void instantiate_impl_method_types(
         Type *mtype = type_function(params, total, ret, false);
 
         register_method(c, impl_idx, mname, mtype, is_static, sbk,
+                        origin, method,  /* L-002 v2: carry fold origin */
                         method->line, method->column);
 
-        /* Build mangled function name: "Pair(int,string).get_first" */
+        /* Build mangled function name: "Pair(int,string).get_first"
+           L-002 v2: a contended interface method becomes "T.<Iface>.m". */
         char mfn_name[512];
-        snprintf(mfn_name, sizeof(mfn_name), "%s.%s", mangled_name, mname);
+        generic_method_symbol(mfn_name, sizeof(mfn_name), mangled_name, method);
         if (generic_method_is_eager(mname))
             check_and_queue_generic_method(c, struct_type, mangled_name, method,
                                            mtype, tp_names, type_args, tp_count,
@@ -4632,6 +4813,64 @@ Type *check_expr(Checker *c, AstNode *node)
             AstNode *obj_node = node->as.call.callee->as.field_access.object;
             const char *method_name = node->as.call.callee->as.field_access.field;
 
+            /* L-002: interface-qualified call `Iface.method(recv, args...)`. The
+               leading IDENT names a known interface, not a value/type. The receiver
+               is args[0]; REWRITE into an ordinary instance call so all the existing
+               receiver-resolution / borrow-gating / arg-checking below applies:
+                   Iface.m(recv, a1, ...)  ==>  recv.m(a1, ...)
+               and stamp node.qualified_iface so the resolution step picks the
+               interface overload (and codegen mangles the symbol when contended).
+               (Zero parser changes — the token shape `Ident.Ident(args)` is identical
+               to a static call; we recognize the interface name here.) */
+            if (obj_node->kind == AST_IDENT &&
+                checker_is_known_interface(c, obj_node->as.ident.name))
+            {
+                if (node->as.call.arg_count < 1)
+                {
+                    checker_error(c, node->line, node->column,
+                        "interface-qualified call '%s.%s' requires a receiver "
+                        "argument, e.g. '%s.%s(recv)'",
+                        obj_node->as.ident.name, method_name,
+                        obj_node->as.ident.name, method_name);
+                    result = NULL;
+                    break;
+                }
+                /* Stamp the interface name (owned). The resolution step frees it
+                   again if the method turns out not to be contended (plain `T.m`). */
+                free(node->as.call.qualified_iface);
+                node->as.call.qualified_iface = chk_strdup(obj_node->as.ident.name);
+                /* recv = args[0]. Strip an explicit borrow shell `&x` / `&!x`: the
+                   instance-method machinery auto-borrows the receiver (takes its
+                   address for self), so a borrow wrapper would make self a
+                   pointer-to-pointer. Mirrors fn_call_strip_amp_shell. */
+                AstNode *recv = node->as.call.args[0];
+                if (recv->kind == AST_MUT_BORROW && recv->as.mut_borrow.operand)
+                {
+                    AstNode *inner = recv->as.mut_borrow.operand;
+                    recv->as.mut_borrow.operand = NULL;
+                    ast_free(recv);
+                    recv = inner;
+                }
+                else if (recv->kind == AST_UNARY && recv->as.unary.op == TOKEN_AMP &&
+                         recv->as.unary.operand &&
+                         (recv->as.unary.operand->kind == AST_IDENT ||
+                          recv->as.unary.operand->kind == AST_FIELD ||
+                          recv->as.unary.operand->kind == AST_INDEX))
+                {
+                    AstNode *inner = recv->as.unary.operand;
+                    recv->as.unary.operand = NULL;
+                    ast_free(recv);
+                    recv = inner;
+                }
+                /* install recv as the field object, shift the remaining args left. */
+                for (int ai = 1; ai < node->as.call.arg_count; ai++)
+                    node->as.call.args[ai - 1] = node->as.call.args[ai];
+                node->as.call.arg_count--;
+                node->as.call.callee->as.field_access.object = recv;
+                ast_free(obj_node);   /* detached interface IDENT */
+                obj_node = recv;
+            }
+
             /* ③ case B: `Box(Str).reflect()` with a USER-TYPE arg parses as a call
                `Box(Str)` (Str is an IDENT, ambiguous with a value at parse time) —
                object is AST_CALL(callee=IDENT, args=[type-name idents]). Disambiguate
@@ -5042,6 +5281,72 @@ Type *check_expr(Checker *c, AstNode *node)
         if (is_method_call || is_static_call)
         {
             const char *method_name = node->as.call.callee->as.field_access.field;
+
+            /* L-002: interface-qualified call `Iface.m(recv)` (rewritten above to
+               `recv.m(...)` with qualified_iface stamped). Select the interface
+               overload by origin rather than the inherent-preferring find_method,
+               and keep qualified_iface set ONLY if the method is contended (so
+               codegen mangles to `T.<Iface>.m`; a single-provider interface keeps
+               the plain `T.m`). */
+            if (node->as.call.qualified_iface && is_method_call)
+            {
+                const char *qi = node->as.call.qualified_iface;
+                callee_type = find_method_origin(c, method_struct, method_name, qi);
+                if (callee_type == NULL)
+                {
+                    checker_error(c, node->line, node->column,
+                        "interface '%s' has no method '%s' for type '%s'",
+                        qi, method_name, method_struct);
+                    result = NULL;
+                    break;
+                }
+                node->as.call.callee->resolved_type = callee_type;
+                int inh = 0, ifc = 0;
+                method_providers(c, method_struct, method_name, &inh, &ifc, NULL, NULL);
+                if (inh + ifc < 2)
+                {
+                    free(node->as.call.qualified_iface);  /* not contended → plain T.m */
+                    node->as.call.qualified_iface = NULL;
+                }
+                /* L-002 v2: for a generic instance, force-instantiate THIS overload's
+                   body, keyed by the iface-aware lazy symbol (`T.<Iface>.m` when
+                   contended, else `T.m`). No-op for non-generic types (no lazy entry).
+                   Without this the qualified path would skip instantiation → JIT
+                   "Symbols not found". */
+                {
+                    char qsym[512];
+                    if (node->as.call.qualified_iface)
+                        snprintf(qsym, sizeof(qsym), "%s.%s.%s", method_struct,
+                                 node->as.call.qualified_iface, method_name);
+                    else
+                        snprintf(qsym, sizeof(qsym), "%s.%s", method_struct, method_name);
+                    ensure_generic_method_instantiated_sym(c, method_struct, qsym,
+                                                           node->line, node->column);
+                }
+                goto after_method_check;
+            }
+
+            /* L-002: bare instance dispatch `obj.m()` where `m` is ambiguous —
+               no inherent provider and >=2 interfaces provide it. The user must
+               disambiguate with a qualified call `Iface.m(recv)`. (Inherent
+               priority resolves the "inherent + interface" overlap silently;
+               only the "all-interface, >=2" case is irresolvable here.) */
+            if (is_method_call && !is_static_call)
+            {
+                int inh = 0, ifc = 0; const char *ia = NULL, *ib = NULL;
+                method_providers(c, method_struct, method_name, &inh, &ifc, &ia, &ib);
+                if (inh == 0 && ifc >= 2)
+                {
+                    checker_error(c, node->line, node->column,
+                        "ambiguous method '%s' on type '%s': provided by interfaces "
+                        "'%s' and '%s'; disambiguate with a qualified call, "
+                        "e.g. '%s.%s(recv)'",
+                        method_name, method_struct, ia, ib, ia, method_name);
+                    result = NULL;
+                    break;
+                }
+            }
+
             callee_type = find_method(c, method_struct, method_name);
             if (callee_type == NULL)
             {
@@ -8997,6 +9302,7 @@ void forward_pass(Checker *c, AstNode *program)
                         register_method(c, impl_idx, mname,
                                         method->resolved_type,
                                         m_static, m_sbk,
+                                        NULL, method,  /* imported inherent impl */
                                         method->line, method->column);
                         /* Also expose as a free function so direct calls work */
                         scope_define(c->current_scope, mname,

@@ -1314,9 +1314,19 @@ void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
 
         const char *orig_name = method->as.fn_decl.name;
 
-        /* Qualify with struct name: "Point.to_string" */
+        /* Qualify with struct name: "Point.to_string".
+           L-002: when this interface method's name is CONTENDED on its type (the
+           checker flagged it — there is also an inherent method of the same name,
+           or another interface provides it), emit it under the disambiguated symbol
+           "T.<Iface>.m" so the two bodies don't collide. The inherent method keeps
+           "T.m" (codegen_impl_decl, unchanged); a single-provider interface method
+           also keeps "T.m". Dispatch mirrors this in codegen_expr.c. */
         static char qualified_name[256];
-        snprintf(qualified_name, sizeof(qualified_name), "%s.%s", struct_name, orig_name);
+        if (method->as.fn_decl.iface_method_contended)
+            snprintf(qualified_name, sizeof(qualified_name), "%s.%s.%s",
+                     struct_name, node->as.impl_trait_decl.trait_name, orig_name);
+        else
+            snprintf(qualified_name, sizeof(qualified_name), "%s.%s", struct_name, orig_name);
         method->as.fn_decl.name = qualified_name;
 
         codegen_fn_decl(ctx, method);

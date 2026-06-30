@@ -1,28 +1,20 @@
-// trait_conflict_reject.ls — negative: conflicting method names across traits
-// should produce compile error: "conflicting method 'greet'"
-
-interface Greet {
-    def greet(&self) -> Str
-}
-
-interface HasValue {
-    def greet(&self) -> int
-}
+// trait_conflict_reject.ls — negative: SAME-ORIGIN duplicate method must error.
+// L-002 allows the SAME method name from DIFFERENT origins (two interfaces, or
+// inherent + interface) to coexist — see iface_method_disambig_test.ls. What is
+// still rejected is a true same-origin duplicate: two inherent `greet` methods.
+// Expected compile error: "conflicting method 'greet'".
 
 struct Person {
     Str name
     int age
 }
 
-methods Person: Greet {
+methods Person {
     def greet(&self) -> Str {
         return self.name
     }
-}
-
-methods Person: HasValue {
-    def greet(&self) -> int {
-        return self.age
+    def greet(&self) -> Str {
+        return self.name
     }
 }
 

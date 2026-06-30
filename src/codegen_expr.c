@@ -3167,9 +3167,19 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 const char *method_name = node->as.call.callee->as.field_access.field;
                 /* Build qualified name: StructName.method_name
                    G3: when call site provides type args (method-level generics
-                   like obj.map(string)(...)), append them: StructName.method(type) */
+                   like obj.map(string)(...)), append them: StructName.method(type)
+                   L-002: an interface-qualified call to a CONTENDED method carries
+                   node.qualified_iface — emit `StructName.<Iface>.method` to match
+                   the disambiguated symbol from codegen_impl_trait_decl. (Non-
+                   contended qualified calls have qualified_iface==NULL → plain.) */
                 static char qualified_name[512];
-                int npos = snprintf(qualified_name, sizeof(qualified_name), "%s.%s",
+                int npos;
+                if (node->as.call.qualified_iface)
+                    npos = snprintf(qualified_name, sizeof(qualified_name), "%s.%s.%s",
+                                    struct_name ? struct_name : "",
+                                    node->as.call.qualified_iface, method_name);
+                else
+                    npos = snprintf(qualified_name, sizeof(qualified_name), "%s.%s",
                                     struct_name ? struct_name : "", method_name);
                 if (node->as.call.type_arg_count > 0)
                 {

@@ -92,7 +92,15 @@ typedef struct Checker {
     /* Method registry (struct_name -> methods) */
     struct {
         const char *struct_name;
-        struct { const char *name; Type *type; bool is_static; int self_borrow_kind; } *methods;
+        struct { const char *name; Type *type; bool is_static; int self_borrow_kind;
+                 /* L-002: NULL = inherent method; else the interface name that
+                    provided it (`methods T: Iface`). Cross-origin same-name methods
+                    coexist (inherent priority on bare dispatch; qualified call
+                    `Iface.m(recv)` selects an interface one). */
+                 const char *origin_iface;
+                 /* The method's AST_FN_DECL (NULL for the auto-generated __drop).
+                    Used to flag iface_method_contended for codegen symbol mangling. */
+                 AstNode *decl_node; } *methods;
         int method_count;
         int method_cap;
     } *impl_registry;

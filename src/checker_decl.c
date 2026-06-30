@@ -281,7 +281,7 @@ void check_struct_decl(Checker *c, AstNode *node)
         drop_params[0] = type_pointer(st); /* *Struct self */
         Type *drop_type = type_function(drop_params, 1, drop_ret, false);
         register_method(c, impl_idx, "__drop", drop_type, false, 0,
-                        node->line, node->column);
+                        NULL, NULL, node->line, node->column);
         /* Also define in global scope for free function call */
         scope_define(c->current_scope, "__drop", drop_type);
     }
@@ -607,6 +607,7 @@ void check_impl_decl(Checker *c, AstNode *node)
 
         if (!register_method(c, impl_idx, method->as.fn_decl.name, method_type, is_static,
                         method->as.fn_decl.self_borrow_kind,
+                        NULL, method,  /* inherent method */
                         method->line, method->column))
             continue;
 
@@ -1071,7 +1072,17 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
             impl_node->as.impl_decl.methods,
             (size_t)(old_n + add_n) * sizeof(AstNode *));
         for (int i = 0; i < add_n; i++)
-            impl_node->as.impl_decl.methods[old_n + i] = node->as.impl_trait_decl.methods[i];
+        {
+            AstNode *fm = node->as.impl_trait_decl.methods[i];
+            impl_node->as.impl_decl.methods[old_n + i] = fm;
+            /* L-002 v2: remember which interface provided this folded method so the
+               monomorphization loop can register it with the right origin (the
+               impl_trait_decl node's identity is lost after folding). trait_name
+               points into the persisting impl_trait_decl node — same program AST
+               lifetime as the method node. Inherent methods keep origin_iface NULL. */
+            if (fm != NULL && fm->kind == AST_FN_DECL)
+                fm->as.fn_decl.origin_iface = trait_name;
+        }
         impl_node->as.impl_decl.method_count = old_n + add_n;
         /* Transfer ownership of the method NODES to the inherent impl_node: free
            only the (now-empty) trait-decl array and detach it, so ast_free does not
@@ -1312,6 +1323,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
 
         /* Register in impl_registry (same as check_impl_decl) */
         if (!register_method(c, impl_idx, mname, method_type, is_static, user_sbk,
+                           trait_name, method,  /* interface-provided method */
                            method->line, method->column))
             continue;
 
@@ -1471,6 +1483,7 @@ void register_one_imported_trait_decl(Checker *c, AstNode *d, Type *mod_type)
                         method->resolved_type,
                         method->as.fn_decl.is_static,
                         method->as.fn_decl.self_borrow_kind,
+                        tr_name, method,  /* imported interface-provided method */
                         method->line, method->column);
     }
     /* Record the trait-impl pair (so the dedup above fires on re-import). */

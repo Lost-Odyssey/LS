@@ -242,6 +242,7 @@ void ast_free(AstNode *node) {
             type_node_free(node->as.call.type_args[i]);
         free(node->as.call.type_args);
         free(node->as.call.resolved_type_args);
+        free(node->as.call.qualified_iface);
         break;
     case AST_INDEX:
         ast_free(node->as.index_expr.object);
@@ -782,6 +783,11 @@ AstNode *ast_clone_deep(const AstNode *src) {
         }
         if (src->as.call.resolved_type_args)
             n->as.call.resolved_type_args = ast_strdup(src->as.call.resolved_type_args);
+        /* Don't share the owned strdup with the source (shallow `*n=*src` copied
+           the pointer); re-strdup or NULL it. Normally NULL at clone time (set
+           during checking, which post-dates cloning). */
+        n->as.call.qualified_iface = src->as.call.qualified_iface
+            ? ast_strdup(src->as.call.qualified_iface) : NULL;
         break;
     case AST_INDEX:
         n->as.index_expr.object = ast_clone_deep(src->as.index_expr.object);

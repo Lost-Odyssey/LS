@@ -3195,6 +3195,19 @@ add_test(
 )
 set_tests_properties(test_trait_call PROPERTIES DEPENDS "test_impl_trait_parse")
 
+# L-002: interface same-name method disambiguation — inherent priority on bare
+# dispatch, qualified `Iface.method(recv)` selecting the overload (contended ones
+# emitted as `T.<Iface>.m`), ambiguity rejected with a hint. JIT+AOT+memcheck +
+# negatives (ambiguous / no-receiver / bad-receiver / generic v1 limit).
+add_test(
+    NAME test_iface_method_disambig
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_iface_method_disambig.cmake
+)
+set_tests_properties(test_iface_method_disambig PROPERTIES DEPENDS "test_trait_call")
+
 add_test(
     NAME test_trait_bounds_parse
     COMMAND ${CMAKE_COMMAND}

@@ -78,6 +78,7 @@
   <a class="item" href="#ty-struct">struct &amp; methods</a>
   <a class="item" href="#ty-self">self forms</a>
   <a class="item" href="#ty-interface">interfaces</a>
+  <a class="item" href="#ty-disambig">same-name disambiguation</a>
   <a class="item" href="#ty-operators">operator overloading</a>
   <a class="item" href="#ty-destroy">Destroy / Clone</a>
   <a class="item" href="#ty-generics">generic structs</a>
@@ -214,6 +215,68 @@ announce(<span class="t">Circle</span>)(<span class="t">Circle</span> { radius: 
     <b>inherent</b> methods. <code>methods Type: Interface { … }</code> additionally records
     that <code>Type</code> satisfies <code>Interface</code>, so it can be used wherever a
     <code>T: Interface</code> bound is required.</div>
+  </section>
+
+  <section id="ty-disambig">
+    <h2>Same-name methods &amp; qualified calls <span class="tag ok">disambiguation</span></h2>
+    <p>A type may carry the <b>same method name</b> from more than one source — an
+    inherent method plus one or more interfaces, or two different interfaces. They
+    <b>coexist</b>; you pick one of three ways.</p>
+
+    <h3>Inherent priority</h3>
+    <p>If the type has an <b>inherent</b> method of that name, a bare <code>obj.m()</code>
+    call always resolves to it. An interface of the same name is reachable only through
+    a qualified call.</p>
+    <div class="ex"><pre><span class="k">import</span> std.core.str
+
+<span class="k">struct</span> <span class="t">Doc</span> { <span class="t">Str</span> body }
+<span class="k">methods</span> <span class="t">Doc</span>            { <span class="k">def</span> render(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> self.body } }            <span class="c">// inherent</span>
+<span class="k">methods</span> <span class="t">Doc</span>: <span class="t">Show</span>      { <span class="k">def</span> render(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> f<span class="s">"&lt;{self.body}&gt;"</span> } }   <span class="c">// interface</span>
+
+<span class="t">Doc</span> d = <span class="t">Doc</span> { body: <span class="s">"hi"</span> }
+d.render()          <span class="c">// "hi"   — inherent wins, no ambiguity</span>
+<span class="t">Show</span>.render(&amp;d)     <span class="c">// "&lt;hi&gt;" — qualified call picks the interface version</span></pre></div>
+
+    <h3>Qualified call — <code>Interface.method(recv, args…)</code></h3>
+    <p>When two interfaces provide the same name (no inherent method to win), a bare call
+    is a <b>compile error</b>; name the interface to choose. The receiver is the first
+    argument — auto-borrowed for an <code>&amp;self</code> method (bare or <code>&amp;recv</code>),
+    and written <code>&amp;!recv</code> for an <code>&amp;!self</code> method.</p>
+    <div class="ex"><pre><span class="k">interface</span> <span class="t">Source</span> { <span class="k">def</span> close(&amp;!self) -&gt; <span class="t">int</span> }
+<span class="k">interface</span> <span class="t">Sink</span>   { <span class="k">def</span> close(&amp;!self) -&gt; <span class="t">int</span> }
+<span class="k">struct</span> <span class="t">Pipe</span> { <span class="t">int</span> n }
+<span class="k">methods</span> <span class="t">Pipe</span>: <span class="t">Source</span> { <span class="k">def</span> close(&amp;!self) -&gt; <span class="t">int</span> { <span class="k">return</span> 100 } }
+<span class="k">methods</span> <span class="t">Pipe</span>: <span class="t">Sink</span>   { <span class="k">def</span> close(&amp;!self) -&gt; <span class="t">int</span> { <span class="k">return</span> 200 } }
+
+<span class="t">Pipe</span> p = <span class="t">Pipe</span> { n: 0 }
+<span class="bad">p.close()           // ✗ ambiguous: interfaces 'Source' and 'Sink' both provide 'close'</span>
+<span class="t">Source</span>.close(&amp;!p)   <span class="c">// 100</span>
+<span class="t">Sink</span>.close(&amp;!p)     <span class="c">// 200</span></pre></div>
+
+    <div class="warn"><b>Ambiguity is rejected at compile time.</b> A bare call to a name
+    that has no inherent method and ≥2 interface providers fails with a clear error that
+    names the interfaces and suggests the qualified form. There is no silent "first one
+    wins".</div>
+
+    <h3>Works on generic types too</h3>
+    <p>A generic type can carry same-name methods the same way (it just needs an inherent
+    <code>methods(T) X(T) { … }</code> block present to host them — any inherent block will do).</p>
+    <div class="ex"><pre><span class="k">interface</span> <span class="t">Show3</span> { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> }
+<span class="k">interface</span> <span class="t">Mark</span>  { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> }
+<span class="k">struct</span> <span class="t">Box</span>(<span class="t">T</span>) { <span class="t">T</span> val }
+<span class="k">methods</span>(<span class="t">T</span>) <span class="t">Box</span>(<span class="t">T</span>)        { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> <span class="s">"inherent"</span> } }
+<span class="k">methods</span>(<span class="t">T</span>) <span class="t">Box</span>(<span class="t">T</span>): <span class="t">Show3</span> { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> <span class="s">"show3"</span> } }
+<span class="k">methods</span>(<span class="t">T</span>) <span class="t">Box</span>(<span class="t">T</span>): <span class="t">Mark</span>  { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> <span class="s">"mark"</span> } }
+
+<span class="t">Box</span>(<span class="t">int</span>) b = <span class="t">Box</span>(<span class="t">int</span>) { val: 1 }
+b.tag()           <span class="c">// "inherent"</span>
+<span class="t">Show3</span>.tag(&amp;b)     <span class="c">// "show3"</span>
+<span class="t">Mark</span>.tag(&amp;b)      <span class="c">// "mark"</span></pre></div>
+
+    <div class="note">Nothing changes for the common case: an interface method with a
+    <b>single</b> provider — <code>x.show()</code>, <code>x.hash()</code>, <code>it.next()</code>,
+    <code>~</code>/<code>clone</code>, operators — is called bare exactly as before. Qualified
+    calls and the ambiguity rule only come into play when a name is genuinely contended.</div>
   </section>
 
   <section id="ty-operators">

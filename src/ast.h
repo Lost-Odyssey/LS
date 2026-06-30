@@ -275,6 +275,12 @@ struct AstNode
                                          closure return (e.g. "int" for v.map(|x|x+1));
                                          codegen mangles `.map(int)` when type_args
                                          is empty. NULL otherwise. */
+            /* L-002: interface-qualified call `Iface.method(recv, ...)`. Set by the
+               checker (owned strdup) ONLY when the resolved method is contended
+               (>=2 providers on the receiver type) and therefore emitted under the
+               mangled symbol `T.<Iface>.m`. NULL for ordinary calls and for
+               single-provider interface methods (those keep the plain `T.m`). */
+            char *qualified_iface;
         } call;
         struct
         {
@@ -510,6 +516,18 @@ struct AstNode
                  1 = &self  (read-only borrow, Phase A2 — not yet implemented)
                  2 = &!self (writable borrow) */
             int self_borrow_kind;
+            /* L-002: set by the checker when this is an INTERFACE method whose name
+               is contended on its type (the type also has an inherent method of the
+               same name, or another interface provides it). Codegen then emits it
+               under the mangled symbol `T.<Iface>.m` instead of `T.m`. */
+            bool iface_method_contended;
+            /* L-002 v2 (generic types): the interface that provided this method,
+               stamped when `check_impl_trait_decl` FOLDS a generic `methods(T) X(T):
+               Iface` block into the struct's inherent impl_node. NULL = inherent.
+               (Non-generic types carry origin in the method-registry entry instead;
+               this AST field is the carrier across the generic fold, which erases
+               the separate impl_trait_decl node.) */
+            const char *origin_iface;
         } fn_decl;
         struct
         {
