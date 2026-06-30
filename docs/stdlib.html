@@ -131,6 +131,7 @@
     <a class="item" href="#stack">stack — Stack(T)</a>
     <a class="item" href="#set">set — Set(T)</a>
     <a class="item" href="#heap">heap — BinaryHeap(T)</a>
+    <a class="item" href="#deque">deque — Deque(T)</a>
     <div class="group">Memory</div>
     <a class="item" href="#arena">arena — Arena/Region</a>
     <div class="group">Strings &amp; Text</div>
@@ -201,6 +202,7 @@ are built-in types, not a module.</p>
 <tr><td class="m"><a href="#stack">stack</a></td><td>LIFO stack</td></tr>
 <tr><td class="m"><a href="#set">set</a></td><td>Generic hash set <code>Set(T)</code> — membership, de-dup, set algebra</td></tr>
 <tr><td class="m"><a href="#heap">heap</a></td><td>Binary max-heap <code>BinaryHeap(T)</code> — priority queue</td></tr>
+<tr><td class="m"><a href="#deque">deque</a></td><td>Double-ended queue <code>Deque(T)</code> — growable ring buffer, O(1) both ends</td></tr>
 <tr><td class="grp" colspan="2">Memory</td></tr>
 <tr><td class="m"><a href="#arena">arena</a></td><td>Bump allocators: typed <code>Arena(T)</code> pool + heterogeneous <code>Region</code> (string interning)</td></tr>
 <tr><td class="grp" colspan="2">Strings &amp; Text</td></tr>
@@ -720,6 +722,73 @@ largest whenever it overflows — the root is the current K-th smallest:</p>
 <span class="t">Vec</span>(<span class="t">int</span>) sorted_desc = {}
 <span class="k">while</span> hs.empty? == <span class="k">false</span> { sorted_desc.push(hs.pop().unwrap()) }
 <span class="c">// sorted_desc = [9, 8, 7, 3, 2, 1]  — reverse() for ascending</span></pre></div>
+</section>
+
+<section id="deque">
+<h2>deque<span class="imp">import std.core.deque</span></h2>
+<p class="purpose">Double-ended queue backed by a growable <b>ring buffer</b>: push and pop at
+<b>both</b> ends in O(1) (amortized for growth), and O(1) random access by logical index.
+Use it as a <b>queue</b> (push_back + pop_front), a <b>stack</b> (push_back + pop_back), or a
+<b>sliding window</b>. Unlike <code>Vec(T)</code> — which is O(n) to insert/remove at the front —
+the ring keeps both ends cheap. Works for any element type (no <code>Order</code>/<code>Hash</code>
+needed).</p>
+
+<div class="types"><pre>struct Deque(T) { *T data; int cap; int head; int len }   // has destructor
+<span class="t">Deque</span>(<span class="t">int</span>) d = {}             <span class="c">// empty (the default constructor)</span>
+<span class="t">Deque</span>(<span class="t">int</span>) d = [1, 2, 3]       <span class="c">// list literal, front→back</span></pre></div>
+
+<table class="api">
+<tr><td class="s"><span class="sig">def push_back(&amp;!self, T x)</span></td><td class="d">Append at the back (moves in). O(1) amortized.</td></tr>
+<tr><td class="s"><span class="sig">def push_front(&amp;!self, T x)</span></td><td class="d">Prepend at the front (moves in). O(1) amortized.</td></tr>
+<tr><td class="s"><span class="sig">def pop_front(&amp;!self) -&gt; Option(T)</span></td><td class="d">Remove &amp; return the front (moved out), or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def pop_back(&amp;!self) -&gt; Option(T)</span></td><td class="d">Remove &amp; return the back (moved out), or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def front(&amp;self) -&gt; Option(T)</span></td><td class="d">Clone of the front element, or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def back(&amp;self) -&gt; Option(T)</span></td><td class="d">Clone of the back element, or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def get(&amp;self, int i) -&gt; Option(T)</span></td><td class="d">Clone of the element at logical index <code>i</code> (0 = front), or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span> / <span class="sig">empty?(&amp;self) -&gt; bool</span></td><td class="d">Element count / emptiness.</td></tr>
+<tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all elements (keeps the buffer).</td></tr>
+<tr><td class="s"><span class="sig">def to_vec(&amp;self) -&gt; Vec(T)</span></td><td class="d">Collect clones front→back into a <code>Vec(T)</code>.</td></tr>
+<tr><td class="s"><span class="sig">def iter(&amp;self) -&gt; DequeIter(T)</span></td><td class="d">Borrowing iterator front→back; drives <code>for x in d</code>.</td></tr>
+</table>
+
+<h3>As a FIFO queue</h3>
+<div class="ex"><pre><span class="k">import</span> std.core.deque
+
+<span class="t">Deque</span>(<span class="t">int</span>) q = {}
+q.push_back(1)  q.push_back(2)  q.push_back(3)
+<span class="k">while</span> q.empty? == <span class="k">false</span> {
+    @print(q.pop_front().unwrap())   <span class="c">// 1, 2, 3  (first-in first-out)</span>
+}</pre></div>
+
+<h3>Sliding window of the last K items</h3>
+<p>Push each item at the back; once the window overflows K, drop the oldest from the
+front. The deque always holds the most recent K — the bread-and-butter of streaming /
+signal processing:</p>
+<div class="ex"><pre><span class="k">def</span> moving_sum(<span class="t">Vec</span>(<span class="t">int</span>) stream, <span class="t">int</span> k) -&gt; <span class="t">Vec</span>(<span class="t">int</span>) {
+    <span class="t">Deque</span>(<span class="t">int</span>) win = {}
+    <span class="t">Vec</span>(<span class="t">int</span>) sums = {}
+    <span class="t">int</span> running = 0
+    <span class="k">for</span> x <span class="k">in</span> stream {
+        win.push_back(x)
+        running = running + x
+        <span class="k">if</span> win.len() &gt; k {
+            running = running - win.pop_front().unwrap()   <span class="c">// evict the oldest</span>
+        }
+        <span class="k">if</span> win.len() == k { sums.push(running) }            <span class="c">// emit one window sum</span>
+    }
+    <span class="k">return</span> sums
+}
+
+<span class="t">Vec</span>(<span class="t">int</span>) s = [5, 3, 8, 1, 9, 2, 7]
+@print(moving_sum(s, 3).len())   <span class="c">// 5  → [16, 12, 18, 12, 18]</span></pre></div>
+
+<h3>BFS frontier</h3>
+<div class="ex"><pre><span class="t">Deque</span>(<span class="t">int</span>) frontier = {}
+frontier.push_back(start)
+<span class="k">while</span> frontier.empty? == <span class="k">false</span> {
+    <span class="t">int</span> node = frontier.pop_front().unwrap()   <span class="c">// FIFO → breadth-first</span>
+    <span class="c">// ... visit node, push_back its unseen neighbors ...</span>
+}</pre></div>
 </section>
 
 <section id="arena">

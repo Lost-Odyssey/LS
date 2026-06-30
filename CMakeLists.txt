@@ -2543,6 +2543,20 @@ add_test(
 )
 set_tests_properties(test_heap PROPERTIES DEPENDS "test_set")
 
+# std.core.deque — Deque(T) growable ring buffer (double-ended queue). Both-ends
+# O(1), growth + wraparound stress, sliding-window pattern, Deque(Str) has_drop.
+# JIT + AOT + memcheck.
+add_test(
+    NAME test_deque
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/deque_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_deque.cmake
+)
+set_tests_properties(test_deque PROPERTIES DEPENDS "test_set")
+
 # Cross-module same-name generic → clear ambiguity error on bare use (negative).
 add_test(
     NAME test_generic_ambig
