@@ -2026,17 +2026,30 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
         switch (node->as.binary.op)
         {
+        /* Signed integer arithmetic is emitted with `nsw` (no-signed-wrap):
+           signed overflow is undefined (C semantics), which lets LLVM's
+           IndVarSimplify widen i32 loop induction vars to i64 and LSR
+           strength-reduce affine array addressing into pointer-walking —
+           without nsw the i32 IV can't be widened, forcing a sext (movslq)
+           and explicit offset math (leal) on every indexed access. Measured
+           ~+25% on the packed sgemm micro-kernel. Unsigned keeps wrapping. */
         case TOKEN_PLUS:
             if (is_fp)
                 return cg_fp_contract(LLVMBuildFAdd(ctx->builder, left, right, "fadd"));
+            if (is_signed_int)
+                return LLVMBuildNSWAdd(ctx->builder, left, right, "add");
             return LLVMBuildAdd(ctx->builder, left, right, "add");
         case TOKEN_MINUS:
             if (is_fp)
                 return cg_fp_contract(LLVMBuildFSub(ctx->builder, left, right, "fsub"));
+            if (is_signed_int)
+                return LLVMBuildNSWSub(ctx->builder, left, right, "sub");
             return LLVMBuildSub(ctx->builder, left, right, "sub");
         case TOKEN_STAR:
             if (is_fp)
                 return cg_fp_contract(LLVMBuildFMul(ctx->builder, left, right, "fmul"));
+            if (is_signed_int)
+                return LLVMBuildNSWMul(ctx->builder, left, right, "mul");
             return LLVMBuildMul(ctx->builder, left, right, "mul");
         case TOKEN_SLASH:
             if (is_fp)
