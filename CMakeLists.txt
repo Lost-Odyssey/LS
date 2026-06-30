@@ -3303,6 +3303,16 @@ add_test(
 )
 set_tests_properties(test_decl_init_mul PROPERTIES DEPENDS "test_operator_overload")
 
+# ---- B-5: dedup imports by resolved file, not import-path spelling ----
+add_test(
+    NAME test_module_dedup_spelling
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_module_dedup_spelling.cmake
+)
+
 # ---- L-006 fix: enum with vec/map payload ----
 add_test(
     NAME test_enum_vec_map_payload

@@ -262,6 +262,25 @@ ModuleInfo *module_load(ModuleRegistry *reg, const char *import_path,
         return NULL;
     }
 
+    /* B-5: dedup by the RESOLVED FILE, not by the import-path spelling. Two
+       different spellings can resolve to the same .ls file — e.g. `import
+       std.sys.io` (resolve Try 1: lib/std/sys/io.ls) and `import sys.io`
+       (resolve Try 2: lib/std/<rel> = lib/std/sys/io.ls). The spelling-keyed
+       module_find() above misses that, so without this the same module would be
+       parsed, type-checked, and code-generated TWICE (each under its own symbol
+       prefix). If the resolved file is already registered under another
+       spelling, reuse that entry. The checker keys the module TYPE by mod->name
+       (the canonical first-loaded spelling), so call sites through either
+       spelling mangle to the single emitted copy. */
+    for (int i = 0; i < reg->count; i++) {
+        if (reg->modules[i].file_path != NULL &&
+            strcmp(reg->modules[i].file_path, file_path) == 0) {
+            free(file_path);
+            free(source);
+            return &reg->modules[i];
+        }
+    }
+
     /* Parse */
     AstNode *ast = parse(source, file_path);
     if (ast == NULL) {

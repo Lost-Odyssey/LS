@@ -9141,8 +9141,15 @@ void forward_pass(Checker *c, AstNode *program)
                 mod->checked = true;
             }
 
-            /* Collect exported symbols from the module */
-            Type *mod_type = type_module_new(import_path);
+            /* Collect exported symbols from the module.
+               B-5: key the module TYPE by mod->name (the canonical first-loaded
+               spelling), NOT the local import_path. When two spellings resolve to
+               the same file (module_load dedups them, e.g. `import std.sys.io` and
+               `import sys.io`), both must mangle call-site symbols to the single
+               emitted copy. For the common single-spelling case mod->name ==
+               import_path, so this is an identity change. The scope binding below
+               still keys on the local spelling/alias, so name lookup is unaffected. */
+            Type *mod_type = type_module_new(mod->name);
             AstNode *mod_ast = mod->ast;
             for (int j = 0; j < mod_ast->as.program.decl_count; j++)
             {
