@@ -116,8 +116,7 @@ methods(T) Set(T) {
 
     // Elements in self OR other.
     def union(&self, &Set(T) other) -> Set(T) where T: Hash + Equal {
-        Map(T, bool) _empty = {}
-        Set(T) out = Set(T) { m: _empty }
+        Set(T) out = new_set(T)()
         out.extend(self)
         out.extend(other)
         return out
@@ -125,8 +124,7 @@ methods(T) Set(T) {
 
     // Elements in self AND other.
     def intersect(&self, &Set(T) other) -> Set(T) where T: Hash + Equal {
-        Map(T, bool) _empty = {}
-        Set(T) out = Set(T) { m: _empty }
+        Set(T) out = new_set(T)()
         for (int i = 0; i < self.m.cap; i = i + 1) {
             int c = self.m.ctrl[i] as int
             if c != 255 {
@@ -141,8 +139,7 @@ methods(T) Set(T) {
 
     // Elements in self but NOT in other.
     def difference(&self, &Set(T) other) -> Set(T) where T: Hash + Equal {
-        Map(T, bool) _empty = {}
-        Set(T) out = Set(T) { m: _empty }
+        Set(T) out = new_set(T)()
         for (int i = 0; i < self.m.cap; i = i + 1) {
             int c = self.m.ctrl[i] as int
             if c != 255 {

@@ -4462,10 +4462,16 @@ Type *check_expr(Checker *c, AstNode *node)
             }
             if (!type_args_ok) { free(type_args); result = NULL; break; }
 
-            /* Inferred calls carry no `type_args` on the node — stash the resolved
-               type-arg names so codegen mangles the call to the instantiated
-               symbol (mirrors the method-generic `resolved_type_args` mechanism). */
-            if (inferring && node->as.call.resolved_type_args == NULL) {
+            /* Stash the resolved (concrete) type-arg names so codegen mangles the
+               call to the instantiated symbol (mirrors the method-generic
+               `resolved_type_args` mechanism). Inferred calls carry no `type_args`
+               at all and MUST use this. Explicit calls also need it whenever the
+               type args were resolved through aliases — e.g. `make(T)(..)` inside a
+               generic body, where the alias T→int is checker-transient: codegen has
+               no alias context, so re-mangling from the raw TypeNode would emit the
+               abstract `make(T)` instead of the instantiated `make(int)`. The
+               clone is checked fresh each instantiation, so this node starts NULL. */
+            if (node->as.call.resolved_type_args == NULL) {
                 char taj[512];
                 int tp = 0;
                 for (int ti = 0; ti < tp_count && tp < (int)sizeof(taj) - 1; ti++) {

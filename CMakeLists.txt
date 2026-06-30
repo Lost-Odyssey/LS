@@ -2499,6 +2499,21 @@ add_test(
 )
 set_tests_properties(test_set PROPERTIES DEPENDS "test_stack")
 
+# Generic free-function called with an ABSTRACT type param from inside another
+# generic body (method / free fn) — regression for the call-site mangling gap
+# (docs/plan_generic_freefn_mangle.md): codegen used to emit `make(T)` instead of
+# the instantiated `make(int)`. JIT + AOT + memcheck.
+add_test(
+    NAME test_generic_freefn
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/generic_freefn_in_body.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_generic_freefn.cmake
+)
+set_tests_properties(test_generic_freefn PROPERTIES DEPENDS "test_set")
+
 # Cross-module same-name generic → clear ambiguity error on bare use (negative).
 add_test(
     NAME test_generic_ambig

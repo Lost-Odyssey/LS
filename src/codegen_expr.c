@@ -3281,7 +3281,19 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 {
                     static char g2_mangled[512];
                     int pos = snprintf(g2_mangled, sizeof(g2_mangled), "%s(", fn_name);
-                    if (node->as.call.type_arg_count > 0)
+                    /* Prefer the checker's resolved_type_args (concrete, alias-
+                       resolved, type_name-built — byte-identical to the symbol the
+                       checker registered). Re-mangling from the raw TypeNodes is the
+                       legacy fallback only when resolved_type_args is absent: codegen
+                       has no type-alias context, so a `make(T)(..)` call inside a
+                       generic body would otherwise emit the abstract `make(T)`
+                       instead of the instantiated `make(int)`. */
+                    if (node->as.call.resolved_type_args != NULL)
+                    {
+                        pos += snprintf(g2_mangled + pos, sizeof(g2_mangled) - (size_t)pos,
+                                        "%s", node->as.call.resolved_type_args);
+                    }
+                    else
                     {
                         for (int ti = 0; ti < node->as.call.type_arg_count; ti++)
                         {
@@ -3289,11 +3301,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             cg_append_type_node_name(node->as.call.type_args[ti],
                                                      g2_mangled, &pos, (int)sizeof(g2_mangled));
                         }
-                    }
-                    else
-                    {
-                        pos += snprintf(g2_mangled + pos, sizeof(g2_mangled) - (size_t)pos,
-                                        "%s", node->as.call.resolved_type_args);
                     }
                     g2_mangled[pos++] = ')';
                     g2_mangled[pos] = '\0';
