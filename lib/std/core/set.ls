@@ -77,6 +77,24 @@ methods(T) Set(T) {
     // Drop every element, keep the buffer (cheap reuse).
     def clear(&!self) { self.m.clear() }
 
+    // Keep only the elements for which `keep` returns true; drop the rest.
+    // Rebuilds the inner map (moving survivors into a fresh table, then dropping
+    // the old one) — removing during slot iteration is unsafe since the inner
+    // map's backward-shift delete relocates slots.
+    def retain(&!self, Block(&T) -> bool keep) where T: Hash + Equal {
+        Map(T, bool) kept = {}
+        for (int i = 0; i < self.m.cap; i = i + 1) {
+            int c = self.m.ctrl[i] as int
+            if c != 255 {
+                if keep(&self.m.keys[i]) {
+                    T k = self.m.keys[i]
+                    kept.set(k, true)
+                }
+            }
+        }
+        self.m = kept
+    }
+
     // ---- literal protocol ----
 
     // Set-literal `Set(T) s = [a, b, c]` opt-in (reserved-method protocol, like

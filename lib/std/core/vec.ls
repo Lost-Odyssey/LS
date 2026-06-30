@@ -425,6 +425,112 @@ methods(T) Vec(T) {
         return acc
     }
 
+    // ---- in-place edits ----
+
+    // Keep only the elements for which `keep` returns true; drop the rest in
+    // place (has_drop T is destroyed exactly once). O(n), order-preserving:
+    // survivors are compacted left by MOVE (no clone).
+    def retain(&!self, Block(&T) -> bool keep) {
+        int w = 0
+        for (int r = 0; r < self.len; r = r + 1) {
+            if keep(&self.data[r]) {
+                if w != r { self.data[w] = __take(self.data[r]) }
+                w = w + 1
+            } else {
+                __drop_at(self.data[r])
+            }
+        }
+        self.len = w
+    }
+
+    // Remove CONSECUTIVE duplicate elements (keep the first of each run), dropping
+    // the removed ones. Like Unix `uniq`: run `sort()` first to dedup globally.
+    def dedup(&!self) where T: Equal {
+        if self.len < 2 { return }
+        int w = 1
+        for (int r = 1; r < self.len; r = r + 1) {
+            if self.data[r] == self.data[w - 1] {
+                __drop_at(self.data[r])
+            } else {
+                if w != r { self.data[w] = __take(self.data[r]) }
+                w = w + 1
+            }
+        }
+        self.len = w
+    }
+
+    // Remove and return element i by moving the LAST element into its slot — O(1),
+    // but does NOT preserve order. Bounds-checked (aborts on out-of-range).
+    def swap_remove(&!self, int i) -> T {
+        if i < 0 || i >= self.len {
+            @print("Vec.swap_remove: index out of bounds")
+            std.sys.c.abort()
+        }
+        T out = __take(self.data[i])
+        int last = self.len - 1
+        if i != last { self.data[i] = __take(self.data[last]) }
+        self.len = last
+        return out
+    }
+
+    // ---- reductions ----
+
+    // Smallest element by Order, or None if empty. Clones the winner once.
+    def min(&self) -> Option(T) where T: Order {
+        if self.len == 0 { return None }
+        int bi = 0
+        for (int i = 1; i < self.len; i = i + 1) {
+            if self.data[i] < self.data[bi] { bi = i }
+        }
+        T out = self.data[bi]
+        return Some(out)
+    }
+
+    // Largest element by Order, or None if empty. Clones the winner once.
+    def max(&self) -> Option(T) where T: Order {
+        if self.len == 0 { return None }
+        int bi = 0
+        for (int i = 1; i < self.len; i = i + 1) {
+            if self.data[bi] < self.data[i] { bi = i }
+        }
+        T out = self.data[bi]
+        return Some(out)
+    }
+
+    // True if elements are in non-descending order (by Order). Empty / single = true.
+    def is_sorted(&self) -> bool where T: Order {
+        for (int i = 1; i < self.len; i = i + 1) {
+            if self.data[i] < self.data[i - 1] { return false }
+        }
+        return true
+    }
+
+    // Sum of all elements, seeded with T.zero() (so an empty Vec sums to zero).
+    // Bound-free generic arithmetic (like std.sci.tensor): `+` and `T.zero()`
+    // resolve at monomorphization, so numeric T (int / i64 / f64) works without a
+    // `where` bound; a non-numeric T (no `+` / no `zero()`) is a clear use-site
+    // error. (`where T: Add` does NOT work — scalars use the builtin operator and
+    // don't formally `impl Add`.)
+    def sum(&self) -> T {
+        T acc = T.zero()
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            acc = acc + e
+        }
+        return acc
+    }
+
+    // Product of all elements, seeded with T.one() (empty Vec → one). Same
+    // bound-free generic arithmetic as sum().
+    def product(&self) -> T {
+        T acc = T.one()
+        for (int i = 0; i < self.len; i = i + 1) {
+            T e = self.data[i]
+            acc = acc * e
+        }
+        return acc
+    }
+
     def sort(&!self) where T: Order {
         self.sort_by(|a, b| {
             if a < b { return -1 }

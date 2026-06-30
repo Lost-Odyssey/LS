@@ -491,6 +491,14 @@ Construct with a list literal: <code>Vec(int) v = [1,2,3]</code>.</div>
 <tr><td class="s"><span class="sig">def count(&amp;self, Block(&amp;T)-&gt;bool p) -&gt; int</span></td><td class="d">Count satisfying <code>p</code>.</td></tr>
 <tr><td class="s"><span class="sig">def sort(&amp;!self)   where T: Order</span></td><td class="d">In-place stable merge sort by <code>&lt;</code>.</td></tr>
 <tr><td class="s"><span class="sig">def sort_by(&amp;!self, Block(&amp;T,&amp;T)-&gt;int cmp)</span></td><td class="d">In-place stable sort by comparator.</td></tr>
+<tr><td class="s"><span class="sig">def retain(&amp;!self, Block(&amp;T)-&gt;bool keep)</span></td><td class="d">In-place keep matching elements, drop the rest (O(n), order-preserving).</td></tr>
+<tr><td class="s"><span class="sig">def dedup(&amp;!self)   where T: Equal</span></td><td class="d">Drop consecutive duplicates (run <code>sort()</code> first to dedup globally).</td></tr>
+<tr><td class="s"><span class="sig">def swap_remove(&amp;!self, int i) -&gt; T</span></td><td class="d">Remove &amp; return element <code>i</code> in O(1) by moving the last into its slot (does not preserve order).</td></tr>
+<tr><td class="s"><span class="sig">def min(&amp;self) -&gt; Option(T)   where T: Order</span></td><td class="d">Smallest element, or <code>None</code> if empty.</td></tr>
+<tr><td class="s"><span class="sig">def max(&amp;self) -&gt; Option(T)   where T: Order</span></td><td class="d">Largest element, or <code>None</code> if empty.</td></tr>
+<tr><td class="s"><span class="sig">def is_sorted(&amp;self) -&gt; bool   where T: Order</span></td><td class="d">True if non-descending.</td></tr>
+<tr><td class="s"><span class="sig">def sum(&amp;self) -&gt; T</span></td><td class="d">Sum of elements (numeric T; empty → <code>T.zero()</code>).</td></tr>
+<tr><td class="s"><span class="sig">def product(&amp;self) -&gt; T</span></td><td class="d">Product of elements (numeric T; empty → <code>T.one()</code>).</td></tr>
 </table>
 
 <div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) v = [3, 1, 2]
@@ -520,6 +528,7 @@ struct Entry(K, V) { K key; V val }   // yielded by iteration</pre></div>
 <tr><td class="s"><span class="sig">def empty?(&amp;self) -&gt; bool</span></td><td class="d">True when empty.</td></tr>
 <tr><td class="s"><span class="sig">def get(&amp;self, &amp;K k) -&gt; Option(V)</span></td><td class="d">Clone of value, or <code>None</code> if absent.</td></tr>
 <tr><td class="s"><span class="sig">def has?(&amp;self, &amp;K k) -&gt; bool</span></td><td class="d">Key-existence test.</td></tr>
+<tr><td class="s"><span class="sig">def get_or(&amp;self, &amp;K k, V dflt) -&gt; V</span></td><td class="d">Clone of value, or <code>dflt</code> if absent (non-mutating; <code>freq.get_or(k, 0)</code>).</td></tr>
 <tr><td class="s"><span class="sig">m[k]   (via __index)</span></td><td class="d">Indexing sugar; <b>panics</b> if key absent.</td></tr>
 </table>
 
@@ -528,6 +537,7 @@ struct Entry(K, V) { K key; V val }   // yielded by iteration</pre></div>
 <tr><td class="s"><span class="sig">def set(&amp;!self, K k, V v)</span></td><td class="d">Insert or update (moves <code>k</code>,<code>v</code> in; grows at 7/8 load).</td></tr>
 <tr><td class="s"><span class="sig">m[k] = v   (via __index_set)</span></td><td class="d">Insert/update sugar (same as <code>set</code>).</td></tr>
 <tr><td class="s"><span class="sig">def remove(&amp;!self, &amp;K k) -&gt; Option(V)</span></td><td class="d">Remove key, return its value (moved out), or <code>None</code>.</td></tr>
+<tr><td class="s"><span class="sig">def merge(&amp;!self, &amp;Map(K,V) other)</span></td><td class="d">Insert every entry of <code>other</code> (clones), overwriting on collision.</td></tr>
 <tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all entries (keep buffer).</td></tr>
 </table>
 
@@ -630,6 +640,7 @@ def new_set(T)() -> Set(T)
 <tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Number of distinct elements.</td></tr>
 <tr><td class="s"><span class="sig">def empty?(&amp;self) -&gt; bool</span></td><td class="d">True when empty.</td></tr>
 <tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all elements (keeps the buffer).</td></tr>
+<tr><td class="s"><span class="sig">def retain(&amp;!self, Block(&amp;T)-&gt;bool keep)</span></td><td class="d">Keep only matching elements, drop the rest.</td></tr>
 <tr><td class="s"><span class="sig">def extend(&amp;!self, &amp;Set(T) other)</span></td><td class="d">Add every element of <code>other</code> (clones).</td></tr>
 <tr><td class="s"><span class="sig">def to_vec(&amp;self) -&gt; Vec(T)</span></td><td class="d">Collect element clones into a <code>Vec(T)</code>.</td></tr>
 <tr><td class="s"><span class="sig">def iter(&amp;self) -&gt; SetIter(T)</span></td><td class="d">Borrowing iterator; drives <code>for x in s</code>.</td></tr>
@@ -1372,11 +1383,13 @@ noted; <code>abs/min/max</code> are polymorphic over <code>int</code> and <code>
 <!-- ===================== NUM ===================== -->
 <section id="num">
 <h2>num<span class="imp">import std.core.num</span></h2>
-<p class="purpose">The <code>Zero</code> interface (additive identity) for bound-free generic arithmetic.</p>
+<p class="purpose">The <code>Zero</code> / <code>One</code> interfaces (additive / multiplicative identity) for bound-free generic arithmetic.</p>
 <div class="types"><pre>interface Zero { static def zero() -> Self }
-methods Zero for int / i64 / f64</pre></div>
-<p>Inside a generic body, <code>T.zero()</code> dispatches on the type parameter — used by
-<code>Complex(T)</code> and <code>Tensor(T)</code> reductions.</p>
+interface One  { static def one()  -> Self }
+methods Zero / One for int / i64 / f64</pre></div>
+<p>Inside a generic body, <code>T.zero()</code> / <code>T.one()</code> dispatch on the type
+parameter — used by <code>Complex(T)</code> / <code>Tensor(T)</code> reductions and
+<code>Vec(T).sum()</code> / <code>.product()</code>.</p>
 </section>
 
 <!-- ===================== COMPLEX ===================== -->

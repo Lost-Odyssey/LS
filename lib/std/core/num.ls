@@ -19,3 +19,13 @@ interface Zero { static def zero() -> Self }
 methods int: Zero { static def zero() -> Self { return 0 } }
 methods i64: Zero { static def zero() -> Self { return 0 as i64 } }
 methods f64: Zero { static def zero() -> Self { return 0.0 } }
+
+// `One` is the multiplicative identity, the dual of Zero — same duck-typed
+// static dispatch (`T.one()` inside a monomorphized generic body), used to seed
+// a product fold (e.g. Vec(T).product()). Scalar impls here; a struct numeric
+// type can provide a call-compatible `static def one()` in its own impl.
+interface One { static def one() -> Self }
+
+methods int: One { static def one() -> Self { return 1 } }
+methods i64: One { static def one() -> Self { return 1 as i64 } }
+methods f64: One { static def one() -> Self { return 1.0 } }

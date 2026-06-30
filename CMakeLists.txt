@@ -2514,6 +2514,20 @@ add_test(
 )
 set_tests_properties(test_generic_freefn PROPERTIES DEPENDS "test_set")
 
+# Vec/Map/Set method-completion batch: Vec retain/dedup/swap_remove/min/max/sum/
+# product/is_sorted, Map get_or/merge, Set retain. POD + has_drop (Str) elements.
+# JIT + AOT + memcheck.
+add_test(
+    NAME test_container_methods
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/container_methods.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_container_methods.cmake
+)
+set_tests_properties(test_container_methods PROPERTIES DEPENDS "test_set")
+
 # Cross-module same-name generic → clear ambiguity error on bare use (negative).
 add_test(
     NAME test_generic_ambig

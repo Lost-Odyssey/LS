@@ -238,6 +238,32 @@ methods(K, V) Map(K, V) {
         self._insert_no_grow(key, dflt, h)
     }
 
+    // Value for k (a CLONE), or `dflt` if k is absent. Non-mutating — the
+    // ubiquitous read-with-default (`freq.get_or(k, 0)`), one hash + one probe
+    // vs `get(k).unwrap_or(d)`'s Option round-trip. Ownership: on the present
+    // path `dflt` is unused → dropped at scope exit (has_drop V via maybe-moved,
+    // since the absent path moves it out); on the absent path `dflt` is returned.
+    def get_or(&self, &K k, V dflt) -> V where K: Hash + Equal {
+        u64 h = k.hash()
+        int idx = self._find(k, h)
+        if idx < 0 { return dflt }
+        V v = self.vals[idx]
+        return v
+    }
+
+    // Insert every entry of `other` into self (CLONES — other is unchanged),
+    // overwriting the value on a key collision. The bulk union/extend for maps.
+    def merge(&!self, &Map(K, V) other) where K: Hash + Equal {
+        for (int i = 0; i < other.cap; i = i + 1) {
+            int c = other.ctrl[i] as int
+            if c != 255 {
+                K k = other.keys[i]
+                V v = other.vals[i]
+                self.set(k, v)
+            }
+        }
+    }
+
     // Map-literal `{ k: v, ... }` opt-in (reserved-method protocol, like
     // Vec.__from_list): the presence of this method lets the checker construct a
     // Map from a `{ key: val, ... }` literal — lowered to `Map m = {}` plus one
