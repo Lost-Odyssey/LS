@@ -349,13 +349,22 @@ def sgemm(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
 // L1/L2/L3 block sizes. POD (all int), no destructor.
 struct GemmBlock { int mr; int nr; int kc; int mc; int nc }
 
+// Cached blocking geometry: the cache hierarchy is constant for the life of the
+// process, so the (expensive) detection runs ONCE. mr==0 means "not yet computed"
+// (a valid result always has mr==6). gemm_blocking()'s ~3.5 us cost — 6 syscalls
+// to GetLogicalProcessorInformation + 3 malloc/free per call — used to be paid on
+// EVERY sgemm_packed call, dwarfing small-matrix compute; memoizing pays it once.
+GemmBlock g_gb = { mr: 0, nr: 0, kc: 0, mc: 0, nc: 0 }
+
 // Derive kc/mc/nc analytically from the live cache hierarchy (c.__ls_cache_kb).
 // Falls back to a Skylake-class default (32/256/8192 KB) when detection returns
 // 0 — that default IS effectively a built-in CPU profile. The fractions (½ L1,
 // ~56% L2, full per-core L3 slice) are the BLIS model's simplified residency
 // bounds, tuned to reproduce BLIS's validated Haswell sgemm config
-// (mr6 nr16 kc256 mc144) on a 32/256 KB L1/L2 machine.
+// (mr6 nr16 kc256 mc144) on a 32/256 KB L1/L2 machine. Detected once, then cached
+// in g_gb — see the memoization guard below.
 def gemm_blocking() -> GemmBlock {
+    if g_gb.mr != 0 { return g_gb }       // cached: skip the cache-probe syscalls
     int l1 = c.__ls_cache_kb(1)
     int l2 = c.__ls_cache_kb(2)
     int l3 = c.__ls_cache_kb(3)
@@ -384,6 +393,7 @@ def gemm_blocking() -> GemmBlock {
     if mc < mr { mc = mr }
     if nc < nr { nc = nr }
     GemmBlock gb = { mr: mr, nr: nr, kc: kc, mc: mc, nc: nc }
+    g_gb = gb                             // memoize for all subsequent calls
     return gb
 }
 
