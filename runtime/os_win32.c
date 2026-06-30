@@ -848,3 +848,30 @@ int __ls_cpu_count(void) {
     int n = (int)si.dwNumberOfProcessors;
     return n > 0 ? n : 1;
 }
+
+/* Cache size in KB for `level`: 1=L1 data (per core), 2=L2 (per core),
+ * 3=L3 (shared). Returns 0 if unknown so callers fall back to a portable
+ * default. Used by std.sci.nn.sgemm_packed for analytical cache blocking
+ * (BLIS model: mc/kc/nc derived from cache sizes, not autotuned). */
+int __ls_cache_kb(int level) {
+    DWORD len = 0;
+    GetLogicalProcessorInformation(NULL, &len);
+    if (len == 0) return 0;
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION *buf =
+        (SYSTEM_LOGICAL_PROCESSOR_INFORMATION *)malloc(len);
+    if (buf == NULL) return 0;
+    int kb = 0;
+    if (GetLogicalProcessorInformation(buf, &len)) {
+        DWORD n = len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+        for (DWORD i = 0; i < n; i++) {
+            if (buf[i].Relationship != RelationCache) continue;
+            PCACHE_DESCRIPTOR cd = &buf[i].Cache;
+            if ((int)cd->Level != level) continue;
+            if (level == 1 && cd->Type == CacheInstruction) continue; /* skip L1i */
+            kb = (int)(cd->Size / 1024);
+            break;
+        }
+    }
+    free(buf);
+    return kb;
+}

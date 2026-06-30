@@ -14,14 +14,16 @@
 // handles the N tail (columns past the last multiple of 16). N divisible by 16
 // (e.g. the target 256) takes the all-vector path with no scalar tail.
 //
-// Not yet done (perf only, unmeasurable on an AVX2 dev box — needs GNR/SDE/sim):
-// BLIS-style A/B packing + cache blocking (mc/kc/nc), and the wider GNR-tuned
-// 12×32 kernel (24 zmm accumulators). The current kernel is correct and fully
-// vectorized; packing is a memory-locality optimization layered on top later.
+// Two GEMM drivers: `sgemm` (simple, reads B by stride — good when A·B fits
+// cache) and `sgemm_packed` (BLIS GEBP: A/B packing + cache blocking mc/kc/nc
+// derived from the live cache hierarchy — wins on large matrices that blow L2).
+// Both share the uk_6x16 register tile. The wider GNR-tuned 12×32 kernel (24 zmm
+// accumulators) is for AVX-512 hosts; on AVX2 the 6×16 tile is the right size.
 
 import std.sys.c as c
 import std.core.math as math
 import std.sci.simd as smd
+import std.sync.thread as thread
 
 // 12×32 micro-kernel (C2, the BLIS-family AVX-512 server SGEMM register tile):
 // 12 rows × 32 cols = 24 zmm accumulators. Per k-step: two 16-wide B-loads (the
@@ -286,6 +288,309 @@ def sgemm(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
         if nfull < N { sgemm_tail(A, B, C, K, N, i, 1, nfull) }
         i = i + 1
     }
+}
+
+// ============================================================================
+// Cache-blocked / packed SGEMM (BLIS GEBP) — closes the per-core packing gap.
+//
+// The plain sgemm above reads B with stride ldb=N (a multi-MB matrix that blows
+// L2), so it pays cache-miss traffic on every micro-kernel B-load. The BLIS
+// "analytical model" fix (Low/Igual/Smith/Quintana-Ortí, TOMS 2016): pack A and
+// B into contiguous, cache-resident panels and tile the loops so Ã stays in L2
+// and a B̃ panel stays in L3. The block sizes mc/kc/nc are DERIVED from the
+// detected cache sizes (not autotuned, not hardcoded) — see gemm_blocking.
+// ----------------------------------------------------------------------------
+
+// Cache-block geometry. mr×nr is the register tile (= uk_6x16). kc/mc/nc are the
+// L1/L2/L3 block sizes. POD (all int), no destructor.
+struct GemmBlock { int mr; int nr; int kc; int mc; int nc }
+
+// Derive kc/mc/nc analytically from the live cache hierarchy (c.__ls_cache_kb).
+// Falls back to a Skylake-class default (32/256/8192 KB) when detection returns
+// 0 — that default IS effectively a built-in CPU profile. The fractions (½ L1,
+// ~56% L2, full per-core L3 slice) are the BLIS model's simplified residency
+// bounds, tuned to reproduce BLIS's validated Haswell sgemm config
+// (mr6 nr16 kc256 mc144) on a 32/256 KB L1/L2 machine.
+def gemm_blocking() -> GemmBlock {
+    int l1 = c.__ls_cache_kb(1)
+    int l2 = c.__ls_cache_kb(2)
+    int l3 = c.__ls_cache_kb(3)
+    if l1 <= 0 { l1 = 32 }
+    if l2 <= 0 { l2 = 256 }
+    if l3 <= 0 { l3 = 8192 }
+    int ncores = c.__ls_cpu_count()
+    if ncores <= 0 { ncores = 1 }
+
+    int mr = 6
+    int nr = 16
+    int elem = 4                                   // f32 bytes
+
+    // kc: the kc×nr B micro-panel should occupy ~half of L1.
+    int kc = (l1 * 1024 / 2) / (nr * elem)
+    // mc: the mc×kc Ã block should occupy ~56% of L2 (rest = streaming B + C).
+    int mc = (l2 * 1024 * 56 / 100) / (kc * elem)
+    // nc: the kc×nc B̃ panel should fit this core's slice of the shared L3.
+    int l3slice = (l3 * 1024) / ncores
+    int nc = l3slice / (kc * elem)
+
+    // Snap to kernel-tile multiples; clamp to sane minimums.
+    mc = ((mc + mr / 2) / mr) * mr                 // round mc to nearest mr
+    nc = (nc / nr) * nr                            // floor nc to nr (conservative)
+    if kc < 1 { kc = 1 }
+    if mc < mr { mc = mr }
+    if nc < nr { nc = nr }
+    GemmBlock gb = { mr: mr, nr: nr, kc: kc, mc: mc, nc: nc }
+    return gb
+}
+
+// Pack a kc×nc block of B (rows [pc,pc+kcb), cols [jc,jc+ncb)) into Bt as a
+// sequence of nr-wide micro-panels: panel jp holds, for each k, nr contiguous
+// B[pc+k][jc+jp*nr .. +nr]. ncb is a multiple of nr (bulk region only).
+def pack_b(*f32 B, int ldb, *f32 Bt, int pc, int kcb, int jc, int ncb, int nr) {
+    int npanels = ncb / nr
+    int jp = 0
+    while jp < npanels {
+        int col0 = jc + jp * nr
+        int dst = jp * (kcb * nr)
+        int kk = 0
+        while kk < kcb {
+            int lane = 0
+            while lane < nr {
+                Bt[dst + kk * nr + lane] = B[(pc + kk) * ldb + col0 + lane]
+                lane = lane + 1
+            }
+            kk = kk + 1
+        }
+        jp = jp + 1
+    }
+}
+
+// Pack an mc×kc block of A (rows [ic,ic+mcb), cols [pc,pc+kcb)) into At as a
+// sequence of mr-tall micro-panels: panel ip holds, for each k, mr contiguous
+// A[ic+ip*mr .. +mr][pc+k]. mcb is a multiple of mr (bulk region only).
+def pack_a(*f32 A, int lda, *f32 At, int ic, int mcb, int pc, int kcb, int mr) {
+    int npanels = mcb / mr
+    int ip = 0
+    while ip < npanels {
+        int row0 = ic + ip * mr
+        int dst = ip * (mr * kcb)
+        int kk = 0
+        while kk < kcb {
+            int r = 0
+            while r < mr {
+                At[dst + kk * mr + r] = A[(row0 + r) * lda + pc + kk]
+                r = r + 1
+            }
+            kk = kk + 1
+        }
+        ip = ip + 1
+    }
+}
+
+// Packed 6×16 micro-kernel: C[ci..+6][cj..+16] += Ã_panel · B̃_panel. Reads the
+// packed panels sequentially (At[aoff + k*6 + r], Bt[boff + k*16]); ACCUMULATES
+// into C (loads it first) so the pc-loop sums partial kc-blocks. LS has no
+// pointer arithmetic, so panel bases are passed as element offsets aoff/boff.
+def uk_6x16_packed(*f32 At, int aoff, *f32 Bt, int boff,
+                   *f32 C, int kc, int ldc, int ci, int cj) {
+    Simd(f32, 16) c0 = __simd_load(C, (ci + 0) * ldc + cj)
+    Simd(f32, 16) c1 = __simd_load(C, (ci + 1) * ldc + cj)
+    Simd(f32, 16) c2 = __simd_load(C, (ci + 2) * ldc + cj)
+    Simd(f32, 16) c3 = __simd_load(C, (ci + 3) * ldc + cj)
+    Simd(f32, 16) c4 = __simd_load(C, (ci + 4) * ldc + cj)
+    Simd(f32, 16) c5 = __simd_load(C, (ci + 5) * ldc + cj)
+    // K-loop unrolled ×4: four independent B-loads and 24 FMAs per iteration give
+    // the scheduler enough slack to overlap loads/broadcasts with the FMA pipe
+    // (the rolled loop serialized on a single broadcast register).
+    int k = 0
+    int k4 = (kc / 4) * 4
+    while k < k4 {
+        int ab = aoff + k * 6
+        Simd(f32, 16) b0 = __simd_load(Bt, boff + k * 16)
+        c0 = __simd_fma(__simd_splat(At[ab + 0]), b0, c0)
+        c1 = __simd_fma(__simd_splat(At[ab + 1]), b0, c1)
+        c2 = __simd_fma(__simd_splat(At[ab + 2]), b0, c2)
+        c3 = __simd_fma(__simd_splat(At[ab + 3]), b0, c3)
+        c4 = __simd_fma(__simd_splat(At[ab + 4]), b0, c4)
+        c5 = __simd_fma(__simd_splat(At[ab + 5]), b0, c5)
+        Simd(f32, 16) b1 = __simd_load(Bt, boff + (k + 1) * 16)
+        c0 = __simd_fma(__simd_splat(At[ab + 6]), b1, c0)
+        c1 = __simd_fma(__simd_splat(At[ab + 7]), b1, c1)
+        c2 = __simd_fma(__simd_splat(At[ab + 8]), b1, c2)
+        c3 = __simd_fma(__simd_splat(At[ab + 9]), b1, c3)
+        c4 = __simd_fma(__simd_splat(At[ab + 10]), b1, c4)
+        c5 = __simd_fma(__simd_splat(At[ab + 11]), b1, c5)
+        Simd(f32, 16) b2 = __simd_load(Bt, boff + (k + 2) * 16)
+        c0 = __simd_fma(__simd_splat(At[ab + 12]), b2, c0)
+        c1 = __simd_fma(__simd_splat(At[ab + 13]), b2, c1)
+        c2 = __simd_fma(__simd_splat(At[ab + 14]), b2, c2)
+        c3 = __simd_fma(__simd_splat(At[ab + 15]), b2, c3)
+        c4 = __simd_fma(__simd_splat(At[ab + 16]), b2, c4)
+        c5 = __simd_fma(__simd_splat(At[ab + 17]), b2, c5)
+        Simd(f32, 16) b3 = __simd_load(Bt, boff + (k + 3) * 16)
+        c0 = __simd_fma(__simd_splat(At[ab + 18]), b3, c0)
+        c1 = __simd_fma(__simd_splat(At[ab + 19]), b3, c1)
+        c2 = __simd_fma(__simd_splat(At[ab + 20]), b3, c2)
+        c3 = __simd_fma(__simd_splat(At[ab + 21]), b3, c3)
+        c4 = __simd_fma(__simd_splat(At[ab + 22]), b3, c4)
+        c5 = __simd_fma(__simd_splat(At[ab + 23]), b3, c5)
+        k = k + 4
+    }
+    while k < kc {
+        Simd(f32, 16) b = __simd_load(Bt, boff + k * 16)
+        c0 = __simd_fma(__simd_splat(At[aoff + k * 6 + 0]), b, c0)
+        c1 = __simd_fma(__simd_splat(At[aoff + k * 6 + 1]), b, c1)
+        c2 = __simd_fma(__simd_splat(At[aoff + k * 6 + 2]), b, c2)
+        c3 = __simd_fma(__simd_splat(At[aoff + k * 6 + 3]), b, c3)
+        c4 = __simd_fma(__simd_splat(At[aoff + k * 6 + 4]), b, c4)
+        c5 = __simd_fma(__simd_splat(At[aoff + k * 6 + 5]), b, c5)
+        k = k + 1
+    }
+    __simd_store(C, (ci + 0) * ldc + cj, c0)
+    __simd_store(C, (ci + 1) * ldc + cj, c1)
+    __simd_store(C, (ci + 2) * ldc + cj, c2)
+    __simd_store(C, (ci + 3) * ldc + cj, c3)
+    __simd_store(C, (ci + 4) * ldc + cj, c4)
+    __simd_store(C, (ci + 5) * ldc + cj, c5)
+}
+
+// Cache-blocked SGEMM: C = A·B (overwrites C). Five-loop GEBP around uk_6x16
+// with A/B packing; block sizes from gemm_blocking(). The M-divisible-by-mr ×
+// N-divisible-by-nr rectangle is the packed bulk; the < mr row tail and < nr
+// col tail fall back to the scalar sgemm_tail (overwrite — disjoint from bulk).
+def sgemm_packed(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
+    GemmBlock gb = gemm_blocking()
+    int mr = gb.mr
+    int nr = gb.nr
+    int kc = gb.kc
+    int mc = gb.mc
+    int nc = gb.nc
+
+    int Mfull = (M / mr) * mr
+    int Nfull = (N / nr) * nr
+
+    // Zero C: the bulk accumulates into it across pc-blocks.
+    int z = 0
+    int ncell = M * N
+    while z < ncell {
+        C[z] = 0.0 as f32
+        z = z + 1
+    }
+
+    *f32 Bt = c.malloc(kc * nc * sizeof(f32)) as *f32
+    *f32 At = c.malloc(mc * kc * sizeof(f32)) as *f32
+
+    int jc = 0
+    while jc < Nfull {
+        int ncb = nc
+        if jc + ncb > Nfull { ncb = Nfull - jc }
+        int pc = 0
+        while pc < K {
+            int kcb = kc
+            if pc + kcb > K { kcb = K - pc }
+            pack_b(B, N, Bt, pc, kcb, jc, ncb, nr)
+            int ic = 0
+            while ic < Mfull {
+                int mcb = mc
+                if ic + mcb > Mfull { mcb = Mfull - ic }
+                pack_a(A, K, At, ic, mcb, pc, kcb, mr)
+                int jr = 0
+                while jr < ncb {
+                    int jp = jr / nr
+                    int ir = 0
+                    while ir < mcb {
+                        int ip = ir / mr
+                        uk_6x16_packed(At, ip * (mr * kcb), Bt, jp * (kcb * nr), C, kcb, N, ic + ir, jc + jr)
+                        ir = ir + mr
+                    }
+                    jr = jr + nr
+                }
+                ic = ic + mc
+            }
+            pc = pc + kc
+        }
+        jc = jc + nc
+    }
+
+    c.free(Bt as *u8)
+    c.free(At as *u8)
+
+    // Edges (C still zero there; overwrite with full-K dot products):
+    //   N tail: rows [0,Mfull) × cols [Nfull,N)
+    //   M tail: rows [Mfull,M) × cols [0,N)
+    if Nfull < N { sgemm_tail(A, B, C, K, N, 0, Mfull, Nfull) }
+    if Mfull < M { sgemm_tail(A, B, C, K, N, Mfull, M - Mfull, 0) }
+}
+
+// One mc×nc C-block: pack this block's A-panel into private scratch, then sweep
+// the micro-kernel reading the SHARED, pre-packed B-panel Bt. Worker threads call
+// this on disjoint ic-blocks (disjoint C rows), all reading the same read-only Bt
+// — so B is packed ONCE, not once per thread. C must be pre-zeroed (accumulate).
+def packed_ablock(*f32 A, *f32 Bt, *f32 C, int N, int K, int ic, int mcb,
+                  int pc, int kcb, int jc, int ncb, int mr, int nr, int mc, int kc) {
+    *f32 At = c.malloc(mc * kc * sizeof(f32)) as *f32
+    pack_a(A, K, At, ic, mcb, pc, kcb, mr)
+    int jr = 0
+    while jr < ncb {
+        int jp = jr / nr
+        int ir = 0
+        while ir < mcb {
+            int ip = ir / mr
+            uk_6x16_packed(At, ip * (mr * kcb), Bt, jp * (kcb * nr), C, kcb, N, ic + ir, jc + jr)
+            ir = ir + mr
+        }
+        jr = jr + nr
+    }
+    c.free(At as *u8)
+}
+
+// Multithreaded packed SGEMM (BLIS parallelization of the ic loop): for each
+// (jc, pc) panel, pack B ONCE (serial), then fan the mc-row-blocks across cores
+// — each worker packs its own A-block and runs the micro-kernel against the
+// shared B̃. Avoids the redundant per-thread B-packing that saturates memory
+// bandwidth. Row/col tails finish serially.
+def sgemm_packed_mt(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
+    GemmBlock gb = gemm_blocking()
+    int mr = gb.mr
+    int nr = gb.nr
+    int kc = gb.kc
+    int mc = gb.mc
+    int nc = gb.nc
+    int Mfull = (M / mr) * mr
+    int Nfull = (N / nr) * nr
+
+    int z = 0
+    int ncell = M * N
+    while z < ncell {
+        C[z] = 0.0 as f32
+        z = z + 1
+    }
+
+    *f32 Bt = c.malloc(kc * nc * sizeof(f32)) as *f32
+    int jc = 0
+    while jc < Nfull {
+        int ncb = nc
+        if jc + ncb > Nfull { ncb = Nfull - jc }
+        int pc = 0
+        while pc < K {
+            int kcb = kc
+            if pc + kcb > K { kcb = K - pc }
+            pack_b(B, N, Bt, pc, kcb, jc, ncb, nr)        // ONCE, shared
+            int nblk = (Mfull + mc - 1) / mc
+            thread.parallel_for(0, nblk, |ib| {
+                int ic = ib * mc
+                int mcb = mc
+                if ic + mcb > Mfull { mcb = Mfull - ic }
+                packed_ablock(A, Bt, C, N, K, ic, mcb, pc, kcb, jc, ncb, mr, nr, mc, kc)
+            })
+            pc = pc + kc
+        }
+        jc = jc + nc
+    }
+    c.free(Bt as *u8)
+
+    if Nfull < N { sgemm_tail(A, B, C, K, N, 0, Mfull, Nfull) }
+    if Mfull < M { sgemm_tail(A, B, C, K, N, Mfull, M - Mfull, 0) }
 }
 
 // ----------------------------------------------------------------------------

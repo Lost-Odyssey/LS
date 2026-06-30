@@ -1460,7 +1460,10 @@ over the lane count (plan_simd.md §4.3). <code>tanh</code> is a rational minima
 a register-resident micro-kernel written entirely in LS (no C/FFI), the engine every dense / conv /
 attention layer reduces to.</p>
 <table class="api">
-<tr><td class="s"><span class="sig">def sgemm(*f32 A, *f32 B, *f32 C, int M, int N, int K)</span></td><td class="d">C = A·B, row-major <code>A(M×K)·B(K×N)→C(M×N)</code>, overwrites C. M-blocks 12→6→1, N 32→16→scalar.</td></tr>
+<tr><td class="s"><span class="sig">def sgemm(*f32 A, *f32 B, *f32 C, int M, int N, int K)</span></td><td class="d">C = A·B, row-major <code>A(M×K)·B(K×N)→C(M×N)</code>, overwrites C. M-blocks 12→6→1, N 32→16→scalar. Best when A·B fits cache.</td></tr>
+<tr><td class="s"><span class="sig">def sgemm_packed(*f32 A, *f32 B, *f32 C, int M, int N, int K)</span></td><td class="d"><b>Cache-blocked / packed</b> C = A·B (BLIS GEBP): packs A/B into contiguous panels + 5-loop tiling around the 6×16 kernel. Block sizes <code>mc/kc/nc</code> <b>auto-derived from the live cache hierarchy</b> (<code>gemm_blocking</code> → <code>c.__ls_cache_kb</code>), not hardcoded. Wins on large matrices that blow the cache (throughput stays flat with size where unpacked falls off; steadier run-to-run). Same result as <code>sgemm</code> (bit-exact).</td></tr>
+<tr><td class="s"><span class="sig">def sgemm_packed_mt(*f32 A, *f32 B, *f32 C, int M, int N, int K)</span></td><td class="d"><b>Packed + multithreaded</b> C = A·B: BLIS GEBP with the <code>ic</code> loop fanned across cores (<code>parallel_for</code>) — B packed once per panel (shared, read-only), each worker packs its own A and writes disjoint C rows. Wins on <b>large out-of-cache matrices</b>; for cache-resident sizes the unpacked threaded path (<code>sgemm_mt</code>) is faster. Imports <code>std.sync.thread</code>.</td></tr>
+<tr><td class="s"><span class="sig">def gemm_blocking() -&gt; GemmBlock</span></td><td class="d">Derive <code>{mr,nr,kc,mc,nc}</code> from detected L1/L2/L3 sizes (BLIS analytical model). Falls back to a Skylake-class default if detection returns 0.</td></tr>
 <tr><td class="s"><span class="sig">def sgemm_f16(*f16 A, *f16 B, *f32 C, int M, int N, int K)</span></td><td class="d">C(f32) = A(f16)·B(f16), <b>f32 accumulate</b> (precision-safe). Half the memory of f32 — the win for memory-bound inference. A-broadcast/B-load widen via F16C vector ops (no scalar libcall); AOT needs an f16c target (<code>--target=graniterapids</code>/native).</td></tr>
 <tr><td class="s"><span class="sig">def conv1d(*f32 in, *f32 w, *f32 bias, *f32 out, *f32 col, int Cin, int Cout, int W, int K, int pad)</span></td><td class="d">1D conv (channel-major) via im2col + sgemm; <code>col</code> = caller scratch <code>Cin*K*Wout</code>, zero alloc.</td></tr>
 <tr><td class="s"><span class="sig">def conv2d(*f32 in, *f32 w, *f32 bias, *f32 out, *f32 col, int Cin, int Cout, int H, int W, int Kh, int Kw, int pad)</span></td><td class="d">2D conv via im2col + sgemm; <code>col</code> = caller scratch <code>Cin*Kh*Kw*Hout*Wout</code>.</td></tr>
@@ -1485,12 +1488,15 @@ Wout≥16. Full NWc16 channel-blocked layout (vectorize channels) is a further l
 accumulators — the BLIS-family AVX-512 server tile) and <b>12×16</b> (12 acc) hold C-rows in registers
 across K (one B-load feeds 24/12 FMAs — fewer loads, and ≥8 accumulators hide the FMA-recurrence on a
 2-FMA-port core), falling to <b>6×16</b> and a <b>1×16</b> M-tail; the N tail is a scalar block.
-<b>Measured (llvm-mca GNR + SDE)</b>: the wide kernels keep the FMA count and cut B-loads. BLIS A/B
-packing + cache blocking and the full NWc16 conv layout are <i>not</i> wired into the hot path:
-llvm-mca shows these kernels are FMA-port-bound (load ports have headroom), so packing optimizes a
-non-bottleneck on in-cache shapes — pure overhead here; its cache benefit only appears on out-of-L2 /
-many-channel workloads and is unmeasurable without real GNR. AMX-FP16 (tile engine, f32-accumulate) is
-a separate reference kernel — see <code>model/amx/amx_sgemm_fp16.c</code> + the model manual.</div>
+<b>Measured (llvm-mca GNR + SDE)</b>: the wide kernels keep the FMA count and cut B-loads.
+<b>BLIS A/B packing + cache blocking is available as <code>sgemm_packed</code> / <code>sgemm_packed_mt</code></b>
+(block sizes auto-derived from the detected cache hierarchy). There's a clean <b>crossover</b>: on
+cache-resident shapes packing is pure overhead (FMA-port-bound, B already in cache), so the unpacked
+<code>sgemm</code>/<code>sgemm_mt</code> win; on large out-of-cache matrices packing keeps the working set
+resident and wins big (single-thread throughput stays flat with size, where unpacked falls off a cliff).
+The K-loop is unrolled ×4. AMX-FP16
+(tile engine, f32-accumulate) is a separate reference kernel — see <code>model/amx/amx_sgemm_fp16.c</code>
++ the model manual.</div>
 <div class="ex"><pre><span class="c">// 201×201 weight · (201×256) features → (201×256), the SRS-CNN shared GEMM</span>
 nn.sgemm(W, X, Y, 201, 256, 201)</pre></div>
 <h3>Pool — static f32 activation arena</h3>

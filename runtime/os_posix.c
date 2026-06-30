@@ -646,3 +646,18 @@ int __ls_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int)n : 1;
 }
+
+/* Cache size in KB for `level` (1=L1d, 2=L2, 3=L3). Best-effort via sysconf
+ * (glibc extension); 0 if unavailable so callers fall back to a portable
+ * default. Used by std.sci.nn.sgemm_packed for analytical cache blocking. */
+int __ls_cache_kb(int level) {
+    long sz = 0;
+#if defined(_SC_LEVEL1_DCACHE_SIZE)
+    if (level == 1)      sz = sysconf(_SC_LEVEL1_DCACHE_SIZE);
+    else if (level == 2) sz = sysconf(_SC_LEVEL2_CACHE_SIZE);
+    else if (level == 3) sz = sysconf(_SC_LEVEL3_CACHE_SIZE);
+#else
+    (void)level;
+#endif
+    return sz > 0 ? (int)(sz / 1024) : 0;
+}

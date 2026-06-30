@@ -81,6 +81,10 @@ extern def __ls_fxhash_bytes(*u8 data, int len) -> u64
 // Number of logical processors (par_for default worker fan-out). >= 1.
 extern def __ls_cpu_count() -> int
 
+// Cache size in KB for `level`: 1=L1d (per core), 2=L2 (per core), 3=L3 (shared).
+// 0 if unknown. Drives std.sci.nn.sgemm_packed's analytical cache blocking.
+extern def __ls_cache_kb(int level) -> int
+
 // Byte-buffer integer loads (std.text.bytes — V2 bit-pattern parsing). Assemble an
 // N-byte big/little-endian integer from p+off by byte shifts (host-endian
 // independent). All return u64 (value zero-extended); the std.text.bytes wrapper casts

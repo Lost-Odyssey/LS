@@ -37,11 +37,18 @@ def run_case(int M, int N, int K) -> bool {
     *f32 R = sc.malloc(M * N * sizeof(f32)) as *f32
     fillA(A, M, K)
     fillB(B, K, N)
-    nn.sgemm(A, B, C, M, N, K)
     naive(A, B, R, M, N, K)
     bool ok = true
     int n = M * N
+    // Both GEMM drivers must match the naive reference exactly.
+    nn.sgemm(A, B, C, M, N, K)
     int idx = 0
+    while idx < n {
+        if (C[idx] as f64) != (R[idx] as f64) { ok = false }
+        idx = idx + 1
+    }
+    nn.sgemm_packed(A, B, C, M, N, K)        // BLIS packed/cache-blocked path
+    idx = 0
     while idx < n {
         if (C[idx] as f64) != (R[idx] as f64) { ok = false }
         idx = idx + 1
