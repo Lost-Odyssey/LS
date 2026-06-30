@@ -1,13 +1,14 @@
 // generic_freefn_in_body.ls — regression for the generic-free-function call-site
 // mangling gap (docs/plan_generic_freefn_mangle.md).
 //
-// A generic free function called with an ABSTRACT type param `T` from inside
-// another generic body (method or free function) used to emit `make(T)` at
-// codegen (no alias context) → "undefined function 'make(T)'". The fix stashes
-// the checker-resolved concrete type names on the call node and makes codegen
-// prefer them. Covers: abstract T from a generic method body, concrete type from
-// a generic method body, abstract T from a generic free-function body, and a
-// generic free function that constructs+returns a generic container by abstract T.
+// A generic callable (free function OR method-level generic method) invoked with
+// an ABSTRACT type param `T` from inside another generic body used to emit the
+// abstract symbol at codegen (no alias context) → "undefined function 'make(T)'"
+// / "Symbols not found: Box(int).conv(T)". The fix stashes the checker-resolved
+// concrete type names on the call node and makes codegen prefer them. Covers:
+// abstract T to a free fn / a method-level generic / a container-returning free
+// fn from a generic method body; abstract T to a free fn from a generic free-fn
+// body; concrete-type control cases; int + Str (has_drop) elements.
 //
 // Prints "ok <label>" / "FAIL <label>", then "GFN PASS".
 
@@ -37,6 +38,14 @@ methods(T) Box(T) {
     def seven(&self) -> int { return identity(int)(7) }
     // generic free fn returning a generic container, by abstract T
     def wrap(&self) -> Vec(T) { return singleton(T)(self.v) }
+
+    // ---- method-level generic (the twin gap) ----
+    // a method that carries its OWN type param U, independent of the struct's T
+    def conv(U)(&self, U y) -> U { return y }
+    // call the method-level generic with the outer ABSTRACT T from a generic body
+    def via_method_abstract(&self) -> T { return self.conv(T)(self.v) }
+    // and with a concrete type (the path that already worked)
+    def via_method_concrete(&self) -> int { return self.conv(int)(9) }
 }
 
 def check(bool cond, Str label) {
@@ -53,6 +62,9 @@ def main() {
     check(wi.len() == 1, "container-returning free fn (int) len")
     check(wi[0] == 42, "container-returning free fn (int) value")
 
+    check(bi.via_method_concrete() == 9, "method-level generic, concrete arg")
+    check(bi.via_method_abstract() == 42, "method-level generic, abstract T (int)")
+
     // has_drop element: same paths must keep ownership correct.
     Box(Str) bs = Box(Str){ v: "alpha" }
     Str e = bs.echo()
@@ -60,6 +72,8 @@ def main() {
     Vec(Str) ws = bs.wrap()
     check(ws.len() == 1, "container-returning free fn (Str) len")
     check(ws[0].eq?("alpha"), "container-returning free fn (Str) value")
+    Str me = bs.via_method_abstract()
+    check(me.eq?("alpha"), "method-level generic, abstract T (Str)")
 
     @print("GFN PASS")
 }

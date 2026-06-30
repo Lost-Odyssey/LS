@@ -369,6 +369,18 @@ b.tag()           <span class="c">// "inherent"</span>
     at the use site — never a silent wrong value. (A method-level type parameter that is a
     closure's return type, like <code>def map(U)(…)</code>, is covered in the
     <a href="#args">Closures</a> chapter.)</div>
+    <h3>Generic calls compose</h3>
+    <p>Inside a generic body you can forward the surrounding type parameter to <em>another</em>
+    generic callable — a generic free function or a method-level generic — and it instantiates
+    transitively:</p>
+    <div class="ex"><pre><span class="k">def</span> singleton(<span class="t">T</span>)(<span class="t">T</span> x) -&gt; <span class="t">Vec</span>(<span class="t">T</span>) { <span class="t">Vec</span>(<span class="t">T</span>) v = {}  v.push(x)  <span class="k">return</span> v }
+
+<span class="k">methods</span>(<span class="t">T</span>) <span class="t">Box</span>(<span class="t">T</span>) {
+    <span class="c">// the outer T is passed straight through to the generic free function</span>
+    <span class="k">def</span> wrap(&amp;self) -&gt; <span class="t">Vec</span>(<span class="t">T</span>) { <span class="k">return</span> singleton(<span class="t">T</span>)(self.v) }
+}</pre></div>
+    <p>This is how a container builds another container of the same element type
+    (e.g. <code>Set(T)</code>'s set algebra calls <code>new_set(T)()</code> internally).</p>
   </section>
 
   <h1 style="margin-top:3.5rem">enum &amp; pattern matching</h1>

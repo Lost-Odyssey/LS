@@ -5374,6 +5374,27 @@ Type *check_expr(Checker *c, AstNode *node)
                 if (concrete) {
                     callee_type = concrete;
                     node->as.call.callee->resolved_type = callee_type;
+                    /* Stash the resolved (concrete) method-level type-arg names so
+                       codegen mangles the call as `Type.method(int)` not
+                       `Type.method(T)` when called with an abstract type param
+                       inside a generic body. The alias (T→int) is active here, so
+                       resolve_type_node yields the concrete type; codegen has no
+                       alias context and would otherwise re-mangle the raw `T`.
+                       Mirrors the closure-inference and free-function paths. */
+                    if (node->as.call.resolved_type_args == NULL) {
+                        char taj[512];
+                        int tp = 0;
+                        for (int ti = 0; ti < node->as.call.type_arg_count &&
+                                         tp < (int)sizeof(taj) - 1; ti++) {
+                            Type *rt = resolve_type_node(c, node->as.call.type_args[ti],
+                                                         node->line, node->column);
+                            if (ti > 0)
+                                tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, ",");
+                            tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, "%s",
+                                           rt ? type_name(rt) : "?");
+                        }
+                        node->as.call.resolved_type_args = chk_strdup(taj);
+                    }
                     /* Body already checked+queued by try_instantiate; skip lazy path */
                     goto after_method_check;
                 }

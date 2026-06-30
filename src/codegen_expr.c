@@ -3194,7 +3194,19 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 else
                     npos = snprintf(qualified_name, sizeof(qualified_name), "%s.%s",
                                     struct_name ? struct_name : "", method_name);
-                if (node->as.call.type_arg_count > 0)
+                if (node->as.call.resolved_type_args)
+                {
+                    /* Prefer the checker's resolved method-level type-arg names
+                       (concrete, alias-resolved): closure-inferred calls
+                       (`v.map(|x| x+1)`) carry no type_args, AND an explicit call
+                       with an abstract type param inside a generic body
+                       (`self.conv(T)(..)`) needs this too — codegen has no alias
+                       context, so re-mangling the raw TypeNode would emit the
+                       abstract `Type.conv(T)` instead of `Type.conv(int)`. */
+                    npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos,
+                                     "(%s)", node->as.call.resolved_type_args);
+                }
+                else if (node->as.call.type_arg_count > 0)
                 {
                     npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, "(");
                     for (int ti = 0; ti < node->as.call.type_arg_count; ti++)
@@ -3205,15 +3217,6 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                                                  qualified_name, &npos, (int)sizeof(qualified_name));
                     }
                     snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, ")");
-                }
-                else if (node->as.call.resolved_type_args)
-                {
-                    /* Method-generic type args inferred from a closure return
-                       (e.g. `v.map(|x| x+1)`): the checker recorded the resolved
-                       arg name string so the mangled symbol matches the
-                       instantiated `Type.method(U)`. */
-                    npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos,
-                                     "(%s)", node->as.call.resolved_type_args);
                 }
                 fn_name = qualified_name;
                 callee = LLVMGetNamedFunction(ctx->module, fn_name);
