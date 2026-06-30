@@ -21,12 +21,9 @@ import std.core.num
 
 struct BinaryHeap(T) { Vec(T) data }
 
-// Returns an empty, owned max-heap. The empty Vec is bound through an explicit
-// `Vec(T)` local so the generic element type is resolved (mirrors new_stack).
-def new_heap(T)() -> BinaryHeap(T) {
-    Vec(T) d = {}
-    return BinaryHeap(T) { data: d }
-}
+// Construct an empty heap with `BinaryHeap(T) h = {}` (zero-init: the Vec field
+// starts empty), or `BinaryHeap(T) h = [a, b, c]` from a list literal (heapified).
+// `{}` is the default constructor — the dual of the `~` destructor.
 
 methods(T) BinaryHeap(T) {
     // ---- queries ----

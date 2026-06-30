@@ -14,7 +14,7 @@ def check(bool c, Str l) {
 }
 
 def main() {
-    st.Stack(int) si = new_stack(int)()
+    st.Stack(int) si = {}
     si.push(1)
     si.push(2)
     si.push(3)
@@ -23,7 +23,7 @@ def main() {
     check(si.pop() == 3, "qual int pop 3")
     check(si.len() == 2, "qual int len 2")
 
-    st.Stack(Str) ss = new_stack(Str)()
+    st.Stack(Str) ss = {}
     ss.push("alpha")
     ss.push("beta")
     check(ss.len() == 2, "qual str len 2")

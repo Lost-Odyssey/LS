@@ -26,14 +26,9 @@ struct Set(T) { Map(T, bool) m }
 // MapIter, but yields just the element key (a clone), not an Entry.
 struct SetIter(T) { *u8 ctrl; *T keys; int cap; int i }
 
-// ---- new_set(T)() -> Set(T) ----
-// Returns an empty, owned set. The empty Map literal is bound through an
-// explicit `Map(T, bool)` local so the generic element type is resolved
-// (mirrors std.core.stack's new_stack).
-def new_set(T)() -> Set(T) {
-    Map(T, bool) inner = {}
-    return Set(T) { m: inner }
-}
+// Construct an empty set with `Set(T) s = {}` (zero-init: the inner Map field
+// starts empty), or `Set(T) s = [a, b, c]` from a list literal (de-duplicated).
+// `{}` is the default constructor — the dual of the `~` destructor.
 
 methods(T) Set(T) {
     // ---- queries ----
@@ -134,7 +129,7 @@ methods(T) Set(T) {
 
     // Elements in self OR other.
     def union(&self, &Set(T) other) -> Set(T) where T: Hash + Equal {
-        Set(T) out = new_set(T)()
+        Set(T) out = {}
         out.extend(self)
         out.extend(other)
         return out
@@ -142,7 +137,7 @@ methods(T) Set(T) {
 
     // Elements in self AND other.
     def intersect(&self, &Set(T) other) -> Set(T) where T: Hash + Equal {
-        Set(T) out = new_set(T)()
+        Set(T) out = {}
         for (int i = 0; i < self.m.cap; i = i + 1) {
             int c = self.m.ctrl[i] as int
             if c != 255 {
@@ -157,7 +152,7 @@ methods(T) Set(T) {
 
     // Elements in self but NOT in other.
     def difference(&self, &Set(T) other) -> Set(T) where T: Hash + Equal {
-        Set(T) out = new_set(T)()
+        Set(T) out = {}
         for (int i = 0; i < self.m.cap; i = i + 1) {
             int c = self.m.ctrl[i] as int
             if c != 255 {

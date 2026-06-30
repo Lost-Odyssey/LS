@@ -609,7 +609,7 @@ r.enqueue(1)  r.enqueue(2)
 <p class="purpose">Generic LIFO stack built on Vec.</p>
 
 <div class="types"><pre>struct Stack(T) { Vec(T) data }   // has destructor
-def new_stack(T)() -> Stack(T)</pre></div>
+<span class="t">Stack</span>(<span class="t">int</span>) s = {}              <span class="c">// construct empty with {} (the default constructor)</span></pre></div>
 
 <table class="api">
 <tr><td class="s"><span class="sig">def push(&amp;!self, T x)</span></td><td class="d">Push <code>x</code> onto the top (moves in).</td></tr>
@@ -620,7 +620,7 @@ def new_stack(T)() -> Stack(T)</pre></div>
 <tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all elements.</td></tr>
 </table>
 
-<div class="ex"><pre><span class="t">Stack</span>(<span class="t">int</span>) s = new_stack(<span class="t">int</span>)()
+<div class="ex"><pre><span class="t">Stack</span>(<span class="t">int</span>) s = {}
 s.push(1)  s.push(2)
 @print(s.peek())     <span class="c">// 2, still on stack</span>
 <span class="t">int</span> top = s.pop()    <span class="c">// 2, removed</span></pre></div>
@@ -634,7 +634,7 @@ builtin scalar and <code>Str</code> qualify). Iteration order is unspecified (sl
 order, not insertion order).</p>
 
 <div class="types"><pre>struct Set(T) { Map(T, bool) m }   // has destructor
-def new_set(T)() -> Set(T)
+<span class="t">Set</span>(<span class="t">int</span>) s = {}              <span class="c">// empty (the default constructor)</span>
 <span class="t">Set</span>(<span class="t">int</span>) s = [1, 2, 3, 3]      <span class="c">// list literal, de-duplicates → {1,2,3}</span></pre></div>
 
 <table class="api">
@@ -674,7 +674,7 @@ For a <b>min</b>-heap (smallest-first, e.g. Dijkstra), negate the keys or store 
 <code>Order</code> is reversed.</p>
 
 <div class="types"><pre>struct BinaryHeap(T) { Vec(T) data }   // has destructor
-def new_heap(T)() -> BinaryHeap(T)
+<span class="t">BinaryHeap</span>(<span class="t">int</span>) h = {}        <span class="c">// empty (the default constructor)</span>
 <span class="t">BinaryHeap</span>(<span class="t">int</span>) h = [3, 1, 4]     <span class="c">// list literal, heapified on the way in</span></pre></div>
 
 <table class="api">
@@ -689,7 +689,7 @@ def new_heap(T)() -> BinaryHeap(T)
 <h3>Draining in priority order</h3>
 <div class="ex"><pre><span class="k">import</span> std.core.heap
 
-<span class="t">BinaryHeap</span>(<span class="t">int</span>) h = new_heap(<span class="t">int</span>)()
+<span class="t">BinaryHeap</span>(<span class="t">int</span>) h = {}
 h.push(3)  h.push(1)  h.push(4)  h.push(1)  h.push(5)
 @print(h.peek().unwrap())          <span class="c">// 5  (largest, not removed)</span>
 
@@ -702,7 +702,7 @@ h.push(3)  h.push(1)  h.push(4)  h.push(1)  h.push(5)
 <p>Keep the K smallest of a stream by holding a max-heap of size K and dropping its
 largest whenever it overflows — the root is the current K-th smallest:</p>
 <div class="ex"><pre><span class="k">def</span> smallest_k(<span class="t">Vec</span>(<span class="t">int</span>) xs, <span class="t">int</span> k) -&gt; <span class="t">Vec</span>(<span class="t">int</span>) {
-    <span class="t">BinaryHeap</span>(<span class="t">int</span>) h = new_heap(<span class="t">int</span>)()
+    <span class="t">BinaryHeap</span>(<span class="t">int</span>) h = {}
     <span class="k">for</span> x <span class="k">in</span> xs {
         h.push(x)
         <span class="k">if</span> h.len() &gt; k { h.pop() }       <span class="c">// evict the current largest</span>

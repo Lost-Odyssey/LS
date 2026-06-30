@@ -15,7 +15,7 @@ import helper
 
 def main() {
     // Direct use in the root module: a different instantiation (Str).
-    Stack(Str) ss = new_stack(Str)()
+    Stack(Str) ss = {}
     ss.push("x")
     ss.push("y")
 

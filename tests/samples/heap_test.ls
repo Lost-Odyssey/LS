@@ -11,7 +11,7 @@ def check(bool cond, Str label) {
 
 def main() {
     // ---- BinaryHeap(int): empty / push / peek ----
-    BinaryHeap(int) h = new_heap(int)()
+    BinaryHeap(int) h = {}
     check(h.empty?, "int empty init")
     check(h.len() == 0, "int len 0")
 
@@ -49,7 +49,7 @@ def main() {
     check(desc[0] == 9 && desc[5] == 1, "descending 9..1")
 
     // ---- BinaryHeap(Str): has_drop element (memcheck probe) ----
-    BinaryHeap(Str) sh = new_heap(Str)()
+    BinaryHeap(Str) sh = {}
     sh.push("banana")
     sh.push("apple")
     sh.push("cherry")

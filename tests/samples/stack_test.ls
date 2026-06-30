@@ -17,7 +17,7 @@ def check(bool cond, Str label) {
 
 def main() {
     // ---- Stack(int): POD element ----
-    Stack(int) si = new_stack(int)()
+    Stack(int) si = {}
     check(si.is_empty(), "int empty init")
     check(si.len() == 0, "int len 0")
 
@@ -37,7 +37,7 @@ def main() {
     check(si.is_empty(), "int empty after clear")
 
     // ---- Stack(Str): has_drop element ----
-    Stack(Str) ss = new_stack(Str)()
+    Stack(Str) ss = {}
     ss.push("alpha")
     ss.push("beta")
     ss.push("gamma")

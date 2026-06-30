@@ -18,7 +18,7 @@ import std.core.vec
 def identity(T)(T x) -> T { return x }
 
 // A generic free function that builds a generic container parameterized by the
-// caller's abstract T — the new_set(T)() shape that std.core.set hit.
+// caller's abstract T — the call-with-abstract-T shape that first surfaced the gap.
 def singleton(T)(T x) -> Vec(T) {
     Vec(T) v = {}
     v.push(x)

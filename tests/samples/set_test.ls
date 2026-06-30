@@ -17,7 +17,7 @@ def check(bool cond, Str label) {
 
 def main() {
     // ---- Set(int): POD element ----
-    Set(int) si = new_set(int)()
+    Set(int) si = {}
     check(si.empty?, "int empty init")
     check(si.len() == 0, "int len 0")
 
@@ -41,7 +41,7 @@ def main() {
     check(si.len() == 0, "int len 0 after clear")
 
     // ---- Set(Str): has_drop element ----
-    Set(Str) ss = new_set(Str)()
+    Set(Str) ss = {}
     check(ss.insert("alpha"), "str insert alpha new")
     check(ss.insert("beta"), "str insert beta new")
     check(ss.insert("alpha") == false, "str insert alpha dup -> false")

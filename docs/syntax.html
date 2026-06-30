@@ -379,8 +379,9 @@ b.tag()           <span class="c">// "inherent"</span>
     <span class="c">// the outer T is passed straight through to the generic free function</span>
     <span class="k">def</span> wrap(&amp;self) -&gt; <span class="t">Vec</span>(<span class="t">T</span>) { <span class="k">return</span> singleton(<span class="t">T</span>)(self.v) }
 }</pre></div>
-    <p>This is how a container builds another container of the same element type
-    (e.g. <code>Set(T)</code>'s set algebra calls <code>new_set(T)()</code> internally).</p>
+    <p>This is how generic code reuses other generics parameterized by its own
+    element type — forwarding <code>T</code> into a helper that builds, transforms, or
+    collects values of that same type.</p>
   </section>
 
   <h1 style="margin-top:3.5rem">enum &amp; pattern matching</h1>

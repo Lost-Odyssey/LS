@@ -11,7 +11,7 @@ module helper
 import std.core.stack
 
 def sum_pushed() -> int {
-    Stack(int) s = new_stack(int)()
+    Stack(int) s = {}
     s.push(10)
     s.push(20)
     s.push(30)

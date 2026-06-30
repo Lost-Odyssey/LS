@@ -18,14 +18,9 @@ struct Stack(T) {
     Vec(T) data
 }
 
-// ---- new_stack(T)() -> Stack(T) ----
-// Returns an empty, owned stack. The empty Vec literal is bound through an
-// explicit `Vec(T)` local so the generic element type is resolved.
-
-def new_stack(T)() -> Stack(T) {
-    Vec(T) d = {}
-    return Stack(T) { data: d }
-}
+// Construct an empty stack with `Stack(T) s = {}` (zero-init: the Vec field
+// starts nil/0 = a valid empty Vec). No constructor function needed — `{}` is
+// the default constructor, the dual of the `~` destructor.
 
 methods(T) Stack(T) {
     // Move x onto the top of the stack.
