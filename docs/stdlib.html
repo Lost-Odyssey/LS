@@ -129,6 +129,7 @@
     <a class="item" href="#map">map — Map(K,V)</a>
     <a class="item" href="#ring">ring — Ring(T)</a>
     <a class="item" href="#stack">stack — Stack(T)</a>
+    <a class="item" href="#set">set — Set(T)</a>
     <div class="group">Memory</div>
     <a class="item" href="#arena">arena — Arena/Region</a>
     <div class="group">Strings &amp; Text</div>
@@ -197,6 +198,7 @@ are built-in types, not a module.</p>
 <tr><td class="m"><a href="#map">map</a></td><td>Generic hash table <code>Map(K,V)</code></td></tr>
 <tr><td class="m"><a href="#ring">ring</a></td><td>Bounded FIFO ring buffer — lock-free SPSC &amp; MPMC</td></tr>
 <tr><td class="m"><a href="#stack">stack</a></td><td>LIFO stack</td></tr>
+<tr><td class="m"><a href="#set">set</a></td><td>Generic hash set <code>Set(T)</code> — membership, de-dup, set algebra</td></tr>
 <tr><td class="grp" colspan="2">Memory</td></tr>
 <tr><td class="m"><a href="#arena">arena</a></td><td>Bump allocators: typed <code>Arena(T)</code> pool + heterogeneous <code>Region</code> (string interning)</td></tr>
 <tr><td class="grp" colspan="2">Strings &amp; Text</td></tr>
@@ -608,6 +610,43 @@ def new_stack(T)() -> Stack(T)</pre></div>
 s.push(1)  s.push(2)
 @print(s.peek())     <span class="c">// 2, still on stack</span>
 <span class="t">int</span> top = s.pop()    <span class="c">// 2, removed</span></pre></div>
+</section>
+
+<section id="set">
+<h2>set<span class="imp">import std.core.set</span></h2>
+<p class="purpose">Generic hash set built on <code>Map(T, bool)</code>: membership tests,
+de-duplication, and set algebra. Elements need <code>Hash + Equal</code> (every
+builtin scalar and <code>Str</code> qualify). Iteration order is unspecified (slot
+order, not insertion order).</p>
+
+<div class="types"><pre>struct Set(T) { Map(T, bool) m }   // has destructor
+def new_set(T)() -> Set(T)
+<span class="t">Set</span>(<span class="t">int</span>) s = [1, 2, 3, 3]      <span class="c">// list literal, de-duplicates → {1,2,3}</span></pre></div>
+
+<table class="api">
+<tr><td class="s"><span class="sig">def insert(&amp;!self, T x) -&gt; bool</span></td><td class="d">Move <code>x</code> in; <code>true</code> if newly added, <code>false</code> if already present.</td></tr>
+<tr><td class="s"><span class="sig">def has?(&amp;self, &amp;T x) -&gt; bool</span></td><td class="d">Membership test (borrows <code>x</code>; no clone). <code>contains</code> is an alias.</td></tr>
+<tr><td class="s"><span class="sig">def remove(&amp;!self, &amp;T x) -&gt; bool</span></td><td class="d">Remove (and destroy) <code>x</code>; <code>true</code> if it was present.</td></tr>
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Number of distinct elements.</td></tr>
+<tr><td class="s"><span class="sig">def empty?(&amp;self) -&gt; bool</span></td><td class="d">True when empty.</td></tr>
+<tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all elements (keeps the buffer).</td></tr>
+<tr><td class="s"><span class="sig">def extend(&amp;!self, &amp;Set(T) other)</span></td><td class="d">Add every element of <code>other</code> (clones).</td></tr>
+<tr><td class="s"><span class="sig">def to_vec(&amp;self) -&gt; Vec(T)</span></td><td class="d">Collect element clones into a <code>Vec(T)</code>.</td></tr>
+<tr><td class="s"><span class="sig">def iter(&amp;self) -&gt; SetIter(T)</span></td><td class="d">Borrowing iterator; drives <code>for x in s</code>.</td></tr>
+<tr><td class="s"><span class="sig">def union(&amp;self, &amp;Set(T) o) -&gt; Set(T)</span></td><td class="d">Elements in self OR <code>o</code>. Also <code>a + b</code>.</td></tr>
+<tr><td class="s"><span class="sig">def intersect(&amp;self, &amp;Set(T) o) -&gt; Set(T)</span></td><td class="d">Elements in self AND <code>o</code>.</td></tr>
+<tr><td class="s"><span class="sig">def difference(&amp;self, &amp;Set(T) o) -&gt; Set(T)</span></td><td class="d">Elements in self but NOT <code>o</code>. Also <code>a - b</code>.</td></tr>
+<tr><td class="s"><span class="sig">def is_subset(&amp;self, &amp;Set(T) o) -&gt; bool</span></td><td class="d">Every element of self is in <code>o</code>.</td></tr>
+<tr><td class="s"><span class="sig">def is_superset(&amp;self, &amp;Set(T) o) -&gt; bool</span></td><td class="d">Every element of <code>o</code> is in self.</td></tr>
+<tr><td class="s"><span class="sig">def is_disjoint(&amp;self, &amp;Set(T) o) -&gt; bool</span></td><td class="d">Self and <code>o</code> share no element.</td></tr>
+</table>
+
+<div class="ex"><pre><span class="t">Set</span>(<span class="t">int</span>) a = [1, 2, 3]
+<span class="t">Set</span>(<span class="t">int</span>) b = [2, 3, 4]
+@print((a + b).len())          <span class="c">// 4  (union)</span>
+@print(a.intersect(&amp;b).len())  <span class="c">// 2  ({2,3})</span>
+@print((a - b).has?(1))        <span class="c">// true  (difference {1})</span>
+for x in a { @print(x) }       <span class="c">// 1 2 3 (some order)</span></pre></div>
 </section>
 
 <section id="arena">

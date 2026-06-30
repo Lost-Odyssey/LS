@@ -2484,6 +2484,21 @@ add_test(
 )
 set_tests_properties(test_stack_qual PROPERTIES DEPENDS "test_stack")
 
+# std.core.set — pure-LS hash set built on Map(T, bool). Exercises Set(int) /
+# Set(Str) (POD + has_drop), `[..]` list literals (de-dup), for-in iteration,
+# to_vec, set algebra (union/intersect/difference + `+`/`-` operators) and
+# predicates. JIT + AOT + memcheck (probe: generic struct + Map(T,_) field drop).
+add_test(
+    NAME test_set
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/set_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_set.cmake
+)
+set_tests_properties(test_set PROPERTIES DEPENDS "test_stack")
+
 # Cross-module same-name generic → clear ambiguity error on bare use (negative).
 add_test(
     NAME test_generic_ambig
