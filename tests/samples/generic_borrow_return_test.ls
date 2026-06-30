@@ -15,7 +15,7 @@ struct Box(T) {
     T value
 }
 
-methods(T) Box(T) {
+methods Box(T) {
     def get_ref(&self) -> &T { return self.value }
     def get_mut(&!self) -> &!T { return self.value }
 }

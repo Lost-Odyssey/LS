@@ -10062,9 +10062,9 @@ static void db_selfty(DeriveBuf *sb, AstNode *d) {
    (`bound` is retained for call-site readability but currently unused.) */
 static void db_methods_open(DeriveBuf *sb, AstNode *d, const char *trait, bool bound) {
     (void)bound;
-    db_puts(sb, "methods");
-    db_tparams(sb, d);
-    db_puts(sb, " ");
+    /* New syntax: type params ride on the receiver — `methods Name(T): Trait`
+       (db_selfty already emits `Name(T)`), not a leading `methods(T)` list. */
+    db_puts(sb, "methods ");
     db_selfty(sb, d);
     db_puts(sb, ": ");
     db_puts(sb, trait);
@@ -10076,7 +10076,7 @@ static void derive_emit_struct(Checker *c, DeriveBuf *sb, AstNode *d, AstNode *p
     int fc = d->as.struct_decl.field_count;
     char **fname = d->as.struct_decl.field_names;
 
-    /* A generic interface-impl folds into the struct's inherent `methods(T) Name(T)`
+    /* A generic interface-impl folds into the struct's inherent `methods Name(T)`
        block, which must appear BEFORE it in decl order. expand_derives inserts
        these synthesized impls AFTER any user inherent block (look-ahead), so the
        fold anchor exists when the user wrote one. Only when the user wrote NO
@@ -10094,8 +10094,7 @@ static void derive_emit_struct(Checker *c, DeriveBuf *sb, AstNode *d, AstNode *p
             }
         }
         if (!has_inherent) {
-            db_puts(sb, "methods"); db_tparams(sb, d); db_puts(sb, " ");
-            db_selfty(sb, d); db_puts(sb, " {\n}\n");
+            db_puts(sb, "methods "); db_selfty(sb, d); db_puts(sb, " {\n}\n");
         }
     }
 
@@ -10593,7 +10592,7 @@ static void expand_derives(Checker *c, AstNode *program) {
                              d->as.enum_decl.derive_count > 0;
         if (is_struct_der || is_enum_der) {
             /* Generic structs: derived interface-impls must follow the struct's
-               inherent methods(T) block (the fold anchor). Push any impl blocks
+               inherent methods Name(T) block (the fold anchor). Push any impl blocks
                for this struct first (advancing i), so the synth lands after them. */
             if (is_struct_der && d->as.struct_decl.type_param_count > 0) {
                 const char *sname = d->as.struct_decl.name;

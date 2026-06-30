@@ -28,7 +28,7 @@ struct DequeIter(T) { *T data; int cap; int head; int len; int i }
 // Construct empty with `Deque(T) d = {}` (zero-init: data=nil, cap=head=len=0 —
 // a valid empty ring). `{}` is the default constructor — dual of the `~` destructor.
 
-methods(T) Deque(T) {
+methods Deque(T) {
     // ---- queries ----
 
     def len(&self) -> int { return self.len }
@@ -146,7 +146,7 @@ methods(T) Deque(T) {
     }
 }
 
-methods(T) DequeIter(T) {
+methods DequeIter(T) {
     def next(&!self) -> Option(T) {
         if self.i >= self.len { return None }
         int idx = (self.head + self.i) & (self.cap - 1)
@@ -156,7 +156,7 @@ methods(T) DequeIter(T) {
     }
 }
 
-methods(T) Deque(T): Clone {
+methods Deque(T): Clone {
     // Deep copy into a compacted [0, len) layout (head = 0). Each live element is
     // cloned; empty slots are never read.
     def clone(&self) -> Deque(T) {
@@ -176,7 +176,7 @@ methods(T) Deque(T): Clone {
     }
 }
 
-methods(T) Deque(T): Destroy {
+methods Deque(T): Destroy {
     // Drop every live element, then free the buffer.
     def ~(&!self) {
         for (int i = 0; i < self.len; i = i + 1) {

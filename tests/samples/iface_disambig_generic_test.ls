@@ -8,9 +8,9 @@ import std.core.str
 interface Show3 { def tag(&self) -> Str }
 interface Mark  { def tag(&self) -> Str }
 struct Box(T) { T val; Str note }
-methods(T) Box(T)        { def tag(&self) -> Str { return f"in:{self.note}" } }  // inherent
-methods(T) Box(T): Show3 { def tag(&self) -> Str { return f"s3:{self.note}" } }
-methods(T) Box(T): Mark  { def tag(&self) -> Str { return f"mk:{self.note}" } }
+methods Box(T)        { def tag(&self) -> Str { return f"in:{self.note}" } }  // inherent
+methods Box(T): Show3 { def tag(&self) -> Str { return f"s3:{self.note}" } }
+methods Box(T): Mark  { def tag(&self) -> Str { return f"mk:{self.note}" } }
 
 def main() -> int {
     Box(int) b = Box(int) { val: 1, note: "i" }

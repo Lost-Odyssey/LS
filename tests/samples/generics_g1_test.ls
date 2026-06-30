@@ -7,7 +7,7 @@ struct Pair(T, U) {
     U second
 }
 
-methods(T, U) Pair(T, U) {
+methods Pair(T, U) {
     def get_first() -> T { return self.first }
     def get_second() -> U { return self.second }
 }

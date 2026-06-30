@@ -37,7 +37,7 @@ import std.core.reflect_core
 @derive(ReflectRaw)
 struct Vec(T) { *T data; int len; int cap }
 
-methods(T) Vec(T) {
+methods Vec(T) {
     // ---- capacity ----
 
     // Ensure capacity for at least `need` elements (geometric growth).
@@ -610,14 +610,14 @@ methods(T) Vec(T) {
 
 }
 
-methods(T) Vec(T): Clone {
+methods Vec(T): Clone {
     // User deep-copy hook: called when Vec(T) is cloned (e.g. read by value as a
     // nested element), instead of the field-wise auto-clone (which cannot deep-copy
     // the raw *T buffer).
     def clone(&self) -> Vec(T) { return self.copy() }
 }
 
-methods(T) Vec(T): Destroy {
+methods Vec(T): Destroy {
     // Drop every live element (recursively), then free the buffer.
     def ~(&!self) {
         for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
@@ -631,7 +631,7 @@ methods(T) Vec(T): Destroy {
 // `for x in v` desugaring (see docs/plan_userdef_for_in.md).
 struct VecIter(T) { *T data; int len; int i }
 
-methods(T) VecIter(T) {
+methods VecIter(T) {
     // Iterator(T) protocol: yield the next element by value (clone-on-read for
     // has_drop T, matching Vec.get), or None when exhausted.
     def next(&!self) -> Option(T) {

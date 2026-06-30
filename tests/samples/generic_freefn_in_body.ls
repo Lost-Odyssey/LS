@@ -31,7 +31,7 @@ def twice(T)(T x) -> T { return identity(T)(x) }
 
 struct Box(T) { T v }
 
-methods(T) Box(T) {
+methods Box(T) {
     // abstract T passed to a generic free function from a generic method body
     def echo(&self) -> T { return identity(T)(self.v) }
     // concrete type arg from a generic method body (the path that already worked)

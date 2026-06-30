@@ -3368,36 +3368,50 @@ static AstNode *parse_trait_decl(Parser *p) {
     return n;
 }
 
+/* Collect bare type-parameter names from a `(T, U, ...)` receiver/target list
+   into *params (growing *cap). Each entry must be an identifier — a concrete type
+   keyword (`int`, ...) is rejected, since LS has no concrete-type impl
+   specialization. Assumes the current token is '('. This is where a generic
+   `methods X(T) { ... }` block declares its type parameters: there is no separate
+   leading `methods(T)` list — the receiver IS the declaration site. */
+static void parse_receiver_type_params(Parser *p, char ***params,
+                                       int *count, int *cap) {
+    advance(p); /* consume '(' */
+    if (!check(p, TOKEN_RPAREN)) {
+        do {
+            if (!check(p, TOKEN_IDENTIFIER)) {
+                error_at_current(p, "expected a type-parameter name (e.g. T) in "
+                                    "the methods receiver type");
+                break;
+            }
+            advance(p);
+            char *tpname = str_dup_n(p->previous.start, p->previous.length);
+            if (*count >= *cap) {
+                *cap = GROW_CAPACITY(*cap);
+                *params = GROW_ARRAY(char *, *params, *cap);
+            }
+            (*params)[(*count)++] = tpname;
+        } while (match_tok(p, TOKEN_COMMA));
+    }
+    consume(p, TOKEN_RPAREN, "expected ')' after methods receiver type params");
+}
+
 static AstNode *parse_impl_decl(Parser *p) {
     /* 'impl' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
 
-    /* G1.5: optional type param list — impl(T, U) ... { ... }. Parsed FIRST so it
-       applies to both inherent impls (impl(T) Stack(T)) and generic trait impls
-       (impl(T) Add for Complex(T)). */
+    /* Type params come from the RECEIVER type — `methods X(T) { ... }` — collected
+       at the receiver/target sites below. The old leading list `methods(T) X(T)`
+       is retired (it duplicated the receiver and could silently disagree with it). */
     char **type_params = NULL;
     int type_param_count = 0;
     int type_param_cap = 0;
 
     if (check(p, TOKEN_LPAREN)) {
-        advance(p); /* consume '(' */
-        if (!check(p, TOKEN_RPAREN)) {
-            do {
-                if (!check(p, TOKEN_IDENTIFIER)) {
-                    error_at_current(p, "expected type parameter name in methods(...)");
-                    break;
-                }
-                advance(p);
-                char *tpname = str_dup_n(p->previous.start, p->previous.length);
-                if (type_param_count >= type_param_cap) {
-                    type_param_cap = GROW_CAPACITY(type_param_cap);
-                    type_params = GROW_ARRAY(char *, type_params, type_param_cap);
-                }
-                type_params[type_param_count++] = tpname;
-            } while (match_tok(p, TOKEN_COMMA));
-        }
-        consume(p, TOKEN_RPAREN, "expected ')' after methods type params");
+        error_at_current(p, "type parameters now go on the receiver type: write "
+                            "`methods X(T) { ... }`, not `methods(T) X(T)`");
+        return NULL;
     }
 
     /* Trait impl detection: impl[(T...)] TraitName for StructName[(T...)] { ... }.
@@ -3424,12 +3438,11 @@ static AstNode *parse_impl_decl(Parser *p) {
             advance(p);
             char *struct_name = str_dup_n(p->previous.start, p->previous.length);
 
-            /* generic target args — impl(T) Trait for Complex(T): consume the (T) */
+            /* generic target args — `methods Trait for Complex(T)`: collect the (T)
+               as this impl's type parameters (the receiver is the declaration site). */
             if (check(p, TOKEN_LPAREN)) {
-                advance(p); /* consume '(' */
-                while (!check(p, TOKEN_RPAREN) && !check(p, TOKEN_EOF))
-                    advance(p);
-                consume(p, TOKEN_RPAREN, "expected ')' after methods target type params");
+                parse_receiver_type_params(p, &type_params,
+                                           &type_param_count, &type_param_cap);
             }
 
             consume(p, TOKEN_LBRACE, "expected '{' after struct name in interface methods");
@@ -3494,12 +3507,11 @@ static AstNode *parse_impl_decl(Parser *p) {
     advance(p);
     char *name = str_dup_n(p->previous.start, p->previous.length);
 
-    /* G1.5: skip target type params — impl(T) Stack(T) — the second (T) */
+    /* Collect receiver type params — `methods Stack(T)` / `methods Map(K, V)`.
+       This is the sole declaration site (the leading `methods(T)` form is retired). */
     if (check(p, TOKEN_LPAREN)) {
-        advance(p); /* consume '(' */
-        while (!check(p, TOKEN_RPAREN) && !check(p, TOKEN_EOF))
-            advance(p);
-        consume(p, TOKEN_RPAREN, "expected ')' after methods target type params");
+        parse_receiver_type_params(p, &type_params,
+                                   &type_param_count, &type_param_cap);
     }
 
     /* de-Rust merged trait-impl form: `methods Type[(T)]: Interface { ... }`.

@@ -74,7 +74,7 @@ def new_mpmc_ring(T)(int capacity) -> Ring(T) {
     return r
 }
 
-methods(T) Ring(T) {
+methods Ring(T) {
     // Buffered count (approximate under concurrency).
     def len(&self) -> int {
         return (self.prod_tail.get() - self.cons_tail.get()) as int
@@ -214,7 +214,7 @@ methods(T) Ring(T) {
 
 }
 
-methods(T) Ring(T): Destroy {
+methods Ring(T): Destroy {
     // Drop any [cons_tail, prod_tail) residual, then free buf.
     def ~(&!self) {
         i64 c = self.cons_tail.get()

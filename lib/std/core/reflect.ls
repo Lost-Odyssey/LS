@@ -61,6 +61,6 @@ def reflect_vec() -> TypeInfo {
     return from_raw(Vec(int).reflect_raw())
 }
 
-methods(T) Vec(T): Reflect {
+methods Vec(T): Reflect {
     static def reflect() -> TypeInfo { return std.core.reflect.reflect_vec() }
 }

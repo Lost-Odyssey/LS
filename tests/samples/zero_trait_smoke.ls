@@ -11,7 +11,7 @@ methods int: Zero { static def zero() -> Self { return 0 } }
 methods f64: Zero { static def zero() -> Self { return 0.0 } }
 
 struct Box(T) { T v }
-methods(T) Box(T) {
+methods Box(T) {
     // `T.zero()`: static trait method dispatched on the type parameter.
     def z(&self) -> T { return T.zero() }
     // also exercise the field-store path through T.zero()

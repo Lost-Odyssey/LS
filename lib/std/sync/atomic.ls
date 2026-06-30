@@ -20,7 +20,7 @@
 
 struct Atomic(T) { T value }
 
-methods(T) Atomic(T) {
+methods Atomic(T) {
     // Atomic load (SeqCst). Read-only borrow — callable on a shared &Atomic.
     def get(&self) -> T { return __atomic_load(self.value) }
 

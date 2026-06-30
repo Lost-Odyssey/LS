@@ -22,7 +22,7 @@ struct Stack(T) {
 // starts nil/0 = a valid empty Vec). No constructor function needed — `{}` is
 // the default constructor, the dual of the `~` destructor.
 
-methods(T) Stack(T) {
+methods Stack(T) {
     // Move x onto the top of the stack.
     def push(&!self, T x) {
         self.data.push(x)

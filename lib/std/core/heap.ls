@@ -25,7 +25,7 @@ struct BinaryHeap(T) { Vec(T) data }
 // starts empty), or `BinaryHeap(T) h = [a, b, c]` from a list literal (heapified).
 // `{}` is the default constructor — the dual of the `~` destructor.
 
-methods(T) BinaryHeap(T) {
+methods BinaryHeap(T) {
     // ---- queries ----
 
     def len(&self) -> int { return self.data.len() }

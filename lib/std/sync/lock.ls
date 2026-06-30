@@ -122,7 +122,7 @@ struct Guard(T) {
     private object handle
 }
 
-methods(T) Guard(T) {
+methods Guard(T) {
     // Create the OS lock. Call once after construction, before sharing.
     def init(&!self) { self.handle = __mutex_init() }
 
@@ -144,7 +144,7 @@ methods(T) Guard(T) {
 
 }
 
-methods(T) Guard(T): Destroy {
+methods Guard(T): Destroy {
     // Destroy the OS lock. The protected value's own drop runs automatically.
     def ~(&!self) { __mutex_destroy(self.handle) }
 }
@@ -180,7 +180,7 @@ struct RwLock(T) {
     private object handle
 }
 
-methods(T) RwLock(T) {
+methods RwLock(T) {
     def init(&!self) { self.handle = __rwlock_init() }
 
     // Shared read: many readers run in parallel. The closure gets a read-only
@@ -201,7 +201,7 @@ methods(T) RwLock(T) {
 
 }
 
-methods(T) RwLock(T): Destroy {
+methods RwLock(T): Destroy {
     def ~(&!self) { __rwlock_destroy(self.handle) }
 }
 
@@ -223,7 +223,7 @@ struct SpinGuard(T) {
     private SpinLock slock
 }
 
-methods(T) SpinGuard(T) {
+methods SpinGuard(T) {
     def lock(&!self, Block(&!T) f) {
         self.slock.lock!()
         f(&!self.value)

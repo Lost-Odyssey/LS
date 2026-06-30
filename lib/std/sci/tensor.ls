@@ -97,7 +97,7 @@ def from_vec(T)(Vec(int) shape, Vec(T) src) -> Tensor(T) {
     return out
 }
 
-methods(T) Tensor(T) {
+methods Tensor(T) {
     // ---- internal: set shape/strides/size from `shape`; return element count n.
     // Does NOT allocate data — the caller allocates data[n] next. Call on a fresh
     // `{}` tensor (or after the old buffer has been handled).
@@ -875,12 +875,12 @@ methods(T) Tensor(T) {
     }
 }
 
-methods(T) Tensor(T): Clone {
+methods Tensor(T): Clone {
     // User deep-copy hook (used when a Tensor is read by value as a nested element).
     def clone(&self) -> Tensor(T) { return self.copy() }
 }
 
-methods(T) Tensor(T): Destroy {
+methods Tensor(T): Destroy {
     // Free the data buffer. The shape/strides Vec fields are auto-dropped by the
     // compiler-generated drop wrapper after this body runs.
     def ~(&!self) { std.sys.c.free(self.data as *u8) }
@@ -891,7 +891,7 @@ methods(T) Tensor(T): Destroy {
 // Tensor.iter(); driven by the `for v in t` desugaring.
 struct TensorIter(T) { *T data; int size; int i }
 
-methods(T) TensorIter(T) {
+methods TensorIter(T) {
     def next(&!self) -> Option(T) {
         if self.i >= self.size { return None }
         T e = self.data[self.i]          // clone-on-read (POD: value copy)

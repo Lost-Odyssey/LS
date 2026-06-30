@@ -260,12 +260,12 @@ d.render()          <span class="c">// "hi"   — inherent wins, no ambiguity</s
 
     <h3>Works on generic types too</h3>
     <p>A generic type can carry same-name methods the same way (it just needs an inherent
-    <code>methods(T) X(T) { … }</code> block present to host them — any inherent block will do).</p>
+    <code>methods X(T) { … }</code> block present to host them — any inherent block will do).</p>
     <div class="ex"><pre><span class="k">interface</span> <span class="t">Show3</span> { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> }
 <span class="k">interface</span> <span class="t">Mark</span>  { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> }
 <span class="k">struct</span> <span class="t">Box</span>(<span class="t">T</span>) { <span class="t">T</span> val }
-<span class="k">methods</span>(<span class="t">T</span>) <span class="t">Box</span>(<span class="t">T</span>)        { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> <span class="s">"inherent"</span> } }
-<span class="k">methods</span>(<span class="t">T</span>) <span class="t">Box</span>(<span class="t">T</span>): <span class="t">Show3</span> { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> <span class="s">"show3"</span> } }
+<span class="k">methods</span> <span class="t">Box</span>(<span class="t">T</span>)        { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> <span class="s">"inherent"</span> } }
+<span class="k">methods</span> <span class="t">Box</span>(<span class="t">T</span>): <span class="t">Show3</span> { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> <span class="s">"show3"</span> } }
 <span class="k">methods</span>(<span class="t">T</span>) <span class="t">Box</span>(<span class="t">T</span>): <span class="t">Mark</span>  { <span class="k">def</span> tag(&amp;self) -&gt; <span class="t">Str</span> { <span class="k">return</span> <span class="s">"mark"</span> } }
 
 <span class="t">Box</span>(<span class="t">int</span>) b = <span class="t">Box</span>(<span class="t">int</span>) { val: 1 }

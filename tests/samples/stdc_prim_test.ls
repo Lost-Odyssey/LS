@@ -9,7 +9,7 @@ import std.core.str
 
 struct Buf(T) { *u8 p; int n }
 
-methods(T) Buf(T) {
+methods Buf(T) {
     def make(&!self, int n) {
         self.p = std.sys.c.malloc(n)               // canonical malloc in a generic body
         self.n = n

@@ -17,7 +17,7 @@ def scatter(u64 h, u64 shift) -> int {
 }
 
 struct Box(T) { T val }
-methods(T) Box(T) {
+methods Box(T) {
     // Realistic Map usage: hash an owned element through the trait bound.
     def h(&self) -> u64 where T: Hash {
         return self.val.hash()

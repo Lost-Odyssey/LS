@@ -5,11 +5,11 @@ int drops = 0
 int clones = 0
 
 struct Box(T) { Str tag }
-methods(T) Box(T) {
+methods Box(T) {
     def deepcopy(&self) -> Box(T) { clones = clones + 1; return Box(T){ tag: self.tag.copy() } }
 }
-methods(T) Box(T): Destroy { def ~(&!self) { drops = drops + 1 } }
-methods(T) Box(T): Clone   { def clone(&self) -> Box(T) { return self.deepcopy() } }
+methods Box(T): Destroy { def ~(&!self) { drops = drops + 1 } }
+methods Box(T): Clone   { def clone(&self) -> Box(T) { return self.deepcopy() } }
 
 struct Handle { Str name }
 methods Handle: Destroy { def ~(&!self) { drops = drops + 1 } }

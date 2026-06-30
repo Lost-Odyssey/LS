@@ -13,7 +13,7 @@ import std.core.map
 
 struct Pair(K, V) { object kbuf; object vbuf; int sz }
 
-methods(K, V) Pair(K, V) {
+methods Pair(K, V) {
     def build(&!self) {
         self.sz = 8                      // value-ending stmt, then a `*K` decl
         *K kp = c.malloc(8) as *K

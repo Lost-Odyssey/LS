@@ -15,7 +15,7 @@ struct Box(T) { T val }
 
 def new_box(T)(T v) -> Box(T) { return Box(T) { val: v } }
 
-methods(T) Box(T) {
+methods Box(T) {
     def elem_size(&self) -> i64 { return sizeof(T) }
     def bytes_for(&self, int n) -> i64 { return n * sizeof(T) }
 }

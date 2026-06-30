@@ -16,7 +16,7 @@ import std.core.value
 @derive(Equal, Hash, Order, Reflect, Show, Serialize, Deserialize)
 struct Box(T) { T value; Str label }
 
-methods(T) Box(T) {
+methods Box(T) {
     def get(&self) -> T { return self.value }
 }
 

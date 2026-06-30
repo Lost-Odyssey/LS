@@ -41,7 +41,7 @@ import std.core.str
 
 struct Arena(T) { *T data; int len; int cap }
 
-methods(T) Arena(T) {
+methods Arena(T) {
     // ---- capacity ----
 
     // Ensure capacity for at least `need` elements (geometric growth). A realloc
@@ -103,7 +103,7 @@ methods(T) Arena(T) {
 
 }
 
-methods(T) Arena(T): Destroy {
+methods Arena(T): Destroy {
     // Destructor: free the single backing block. Elements are POD → never need
     // per-element drop, so this is the only free the arena ever does.
     def ~(&!self) {

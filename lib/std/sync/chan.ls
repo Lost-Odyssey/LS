@@ -59,7 +59,7 @@ def channel(T)(int capacity) -> Chan(T) {
     return c
 }
 
-methods(T) Chan(T) {
+methods Chan(T) {
     // Allocate the buffer and create the OS lock + condvars. Call once after
     // construction (channel() does this for you).
     def init(&!self, int capacity) {
@@ -171,7 +171,7 @@ methods(T) Chan(T) {
 
 }
 
-methods(T) Chan(T): Destroy {
+methods Chan(T): Destroy {
     // Drop any unconsumed residual, then free the buffer + destroy lock/condvars.
     def ~(&!self) {
         int h = self.head
@@ -188,7 +188,7 @@ methods(T) Chan(T): Destroy {
     }
 }
 
-methods(T) ChanIter(T) {
+methods ChanIter(T) {
     // Iterator(T) protocol: blocking recv until the channel is closed & drained.
     // (*self.ch) derefs the raw pointer so recv() runs on the real channel.
     def next(&!self) -> Option(T) {

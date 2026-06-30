@@ -7,7 +7,7 @@ import std.core.hash
 struct NoHash { int x }
 
 struct Box(T) { T val }
-methods(T) Box(T) {
+methods Box(T) {
     def h(&self) -> u64 where T: Hash {
         return self.val.hash()
     }

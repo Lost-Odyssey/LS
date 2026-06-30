@@ -1,5 +1,5 @@
 // de-Rust 关键字 smoke：def / methods / interface / private + 合并 trait-impl
-// 形态 `methods Type: Interface`（含泛型 methods(T)）。退役后旧 fn/impl/trait/
+// 形态 `methods Type: Interface`（含泛型 methods X(T)）。退役后旧 fn/impl/trait/
 // pub/priv 应报错（见 derust_keywords_reject.ls）。
 interface Greet {
     def hello(&self) -> int
@@ -25,7 +25,7 @@ struct Pair(T) {
     T b
 }
 
-methods(T) Pair(T) {
+methods Pair(T) {
     def first(&self) -> T { return self.a }
 }
 

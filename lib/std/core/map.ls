@@ -24,7 +24,7 @@ import std.core.vec
 @derive(Reflect)
 struct Map(K, V) { *u8 ctrl; *K keys; *V vals; int len; int cap; int shift }
 
-methods(K, V) Map(K, V) {
+methods Map(K, V) {
     // ---- queries ----
 
     def len(&self) -> int { return self.len }
@@ -405,7 +405,7 @@ methods(K, V) Map(K, V) {
 
 }
 
-methods(K, V) Map(K, V): Clone {
+methods Map(K, V): Clone {
     // Deep copy preserving the exact table layout (no rehash): clone each live
     // entry into the same slot, copy ctrl bytes verbatim. Empty slots' key/val
     // memory is never read (ctrl marks them EMPTY), so leaving it uninitialized
@@ -434,7 +434,7 @@ methods(K, V) Map(K, V): Clone {
     }
 }
 
-methods(K, V) Map(K, V): Destroy {
+methods Map(K, V): Destroy {
     // Drop every live entry, then free the buffers.
     def ~(&!self) {
         for (int i = 0; i < self.cap; i = i + 1) {
@@ -463,7 +463,7 @@ struct Entry(K, V) { K key; V val }
 // empty slots.
 struct MapIter(K, V) { *u8 ctrl; *K keys; *V vals; int cap; int i }
 
-methods(K, V) MapIter(K, V) {
+methods MapIter(K, V) {
     // Iterator protocol: yield the next live entry (key/value clone-on-read,
     // matching Map.get), or None when exhausted.
     def next(&!self) -> Option(Entry(K, V)) {

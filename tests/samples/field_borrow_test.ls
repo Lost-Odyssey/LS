@@ -15,7 +15,7 @@ def vsum(&Vec(int) v) -> int {
 
 struct Pair(A, B) { A first; B second }
 
-methods(A, B) Pair(A, B) {
+methods Pair(A, B) {
     // &field (has_drop) via a plain read-only def param
     def first_len(&self) -> int { return slen(&self.first) }
     // &field via a read-only Block(&B) param (zero-copy)

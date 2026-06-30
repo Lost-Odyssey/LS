@@ -6,13 +6,13 @@ import std.core.reflect
 @derive(Reflect)
 struct Widget(T) { T value; int id }
 
-methods(T) Widget(T) {
+methods Widget(T) {
     def kind(&self) -> int { return self.id }
     static def make(T v) -> Widget(T) { return Widget(T){ value: v, id: 0 } }
 }
 
 // A user destructor: reflection must surface this as `~`, never the internal
 // `__drop` name (mirrors `ls inspect`).
-methods(T) Widget(T): Destroy {
+methods Widget(T): Destroy {
     def ~(&!self) { self.id = 0 }
 }

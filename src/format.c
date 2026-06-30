@@ -81,7 +81,7 @@ static bool is_prefixable(TokenType t) {
 /* Should there be a space between prev and cur on the same line? */
 static bool space_between(TokenType prev, bool prev_value_end,
                          bool prev_prefix_op, TokenType cur) {
-    /* `methods(T)` — impl keyword glues to its generic parameter list */
+    /* legacy `methods(T)` form is retired; this rule is now inert (methods never directly precedes `(`) */
     if (prev == TOKEN_IMPL && cur == TOKEN_LPAREN) return false;
     /* glue after openers */
     if (prev == TOKEN_LPAREN || prev == TOKEN_LBRACKET) return false;

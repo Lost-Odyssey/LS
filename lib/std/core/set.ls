@@ -30,7 +30,7 @@ struct SetIter(T) { *u8 ctrl; *T keys; int cap; int i }
 // starts empty), or `Set(T) s = [a, b, c]` from a list literal (de-duplicated).
 // `{}` is the default constructor — the dual of the `~` destructor.
 
-methods(T) Set(T) {
+methods Set(T) {
     // ---- queries ----
 
     // Number of distinct elements.
@@ -205,19 +205,19 @@ methods(T) Set(T) {
 // `a + b` = union, `a - b` = difference. (`|`/`&` are not overloadable in LS,
 // so intersection stays the named `intersect`.)
 
-methods(T) Set(T): Add {
+methods Set(T): Add {
     def +(&self, &Set(T) rhs) -> Set(T) where T: Hash + Equal {
         return self.union(rhs)
     }
 }
 
-methods(T) Set(T): Sub {
+methods Set(T): Sub {
     def -(&self, &Set(T) rhs) -> Set(T) where T: Hash + Equal {
         return self.difference(rhs)
     }
 }
 
-methods(T) SetIter(T) {
+methods SetIter(T) {
     // Iterator protocol: yield the next live element (clone-on-read, matching
     // Map.get), or None when exhausted.
     def next(&!self) -> Option(T) {

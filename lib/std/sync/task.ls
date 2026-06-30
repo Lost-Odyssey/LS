@@ -31,7 +31,7 @@
 
 struct Task(T) { object h; *T box }
 
-methods(T) Task(T) {
+methods Task(T) {
     // Start: run `f` on a worker thread. The result will be written into a fresh
     // *T box this Task owns. Construct the Task first (`Task(int) t = {}`), call
     // run, then join. `f` move-captures its inputs (those sources are MOVED).

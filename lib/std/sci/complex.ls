@@ -22,7 +22,7 @@ import std.core.math as math
 
 struct Complex(T) { T re; T im }
 
-methods(T) Complex(T) {
+methods Complex(T) {
     // additive / multiplicative identities (static — used as Complex(f64).zero()
     // and, inside generic bodies, as T.zero())
     static def zero() -> Complex(T) { return {re: 0 as T, im: 0 as T} }
@@ -51,19 +51,19 @@ methods(T) Complex(T) {
 
 // --- operator overloads (generic trait impls, folded into the inherent impl) ---
 
-methods(T) Complex(T): Add {
+methods Complex(T): Add {
     def +(&self, &Complex(T) rhs) -> Complex(T) {
         return {re: self.re + rhs.re, im: self.im + rhs.im}
     }
 }
 
-methods(T) Complex(T): Sub {
+methods Complex(T): Sub {
     def -(&self, &Complex(T) rhs) -> Complex(T) {
         return {re: self.re - rhs.re, im: self.im - rhs.im}
     }
 }
 
-methods(T) Complex(T): Mul {
+methods Complex(T): Mul {
     // (a+bi)(c+di) = (ac - bd) + (ad + bc)i
     def *(&self, &Complex(T) rhs) -> Complex(T) {
         return {re: self.re * rhs.re - self.im * rhs.im,
@@ -71,7 +71,7 @@ methods(T) Complex(T): Mul {
     }
 }
 
-methods(T) Complex(T): Div {
+methods Complex(T): Div {
     // (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c^2 + d^2)   (truncates for int T)
     def /(&self, &Complex(T) rhs) -> Complex(T) {
         T d = rhs.re * rhs.re + rhs.im * rhs.im

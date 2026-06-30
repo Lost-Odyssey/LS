@@ -504,7 +504,7 @@ void check_impl_decl(Checker *c, AstNode *node)
         int tidx = find_struct_template_idx(c, name);
         if (tidx < 0) {
             checker_error(c, node->line, node->column,
-                          "methods(T) for undefined generic struct '%s'", name);
+                          "methods for undefined generic struct '%s'", name);
             return;
         }
         c->struct_templates[tidx].impl_node = node;
@@ -1063,7 +1063,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
         {
             checker_error(c, node->line, node->column,
                           "generic interface methods '%s for %s' requires an inherent "
-                          "'methods(T) %s(T)' block before it", trait_name, struct_name, struct_name);
+                          "'methods %s(T)' block before it", trait_name, struct_name, struct_name);
             return;
         }
         int old_n = impl_node->as.impl_decl.method_count;
