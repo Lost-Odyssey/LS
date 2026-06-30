@@ -130,6 +130,7 @@
     <a class="item" href="#ring">ring — Ring(T)</a>
     <a class="item" href="#stack">stack — Stack(T)</a>
     <a class="item" href="#set">set — Set(T)</a>
+    <a class="item" href="#heap">heap — BinaryHeap(T)</a>
     <div class="group">Memory</div>
     <a class="item" href="#arena">arena — Arena/Region</a>
     <div class="group">Strings &amp; Text</div>
@@ -199,6 +200,7 @@ are built-in types, not a module.</p>
 <tr><td class="m"><a href="#ring">ring</a></td><td>Bounded FIFO ring buffer — lock-free SPSC &amp; MPMC</td></tr>
 <tr><td class="m"><a href="#stack">stack</a></td><td>LIFO stack</td></tr>
 <tr><td class="m"><a href="#set">set</a></td><td>Generic hash set <code>Set(T)</code> — membership, de-dup, set algebra</td></tr>
+<tr><td class="m"><a href="#heap">heap</a></td><td>Binary max-heap <code>BinaryHeap(T)</code> — priority queue</td></tr>
 <tr><td class="grp" colspan="2">Memory</td></tr>
 <tr><td class="m"><a href="#arena">arena</a></td><td>Bump allocators: typed <code>Arena(T)</code> pool + heterogeneous <code>Region</code> (string interning)</td></tr>
 <tr><td class="grp" colspan="2">Strings &amp; Text</td></tr>
@@ -660,6 +662,64 @@ def new_set(T)() -> Set(T)
 @print(a.intersect(&amp;b).len())  <span class="c">// 2  ({2,3})</span>
 @print((a - b).has?(1))        <span class="c">// true  (difference {1})</span>
 for x in a { @print(x) }       <span class="c">// 1 2 3 (some order)</span></pre></div>
+</section>
+
+<section id="heap">
+<h2>heap<span class="imp">import std.core.heap</span></h2>
+<p class="purpose">Binary <b>max</b>-heap priority queue built on <code>Vec(T)</code>: <code>peek</code>/<code>pop</code>
+always return the <b>largest</b> element by <code>Order</code> (the same convention as Rust's
+<code>BinaryHeap</code> / C++ <code>priority_queue</code>). <code>push</code> and <code>pop</code> are O(log n),
+<code>peek</code> is O(1). Elements need <code>Order</code> (every builtin scalar and <code>Str</code> qualify).
+For a <b>min</b>-heap (smallest-first, e.g. Dijkstra), negate the keys or store a type whose
+<code>Order</code> is reversed.</p>
+
+<div class="types"><pre>struct BinaryHeap(T) { Vec(T) data }   // has destructor
+def new_heap(T)() -> BinaryHeap(T)
+<span class="t">BinaryHeap</span>(<span class="t">int</span>) h = [3, 1, 4]     <span class="c">// list literal, heapified on the way in</span></pre></div>
+
+<table class="api">
+<tr><td class="s"><span class="sig">def push(&amp;!self, T x)   where T: Order</span></td><td class="d">Insert <code>x</code> (moves in); sift up. O(log n).</td></tr>
+<tr><td class="s"><span class="sig">def pop(&amp;!self) -&gt; Option(T)   where T: Order</span></td><td class="d">Remove &amp; return the max (moved out), or <code>None</code> if empty. O(log n).</td></tr>
+<tr><td class="s"><span class="sig">def peek(&amp;self) -&gt; Option(T)   where T: Order</span></td><td class="d">Clone of the max, or <code>None</code>. O(1).</td></tr>
+<tr><td class="s"><span class="sig">def len(&amp;self) -&gt; int</span></td><td class="d">Number of elements.</td></tr>
+<tr><td class="s"><span class="sig">def empty?(&amp;self) -&gt; bool</span></td><td class="d">True when empty.</td></tr>
+<tr><td class="s"><span class="sig">def clear(&amp;!self)</span></td><td class="d">Destroy all elements (keeps the buffer).</td></tr>
+</table>
+
+<h3>Draining in priority order</h3>
+<div class="ex"><pre><span class="k">import</span> std.core.heap
+
+<span class="t">BinaryHeap</span>(<span class="t">int</span>) h = new_heap(<span class="t">int</span>)()
+h.push(3)  h.push(1)  h.push(4)  h.push(1)  h.push(5)
+@print(h.peek().unwrap())          <span class="c">// 5  (largest, not removed)</span>
+
+<span class="c">// pop drains largest-first → 5 4 3 1 1</span>
+<span class="k">while</span> h.empty? == <span class="k">false</span> {
+    @print(h.pop().unwrap())
+}</pre></div>
+
+<h3>Top-K with a bounded heap</h3>
+<p>Keep the K smallest of a stream by holding a max-heap of size K and dropping its
+largest whenever it overflows — the root is the current K-th smallest:</p>
+<div class="ex"><pre><span class="k">def</span> smallest_k(<span class="t">Vec</span>(<span class="t">int</span>) xs, <span class="t">int</span> k) -&gt; <span class="t">Vec</span>(<span class="t">int</span>) {
+    <span class="t">BinaryHeap</span>(<span class="t">int</span>) h = new_heap(<span class="t">int</span>)()
+    <span class="k">for</span> x <span class="k">in</span> xs {
+        h.push(x)
+        <span class="k">if</span> h.len() &gt; k { h.pop() }       <span class="c">// evict the current largest</span>
+    }
+    <span class="t">Vec</span>(<span class="t">int</span>) out = {}
+    <span class="k">while</span> h.empty? == <span class="k">false</span> { out.push(h.pop().unwrap()) }
+    <span class="k">return</span> out                          <span class="c">// the K smallest (descending)</span>
+}
+
+<span class="t">Vec</span>(<span class="t">int</span>) data = [8, 3, 9, 1, 7, 2, 6]
+@print(smallest_k(data, 3).len())   <span class="c">// 3  → {3, 2, 1}</span></pre></div>
+
+<h3>Heapsort</h3>
+<div class="ex"><pre><span class="t">BinaryHeap</span>(<span class="t">int</span>) hs = [7, 2, 8, 1, 9, 3]   <span class="c">// literal heapifies</span>
+<span class="t">Vec</span>(<span class="t">int</span>) sorted_desc = {}
+<span class="k">while</span> hs.empty? == <span class="k">false</span> { sorted_desc.push(hs.pop().unwrap()) }
+<span class="c">// sorted_desc = [9, 8, 7, 3, 2, 1]  — reverse() for ascending</span></pre></div>
 </section>
 
 <section id="arena">

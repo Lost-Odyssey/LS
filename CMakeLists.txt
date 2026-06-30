@@ -2528,6 +2528,21 @@ add_test(
 )
 set_tests_properties(test_container_methods PROPERTIES DEPENDS "test_set")
 
+# std.core.heap — BinaryHeap(T: Order) max-heap priority queue over Vec(T). The
+# trait-bound container probe: a generic container whose methods call `<` on T
+# under monomorphization. BinaryHeap(int) ordering + literal heapsort +
+# BinaryHeap(Str) has_drop. JIT + AOT + memcheck.
+add_test(
+    NAME test_heap
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/heap_test.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_heap.cmake
+)
+set_tests_properties(test_heap PROPERTIES DEPENDS "test_set")
+
 # Cross-module same-name generic → clear ambiguity error on bare use (negative).
 add_test(
     NAME test_generic_ambig
