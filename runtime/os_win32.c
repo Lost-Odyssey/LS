@@ -17,6 +17,7 @@
 #include <string.h>
 #include <time.h>
 #include <process.h>   /* _beginthreadex (CRT-aware thread start) */
+#include <intrin.h>    /* __cpuidex (AVX-512 feature detection) */
 #include "os_backend.h"
 
 /* Forward-declare env-string helpers to avoid WIN32_LEAN_AND_MEAN issues */
@@ -874,4 +875,13 @@ int __ls_cache_kb(int level) {
     }
     free(buf);
     return kb;
+}
+
+/* 1 if the host supports AVX-512 Foundation (CPUID leaf 7, EBX bit 16), else 0.
+ * std.sci.nn.sgemm uses this to pick the 12x32 (AVX-512, 24 zmm acc) vs 6x16
+ * (AVX2, fits 16 ymm) micro-kernel — the 12x32 tile spills on AVX2. */
+int __ls_cpu_has_avx512(void) {
+    int regs[4];
+    __cpuidex(regs, 7, 0);
+    return (regs[1] & (1 << 16)) ? 1 : 0;   /* EBX bit 16 = AVX512F */
 }

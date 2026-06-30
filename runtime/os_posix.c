@@ -661,3 +661,14 @@ int __ls_cache_kb(int level) {
 #endif
     return sz > 0 ? (int)(sz / 1024) : 0;
 }
+
+/* 1 if the host supports AVX-512 Foundation, else 0. std.sci.nn.sgemm uses this
+ * to pick the 12x32 (AVX-512) vs 6x16 (AVX2) micro-kernel. */
+int __ls_cpu_has_avx512(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_cpu_init();
+    return __builtin_cpu_supports("avx512f") ? 1 : 0;
+#else
+    return 0;
+#endif
+}

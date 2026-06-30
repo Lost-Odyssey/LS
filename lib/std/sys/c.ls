@@ -85,6 +85,10 @@ extern def __ls_cpu_count() -> int
 // 0 if unknown. Drives std.sci.nn.sgemm_packed's analytical cache blocking.
 extern def __ls_cache_kb(int level) -> int
 
+// 1 if the host supports AVX-512 Foundation, else 0. std.sci.nn.sgemm uses it to
+// pick the 12x32 (AVX-512) vs 6x16 (AVX2) micro-kernel.
+extern def __ls_cpu_has_avx512() -> int
+
 // Byte-buffer integer loads (std.text.bytes — V2 bit-pattern parsing). Assemble an
 // N-byte big/little-endian integer from p+off by byte shifts (host-endian
 // independent). All return u64 (value zero-extended); the std.text.bytes wrapper casts

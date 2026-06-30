@@ -247,8 +247,10 @@ def sgemm_tail(*f32 A, *f32 B, *f32 C, int K, int N, int i0, int rows, int jstar
     }
 }
 
-// C = A·B for row-major A(M×K), B(K×N), C(M×N). C is overwritten.
-def sgemm(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
+// AVX-512 driver: 12×32 (24 zmm acc) bulk → 12×16 → 6×16 → 1×16. Used by `sgemm`
+// when the host has AVX-512; on AVX2 the 12×32 tile needs 48 ymm and spills, so
+// `sgemm` routes AVX2 hosts to sgemm_avx2 instead.
+def sgemm_wide(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
     int nfull = (N / 16) * 16
     int n2 = (N / 32) * 32
     int i = 0
@@ -288,6 +290,48 @@ def sgemm(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
         if nfull < N { sgemm_tail(A, B, C, K, N, i, 1, nfull) }
         i = i + 1
     }
+}
+
+// AVX2 driver: 6×16 (12 ymm acc, fits AVX2's 16 ymm) bulk → 1×16 → scalar N-tail.
+// 6×16 is the measured-best AVX2 f32 tile (vs 4×16 / 8×8): FMA-bound with 12
+// independent accumulator chains to hide the FMA latency. The 12×32 wide tile
+// spills here, so it loses to this on AVX2 (medium and tiny alike).
+def sgemm_avx2(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
+    int nfull = (N / 16) * 16
+    int i = 0
+    while i + 6 <= M {
+        int j = 0
+        while j < nfull {
+            uk_6x16(A, B, C, K, K, N, N, i, j)
+            j = j + 16
+        }
+        if nfull < N { sgemm_tail(A, B, C, K, N, i, 6, nfull) }
+        i = i + 6
+    }
+    while i < M {
+        int j = 0
+        while j < nfull {
+            uk_1x16(A, B, C, K, K, N, N, i, j)
+            j = j + 16
+        }
+        if nfull < N { sgemm_tail(A, B, C, K, N, i, 1, nfull) }
+        i = i + 1
+    }
+}
+
+// Host ISA cache for sgemm dispatch: -1 unknown, 0 AVX2, 1 AVX-512.
+int g_sgemm_isa = -1
+
+// C = A·B for row-major A(M×K), B(K×N), C(M×N). C is overwritten. Picks the 12×32
+// (AVX-512) or 6×16 (AVX2) micro-kernel based on the host ISA — detected once via
+// c.__ls_cpu_has_avx512() and cached. So one source runs near-optimally on both.
+def sgemm(*f32 A, *f32 B, *f32 C, int M, int N, int K) {
+    if g_sgemm_isa < 0 {
+        if c.__ls_cpu_has_avx512() != 0 { g_sgemm_isa = 1 }
+        else { g_sgemm_isa = 0 }
+    }
+    if g_sgemm_isa == 1 { sgemm_wide(A, B, C, M, N, K) }
+    else { sgemm_avx2(A, B, C, M, N, K) }
 }
 
 // ============================================================================
