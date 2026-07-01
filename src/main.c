@@ -29,6 +29,9 @@
   #include <limits.h>
 #endif
 
+/* Runtime entry declared at file scope (a block-scope extern triggers MSVC C4210). */
+extern void __ls_set_args(int, char **);
+
 #ifdef _WIN32
   #include <io.h>      /* _setmode, _fileno */
   #include <fcntl.h>   /* _O_BINARY */
@@ -1783,7 +1786,6 @@ int main(int argc, char *argv[]) {
                the remaining arguments (i=1 .. n-1), matching POSIX convention. */
             int script_argc = argc - file_idx;
             char **script_argv = &argv[file_idx];
-            extern void __ls_set_args(int, char **);
             __ls_set_args(script_argc, script_argv);
         }
         if (memcheck) return jit_run_file_memcheck(file);

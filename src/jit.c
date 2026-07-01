@@ -18,6 +18,16 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+/* The runtime-symbol registration below declares each imported symbol with a
+   block-scope `extern` prototype right next to the ORC symbol-map that binds it
+   (keeps every subsystem's decls self-documenting). MSVC flags each such local
+   prototype with C4210 ("nonstandard extension: function given file scope").
+   The extension is benign and the placement is deliberate, so silence it for
+   this translation unit. */
+#pragma warning(disable: 4210)
+#endif
+
 /* ls_os_perf_now and all ls_os_* symbols are defined in runtime/os_win32.c
    or runtime/os_posix.c, which are compiled into ls.exe via CMakeLists.txt.
    Forward-declare here so jit_init can register them as AbsoluteSymbols. */

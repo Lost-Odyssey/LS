@@ -49,10 +49,10 @@ void cg_mark_noreturn_cold(CodegenContext *ctx, LLVMValueRef fn)
     unsigned nr = LLVMGetEnumAttributeKindForName("noreturn", 8);
     unsigned cd = LLVMGetEnumAttributeKindForName("cold", 4);
     if (nr)
-        LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+        LLVMAddAttributeAtIndex(fn, (LLVMAttributeIndex)LLVMAttributeFunctionIndex,
                                 LLVMCreateEnumAttribute(ctx->context, nr, 0));
     if (cd)
-        LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+        LLVMAddAttributeAtIndex(fn, (LLVMAttributeIndex)LLVMAttributeFunctionIndex,
                                 LLVMCreateEnumAttribute(ctx->context, cd, 0));
 }
 

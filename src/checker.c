@@ -1561,7 +1561,6 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
                                            char **tp_names, Type **type_args,
                                            int tp_count, int line, int col)
 {
-    const char *mname = method->as.fn_decl.name;
     char mfn_name[512];
     /* L-002 v2: contended interface methods get `T.<Iface>.m` (the flag was
        pre-set on `method` by the instantiation loop). */
@@ -2213,7 +2212,7 @@ void instantiate_impl_method_types(
                 c->generic_impl_mt_cap = new_cap;
             }
             int idx = c->generic_impl_mt_count++;
-            c->generic_impl_method_templates[idx].method_name = mname;
+            c->generic_impl_method_templates[idx].method_name = (char *)mname; /* borrowed into AST, read-only */
             c->generic_impl_method_templates[idx].impl_key = strdup(mangled_name);
             c->generic_impl_method_templates[idx].method_ast = method;
             c->generic_impl_method_templates[idx].impl_tp_names =
@@ -7470,7 +7469,9 @@ static bool ct_eval_math_call(Checker *c, AstNode *call, CtEval *ev, CtScalar *o
     if (!builtin_math_lookup_fn(fn, &arity, &mk, &en, &mp, &ip)) return false;
     if (call->as.call.arg_count != arity || arity < 1 || arity > 2) return false;
 
-    CtScalar a, b;
+    CtScalar a, b = {0};  /* b is only assigned when arity==2; zero-init keeps the
+                             min/max path (which is always arity 2) defined even if
+                             the arity table were ever wrong. Silences C4701. */
     if (!ct_eval_scalar(c, call->as.call.args[0], ev, &a)) return false;
     if (arity == 2 && !ct_eval_scalar(c, call->as.call.args[1], ev, &b)) return false;
 
