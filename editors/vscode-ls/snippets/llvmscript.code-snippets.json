@@ -1,0 +1,92 @@
+{
+  "Function definition": {
+    "prefix": "def",
+    "body": ["def ${1:name}(${2:args}) -> ${3:RetType} {", "\t$0", "}"],
+    "description": "def name(args) -> RetType { }"
+  },
+  "Function definition (no return value)": {
+    "prefix": "defv",
+    "body": ["def ${1:name}(${2:args}) {", "\t$0", "}"],
+    "description": "def name(args) { } — no -> RetType"
+  },
+  "Main function": {
+    "prefix": "main",
+    "body": ["def main() {", "\t$0", "}"],
+    "description": "def main() { } — entry point skeleton"
+  },
+  "Struct declaration": {
+    "prefix": "struct",
+    "body": ["struct ${1:Name} {", "\t${2:int} ${3:field}", "}"],
+    "description": "struct Name { field declarations }"
+  },
+  "Methods block": {
+    "prefix": "methods",
+    "body": ["methods ${1:Type} {", "\tdef ${2:name}(&self) {", "\t\t$0", "\t}", "}"],
+    "description": "methods Type { def f(&self) { } }"
+  },
+  "Methods block implementing an interface": {
+    "prefix": "methodsi",
+    "body": ["methods ${1:Type}: ${2:Interface} {", "\tdef ${3:name}(&self) {", "\t\t$0", "\t}", "}"],
+    "description": "methods Type: Interface { } — trait-impl merged form"
+  },
+  "Destroy (destructor) impl": {
+    "prefix": "destroy",
+    "body": ["methods ${1:Type}: Destroy {", "\tdef ~(&!self) {", "\t\t$0", "\t}", "}"],
+    "description": "methods Type: Destroy { def ~(&!self) { } } — RAII destructor"
+  },
+  "Clone (deep copy) impl": {
+    "prefix": "clone",
+    "body": ["methods ${1:Type}: Clone {", "\tdef clone(&self) -> Self {", "\t\t$0", "\t}", "}"],
+    "description": "methods Type: Clone { def clone(&self) -> Self { } }"
+  },
+  "Interface declaration": {
+    "prefix": "interface",
+    "body": ["interface ${1:Name} {", "\tdef ${2:method}(&self)$0", "}"],
+    "description": "interface Name { def method(&self) }"
+  },
+  "Enum declaration": {
+    "prefix": "enum",
+    "body": ["enum ${1:Name} {", "\t${2:Variant1},", "\t${3:Variant2}(${4:T}),", "}"],
+    "description": "enum Name { Variant1, Variant2(T) }"
+  },
+  "Match expression": {
+    "prefix": "match",
+    "body": ["match ${1:expr} {", "\t${2:Pattern} => { $3 }", "\t_ => { $0 }", "}"],
+    "description": "match expr { Pattern => { } _ => { } } — exhaustive match"
+  },
+  "For-in loop": {
+    "prefix": "forin",
+    "body": ["for ${1:x} in ${2:iterable} {", "\t$0", "}"],
+    "description": "for x in iterable { }"
+  },
+  "C-style for loop": {
+    "prefix": "forc",
+    "body": ["for (${1:int i = 0}; ${2:i < n}; ${3:i += 1}) {", "\t$0", "}"],
+    "description": "for (init; cond; update) { }"
+  },
+  "If / else": {
+    "prefix": "ifelse",
+    "body": ["if ${1:cond} {", "\t$2", "} else {", "\t$0", "}"],
+    "description": "if cond { } else { }"
+  },
+  "While loop": {
+    "prefix": "while",
+    "body": ["while ${1:cond} {", "\t$0", "}"],
+    "description": "while cond { }"
+  },
+  "Import module": {
+    "prefix": "import",
+    "body": ["import std.${1:core.vec}"],
+    "description": "import std.core.vec — or `import X as Y`"
+  },
+  "Derive annotation": {
+    "prefix": "derive",
+    "body": ["@derive(${1:Show})"],
+    "description": "@derive(Show, Clone, ...) — synthesize trait impls"
+  },
+  "Format string": {
+    "prefix": "fstr",
+    "body": ["f\"${1:text} {${2:expr}}\""],
+    "description": "f\"text {expr}\" — interpolated string"
+  }
+}

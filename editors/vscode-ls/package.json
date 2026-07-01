@@ -1,0 +1,51 @@
+{
+  "name": "llvmscript",
+  "displayName": "LS (LLVM Script)",
+  "description": "Syntax highlighting, diagnostics, hover, go-to-definition, and completion for LS (LLVM Script) — .ls files.",
+  "version": "0.5.0",
+  "publisher": "ls-lang",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "main": "./client/extension.js",
+  "activationEvents": ["onLanguage:llvmscript"],
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "llvmscript",
+        "aliases": ["LS (LLVM Script)", "llvmscript"],
+        "extensions": [".ls"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "llvmscript",
+        "scopeName": "source.llvmscript",
+        "path": "./syntaxes/llvmscript.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "llvmscript",
+        "path": "./snippets/llvmscript.code-snippets.json"
+      }
+    ],
+    "configuration": {
+      "title": "LS (LLVM Script)",
+      "properties": {
+        "llvmscript.compilerPath": {
+          "type": "string",
+          "default": "ls",
+          "description": "Path to the ls (LLVM Script) compiler binary used for diagnostics (`<compilerPath> check <file>`), hover/go-to-definition (`<compilerPath> symbol <file> <line> <col>`), and completion (`<compilerPath> complete <file>`). Defaults to resolving 'ls' on PATH."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,219 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "LS (LLVM Script)",
+  "scopeName": "source.llvmscript",
+  "fileTypes": ["ls"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#annotations" },
+    { "include": "#fstrings" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#numbers" },
+    { "include": "#function-decl" },
+    { "include": "#struct-enum-decl" },
+    { "include": "#keywords-control" },
+    { "include": "#keywords-declare" },
+    { "include": "#keywords-modifier" },
+    { "include": "#keywords-other" },
+    { "include": "#constants-language" },
+    { "include": "#types-primitive" },
+    { "include": "#type-names" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.llvmscript",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.llvmscript",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [{ "include": "#comments" }]
+        }
+      ]
+    },
+    "annotations": {
+      "patterns": [
+        {
+          "name": "entity.name.function.annotation.llvmscript",
+          "match": "@(print|time|bench|derive)\\b"
+        },
+        {
+          "name": "entity.name.function.annotation.llvmscript",
+          "match": "@[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "escapes": {
+      "comment": "Matches src/scanner.c scan_string: \\xHH is a 2-hex-digit unit, everything else is a single escaped char (\\n \\t \\\\ \\\" \\0 \\r \\a \\b). Highlighting doesn't enforce the exact valid set.",
+      "patterns": [
+        { "name": "constant.character.escape.llvmscript", "match": "\\\\x[0-9a-fA-F]{2}" },
+        { "name": "constant.character.escape.llvmscript", "match": "\\\\." }
+      ]
+    },
+    "fstrings": {
+      "name": "string.quoted.double.fstring.llvmscript",
+      "begin": "f\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.llvmscript" } },
+      "end": "\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.llvmscript" } },
+      "patterns": [
+        { "include": "#escapes" },
+        {
+          "name": "meta.embedded.expression.llvmscript",
+          "begin": "\\{",
+          "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.llvmscript" } },
+          "end": "\\}",
+          "endCaptures": { "0": { "name": "punctuation.section.embedded.end.llvmscript" } },
+          "patterns": [
+            { "include": "#fstring-nested-braces" },
+            {
+              "comment": "scanner.c: a top-level ':' (brace depth exactly 1) starts a printf-style spec that runs raw to the closing '}' — not re-tokenized as an expression. Nested braces are consumed above before this can misfire on a struct-literal colon.",
+              "name": "string.other.format-spec.llvmscript",
+              "match": ":[^}\"]*"
+            },
+            { "include": "#fstring-expr" }
+          ]
+        }
+      ]
+    },
+    "fstring-nested-braces": {
+      "comment": "A brace pair nested inside an f-string expression (e.g. a struct literal) — consumed as a unit so its inner '}' can't be mistaken for the end of the embedded expression.",
+      "begin": "\\{",
+      "beginCaptures": { "0": { "name": "punctuation.section.braces.llvmscript" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.braces.llvmscript" } },
+      "patterns": [{ "include": "#fstring-nested-braces" }, { "include": "#fstring-expr" }]
+    },
+    "fstring-expr": {
+      "patterns": [
+        { "include": "#strings" },
+        { "include": "#chars" },
+        { "include": "#numbers" },
+        { "include": "#constants-language" },
+        { "include": "#operators" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.llvmscript",
+      "begin": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.llvmscript" } },
+      "end": "\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.llvmscript" } },
+      "patterns": [{ "include": "#escapes" }]
+    },
+    "chars": {
+      "name": "string.quoted.single.llvmscript",
+      "begin": "'",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.llvmscript" } },
+      "end": "'",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.llvmscript" } },
+      "patterns": [{ "include": "#escapes" }]
+    },
+    "numbers": {
+      "comment": "src/scanner.c scan_number has no digit-group separator (no '_') and a float requires digits on both sides of '.' — matched exactly, not the looser '_'-permissive guess from Phase 0.",
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.llvmscript",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.llvmscript",
+          "match": "\\b0[bB][01]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.llvmscript",
+          "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.llvmscript",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "keywords-control": {
+      "name": "keyword.control.llvmscript",
+      "match": "\\b(if|else|while|for|in|match|break|continue|return|try)\\b"
+    },
+    "keywords-declare": {
+      "name": "keyword.other.declare.llvmscript",
+      "match": "\\b(struct|enum|module|import|load|extern|comptime|type|interface|methods|def)\\b"
+    },
+    "keywords-modifier": {
+      "name": "storage.modifier.llvmscript",
+      "match": "\\b(public|private|static|where)\\b"
+    },
+    "keywords-other": {
+      "name": "keyword.other.llvmscript",
+      "match": "\\b(as|new|from|do|end)\\b"
+    },
+    "constants-language": {
+      "patterns": [
+        { "name": "constant.language.boolean.llvmscript", "match": "\\b(true|false)\\b" },
+        { "name": "constant.language.nil.llvmscript", "match": "\\bnil\\b" },
+        { "name": "variable.language.self.llvmscript", "match": "\\bself\\b" }
+      ]
+    },
+    "types-primitive": {
+      "name": "storage.type.primitive.llvmscript",
+      "match": "\\b(int|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|f16|bf16|bool|char|void|lib|object|array|Simd|Block)\\b"
+    },
+    "function-decl": {
+      "match": "\\b(def)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+      "captures": {
+        "1": { "name": "keyword.other.declare.llvmscript" },
+        "2": { "name": "entity.name.function.llvmscript" }
+      }
+    },
+    "struct-enum-decl": {
+      "match": "\\b(struct|enum|interface)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+      "captures": {
+        "1": { "name": "keyword.other.declare.llvmscript" },
+        "2": { "name": "entity.name.type.llvmscript" }
+      }
+    },
+    "type-names": {
+      "comment": "Heuristic: PascalCase identifiers are conventionally type names (struct/enum/interface/generic params).",
+      "name": "entity.name.type.llvmscript",
+      "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.arrow.llvmscript", "match": "->|=>" },
+        { "name": "keyword.operator.borrow.llvmscript", "match": "&!|&" },
+        { "name": "keyword.operator.unwrap.llvmscript", "match": "!|\\?" },
+        { "name": "keyword.operator.range.llvmscript", "match": "\\.\\.\\.|\\.\\." },
+        {
+          "name": "keyword.operator.comparison.llvmscript",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        { "name": "keyword.operator.logical.llvmscript", "match": "&&|\\|\\|" },
+        {
+          "name": "keyword.operator.assignment.llvmscript",
+          "match": "\\+=|-=|\\*=|/=|="
+        },
+        {
+          "name": "keyword.operator.arithmetic.llvmscript",
+          "match": "\\+|-|\\*|/|%|\\^|~|<<|>>|\\|"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.terminator.llvmscript", "match": ";" },
+        { "name": "punctuation.separator.colon.llvmscript", "match": ":" },
+        { "name": "punctuation.separator.comma.llvmscript", "match": "," },
+        { "name": "punctuation.accessor.llvmscript", "match": "\\." },
+        { "name": "punctuation.section.braces.llvmscript", "match": "[{}]" },
+        { "name": "punctuation.section.brackets.llvmscript", "match": "[\\[\\]]" },
+        { "name": "punctuation.section.parens.llvmscript", "match": "[()]" }
+      ]
+    }
+  }
+}

@@ -10,6 +10,7 @@
 #include "format.h"
 #include "doc_assets.h"
 #include "emit_c.h"
+#include <ctype.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/TargetMachine.h>
 
@@ -1070,6 +1071,328 @@ static void doc_emit_section_body(DBuf *sec, const char *src, const size_t *line
     }
 }
 
+/* ---- ls symbol: hover/go-to-definition backend (Phase 3, editor-support) ----
+   Reuses the exact extraction helpers `ls doc` already has (extract_sig /
+   doc_block_top / extract_comment_range) — this is deliberately NOT a real
+   symbol resolver: it never touches the type checker or symbol table (both
+   are torn down inside checker_check before main.c ever sees them, see
+   docs/plan_editor_lsp.md §9). It's a name-based lookup over the current
+   file's top-level decls + `methods X { }` bodies, plus one level of import
+   expansion via the same module_resolve_path() the real compiler uses. No
+   scope/shadowing resolution — a name present in more than one searched file
+   comes back as multiple candidates; the LSP client (not this command)
+   decides what to do with more than one (definition lookups can legitimately
+   return a list, hover just uses the first). */
+
+/* JSON-escape (not the HTML db_esc a few lines up — doc comments can contain
+   literal newlines from extract_comment_range's multi-line join). */
+static void json_esc(DBuf *b, const char *s) {
+    if (!s) return;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '"':  db_puts(b, "\\\""); break;
+        case '\\': db_puts(b, "\\\\"); break;
+        case '\n': db_puts(b, "\\n");  break;
+        case '\r': db_puts(b, "\\r");  break;
+        case '\t': db_puts(b, "\\t");  break;
+        default:
+            if (*p < 0x20) {
+                char esc[8];
+                snprintf(esc, sizeof esc, "\\u%04x", *p);
+                db_puts(b, esc);
+            } else {
+                db_putn(b, (const char *)p, 1);
+            }
+        }
+    }
+}
+
+/* The maximal [A-Za-z_][A-Za-z0-9_]* run covering 1-based (line, col).
+   LSP hover/definition positions sometimes land one past the last character
+   of the word (end-of-token cursor), so a miss at `col` also tries `col-1`. */
+static char *extract_ident_at(const char *src, const size_t *lineoff, int nlines,
+                               int line, int col) {
+    if (line < 1 || line > nlines || col < 1) return NULL;
+    size_t ls = lineoff[line - 1];
+    size_t le = ls;
+    while (src[le] && src[le] != '\n' && src[le] != '\r') le++;
+
+    size_t at = ls + (size_t)(col - 1);
+    bool at_ok = at < le && (isalnum((unsigned char)src[at]) || src[at] == '_');
+    if (!at_ok && at > ls && at <= le) {
+        size_t prev = at - 1;
+        if (isalnum((unsigned char)src[prev]) || src[prev] == '_') { at = prev; at_ok = true; }
+    }
+    if (!at_ok) return NULL;
+
+    size_t s = at, e = at;
+    while (s > ls && (isalnum((unsigned char)src[s - 1]) || src[s - 1] == '_')) s--;
+    while (e < le && (isalnum((unsigned char)src[e]) || src[e] == '_')) e++;
+    if (!(isalpha((unsigned char)src[s]) || src[s] == '_')) return NULL; /* bare digit run, not an identifier */
+
+    char *out = malloc_safe(e - s + 1);
+    memcpy(out, src + s, e - s);
+    out[e - s] = 0;
+    return out;
+}
+
+/* Emit one `{"file":...,"line":...,"kind":...,"signature":...,"doc":...}`
+   item, comma-separated within the enclosing JSON array via *first. `kind`
+   is one of "struct"/"enum"/"interface"/"function"/"method" — used by both
+   `ls symbol` (Phase 3, one name) and `ls complete` (Phase 4, every name)
+   below, so completion items carry the same icon/detail info hover does. */
+static void symbol_emit_item(DBuf *out, bool *first, const char *filepath,
+                              const char *src, const size_t *lineoff, int nlines,
+                              int mend, const char *name, const char *kind, int line) {
+    if (!*first) db_puts(out, ",");
+    *first = false;
+
+    char *sig = extract_sig(src, lineoff, nlines, line);
+    int top = doc_block_top(src, lineoff, line);
+    char *doc = (top > mend) ? extract_comment_range(src, lineoff, top, line - 1) : NULL;
+
+    db_puts(out, "{\"file\":\"");
+    json_esc(out, filepath);
+    db_puts(out, "\",\"line\":");
+    char linebuf[16];
+    snprintf(linebuf, sizeof linebuf, "%d", line);
+    db_puts(out, linebuf);
+    db_puts(out, ",\"kind\":\"");
+    json_esc(out, kind);
+    db_puts(out, "\",\"name\":\"");
+    json_esc(out, name);
+    db_puts(out, "\",\"signature\":\"");
+    json_esc(out, sig ? sig : name);
+    db_puts(out, "\",\"doc\":");
+    if (doc) { db_puts(out, "\""); json_esc(out, doc); db_puts(out, "\""); }
+    else db_puts(out, "null");
+    db_puts(out, "}");
+
+    free(sig);
+    free(doc);
+}
+
+/* Same top-level-decls + impl-methods walk as doc_emit_section_body, but
+   filtering by name instead of emitting everything. */
+static void symbol_search_decls(DBuf *out, bool *first, const char *filepath,
+                                 const char *src, const size_t *lineoff, int nlines,
+                                 int mend, AstNode *ast, const char *name) {
+    for (int d = 0; d < ast->as.program.decl_count; d++) {
+        AstNode *dn = ast->as.program.decls[d];
+        switch (dn->kind) {
+        case AST_FN_DECL:
+            if (dn->as.fn_decl.name && strcmp(dn->as.fn_decl.name, name) == 0)
+                symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend, name, "function", dn->line);
+            break;
+        case AST_STRUCT_DECL:
+            if (dn->as.struct_decl.name && strcmp(dn->as.struct_decl.name, name) == 0)
+                symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend, name, "struct", dn->line);
+            break;
+        case AST_ENUM_DECL:
+            if (dn->as.enum_decl.name && strcmp(dn->as.enum_decl.name, name) == 0)
+                symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend, name, "enum", dn->line);
+            break;
+        case AST_TRAIT_DECL:
+            if (dn->as.trait_decl.name && strcmp(dn->as.trait_decl.name, name) == 0)
+                symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend, name, "interface", dn->line);
+            break;
+        case AST_IMPL_DECL:
+            for (int m = 0; m < dn->as.impl_decl.method_count; m++) {
+                AstNode *mn = dn->as.impl_decl.methods[m];
+                if (mn->kind == AST_FN_DECL && mn->as.fn_decl.name &&
+                    strcmp(mn->as.fn_decl.name, name) == 0)
+                    symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend, name, "method", mn->line);
+            }
+            break;
+        case AST_IMPL_TRAIT_DECL:
+            for (int m = 0; m < dn->as.impl_trait_decl.method_count; m++) {
+                AstNode *mn = dn->as.impl_trait_decl.methods[m];
+                if (mn->kind == AST_FN_DECL && mn->as.fn_decl.name &&
+                    strcmp(mn->as.fn_decl.name, name) == 0)
+                    symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend, name, "method", mn->line);
+            }
+            break;
+        default: break;
+        }
+    }
+}
+
+/* Same walk, but collecting every non-internal (`_`-prefixed = skipped, same
+   convention as ls doc's doc_emit_item) top-level decl + method instead of
+   filtering by name — the data source for `ls complete`'s coarse, unfiltered
+   suggestion list (see cmd_complete). */
+static void symbol_collect_all(DBuf *out, bool *first, const char *filepath,
+                                const char *src, const size_t *lineoff, int nlines,
+                                int mend, AstNode *ast) {
+    for (int d = 0; d < ast->as.program.decl_count; d++) {
+        AstNode *dn = ast->as.program.decls[d];
+        switch (dn->kind) {
+        case AST_FN_DECL:
+            if (dn->as.fn_decl.name && dn->as.fn_decl.name[0] != '_')
+                symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend,
+                                  dn->as.fn_decl.name, "function", dn->line);
+            break;
+        case AST_STRUCT_DECL:
+            if (dn->as.struct_decl.name && dn->as.struct_decl.name[0] != '_')
+                symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend,
+                                  dn->as.struct_decl.name, "struct", dn->line);
+            break;
+        case AST_ENUM_DECL:
+            if (dn->as.enum_decl.name && dn->as.enum_decl.name[0] != '_')
+                symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend,
+                                  dn->as.enum_decl.name, "enum", dn->line);
+            break;
+        case AST_TRAIT_DECL:
+            if (dn->as.trait_decl.name && dn->as.trait_decl.name[0] != '_')
+                symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend,
+                                  dn->as.trait_decl.name, "interface", dn->line);
+            break;
+        case AST_IMPL_DECL:
+            for (int m = 0; m < dn->as.impl_decl.method_count; m++) {
+                AstNode *mn = dn->as.impl_decl.methods[m];
+                if (mn->kind == AST_FN_DECL && mn->as.fn_decl.name && mn->as.fn_decl.name[0] != '_')
+                    symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend,
+                                      mn->as.fn_decl.name, "method", mn->line);
+            }
+            break;
+        case AST_IMPL_TRAIT_DECL:
+            for (int m = 0; m < dn->as.impl_trait_decl.method_count; m++) {
+                AstNode *mn = dn->as.impl_trait_decl.methods[m];
+                if (mn->kind == AST_FN_DECL && mn->as.fn_decl.name && mn->as.fn_decl.name[0] != '_')
+                    symbol_emit_item(out, first, filepath, src, lineoff, nlines, mend,
+                                      mn->as.fn_decl.name, "method", mn->line);
+            }
+            break;
+        default: break;
+        }
+    }
+}
+
+/* ls symbol <file> <line> <col>
+   Prints {"query": "<ident or null>", "candidates": [...]} to stdout. Never
+   hard-fails on a bad position/missing match — an empty candidates array is
+   the normal "nothing to show" response an editor expects, not an error. */
+static int cmd_symbol(const char *path, int line, int col) {
+    char *source = read_file(path);
+    if (source == NULL) { printf("{\"query\":null,\"candidates\":[]}\n"); return 0; }
+    AstNode *ast = parse(source, path);
+    if (ast == NULL) {
+        printf("{\"query\":null,\"candidates\":[]}\n");
+        free(source);
+        return 0;
+    }
+
+    int nlines;
+    size_t *lineoff = build_lineoff(source, &nlines);
+    char *name = extract_ident_at(source, lineoff, nlines, line, col);
+
+    DBuf out;
+    db_init(&out);
+    db_puts(&out, "{\"query\":");
+    if (name) { db_puts(&out, "\""); json_esc(&out, name); db_puts(&out, "\""); }
+    else db_puts(&out, "null");
+    db_puts(&out, ",\"candidates\":[");
+
+    bool first = true;
+    if (name) {
+        int mend = top_block_end(source, lineoff, nlines);
+        symbol_search_decls(&out, &first, path, source, lineoff, nlines, mend, ast, name);
+
+        /* One level of import expansion (this file's own imports, not their
+           transitive imports) via the same resolver the real compiler uses. */
+        for (int d = 0; d < ast->as.program.decl_count; d++) {
+            AstNode *dn = ast->as.program.decls[d];
+            if (dn->kind != AST_IMPORT_DECL) continue;
+            char *resolved = module_resolve_import_path(dn->as.import_decl.path, path);
+            if (!resolved) continue;
+            char *isrc = read_file(resolved);
+            if (isrc) {
+                AstNode *iast = parse(isrc, resolved);
+                if (iast) {
+                    int inlines;
+                    size_t *ilineoff = build_lineoff(isrc, &inlines);
+                    int imend = top_block_end(isrc, ilineoff, inlines);
+                    symbol_search_decls(&out, &first, resolved, isrc, ilineoff, inlines, imend, iast, name);
+                    free(ilineoff);
+                    ast_free(iast);
+                }
+                free(isrc);
+            }
+            free(resolved);
+        }
+    }
+
+    db_puts(&out, "]}\n");
+    printf("%s", out.d);
+
+    free(out.d);
+    free(name);
+    free(lineoff);
+    ast_free(ast);
+    free(source);
+    return 0;
+}
+
+/* ls complete <file>
+   Prints {"items": [...]} — every non-internal top-level decl + method in
+   the file plus one level of its imports, unfiltered (Phase 4, editor
+   completion). Deliberately coarse: no receiver-type filtering (that would
+   need the same symbol-table access Phase 3 established isn't available
+   after checker_check() returns, see docs/plan_editor_lsp.md §9) — the LSP
+   client does prefix/fuzzy filtering over this full list as the user types,
+   same as it already does over static keyword/snippet completions. */
+static int cmd_complete(const char *path) {
+    char *source = read_file(path);
+    if (source == NULL) { printf("{\"items\":[]}\n"); return 0; }
+    AstNode *ast = parse(source, path);
+    if (ast == NULL) {
+        printf("{\"items\":[]}\n");
+        free(source);
+        return 0;
+    }
+
+    int nlines;
+    size_t *lineoff = build_lineoff(source, &nlines);
+    int mend = top_block_end(source, lineoff, nlines);
+
+    DBuf out;
+    db_init(&out);
+    db_puts(&out, "{\"items\":[");
+
+    bool first = true;
+    symbol_collect_all(&out, &first, path, source, lineoff, nlines, mend, ast);
+
+    for (int d = 0; d < ast->as.program.decl_count; d++) {
+        AstNode *dn = ast->as.program.decls[d];
+        if (dn->kind != AST_IMPORT_DECL) continue;
+        char *resolved = module_resolve_import_path(dn->as.import_decl.path, path);
+        if (!resolved) continue;
+        char *isrc = read_file(resolved);
+        if (isrc) {
+            AstNode *iast = parse(isrc, resolved);
+            if (iast) {
+                int inlines;
+                size_t *ilineoff = build_lineoff(isrc, &inlines);
+                int imend = top_block_end(isrc, ilineoff, inlines);
+                symbol_collect_all(&out, &first, resolved, isrc, ilineoff, inlines, imend, iast);
+                free(ilineoff);
+                ast_free(iast);
+            }
+            free(isrc);
+        }
+        free(resolved);
+    }
+
+    db_puts(&out, "]}\n");
+    printf("%s", out.d);
+
+    free(out.d);
+    free(lineoff);
+    ast_free(ast);
+    free(source);
+    return 0;
+}
+
 /* ls doc <files...> [-o out.html] [--css f] [--template f] [--title s]
    Generates an HTML API reference. Default style is the stdlib.html layout
    (grouped nav sidebar + overview table + per-module sections). Customize via
@@ -1212,6 +1535,13 @@ static void usage(void) {
         "  tokens <file>              Print token stream\n"
         "  parse <file>               Parse and print AST\n"
         "  check <file>               Parse and type-check\n"
+        "  symbol <file> <line> <col>  Print {query,candidates:[{file,line,kind,name,signature,doc}]}\n"
+        "       JSON for the identifier at (line, col) — name-based lookup across the\n"
+        "       file + its imports, for editor hover/go-to-definition (not a real\n"
+        "       scope-resolving symbol lookup, see docs/plan_editor_lsp.md)\n"
+        "  complete <file>            Print {items:[{file,line,kind,name,signature,doc}]}\n"
+        "       every decl/method in the file + its imports, unfiltered, for editor\n"
+        "       completion lists (same caveat as 'symbol' above)\n"
         "  inspect <Type> <file>      Print a type's fields + methods (reflection)\n"
         "  ir  <fn> <file> [-O|-On] [--native]   Print one function's LLVM IR\n"
         "  asm <fn> <file> [-O|-On] [--native]   Print one function's assembly\n"
@@ -1274,6 +1604,22 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         return cmd_check(argv[2]);
+    }
+
+    if (strcmp(cmd, "symbol") == 0) {
+        if (argc < 5) {
+            fprintf(stderr, "error: 'symbol' requires <file> <line> <col>\n");
+            return 1;
+        }
+        return cmd_symbol(argv[2], atoi(argv[3]), atoi(argv[4]));
+    }
+
+    if (strcmp(cmd, "complete") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "error: 'complete' requires a file path\n");
+            return 1;
+        }
+        return cmd_complete(argv[2]);
     }
 
     if (strcmp(cmd, "inspect") == 0) {

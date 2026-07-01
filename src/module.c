@@ -234,6 +234,16 @@ char *module_resolve_path(const char *import_path, const char *current_file) {
     return full;
 }
 
+char *module_resolve_import_path(const char *import_path, const char *current_file) {
+    char *file_path = module_resolve_path(import_path, current_file);
+    if (file_path != NULL) {
+        FILE *f = fopen_retry(file_path, "rb");
+        if (f != NULL) { fclose(f); return file_path; }
+        free(file_path);
+    }
+    return resolve_stdlib_path(import_path);  /* NULL if neither location has it */
+}
+
 ModuleInfo *module_load(ModuleRegistry *reg, const char *import_path,
                         const char *current_file) {
     /* Check if already loaded */
