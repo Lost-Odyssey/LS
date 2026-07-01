@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  linux:
+    name: Linux (Ubuntu, LLVM 18)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake ninja-build git wget lsb-release \
+            software-properties-common gnupg \
+            zlib1g-dev libzstd-dev libtinfo-dev
+
+      - name: Install LLVM 18
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 18
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          # Do NOT pass -DCMAKE_BUILD_TYPE=Release: three library targets
+          # (ls_os_backend/ls_memcheck/ls_profiler) hardcode a per-config
+          # ARCHIVE_OUTPUT_DIRECTORY_RELEASE copied from the Windows
+          # multi-config (Visual Studio) convention. Under a single-config
+          # generator like Ninja, setting CMAKE_BUILD_TYPE=Release makes
+          # CMake honor that override and split the archives into
+          # build/Release/ while the `ls` binary itself stays in build/,
+          # breaking AOT linking (`cannot find -lls_os_backend`).
+          # The non-MSVC compile options already default to -O2 when
+          # CMAKE_BUILD_TYPE isn't "Debug", so this loses no optimization.
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Test
+        working-directory: build
+        run: ctest -j "$(nproc)" --output-on-failure --repeat until-pass:2
