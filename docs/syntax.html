@@ -104,6 +104,11 @@
   <a class="item" href="#bo-forin">for x in &amp;v</a>
   <a class="item" href="#bo-slice">borrow slices</a>
   <a class="item" href="#bo-return">returning a borrow</a>
+  <div class="group">Low-level intrinsics</div>
+  <a class="item" href="#in-model">place-intrinsic model</a>
+  <a class="item" href="#in-primitives">@take / @dispose / @dup / @move</a>
+  <a class="item" href="#in-hazards">misuse → UB / leaks</a>
+  <a class="item" href="#in-protocols">protocol interfaces</a>
   <div class="group">Closures</div>
   <a class="item" href="#overview">Overview</a>
   <a class="item" href="#forms">The two body forms</a>
@@ -853,6 +858,156 @@ double_all(&amp;!v[0..5])          <span class="c">// v becomes [20, 40, 60, 80,
     element with <code>get!</code> instead. Borrows as <code>struct</code> fields, named
     lifetimes, and multi-input returned borrows are deliberately <b>not</b> supported;
     use a value-offset view (<code>StrSlice</code>) when you need a stored window.</div>
+  </section>
+
+  <h1 id="in-top" style="margin-top:3.5rem">LS Low-level intrinsics</h1>
+  <p class="lede">Four <code>@</code>-sigil builtins — <code>@take</code>, <code>@dispose</code>,
+  <code>@dup</code>, <code>@move</code> — let a container author move, destroy, and copy
+  values in raw memory the compiler doesn't track. They are the substrate the safe
+  ownership model is built on. You rarely call them outside a hand-written container;
+  when you do, correctness is <b>your</b> responsibility, not the compiler's.</p>
+
+  <section id="in-model">
+    <h2>The place-intrinsic model</h2>
+    <p>The compiler tracks ownership only for <b>named variables</b> (see
+    <a href="#ow-model">the move model</a>). The moment you move values between anonymous
+    slots of a raw buffer — a <code>*T</code> array, a heap box, a struct field reached by
+    a runtime index — there is no variable to track, and the compiler's bookkeeping goes
+    silent. The three <em>place</em> intrinsics operate there:</p>
+    <table class="api">
+      <tr><th>Intrinsic</th><th>Operates on</th><th>Effect</th><th>Liveness tracked by</th></tr>
+      <tr><td><code>@take(place)</code></td><td>a place (<code>p[i]</code>, <code>field</code>, <code>*p</code>)</td><td>move the value OUT (raw load, no clone); slot left stale</td><td><b>you</b> (the container's <code>len</code>/metadata)</td></tr>
+      <tr><td><code>@dispose(place)</code></td><td>same</td><td>run the value's destructor in place; buffer NOT freed; POD = no-op</td><td><b>you</b></td></tr>
+      <tr><td><code>@dup(place)</code></td><td>same</td><td>deep-copy the value; source untouched</td><td>— (produces an independent value)</td></tr>
+      <tr><td><code>@move(var)</code></td><td>a <b>named variable</b> only</td><td>transfer ownership; marks the variable moved</td><td><b>the compiler</b> (use-after-move is a compile error)</td></tr>
+    </table>
+    <p>They work anywhere the pattern applies, not just <code>Vec</code>: open-addressing
+    <code>Map</code> slots, ring buffers, a <code>Task</code>'s <code>*T</code> result box,
+    a struct field handed off by a builder, broadcasting a value into a tensor.</p>
+    <div class="note"><b>The one-line intuition.</b> <code>@move</code> is the automatic
+    gearbox — the compiler catches your mistakes. <code>@take</code>/<code>@dispose</code>/<code>@dup</code>
+    are the manual gearbox — the compiler hands you the wheel, and a wrong metadata invariant
+    is undefined behaviour or a leak. <code>ls run --memcheck</code> is your only safety net.</div>
+  </section>
+
+  <section id="in-primitives">
+    <h2><code>@take</code> · <code>@dispose</code> · <code>@dup</code> · <code>@move</code></h2>
+    <p>An owning value like <code>Str</code> is a small <b>handle</b> — <code>{data, len, cap}</code>
+    — pointing at a heap payload elsewhere. <code>@take</code> is a single <code>load</code> of
+    that handle: it relocates ownership in O(1) without touching the payload, where a normal
+    read would deep-copy it.</p>
+    <div class="ex"><pre><span class="c">// Vec.pop — move the last element out (no clone), then shrink len so the</span>
+<span class="c">// vacated slot is unreachable and never destroyed twice.</span>
+<span class="k">def</span> pop(&!<span class="k">self</span>) -&gt; <span class="t">Option</span>(<span class="t">T</span>) {
+    <span class="k">if</span> <span class="k">self</span>.len == 0 { <span class="k">return</span> <span class="t">None</span> }
+    <span class="k">self</span>.len = <span class="k">self</span>.len - 1
+    <span class="t">T</span> out = <span class="k">@take</span>(<span class="k">self</span>.data[<span class="k">self</span>.len])   <span class="c">// steal the handle; slot now stale but excluded by len</span>
+    <span class="k">return</span> <span class="t">Some</span>(out)
+}</pre></div>
+    <p><code>@dispose</code> runs the destructor on the value living at a slot — freeing the
+    payload its owning fields point to — <b>without</b> freeing the backing buffer. It is a
+    no-op for POD. Use it before a raw overwrite, since a raw <code>*T</code> store does
+    <em>not</em> drop the old occupant:</p>
+    <div class="ex"><pre><span class="c">// Map.set — the slot already holds a live value; destroy it before storing the new one.</span>
+<span class="k">@dispose</span>(<span class="k">self</span>.vals[idx])
+<span class="k">self</span>.vals[idx] = v</pre></div>
+    <p><code>@dup</code> is the generic duplication primitive: a bit-copy for POD, a deep clone
+    (via the type's <a href="#ty-destroy"><code>Clone</code></a> impl) for owning types, leaving
+    the source live. It backs <code>Vec.fill(x)</code> and <code>Map.get_or_insert</code>.</p>
+    <div class="ex"><pre><span class="c">// Vec.fill — write N independent copies of x; x itself is dropped once at scope exit.</span>
+<span class="k">for</span> (<span class="t">int</span> i = 0; i &lt; <span class="k">self</span>.len; i = i + 1) {
+    <span class="k">@dispose</span>(<span class="k">self</span>.data[i])       <span class="c">// destroy the old element…</span>
+    <span class="k">self</span>.data[i] = <span class="k">@dup</span>(x)        <span class="c">// …then store a fresh deep copy</span>
+}</pre></div>
+    <p><code>@move</code> is the only tracked one, and the only one that takes a bare variable.
+    Use it to force-transfer a named local's ownership — the compiler then rejects any later use:</p>
+    <div class="ex"><pre><span class="t">Str</span> a = <span class="s">"hi"</span>.upper()
+<span class="t">Str</span> b = <span class="k">@move</span>(a)     <span class="c">// a's ownership → b; the compiler marks a dead</span>
+<span class="c">// @print(a)             // ❌ compile error: use after move</span></pre></div>
+  </section>
+
+  <section id="in-hazards">
+    <h2>Misuse → UB / leaks <span class="tag no">read this</span></h2>
+    <p>Because the place intrinsics do <b>zero</b> liveness tracking, every safety property
+    is an invariant <em>you</em> maintain. Here is what breaks and why.</p>
+
+    <h3>1 · <code>@take</code> on a named variable → silent double-free</h3>
+    <p><code>@take</code> does NOT mark a variable moved (only <code>@move</code> does). Take a
+    named local and both it and the result own the same heap — a double-free at scope exit,
+    with <b>no compile error</b>.</p>
+    <div class="ex"><pre><span class="t">Str</span> a = <span class="s">"hi"</span>.upper()
+<span class="t">Str</span> b = <span class="k">@take</span>(a)     <span class="c">// ❌ a is NOT marked moved — a and b alias the same buffer</span>
+<span class="k">@print</span>(a)             <span class="c">//    both freed at scope end → double-free (undefined behaviour)</span></pre></div>
+    <div class="note"><b>Rule.</b> To transfer a <b>named variable</b>, always use
+    <code>@move</code>. Reserve <code>@take</code> for anonymous slots / boxes / fields the
+    compiler cannot track.</div>
+
+    <h3>2 · Raw overwrite without <code>@dispose</code> → leak</h3>
+    <p>A raw <code>*T</code> store deliberately does not destroy the old occupant (the slot may
+    be uninitialised reserved memory). Overwrite a <b>live</b> owning slot without disposing it
+    first and its payload leaks:</p>
+    <div class="ex"><pre><span class="k">self</span>.data[i] = v          <span class="c">// ❌ if self.data[i] held a live Str, its buffer is now leaked</span>
+<span class="c">// correct: @dispose(self.data[i]) first, then store</span></pre></div>
+
+    <h3>3 · Reading a slot after <code>@take</code> / <code>@dispose</code> → dangling</h3>
+    <p><code>@dispose</code> frees the payload but leaves the handle bits in place — dangling.
+    A later read, second <code>@dispose</code>, or <code>@dup</code> of that slot dereferences a
+    freed pointer:</p>
+    <div class="ex"><pre><span class="k">struct</span> <span class="t">User</span> { <span class="t">int</span> id; <span class="t">Str</span> name }
+</pre></div>
+    <div class="ex"><pre>@dispose(slot)  frees only what name.data points at; the struct bytes stay:
+
+  before                          after @dispose
+  ┌──────────────┐   heap        ┌──────────────┐   heap
+  │ id   = 42    │               │ id   = 42    │   ← unchanged, safe to read
+  │ name.data ●──┼─▶ "alice"     │ name.data ●──┼─▶ [freed]   ← handle dangles
+  │ name.len = 5 │               │ name.len = 5 │
+  └──────────────┘               └──────────────┘
+
+  read id            → SAFE   (POD, nothing was freed)
+  read name's chars  → UAF    (through the dangling data pointer)
+  @dispose again     → double-free   (free of a dangling pointer)
+  @dup(slot)         → UAF    (clone deep-reads freed memory)</pre></div>
+
+    <h3>4 · Touching an uninitialised slot → free of garbage</h3>
+    <p>Only the initialised range <code>[0, len)</code> holds real handles. A reserved-but-unwritten
+    slot in <code>[len, cap)</code> is garbage; <code>@dispose</code>-ing it runs a destructor on a
+    junk pointer → <code>free(garbage)</code> → crash. Move new values into reserved slots with a
+    raw store, never a dispose.</p>
+
+    <h3>5 · <code>@take</code> without excluding the slot → double-free</h3>
+    <p>Take a value out but forget to shrink <code>len</code> (or overwrite the slot), and the
+    container's destructor later drops that same, now-dangling handle a second time.</p>
+
+    <div class="note"><b>Three rules that cover all five.</b>
+    <ol style="margin:.4rem 0 0 1.1rem">
+      <li>Every <code>@take</code>/<code>@dispose</code> must make the slot unreachable
+      (update metadata or overwrite) before anything can read or drop it again.</li>
+      <li>Every owning slot is <code>@dispose</code>d exactly once over its life — more is a
+      double-free, fewer is a leak.</li>
+      <li>Transfer named variables with <code>@move</code>; use <code>@take</code> only for
+      raw slots / boxes / fields.</li>
+    </ol></div>
+  </section>
+
+  <section id="in-protocols">
+    <h2>Protocol interfaces — <code>FromList</code> / <code>FromPairs</code></h2>
+    <p>Some language sugar is opt-in per type via a small interface, exactly like the
+    <a href="#ty-destroy"><code>Destroy</code>/<code>Clone</code></a> lifecycle interfaces.
+    Implementing the interface unlocks the literal syntax; the element/key/value types come
+    from your own generics.</p>
+    <table class="api">
+      <tr><th>Interface</th><th>Method</th><th>Unlocks</th></tr>
+      <tr><td><code>FromList</code></td><td><code>def from_list(&amp;!self, T x)</code></td><td><code>Vec(T) v = [a, b, c]</code></td></tr>
+      <tr><td><code>FromPairs</code></td><td><code>def from_pairs(&amp;!self, K k, V v)</code></td><td><code>Map(K,V) m = { k: v }</code></td></tr>
+    </table>
+    <div class="ex"><pre><span class="k">methods</span> <span class="t">Vec</span>(<span class="t">T</span>): <span class="t">FromList</span> {
+    <span class="c">// implementing FromList enables the `[a, b, c]` list-literal initialiser</span>
+    <span class="k">def</span> from_list(&!<span class="k">self</span>, <span class="t">T</span> x) { <span class="k">self</span>.push(x) }
+}</pre></div>
+    <div class="note">These replace the old reserved magic-method names (<code>def __from_list</code>
+    is retired — hand-writing it is a compile error that points you at the interface). The
+    internal wiring is unchanged; only the surface is now a named, discoverable contract.</div>
   </section>
 
   <h1 id="cl-top" style="margin-top:3.5rem">LS Closures</h1>
