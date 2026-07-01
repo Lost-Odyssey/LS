@@ -26,7 +26,12 @@ if(NOT WIN32)
     find_package(Threads REQUIRED)
     # stdc++ is needed because LLVM is a C++ library; project(ls C) uses the C
     # linker which does not pull it in automatically on all distros.
-    set(LS_UNIX_EXTRA_LIBS dl m stdc++ Threads::Threads)
+    # -rdynamic: without it, ELF executables don't export their own symbols to
+    # their own dynamic symbol table, so LLJIT's process-symbol resolver can't
+    # find builtins (e.g. ls_mc_ensure_report from runtime/memcheck.c) compiled
+    # into the same binary — "Symbols not found" at JIT materialization time.
+    # Windows has no equivalent restriction, which is why this never surfaced there.
+    set(LS_UNIX_EXTRA_LIBS dl m stdc++ Threads::Threads -rdynamic)
     if(LLVM_SYSTEM_LIBS)
         list(APPEND LS_UNIX_EXTRA_LIBS ${LLVM_SYSTEM_LIBS})
     endif()
@@ -239,6 +244,9 @@ add_executable(test_types
     src/builtins_perf.c
 )
 target_include_directories(test_types PRIVATE src/ include/)
+if(NOT WIN32)
+    target_link_libraries(test_types ${LS_UNIX_EXTRA_LIBS})
+endif()
 add_test(NAME test_types COMMAND test_types)
 
 # Phase 4 test: codegen (needs LLVM)

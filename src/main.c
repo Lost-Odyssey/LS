@@ -35,29 +35,36 @@
   #include <process.h> /* _spawnv, _P_WAIT */
 #endif
 
+/* Resolve the full path to the running ls executable (not just its
+   containing directory). Returns 0 on success and writes a NUL-terminated
+   path to `out`. Shared by get_executable_dir() below and self_exe_path()
+   (which needs the executable itself, to spawn `ls run <driver>` for
+   `ls test` without depending on `ls` being first on PATH — on POSIX,
+   coreutils already owns the name `ls` for directory listing). */
+static int get_executable_path(char *out, size_t out_sz) {
+    if (out == NULL || out_sz == 0) return -1;
+#ifdef _WIN32
+    DWORD_W32 n = GetModuleFileNameA(NULL, out, (DWORD_W32)out_sz);
+    if (n == 0 || n >= out_sz) return -1;
+#elif defined(__APPLE__)
+    uint32_t n = (uint32_t)out_sz;
+    if (_NSGetExecutablePath(out, &n) != 0) return -1;
+#else
+    ssize_t n = readlink("/proc/self/exe", out, out_sz - 1);
+    if (n <= 0) return -1;
+    out[n] = '\0';
+#endif
+    return 0;
+}
+
 /* Resolve the directory containing the running ls executable.
    Returns 0 on success and writes a NUL-terminated path (no trailing
    separator) to `out`. Used by AOT --memcheck to locate ls_memcheck.lib
    alongside ls.exe. */
 static int get_executable_dir(char *out, size_t out_sz) {
-    if (out == NULL || out_sz == 0) return -1;
     char buf[1024];
-    size_t len = 0;
-
-#ifdef _WIN32
-    DWORD_W32 n = GetModuleFileNameA(NULL, buf, (DWORD_W32)sizeof(buf));
-    if (n == 0 || n >= sizeof(buf)) return -1;
-    len = (size_t)n;
-#elif defined(__APPLE__)
-    uint32_t n = (uint32_t)sizeof(buf);
-    if (_NSGetExecutablePath(buf, &n) != 0) return -1;
-    len = strlen(buf);
-#else
-    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n <= 0) return -1;
-    buf[n] = '\0';
-    len = (size_t)n;
-#endif
+    if (get_executable_path(buf, sizeof(buf)) != 0) return -1;
+    size_t len = strlen(buf);
 
     /* Strip trailing filename component, leaving the directory. */
     while (len > 0 && buf[len - 1] != '/' && buf[len - 1] != '\\') {
@@ -359,9 +366,12 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
     }
 #else
     /* -lpthread for os_posix.c's ls_thread_* (std.task). Harmless on modern
-       glibc (≥2.34, pthread folded into libc); required on older glibc / musl. */
+       glibc (≥2.34, pthread folded into libc); required on older glibc / musl.
+       -no-pie: codegen emits objects with LLVMRelocDefault (non-PIC); modern
+       distros (Ubuntu >=17.10, etc.) default `cc` to -pie, which rejects the
+       absolute relocations in those objects ("recompile with -fPIE"). */
     snprintf(link_cmd, sizeof(link_cmd),
-             "cc \"%s\" -o \"%s\" %s %s %s -lm -lpthread", obj_path, exe_path, mc_lib, prof_lib, os_lib);
+             "cc -no-pie \"%s\" -o \"%s\" %s %s %s -lm -lpthread", obj_path, exe_path, mc_lib, prof_lib, os_lib);
 #endif
 
     printf("Linking: %s\n", link_cmd);
@@ -721,16 +731,13 @@ static int cmd_fmt(int argc, char *argv[]) {
 
 /* ---- ls test: native test runner ---------------------------------------- */
 
-/* Full path to this ls executable (for spawning `ls run <driver>`). */
+/* Full path to this ls executable (for spawning `ls run <driver>`). Must be
+   an absolute path, not the bare name "ls" -- on POSIX, PATH lookup would
+   resolve "ls" to coreutils' directory-listing tool instead of us. */
 static const char *self_exe_path(void) {
     static char buf[2048];
-#ifdef _WIN32
-    if (GetModuleFileNameA(NULL, buf, (DWORD_W32)sizeof(buf)) > 0) return buf;
-    return "ls";
-#else
-    /* best-effort; PATH lookup via system() fallback handles the rest */
-    return "ls";
-#endif
+    if (get_executable_path(buf, sizeof(buf)) == 0) return buf;
+    return "ls";  /* last-resort fallback; may collide with coreutils `ls` */
 }
 
 /* Run `ls run [--memcheck] <driver>` as a child, inheriting stdio; return its

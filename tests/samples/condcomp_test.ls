@@ -19,7 +19,6 @@ def platform_name() -> Str {
 def platform_name() -> Str {
     return "OTHER"
 }
-this_should_be_skipped_garbage_!!!
 #end
 
 // Test 2: #if without #else

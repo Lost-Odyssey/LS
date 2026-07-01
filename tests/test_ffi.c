@@ -198,7 +198,11 @@ static void test_ffi_codegen_extern(void) {
     char *ir = codegen_get_ir(&ctx);
     ASSERT_NOT_NULL(ir);
     ASSERT_TRUE(strstr(ir, "@msvcrt") != NULL);  /* global lib handle */
+#ifdef _WIN32
     ASSERT_TRUE(strstr(ir, "LoadLibraryA") != NULL);  /* platform load call */
+#else
+    ASSERT_TRUE(strstr(ir, "dlopen") != NULL);  /* platform load call */
+#endif
     ASSERT_TRUE(strstr(ir, "define i32 @main") != NULL);
 
     LLVMDisposeMessage(ir);
@@ -227,7 +231,11 @@ static void test_ffi_codegen_dynamic_call(void) {
 
     char *ir = codegen_get_ir(&ctx);
     ASSERT_NOT_NULL(ir);
+#ifdef _WIN32
     ASSERT_TRUE(strstr(ir, "GetProcAddress") != NULL);  /* symbol lookup */
+#else
+    ASSERT_TRUE(strstr(ir, "dlsym") != NULL);  /* symbol lookup */
+#endif
 
     LLVMDisposeMessage(ir);
     codegen_destroy(&ctx);

@@ -869,13 +869,16 @@ bool register_method(Checker *c, int impl_idx, const char *name,
                compile-time leak. */
             Type *old = c->impl_registry[impl_idx].methods[j].type;
             if (old && old->kind == TYPE_FUNCTION) {
-                free(old->as.function.params);
                 /* The pointer param (old->as.function.params[0]) was created
-                   by type_pointer(st); it outlives use here so free it. */
+                   by type_pointer(st); it outlives use here so free it.
+                   Must happen BEFORE freeing params itself (use-after-free
+                   otherwise — glibc's tcache overwrites the freed block with
+                   freelist metadata, corrupting params[0] before this read). */
                 if (old->as.function.params &&
                     old->as.function.params[0] &&
                     old->as.function.params[0]->kind == TYPE_POINTER)
                     free(old->as.function.params[0]);
+                free(old->as.function.params);
                 free(old);
             }
             c->impl_registry[impl_idx].methods[j].type = type;
