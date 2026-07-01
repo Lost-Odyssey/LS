@@ -17,6 +17,25 @@
    operator-overload lowering in checker_lower.c. */
 extern Type g_self_placeholder_type;
 
+/* Compiler intrinsic registry (single source of truth for @-sigil builtins).
+   canonical = the `@name` spelling; legacy = the retired `__name` spelling
+   (accepted during migration, rejected after Phase 2). */
+typedef enum {
+    INTR_PLACE_TAKE,      /* @take    — move out of a place (raw load)       */
+    INTR_PLACE_DISPOSE,   /* @dispose — in-place destructor (no buffer free) */
+    INTR_PLACE_DUP,       /* @dup     — deep copy without consuming source   */
+    INTR_VAR_MOVE         /* @move    — tracked ownership move of a variable  */
+} IntrinsicKind;
+
+typedef struct {
+    const char   *canonical;  /* "@take"                     */
+    const char   *legacy;     /* "__take" (NULL once retired) */
+    IntrinsicKind kind;
+    int           arity;      /* fixed argument count         */
+} IntrinsicDef;
+
+const IntrinsicDef *intrinsic_lookup(const char *name);
+
 /* ---- Internal types shared across checker TUs ----
    (moved out of checker.c so cross-TU prototypes below can reference them). */
 

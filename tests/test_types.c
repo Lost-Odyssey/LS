@@ -3,6 +3,7 @@
 #include "types.h"
 #include "symtable.h"
 #include "checker.h"
+#include "checker_internal.h"
 #include "parser.h"
 #include "module.h"
 #include <stdio.h>
@@ -2103,6 +2104,15 @@ int main(void) {
 
     printf("\n=== Struct Move Semantics Phase 3 Tests ===\n");
     test_move_struct_no_drop_clone_ok();
+
+    printf("\n=== Intrinsic Registry Tests ===\n");
+    /* intrinsic registry: canonical + legacy spellings both resolve */
+    ASSERT(intrinsic_lookup("@take") != NULL, "@take is an intrinsic");
+    ASSERT(intrinsic_lookup("__take") != NULL, "__take (legacy) still resolves");
+    ASSERT(intrinsic_lookup("@dispose")->kind == INTR_PLACE_DISPOSE, "@dispose kind");
+    ASSERT(intrinsic_lookup("__drop_at")->kind == INTR_PLACE_DISPOSE, "legacy maps same kind");
+    ASSERT(intrinsic_lookup("@move")->kind == INTR_VAR_MOVE, "@move kind");
+    ASSERT(intrinsic_lookup("nope") == NULL, "unknown name not an intrinsic");
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

@@ -3435,16 +3435,34 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
     return NULL;
 }
 
+/* Intrinsic registry — single source of truth for the @-sigil place/ownership
+   builtins. Each entry accepts both the canonical @-name and (during migration)
+   the legacy __ spelling. */
+static const IntrinsicDef k_intrinsics[] = {
+    { "@take",    "__take",    INTR_PLACE_TAKE,    1 },
+    { "@dispose", "__drop_at", INTR_PLACE_DISPOSE, 1 },
+    { "@dup",     "__dup",     INTR_PLACE_DUP,     1 },
+    { "@move",    "__move",    INTR_VAR_MOVE,      1 },
+};
+
+const IntrinsicDef *intrinsic_lookup(const char *name)
+{
+    if (name == NULL) return NULL;
+    for (size_t i = 0; i < sizeof(k_intrinsics) / sizeof(k_intrinsics[0]); i++) {
+        const IntrinsicDef *d = &k_intrinsics[i];
+        if (strcmp(name, d->canonical) == 0) return d;
+        if (d->legacy != NULL && strcmp(name, d->legacy) == 0) return d;
+    }
+    return NULL;
+}
+
 /* Check if a name is a builtin function (so we don't report "undefined variable") */
 static bool is_builtin_function(const char *name)
 {
+    if (intrinsic_lookup(name) != NULL) return true;
     return strcmp(name, "from_cstr") == 0 ||
            strcmp(name, "errno") == 0 ||
            strcmp(name, "__rawstr") == 0 ||
-           strcmp(name, "__move") == 0 ||
-           strcmp(name, "__drop_at") == 0 ||
-           strcmp(name, "__take") == 0 ||
-           strcmp(name, "__dup") == 0 ||
            strcmp(name, "__task_spawn") == 0 ||
            strcmp(name, "__task_join") == 0 ||
            strncmp(name, "__atomic_", 9) == 0 ||
