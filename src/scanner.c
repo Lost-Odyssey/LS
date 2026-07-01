@@ -658,6 +658,21 @@ static Token scanner_next_inner(Scanner *s) {
             s->current += 5; s->column += 5;
             return make_token(s, TOKEN_AT_PRINT);
         }
+        /* @-sigil place/ownership intrinsics: @take @dispose @dup @move.
+           A dedicated token (like @time/@bench/@print) so a standalone statement
+           `@dispose(slot)` routes through expression parsing and never collides
+           with the `@derive` declaration-attribute path. */
+        {
+            static const char *const intr[] = { "take", "dispose", "dup", "move" };
+            for (size_t k = 0; k < sizeof(intr) / sizeof(intr[0]); k++) {
+                size_t n = strlen(intr[k]);
+                if (strncmp(s->current, intr[k], n) == 0 &&
+                    !isalnum((unsigned char)s->current[n]) && s->current[n] != '_') {
+                    s->current += n; s->column += (int)n;
+                    return make_token(s, TOKEN_AT_INTRINSIC);
+                }
+            }
+        }
         /* Generic declaration attribute: bare '@' followed by an identifier
            (e.g. @derive(...)). The attribute name is scanned as the next token. */
         if (isalpha((unsigned char)*s->current) || *s->current == '_')
@@ -720,6 +735,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_AT_TIME:       return "AT_TIME";
     case TOKEN_AT_BENCH:      return "AT_BENCH";
     case TOKEN_AT_PRINT:      return "AT_PRINT";
+    case TOKEN_AT_INTRINSIC:  return "AT_INTRINSIC";
     case TOKEN_AT:            return "AT";
     case TOKEN_TYPE_INT:      return "TYPE_INT";
     case TOKEN_TYPE_I8:       return "TYPE_I8";

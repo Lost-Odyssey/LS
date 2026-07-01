@@ -48,6 +48,7 @@ typedef enum {
     TOKEN_AT_TIME,          /* @time (timing annotation) */
     TOKEN_AT_BENCH,         /* @bench (benchmark annotation) */
     TOKEN_AT_PRINT,         /* @print (the print intrinsic — only spelling; bare print retired) */
+    TOKEN_AT_INTRINSIC,     /* @take/@dispose/@dup/@move — place/ownership intrinsics */
     TOKEN_AT,               /* bare @ — generic declaration attribute (@derive, ...) */
 
     /* Type keywords */

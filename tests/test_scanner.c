@@ -502,6 +502,15 @@ static void test_boolean_literals(void) {
 
 /* ---- Main ---- */
 
+static void test_at_sigil_intrinsics(void) {
+    Scanner s;
+    scanner_init(&s, "@take @dispose @dup @move");
+    ASSERT_TOKEN_VAL(s, TOKEN_AT_INTRINSIC, "@take");
+    ASSERT_TOKEN_VAL(s, TOKEN_AT_INTRINSIC, "@dispose");
+    ASSERT_TOKEN_VAL(s, TOKEN_AT_INTRINSIC, "@dup");
+    ASSERT_TOKEN_VAL(s, TOKEN_AT_INTRINSIC, "@move");
+}
+
 int main(void) {
     printf("=== Scanner Tests ===\n");
 
@@ -546,6 +555,7 @@ int main(void) {
     test_function_decl();
     test_match_expression();
     test_boolean_literals();
+    test_at_sigil_intrinsics();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
