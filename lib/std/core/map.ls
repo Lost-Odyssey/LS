@@ -281,12 +281,6 @@ methods Map(K, V) {
         }
     }
 
-    // Map-literal `{ k: v, ... }` opt-in (reserved-method protocol, like
-    // Vec.__from_list): the presence of this method lets the checker construct a
-    // Map from a `{ key: val, ... }` literal — lowered to `Map m = {}` plus one
-    // __from_pairs call per pair (keys/values moved in). Mirrors set().
-    def __from_pairs(&!self, K k, V v) where K: Hash + Equal { self.set(k, v) }
-
     // ---- lookup ----
 
     // Slot index of key k (hash h precomputed), or -1 if absent. Early-terminates
@@ -403,6 +397,13 @@ methods Map(K, V) {
 
     // ---- copy / drop hooks ----
 
+}
+
+methods Map(K, V): FromPairs {
+    // Map-literal `{ k: v, ... }` opt-in: implementing FromPairs lets the checker
+    // construct a Map from a `{ key: val, ... }` literal — lowered to `Map m = {}`
+    // plus one from_pairs call per pair (keys/values moved in). Mirrors set().
+    def from_pairs(&!self, K k, V v) where K: Hash + Equal { self.set(k, v) }
 }
 
 methods Map(K, V): Clone {

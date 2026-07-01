@@ -1247,6 +1247,7 @@ void register_builtin_operator_traits(Checker *c)
        come from the implementing type's own generics — no interface type parameter
        needed. The `from_list`→`__from_list` rename happens in check_impl_trait_decl. */
     add_builtin_lifecycle_trait(c, "FromList",  "__from_list",  type_void(), 2); /* def from_list(&!self, E x) */
+    add_builtin_lifecycle_trait(c, "FromPairs", "__from_pairs", type_void(), 3); /* def from_pairs(&!self, K k, V v) */
 }
 
 /* Build `obj.method(arg)` as a fresh AST_CALL. obj/arg are TAKEN BY OWNERSHIP
