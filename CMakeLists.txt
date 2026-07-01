@@ -580,6 +580,11 @@ add_test(NAME test_retired_take
     COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_take.ls)
 set_tests_properties(test_retired_take PROPERTIES WILL_FAIL TRUE)
 
+# Hand-writing the reserved __from_list method name must be rejected.
+add_test(NAME test_retired_fromlist
+    COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_fromlist.ls)
+set_tests_properties(test_retired_fromlist PROPERTIES WILL_FAIL TRUE)
+
 # std.html Phase H1 (generation + render): functional bottom-up construction,
 # escaping, void tags, fmt_tag. JIT + AOT correctness + memcheck.
 add_test(

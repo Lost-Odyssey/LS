@@ -554,6 +554,23 @@ void check_impl_decl(Checker *c, AstNode *node)
         if (method->kind != AST_FN_DECL)
             continue;
 
+        /* Retire the bare reserved protocol method names: users must implement
+           the FromList / FromPairs interface, not hand-write `def __from_list`.
+           origin_iface != NULL means this node was folded in from an interface
+           impl (which renamed from_list→__from_list) — those are allowed. */
+        {
+            const char *mn = method->as.fn_decl.name;
+            if (mn != NULL && method->as.fn_decl.origin_iface == NULL &&
+                (strcmp(mn, "__from_list") == 0 || strcmp(mn, "__from_pairs") == 0))
+            {
+                const char *iface = strcmp(mn, "__from_list") == 0 ? "FromList" : "FromPairs";
+                const char *um    = strcmp(mn, "__from_list") == 0 ? "from_list" : "from_pairs";
+                checker_error(c, method->line, method->column,
+                    "'%s' is reserved; implement '%s' via `methods T: %s` instead",
+                    mn, um, iface);
+            }
+        }
+
         bool is_static = method->as.fn_decl.is_static;
         int user_n = method->as.fn_decl.param_count;
 
@@ -1031,14 +1048,14 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
     }
 
     /* Protocol interface facades: rename the user-facing method to the internal
-       reserved name the literal-init / index detection scans for (mirrors
-       clone→__clone). from_list→__from_list, from_pairs→__from_pairs,
-       index→__index. */
+       reserved name the literal-init detection scans for (mirrors clone→__clone).
+       from_list→__from_list, from_pairs→__from_pairs. (The __index family is an
+       indexing-operator protocol — __index/__index_set/__indexN — kept as-is, not
+       a marker facade.) */
     {
         const char *user_m = NULL, *internal_m = NULL;
         if (strcmp(trait_name, "FromList") == 0)  { user_m = "from_list";  internal_m = "__from_list"; }
         else if (strcmp(trait_name, "FromPairs") == 0) { user_m = "from_pairs"; internal_m = "__from_pairs"; }
-        else if (strcmp(trait_name, "Index") == 0)     { user_m = "index";      internal_m = "__index"; }
         if (user_m != NULL)
         {
             for (int i = 0; i < node->as.impl_trait_decl.method_count; i++)
