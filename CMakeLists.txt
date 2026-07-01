@@ -540,6 +540,19 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
 
+# @-sigil intrinsics parse/checker/codegen parity with legacy __ spellings.
+# (Full JIT+AOT parity is exercised across the whole suite once the stdlib is
+# migrated to @-names in Phase 2; this is a focused JIT+memcheck smoke test.)
+add_test(
+    NAME test_intrinsic_sigil
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/intrinsic_sigil.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=intrinsic_sigil
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+
 # std.html Phase H1 (generation + render): functional bottom-up construction,
 # escaping, void tags, fmt_tag. JIT + AOT correctness + memcheck.
 add_test(

@@ -71,6 +71,13 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef codegen_from_cstr(CodegenContext *ctx, AstNode *node);
 static void codegen_print_array(CodegenContext *ctx, AstNode *arg);
 static void codegen_print_struct_value(CodegenContext *ctx, LLVMValueRef val, Type *t);
+
+/* Accept both the @-sigil canonical spelling and the legacy __ spelling during
+   the migration window (Phase 2 retires the legacy form). */
+static bool cg_is_intrinsic(const char *name, const char *canon, const char *legacy) {
+    return name != NULL &&
+           (strcmp(name, canon) == 0 || strcmp(name, legacy) == 0);
+}
 static void codegen_print_enum_value(CodegenContext *ctx, LLVMValueRef val, Type *t);
 static void cg_print_one_value(CodegenContext *ctx, LLVMValueRef fval, Type *ftype);
 static LLVMValueRef codegen_short_circuit(CodegenContext *ctx, AstNode *node);
@@ -2254,7 +2261,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            generated IR. Ownership-transfer logic in container ops unwraps
            via ast_unwrap_move() to see the underlying IDENT. */
         if (node->as.call.callee->kind == AST_IDENT &&
-            strcmp(node->as.call.callee->as.ident.name, "__move") == 0 &&
+            cg_is_intrinsic(node->as.call.callee->as.ident.name, "@move", "__move") &&
             node->as.call.arg_count == 1)
         {
             return codegen_expr(ctx, node->as.call.args[0]);
@@ -2556,7 +2563,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            struct.__drop / enum.__drop), so __drop_at on a RawVec(RawVec(T)) slot
            dispatches to the inner RawVec's user __drop. */
         if (node->as.call.callee->kind == AST_IDENT &&
-            strcmp(node->as.call.callee->as.ident.name, "__drop_at") == 0 &&
+            cg_is_intrinsic(node->as.call.callee->as.ident.name, "@dispose", "__drop_at") &&
             node->as.call.arg_count == 1)
         {
             AstNode *place = node->as.call.args[0];
@@ -2577,7 +2584,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            (or overwrites it). Counterpart of __drop_at; used to relocate elements
            (pop/remove/insert/swap) without a clone. */
         if (node->as.call.callee->kind == AST_IDENT &&
-            strcmp(node->as.call.callee->as.ident.name, "__take") == 0 &&
+            cg_is_intrinsic(node->as.call.callee->as.ident.name, "@take", "__take") &&
             node->as.call.arg_count == 1)
         {
             AstNode *place = node->as.call.args[0];
@@ -2599,7 +2606,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            untouched (stays live). The clone counterpart of __take; the generic
            value-duplication primitive behind Vec.fill / Map.get_or_insert. */
         if (node->as.call.callee->kind == AST_IDENT &&
-            strcmp(node->as.call.callee->as.ident.name, "__dup") == 0 &&
+            cg_is_intrinsic(node->as.call.callee->as.ident.name, "@dup", "__dup") &&
             node->as.call.arg_count == 1)
         {
             AstNode *place = node->as.call.args[0];

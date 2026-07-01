@@ -2874,7 +2874,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
     /* __move(var) -> T  — explicit move annotation.
        Marks the argument variable as MOVED and returns its type transparently.
        Works on any movable type; also force-moves static strings (unlike implicit moves). */
-    if (strcmp(name, "__move") == 0)
+    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_VAR_MOVE)
     {
         if (argc != 1)
         {
@@ -2940,7 +2940,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
        self-managed container (RawVec) drop owned elements in __drop/set/clear
        WITHOUT freeing the backing buffer. The slot is left logically dead;
        liveness is the container's responsibility (its `len` bound). */
-    if (strcmp(name, "__drop_at") == 0)
+    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_DISPOSE)
     {
         if (argc != 1)
         {
@@ -2966,7 +2966,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
        container must drop its `len`/track liveness). The move-out counterpart of
        `__drop_at`; used by RawVec.pop / remove / insert / swap to relocate elements
        without a clone. Returns the element (pointee) type. */
-    if (strcmp(name, "__take") == 0)
+    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_TAKE)
     {
         if (argc != 1)
         {
@@ -2994,7 +2994,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
        __take (which moves out): use __dup when you need an independent copy of a
        value you still own — e.g. Vec.fill(x) writes N copies of x; Map.get_or_insert
        returns a copy of the default it also inserts. Returns the value type. */
-    if (strcmp(name, "__dup") == 0)
+    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_DUP)
     {
         if (argc != 1)
         {

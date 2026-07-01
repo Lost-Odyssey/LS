@@ -74,7 +74,8 @@ AstNode *ast_unwrap_move(AstNode *n)
 {
     while (n && n->kind == AST_CALL &&
            n->as.call.callee && n->as.call.callee->kind == AST_IDENT &&
-           strcmp(n->as.call.callee->as.ident.name, "__move") == 0 &&
+           (strcmp(n->as.call.callee->as.ident.name, "@move") == 0 ||
+            strcmp(n->as.call.callee->as.ident.name, "__move") == 0) &&
            n->as.call.arg_count == 1)
     {
         n = n->as.call.args[0];
