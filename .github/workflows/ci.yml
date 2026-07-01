@@ -75,11 +75,15 @@ jobs:
       - name: Test
         working-directory: build
         run: |
-          # test_sim is a single ~250s CPU-simulator test that dominates CI wall
-          # time (~80% of the run). Skip it on push/PR for fast feedback; the
-          # nightly schedule runs the full suite including test_sim.
+          # Heavy "repetition for confidence" tests dominate CI Test time:
+          #   test_sim        ~25 samples x (JIT+AOT+memcheck)
+          #   test_oran       ~20 samples x (JIT+AOT+memcheck)
+          #   test_repl_l010  60-run soak for an already-fixed 8% flaky UAF
+          # Skip them on push/PR for fast feedback; the nightly schedule runs the
+          # full suite (anchored names so test_simd etc. still run every push).
           if [ "${{ github.event_name }}" = "schedule" ]; then
             ctest -j "$(nproc)" --output-on-failure --repeat until-pass:2
           else
-            ctest -j "$(nproc)" --output-on-failure --repeat until-pass:2 -E '^test_sim$'
+            ctest -j "$(nproc)" --output-on-failure --repeat until-pass:2 \
+              -E '^(test_sim|test_oran|test_repl_l010)$'
           fi
