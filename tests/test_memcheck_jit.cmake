@@ -4,7 +4,7 @@
 #
 # Required cache variables (passed by add_test):
 #   LS_EXE    — path to the ls.exe / ls binary
-#   SAMPLE    — absolute path to the .ls sample to run
+#   SAMPLE    — absolute path to the .lls sample to run
 #   WORK_DIR  — build directory (unused here but kept for consistency)
 #   TEST_NAME — test name (for error messages)
 

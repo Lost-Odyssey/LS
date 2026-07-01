@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.20)
 # LS_EXE is passed in via -DLS_EXE=$<TARGET_FILE:ls> from CMakeLists.txt;
 # do not hardcode it here (a hardcoded build/Release/ls.exe only happens to
 # exist on Windows' multi-config Visual Studio generator layout).
-set(TEST_LS "${CMAKE_CURRENT_LIST_DIR}/samples/closure_f5_test.ls")
+set(TEST_LS "${CMAKE_CURRENT_LIST_DIR}/samples/closure_f5_test.lls")
 set(OUT_EXE "${CMAKE_CURRENT_LIST_DIR}/../build/closure_f5_test.exe")
 set(OUT_MC  "${CMAKE_CURRENT_LIST_DIR}/../build/closure_f5_test_mc.exe")
 

@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/generics_g2_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/generics_g2_test.lls")
 
 set(_expected
     "42" "hello" "3.140000" "true"

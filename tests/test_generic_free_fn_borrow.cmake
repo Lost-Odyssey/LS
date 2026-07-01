@@ -7,7 +7,7 @@
 #             error (not a crash, not a silent miscompile).
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/generic_free_fn_borrow.ls")
+set(POS "${SAMPLE_DIR}/generic_free_fn_borrow.lls")
 set(_expected "GFFB DONE")
 
 # Expected output lines, in order:
@@ -59,7 +59,7 @@ endif()
 message(STATUS "gffb memcheck: OK clean")
 
 # ---- negative: type param in no value-arg position → clean compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/generic_free_fn_borrow_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/generic_free_fn_borrow_reject.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "gffb_reject: expected compile error, got success\n${n_out}")

@@ -2,7 +2,7 @@
 # let two modules' same-named (different-layout) structs coexist. JIT + AOT + memcheck.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/modtype_qualified/main.ls")
+set(MAIN "${SAMPLE_DIR}/modtype_qualified/main.lls")
 set(_expected "a=1 b=60" "MODTYPE_QUALIFIED PASS")
 
 # ---- JIT ----

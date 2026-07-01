@@ -4,7 +4,7 @@
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/closure_phase_c5_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/closure_phase_c5_test.lls")
 
 set(_expected "INFO: alice" "TAG: bob" "7" "STATIC: carol" "X: y" "X: z")
 

@@ -11,7 +11,7 @@ set(B3_DIR "${SAMPLE_DIR}/modtype_ns_b3")
 
 # JIT run
 execute_process(
-    COMMAND "${LS_EXE}" run "${B2_DIR}/main_b2.ls"
+    COMMAND "${LS_EXE}" run "${B2_DIR}/main_b2.lls"
     OUTPUT_VARIABLE B2_JIT_OUT
     RESULT_VARIABLE B2_JIT_RC
 )
@@ -27,7 +27,7 @@ endif()
 
 # Memcheck
 execute_process(
-    COMMAND "${LS_EXE}" run --memcheck "${B2_DIR}/main_b2.ls"
+    COMMAND "${LS_EXE}" run --memcheck "${B2_DIR}/main_b2.lls"
     OUTPUT_VARIABLE B2_MC_OUT
     ERROR_VARIABLE  B2_MC_ERR
     RESULT_VARIABLE B2_MC_RC
@@ -42,7 +42,7 @@ endif()
 # AOT compile + run
 set(B2_AOT_EXE "${WORK_DIR}/b2_test_tmp.exe")
 execute_process(
-    COMMAND "${LS_EXE}" compile "${B2_DIR}/main_b2.ls" -o "${B2_AOT_EXE}"
+    COMMAND "${LS_EXE}" compile "${B2_DIR}/main_b2.lls" -o "${B2_AOT_EXE}"
     RESULT_VARIABLE B2_AOT_RC
 )
 if(NOT B2_AOT_RC EQUAL 0)
@@ -65,7 +65,7 @@ endif()
 
 # JIT run (Widget with methods)
 execute_process(
-    COMMAND "${LS_EXE}" run "${B3_DIR}/main_b3.ls"
+    COMMAND "${LS_EXE}" run "${B3_DIR}/main_b3.lls"
     OUTPUT_VARIABLE B3_JIT_OUT
     RESULT_VARIABLE B3_JIT_RC
 )
@@ -84,7 +84,7 @@ endif()
 
 # Memcheck (Widget)
 execute_process(
-    COMMAND "${LS_EXE}" run --memcheck "${B3_DIR}/main_b3.ls"
+    COMMAND "${LS_EXE}" run --memcheck "${B3_DIR}/main_b3.lls"
     OUTPUT_VARIABLE B3_MC_OUT
     ERROR_VARIABLE  B3_MC_ERR
     RESULT_VARIABLE B3_MC_RC
@@ -99,7 +99,7 @@ endif()
 # AOT compile + run (Widget)
 set(B3_AOT_EXE "${WORK_DIR}/b3_test_tmp.exe")
 execute_process(
-    COMMAND "${LS_EXE}" compile "${B3_DIR}/main_b3.ls" -o "${B3_AOT_EXE}"
+    COMMAND "${LS_EXE}" compile "${B3_DIR}/main_b3.lls" -o "${B3_AOT_EXE}"
     RESULT_VARIABLE B3_AOT_RC
 )
 if(NOT B3_AOT_RC EQUAL 0)
@@ -120,7 +120,7 @@ endif()
 
 # JIT run (user-defined __drop counter)
 execute_process(
-    COMMAND "${LS_EXE}" run "${B3_DIR}/main_b3_drop.ls"
+    COMMAND "${LS_EXE}" run "${B3_DIR}/main_b3_drop.lls"
     OUTPUT_VARIABLE B3D_JIT_OUT
     RESULT_VARIABLE B3D_JIT_RC
 )
@@ -136,7 +136,7 @@ endif()
 
 # Memcheck (user-defined __drop)
 execute_process(
-    COMMAND "${LS_EXE}" run --memcheck "${B3_DIR}/main_b3_drop.ls"
+    COMMAND "${LS_EXE}" run --memcheck "${B3_DIR}/main_b3_drop.lls"
     OUTPUT_VARIABLE B3D_MC_OUT
     ERROR_VARIABLE  B3D_MC_ERR
     RESULT_VARIABLE B3D_MC_RC
@@ -151,7 +151,7 @@ endif()
 # AOT compile + run (user-defined __drop)
 set(B3D_AOT_EXE "${WORK_DIR}/b3d_test_tmp.exe")
 execute_process(
-    COMMAND "${LS_EXE}" compile "${B3_DIR}/main_b3_drop.ls" -o "${B3D_AOT_EXE}"
+    COMMAND "${LS_EXE}" compile "${B3_DIR}/main_b3_drop.lls" -o "${B3D_AOT_EXE}"
     RESULT_VARIABLE B3D_AOT_RC
 )
 if(NOT B3D_AOT_RC EQUAL 0)

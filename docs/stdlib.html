@@ -177,7 +177,7 @@
 
 <main>
 <h1>LS Standard Library</h1>
-<p class="lede">API reference for the LS (LLVM Script) standard library. Every module is
+<p class="lede">API reference for the LS (Low-level Script) standard library. Every module is
 written in pure LS and lives under <code>&lt;LS_HOME&gt;/lib/std/</code>. Signatures below are
 taken verbatim from source.</p>
 
@@ -213,7 +213,7 @@ are built-in types, not a module.</p>
 <tr><td class="m"><a href="#sink">sink</a></td><td><code>Sink</code> byte writer + <code>set_sink</code> (redirect <code>print</code> to file/stderr)</td></tr>
 <tr><td class="m"><a href="#value">value</a></td><td>Neutral value tree + <code>Serialize</code> (<code>@derive(Serialize)</code>)</td></tr>
 <tr><td class="m"><a href="#reflect">reflect</a></td><td>Runtime <code>TypeInfo</code> (<code>@derive(Reflect)</code>)</td></tr>
-<tr><td class="m"><a href="#test">test</a></td><td>Unit-test assertions + the <code>ls test</code> runner</td></tr>
+<tr><td class="m"><a href="#test">test</a></td><td>Unit-test assertions + the <code>lls test</code> runner</td></tr>
 <tr><td class="m"><a href="#regex">regex</a></td><td>Regular expressions (Pike-VM)</td></tr>
 <tr><td class="grp" colspan="2">I/O &amp; System</td></tr>
 <tr><td class="m"><a href="#io">io</a></td><td>File I/O &amp; stdin lines</td></tr>
@@ -255,7 +255,7 @@ are built-in types, not a module.</p>
 <p>Bring a module into scope with <code>import std.&lt;name&gt;</code>; an alias is optional:</p>
 <div class="ex"><pre><span class="k">import</span> std.core.vec
 <span class="k">import</span> std.text.regex <span class="k">as</span> re      <span class="c">// then call re.matches(...)</span></pre></div>
-<p>The compiler resolves <code>std.sys.time</code> to <code>&lt;LS_HOME&gt;/lib/std/time.ls</code>.
+<p>The compiler resolves <code>std.sys.time</code> to <code>&lt;LS_HOME&gt;/lib/std/time.lls</code>.
 <code>std.core.str</code> is auto-imported by the prelude, so string literals work without an explicit import.</p>
 
 <h3>Notation used below</h3>
@@ -292,9 +292,9 @@ exact rules for naming a type vs calling a function — bare, by alias, or by fu
 <h3>Import path = directory path</h3>
 <p>The standard library lives under <code>&lt;LS_HOME&gt;/lib/std/</code>, organised into category
 sub-directories. An import path maps <b>dot-for-slash</b> onto that tree:</p>
-<div class="ex"><pre><span class="k">import</span> std.core.vec       <span class="c">// → lib/std/core/vec.ls</span>
-<span class="k">import</span> std.sys.io         <span class="c">// → lib/std/sys/io.ls</span>
-<span class="k">import</span> std.sys.c <span class="k">as</span> c    <span class="c">// → lib/std/sys/c.ls</span></pre></div>
+<div class="ex"><pre><span class="k">import</span> std.core.vec       <span class="c">// → lib/std/core/vec.lls</span>
+<span class="k">import</span> std.sys.io         <span class="c">// → lib/std/sys/io.lls</span>
+<span class="k">import</span> std.sys.c <span class="k">as</span> c    <span class="c">// → lib/std/sys/c.lls</span></pre></div>
 <p>The seven categories: <code>core</code> (str·vec·map·hash·stack·num), <code>mem</code> (arena),
 <code>sync</code> (task·thread·atomic·lock·chan·ring), <code>sci</code> (complex·tensor·fft·rand),
 <code>text</code> (strconv·regex·json·html·md·bytes), <code>sys</code> (os·io·fs·path·env·proc·time·perf·c),
@@ -1068,7 +1068,7 @@ reset_sink()                          <span class="c">// back to stdout (closes 
 <section id="test">
 <h2>test<span class="imp">import std.core.test</span></h2>
 <p class="purpose">Native unit testing. Write zero-arg <code>def test_*()</code> functions
-with assertions; run them with <code>ls test &lt;files&gt;</code>. A failing assertion makes
+with assertions; run them with <code>lls test &lt;files&gt;</code>. A failing assertion makes
 the run exit non-zero (so CI catches it) and prints the offending values.</p>
 <div class="types"><pre>// example
 import std.core.test as t
@@ -1083,7 +1083,7 @@ def test_add() {
 <tr><td class="s"><span class="sig">def expect_eq_f64(f64 a, f64 b)</span></td><td class="d">Exact float equality (use <code>expect_near</code> for tolerances).</td></tr>
 <tr><td class="s"><span class="sig">def expect_near(f64 a, f64 b, f64 eps)</span></td><td class="d">Fail if <code>|a - b| &gt; eps</code>.</td></tr>
 </table>
-<p>Run: <code>ls test tests/*.ls</code> — discovers <code>test_*</code>, runs each, prints a
+<p>Run: <code>lls test tests/*.lls</code> — discovers <code>test_*</code>, runs each, prints a
 per-test <code>ok</code>/<code>FAIL</code> line and a summary; exits non-zero on any failure.
 Flags: <code>--filter &lt;substr&gt;</code> (run a subset), <code>--memcheck</code> (run under the
 leak checker).</p>
@@ -1449,7 +1449,7 @@ def CsvOpts.default() -> CsvOpts                      // ',' / '"' / no header /
 
 <div class="note"><b>Merged module.</b> The primitives (constants + intrinsic/libm functions
 below) are compiler built-ins; pure-arithmetic derived helpers (<code>radians</code>/<code>degrees</code>,
-…) live in <code>lib/std/core/math.ls</code> and are folded into the same namespace. Import as
+…) live in <code>lib/std/core/math.lls</code> and are folded into the same namespace. Import as
 <code>import std.core.math as math</code>. Built-in primitives are also <i>ambient</i>: generic
 stdlib bodies (e.g. <code>Tensor</code> activations) may call <code>math.*</code> via the defining
 module's alias even when the caller didn't import it. Functions take/return <code>f64</code> unless
@@ -1874,7 +1874,7 @@ Canonical primitives are also reachable as <code>std.sys.c.malloc</code> without
 </section>
 
 <footer>
-LS Standard Library Reference · generated from <code>lib/std/*.ls</code> source.
+LS Standard Library Reference · generated from <code>lib/std/*.lls</code> source.
 For language internals see <code>docs/architecture.md</code> &amp; <code>docs/internals_subsystems.md</code>;
 for ownership rules see <code>docs/ownership.md</code>.
 </footer>

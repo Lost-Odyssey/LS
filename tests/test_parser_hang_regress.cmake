@@ -15,7 +15,7 @@ if(NOT LS_EXE OR NOT REGRESS_DIR)
     message(FATAL_ERROR "test_parser_hang_regress.cmake requires LS_EXE and REGRESS_DIR")
 endif()
 
-file(GLOB _cases "${REGRESS_DIR}/*.ls")
+file(GLOB _cases "${REGRESS_DIR}/*.lls")
 if(_cases STREQUAL "")
     message(FATAL_ERROR "no regression corpus in ${REGRESS_DIR}")
 endif()

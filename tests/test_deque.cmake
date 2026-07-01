@@ -10,7 +10,7 @@
 #
 # Required cache variables (passed by add_test):
 #   LS_EXE    — path to the ls binary
-#   SAMPLE    — absolute path to the .ls sample
+#   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   STDLIB    — repo root, set as LS_HOME so `import std.core.set` resolves
 cmake_minimum_required(VERSION 3.20)

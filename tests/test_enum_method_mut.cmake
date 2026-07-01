@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-set(SRC "${SAMPLE_DIR}/enum_method_mut.ls")
+set(SRC "${SAMPLE_DIR}/enum_method_mut.lls")
 
 set(_expected
     "PASS 2a" "PASS 2b"

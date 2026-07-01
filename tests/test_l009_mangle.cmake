@@ -4,14 +4,14 @@
 #   ① user-local `read_file` + imported module `read_file` -> IR verification crash
 #   ② two modules each defining `helper` -> silent wrong result (both hit module A)
 #
-# Fixture: tests/samples/l009_mangle/{main,mod_a,mod_b}.ls
+# Fixture: tests/samples/l009_mangle/{main,mod_a,mod_b}.lls
 #   main imports mod_a + mod_b, defines its own local read_file, and asserts:
 #     mod_a.helper()==1, mod_b.helper()==2          (distinct module-qualified)
 #     mod_a.combined()==11, mod_b.combined()==22     (bare intra-module calls)
 #     mod_a/mod_b/local read_file all distinct strings
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/l009_mangle/main.ls")
+set(MAIN "${SAMPLE_DIR}/l009_mangle/main.lls")
 
 set(_expected
     "helper a=1 b=2"

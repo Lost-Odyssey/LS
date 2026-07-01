@@ -1,6 +1,6 @@
 # test_phase_b_closure.cmake — Phase B closure codegen end-to-end.
 #
-# Runs tests/samples/closure_phase_b_test.ls through both JIT and AOT and
+# Runs tests/samples/closure_phase_b_test.lls through both JIT and AOT and
 # asserts every expected line is produced. Each line corresponds to one of
 # the 6 shapes the test exercises (prefix / trailing / multi-arg / no-arg /
 # bool-return / multi-stmt body).
@@ -8,7 +8,7 @@
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/closure_phase_b_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/closure_phase_b_test.lls")
 
 # Expected output lines (in order). Keep in sync with the test file's prints.
 set(_expected "11" "40" "12" "42" "true" "107")

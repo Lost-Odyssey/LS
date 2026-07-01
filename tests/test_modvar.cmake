@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.20)
 # ---- helper ----
 macro(run_jit sample label)
     execute_process(
-        COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${sample}/main.ls"
+        COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${sample}/main.lls"
         OUTPUT_VARIABLE _jit_out  ERROR_VARIABLE _jit_err  RESULT_VARIABLE _jit_rc
     )
     if(NOT _jit_rc EQUAL 0)
@@ -29,7 +29,7 @@ macro(run_aot sample label)
         set(_aot_bin "${_aot_bin}.exe")
     endif()
     execute_process(
-        COMMAND "${LS_EXE}" compile "${SAMPLE_DIR}/${sample}/main.ls" -o "${_aot_bin}"
+        COMMAND "${LS_EXE}" compile "${SAMPLE_DIR}/${sample}/main.lls" -o "${_aot_bin}"
         RESULT_VARIABLE _aot_rc  ERROR_VARIABLE _aot_err
     )
     if(NOT _aot_rc EQUAL 0)
@@ -51,7 +51,7 @@ endmacro()
 
 macro(run_memcheck sample label)
     execute_process(
-        COMMAND "${LS_EXE}" run --memcheck "${SAMPLE_DIR}/${sample}/main.ls"
+        COMMAND "${LS_EXE}" run --memcheck "${SAMPLE_DIR}/${sample}/main.lls"
         OUTPUT_VARIABLE _mc_out  ERROR_VARIABLE _mc_err  RESULT_VARIABLE _mc_rc
     )
     if(NOT _mc_rc EQUAL 0)

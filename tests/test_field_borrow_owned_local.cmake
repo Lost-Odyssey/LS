@@ -9,7 +9,7 @@ set(LS "${LS_EXE}")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
-set(F "${CMAKE_CURRENT_LIST_DIR}/samples/field_borrow_owned_local_test.ls")
+set(F "${CMAKE_CURRENT_LIST_DIR}/samples/field_borrow_owned_local_test.lls")
 
 execute_process(COMMAND "${LS}" run "${F}"
     OUTPUT_VARIABLE so ERROR_VARIABLE se RESULT_VARIABLE sr TIMEOUT 30)

@@ -4,7 +4,7 @@
 # and byval declaration compilation correctness.
 # Variables injected by CMakeLists.txt:
 #   LS_EXE    — path to ls.exe
-#   SAMPLE    — path to extern_struct_byval.ls
+#   SAMPLE    — path to extern_struct_byval.lls
 #   WORK_DIR  — build directory (for AOT output)
 
 # ---- JIT path ----

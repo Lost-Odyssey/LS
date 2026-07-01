@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SRC "${SAMPLE_DIR}/sink_atprint_test.ls")
+set(SRC "${SAMPLE_DIR}/sink_atprint_test.lls")
 
 execute_process(COMMAND "${LS_EXE}" run --memcheck "${SRC}"
     OUTPUT_VARIABLE out ERROR_VARIABLE err RESULT_VARIABLE rc)

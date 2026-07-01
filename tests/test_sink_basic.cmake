@@ -4,12 +4,12 @@
 # whole path is memcheck-clean (the redirect File handle is closed exactly once).
 cmake_minimum_required(VERSION 3.20)
 
-# Resolve stdlib (new lib/std/core/sink.ls + updated io.ls) from the SOURCE tree,
+# Resolve stdlib (new lib/std/core/sink.lls + updated io.lls) from the SOURCE tree,
 # not the build copy — mirrors tests/test_io_raii.cmake.
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SRC "${SAMPLE_DIR}/sink_basic_test.ls")
+set(SRC "${SAMPLE_DIR}/sink_basic_test.lls")
 
 execute_process(COMMAND "${LS_EXE}" run --memcheck "${SRC}"
     OUTPUT_VARIABLE mc_out ERROR_VARIABLE mc_err RESULT_VARIABLE mc_rc)

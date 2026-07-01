@@ -7,7 +7,7 @@ set(LS "${LS_EXE}")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
-set(F "${CMAKE_CURRENT_LIST_DIR}/samples/destroy_smoke.ls")
+set(F "${CMAKE_CURRENT_LIST_DIR}/samples/destroy_smoke.lls")
 
 # --- positive: JIT ---
 execute_process(COMMAND "${LS}" run "${F}"
@@ -38,7 +38,7 @@ endif()
 
 # --- negatives: must be rejected at compile time ---
 foreach(neg destroy_bare_reject destroy_manual_reject destroy_retire_reject destroy_moveonly_reject)
-    execute_process(COMMAND "${LS}" run "${CMAKE_CURRENT_LIST_DIR}/samples/${neg}.ls"
+    execute_process(COMMAND "${LS}" run "${CMAKE_CURRENT_LIST_DIR}/samples/${neg}.lls"
         OUTPUT_VARIABLE no ERROR_VARIABLE ne RESULT_VARIABLE nr TIMEOUT 30)
     if(nr EQUAL 0)
         message(FATAL_ERROR "destroy negative ${neg}: expected compile error but got rc=0\n${no}")

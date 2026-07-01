@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-set(SRC "${SAMPLE_DIR}/char_lit_test.ls")
+set(SRC "${SAMPLE_DIR}/char_lit_test.lls")
 
 set(_expected
     "PASS 1a" "PASS 1b" "PASS 1c" "PASS 1d"

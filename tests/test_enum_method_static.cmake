@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-set(SRC "${SAMPLE_DIR}/enum_method_static.ls")
+set(SRC "${SAMPLE_DIR}/enum_method_static.lls")
 
 set(_expected
     "PASS 3a" "PASS 3b"

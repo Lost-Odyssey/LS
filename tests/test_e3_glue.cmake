@@ -3,12 +3,12 @@
 # "ALL PASS" appears in stdout.
 # Variables injected by CMakeLists.txt:
 #   LS_EXE     — path to ls.exe
-#   SAMPLE     — path to .ls test file
+#   SAMPLE     — path to .lls test file
 #   WORK_DIR   — build directory (for AOT output)
 #   TEST_NAME  — test name (used for AOT binary filename)
 
 # Point LS_HOME at the project root so stdlib imports (e.g. `import io`)
-# resolve to std/io.ls under the source tree (ls.exe lives in build/Release/
+# resolve to std/io.lls under the source tree (ls.exe lives in build/Release/
 # which has no std/ sub-directory of its own).
 if(DEFINED ENV{CMAKE_SOURCE_DIR_OVERRIDE})
     set(_ls_stdlib_root "$ENV{CMAKE_SOURCE_DIR_OVERRIDE}")

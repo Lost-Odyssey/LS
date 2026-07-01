@@ -4,15 +4,15 @@
 # is move-only (object handle + Destroy, no Clone), so it is matched out of the
 # owned `io.open(...)` rvalue by move. Asserts memcheck is clean (the auto-close
 # frees the handle; the explicit-then-auto close does not double-free).
-# Runs io_basic_test.ls (which now includes a no-explicit-close RAII case).
+# Runs io_basic_test.lls (which now includes a no-explicit-close RAII case).
 cmake_minimum_required(VERSION 3.20)
 
-# Resolve stdlib (the updated lib/std/sys/io.ls) from the source tree, not the
+# Resolve stdlib (the updated lib/std/sys/io.lls) from the source tree, not the
 # build copy — mirrors tests/test_e3_glue.cmake.
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SRC "${SAMPLE_DIR}/io_basic_test.ls")
+set(SRC "${SAMPLE_DIR}/io_basic_test.lls")
 
 execute_process(COMMAND "${LS_EXE}" run --memcheck "${SRC}"
     OUTPUT_VARIABLE mc_out ERROR_VARIABLE mc_err RESULT_VARIABLE mc_rc)

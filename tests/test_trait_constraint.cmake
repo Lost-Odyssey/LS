@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/trait_constraint_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/trait_constraint_test.lls")
 
 set(_expected "5" "circle" "square" "circle" "5" "99")
 
@@ -57,7 +57,7 @@ file(REMOVE "${aot_bin}")
 
 # ---- Negative: unsatisfied trait bound ----
 execute_process(
-    COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/trait_constraint_reject.ls"
+    COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/trait_constraint_reject.lls"
     OUTPUT_VARIABLE rej_out
     ERROR_VARIABLE  rej_err
     RESULT_VARIABLE rej_rc

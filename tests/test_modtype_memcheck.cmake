@@ -3,7 +3,7 @@
 # cross-module returns. JIT + AOT + memcheck (0 leak / 0 double-free).
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/modtype_memcheck/main.ls")
+set(MAIN "${SAMPLE_DIR}/modtype_memcheck/main.lls")
 set(_expected "na=A nb=B" "va0=A1 va1=A2 vb0=B1" "ba=AX bb=BX" "MODTYPE_MEMCHECK PASS")
 
 # ---- JIT ----

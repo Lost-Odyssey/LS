@@ -9,7 +9,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(
-    COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/gen_ambig/main.ls"
+    COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/gen_ambig/main.lls"
     OUTPUT_VARIABLE _out  ERROR_VARIABLE _err  RESULT_VARIABLE _rc
 )
 if(_rc EQUAL 0)

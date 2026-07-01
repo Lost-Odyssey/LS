@@ -296,7 +296,7 @@ cmake --build build_cg
 sudo ln -sf "$(pwd)/build/ls" /usr/local/bin/ls-lang
 
 # Test
-ls-lang run tests/samples/math_basic_test.ls
+ls-lang run tests/samples/math_basic_test.lls
 ```
 
 > **Note:** do not shadow the system `ls` command — use a different symlink name such as `ls-lang`.
@@ -328,21 +328,21 @@ cp -r stdlib build/
 ### JIT quick smoke test
 
 ```bash
-build/ls run tests/samples/math_basic_test.ls
-build/ls run tests/samples/closure_f7_stress_test.ls
+build/lls run tests/samples/math_basic_test.lls
+build/lls run tests/samples/closure_f7_stress_test.lls
 ```
 
 ### AOT compile smoke test
 
 ```bash
-build/ls compile tests/samples/math_basic_test.ls -o /tmp/math_test
+build/lls compile tests/samples/math_basic_test.lls -o /tmp/math_test
 /tmp/math_test
 ```
 
 ### Memcheck smoke test
 
 ```bash
-build/ls run --memcheck tests/samples/memcheck_phase_a.ls
+build/lls run --memcheck tests/samples/memcheck_phase_a.lls
 # Expected last line: [memcheck] SUMMARY: 0 leak(s) (0 bytes), 0 double-free, 0 invalid free
 ```
 
@@ -467,4 +467,4 @@ Copy the stdlib directory next to the `ls` binary:
 cp -r stdlib build/
 ```
 
-The module resolver looks for `stdlib/<module>.ls` relative to the `ls` executable location.
+The module resolver looks for `stdlib/<module>.lls` relative to the `ls` executable location.

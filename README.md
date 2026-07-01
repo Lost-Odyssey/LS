@@ -1,21 +1,22 @@
-# LS (LLVM Script)
+# LS (Low-level Script)
 
 A compiled language that pairs the familiarity of C with the expressiveness of
 Ruby, backed by Rust-style move semantics and RAII — memory safety without a
 garbage collector.
 
-LS compiles to native code through an LLVM backend, with both AOT and JIT
-execution from a single statically-linked binary.
+LS is *low-level* (manual layout, no GC, native codegen) yet reads like a
+*script*. It compiles to native code through an LLVM backend, with both AOT and
+JIT execution from a single statically-linked binary.
 
 ## Key Characteristics
 
 - **Move semantics + RAII** — ownership is tracked at compile time; string, vec,
   map, and struct values free themselves automatically. No GC, no manual free.
 - **C + Ruby syntax** — C-style type annotations and block structure, Ruby-style
-  `impl` blocks, trailing closures, and operator overloading (`fn +`).
+  `methods` blocks, trailing closures, and operator overloading (`def +`).
 - **Algebraic types** — tagged unions (`enum`) with exhaustive `match`, OR-patterns,
   borrowed payloads, and `Option(T)` / `Result(T, E)` built in.
-- **First-class closures** — by-copy, by-move, and by-ref capture; deep-copied
+- **First-class closures** — by-copy, by-move, and by-clone capture; deep-copied
   environments let closures outlive their creator.
 - **Dynamic FFI** — load shared libraries at runtime and call `extern fn` directly.
 - **Built-in tooling** — bundled memory checker (`--memcheck`), REPL with incremental
@@ -44,11 +45,14 @@ cmake --build build
 
 ## Run
 
+The compiler binary is `lls`. Source files use the `.lls` extension; the legacy
+`.ls` extension is still accepted but no longer the default.
+
 ```
-ls compile input.ls -o out.exe   # AOT
-ls run input.ls                  # JIT
-ls run --memcheck input.ls       # JIT + memory checker
-ls repl                          # REPL
+lls compile input.lls -o out.exe   # AOT
+lls run input.lls                  # JIT
+lls run --memcheck input.lls       # JIT + memory checker
+lls repl                           # REPL
 ```
 
 ## License

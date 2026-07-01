@@ -10,7 +10,7 @@
 # JIT + AOT + memcheck (0 leak / 0 double-free).
 cmake_minimum_required(VERSION 3.20)
 
-set(SRC "${SAMPLE_DIR}/opt_owned_rvalue_test.ls")
+set(SRC "${SAMPLE_DIR}/opt_owned_rvalue_test.lls")
 set(_expected "OPTOWN PASS")
 
 # ---- JIT ----

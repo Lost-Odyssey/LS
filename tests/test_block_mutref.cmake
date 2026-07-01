@@ -3,9 +3,9 @@
 # 负向①只读 &T 体内调 &!self 方法拒绝；负向②裸 v 传 &!T 拒绝。
 cmake_minimum_required(VERSION 3.20)
 
-set(POS  "${SAMPLE_DIR}/block_mutref_test.ls")
-set(NEG1 "${SAMPLE_DIR}/block_mutref_readonly_reject.ls")
-set(NEG2 "${SAMPLE_DIR}/block_mutref_bare_reject.ls")
+set(POS  "${SAMPLE_DIR}/block_mutref_test.lls")
+set(NEG1 "${SAMPLE_DIR}/block_mutref_readonly_reject.lls")
+set(NEG2 "${SAMPLE_DIR}/block_mutref_bare_reject.lls")
 set(_expected "BLOCK_MUTREF PASS")
 
 # ---- JIT ----

@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 
-set(SRC "${SAMPLE_DIR}/enum_method_has_drop.ls")
+set(SRC "${SAMPLE_DIR}/enum_method_has_drop.lls")
 
 set(_expected
     "PASS 4a" "PASS 4b" "PASS 4c" "PASS 4d"

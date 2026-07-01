@@ -4,7 +4,7 @@
 # memcheck 0/0/0.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/method_on_borrow_call_test.ls")
+set(POS "${SAMPLE_DIR}/method_on_borrow_call_test.lls")
 set(_expected "METHOD ON BORROW CALL PASS")
 
 # ---- positive: JIT ----

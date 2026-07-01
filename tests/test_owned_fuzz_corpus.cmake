@@ -15,7 +15,7 @@ if(NOT LS_EXE OR NOT CORPUS_DIR OR NOT LS_HOME)
 endif()
 set(ENV{LS_HOME} "${LS_HOME}")
 
-file(GLOB _cases "${CORPUS_DIR}/*.ls")
+file(GLOB _cases "${CORPUS_DIR}/*.lls")
 if(_cases STREQUAL "")
     message(FATAL_ERROR "no corpus in ${CORPUS_DIR}")
 endif()

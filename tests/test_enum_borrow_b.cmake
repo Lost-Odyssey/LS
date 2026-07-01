@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 set(LS      "${LS_EXE}")
-set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/enum_borrow_b_test.ls")
+set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/enum_borrow_b_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/enum_borrow_b.exe")
 set(MC_EXE  "${CMAKE_BINARY_DIR}/enum_borrow_b_mc.exe")
 

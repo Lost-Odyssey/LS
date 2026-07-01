@@ -7,8 +7,8 @@ set(LS "${LS_EXE}")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
-set(PASS "${CMAKE_CURRENT_LIST_DIR}/samples/selftest_pass.ls")
-set(FAIL "${CMAKE_CURRENT_LIST_DIR}/samples/selftest_fail.ls")
+set(PASS "${CMAKE_CURRENT_LIST_DIR}/samples/selftest_pass.lls")
+set(FAIL "${CMAKE_CURRENT_LIST_DIR}/samples/selftest_fail.lls")
 
 # (1) all-pass fixture -> exit 0, runs assertions, no FAIL
 execute_process(COMMAND "${LS}" test "${PASS}"

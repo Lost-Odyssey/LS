@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/trait_self_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/trait_self_test.lls")
 
 # Expected: 4.0 6.0 15.0 26.0 11 22
 set(_expected "4" "6" "15" "26" "11" "22")

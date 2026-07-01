@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SRC "${SAMPLE_DIR}/move_only_test.ls")
+set(SRC "${SAMPLE_DIR}/move_only_test.lls")
 set(_expected "MOVEONLY PASS")
 
 execute_process(COMMAND "${LS_EXE}" run "${SRC}"

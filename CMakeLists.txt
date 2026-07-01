@@ -145,9 +145,14 @@ endif()
 target_include_directories(ls PRIVATE ${LLVM_INCLUDE_DIRS} src/ include/)
 target_link_libraries(ls ${LLVM_LIBS})
 
+# Emit the binary as `lls` (LS = Low-level Script); bare `ls` collides with the
+# Unix list-directory command. The CMake target keeps the short name `ls`, so
+# existing $<TARGET_FILE:ls> test references need no change.
+set_target_properties(ls PROPERTIES OUTPUT_NAME lls)
+
 # Keep the lib/std/ directory in the output folder up-to-date with the source tree.
 # CMake's file(COPY) only runs at configure time; POST_BUILD runs every build.
-# We copy the whole lib/ tree so ls.exe can find lib/std/*.ls when LS_HOME is not set.
+# We copy the whole lib/ tree so ls.exe can find lib/std/*.lls when LS_HOME is not set.
 add_custom_command(TARGET ls POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_SOURCE_DIR}/lib"
@@ -511,7 +516,7 @@ add_test(
     NAME test_std_md_jit
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_build.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_build.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=std_md
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -523,7 +528,7 @@ add_test(
     NAME test_std_md_parse_jit
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_parse.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_parse.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=std_md_parse
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -534,7 +539,7 @@ add_test(
     NAME test_std_md_inline_jit
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_inline.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_inline.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=std_md_inline
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -547,7 +552,7 @@ add_test(
     NAME test_intrinsic_sigil
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/intrinsic_sigil.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/intrinsic_sigil.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=intrinsic_sigil
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -558,7 +563,7 @@ add_test(
     NAME test_protocol_fromlist
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/protocol_fromlist.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/protocol_fromlist.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=protocol_fromlist
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -569,7 +574,7 @@ add_test(
     NAME test_protocol_frompairs
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/protocol_frompairs.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/protocol_frompairs.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=protocol_frompairs
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -577,13 +582,21 @@ add_test(
 
 # Retired legacy intrinsic spelling (__take) must be rejected at compile time.
 add_test(NAME test_retired_take
-    COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_take.ls)
+    COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_take.lls)
 set_tests_properties(test_retired_take PROPERTIES WILL_FAIL TRUE)
 
 # Hand-writing the reserved __from_list method name must be rejected.
 add_test(NAME test_retired_fromlist
-    COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_fromlist.ls)
+    COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_fromlist.lls)
 set_tests_properties(test_retired_fromlist PROPERTIES WILL_FAIL TRUE)
+
+# Extension guards for the LS→lls rename: the official source extension is now
+# `.lls`, but the legacy `.ls` must keep compiling. These two run the same kind
+# of program through each extension (both also import std.sys.io → io.lls).
+add_test(NAME test_ext_lls_smoke
+    COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/rename_smoke.lls)
+add_test(NAME test_ext_ls_legacy
+    COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/legacy_ext_compat.ls)
 
 # std.html Phase H1 (generation + render): functional bottom-up construction,
 # escaping, void tags, fmt_tag. JIT + AOT correctness + memcheck.
@@ -591,7 +604,7 @@ add_test(
     NAME test_std_html_write
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/html_write.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/html_write.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=std_html_write
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
@@ -606,7 +619,7 @@ add_test(
     NAME test_std_html_parse
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/html_parse.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/html_parse.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=std_html_parse
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
@@ -620,7 +633,7 @@ add_test(
     NAME test_md_to_html
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_to_html.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/md_to_html.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=md_to_html
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_html.cmake
@@ -634,20 +647,20 @@ add_test(
     NAME test_std_csv
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/csv_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/csv_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=std_csv
         -P ${CMAKE_SOURCE_DIR}/tests/test_std_csv.cmake
 )
 
-# std/plotfmt.ls (plot infra Phase 0.2): pure-LS formatting helpers
+# std/plotfmt.lls (plot infra Phase 0.2): pure-LS formatting helpers
 # (fmt_fixed/auto/sci/time, pad, clamp, rgb/hsv -> hex). Self-verifying sample
 # prints "PLOTFMT PASS". JIT + AOT correctness + memcheck.
 add_test(
     NAME test_plotfmt
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plotfmt_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plotfmt_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plotfmt
         -DMARKER=PLOTFMT
@@ -661,7 +674,7 @@ add_test(
     NAME test_fstring_spec
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fstring_spec_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fstring_spec_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=fstring_spec
         -DMARKER=FSPEC
@@ -669,13 +682,13 @@ add_test(
 )
 
 # Merged std.core.math: pure-LS derived helpers (radians/degrees,
-# lib/std/core/math.ls) folded into the built-in math namespace alongside C
+# lib/std/core/math.lls) folded into the built-in math namespace alongside C
 # primitives. Sample prints "MATHEXT PASS". JIT + AOT correctness + memcheck.
 add_test(
     NAME test_math_ext
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/math_ext_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/math_ext_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=math_ext
         -DMARKER=MATHEXT
@@ -683,12 +696,12 @@ add_test(
 )
 
 # Retirement: built-in math moved to std.core.math. Bare `import math` (no user
-# math.ls present) must be a clean compile error pointing at the new path.
+# math.lls present) must be a clean compile error pointing at the new path.
 add_test(
     NAME test_bare_math_import_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bare_math_import_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bare_math_import_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_bare_math_import_reject.cmake
 )
 
@@ -698,7 +711,7 @@ add_test(
     NAME test_ident_suffix
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ident_suffix_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ident_suffix_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=ident_suffix
         -DMARKER=IDENTSUF
@@ -709,7 +722,7 @@ add_test(
     NAME test_force_unwrap
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/force_unwrap_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/force_unwrap_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=force_unwrap
         -DMARKER=FORCEUNWRAP
@@ -723,7 +736,7 @@ add_test(
     NAME test_bit_match
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bit_match_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bit_match_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=bit_match
         -DMARKER=BITMATCH
@@ -916,7 +929,7 @@ add_test(
     NAME test_bytes
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bytes_oran_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bytes_oran_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=bytes
         -DMARKER=ORAN
@@ -927,7 +940,7 @@ add_test(
     NAME test_bytes_oob
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bytes_reader_oob.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bytes_reader_oob.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_bytes_oob.cmake
 )
 
@@ -938,7 +951,7 @@ add_test(
     NAME test_modfn_canonical
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modfn_canonical_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modfn_canonical_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=modfn_canonical
         -DMARKER=MODFN
@@ -948,13 +961,13 @@ add_test(
 # 通用 mod.fn 解析 Phase 2 (docs/plan_module_fn_resolution.md): a generic struct
 # defined in module A, whose methods call module functions via alias / canonical
 # path, instantiated in consumer B that never imported those modules. A's import
-# env is bound when the generic method bodies are checked in B. main.ls imports a
-# sibling defmod.ls (resolved relative to the source dir). JIT + AOT + memcheck.
+# env is bound when the generic method bodies are checked in B. main.lls imports a
+# sibling defmod.lls (resolved relative to the source dir). JIT + AOT + memcheck.
 add_test(
     NAME test_modfn_generic
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modfn_generic/main.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modfn_generic/main.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=modfn_generic
         -DMARKER=MODFN2
@@ -969,7 +982,7 @@ add_test(
     NAME test_match_result_own
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/match_result_own_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/match_result_own_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=match_result_own
         -DMARKER=MATCHOWN
@@ -985,7 +998,7 @@ add_test(
     NAME test_str_p1
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p1_litcoerce.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p1_litcoerce.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_p1
         -DMARKER=STRP1
@@ -1000,7 +1013,7 @@ add_test(
     NAME test_str_p2
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p2_fstring.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p2_fstring.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_p2
         -DMARKER=STRP2
@@ -1015,7 +1028,7 @@ add_test(
     NAME test_str_p3
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p3_print.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_p3_print.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_p3
         -DMARKER=STRP3
@@ -1030,7 +1043,7 @@ add_test(
     NAME test_str_methods
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_methods
         -DMARKER=STRM
@@ -1044,7 +1057,7 @@ add_test(
     NAME test_str_methods2
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods2.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods2.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_methods2
         -DMARKER=STRM2
@@ -1058,7 +1071,7 @@ add_test(
     NAME test_str_methods3
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods3.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_methods3.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_methods3
         -DMARKER=STRM3
@@ -1073,7 +1086,7 @@ add_test(
     NAME test_str_perf_methods
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_perf_methods.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_perf_methods.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_perf_methods
         -DMARKER=STRPERF
@@ -1087,7 +1100,7 @@ add_test(
     NAME test_str_lit_borrow
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_lit_borrow.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_lit_borrow.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_lit_borrow
         -DMARKER=STRLB
@@ -1102,21 +1115,21 @@ add_test(
     NAME test_str_fstring_interp
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_fstring_interp.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_fstring_interp.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_fstring_interp
         -DMARKER=STRFI
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# string-to-stdlib P7-mig: impl Hash for Str (std/str.ls, FxHash via std.hash)
+# string-to-stdlib P7-mig: impl Hash for Str (std/str.lls, FxHash via std.hash)
 # + operator == (impl Eq for Str) => Str usable as Map key (Hash + Eq bounds);
 # covers set/get/grow/overwrite/remove with has_drop Str keys. 0/0/0.
 add_test(
     NAME test_str_hash_mapkey
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_hash_mapkey.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_hash_mapkey.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_hash_mapkey
         -DMARKER=STRHK
@@ -1126,12 +1139,12 @@ add_test(
 # P5-0 (docs/plan_p5_remove_builtin_string.md §4): Str.c_str() — NUL-terminated
 # view for FFI char* consumers, verified through CRT strlen in every state
 # (static literal zero-copy / owned / grown / empty / zero-init nil data).
-# Unfreezes std/c.ls + std/os.ls migration (P5-3). JIT+AOT+memcheck 0/0/0.
+# Unfreezes std/c.lls + std/os.lls migration (P5-3). JIT+AOT+memcheck 0/0/0.
 add_test(
     NAME test_str_cstr
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_cstr_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_cstr_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_cstr
         -DMARKER=CSTR
@@ -1146,7 +1159,7 @@ add_test(
     NAME test_str_modfn_clone
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_modfn_clone/main.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/str_modfn_clone/main.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=str_modfn_clone
         -DMARKER=STRMC
@@ -1300,7 +1313,7 @@ add_test(
     NAME test_bare_print_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bare_print_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/bare_print_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_bare_print_reject.cmake
 )
 
@@ -1310,7 +1323,7 @@ add_test(
     NAME test_vec_sort
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_sort_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_sort_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=vec_sort
         -DMARKER=VECSORT
@@ -1324,7 +1337,7 @@ add_test(
     NAME test_stdc_prim
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdc_prim_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdc_prim_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=stdc_prim
         -DMARKER=STDCPRIM
@@ -1338,7 +1351,7 @@ add_test(
     NAME test_fma_coldpath
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fma_coldpath_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fma_coldpath_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=fma_coldpath
         -DMARKER=FMACOLD
@@ -1353,7 +1366,7 @@ add_test(
     NAME test_borrow_attrs
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_attrs_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_attrs_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=borrow_attrs
         -DMARKER=BORROWATTR
@@ -1367,7 +1380,7 @@ add_test(
     NAME test_forin_i64_bound
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/forin_i64_bound.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/forin_i64_bound.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=forin_i64_bound
         -DMARKER=FORINI64
@@ -1381,14 +1394,14 @@ add_test(
     NAME test_opt_levels
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/opt_levels_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/opt_levels_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=opt_levels
         -P ${CMAKE_SOURCE_DIR}/tests/test_opt_levels.cmake
 )
 set_tests_properties(test_ident_suffix PROPERTIES DEPENDS "test_fstring_spec")
 
-# std/plot.ls (plot Phase 1 skeleton): data model + builder API + summary output.
+# std/plot.lls (plot Phase 1 skeleton): data model + builder API + summary output.
 # Exercises deeply-nested has_drop (Figure -> vec(Axes) -> vec(LineStyle) ->
 # vec(f64)), Axes MOVE into Figure, and deep-copy reads. Self-verifying sample
 # prints "PLOT PASS". JIT + AOT correctness + memcheck.
@@ -1396,84 +1409,84 @@ add_test(
     NAME test_plot_skeleton
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_skeleton_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_skeleton_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_skeleton
         -DMARKER=PLOT
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# std/plot.ls tick engine (plot Phase 2): standard Heckbert nice-numbers,
+# std/plot.lls tick engine (plot Phase 2): standard Heckbert nice-numbers,
 # generate_ticks, map_x/map_y, update_limits, finalize (margins + ticks).
 # Self-verifying sample prints "TICKS PASS". JIT + AOT correctness + memcheck.
 add_test(
     NAME test_plot_ticks
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_ticks_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_ticks_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_ticks
         -DMARKER=TICKS
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# std/plot.ls SVG backend (plot Phase 2b): layout, polyline, axes, ticks, grid,
+# std/plot.lls SVG backend (plot Phase 2b): layout, polyline, axes, ticks, grid,
 # title/labels (escaped), scatter circles. Self-verifying sample prints
 # "SVG PASS". JIT + AOT correctness + memcheck.
 add_test(
     NAME test_plot_svg
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_svg_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_svg_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_svg
         -DMARKER=SVG
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# std/plot.ls Text/ASCII backend (plot Phase 2c): vec(string) grid, _put_char,
+# std/plot.lls Text/ASCII backend (plot Phase 2c): vec(string) grid, _put_char,
 # DDA line rasterization, y/x labels + axes. Self-verifying sample prints
 # "TEXT PASS". JIT + AOT correctness + memcheck.
 add_test(
     NAME test_plot_text
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_text_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_text_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_text
         -DMARKER=TEXT
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# std/plottl.ls timeline (plot TL-1): swimlane SVG (rects + <title> + time
+# std/plottl.lls timeline (plot TL-1): swimlane SVG (rects + <title> + time
 # ticks) and text backend. Self-verifying sample prints "TL PASS".
 # JIT + AOT correctness + memcheck.
 add_test(
     NAME test_plot_timeline
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_timeline_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_timeline_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_timeline
         -DMARKER=TL
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# std/plottl.ls CSV input (plot TL-1.5): parse_timeline_csv (header/blank skip,
+# std/plottl.lls CSV input (plot TL-1.5): parse_timeline_csv (header/blank skip,
 # auto palette color), load_timeline_csv. Self-verifying sample prints
 # "CSV PASS". JIT + AOT correctness + memcheck.
 add_test(
     NAME test_plot_csv
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_csv_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_csv_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_csv
         -DMARKER=CSV
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# std/plottl.ls CPU timeline (plot TL-2): CpuSchedEvent/CpuTopology, HT coloring
+# std/plottl.lls CPU timeline (plot TL-2): CpuSchedEvent/CpuTopology, HT coloring
 # (cpu_hue/cpu_color via plotfmt.hsv_to_hex), SVG swimlanes + diagonal-stripe
 # HT patterns + CPU legend, text backend. Self-verifying sample prints
 # "TL2 PASS". JIT + AOT correctness + memcheck.
@@ -1481,14 +1494,14 @@ add_test(
     NAME test_plot_cpu
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_cpu_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_cpu_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_cpu
         -DMARKER=TL2
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# std/plottl.ls scrollable HTML wrapper (plot TL-2b): cpu_timeline_html emits a
+# std/plottl.lls scrollable HTML wrapper (plot TL-2b): cpu_timeline_html emits a
 # self-contained single-file HTML with a fixed lane column + horizontally
 # scrollable wide SVG (pure CSS overflow, zero JS). Self-verifying sample prints
 # "HTML PASS". JIT + AOT correctness + memcheck.
@@ -1496,21 +1509,21 @@ add_test(
     NAME test_plot_html
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_html_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_html_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_html
         -DMARKER=HTML
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# std/plottl.ls aggregated CPU timeline (plot TL-3): cpu_timeline_aggregated
+# std/plottl.lls aggregated CPU timeline (plot TL-3): cpu_timeline_aggregated
 # buckets time into windows and renders the per-(thread,window) dominant CPU.
 # Self-verifying sample prints "AGG PASS". JIT + AOT correctness + memcheck.
 add_test(
     NAME test_plot_agg
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_agg_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/plot_agg_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=plot_agg
         -DMARKER=AGG
@@ -1518,13 +1531,13 @@ add_test(
 )
 
 # B-4 cross-module struct literal `mod.Type{...}` + struct field defaults
-# (options-struct pattern). main.ls imports opt.ls and constructs opt.PlotOpts{}.
+# (options-struct pattern). main.lls imports opt.lls and constructs opt.PlotOpts{}.
 # Self-verifying sample prints "MSL PASS". JIT + AOT correctness + memcheck.
 add_test(
     NAME test_mod_struct_literal
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modstructlit/main.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modstructlit/main.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=mod_struct_literal
         -DMARKER=MSL
@@ -1539,7 +1552,7 @@ add_test(
     NAME test_struct_field_defaults
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=struct_field_defaults
         -DMARKER=SFDEF
@@ -1553,7 +1566,7 @@ add_test(
     NAME test_struct_field_defaults_v2
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_v2_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_v2_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=struct_field_defaults_v2
         -DMARKER=SFD2
@@ -1565,7 +1578,7 @@ add_test(
     NAME test_struct_field_defaults_uservec
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_uservec_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_defaults_uservec_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=struct_field_defaults_uservec
         -DMARKER=USERVEC_FIELD_DEFAULTS
@@ -1582,7 +1595,7 @@ add_test(
     NAME test_fn_default_params
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fn_default_params_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fn_default_params_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=fn_default_params
         -DMARKER=FNDEF
@@ -1595,7 +1608,7 @@ add_test(
     NAME test_map_keys
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/map_keys.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/map_keys.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=map_keys
         -P ${CMAKE_SOURCE_DIR}/tests/test_map_keys.cmake
@@ -1608,7 +1621,7 @@ add_test(
     NAME test_shortcircuit_temp
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/shortcircuit_temp.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/shortcircuit_temp.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=shortcircuit_temp
         -P ${CMAKE_SOURCE_DIR}/tests/test_shortcircuit_temp.cmake
@@ -1627,7 +1640,7 @@ foreach(cm
         NAME test_cmatrix_${cm}
         COMMAND ${CMAKE_COMMAND}
             -DLS_EXE=$<TARGET_FILE:ls>
-            -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/cmatrix/${cm}.ls
+            -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/cmatrix/${cm}.lls
             -DWORK_DIR=${CMAKE_BINARY_DIR}
             -DTEST_NAME=cmatrix_${cm}
             -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -1641,7 +1654,7 @@ add_test(
     NAME test_move_elision
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/cmatrix/me01_move_elision.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/cmatrix/me01_move_elision.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=move_elision
         -P ${CMAKE_SOURCE_DIR}/tests/test_move_elision.cmake
@@ -1654,7 +1667,7 @@ add_test(
     NAME test_phase_g_closure
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/closure_g.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/closure_g.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=phase_g_closure
         -P ${CMAKE_SOURCE_DIR}/tests/test_phase_g_closure.cmake
@@ -1669,7 +1682,7 @@ add_test(
     NAME test_struct_byval_arg
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_byval_arg.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_byval_arg.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=struct_byval_arg
         -P ${CMAKE_SOURCE_DIR}/tests/test_struct_byval.cmake
@@ -1685,7 +1698,7 @@ add_test(
     NAME test_struct_field_readthrough
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_readthrough.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/struct_field_readthrough.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=struct_field_readthrough
         -P ${CMAKE_SOURCE_DIR}/tests/test_struct_readthrough.cmake
@@ -1698,7 +1711,7 @@ add_test(
     NAME test_memcheck_aot
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_phase_a.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_phase_a.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
 )
@@ -1711,7 +1724,7 @@ add_test(
     NAME test_memcheck_edge_jit
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_edge.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_edge.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=test_memcheck_edge_jit
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -1723,7 +1736,7 @@ add_test(
     NAME test_mem_m3_jit
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m3_xfer_unified.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m3_xfer_unified.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=test_mem_m3_jit
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -1737,7 +1750,7 @@ add_test(
     NAME test_mem_m4_jit
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_matrix.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_matrix.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=test_mem_m4_jit
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -1750,7 +1763,7 @@ add_test(
     NAME test_mem_m4_5_jit
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_5_drop_temp.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_5_drop_temp.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=test_mem_m4_5_jit
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -1762,7 +1775,7 @@ add_test(
     NAME test_mem_m4_5_aot
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_5_drop_temp.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/test_mem_m4_5_drop_temp.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
 )
@@ -1783,7 +1796,7 @@ add_test(
     NAME test_vec_builtin_syntax_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_builtin_syntax_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_builtin_syntax_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_vec_builtin_syntax_reject.cmake
 )
 set_tests_properties(test_vec_builtin_syntax_reject PROPERTIES DEPENDS "test_mem_m5_neg")
@@ -1793,7 +1806,7 @@ add_test(
     NAME test_map_builtin_syntax_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/map_builtin_syntax_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/map_builtin_syntax_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_map_builtin_syntax_reject.cmake
 )
 set_tests_properties(test_map_builtin_syntax_reject PROPERTIES DEPENDS "test_vec_builtin_syntax_reject")
@@ -1804,7 +1817,7 @@ add_test(
     NAME test_string_type_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/string_type_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/string_type_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_string_type_reject.cmake
 )
 set_tests_properties(test_string_type_reject PROPERTIES DEPENDS "test_map_builtin_syntax_reject")
@@ -1815,7 +1828,7 @@ add_test(
     NAME test_nested_decl_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/nested_fn_decl_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/nested_fn_decl_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_nested_decl_reject.cmake
 )
 set_tests_properties(test_nested_decl_reject PROPERTIES DEPENDS "test_string_type_reject")
@@ -1825,7 +1838,7 @@ add_test(
     NAME test_explicit_drop_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/explicit_drop_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/explicit_drop_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_explicit_drop_reject.cmake
 )
 set_tests_properties(test_explicit_drop_reject PROPERTIES DEPENDS "test_nested_decl_reject")
@@ -1836,7 +1849,7 @@ add_test(
     NAME test_forward_ref_struct_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/forward_ref_struct_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/forward_ref_struct_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_forward_ref_struct_reject.cmake
 )
 set_tests_properties(test_forward_ref_struct_reject PROPERTIES DEPENDS "test_explicit_drop_reject")
@@ -1848,7 +1861,7 @@ add_test(
     NAME test_match_concat_temp
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/match_concat_temp_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/match_concat_temp_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=match_concat_temp
         -DMARKER=MATCHCAT
@@ -1862,7 +1875,7 @@ add_test(
     NAME test_impl_imported_struct
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/impl_imported_struct_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/impl_imported_struct_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=impl_imported_struct
         -DMARKER=IMPLIMP
@@ -1878,7 +1891,7 @@ add_test(
     NAME test_fs
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fs_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fs_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_fs.cmake
 )
@@ -1890,7 +1903,7 @@ add_test(
     NAME test_struct_print_str
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/deep_copy_all_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/deep_copy_all_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_struct_print_str.cmake
 )
@@ -1903,7 +1916,7 @@ add_test(
     NAME test_global_name_collision
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/global_name_collision_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/global_name_collision_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_global_name_collision.cmake
 )
@@ -1914,7 +1927,7 @@ add_test(
     NAME test_malloc_builtin_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/malloc_builtin_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/malloc_builtin_reject.lls
         -P ${CMAKE_SOURCE_DIR}/tests/test_malloc_builtin_reject.cmake
 )
 
@@ -1925,7 +1938,7 @@ add_test(
     NAME test_borrow_return_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_reject.lls
         "-DEXPECT=borrows cannot escape via return"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -1933,7 +1946,7 @@ add_test(
     NAME test_borrow_method_return_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_method_return_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_method_return_reject.lls
         "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -1941,7 +1954,7 @@ add_test(
     NAME test_borrow_field_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_field_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_field_reject.lls
         "-DEXPECT=struct fields cannot be borrows yet"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -1949,7 +1962,7 @@ add_test(
     NAME test_borrow_enum_payload_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_enum_payload_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_enum_payload_reject.lls
         "-DEXPECT=enum payloads cannot be borrows yet"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -1957,7 +1970,7 @@ add_test(
     NAME test_borrow_typearg_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_typearg_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_typearg_reject.lls
         "-DEXPECT=a borrow type cannot be a generic type argument"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -1969,7 +1982,7 @@ add_test(
     NAME test_borrow_local
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=borrow_local
         -DMARKER=LB
@@ -1982,7 +1995,7 @@ add_test(
     NAME test_borrow_local_move_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_move_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_move_reject.lls
         "-DEXPECT=is borrowed by a live local borrow"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -1990,7 +2003,7 @@ add_test(
     NAME test_borrow_local_copyout_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_copyout_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_copyout_reject.lls
         "-DEXPECT=value cannot be copied out"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -1998,7 +2011,7 @@ add_test(
     NAME test_borrow_local_capture_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_capture_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_local_capture_reject.lls
         "-DEXPECT=is borrowed by a live local borrow"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2011,7 +2024,7 @@ add_test(
     NAME test_borrow_return
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=borrow_return
         -DMARKER=BR
@@ -2024,7 +2037,7 @@ add_test(
     NAME test_borrow_return_multiinput_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_multiinput_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_multiinput_reject.lls
         "-DEXPECT=exactly one borrow input"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2032,7 +2045,7 @@ add_test(
     NAME test_borrow_return_pin_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_pin_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_pin_reject.lls
         "-DEXPECT=is borrowed by a live local borrow"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2040,7 +2053,7 @@ add_test(
     NAME test_borrow_return_temp_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_temp_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_temp_reject.lls
         "-DEXPECT=source is a temporary"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2050,7 +2063,7 @@ add_test(
     NAME test_borrow_return_freelocal_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_freelocal_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_freelocal_reject.lls
         "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2058,7 +2071,7 @@ add_test(
     NAME test_borrow_return_chain_temp_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_chain_temp_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/borrow_return_chain_temp_reject.lls
         "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2070,7 +2083,7 @@ add_test(
     NAME test_slice
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=slice
         -DMARKER=SL
@@ -2080,7 +2093,7 @@ add_test(
     NAME test_slice_return_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_return_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_return_reject.lls
         "-DEXPECT=cannot return a slice"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2088,7 +2101,7 @@ add_test(
     NAME test_slice_field_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_field_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_field_reject.lls
         "-DEXPECT=cannot be slices"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2097,7 +2110,7 @@ add_test(
     NAME test_slice_return_local_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_return_local_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_return_local_reject.lls
         "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2106,7 +2119,7 @@ add_test(
     NAME test_slice_readonly_store_reject
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_readonly_store_reject.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/slice_readonly_store_reject.lls
         "-DEXPECT=read-only slice"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
@@ -2116,7 +2129,7 @@ add_test(
     NAME test_mem_overhaul_jit
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_overhaul.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_overhaul.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=test_mem_overhaul_jit
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
@@ -2128,7 +2141,7 @@ add_test(
     NAME test_mem_overhaul_aot
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_overhaul.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/memcheck_overhaul.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_aot.cmake
 )
@@ -2139,7 +2152,7 @@ add_test(
     NAME test_extern_struct
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/extern_struct_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/extern_struct_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_extern_struct.cmake
 )
@@ -2154,7 +2167,7 @@ add_test(
     NAME test_extern_struct_byval
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/extern_struct_byval.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/extern_struct_byval.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_extern_struct_byval.cmake
 )
@@ -2166,7 +2179,7 @@ add_test(
     NAME test_e3_errno
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/errno_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/errno_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=errno
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
@@ -2184,7 +2197,7 @@ add_test(
     NAME test_e3_condcomp
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/condcomp_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/condcomp_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=condcomp
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
@@ -2196,20 +2209,20 @@ add_test(
     NAME test_e3_stdlib_path
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdlib_path_test/main.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stdlib_path_test/main.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=stdlib_path
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
 )
 set_tests_properties(test_e3_stdlib_path PROPERTIES DEPENDS "test_e3_condcomp")
 
-# Phase E.4: pure-LS io stdlib (replaces builtins_io.c). Same .ls test files
+# Phase E.4: pure-LS io stdlib (replaces builtins_io.c). Same .lls test files
 # the built-in version used to pass; output must include "ALL PASS".
 add_test(
     NAME test_e4_io_basic
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/io_basic_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/io_basic_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=io_basic
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
@@ -2220,7 +2233,7 @@ add_test(
     NAME test_e4_io_seek
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/io_seek_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/io_seek_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=io_seek
         -P ${CMAKE_SOURCE_DIR}/tests/test_e3_glue.cmake
@@ -2501,7 +2514,7 @@ add_test(
     NAME test_stack
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_stack.cmake
@@ -2516,7 +2529,7 @@ add_test(
     NAME test_stack_xmod
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_xmod/main.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_xmod/main.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -DTEST_NAME=stack_xmod
@@ -2529,7 +2542,7 @@ add_test(
     NAME test_stack_qual
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_qual.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/stack_qual.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -DTEST_NAME=stack_qual
@@ -2545,7 +2558,7 @@ add_test(
     NAME test_set
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/set_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/set_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_set.cmake
@@ -2560,7 +2573,7 @@ add_test(
     NAME test_generic_freefn
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/generic_freefn_in_body.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/generic_freefn_in_body.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_generic_freefn.cmake
@@ -2574,7 +2587,7 @@ add_test(
     NAME test_container_methods
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/container_methods.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/container_methods.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_container_methods.cmake
@@ -2589,7 +2602,7 @@ add_test(
     NAME test_heap
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/heap_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/heap_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_heap.cmake
@@ -2603,7 +2616,7 @@ add_test(
     NAME test_deque
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/deque_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/deque_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_deque.cmake
@@ -2627,7 +2640,7 @@ add_test(
     NAME test_ring
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ring_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ring_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_ring.cmake
@@ -2641,7 +2654,7 @@ add_test(
     NAME test_ring_spsc
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ring_spsc_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ring_spsc_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_ring_spsc.cmake
@@ -2655,7 +2668,7 @@ add_test(
     NAME test_ring_mpmc
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ring_mpmc_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ring_mpmc_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_ring_mpmc.cmake
@@ -2668,7 +2681,7 @@ add_test(
     NAME test_chan
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/chan_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/chan_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_chan.cmake
@@ -2681,7 +2694,7 @@ add_test(
     NAME test_chan_mpmc
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/chan_mpmc_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/chan_mpmc_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_chan_mpmc.cmake
@@ -2694,7 +2707,7 @@ add_test(
     NAME test_deref_method
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/deref_method_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/deref_method_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_deref_method.cmake
@@ -2707,7 +2720,7 @@ add_test(
     NAME test_chan_forin
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/chan_forin_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/chan_forin_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_chan_forin.cmake
@@ -2827,7 +2840,7 @@ add_test(
     NAME test_vec_global_drop
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_global_drop_test.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/vec_global_drop_test.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_vec_global_drop.cmake
@@ -3410,7 +3423,7 @@ add_test(
     NAME test_operator_overload_memcheck
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
-        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/operator_overload_memcheck.ls
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/operator_overload_memcheck.lls
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=operator_overload_memcheck
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake

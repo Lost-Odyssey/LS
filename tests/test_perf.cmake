@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 set(LS   "${LS_EXE}")
-set(SRC  "${CMAKE_CURRENT_LIST_DIR}/samples/perf_basic_test.ls")
+set(SRC  "${CMAKE_CURRENT_LIST_DIR}/samples/perf_basic_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/perf_basic_test.exe")
 
 # ── Step 1: JIT run ──────────────────────────────────────────────────────────

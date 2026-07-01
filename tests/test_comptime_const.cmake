@@ -9,7 +9,7 @@
 #    compile errors.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/comptime_const_test.ls")
+set(POS "${SAMPLE_DIR}/comptime_const_test.lls")
 set(_expected "COMPTIME CONST DONE")
 set(_needles
     "MASK=511" "BIG=true" "LCODE=81" "SUM=45" "FACT5=120" "SQ=25,81"
@@ -59,7 +59,7 @@ endif()
 message(STATUS "comptime_const memcheck: OK clean")
 
 # ---- negative: assignment to a comptime constant is a clean compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_const_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_const_reject.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "comptime_const_reject: expected compile error, got success\n${n_out}")
@@ -74,7 +74,7 @@ endif()
 message(STATUS "comptime_const_reject: rejected as expected")
 
 # ---- negative: array length mismatch is a clean compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_const_reject2.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_const_reject2.lls"
     OUTPUT_VARIABLE m_out ERROR_VARIABLE m_err RESULT_VARIABLE m_rc)
 if(m_rc EQUAL 0)
     message(FATAL_ERROR "comptime_const_reject2: expected compile error, got success\n${m_out}")

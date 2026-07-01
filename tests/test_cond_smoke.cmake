@@ -1,6 +1,6 @@
 # Phase 0 (std.chan foundation) — condition-variable intrinsics.
 #
-#   cond_smoke.ls   single-threaded: __cond_init / signal / broadcast / destroy
+#   cond_smoke.lls   single-threaded: __cond_init / signal / broadcast / destroy
 #                   resolve and run (the new runtime primitive + intrinsic +
 #                   jit wiring). __cond_wait is exercised later by the blocking
 #                   Chan tests (Phase 2), where a peer thread signals.
@@ -14,7 +14,7 @@ if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
 set(SDIR "${CMAKE_CURRENT_LIST_DIR}/samples")
-set(ST "${SDIR}/cond_smoke.ls")
+set(ST "${SDIR}/cond_smoke.lls")
 
 # JIT
 execute_process(COMMAND "${LS}" run "${ST}"

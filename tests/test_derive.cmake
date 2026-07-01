@@ -6,7 +6,7 @@
 #  * negative: an unsupported trait is a compile error
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/derive_equal.ls")
+set(POS "${SAMPLE_DIR}/derive_equal.lls")
 set(_expected "DERIVE TRAITS DONE")
 
 # ---- positive: JIT ----
@@ -62,7 +62,7 @@ endforeach()
 message(STATUS "derive inspect (==, hash, <): OK")
 
 # ---- negative: unsupported trait is a compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/derive_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/derive_reject.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "derive_reject: expected compile error, got success\n${n_out}")
@@ -77,7 +77,7 @@ endif()
 message(STATUS "derive_reject: rejected as expected")
 
 # ---- enum derive: @derive(Equal, Hash) (JIT + AOT + memcheck) ----
-set(ENUMPOS "${SAMPLE_DIR}/derive_enum.ls")
+set(ENUMPOS "${SAMPLE_DIR}/derive_enum.lls")
 set(_eexp "DERIVE ENUM DONE")
 execute_process(COMMAND "${LS_EXE}" run "${ENUMPOS}"
     OUTPUT_VARIABLE e_out ERROR_VARIABLE e_err RESULT_VARIABLE e_rc)
@@ -113,7 +113,7 @@ endif()
 message(STATUS "derive_enum (Equal+Hash+Order+Show, Map key): OK")
 
 # ---- negative: @derive(Serialize) on an enum is not supported -> compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/derive_enum_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/derive_enum_reject.lls"
     OUTPUT_VARIABLE er_out ERROR_VARIABLE er_err RESULT_VARIABLE er_rc)
 if(er_rc EQUAL 0)
     message(FATAL_ERROR "derive_enum_reject: expected compile error\n${er_out}")
@@ -125,7 +125,7 @@ endif()
 message(STATUS "derive_enum_reject (Order): rejected as expected")
 
 # ---- @derive(Show): def show()->Str (POD/Str/nested fields) JIT+AOT+memcheck ----
-set(SHOWPOS "${SAMPLE_DIR}/derive_show.ls")
+set(SHOWPOS "${SAMPLE_DIR}/derive_show.lls")
 set(_sexp "DERIVE SHOW DONE")
 execute_process(COMMAND "${LS_EXE}" run "${SHOWPOS}"
     OUTPUT_VARIABLE s_out ERROR_VARIABLE s_err RESULT_VARIABLE s_rc)
@@ -160,7 +160,7 @@ endif()
 message(STATUS "derive_show (Show, nested, composable): OK")
 
 # ---- negative: @derive(Clone) is redundant -> rejected with explanation ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/derive_clone_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/derive_clone_reject.lls"
     OUTPUT_VARIABLE cl_out ERROR_VARIABLE cl_err RESULT_VARIABLE cl_rc)
 if(cl_rc EQUAL 0)
     message(FATAL_ERROR "derive_clone_reject: expected compile error\n${cl_out}")

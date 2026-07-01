@@ -9,7 +9,7 @@ if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
 set(SDIR "${CMAKE_CURRENT_LIST_DIR}/samples")
-set(ST "${SDIR}/simd_test.ls")
+set(ST "${SDIR}/simd_test.lls")
 
 # JIT
 execute_process(COMMAND "${LS}" run "${ST}"
@@ -44,7 +44,7 @@ if(NOT ar EQUAL 0 OR NOT ao MATCHES "SIMD OK" OR ao MATCHES "SIMD FAIL")
 endif()
 
 # ===== Phase 2: f16 element type + __simd_cast (mixed precision) =====
-set(FT "${SDIR}/simd_f16_test.ls")
+set(FT "${SDIR}/simd_f16_test.lls")
 
 execute_process(COMMAND "${LS}" run "${FT}"
     OUTPUT_VARIABLE fo ERROR_VARIABLE fe RESULT_VARIABLE fr TIMEOUT 30)
@@ -70,7 +70,7 @@ if(NOT far EQUAL 0 OR NOT fao MATCHES "F16 OK" OR fao MATCHES "F16 FAIL")
 endif()
 
 # ===== std.sci.simd: vectorized activations (tanh/sigmoid/silu/relu) =====
-set(AT "${SDIR}/simd_activation_test.ls")
+set(AT "${SDIR}/simd_activation_test.lls")
 
 execute_process(COMMAND "${LS}" run "${AT}"
     OUTPUT_VARIABLE aco ERROR_VARIABLE ace RESULT_VARIABLE acr TIMEOUT 30)
@@ -96,7 +96,7 @@ if(NOT acar EQUAL 0 OR NOT acao MATCHES "ACT OK" OR acao MATCHES "ACT FAIL")
 endif()
 
 # ===== std.sci.simd: vectorized exp (__simd_floor/__simd_bitcast) + atan =====
-set(ET "${SDIR}/simd_exp_atan_test.ls")
+set(ET "${SDIR}/simd_exp_atan_test.lls")
 
 execute_process(COMMAND "${LS}" run "${ET}"
     OUTPUT_VARIABLE eco ERROR_VARIABLE ece RESULT_VARIABLE ecr TIMEOUT 30)
@@ -122,7 +122,7 @@ if(NOT ecar EQUAL 0 OR NOT ecao MATCHES "EXPATAN OK" OR ecao MATCHES "EXPATAN FA
 endif()
 
 # ===== std.sci.nn: vectorized softmax_rows (smd.exp) =====
-set(ST "${SDIR}/nn_softmax_test.ls")
+set(ST "${SDIR}/nn_softmax_test.lls")
 
 execute_process(COMMAND "${LS}" run "${ST}"
     OUTPUT_VARIABLE sco ERROR_VARIABLE sce RESULT_VARIABLE scr TIMEOUT 30)
@@ -148,7 +148,7 @@ if(NOT scar EQUAL 0 OR NOT scao MATCHES "SOFTMAX OK" OR scao MATCHES "SOFTMAX FA
 endif()
 
 # ===== std.sci.nn: blocked FP32 GEMM (register-resident 6x16 micro-kernel) =====
-set(GT "${SDIR}/simd_gemm_test.ls")
+set(GT "${SDIR}/simd_gemm_test.lls")
 
 execute_process(COMMAND "${LS}" run "${GT}"
     OUTPUT_VARIABLE gco ERROR_VARIABLE gce RESULT_VARIABLE gcr TIMEOUT 60)
@@ -174,7 +174,7 @@ if(NOT gar EQUAL 0 OR NOT gao MATCHES "GEMM OK" OR gao MATCHES "GEMM FAIL")
 endif()
 
 # ===== std.sci.nn.Pool: static f32 activation arena (64-byte aligned) =====
-set(PT "${SDIR}/simd_pool_test.ls")
+set(PT "${SDIR}/simd_pool_test.lls")
 
 execute_process(COMMAND "${LS}" run "${PT}"
     OUTPUT_VARIABLE po ERROR_VARIABLE pe RESULT_VARIABLE pr TIMEOUT 30)
@@ -200,14 +200,14 @@ if(NOT par EQUAL 0 OR NOT pao MATCHES "POOL OK" OR pao MATCHES "POOL FAIL")
 endif()
 
 # overflow must abort (non-zero, never reaches the trailing print)
-execute_process(COMMAND "${LS}" run "${SDIR}/simd_pool_oob.ls"
+execute_process(COMMAND "${LS}" run "${SDIR}/simd_pool_oob.lls"
     OUTPUT_VARIABLE oo ERROR_VARIABLE oe RESULT_VARIABLE oor TIMEOUT 30)
 if(oor EQUAL 0 OR oo MATCHES "UNREACHABLE")
     message(FATAL_ERROR "simd pool overflow should abort, got rc=${oor}:\n${oo}")
 endif()
 
 # ===== std.sci.nn.conv1d (im2col + sgemm) + end-to-end conv->relu->conv =====
-set(CT "${SDIR}/simd_conv_test.ls")
+set(CT "${SDIR}/simd_conv_test.lls")
 
 execute_process(COMMAND "${LS}" run "${CT}"
     OUTPUT_VARIABLE cvo ERROR_VARIABLE cve RESULT_VARIABLE cvr TIMEOUT 30)

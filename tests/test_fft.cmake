@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
-set(POS "${SAMPLE_DIR}/fft_smoke.ls")
+set(POS "${SAMPLE_DIR}/fft_smoke.lls")
 set(_expected "FFT PASS")
 
 execute_process(COMMAND "${LS_EXE}" run "${POS}"

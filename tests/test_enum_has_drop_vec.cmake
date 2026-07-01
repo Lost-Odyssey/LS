@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/enum_has_drop_vec_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/enum_has_drop_vec_test.lls")
 set(_expected
     "A: len = 2"
     "B: len = 1"

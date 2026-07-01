@@ -7,7 +7,7 @@ set(LS "${LS_EXE}")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
-set(F "${CMAKE_CURRENT_LIST_DIR}/samples/derust_keywords_smoke.ls")
+set(F "${CMAKE_CURRENT_LIST_DIR}/samples/derust_keywords_smoke.lls")
 
 # --- positive: JIT ---
 execute_process(COMMAND "${LS}" run "${F}"
@@ -29,7 +29,7 @@ if(NOT ar EQUAL 0 OR NOT ao MATCHES "DERUST OK" OR ao MATCHES "DERUST FAIL")
 endif()
 
 # --- negative: retired `fn` must be rejected ---
-set(R "${CMAKE_CURRENT_LIST_DIR}/samples/derust_keywords_reject.ls")
+set(R "${CMAKE_CURRENT_LIST_DIR}/samples/derust_keywords_reject.lls")
 execute_process(COMMAND "${LS}" run "${R}"
     OUTPUT_VARIABLE ro ERROR_VARIABLE re RESULT_VARIABLE rr TIMEOUT 30)
 if(rr EQUAL 0)

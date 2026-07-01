@@ -2,7 +2,7 @@
 # i32 at codegen. JIT + AOT + memcheck.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/i64_literal_test.ls")
+set(MAIN "${SAMPLE_DIR}/i64_literal_test.lls")
 set(_expected "pass=7 fail=0" "I64_LITERAL PASS")
 
 # ---- JIT ----

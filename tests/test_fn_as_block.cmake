@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-set(SAMPLE "${SAMPLE_DIR}/fn_as_block_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/fn_as_block_test.lls")
 set(aot_bin "${WORK_DIR}/fn_as_block_aot")
 set(aot_mc_bin "${WORK_DIR}/fn_as_block_mc_aot")
 if(WIN32)

@@ -7,7 +7,7 @@
 #    with a T that lacks the operation fails at monomorphization (clear error)
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/derive_generic.ls")
+set(POS "${SAMPLE_DIR}/derive_generic.lls")
 set(_exp "GENERIC DERIVE DONE")
 
 execute_process(COMMAND "${LS_EXE}" run "${POS}"
@@ -47,7 +47,7 @@ if(NOT mrc EQUAL 0 OR NOT "${mc}" MATCHES "OK clean")
 endif()
 message(STATUS "derive_generic memcheck: OK clean")
 
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/derive_generic_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/derive_generic_reject.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "derive_generic_reject: expected compile error\n${n_out}")

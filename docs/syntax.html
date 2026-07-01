@@ -887,7 +887,7 @@ double_all(&amp;!v[0..5])          <span class="c">// v becomes [20, 40, 60, 80,
     <div class="note"><b>The one-line intuition.</b> <code>@move</code> is the automatic
     gearbox — the compiler catches your mistakes. <code>@take</code>/<code>@dispose</code>/<code>@dup</code>
     are the manual gearbox — the compiler hands you the wheel, and a wrong metadata invariant
-    is undefined behaviour or a leak. <code>ls run --memcheck</code> is your only safety net.</div>
+    is undefined behaviour or a leak. <code>lls run --memcheck</code> is your only safety net.</div>
   </section>
 
   <section id="in-primitives">
@@ -1266,12 +1266,12 @@ rw.write(|b| b.nums.push(7))</pre></div>
     <p>A file declares its module name with <code>module</code>; the entry file is
     <code>module main</code> and defines <code>def main()</code>. Another file pulls it in
     with <code>import</code> and calls across with a qualified <code>mod.name</code>.</p>
-    <div class="ex"><pre><span class="c">// geometry.ls</span>
+    <div class="ex"><pre><span class="c">// geometry.lls</span>
 <span class="k">module</span> geometry
 <span class="k">def</span> area(<span class="t">int</span> w, <span class="t">int</span> h) -&gt; <span class="t">int</span> { <span class="k">return</span> w * h }
 <span class="t">int</span> UNIT = 1
 
-<span class="c">// main.ls</span>
+<span class="c">// main.lls</span>
 <span class="k">module</span> main
 <span class="k">import</span> geometry
 <span class="k">import</span> geometry <span class="k">as</span> g          <span class="c">// optional alias</span>
@@ -1283,7 +1283,7 @@ rw.write(|b| b.nums.push(7))</pre></div>
 }</pre></div>
     <p>The standard library is a tree of modules; the <b>import path is the directory
     path</b>. The compiler resolves it under <code>&lt;LS_HOME&gt;/lib/</code>:</p>
-    <div class="ex"><pre><span class="k">import</span> std.core.vec          <span class="c">// lib/std/core/vec.ls — Vec(T)</span>
+    <div class="ex"><pre><span class="k">import</span> std.core.vec          <span class="c">// lib/std/core/vec.lls — Vec(T)</span>
 <span class="k">import</span> std.core.str          <span class="c">// Str  (auto-injected; rarely written by hand)</span>
 <span class="k">import</span> std.core.map          <span class="c">// Map(K,V)</span>
 <span class="k">import</span> std.sys.io            <span class="c">// file I/O</span>
@@ -1354,7 +1354,7 @@ rw.write(|b| b.nums.push(7))</pre></div>
   <h1 id="sr-top" style="margin-top:3.5rem">Static Reflection</h1>
   <p class="lede">LS reflects types at <b>compile time</b>: <code>@derive(...)</code>
   asks the compiler to synthesise standard methods by walking a type's fields, and
-  <code>ls inspect</code> / <code>reflect()</code> expose that structure. No RTTI,
+  <code>lls inspect</code> / <code>reflect()</code> expose that structure. No RTTI,
   no runtime cost unless you opt in.</p>
 
   <section id="sr-overview">
@@ -1654,13 +1654,13 @@ def fast_sin(int k) -&gt; f64 { return SIN_LUT[k &amp; 255] }   <span class="c">
     <h2>Tooling: <code>inspect</code> · <code>ir</code> · <code>asm</code></h2>
     <p>Inspect a type's fields + methods without running it — handy for exploring
     a type (incl. what a <code>@derive</code> produced, shown with tags):</p>
-    <div class="ex"><pre>$ ls inspect Point app.ls        <span class="c">// fields + method signatures + [static]/[Destroy] tags</span>
+    <div class="ex"><pre>$ lls inspect Point app.lls        <span class="c">// fields + method signatures + [static]/[Destroy] tags</span>
 ls&gt; :methods Vec                  <span class="c">// in the REPL — methods only</span>
 ls&gt; :fields Config               <span class="c">// fields only  (also :inspect)</span></pre></div>
     <p>See one function's <b>optimised</b> LLVM IR or x64 assembly — the feedback
     loop for hand-optimisation (e.g. checking SIMD actually got vectorised):</p>
-    <div class="ex"><pre>$ ls ir  myfn app.ls -O2          <span class="c">// that function's LLVM IR</span>
-$ ls asm myfn app.ls -O3 --native <span class="c">// its x64 asm (--native unlocks AVX)</span></pre></div>
+    <div class="ex"><pre>$ lls ir  myfn app.lls -O2          <span class="c">// that function's LLVM IR</span>
+$ lls asm myfn app.lls -O3 --native <span class="c">// its x64 asm (--native unlocks AVX)</span></pre></div>
     <p>The function name matches exactly, else by unique substring
     (<code>area</code> → <code>Point.area</code>); ambiguous names are listed.</p>
     <p>Emit <b>reusable C with Intel intrinsics</b> for the numeric/SIMD kernel
@@ -1669,13 +1669,13 @@ $ ls asm myfn app.ls -O3 --native <span class="c">// its x64 asm (--native unloc
     kernel or a pointer-based model <code>forward</code> drops into a C/C++ codebase
     without the LS runtime.
     <code>Simd(f32,16)</code> → <code>__m512</code>, ops → <code>_mm512_*</code>:</p>
-    <div class="ex"><pre>$ ls emit-c kernels.ls -o kernels.c   <span class="c">// every in-subset fn → self-contained .c</span>
+    <div class="ex"><pre>$ ls emit-c kernels.lls -o kernels.c   <span class="c">// every in-subset fn → self-contained .c</span>
 $ clang -march=graniterapids -O3 -c kernels.c   <span class="c">// compiles immediately</span></pre></div>
     <p>Out-of-subset constructs (<code>Str</code>/<code>Vec</code>/<code>Map</code>/closures/enums/
     methods) are reported with a source location and nothing is written. To pull the
     kernels out of a mixed model file, restrict or relax the selection:</p>
-    <div class="ex"><pre>$ ls emit-c model.ls --only sgemm,relu16 -o k.c  <span class="c">// just these functions</span>
-$ ls emit-c model.ls --skip-unsupported -o k.c   <span class="c">// all in-subset fns; warn-skip the rest</span></pre></div>
+    <div class="ex"><pre>$ ls emit-c model.lls --only sgemm,relu16 -o k.c  <span class="c">// just these functions</span>
+$ ls emit-c model.lls --skip-unsupported -o k.c   <span class="c">// all in-subset fns; warn-skip the rest</span></pre></div>
   </section>
 
   <section id="sr-gotchas">

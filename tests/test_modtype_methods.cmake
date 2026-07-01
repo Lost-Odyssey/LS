@@ -3,7 +3,7 @@
 # static methods + enum methods, disambiguated via qualified types. JIT+AOT+memcheck.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/modtype_methods/main.ls")
+set(MAIN "${SAMPLE_DIR}/modtype_methods/main.lls")
 set(_expected "va=30 vb=105 ra=2 rb=40" "MODTYPE_METHODS PASS")
 
 # ---- JIT ----

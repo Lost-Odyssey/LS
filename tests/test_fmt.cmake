@@ -7,8 +7,8 @@ set(LS "${LS_EXE}")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
-set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/fmt_fixture.ls")
-set(COPY "${CMAKE_BINARY_DIR}/fmt_fixture_copy.ls")
+set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/fmt_fixture.lls")
+set(COPY "${CMAKE_BINARY_DIR}/fmt_fixture_copy.lls")
 
 # baseline: messy fixture runs and prints the marker
 execute_process(COMMAND "${LS}" run "${SRC}"

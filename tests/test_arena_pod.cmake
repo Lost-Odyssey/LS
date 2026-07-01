@@ -4,7 +4,7 @@
 #  * Negative: Arena(Str).alloc is a compile error (element type must be Pod).
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/arena_pod_test.ls")
+set(POS "${SAMPLE_DIR}/arena_pod_test.lls")
 set(_expected "ARENA POD PASS")
 
 # ---- positive: JIT ----
@@ -56,7 +56,7 @@ endif()
 message(STATUS "arena_pod positive memcheck: OK clean")
 
 # ---- negative: Arena(Str).alloc must be a compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/arena_pod_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/arena_pod_reject.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "arena_pod_reject: expected compile error, got success\n${n_out}")

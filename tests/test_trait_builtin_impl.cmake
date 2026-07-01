@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/trait_int_impl_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/trait_int_impl_test.lls")
 
 # Expected output lines
 set(_expected "int:42" "f64:3" "bool:true" "int:99" "f64:2" "bool:false")

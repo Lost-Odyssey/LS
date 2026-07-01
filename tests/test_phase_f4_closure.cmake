@@ -10,7 +10,7 @@
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/closure_f4_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/closure_f4_test.lls")
 
 set(_expected "11" "20" "7" "add3" "sub2" "100")
 

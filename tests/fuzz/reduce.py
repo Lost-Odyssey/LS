@@ -8,13 +8,13 @@ the parser hanging under `ls parse`; pass --verb to target another stage and
 --crash to minimize a non-{0,1} exit instead of a timeout.
 
 Usage:
-    python tests/fuzz/reduce.py <input.ls> [--verb parse] [--timeout 3] [--crash]
+    python tests/fuzz/reduce.py <input.lls> [--verb parse] [--timeout 3] [--crash]
 """
 import subprocess, sys, os, argparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LS = os.path.join(ROOT, "build", "Release", "ls.exe")
-SCRATCH = os.path.join(ROOT, "tests", "fuzz", "_red.ls")
+SCRATCH = os.path.join(ROOT, "tests", "fuzz", "_red.lls")
 
 def make_triggers(verb, timeout, want_crash):
     def triggers(data):

@@ -5,7 +5,7 @@
 #  JIT + AOT + memcheck 0/0/0; negative: comptime match on a non-enum is a clean error.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/comptime_match_test.ls")
+set(POS "${SAMPLE_DIR}/comptime_match_test.lls")
 set(_expected "COMPTIME MATCH DONE")
 set(_needles "${_expected}" "Circle.5." "Square.9." "Empty" "Name.hi." "Leaf.7."
              "Nil" "XY.3." "XY/2" "Origin/0")
@@ -53,7 +53,7 @@ endif()
 message(STATUS "comptime match memcheck: OK clean")
 
 # ---- negative: comptime match on a non-enum is a clean compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_match_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_match_reject.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "comptime_match_reject: expected compile error, got success\n${n_out}")

@@ -1,11 +1,11 @@
 # test_generic_borrow_return.cmake — generic return-borrow elision: extend
 # single-input `&self` borrow-return to GENERIC methods so a generic container
 # hands out a zero-copy `&T` instead of cloning. Covers:
-#   (1) generic_borrow_return_test.ls — Box(T) aggregate borrow (struct element),
+#   (1) generic_borrow_return_test.lls — Box(T) aggregate borrow (struct element),
 #       read + bind + writable &!T (JIT + AOT + memcheck 0/0/0).
-#   (2) vec_get_ref_test.ls — Vec.get_ref(&self,i) -> &T on the real container,
+#   (2) vec_get_ref_test.lls — Vec.get_ref(&self,i) -> &T on the real container,
 #       validating the `*T data[i]` pointer-index borrow-return path.
-#   (3) generic_borrow_scalar_reject.ls (NEGATIVE) — a POD-scalar element borrow
+#   (3) generic_borrow_scalar_reject.lls (NEGATIVE) — a POD-scalar element borrow
 #       (`Box(int).get_ref -> &int`) must be a clean compile error (aggregate-only).
 # FAIL anywhere in positive output vetoes; the negative must rc!=0 with a message.
 cmake_minimum_required(VERSION 3.20)
@@ -44,11 +44,11 @@ function(run_positive name sample marker)
     message(STATUS "${name}: OK (JIT + AOT + memcheck)")
 endfunction()
 
-run_positive("generic_borrow_return" "${SAMPLE_DIR}/generic_borrow_return_test.ls" "GBR PASS")
-run_positive("vec_get_ref"           "${SAMPLE_DIR}/vec_get_ref_test.ls"           "VGR PASS")
+run_positive("generic_borrow_return" "${SAMPLE_DIR}/generic_borrow_return_test.lls" "GBR PASS")
+run_positive("vec_get_ref"           "${SAMPLE_DIR}/vec_get_ref_test.lls"           "VGR PASS")
 
 # ---- negative: POD-scalar generic borrow return must be rejected ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/generic_borrow_scalar_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/generic_borrow_scalar_reject.lls"
     OUTPUT_VARIABLE no ERROR_VARIABLE ne RESULT_VARIABLE nr)
 if(nr EQUAL 0)
     message(FATAL_ERROR "scalar-reject should have failed to compile but rc=0:\n${no}")

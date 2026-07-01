@@ -2,8 +2,8 @@
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
-set(SRC_OK "${CMAKE_CURRENT_LIST_DIR}/samples/vec_kid_lazy_test.ls")
-set(SRC_BAD "${CMAKE_CURRENT_LIST_DIR}/samples/vec_kid_missing_eq_fail.ls")
+set(SRC_OK "${CMAKE_CURRENT_LIST_DIR}/samples/vec_kid_lazy_test.lls")
+set(SRC_BAD "${CMAKE_CURRENT_LIST_DIR}/samples/vec_kid_missing_eq_fail.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/vec_kid.exe")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")

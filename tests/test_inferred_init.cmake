@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")
-set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/inferred_init_test.ls")
+set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/inferred_init_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/inferred_init.exe")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")

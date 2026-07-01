@@ -2,7 +2,7 @@
 # See docs/plan_strslice_view.md.  JIT + AOT + memcheck (0/0/0).
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/strslice_test.ls")
+set(POS "${SAMPLE_DIR}/strslice_test.lls")
 set(_expected "STRSLICE PASS")
 
 # ---- positive: JIT ----

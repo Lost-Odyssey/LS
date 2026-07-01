@@ -6,7 +6,7 @@
 #  JIT + AOT + memcheck 0/0/0; negative: variants(non-enum) is a clean error.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/comptime_v2_test.ls")
+set(POS "${SAMPLE_DIR}/comptime_v2_test.lls")
 set(_expected "COMPTIME V2 DONE")
 set(_needles "${_expected}" "doubled=6,10" "copy=alice,42,true" "src=alice"
              "blank=..,0,false" "Circle#0.int. Square#1.int. Empty#2.."
@@ -55,7 +55,7 @@ endif()
 message(STATUS "comptime v2 memcheck: OK clean")
 
 # ---- negative: variants(non-enum) is a clean compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_v2_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_v2_reject.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "comptime_v2_reject: expected compile error, got success\n${n_out}")

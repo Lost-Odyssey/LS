@@ -2,7 +2,7 @@
 # JIT stack overflow. n=200000 would crash before fix. JIT + AOT + memcheck.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/struct_loop_test.ls")
+set(MAIN "${SAMPLE_DIR}/struct_loop_test.lls")
 set(_expected "STRUCT_LOOP PASS")
 
 # ---- JIT ----

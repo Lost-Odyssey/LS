@@ -7,7 +7,7 @@
 #
 # Required cache variables (passed by add_test):
 #   LS_EXE    — path to the ls binary
-#   SAMPLE    — absolute path to the .ls sample
+#   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (AOT binary + file round-trip scratch)
 #   TEST_NAME — test name (for error messages)
 cmake_minimum_required(VERSION 3.20)
@@ -19,7 +19,7 @@ if(NOT TEST_NAME)
     set(TEST_NAME "std_csv")
 endif()
 
-# Resolve std modules from the source tree (csv.ls lives there).
+# Resolve std modules from the source tree (csv.lls lives there).
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 

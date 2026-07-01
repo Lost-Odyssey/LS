@@ -2,7 +2,7 @@
 # round-trip through aligned construction + match. JIT + AOT + memcheck.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/enum_align_test.ls")
+set(MAIN "${SAMPLE_DIR}/enum_align_test.lls")
 set(_expected "ENUM_ALIGN PASS")
 
 execute_process(COMMAND "${LS_EXE}" run "${MAIN}"

@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/trait_struct_bound_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/trait_struct_bound_test.lls")
 set(_expected "Circle" "5" "Circle" "9")
 
 # ---- JIT ----
@@ -55,7 +55,7 @@ message(STATUS "test_trait_struct_bound AOT: OK")
 file(REMOVE "${aot_bin}")
 
 # ---- Negative: type doesn't satisfy bound ----
-set(REJECT "${SAMPLE_DIR}/trait_struct_bound_reject.ls")
+set(REJECT "${SAMPLE_DIR}/trait_struct_bound_reject.lls")
 execute_process(
     COMMAND "${LS_EXE}" run "${REJECT}"
     OUTPUT_VARIABLE rej_out

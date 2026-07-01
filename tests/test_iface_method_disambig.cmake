@@ -8,7 +8,7 @@ set(LS "${LS_EXE}")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
-set(F "${CMAKE_CURRENT_LIST_DIR}/samples/iface_method_disambig_test.ls")
+set(F "${CMAKE_CURRENT_LIST_DIR}/samples/iface_method_disambig_test.lls")
 
 set(_expected "100" "200" "hi" "<hi>" "14" "Tom" "R2" "ALL OK")
 
@@ -54,7 +54,7 @@ endif()
 message(STATUS "test_iface_method_disambig memcheck: OK")
 
 # --- negative: bare ambiguous call ---
-execute_process(COMMAND "${LS}" run "${CMAKE_CURRENT_LIST_DIR}/samples/iface_disambig_ambiguous_reject.ls"
+execute_process(COMMAND "${LS}" run "${CMAKE_CURRENT_LIST_DIR}/samples/iface_disambig_ambiguous_reject.lls"
     OUTPUT_VARIABLE no ERROR_VARIABLE ne RESULT_VARIABLE nr TIMEOUT 30)
 if(nr EQUAL 0)
     message(FATAL_ERROR "ambiguous_reject: expected compile error but got rc=0\n${no}")
@@ -65,7 +65,7 @@ endif()
 message(STATUS "test_iface_method_disambig ambiguous reject: OK")
 
 # --- negative: qualified call without a receiver ---
-execute_process(COMMAND "${LS}" run "${CMAKE_CURRENT_LIST_DIR}/samples/iface_disambig_no_recv_reject.ls"
+execute_process(COMMAND "${LS}" run "${CMAKE_CURRENT_LIST_DIR}/samples/iface_disambig_no_recv_reject.lls"
     OUTPUT_VARIABLE no2 ERROR_VARIABLE ne2 RESULT_VARIABLE nr2 TIMEOUT 30)
 if(nr2 EQUAL 0)
     message(FATAL_ERROR "no_recv_reject: expected compile error but got rc=0\n${no2}")
@@ -76,7 +76,7 @@ endif()
 message(STATUS "test_iface_method_disambig no-receiver reject: OK")
 
 # --- negative: receiver does not implement the named interface ---
-execute_process(COMMAND "${LS}" run "${CMAKE_CURRENT_LIST_DIR}/samples/iface_disambig_bad_recv_reject.ls"
+execute_process(COMMAND "${LS}" run "${CMAKE_CURRENT_LIST_DIR}/samples/iface_disambig_bad_recv_reject.lls"
     OUTPUT_VARIABLE no3 ERROR_VARIABLE ne3 RESULT_VARIABLE nr3 TIMEOUT 30)
 if(nr3 EQUAL 0)
     message(FATAL_ERROR "bad_recv_reject: expected compile error but got rc=0\n${no3}")
@@ -87,7 +87,7 @@ endif()
 message(STATUS "test_iface_method_disambig bad-receiver reject: OK")
 
 # --- positive (v2): generic type same-name coexistence (JIT + AOT + memcheck) ---
-set(GF "${CMAKE_CURRENT_LIST_DIR}/samples/iface_disambig_generic_test.ls")
+set(GF "${CMAKE_CURRENT_LIST_DIR}/samples/iface_disambig_generic_test.lls")
 set(_gexpected "in:i" "s3:i" "mk:i" "in:j" "mk:j" "ALL OK")
 
 execute_process(COMMAND "${LS}" run "${GF}"

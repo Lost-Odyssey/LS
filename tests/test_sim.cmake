@@ -1,6 +1,6 @@
 # test_sim.cmake — sim (instruction-level microarch sim + advisor, lib/sim/).
 # Runs each sim_* sample through JIT + AOT + memcheck (0/0/0).
-# LS_HOME points at the source tree so ls.exe resolves lib/sim/*.ls.
+# LS_HOME points at the source tree so ls.exe resolves lib/sim/*.lls.
 cmake_minimum_required(VERSION 3.20)
 
 set(ENV{LS_HOME} "${REPO_DIR}")
@@ -10,31 +10,31 @@ set(ENV{LS_HOME} "${REPO_DIR}")
 file(MAKE_DIRECTORY "${REPO_DIR}/tmp")
 
 set(SAMPLES
-    "sim_viz_test.ls|SIM VIZ PASS"
-    "sim_engine_test.ls|SIM ENGINE PASS"
-    "sim_advisor_test.ls|SIM ADVISOR PASS"
-    "sim_uarch_test.ls|SIM UARCH PASS"
-    "sim_pipeline_test.ls|SIM PIPELINE PASS"
-    "sim_engine2_test.ls|SIM ENGINE2 PASS"
-    "sim_catalog_test.ls|SIM CATALOG PASS"
-    "sim_analysis_test.ls|SIM ANALYSIS PASS"
-    "sim_frontend_test.ls|SIM FRONTEND PASS"
-    "sim_cmul_advice_test.ls|SIM CMUL ADVICE PASS"
-    "sim_report_test.ls|SIM REPORT PASS"
-    "sim_licm_test.ls|SIM LICM PASS"
-    "sim_earlyexit_test.ls|SIM EARLYEXIT PASS"
-    "sim_mca_oracle_test.ls|SIM MCA ORACLE PASS"
-    "sim_asmfile_test.ls|SIM ASMFILE PASS"
-    "sim_branch_test.ls|SIM BRANCH PASS"
-    "sim_batch_compare_test.ls|SIM BATCH COMPARE PASS"
-    "sim_movement_test.ls|SIM MOVEMENT PASS"
-    "sim_isa_table_test.ls|SIM ISA TABLE PASS"
-    "sim_intrinsics_test.ls|SIM INTRINSICS PASS"
-    "sim_movement_gallery_test.ls|SIM MOVEMENT GALLERY DONE"
-    "sim_mask_track_test.ls|SIM MASK TRACK PASS"
-    "sim_bfp8_walk.ls|BFP8 WALK DONE"
-    "sim_bfp8_html.ls|SIM BFP8 HTML DONE"
-    "sim_full_html.ls|SIM FULL HTML DONE"
+    "sim_viz_test.lls|SIM VIZ PASS"
+    "sim_engine_test.lls|SIM ENGINE PASS"
+    "sim_advisor_test.lls|SIM ADVISOR PASS"
+    "sim_uarch_test.lls|SIM UARCH PASS"
+    "sim_pipeline_test.lls|SIM PIPELINE PASS"
+    "sim_engine2_test.lls|SIM ENGINE2 PASS"
+    "sim_catalog_test.lls|SIM CATALOG PASS"
+    "sim_analysis_test.lls|SIM ANALYSIS PASS"
+    "sim_frontend_test.lls|SIM FRONTEND PASS"
+    "sim_cmul_advice_test.lls|SIM CMUL ADVICE PASS"
+    "sim_report_test.lls|SIM REPORT PASS"
+    "sim_licm_test.lls|SIM LICM PASS"
+    "sim_earlyexit_test.lls|SIM EARLYEXIT PASS"
+    "sim_mca_oracle_test.lls|SIM MCA ORACLE PASS"
+    "sim_asmfile_test.lls|SIM ASMFILE PASS"
+    "sim_branch_test.lls|SIM BRANCH PASS"
+    "sim_batch_compare_test.lls|SIM BATCH COMPARE PASS"
+    "sim_movement_test.lls|SIM MOVEMENT PASS"
+    "sim_isa_table_test.lls|SIM ISA TABLE PASS"
+    "sim_intrinsics_test.lls|SIM INTRINSICS PASS"
+    "sim_movement_gallery_test.lls|SIM MOVEMENT GALLERY DONE"
+    "sim_mask_track_test.lls|SIM MASK TRACK PASS"
+    "sim_bfp8_walk.lls|BFP8 WALK DONE"
+    "sim_bfp8_html.lls|SIM BFP8 HTML DONE"
+    "sim_full_html.lls|SIM FULL HTML DONE"
 )
 
 foreach(entry ${SAMPLES})

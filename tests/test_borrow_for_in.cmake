@@ -2,7 +2,7 @@
 # JIT + AOT + memcheck 0/0/0. x binds as non-escaping &T; source survives loop.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/borrow_for_in_test.ls")
+set(POS "${SAMPLE_DIR}/borrow_for_in_test.lls")
 set(_expected "BORROW FORIN PASS")
 
 # ---- positive: JIT ----

@@ -25,12 +25,14 @@ static int tests_passed = 0;
 
 static void test_resolve_simple_path(void) {
     printf("  test_resolve_simple_path...");
-    char *path = module_resolve_path("math", "tests/samples/module_test/main.ls");
+    char *path = module_resolve_path("math", "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(path);
-    /* Should end with math.ls */
-    ASSERT_TRUE(strlen(path) > 7);
-    const char *end = path + strlen(path) - 7;
-    ASSERT_TRUE(strcmp(end, "math.ls") == 0);
+    /* Should end with math.lls */
+    const char *suffix = "math.lls";
+    size_t slen = strlen(suffix);
+    ASSERT_TRUE(strlen(path) > slen);
+    const char *end = path + strlen(path) - slen;
+    ASSERT_TRUE(strcmp(end, suffix) == 0);
     free(path);
     tests_passed++;
     printf(" ok\n");
@@ -38,10 +40,10 @@ static void test_resolve_simple_path(void) {
 
 static void test_resolve_dotted_path(void) {
     printf("  test_resolve_dotted_path...");
-    char *path = module_resolve_path("std.io", "/some/project/main.ls");
+    char *path = module_resolve_path("std.io", "/some/project/main.lls");
     ASSERT_NOT_NULL(path);
     /* Should contain path separator between std and io */
-    ASSERT_TRUE(strstr(path, "io.ls") != NULL);
+    ASSERT_TRUE(strstr(path, "io.lls") != NULL);
     free(path);
     tests_passed++;
     printf(" ok\n");
@@ -107,7 +109,7 @@ static void test_load_module(void) {
 
     /* Load math module relative to the test sample */
     ModuleInfo *mod = module_load(reg, "math",
-        "tests/samples/module_test/main.ls");
+        "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(mod);
     ASSERT_TRUE(strcmp(mod->name, "math") == 0);
     ASSERT_NOT_NULL(mod->source);
@@ -116,7 +118,7 @@ static void test_load_module(void) {
 
     /* Loading again should return same entry */
     ModuleInfo *mod2 = module_load(reg, "math",
-        "tests/samples/module_test/main.ls");
+        "tests/samples/module_test/main.lls");
     ASSERT_TRUE(mod == mod2);
     ASSERT_EQ(reg->count, 1);
 
@@ -130,7 +132,7 @@ static void test_load_nonexistent_module(void) {
     ModuleRegistry *reg = module_registry_new();
 
     ModuleInfo *mod = module_load(reg, "nonexistent",
-        "tests/samples/module_test/main.ls");
+        "tests/samples/module_test/main.lls");
     ASSERT_NULL(mod);
     ASSERT_EQ(reg->count, 0);
 
@@ -179,11 +181,11 @@ static void test_checker_import_math(void) {
         "    return result\n"
         "}\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL);
     ASSERT_TRUE(ok);
 
     /* Verify module was loaded */
@@ -205,11 +207,11 @@ static void test_checker_import_nonexistent(void) {
         "import nonexistent\n"
         "def main() -> int { return 0 }\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL);
     ASSERT_FALSE(ok); /* Should fail: module not found */
 
     module_registry_free(reg);
@@ -228,11 +230,11 @@ static void test_checker_module_no_export(void) {
         "    return x\n"
         "}\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL);
     ASSERT_FALSE(ok); /* Should fail: no such export */
 
     module_registry_free(reg);
@@ -254,11 +256,11 @@ static void test_codegen_import_math(void) {
         "    return result\n"
         "}\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL));
+    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "test_module");
@@ -293,11 +295,11 @@ static void test_codegen_import_call_return(void) {
         "    return result\n"
         "}\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL));
+    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "test_module");
@@ -371,11 +373,11 @@ static void test_checker_import_module_var(void) {
         "    return a + b\n"
         "}\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL);
     ASSERT_TRUE(ok);
 
     /* Verify module was loaded and has variable exports */
@@ -400,11 +402,11 @@ static void test_checker_import_module_var_nonexistent(void) {
         "    return a\n"
         "}\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL);
     ASSERT_FALSE(ok); /* Should fail: no such export */
 
     module_registry_free(reg);
@@ -425,11 +427,11 @@ static void test_checker_import_module_var_type(void) {
         "    return x\n"
         "}\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL);
+    bool ok = checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL);
     ASSERT_TRUE(ok);
 
     module_registry_free(reg);
@@ -449,11 +451,11 @@ static void test_codegen_import_module_var(void) {
         "    return a\n"
         "}\n";
 
-    AstNode *ast = parse(src, "tests/samples/module_test/main.ls");
+    AstNode *ast = parse(src, "tests/samples/module_test/main.lls");
     ASSERT_NOT_NULL(ast);
 
     ModuleRegistry *reg = module_registry_new();
-    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.ls", reg, NULL));
+    ASSERT_TRUE(checker_check(ast, "tests/samples/module_test/main.lls", reg, NULL));
 
     CodegenContext ctx;
     codegen_init(&ctx, "test_module_var");

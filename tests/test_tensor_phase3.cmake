@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(POS "${SAMPLE_DIR}/tensor_phase3_test.ls")
+set(POS "${SAMPLE_DIR}/tensor_phase3_test.lls")
 set(_expected "TENSOR_P3 PASS")
 
 # ---- JIT ----

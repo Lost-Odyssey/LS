@@ -5,7 +5,7 @@
 # Needles avoid regex metachars ( ) [ ] so they match literally.
 cmake_minimum_required(VERSION 3.20)
 
-set(SRC "${SAMPLE_DIR}/inspect_demo.ls")
+set(SRC "${SAMPLE_DIR}/inspect_demo.lls")
 
 # ---- struct Point ----
 execute_process(COMMAND "${LS_EXE}" inspect Point "${SRC}"

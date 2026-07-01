@@ -1,0 +1,11 @@
+// rename_smoke.lls — skeleton proof for the LS→lls rename:
+//   1. `.lls` accepted as compiler input,
+//   2. a renamed stdlib module (std.sys.io → io.lls) resolves via the new
+//      dual-extension resolver,
+//   3. the binary is `lls`.
+import std.sys.io
+
+def main() -> int {
+    @print(f"lls smoke ok: {40 + 2}")
+    return 0
+}

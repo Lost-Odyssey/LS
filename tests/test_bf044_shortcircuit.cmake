@@ -4,7 +4,7 @@
 # assertion is: compiles + runs, all three branch markers print, memcheck clean.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/bf044_shortcircuit/main.ls")
+set(MAIN "${SAMPLE_DIR}/bf044_shortcircuit/main.lls")
 set(_expected "AND_OK" "OR_OK" "CHAIN_OK" "BF044 PASS")
 
 # ---- JIT ----

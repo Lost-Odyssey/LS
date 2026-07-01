@@ -7,7 +7,7 @@ else()
 endif()
 set(ENV{LS_HOME} "${_root}")
 
-set(SAMPLE "${_root}/tests/samples/regex_test.ls")
+set(SAMPLE "${_root}/tests/samples/regex_test.lls")
 
 # ---- JIT path ----
 execute_process(

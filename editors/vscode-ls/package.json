@@ -1,7 +1,7 @@
 {
   "name": "llvmscript",
-  "displayName": "LS (LLVM Script)",
-  "description": "Syntax highlighting, diagnostics, hover, go-to-definition, and completion for LS (LLVM Script) — .ls files.",
+  "displayName": "LS (Low-level Script)",
+  "description": "Syntax highlighting, diagnostics, hover, go-to-definition, and completion for LS (Low-level Script) — .lls and .ls files.",
   "version": "0.5.0",
   "publisher": "ls-lang",
   "engines": {
@@ -19,8 +19,8 @@
     "languages": [
       {
         "id": "llvmscript",
-        "aliases": ["LS (LLVM Script)", "llvmscript"],
-        "extensions": [".ls"],
+        "aliases": ["LS (Low-level Script)", "llvmscript"],
+        "extensions": [".lls", ".ls"],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -38,12 +38,12 @@
       }
     ],
     "configuration": {
-      "title": "LS (LLVM Script)",
+      "title": "LS (Low-level Script)",
       "properties": {
         "llvmscript.compilerPath": {
           "type": "string",
-          "default": "ls",
-          "description": "Path to the ls (LLVM Script) compiler binary used for diagnostics (`<compilerPath> check <file>`), hover/go-to-definition (`<compilerPath> symbol <file> <line> <col>`), and completion (`<compilerPath> complete <file>`). Defaults to resolving 'ls' on PATH."
+          "default": "lls",
+          "description": "Path to the lls (Low-level Script) compiler binary used for diagnostics (`<compilerPath> check <file>`), hover/go-to-definition (`<compilerPath> symbol <file> <line> <col>`), and completion (`<compilerPath> complete <file>`). Defaults to resolving 'lls' on PATH."
         }
       }
     }

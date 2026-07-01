@@ -1,8 +1,8 @@
 # std.atomic — lock-free atomic scalars.
 #
-#   atomic_test.ls         single-threaded correctness of every method, run
+#   atomic_test.lls         single-threaded correctness of every method, run
 #                          under --memcheck (Atomic is POD → 0/0/0).
-#   atomic_thread_test.ls  N workers hammer a shared global Atomic; the exact
+#   atomic_thread_test.lls  N workers hammer a shared global Atomic; the exact
 #                          final count proves real cross-thread atomicity.
 #                          NO --memcheck (tracker not thread-safe — like task);
 #                          soundness/correctness via repeated AOT runs.
@@ -15,7 +15,7 @@ endif()
 set(SDIR "${CMAKE_CURRENT_LIST_DIR}/samples")
 
 # ============================ single-threaded ============================
-set(ST "${SDIR}/atomic_test.ls")
+set(ST "${SDIR}/atomic_test.lls")
 
 # JIT
 execute_process(COMMAND "${LS}" run "${ST}"
@@ -50,7 +50,7 @@ if(NOT ar EQUAL 0 OR NOT ao MATCHES "ATOMIC OK" OR ao MATCHES "ATOMIC FAIL")
 endif()
 
 # ============================== threaded ================================
-set(TT "${SDIR}/atomic_thread_test.ls")
+set(TT "${SDIR}/atomic_thread_test.lls")
 
 # JIT
 execute_process(COMMAND "${LS}" run "${TT}"

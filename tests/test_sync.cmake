@@ -1,8 +1,8 @@
 # std.sync — Mutex(T) + SpinLock(T).
 #
-#   sync_test.ls         single-threaded with/raw/trylock + clean teardown,
+#   sync_test.lls         single-threaded with/raw/trylock + clean teardown,
 #                        run under --memcheck (0/0/0).
-#   sync_thread_test.ls  N workers do a non-atomic RMW on a shared guarded
+#   sync_thread_test.lls  N workers do a non-atomic RMW on a shared guarded
 #                        counter; the lock serialises them → exact final count.
 #                        NO --memcheck (tracker not thread-safe — like task);
 #                        correctness via repeated AOT runs.
@@ -15,7 +15,7 @@ endif()
 set(SDIR "${CMAKE_CURRENT_LIST_DIR}/samples")
 
 # ============================ single-threaded ============================
-set(ST "${SDIR}/sync_test.ls")
+set(ST "${SDIR}/sync_test.lls")
 
 execute_process(COMMAND "${LS}" run "${ST}"
     OUTPUT_VARIABLE so ERROR_VARIABLE se RESULT_VARIABLE sr TIMEOUT 30)
@@ -47,7 +47,7 @@ if(NOT ar EQUAL 0 OR NOT ao MATCHES "SYNC OK" OR ao MATCHES "SYNC FAIL")
 endif()
 
 # ============================== threaded ================================
-set(TT "${SDIR}/sync_thread_test.ls")
+set(TT "${SDIR}/sync_thread_test.lls")
 
 execute_process(COMMAND "${LS}" run "${TT}"
     OUTPUT_VARIABLE to ERROR_VARIABLE te RESULT_VARIABLE tr TIMEOUT 60)
@@ -75,7 +75,7 @@ endforeach()
 # More workers than cores + a long critical section → waiters spin past the
 # pause-only threshold and fall through to __cpu_yield. Must stay exact AND
 # terminate (no priority-inversion deadlock under the adaptive backoff).
-set(SC "${SDIR}/spin_contend_test.ls")
+set(SC "${SDIR}/spin_contend_test.lls")
 
 execute_process(COMMAND "${LS}" run "${SC}"
     OUTPUT_VARIABLE co ERROR_VARIABLE ce2 RESULT_VARIABLE cr2 TIMEOUT 60)

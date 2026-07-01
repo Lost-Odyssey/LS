@@ -626,13 +626,13 @@ static void test_hello_sample(void) {
         "    return 0\n"
         "}\n";
 
-    AstNode *ast = parse(src, "hello.ls");
+    AstNode *ast = parse(src, "hello.lls");
     ASSERT(ast != NULL, "hello.ls equivalent should parse without errors");
     ast_free(ast);
 
     /* Also try reading the actual file if available */
-    FILE *f = fopen("tests/samples/hello.ls", "rb");
-    if (f == NULL) f = fopen("../tests/samples/hello.ls", "rb");
+    FILE *f = fopen("tests/samples/hello.lls", "rb");
+    if (f == NULL) f = fopen("../tests/samples/hello.lls", "rb");
     if (f != NULL) {
         fseek(f, 0, SEEK_END);
         long size = ftell(f);
@@ -642,7 +642,7 @@ static void test_hello_sample(void) {
             size_t rd = fread(source, 1, (size_t)size, f);
             source[rd] = '\0';
             fclose(f);
-            AstNode *ast2 = parse(source, "hello.ls");
+            AstNode *ast2 = parse(source, "hello.lls");
             free(source);
             ASSERT(ast2 != NULL, "hello.ls file should parse without errors");
             ast_free(ast2);

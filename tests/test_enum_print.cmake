@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SRC "${SAMPLE_DIR}/enum_print_test.ls")
+set(SRC "${SAMPLE_DIR}/enum_print_test.lls")
 
 # Substrings that must appear (exact rendered forms).
 set(_expect

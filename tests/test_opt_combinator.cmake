@@ -7,7 +7,7 @@
 #    a compile-time move error (non-zero exit, "moved" diagnostic).
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/opt_combinator_test.ls")
+set(POS "${SAMPLE_DIR}/opt_combinator_test.lls")
 set(_expected "OPTCOMB PASS")
 
 # ---- positive: JIT ----
@@ -53,7 +53,7 @@ endif()
 message(STATUS "opt_combinator positive memcheck: OK clean")
 
 # ---- negative: unwrap() on None must abort ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/opt_combinator_panic.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/opt_combinator_panic.lls"
     OUTPUT_VARIABLE p_out ERROR_VARIABLE p_err RESULT_VARIABLE p_rc)
 if(p_rc EQUAL 0)
     message(FATAL_ERROR "opt_combinator_panic: expected non-zero exit (abort)\n${p_out}")
@@ -67,7 +67,7 @@ endif()
 message(STATUS "opt_combinator_panic: aborted as expected (rc=${p_rc})")
 
 # ---- negative: use-after-move must be rejected at compile time ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/opt_combinator_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/opt_combinator_reject.lls"
     OUTPUT_VARIABLE r_out ERROR_VARIABLE r_err RESULT_VARIABLE r_rc)
 if(r_rc EQUAL 0)
     message(FATAL_ERROR "opt_combinator_reject: expected non-zero exit (move error)\n${r_out}")
@@ -78,7 +78,7 @@ endif()
 message(STATUS "opt_combinator_reject: rejected as expected (rc=${r_rc})")
 
 # ---- C2b negative: map/and_then/map_err need an explicit result type param ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/c2b_no_typearg.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/c2b_no_typearg.lls"
     OUTPUT_VARIABLE t_out ERROR_VARIABLE t_err RESULT_VARIABLE t_rc)
 if(t_rc EQUAL 0)
     message(FATAL_ERROR "c2b_no_typearg: expected non-zero exit (missing type arg)\n${t_out}")
@@ -89,7 +89,7 @@ endif()
 message(STATUS "c2b_no_typearg: rejected as expected (rc=${t_rc})")
 
 # ---- C2b negative: map_err is Result-only; on an Option it is rejected ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/c2b_map_err_option.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/c2b_map_err_option.lls"
     OUTPUT_VARIABLE me_out ERROR_VARIABLE me_err RESULT_VARIABLE me_rc)
 if(me_rc EQUAL 0)
     message(FATAL_ERROR "c2b_map_err_option: expected non-zero exit (Result-only)\n${me_out}")

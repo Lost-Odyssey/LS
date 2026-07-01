@@ -4,8 +4,8 @@
 # 正向 JIT + AOT + memcheck；负向 `&x` 传 `&!T` 仍编译拒绝。
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/s13_borrow_gaps_test.ls")
-set(NEG "${SAMPLE_DIR}/s13_amp_mutref_reject.ls")
+set(POS "${SAMPLE_DIR}/s13_borrow_gaps_test.lls")
+set(NEG "${SAMPLE_DIR}/s13_amp_mutref_reject.lls")
 set(_expected "S13_BORROW_GAPS PASS")
 
 # ---- JIT ----

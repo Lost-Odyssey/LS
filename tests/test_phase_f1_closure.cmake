@@ -9,7 +9,7 @@
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/closure_f1_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/closure_f1_test.lls")
 
 set(_expected "6" "99" "4" "hello world")
 

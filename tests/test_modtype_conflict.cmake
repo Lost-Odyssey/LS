@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.20)
 
 macro(expect_conflict sample label)
     execute_process(
-        COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${sample}/main.ls"
+        COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${sample}/main.lls"
         OUTPUT_VARIABLE _out  ERROR_VARIABLE _err  RESULT_VARIABLE _rc
     )
     if(_rc EQUAL 0)

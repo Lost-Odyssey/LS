@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/operator_overload_demo.ls")
+set(SAMPLE "${SAMPLE_DIR}/operator_overload_demo.lls")
 
 # c=(4,6) e=(3,8) a==b=false a!=b=true a<b=true a>b=false total=(8,12)
 set(_expected "4.000000" "6.000000" "3.000000" "8.000000" "false" "true" "12.000000")

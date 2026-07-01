@@ -18,7 +18,7 @@ foreach(_case ${_cases})
     list(GET _parts 0 _name)
     list(GET _parts 1 _expect)
     execute_process(
-        COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${_name}.ls"
+        COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${_name}.lls"
         OUTPUT_VARIABLE _out
         ERROR_VARIABLE  _err
         RESULT_VARIABLE _rc

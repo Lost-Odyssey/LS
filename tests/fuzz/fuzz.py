@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Mutation fuzzer for the LS compiler front-end.
 
-Feeds mutated .ls sources to `ls <verb> <file>` and flags any exit code that is
+Feeds mutated .lls sources to `ls <verb> <file>` and flags any exit code that is
 NOT a clean result. The crash oracle (established empirically):
 
     exit 0  -> compiled / checked OK
@@ -10,7 +10,7 @@ NOT a clean result. The crash oracle (established empirically):
     other   -> CRASH (segfault / abort / assertion / heap corruption)
     timeout -> HANG
 
-Seeds come from tests/samples/*.ls. Mutations are byte- and token-level. Any
+Seeds come from tests/samples/*.lls. Mutations are byte- and token-level. Any
 crashing input is saved verbatim under tests/fuzz/crashes/ for triage.
 
 Usage:
@@ -45,7 +45,7 @@ INTERESTING = [
 def load_seeds():
     seeds = []
     for fn in os.listdir(SAMPLES):
-        if fn.endswith(".ls"):
+        if fn.endswith(".lls"):
             try:
                 with open(os.path.join(SAMPLES, fn), "rb") as f:
                     seeds.append(f.read())
@@ -123,7 +123,7 @@ def main():
 
     rng = random.Random(args.seed)
     env = dict(os.environ); env["LS_HOME"] = ROOT
-    tmp = os.path.join(CRASH_DIR, "_cur.ls")
+    tmp = os.path.join(CRASH_DIR, "_cur.lls")
     crashes, hangs = {}, 0
     t0 = time.time()
     for it in range(args.iters):
@@ -143,12 +143,12 @@ def main():
         if rc == "timeout":
             hangs += 1
             h = hashlib.sha1(src).hexdigest()[:12]
-            with open(os.path.join(CRASH_DIR, "hang_%s.ls" % h), "wb") as f:
+            with open(os.path.join(CRASH_DIR, "hang_%s.lls" % h), "wb") as f:
                 f.write(src)
         elif rc is not None:
             h = hashlib.sha1(src).hexdigest()[:12]
             crashes.setdefault(rc, []).append(h)
-            with open(os.path.join(CRASH_DIR, "crash_%d_%s.ls" % (rc & 0xffffffff, h)), "wb") as f:
+            with open(os.path.join(CRASH_DIR, "crash_%d_%s.lls" % (rc & 0xffffffff, h)), "wb") as f:
                 f.write(src)
         if (it+1) % 100 == 0:
             print("  %d/%d  crashes=%d hangs=%d  (%.0f/s)" %
@@ -159,7 +159,7 @@ def main():
     print("crashes: %d unique inputs across %d exit codes; hangs: %d" %
           (sum(len(v) for v in crashes.values()), len(crashes), hangs))
     for rc, hs in sorted(crashes.items()):
-        print("  exit 0x%08X (%d): %d inputs, e.g. crash_%d_%s.ls" %
+        print("  exit 0x%08X (%d): %d inputs, e.g. crash_%d_%s.lls" %
               (rc & 0xffffffff, rc, len(hs), rc & 0xffffffff, hs[0]))
     return 1 if (crashes or hangs) else 0
 

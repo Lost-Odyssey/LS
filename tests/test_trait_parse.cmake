@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/trait_parse_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/trait_parse_test.lls")
 
 set(_expected "3" "4" "42")
 
@@ -59,7 +59,7 @@ file(REMOVE "${aot_bin}")
 
 # ---- Negative: duplicate trait name should error ----
 execute_process(
-    COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/trait_dup_reject.ls"
+    COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/trait_dup_reject.lls"
     OUTPUT_VARIABLE dup_out
     ERROR_VARIABLE  dup_err
     RESULT_VARIABLE dup_rc

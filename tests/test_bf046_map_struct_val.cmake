@@ -3,7 +3,7 @@
 # statement-end drop. Named values must not double-drop. JIT + AOT + memcheck.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/bf046_map_struct_val/main.ls")
+set(MAIN "${SAMPLE_DIR}/bf046_map_struct_val/main.lls")
 set(_expected "a=V1 b=V2" "e=PAYLOAD" "BF046 PASS")
 
 # ---- JIT ----

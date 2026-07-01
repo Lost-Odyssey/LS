@@ -1,8 +1,8 @@
 # test_module_dedup_spelling.cmake — B-5: dedup imports by resolved file, not spelling
 #
 # Two import spellings resolve to the SAME stdlib file:
-#   `import std.text.strconv`  → lib/std/text/strconv.ls (resolve Try 1)
-#   `import text.strconv`      → lib/std/text/strconv.ls (resolve Try 2)
+#   `import std.text.strconv`  → lib/std/text/strconv.lls (resolve Try 1)
+#   `import text.strconv`      → lib/std/text/strconv.lls (resolve Try 2)
 # Pre-fix the registry keyed on the spelling, so the module was parsed / checked /
 # emitted twice — once under the `std_text_strconv__` prefix and once under
 # `text_strconv__`. The fix dedups by the resolved file path and keys the module
@@ -14,7 +14,7 @@
 # memcheck clean.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/module_dedup_spelling.ls")
+set(MAIN "${SAMPLE_DIR}/module_dedup_spelling.lls")
 set(_expected "ff" "MODULE_DEDUP PASS")
 
 # ---- JIT ----

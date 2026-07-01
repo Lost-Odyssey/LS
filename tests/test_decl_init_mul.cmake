@@ -6,7 +6,7 @@
 # Regression assertion: compiles + runs (JIT + AOT), markers print, memcheck clean.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/decl_init_mul.ls")
+set(MAIN "${SAMPLE_DIR}/decl_init_mul.lls")
 set(_expected "42" "84" "DECL_MUL PASS")
 
 # ---- JIT ----

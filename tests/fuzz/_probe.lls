@@ -1,0 +1,10 @@
+import std.core.vec
+import std.core.str
+def main() -> int {
+    Vec(Str) v = []
+    v.push("hello")
+    v.push("world")
+    Str s = v.get(0).unwrap_or("")
+    @print(s)
+    return 0
+}

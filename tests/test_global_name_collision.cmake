@@ -3,7 +3,7 @@
 # bug). A user global named `fmt` / `Strlit` / `rawstr` squatted the same LLVM name
 # as an internal private constant; the name-based global init-store + cleanup then
 # wrote a Str into / destroyed a .rodata format string. Fix: internal hints moved
-# to the dotted ".ls.*" namespace (disjoint from user identifiers).
+# to the dotted ".lls.*" namespace (disjoint from user identifiers).
 #
 # Verifies JIT + AOT exact output, then memcheck 0/0/0.
 # Required: LS_EXE, SAMPLE, WORK_DIR

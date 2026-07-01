@@ -4,7 +4,7 @@
 # plus per-element drop at exit (memcheck 0 leak / 0 dfree).
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/global_vec_lit/main.ls")
+set(MAIN "${SAMPLE_DIR}/global_vec_lit/main.lls")
 set(_expected "sum=6" "sum2=10" "words=FOOBAR" "tags=XY" "GLOBAL_VEC_LIT PASS")
 
 # ---- JIT ----

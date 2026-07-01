@@ -8,14 +8,14 @@
 #
 # Variables (set by CMakeLists.txt):
 #   LS_EXE     — path to ls.exe
-#   SAMPLE_DIR — directory containing the .ls fixtures
+#   SAMPLE_DIR — directory containing the .lls fixtures
 #   WORK_DIR   — scratch directory for AOT outputs
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
 # ---- 1) Positive: alias + Block declarations + run ----
-set(pos "${SAMPLE_DIR}/type_alias_block_test.ls")
+set(pos "${SAMPLE_DIR}/type_alias_block_test.lls")
 execute_process(
     COMMAND "${LS_EXE}" run "${pos}"
     OUTPUT_VARIABLE pos_out
@@ -33,7 +33,7 @@ endif()
 message(STATUS "phase_a positive: OK")
 
 # ---- 2) Negative: Block in return position rejected ----
-set(neg1 "${SAMPLE_DIR}/block_return_reject.ls")
+set(neg1 "${SAMPLE_DIR}/block_return_reject.lls")
 execute_process(
     COMMAND "${LS_EXE}" compile "${neg1}" -o "${WORK_DIR}/_should_not_exist.exe"
     OUTPUT_VARIABLE n1_out
@@ -53,7 +53,7 @@ endif()
 message(STATUS "phase_a return-pos reject: OK")
 
 # ---- 3) Negative: Block in struct field rejected ----
-set(neg2 "${SAMPLE_DIR}/block_field_reject.ls")
+set(neg2 "${SAMPLE_DIR}/block_field_reject.lls")
 execute_process(
     COMMAND "${LS_EXE}" compile "${neg2}" -o "${WORK_DIR}/_should_not_exist2.exe"
     OUTPUT_VARIABLE n2_out

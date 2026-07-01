@@ -6,7 +6,7 @@
 # Output is platform/LLVM-version dependent; assert only stable anchors.
 cmake_minimum_required(VERSION 3.20)
 
-set(SRC "${SAMPLE_DIR}/irasm_demo.ls")
+set(SRC "${SAMPLE_DIR}/irasm_demo.lls")
 
 # ---- ir square ----
 execute_process(COMMAND "${LS_EXE}" ir square "${SRC}"

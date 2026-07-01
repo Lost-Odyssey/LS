@@ -1,11 +1,11 @@
 # test_rwlock_spinguard.cmake — std.sync RwLock(T) + SpinGuard(T) data guards.
 #
-#   rwlock_test.ls / spinguard_test.ls    single-threaded read/write (RwLock) and
+#   rwlock_test.lls / spinguard_test.lls    single-threaded read/write (RwLock) and
 #                   lock/get (SpinGuard) over Vec/Str/Map (+POD for SpinGuard);
 #                   JIT + AOT + memcheck 0/0/0.
 #   rwlock_thread_test / spinguard_thread_test  8 workers on a shared global →
 #                   exact 40000. NO --memcheck (tracker not thread-safe); AOT x8.
-#   rwlock_reader_reject.ls   a reader mutating through &T → compile error.
+#   rwlock_reader_reject.lls   a reader mutating through &T → compile error.
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)
@@ -15,7 +15,7 @@ set(SDIR "${CMAKE_CURRENT_LIST_DIR}/samples")
 
 # ---- helper: single-threaded JIT + memcheck + AOT, expecting a marker ----
 function(run_single name marker)
-    set(F "${SDIR}/${name}.ls")
+    set(F "${SDIR}/${name}.lls")
     execute_process(COMMAND "${LS}" run "${F}"
         OUTPUT_VARIABLE so ERROR_VARIABLE se RESULT_VARIABLE sr TIMEOUT 30)
     if(NOT sr EQUAL 0 OR NOT so MATCHES "${marker} OK" OR so MATCHES "${marker} FAIL")
@@ -40,7 +40,7 @@ endfunction()
 
 # ---- helper: threaded JIT + AOT x8, expecting a marker ----
 function(run_threaded name marker)
-    set(F "${SDIR}/${name}.ls")
+    set(F "${SDIR}/${name}.lls")
     execute_process(COMMAND "${LS}" run "${F}"
         OUTPUT_VARIABLE to ERROR_VARIABLE te RESULT_VARIABLE tr TIMEOUT 60)
     if(NOT tr EQUAL 0 OR NOT to MATCHES "${marker} OK" OR to MATCHES "${marker} FAIL")
@@ -66,7 +66,7 @@ run_threaded(rwlock_thread_test RWLOCK)
 run_threaded(spinguard_thread_test SPINGUARD)
 
 # ---- negative: reader mutating through &T must be rejected ----
-set(NR "${SDIR}/rwlock_reader_reject.ls")
+set(NR "${SDIR}/rwlock_reader_reject.lls")
 execute_process(COMMAND "${LS}" run "${NR}"
     OUTPUT_VARIABLE nro ERROR_VARIABLE nre RESULT_VARIABLE nrr TIMEOUT 30)
 if(nrr EQUAL 0)

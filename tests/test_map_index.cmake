@@ -4,7 +4,7 @@
 #    diagnostic and a non-zero exit; the post-access line must NOT run.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/map_index_test.ls")
+set(POS "${SAMPLE_DIR}/map_index_test.lls")
 set(_expected "MAP_INDEX PASS")
 
 # ---- positive: JIT ----
@@ -50,7 +50,7 @@ endif()
 message(STATUS "map_index positive memcheck: OK clean")
 
 # ---- negative: reading a missing key via m[k] must abort ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/map_index_panic.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/map_index_panic.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "map_index_panic: expected non-zero exit (abort)\n${n_out}")

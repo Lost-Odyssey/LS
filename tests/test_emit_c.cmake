@@ -9,7 +9,7 @@ if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
 set(SDIR "${CMAKE_CURRENT_LIST_DIR}/samples")
-set(KERNEL "${SDIR}/emit_c_kernel.ls")
+set(KERNEL "${SDIR}/emit_c_kernel.lls")
 set(OUT "${CMAKE_BINARY_DIR}/emit_c_kernel.c")
 
 # --- emit ---
@@ -66,7 +66,7 @@ else()
 endif()
 
 # --- reject path: out-of-subset function must fail, write nothing ---
-set(BAD "${SDIR}/emit_c_reject.ls")
+set(BAD "${SDIR}/emit_c_reject.lls")
 set(BADOUT "${CMAKE_BINARY_DIR}/emit_c_reject_should_not_exist.c")
 file(REMOVE "${BADOUT}")
 execute_process(COMMAND "${LS}" emit-c "${BAD}" -o "${BADOUT}"
@@ -111,7 +111,7 @@ if(or2 EQUAL 0)
 endif()
 
 # --- subset extension: POD structs + fixed arrays + pointer-based forward ---
-set(STRUCTSRC "${SDIR}/emit_c_struct.ls")
+set(STRUCTSRC "${SDIR}/emit_c_struct.lls")
 set(STRUCTOUT "${CMAKE_BINARY_DIR}/emit_c_struct.c")
 execute_process(COMMAND "${LS}" emit-c "${STRUCTSRC}" -o "${STRUCTOUT}"
     OUTPUT_VARIABLE sto ERROR_VARIABLE ste RESULT_VARIABLE str TIMEOUT 30)

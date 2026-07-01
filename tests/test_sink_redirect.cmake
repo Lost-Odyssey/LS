@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SRC "${SAMPLE_DIR}/sink_redirect_test.ls")
+set(SRC "${SAMPLE_DIR}/sink_redirect_test.lls")
 
 execute_process(COMMAND "${LS_EXE}" run --memcheck "${SRC}"
     OUTPUT_VARIABLE mc_out ERROR_VARIABLE mc_err RESULT_VARIABLE mc_rc)

@@ -8,7 +8,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 set(LS      "${LS_EXE}")
-set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/closure_f7_stress_test.ls")
+set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/closure_f7_stress_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/f7_stress_test.exe")
 set(MC_EXE  "${CMAKE_BINARY_DIR}/f7_stress_mc_test.exe")
 

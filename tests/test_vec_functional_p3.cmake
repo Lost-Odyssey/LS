@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
-set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/vec_functional_p3_test.ls")
+set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/vec_functional_p3_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/vec_functional_p3.exe")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")

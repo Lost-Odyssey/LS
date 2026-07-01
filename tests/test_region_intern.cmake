@@ -3,7 +3,7 @@
 #   JIT + AOT + memcheck (0 leak / 0 double-free / 0 invalid free).
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/region_intern_test.ls")
+set(POS "${SAMPLE_DIR}/region_intern_test.lls")
 set(_expected "REGION INTERN PASS")
 
 # ---- positive: JIT ----

@@ -3,7 +3,7 @@
 # present path), Vec value (has_drop group-by), equivalence with get-then-set.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/map_upsert_test.ls")
+set(POS "${SAMPLE_DIR}/map_upsert_test.lls")
 set(_expected "MAP UPSERT PASS")
 
 # ---- positive: JIT ----

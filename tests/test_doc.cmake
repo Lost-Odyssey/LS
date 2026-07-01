@@ -7,7 +7,7 @@ set(LS "${LS_EXE}")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
-set(F "${CMAKE_CURRENT_LIST_DIR}/samples/doc_fixture.ls")
+set(F "${CMAKE_CURRENT_LIST_DIR}/samples/doc_fixture.lls")
 
 execute_process(COMMAND "${LS}" doc "${F}"
     OUTPUT_VARIABLE out ERROR_VARIABLE err RESULT_VARIABLE rc TIMEOUT 30)

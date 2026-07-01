@@ -1,11 +1,11 @@
-# Phase S.P3 — std/strconv.ls: format / int_to_hex / int_to_oct / int_to_bin /
+# Phase S.P3 — std/strconv.lls: format / int_to_hex / int_to_oct / int_to_bin /
 #               float_fixed / to_string / to_string_f
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
 
 cmake_minimum_required(VERSION 3.20)
 
 # Point LS_HOME at the project root so `import std.strconv` resolves to
-# std/strconv.ls under the source tree.
+# std/strconv.lls under the source tree.
 if(DEFINED ENV{CMAKE_SOURCE_DIR_OVERRIDE})
     set(_ls_root "$ENV{CMAKE_SOURCE_DIR_OVERRIDE}")
 else()
@@ -14,7 +14,7 @@ endif()
 set(ENV{LS_HOME} "${_ls_root}")
 
 set(LS      "${LS_EXE}")
-set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/strconv_test.ls")
+set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/strconv_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/strconv_test.exe")
 set(MC_EXE  "${CMAKE_BINARY_DIR}/strconv_mc_test.exe")
 

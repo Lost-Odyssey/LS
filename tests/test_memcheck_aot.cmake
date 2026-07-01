@@ -1,12 +1,12 @@
 # test_memcheck_aot.cmake — driven by `cmake -P` from CTest.
 #
 # Verifies the AOT --memcheck path end-to-end:
-#   1. ls.exe compile --memcheck memcheck_phase_a.ls -> tmp.exe (links ls_memcheck.lib)
+#   1. ls.exe compile --memcheck memcheck_phase_a.lls -> tmp.exe (links ls_memcheck.lib)
 #   2. tmp.exe runs and ls_mc_report prints "OK clean" via atexit
 #
 # Required cache variables (passed by add_test):
 #   LS_EXE    — path to the ls.exe / ls binary just built
-#   SAMPLE    — absolute path to the .ls sample to compile
+#   SAMPLE    — absolute path to the .lls sample to compile
 #   WORK_DIR  — directory to drop tmp.exe in (cleaned up at end)
 
 if(NOT LS_EXE OR NOT SAMPLE OR NOT WORK_DIR)

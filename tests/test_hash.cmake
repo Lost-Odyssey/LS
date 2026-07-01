@@ -1,4 +1,4 @@
-# M-H (std.map prereq): the `Hash` trait + FxHash hasher (std/hash.ls).
+# M-H (std.map prereq): the `Hash` trait + FxHash hasher (std/hash.lls).
 # Verifies stable/distinct hashes, high-bit distribution under Fibonacci scatter,
 # and `where T: Hash` trait-bound dispatch. JIT + memcheck 0/0/0 + AOT, plus a
 # negative case (a type without `impl Hash` must be rejected at compile time).
@@ -6,8 +6,8 @@
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")
-set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/hash_test.ls")
-set(NEG "${CMAKE_CURRENT_LIST_DIR}/samples/hash_neg_test.ls")
+set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/hash_test.lls")
+set(NEG "${CMAKE_CURRENT_LIST_DIR}/samples/hash_neg_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/hash.exe")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")

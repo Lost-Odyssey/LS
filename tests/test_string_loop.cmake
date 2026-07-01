@@ -2,7 +2,7 @@
 # stack overflow. n=200000 would crash before the entry-block-alloca fix.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/string_loop_test.ls")
+set(MAIN "${SAMPLE_DIR}/string_loop_test.lls")
 set(_expected "STRING_LOOP PASS")
 
 execute_process(COMMAND "${LS_EXE}" run "${MAIN}"

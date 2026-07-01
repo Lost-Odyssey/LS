@@ -1,31 +1,31 @@
 # test_oran.cmake — oran.cus (O-RAN CUS-plane) library: parse + build + filter +
 # stats + render. Runs every oran_* sample through JIT + AOT + memcheck (0/0/0).
-# LS_HOME points at the source tree so ls.exe resolves lib/oran/cus.ls.
+# LS_HOME points at the source tree so ls.exe resolves lib/oran/cus.lls.
 cmake_minimum_required(VERSION 3.20)
 
 set(ENV{LS_HOME} "${REPO_DIR}")
 
 set(SAMPLES
-    "oran_p1_test.ls|ORAN P1 PASS"
-    "oran_p2_bitcursor_test.ls|ORAN P2 BITCURSOR PASS"
-    "oran_p3_st1_test.ls|ORAN P3 ST1 PASS"
-    "oran_p4_st9_test.ls|ORAN P4 ST9 PASS"
-    "oran_p4_multi_test.ls|ORAN P4 MULTI PASS"
-    "oran_p4_stats_test.ls|ORAN P4 STATS PASS"
-    "oran_p5_hexinput_test.ls|ORAN P5 HEXINPUT PASS"
-    "oran_p5_render_test.ls|ORAN P5 RENDER PASS"
-    "oran_p7_secext_test.ls|ORAN P7 SE PASS"
-    "oran_p8_uplane_test.ls|ORAN P8 UPLANE PASS"
-    "oran_modcomp_test.ls|ORAN MODCOMP PASS"
-    "oran_p9_special_test.ls|ORAN SPECIAL PASS"
-    "oran_b1_se_test.ls|ORAN B1 SE PASS"
-    "oran_b2_resolve_test.ls|ORAN B2 RESOLVE PASS"
-    "oran_b3_se1_test.ls|ORAN B3 SE1 PASS"
-    "oran_b4_se11_test.ls|ORAN B4 SE11 PASS"
-    "oran_pcap_test.ls|ORAN PCAP PASS"
-    "oran_pcap_file_test.ls|ORAN PCAP FILE PASS"
-    "oran_o1o2_test.ls|ORAN O1O2 PASS"
-    "oran_analyze.ls|ORAN ANALYZE PASS"
+    "oran_p1_test.lls|ORAN P1 PASS"
+    "oran_p2_bitcursor_test.lls|ORAN P2 BITCURSOR PASS"
+    "oran_p3_st1_test.lls|ORAN P3 ST1 PASS"
+    "oran_p4_st9_test.lls|ORAN P4 ST9 PASS"
+    "oran_p4_multi_test.lls|ORAN P4 MULTI PASS"
+    "oran_p4_stats_test.lls|ORAN P4 STATS PASS"
+    "oran_p5_hexinput_test.lls|ORAN P5 HEXINPUT PASS"
+    "oran_p5_render_test.lls|ORAN P5 RENDER PASS"
+    "oran_p7_secext_test.lls|ORAN P7 SE PASS"
+    "oran_p8_uplane_test.lls|ORAN P8 UPLANE PASS"
+    "oran_modcomp_test.lls|ORAN MODCOMP PASS"
+    "oran_p9_special_test.lls|ORAN SPECIAL PASS"
+    "oran_b1_se_test.lls|ORAN B1 SE PASS"
+    "oran_b2_resolve_test.lls|ORAN B2 RESOLVE PASS"
+    "oran_b3_se1_test.lls|ORAN B3 SE1 PASS"
+    "oran_b4_se11_test.lls|ORAN B4 SE11 PASS"
+    "oran_pcap_test.lls|ORAN PCAP PASS"
+    "oran_pcap_file_test.lls|ORAN PCAP FILE PASS"
+    "oran_o1o2_test.lls|ORAN O1O2 PASS"
+    "oran_analyze.lls|ORAN ANALYZE PASS"
 )
 
 foreach(entry ${SAMPLES})

@@ -970,7 +970,8 @@ static void module_name_of(const char *path, char *out, size_t cap) {
         else out[j++] = *q;
     }
     out[j] = 0;
-    if (j >= 3 && strcmp(out + j - 3, ".ls") == 0) out[j - 3] = 0;  /* strip .ls */
+    if (j >= 4 && strcmp(out + j - 4, ".lls") == 0) out[j - 4] = 0;        /* strip .lls */
+    else if (j >= 3 && strcmp(out + j - 3, ".ls") == 0) out[j - 3] = 0;    /* strip legacy .ls */
 }
 
 static int g_doc_items;  /* counts emitted API items (for --check / summary) */
@@ -1536,7 +1537,7 @@ static int cmd_doc(int argc, char *argv[]) {
 
 static void usage(void) {
     fprintf(stderr,
-        "Usage: ls <command> [options]\n"
+        "Usage: lls <command> [options]\n"
         "\n"
         "Commands:\n"
         "  tokens <file>              Print token stream\n"

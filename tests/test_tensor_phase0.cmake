@@ -4,7 +4,7 @@
 # 显式 .copy() 独立、as_ptr 传真 C 函数（CRT memcpy）。JIT + AOT + memcheck 0/0/0。
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/tensor_phase0_test.ls")
+set(POS "${SAMPLE_DIR}/tensor_phase0_test.lls")
 set(_expected "TENSOR_P0 PASS")
 
 # ---- JIT ----

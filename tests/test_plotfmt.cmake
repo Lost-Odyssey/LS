@@ -7,7 +7,7 @@
 #
 # Required cache variables (passed by add_test):
 #   LS_EXE    — path to the ls binary
-#   SAMPLE    — absolute path to the .ls sample
+#   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   TEST_NAME — test name (for error messages / AOT binary name)
 #   MARKER    — success marker the sample prints (default "PLOTFMT")

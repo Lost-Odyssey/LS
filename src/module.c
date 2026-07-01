@@ -117,11 +117,28 @@ static int ls_executable_dir(char *out, size_t out_sz) {
     return 0;
 }
 
-/* Resolve an import path to an absolute .ls file path under LS_HOME.
+/* Try `<base>.lls` (official extension) then `<base>.ls` (legacy, still
+   accepted). Returns a malloc'd path to the first that exists on disk, or
+   NULL if neither does. Caller owns the returned string. */
+static char *resolve_source_ext(const char *base) {
+    static const char *const exts[] = { ".lls", ".ls" };
+    for (int i = 0; i < 2; i++) {
+        size_t n = strlen(base) + strlen(exts[i]) + 1;
+        char *p = (char *)malloc_safe(n);
+        snprintf(p, n, "%s%s", base, exts[i]);
+        FILE *f = fopen_retry(p, "rb");
+        if (f != NULL) { fclose(f); return p; }
+        free(p);
+    }
+    return NULL;
+}
+
+/* Resolve an import path to an absolute source-file path under LS_HOME.
    Resolution order (stdlib lives under <LS_HOME>/lib/, Zig-style):
-     1. <LS_HOME>/lib/<rel_path>.ls   — dotted std imports: std.time → lib/std/time.ls
-     2. <LS_HOME>/lib/std/<rel>.ls    — short names: io → lib/std/io.ls, path → lib/std/path.ls
-   LS_HOME defaults to the directory containing ls.exe.
+     1. <LS_HOME>/lib/<rel_path>       — dotted std imports: std.time → lib/std/time
+     2. <LS_HOME>/lib/std/<rel>        — short names: io → lib/std/io, path → lib/std/path
+   Each location tries the `.lls` extension first, then legacy `.ls`.
+   LS_HOME defaults to the directory containing the lls executable.
    Returns NULL if no file is found. Caller owns the returned string. */
 static char *resolve_stdlib_path(const char *import_path) {
     /* Convert dots to path separators */
@@ -145,25 +162,24 @@ static char *resolve_stdlib_path(const char *import_path) {
         return NULL;
     }
 
-    /* Try 1: <root>/lib/<rel_path>.ls  (std.time → lib/std/time.ls) */
-    size_t full_len = strlen(root) + 1 + 4 /*"lib/"*/ + strlen(rel_path) + 3 + 1;
-    char *full = (char *)malloc_safe(full_len);
-    snprintf(full, full_len, "%s%slib%s%s.ls",
+    /* Try 1: <root>/lib/<rel_path>.{lls,ls}  (std.time → lib/std/time) */
+    size_t base1_len = strlen(root) + 1 + 4 /*"lib/"*/ + strlen(rel_path) + 1;
+    char *base1 = (char *)malloc_safe(base1_len);
+    snprintf(base1, base1_len, "%s%slib%s%s",
              root, PATH_SEP_STR, PATH_SEP_STR, rel_path);
-    FILE *f = fopen_retry(full, "rb");
-    if (f != NULL) { fclose(f); free(rel_path); return full; }
-    free(full);
+    char *hit1 = resolve_source_ext(base1);
+    free(base1);
+    if (hit1 != NULL) { free(rel_path); return hit1; }
 
-    /* Try 2: <root>/lib/std/<rel_path>.ls  (io → lib/std/io.ls, path → lib/std/path.ls) */
-    size_t full2_len = strlen(root) + 1 + 8 /*"lib/std/"*/ + strlen(rel_path) + 3 + 1;
-    char *full2 = (char *)malloc_safe(full2_len);
-    snprintf(full2, full2_len, "%s%slib%sstd%s%s.ls",
+    /* Try 2: <root>/lib/std/<rel_path>.{lls,ls}  (io → lib/std/io) */
+    size_t base2_len = strlen(root) + 1 + 8 /*"lib/std/"*/ + strlen(rel_path) + 1;
+    char *base2 = (char *)malloc_safe(base2_len);
+    snprintf(base2, base2_len, "%s%slib%sstd%s%s",
              root, PATH_SEP_STR, PATH_SEP_STR, PATH_SEP_STR, rel_path);
     free(rel_path);
-    f = fopen_retry(full2, "rb");
-    if (f != NULL) { fclose(f); return full2; }
-    free(full2);
-    return NULL;
+    char *hit2 = resolve_source_ext(base2);
+    free(base2);
+    return hit2;
 }
 
 /* ---- Public API ---- */
@@ -224,14 +240,24 @@ char *module_resolve_path(const char *import_path, const char *current_file) {
     }
     rel_path[path_len] = '\0';
 
-    /* Build full path: dir/rel_path.ls */
-    size_t full_len = strlen(dir) + 1 + strlen(rel_path) + 3 + 1;
-    char *full = (char *)malloc_safe(full_len);
-    snprintf(full, full_len, "%s%s%s.ls", dir, PATH_SEP_STR, rel_path);
+    /* Build base path dir/rel_path, then try `.lls` (official) then `.ls`.
+       If neither exists yet, fall back to the canonical `.lls` spelling: this
+       keeps the historical "always returns a constructed path" contract (the
+       three callers fopen-check the result and fall back on non-existence). */
+    size_t base_len = strlen(dir) + 1 + strlen(rel_path) + 1;
+    char *base = (char *)malloc_safe(base_len);
+    snprintf(base, base_len, "%s%s%s", dir, PATH_SEP_STR, rel_path);
 
     free(dir);
     free(rel_path);
-    return full;
+    char *hit = resolve_source_ext(base);
+    if (hit == NULL) {
+        size_t n = strlen(base) + 5;  /* ".lls" + NUL */
+        hit = (char *)malloc_safe(n);
+        snprintf(hit, n, "%s.lls", base);
+    }
+    free(base);
+    return hit;
 }
 
 char *module_resolve_import_path(const char *import_path, const char *current_file) {

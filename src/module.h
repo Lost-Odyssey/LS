@@ -60,8 +60,9 @@ bool module_user_file_exists(const char *import_path, const char *current_file);
 /* Resolve `import_path` to the file that module_load() would actually parse:
    user-relative-to-current_file first (module_resolve_path), falling back to
    <LS_HOME>/lib/... (the same private resolve_stdlib_path() module_load()
-   itself falls back to). Unlike module_resolve_path(), this checks existence
-   and returns NULL if neither location has the file — callers that just want
+   itself falls back to). Unlike module_resolve_path() (which only searches the
+   importer's own directory), this also falls back to <LS_HOME>/lib/ and
+   returns NULL if neither location has the file — callers that just want
    "the real path or nothing" (e.g. `ls symbol`'s import expansion) don't need
    to duplicate module_load()'s two-step order or its registry bookkeeping.
    Caller owns the returned string. */

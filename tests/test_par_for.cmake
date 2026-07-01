@@ -1,10 +1,10 @@
 # Closure-foundation Phase A — capture a Block by-clone (and par_for on top).
 #
-#   closure_capture_block.ls  single-threaded: a closure captures another Block
+#   closure_capture_block.lls  single-threaded: a closure captures another Block
 #                             (POD-env and has_drop/Str-env) and calls it
 #                             repeatedly; the source Block stays live. Run under
 #                             --memcheck (0/0/0) to prove env clone/drop balance.
-#   par_for_test.ls           threaded: std.thread.parallel_for runs a Block(int) body in
+#   par_for_test.lls           threaded: std.thread.parallel_for runs a Block(int) body in
 #                             parallel; each chunk closure captures the body
 #                             by-clone. Workers write disjoint slots; join then
 #                             verify. NO --memcheck (tracker not thread-safe —
@@ -18,7 +18,7 @@ endif()
 set(SDIR "${CMAKE_CURRENT_LIST_DIR}/samples")
 
 # ===================== single-threaded capture-Block (memcheck) =====================
-set(CB "${SDIR}/closure_capture_block.ls")
+set(CB "${SDIR}/closure_capture_block.lls")
 
 # JIT
 execute_process(COMMAND "${LS}" run "${CB}"
@@ -53,7 +53,7 @@ if(NOT car EQUAL 0 OR NOT cao MATCHES "A PASS" OR cao MATCHES "A FAIL")
 endif()
 
 # ============================== par_for (threaded) ==============================
-set(PF "${SDIR}/par_for_test.ls")
+set(PF "${SDIR}/par_for_test.lls")
 
 # JIT
 execute_process(COMMAND "${LS}" run "${PF}"

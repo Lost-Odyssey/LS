@@ -3,7 +3,7 @@
 # __ls_set_args, so proc.args() returned empty. JIT already worked.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/proc_args_test.ls")
+set(MAIN "${SAMPLE_DIR}/proc_args_test.lls")
 set(_expected "argc_extra=3" "arg\\[0\\]=foo" "arg\\[1\\]=bar" "arg\\[2\\]=baz")
 
 # ---- JIT ----

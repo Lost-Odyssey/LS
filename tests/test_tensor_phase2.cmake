@@ -7,8 +7,8 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(POS "${SAMPLE_DIR}/tensor_phase2_test.ls")
-set(NEG "${SAMPLE_DIR}/tensor_multi_index_reject.ls")
+set(POS "${SAMPLE_DIR}/tensor_phase2_test.lls")
+set(NEG "${SAMPLE_DIR}/tensor_multi_index_reject.lls")
 set(_expected "TENSOR_P2 PASS")
 
 # ---- JIT ----

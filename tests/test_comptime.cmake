@@ -7,7 +7,7 @@
 #  * negative: fields(non-struct) is a clean compile error, not a crash.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/comptime_test.ls")
+set(POS "${SAMPLE_DIR}/comptime_test.lls")
 set(_expected "COMPTIME STEP2 DONE")
 
 # ---- positive: JIT ----
@@ -55,7 +55,7 @@ endif()
 message(STATUS "comptime memcheck: OK clean")
 
 # ---- negative: fields(non-struct) is a clean compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_reject.lls"
     OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
 if(n_rc EQUAL 0)
     message(FATAL_ERROR "comptime_reject: expected compile error, got success\n${n_out}")
@@ -70,7 +70,7 @@ endif()
 message(STATUS "comptime_reject: rejected as expected")
 
 # ---- negative: a non-constant comptime if condition is a clean compile error ----
-execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_if_reject.ls"
+execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/comptime_if_reject.lls"
     OUTPUT_VARIABLE n2_out ERROR_VARIABLE n2_err RESULT_VARIABLE n2_rc)
 if(n2_rc EQUAL 0)
     message(FATAL_ERROR "comptime_if_reject: expected compile error, got success\n${n2_out}")

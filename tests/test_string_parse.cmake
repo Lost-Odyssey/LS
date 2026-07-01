@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 set(LS      "${LS_EXE}")
-set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/string_parse_test.ls")
+set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/string_parse_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/string_parse_test.exe")
 set(MC_EXE  "${CMAKE_BINARY_DIR}/string_parse_mc_test.exe")
 

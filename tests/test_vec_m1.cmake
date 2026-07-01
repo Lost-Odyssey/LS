@@ -6,7 +6,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 set(LS      "${LS_EXE}")
-set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/rawvec_m1_test.ls")
+set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/rawvec_m1_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/rawvec_m1.exe")
 set(MC_EXE  "${CMAKE_BINARY_DIR}/rawvec_m1_mc.exe")
 

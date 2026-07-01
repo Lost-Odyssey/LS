@@ -4,7 +4,7 @@
 #  * JIT + AOT + memcheck; inspect shows to_value/from_value
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/derive_serialize.ls")
+set(POS "${SAMPLE_DIR}/derive_serialize.lls")
 
 execute_process(COMMAND "${LS_EXE}" run "${POS}"
     OUTPUT_VARIABLE j_out ERROR_VARIABLE j_err RESULT_VARIABLE j_rc)

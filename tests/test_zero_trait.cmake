@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(POS "${SAMPLE_DIR}/zero_trait_smoke.ls")
+set(POS "${SAMPLE_DIR}/zero_trait_smoke.lls")
 set(_expected "ZERO_TRAIT PASS")
 
 # ---- JIT ----

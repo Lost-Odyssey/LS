@@ -4,7 +4,7 @@
 #    "out of bounds" diagnostic and a non-zero exit; the post-access line must NOT run.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/vec_oob_test.ls")
+set(POS "${SAMPLE_DIR}/vec_oob_test.lls")
 set(_expected "VEC_OOB PASS")
 
 # ---- positive: JIT ----
@@ -55,7 +55,7 @@ message(STATUS "vec_oob positive memcheck: OK clean")
 foreach(neg "vec_oob_panic_read" "vec_oob_panic_write"
             "vec_oob_panic_insert" "vec_oob_panic_remove" "vec_oob_panic_swap"
             "vec_oob_panic_truncate" "vec_oob_panic_resize")
-    execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${neg}.ls"
+    execute_process(COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/${neg}.lls"
         OUTPUT_VARIABLE n_out ERROR_VARIABLE n_err RESULT_VARIABLE n_rc)
     if(n_rc EQUAL 0)
         message(FATAL_ERROR "vec_oob ${neg}: expected non-zero exit (abort)\n${n_out}")

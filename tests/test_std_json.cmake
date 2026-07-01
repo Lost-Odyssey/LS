@@ -10,7 +10,7 @@ get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
 # ---- Test A: json_basic_test (14 tests) ----
-set(BASIC "${SAMPLE_DIR}/json_basic_test.ls")
+set(BASIC "${SAMPLE_DIR}/json_basic_test.lls")
 
 set(_basic_expected
     "PASS 1" "PASS 2" "PASS 3" "PASS 4" "PASS 5"
@@ -68,7 +68,7 @@ message(STATUS "json_basic AOT: OK")
 file(REMOVE "${aot_bin}")
 
 # ---- Test B: json_infra_test (5 tests) ----
-set(INFRA "${SAMPLE_DIR}/json_infra_test.ls")
+set(INFRA "${SAMPLE_DIR}/json_infra_test.lls")
 
 set(_infra_expected "PASS 1" "PASS 2" "PASS 3" "PASS 4" "PASS 5" "done")
 
@@ -117,7 +117,7 @@ message(STATUS "json_infra AOT: OK")
 file(REMOVE "${infra_aot_bin}")
 
 # ---- Test C: json_internal_test (stringify) ----
-set(INTERNAL "${SAMPLE_DIR}/json_internal_test.ls")
+set(INTERNAL "${SAMPLE_DIR}/json_internal_test.lls")
 
 execute_process(
     COMMAND "${LS_EXE}" run "${INTERNAL}"
@@ -209,7 +209,7 @@ message(STATUS "json_internal memcheck: OK clean")
 # ---- Test G: json_file_test (navigation API + file round-trip, 13 tests) ----
 # Exercises: array_len / object_len / object_has / object_keys + io.write_file /
 # io.read_file round-trip + pretty-print re-parse + large array (100 elems)
-set(FILE_TEST "${SAMPLE_DIR}/json_file_test.ls")
+set(FILE_TEST "${SAMPLE_DIR}/json_file_test.lls")
 
 set(_file_expected
     "PASS 1" "PASS 2a" "PASS 2b" "PASS 2c" "PASS 2d" "PASS 2e"
@@ -276,7 +276,7 @@ endif()
 message(STATUS "json_file memcheck: OK clean")
 
 # ---- Test E: e2e JSON file read + iterate ----
-set(E2E "${SAMPLE_DIR}/json_e2e_test.ls")
+set(E2E "${SAMPLE_DIR}/json_e2e_test.lls")
 set(E2E_DATA "${SAMPLE_DIR}/json_e2e_data.json")
 
 # Note: uses --memcheck to verify 0 double-free / 0 leak (Phase H fix, bugs/20).
@@ -311,7 +311,7 @@ endif()
 message(STATUS "json_e2e JIT: OK")
 
 # ---- Test H: json_file_io_test (json.read_file / json.write_file convenience wrappers) ----
-set(FILE_IO "${SAMPLE_DIR}/json_file_io_test.ls")
+set(FILE_IO "${SAMPLE_DIR}/json_file_io_test.lls")
 get_filename_component(_src_root "${SAMPLE_DIR}" DIRECTORY)
 get_filename_component(_src_root "${_src_root}" DIRECTORY)
 

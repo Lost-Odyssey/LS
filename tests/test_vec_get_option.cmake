@@ -4,7 +4,7 @@
 # JIT + AOT + memcheck; FAIL anywhere in output vetoes.
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/vec_get_option_test.ls")
+set(POS "${SAMPLE_DIR}/vec_get_option_test.lls")
 set(_expected "VEC_GET_OPTION PASS")
 
 # ---- JIT ----

@@ -4,7 +4,7 @@
 # syntax. JIT + AOT + memcheck.
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/modtype_enum_variants/main.ls")
+set(MAIN "${SAMPLE_DIR}/modtype_enum_variants/main.lls")
 set(_expected "ra=1 rb=10 a1=1 b1=10 m=100" "MODTYPE_ENUM PASS")
 
 # ---- JIT ----

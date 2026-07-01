@@ -7,12 +7,12 @@
 #     distinct module-prefixed symbols (previously both mangled to tag(int) →
 #     silent-wrong, second module's body lost).
 #
-# Fixture: tests/samples/l0091_modgen/{main,mod_a,mod_b}.ls
+# Fixture: tests/samples/l0091_modgen/{main,mod_a,mod_b}.lls
 #   main asserts: mod_a.use_int()==7 (A1), mod_a.run_tag()==1 & mod_b.run_tag()==2
 #   (A2), and a root-module generic id(int)(42)==42 (unprefixed, unaffected).
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/l0091_modgen/main.ls")
+set(MAIN "${SAMPLE_DIR}/l0091_modgen/main.lls")
 set(_expected "u=7 ta=1 tb=2 r=42" "L0091 PASS")
 
 # ---- 1. JIT ----

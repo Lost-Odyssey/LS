@@ -4,7 +4,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 set(LS      "${LS_EXE}")
-set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/rawvec_realloc_test.ls")
+set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/rawvec_realloc_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/rawvec_realloc.exe")
 set(MC_EXE  "${CMAKE_BINARY_DIR}/rawvec_realloc_mc.exe")
 

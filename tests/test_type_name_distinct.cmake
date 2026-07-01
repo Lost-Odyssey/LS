@@ -6,7 +6,7 @@ set(LS "${LS_EXE}")
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")
 endif()
-set(F "${CMAKE_CURRENT_LIST_DIR}/samples/type_name_distinct_reject.ls")
+set(F "${CMAKE_CURRENT_LIST_DIR}/samples/type_name_distinct_reject.lls")
 
 execute_process(COMMAND "${LS}" run "${F}"
     OUTPUT_VARIABLE so ERROR_VARIABLE se RESULT_VARIABLE sr TIMEOUT 30)

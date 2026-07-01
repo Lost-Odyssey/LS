@@ -1,5 +1,5 @@
 # test_bare_math_import_reject.cmake — the built-in math module moved to the
-# canonical std.core.math path. Bare `import math` (with no user math.ls present)
+# canonical std.core.math path. Bare `import math` (with no user math.lls present)
 # must be a clean compile error that points at the new path.
 # Required: LS_EXE, SAMPLE
 cmake_minimum_required(VERSION 3.20)

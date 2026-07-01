@@ -3,7 +3,7 @@
 # AOT garbage / JIT lucky-UAF. JIT + AOT + memcheck (the AOT path is the key one).
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/bf045_string_param/main.ls")
+set(MAIN "${SAMPLE_DIR}/bf045_string_param/main.lls")
 set(_expected "x=HELLO y=WORLD w=WIDGET" "BF045 PASS")
 
 # ---- JIT ----

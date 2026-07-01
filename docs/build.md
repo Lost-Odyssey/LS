@@ -16,7 +16,7 @@ llvm_map_components_to_libnames(LLVM_LIBS
     core support irreader executionengine orcjit native passes target mc
 )
 
-# MSVC: 静态 CRT，ls.exe 完全独立
+# MSVC: 静态 CRT，lls.exe 完全独立
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     add_compile_options(/W4 /WX /utf-8)
@@ -49,7 +49,7 @@ enable_testing()
 
 ## 产出说明
 
-- `ls.exe`：静态链接 LLVM + 静态 CRT（/MT），约 50-150MB，可独立分发
+- `lls.exe`：静态链接 LLVM + 静态 CRT（/MT），约 50-150MB，可独立分发
 - AOT 产出的用户可执行文件：完全独立，不含 LLVM 代码
 
 ## 启用 CG_DEBUG

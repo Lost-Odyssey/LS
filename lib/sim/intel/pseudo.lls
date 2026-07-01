@@ -1,0 +1,341 @@
+// sim.intel.pseudo — compute-class operation as C-like code, GENERATED from the
+// Intel Intrinsics Guide operation pseudocode (transformed, not verbatim) by
+// references/intrinsics/gen_pseudo.py. "" = no clean conversion (complex helper /
+// DEFINE / nested CASE) -> gallery falls back to summary-only.
+import std.core.str
+
+def pseudo_of(&Str mn) -> Str {
+    Str m = mn.copy()
+    if m.eq?("kmovb") { return "dst = ZeroExtend32(a[0]);" }
+    if m.eq?("kmovd") { return "k[31:0] = MEM[j];" }
+    if m.eq?("kmovq") { return "k[63:0] = MEM[j];" }
+    if m.eq?("kmovw") { return "k[15:0] = a[0];" }
+    if m.eq?("vaddpd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = a[j] + b[j];\n}" }
+    if m.eq?("vaddps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = a[j] + b[j];\n}" }
+    if m.eq?("vaddsd") { return "dst[0] = a[0] + b[0];" }
+    if m.eq?("vaddss") { return "dst[0] = a[0] + b[0];" }
+    if m.eq?("vcvtdq2pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_Int32_To_FP64(a[j]);\n}" }
+    if m.eq?("vcvtdq2ph") { return "FOR j = 0 TO 15;\ndst.fp16[j] = Convert_Int32_To_FP16(a.dword[j]);\n}" }
+    if m.eq?("vcvtdq2ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Convert_Int32_To_FP32(a[j]);\n}" }
+    if m.eq?("vcvtne2ps2bf16") { return "for (j = 0; j <= 31; j++) {\n  if (j < 16) {\n    t = b.fp32[j];\n  } else {\n    t = a.fp32[j-16];\n  }\n  dst.word[j] = Convert_FP32_To_BF16(t);\n}" }
+    if m.eq?("vcvtneps2bf16") { return "for (j = 0; j <= 15; j++) {\n  dst.word[j] = Convert_FP32_To_BF16(a.fp32[j]);\n}" }
+    if m.eq?("vcvtpd2dq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_Int32(a[j]);\n}" }
+    if m.eq?("vcvtpd2ph") { return "FOR j = 0 TO 7;\ndst.fp16[j] = Convert_FP64_To_FP16(a.fp64[j]);\n}" }
+    if m.eq?("vcvtpd2ps") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_FP32(a[j]);\n}" }
+    if m.eq?("vcvtpd2qq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_Int64(a[j]);\n}" }
+    if m.eq?("vcvtpd2udq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_UInt32(a[j]);\n}" }
+    if m.eq?("vcvtpd2uqq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_UInt64(a[j]);\n}" }
+    if m.eq?("vcvtph2dq") { return "FOR j = 0 TO 15;\ndst.dword[j] = Convert_FP16_To_Int32(a.fp16[j]);\n}" }
+    if m.eq?("vcvtph2pd") { return "for (j = 0; j <= 7; j++) {\n  dst.fp64[j] = Convert_FP16_To_FP64(a.fp16[j]);\n}" }
+    if m.eq?("vcvtph2ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Convert_FP16_To_FP32(a[j]);\n}" }
+    if m.eq?("vcvtph2psx") { return "for (j = 0; j <= 15; j++) {\n  dst.fp32[j] = Convert_FP16_To_FP32(a.fp16[j]);\n}" }
+    if m.eq?("vcvtph2qq") { return "FOR j = 0 TO 7;\ndst.qword[j] = Convert_FP16_To_Int64(a.fp16[j]);\n}" }
+    if m.eq?("vcvtph2udq") { return "FOR j = 0 TO 15;\ndst.dword[j] = Convert_FP16_To_UInt32(a.fp16[j]);\n}" }
+    if m.eq?("vcvtph2uqq") { return "FOR j = 0 TO 7;\ndst.qword[j] = Convert_FP16_To_UInt64(a.fp16[j]);\n}" }
+    if m.eq?("vcvtph2uw") { return "FOR j = 0 TO 31;\ndst.word[j] = Convert_FP16_To_UInt16(a.fp16[j]);\n}" }
+    if m.eq?("vcvtph2w") { return "FOR j = 0 TO 31;\ndst.word[j] = Convert_FP16_To_Int16(a.fp16[j]);\n}" }
+    if m.eq?("vcvtps2dq") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Convert_FP32_To_Int32(a[j]);\n}" }
+    if m.eq?("vcvtps2pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP32_To_FP64(a[j]);\n}" }
+    if m.eq?("vcvtps2ph") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Convert_FP32_To_FP16(a[j]);\n}" }
+    if m.eq?("vcvtps2phx") { return "for (j = 0; j <= 15; j++) {\n  dst.fp16[j] = Convert_FP32_To_FP16(a.fp32[j]);\n}" }
+    if m.eq?("vcvtps2qq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP32_To_Int64(a[j]);\n}" }
+    if m.eq?("vcvtps2udq") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Convert_FP32_To_UInt32(a[j]);\n}" }
+    if m.eq?("vcvtps2uqq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP32_To_UInt64(a[j]);\n}" }
+    if m.eq?("vcvtqq2pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_Int64_To_FP64(a[j]);\n}" }
+    if m.eq?("vcvtqq2ph") { return "FOR j = 0 TO 7;\ndst.fp16[j] = Convert_Int64_To_FP16(a.qword[j]);\n}" }
+    if m.eq?("vcvtqq2ps") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_Int64_To_FP32(a[j]);\n}" }
+    if m.eq?("vcvtsd2sh") { return "dst.fp16[0] = Convert_FP64_To_FP16(b.fp64[0]);" }
+    if m.eq?("vcvtsd2si") { return "dst[0] = Convert_FP64_To_Int32(a[0]);" }
+    if m.eq?("vcvtsd2ss") { return "dst[0] = Convert_FP64_To_FP32(b[0]);" }
+    if m.eq?("vcvtsd2usi") { return "dst[0] = Convert_FP64_To_UInt32(a[0]);" }
+    if m.eq?("vcvtsh2sd") { return "dst.fp64[0] = Convert_FP16_To_FP64(b.fp16[0]);" }
+    if m.eq?("vcvtsh2si") { return "dst.dword = Convert_FP16_To_Int32(a.fp16[0]);" }
+    if m.eq?("vcvtsh2ss") { return "dst.fp32[0] = Convert_FP16_To_FP32(b.fp16[0]);" }
+    if m.eq?("vcvtsh2usi") { return "dst.dword = Convert_FP16_To_UInt32(a.fp16[0]);" }
+    if m.eq?("vcvtsi2sd") { return "dst[0] = Convert_Int64_To_FP64(b[0]);" }
+    if m.eq?("vcvtsi2sh") { return "dst.fp16[0] = Convert_Int32_To_FP16(b.fp32[0]);" }
+    if m.eq?("vcvtsi2ss") { return "dst[0] = Convert_Int32_To_FP32(b[0]);" }
+    if m.eq?("vcvtss2sd") { return "dst[0] = Convert_FP32_To_FP64(b[0]);" }
+    if m.eq?("vcvtss2sh") { return "dst.fp16[0] = Convert_FP32_To_FP16(b.fp32[0]);" }
+    if m.eq?("vcvtss2si") { return "dst[0] = Convert_FP32_To_Int32(a[0]);" }
+    if m.eq?("vcvtss2usi") { return "dst[0] = Convert_FP32_To_UInt32(a[0]);" }
+    if m.eq?("vcvttpd2dq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_Int32_Truncate(a[j]);\n}" }
+    if m.eq?("vcvttpd2qq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_Int64_Truncate(a[j]);\n}" }
+    if m.eq?("vcvttpd2udq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_UInt32_Truncate(a[j]);\n}" }
+    if m.eq?("vcvttpd2uqq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP64_To_UInt64_Truncate(a[j]);\n}" }
+    if m.eq?("vcvttph2dq") { return "FOR j = 0 TO 15;\ndst.dword[j] = Convert_FP16_To_Int32_Truncate(a.fp16[j]);\n}" }
+    if m.eq?("vcvttph2qq") { return "FOR j = 0 TO 7;\ndst.qword[j] = Convert_FP16_To_Int64_Truncate(a.fp16[j]);\n}" }
+    if m.eq?("vcvttph2udq") { return "FOR j = 0 TO 15;\ndst.dword[j] = Convert_FP16_To_UInt32_Truncate(a.fp16[j]);\n}" }
+    if m.eq?("vcvttph2uqq") { return "FOR j = 0 TO 7;\ndst.qword[j] = Convert_FP16_To_UInt64_Truncate(a.fp16[j]);\n}" }
+    if m.eq?("vcvttph2uw") { return "FOR j = 0 TO 31;\ndst.word[j] = Convert_FP16_To_UInt16_Truncate(a.fp16[j]);\n}" }
+    if m.eq?("vcvttph2w") { return "FOR j = 0 TO 31;\ndst.word[j] = Convert_FP16_To_Int16_Truncate(a.fp16[j]);\n}" }
+    if m.eq?("vcvttps2dq") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Convert_FP32_To_Int32_Truncate(a[j]);\n}" }
+    if m.eq?("vcvttps2qq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP32_To_Int64_Truncate(a[j]);\n}" }
+    if m.eq?("vcvttps2udq") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Convert_FP32_To_UInt32_Truncate(a[j]);\n}" }
+    if m.eq?("vcvttps2uqq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_FP32_To_UInt64_Truncate(a[j]);\n}" }
+    if m.eq?("vcvttsd2si") { return "dst[0] = Convert_FP64_To_Int32_Truncate(a[0]);" }
+    if m.eq?("vcvttsd2usi") { return "dst[0] = Convert_FP64_To_UInt32_Truncate(a[0]);" }
+    if m.eq?("vcvttsh2si") { return "dst.dword = Convert_FP16_To_Int32_Truncate(a.fp16[0]);" }
+    if m.eq?("vcvttsh2usi") { return "dst.dword = Convert_FP16_To_UInt32_Truncate(a.fp16[0]);" }
+    if m.eq?("vcvttss2si") { return "dst[0] = Convert_FP32_To_Int32_Truncate(a[0]);" }
+    if m.eq?("vcvttss2usi") { return "dst[0] = Convert_FP32_To_UInt32_Truncate(a[0]);" }
+    if m.eq?("vcvtudq2pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_Int64_To_FP64(a[j]);\n}" }
+    if m.eq?("vcvtudq2ph") { return "FOR j = 0 TO 15;\ndst.fp16[j] = Convert_Int32_To_FP16(a.dword[j]);\n}" }
+    if m.eq?("vcvtudq2ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Convert_Int32_To_FP32(a[j]);\n}" }
+    if m.eq?("vcvtuqq2pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_Int64_To_FP64(a[j]);\n}" }
+    if m.eq?("vcvtuqq2ph") { return "FOR j = 0 TO 7;\ndst.fp16[j] = Convert_Int64_To_FP16(a.qword[j]);\n}" }
+    if m.eq?("vcvtuqq2ps") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Convert_Int64_To_FP32(a[j]);\n}" }
+    if m.eq?("vcvtusi2sd") { return "dst[0] = Convert_Int64_To_FP64(b[0]);" }
+    if m.eq?("vcvtusi2sh") { return "dst.fp16[0] = Convert_Int32_To_FP16(b.fp32[0]);" }
+    if m.eq?("vcvtusi2ss") { return "dst[0] = Convert_Int32_To_FP32(b[0]);" }
+    if m.eq?("vcvtuw2ph") { return "FOR j = 0 TO 31;\ndst.fp16[j] = Convert_Int16_To_FP16(a.word[j]);\n}" }
+    if m.eq?("vcvtw2ph") { return "FOR j = 0 TO 31;\ndst.fp16[j] = Convert_Int16_To_FP16(a.word[j]);\n}" }
+    if m.eq?("vdivpd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = a[j] / b[j];\n}" }
+    if m.eq?("vdivps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = a[j] / b[j];\n}" }
+    if m.eq?("vdivsd") { return "dst[0] = a[0] / b[0];" }
+    if m.eq?("vdivss") { return "dst[0] = a[0] / b[0];" }
+    if m.eq?("vfmadd132pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = (a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfmadd132ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n}" }
+    if m.eq?("vfmadd132ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfmadd132sd") { return "dst[0] = (a[0] * b[0]) + c[0];" }
+    if m.eq?("vfmadd132sh") { return "dst.fp16[0] = (a.fp16[0] * b.fp16[0]) + c.fp16[0];" }
+    if m.eq?("vfmadd132ss") { return "dst[0] = (a[0] * b[0]) + c[0];" }
+    if m.eq?("vfmadd213pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = (a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfmadd213ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n}" }
+    if m.eq?("vfmadd213ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfmadd213sd") { return "dst[0] = (a[0] * b[0]) + c[0];" }
+    if m.eq?("vfmadd213sh") { return "dst.fp16[0] = (a.fp16[0] * b.fp16[0]) + c.fp16[0];" }
+    if m.eq?("vfmadd213ss") { return "dst[0] = (a[0] * b[0]) + c[0];" }
+    if m.eq?("vfmadd231pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = (a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfmadd231ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n}" }
+    if m.eq?("vfmadd231ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfmadd231sd") { return "dst[0] = (a[0] * b[0]) + c[0];" }
+    if m.eq?("vfmadd231sh") { return "dst.fp16[0] = (a.fp16[0] * b.fp16[0]) + c.fp16[0];" }
+    if m.eq?("vfmadd231ss") { return "dst[0] = (a[0] * b[0]) + c[0];" }
+    if m.eq?("vfmaddsub132pd") { return "for (j = 0; j <= 7; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) - c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) + c[j];\n  }\n}" }
+    if m.eq?("vfmaddsub132ph") { return "for (j = 0; j <= 31; j++) {\n  if (((j & 1) == 0)) {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n  } else {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n  }\n}" }
+    if m.eq?("vfmaddsub132ps") { return "for (j = 0; j <= 15; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) - c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) + c[j];\n  }\n}" }
+    if m.eq?("vfmaddsub213pd") { return "for (j = 0; j <= 7; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) - c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) + c[j];\n  }\n}" }
+    if m.eq?("vfmaddsub213ph") { return "for (j = 0; j <= 31; j++) {\n  if (((j & 1) == 0)) {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n  } else {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n  }\n}" }
+    if m.eq?("vfmaddsub213ps") { return "for (j = 0; j <= 15; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) - c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) + c[j];\n  }\n}" }
+    if m.eq?("vfmaddsub231pd") { return "for (j = 0; j <= 7; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) - c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) + c[j];\n  }\n}" }
+    if m.eq?("vfmaddsub231ph") { return "for (j = 0; j <= 31; j++) {\n  if (((j & 1) == 0)) {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n  } else {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n  }\n}" }
+    if m.eq?("vfmaddsub231ps") { return "for (j = 0; j <= 15; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) - c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) + c[j];\n  }\n}" }
+    if m.eq?("vfmsub132pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = (a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfmsub132ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n}" }
+    if m.eq?("vfmsub132ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfmsub132sd") { return "dst[0] = (a[0] * b[0]) - c[0];" }
+    if m.eq?("vfmsub132sh") { return "dst.fp16[0] = (a.fp16[0] * b.fp16[0]) - c.fp16[0];" }
+    if m.eq?("vfmsub132ss") { return "dst[0] = (a[0] * b[0]) - c[0];" }
+    if m.eq?("vfmsub213pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = (a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfmsub213ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n}" }
+    if m.eq?("vfmsub213ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfmsub213sd") { return "dst[0] = (a[0] * b[0]) - c[0];" }
+    if m.eq?("vfmsub213sh") { return "dst.fp16[0] = (a.fp16[0] * b.fp16[0]) - c.fp16[0];" }
+    if m.eq?("vfmsub213ss") { return "dst[0] = (a[0] * b[0]) - c[0];" }
+    if m.eq?("vfmsub231pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = (a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfmsub231ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n}" }
+    if m.eq?("vfmsub231ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfmsub231sd") { return "dst[0] = (a[0] * b[0]) - c[0];" }
+    if m.eq?("vfmsub231sh") { return "dst.fp16[0] = (a.fp16[0] * b.fp16[0]) - c.fp16[0];" }
+    if m.eq?("vfmsub231ss") { return "dst[0] = (a[0] * b[0]) - c[0];" }
+    if m.eq?("vfmsubadd132pd") { return "for (j = 0; j <= 7; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) + c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) - c[j];\n  }\n}" }
+    if m.eq?("vfmsubadd132ph") { return "for (j = 0; j <= 31; j++) {\n  if (((j & 1) == 0)) {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n  } else {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n  }\n}" }
+    if m.eq?("vfmsubadd132ps") { return "for (j = 0; j <= 15; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) + c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) - c[j];\n  }\n}" }
+    if m.eq?("vfmsubadd213pd") { return "for (j = 0; j <= 7; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) + c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) - c[j];\n  }\n}" }
+    if m.eq?("vfmsubadd213ph") { return "for (j = 0; j <= 31; j++) {\n  if (((j & 1) == 0)) {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n  } else {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n  }\n}" }
+    if m.eq?("vfmsubadd213ps") { return "for (j = 0; j <= 15; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) + c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) - c[j];\n  }\n}" }
+    if m.eq?("vfmsubadd231pd") { return "for (j = 0; j <= 7; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) + c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) - c[j];\n  }\n}" }
+    if m.eq?("vfmsubadd231ph") { return "for (j = 0; j <= 31; j++) {\n  if (((j & 1) == 0)) {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) + c.fp16[j];\n  } else {\n    dst.fp16[j] = (a.fp16[j] * b.fp16[j]) - c.fp16[j];\n  }\n}" }
+    if m.eq?("vfmsubadd231ps") { return "for (j = 0; j <= 15; j++) {\n  if (((j & 1) == 0)) {\n    dst[j] = (a[j] * b[j]) + c[j];\n  } else {\n    dst[j] = (a[j] * b[j]) - c[j];\n  }\n}" }
+    if m.eq?("vfnmadd132pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = -(a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfnmadd132ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = -(a.fp16[j] * b.fp16[j]) + c.fp16[j];\n}" }
+    if m.eq?("vfnmadd132ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = -(a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfnmadd132sd") { return "dst[0] = -(a[0] * b[0]) + c[0];" }
+    if m.eq?("vfnmadd132sh") { return "dst.fp16[0] = -(a.fp16[0] * b.fp16[0]) + c.fp16[0];" }
+    if m.eq?("vfnmadd132ss") { return "dst[0] = -(a[0] * b[0]) + c[0];" }
+    if m.eq?("vfnmadd213pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = -(a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfnmadd213ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = -(a.fp16[j] * b.fp16[j]) + c.fp16[j];\n}" }
+    if m.eq?("vfnmadd213ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = -(a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfnmadd213sd") { return "dst[0] = -(a[0] * b[0]) + c[0];" }
+    if m.eq?("vfnmadd213sh") { return "dst.fp16[0] = -(a.fp16[0] * b.fp16[0]) + c.fp16[0];" }
+    if m.eq?("vfnmadd213ss") { return "dst[0] = -(a[0] * b[0]) + c[0];" }
+    if m.eq?("vfnmadd231pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = -(a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfnmadd231ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = -(a.fp16[j] * b.fp16[j]) + c.fp16[j];\n}" }
+    if m.eq?("vfnmadd231ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = -(a[j] * b[j]) + c[j];\n}" }
+    if m.eq?("vfnmadd231sd") { return "dst[0] = -(a[0] * b[0]) + c[0];" }
+    if m.eq?("vfnmadd231sh") { return "dst.fp16[0] = -(a.fp16[0] * b.fp16[0]) + c.fp16[0];" }
+    if m.eq?("vfnmadd231ss") { return "dst[0] = -(a[0] * b[0]) + c[0];" }
+    if m.eq?("vfnmsub132pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = -(a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfnmsub132ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = -(a.fp16[j] * b.fp16[j]) - c.fp16[j];\n}" }
+    if m.eq?("vfnmsub132ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = -(a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfnmsub132sd") { return "dst[0] = -(a[0] * b[0]) - c[0];" }
+    if m.eq?("vfnmsub132sh") { return "dst.fp16[0] = -(a.fp16[0] * b.fp16[0]) - c.fp16[0];" }
+    if m.eq?("vfnmsub132ss") { return "dst[0] = -(a[0] * b[0]) - c[0];" }
+    if m.eq?("vfnmsub213pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = -(a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfnmsub213ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = -(a.fp16[j] * b.fp16[j]) - c.fp16[j];\n}" }
+    if m.eq?("vfnmsub213ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = -(a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfnmsub213sd") { return "dst[0] = -(a[0] * b[0]) - c[0];" }
+    if m.eq?("vfnmsub213sh") { return "dst.fp16[0] = -(a.fp16[0] * b.fp16[0]) - c.fp16[0];" }
+    if m.eq?("vfnmsub213ss") { return "dst[0] = -(a[0] * b[0]) - c[0];" }
+    if m.eq?("vfnmsub231pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = -(a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfnmsub231ph") { return "for (j = 0; j <= 31; j++) {\n  dst.fp16[j] = -(a.fp16[j] * b.fp16[j]) - c.fp16[j];\n}" }
+    if m.eq?("vfnmsub231ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = -(a[j] * b[j]) - c[j];\n}" }
+    if m.eq?("vfnmsub231sd") { return "dst[0] = -(a[0] * b[0]) - c[0];" }
+    if m.eq?("vfnmsub231sh") { return "dst.fp16[0] = -(a.fp16[0] * b.fp16[0]) - c.fp16[0];" }
+    if m.eq?("vfnmsub231ss") { return "dst[0] = -(a[0] * b[0]) - c[0];" }
+    if m.eq?("vfpclasspd") { return "for (j = 0; j <= 7; j++) {\n  k[j] = CheckFPClass_FP64(a[j], imm8[7:0]);\n}" }
+    if m.eq?("vfpclassph") { return "for (i = 0; i <= 31; i++) {\n  k[i] = CheckFPClass_FP16(a.fp16[i], imm8[7:0]);\n}" }
+    if m.eq?("vfpclassps") { return "for (j = 0; j <= 15; j++) {\n  k[j] = CheckFPClass_FP32(a[j], imm8[7:0]);\n}" }
+    if m.eq?("vfpclasssd") { return "k[0] = CheckFPClass_FP64(a[0], imm8[7:0]);" }
+    if m.eq?("vfpclasssh") { return "k[0] = CheckFPClass_FP16(a.fp16[0], imm8[7:0]);" }
+    if m.eq?("vfpclassss") { return "k[0] = CheckFPClass_FP32(a[0], imm8[7:0]);" }
+    if m.eq?("vgetexppd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = ConvertExpFP64(a[j]);\n}" }
+    if m.eq?("vgetexpph") { return "for (i = 0; i <= 31; i++) {\n  dst.fp16[i] = ConvertExpFP16(a.fp16[i]);\n}" }
+    if m.eq?("vgetexpps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = ConvertExpFP32(a[j]);\n}" }
+    if m.eq?("vgetexpsd") { return "dst[0] = ConvertExpFP64(b[0]);" }
+    if m.eq?("vgetexpsh") { return "dst.fp16[0] = ConvertExpFP16(b.fp16[0]);" }
+    if m.eq?("vgetexpss") { return "dst[0] = ConvertExpFP32(b[0]);" }
+    if m.eq?("vgetmantpd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = GetNormalizedMantissa(a[j], sc, interv);\n}" }
+    if m.eq?("vgetmantph") { return "FOR i = 0 TO 31;\ndst.fp16[i] = GetNormalizedMantissaFP16(a.fp16[i], norm, sign);\n}" }
+    if m.eq?("vgetmantps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = GetNormalizedMantissa(a[j], sc, interv);\n}" }
+    if m.eq?("vgetmantsd") { return "dst[0] = GetNormalizedMantissa(b[0], sc, interv);" }
+    if m.eq?("vgetmantsh") { return "dst.fp16[0] = GetNormalizedMantissaFP16(b.fp16[0], norm, sign);" }
+    if m.eq?("vgetmantss") { return "dst[0] = GetNormalizedMantissa(b[0], sc, interv);" }
+    if m.eq?("vmulpd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = a[j] * b[j];\n}" }
+    if m.eq?("vmulps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = a[j] * b[j];\n}" }
+    if m.eq?("vmulsd") { return "dst[0] = a[0] * b[0];" }
+    if m.eq?("vmulss") { return "dst[0] = a[0] * b[0];" }
+    if m.eq?("vpabsb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = ABS(a[j]);\n}" }
+    if m.eq?("vpabsd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = ABS(a[j]);\n}" }
+    if m.eq?("vpabsq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = ABS(a[j]);\n}" }
+    if m.eq?("vpabsw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = ABS(a[j]);\n}" }
+    if m.eq?("vpaddb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = a[j] + b[j];\n}" }
+    if m.eq?("vpaddd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = a[j] + b[j];\n}" }
+    if m.eq?("vpaddq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = a[j] + b[j];\n}" }
+    if m.eq?("vpaddsb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = Saturate8( a[j] + b[j] );\n}" }
+    if m.eq?("vpaddsw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = Saturate16( a[j] + b[j] );\n}" }
+    if m.eq?("vpaddusb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = SaturateU8( a[j] + b[j] );\n}" }
+    if m.eq?("vpaddusw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = SaturateU16( a[j] + b[j] );\n}" }
+    if m.eq?("vpaddw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = a[j] + b[j];\n}" }
+    if m.eq?("vpandd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = ABS(v2[j]);\n}" }
+    if m.eq?("vpandnd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (~ a[j]) & b[j];\n}" }
+    if m.eq?("vpandnq") { return "dst[0] = ((~ a[0]) & b[0]);" }
+    if m.eq?("vpandq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = ABS(v2[j]);\n}" }
+    if m.eq?("vpavgb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = (a[j] + b[j] + 1) >> 1;\n}" }
+    if m.eq?("vpavgw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = (a[j] + b[j] + 1) >> 1;\n}" }
+    if m.eq?("vpcmpb") { return "switch (imm8[2:0]) {\n  case 0: OP = _MM_CMPINT_EQ; break;\n  case 1: OP = _MM_CMPINT_LT; break;\n  case 2: OP = _MM_CMPINT_LE; break;\n  case 3: OP = _MM_CMPINT_FALSE; break;\n  case 4: OP = _MM_CMPINT_NE; break;\n  case 5: OP = _MM_CMPINT_NLT; break;\n  case 6: OP = _MM_CMPINT_NLE; break;\n  case 7: OP = _MM_CMPINT_TRUE; break;\n}\nfor (j = 0; j <= 63; j++) {\n  k[j] = ( a[j] OP b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpd") { return "for (j = 0; j <= 15; j++) {\n  k[j] = ( a[j] < b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpeqb") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = ( a[j] == b[j] ) ? 0xFF : 0;\n}" }
+    if m.eq?("vpcmpeqd") { return "for (j = 0; j <= 15; j++) {\n  k[j] = ( a[j] == b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpeqq") { return "for (j = 0; j <= 7; j++) {\n  k[j] = ( a[j] == b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpeqw") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = ( a[j] == b[j] ) ? 0xFFFF : 0;\n}" }
+    if m.eq?("vpcmpgtb") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = ( a[j] > b[j] ) ? 0xFF : 0;\n}" }
+    if m.eq?("vpcmpgtd") { return "for (j = 0; j <= 15; j++) {\n  k[j] = ( a[j] > b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpgtq") { return "for (j = 0; j <= 7; j++) {\n  k[j] = ( a[j] > b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpgtw") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = ( a[j] > b[j] ) ? 0xFFFF : 0;\n}" }
+    if m.eq?("vpcmpq") { return "switch (imm8[2:0]) {\n  case 0: OP = _MM_CMPINT_EQ; break;\n  case 1: OP = _MM_CMPINT_LT; break;\n  case 2: OP = _MM_CMPINT_LE; break;\n  case 3: OP = _MM_CMPINT_FALSE; break;\n  case 4: OP = _MM_CMPINT_NE; break;\n  case 5: OP = _MM_CMPINT_NLT; break;\n  case 6: OP = _MM_CMPINT_NLE; break;\n  case 7: OP = _MM_CMPINT_TRUE; break;\n}\nfor (j = 0; j <= 7; j++) {\n  k[j] = ( a[j] OP b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpub") { return "switch (imm8[2:0]) {\n  case 0: OP = _MM_CMPINT_EQ; break;\n  case 1: OP = _MM_CMPINT_LT; break;\n  case 2: OP = _MM_CMPINT_LE; break;\n  case 3: OP = _MM_CMPINT_FALSE; break;\n  case 4: OP = _MM_CMPINT_NE; break;\n  case 5: OP = _MM_CMPINT_NLT; break;\n  case 6: OP = _MM_CMPINT_NLE; break;\n  case 7: OP = _MM_CMPINT_TRUE; break;\n}\nfor (j = 0; j <= 63; j++) {\n  k[j] = ( a[j] OP b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpud") { return "switch (imm8[2:0]) {\n  case 0: OP = _MM_CMPINT_EQ; break;\n  case 1: OP = _MM_CMPINT_LT; break;\n  case 2: OP = _MM_CMPINT_LE; break;\n  case 3: OP = _MM_CMPINT_FALSE; break;\n  case 4: OP = _MM_CMPINT_NE; break;\n  case 5: OP = _MM_CMPINT_NLT; break;\n  case 6: OP = _MM_CMPINT_NLE; break;\n  case 7: OP = _MM_CMPINT_TRUE; break;\n}\nfor (j = 0; j <= 15; j++) {\n  k[j] = ( a[j] OP b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpuq") { return "switch (imm8[2:0]) {\n  case 0: OP = _MM_CMPINT_EQ; break;\n  case 1: OP = _MM_CMPINT_LT; break;\n  case 2: OP = _MM_CMPINT_LE; break;\n  case 3: OP = _MM_CMPINT_FALSE; break;\n  case 4: OP = _MM_CMPINT_NE; break;\n  case 5: OP = _MM_CMPINT_NLT; break;\n  case 6: OP = _MM_CMPINT_NLE; break;\n  case 7: OP = _MM_CMPINT_TRUE; break;\n}\nfor (j = 0; j <= 7; j++) {\n  k[j] = ( a[j] OP b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpuw") { return "switch (imm8[2:0]) {\n  case 0: OP = _MM_CMPINT_EQ; break;\n  case 1: OP = _MM_CMPINT_LT; break;\n  case 2: OP = _MM_CMPINT_LE; break;\n  case 3: OP = _MM_CMPINT_FALSE; break;\n  case 4: OP = _MM_CMPINT_NE; break;\n  case 5: OP = _MM_CMPINT_NLT; break;\n  case 6: OP = _MM_CMPINT_NLE; break;\n  case 7: OP = _MM_CMPINT_TRUE; break;\n}\nfor (j = 0; j <= 31; j++) {\n  k[j] = ( a[j] OP b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpcmpw") { return "switch (imm8[2:0]) {\n  case 0: OP = _MM_CMPINT_EQ; break;\n  case 1: OP = _MM_CMPINT_LT; break;\n  case 2: OP = _MM_CMPINT_LE; break;\n  case 3: OP = _MM_CMPINT_FALSE; break;\n  case 4: OP = _MM_CMPINT_NE; break;\n  case 5: OP = _MM_CMPINT_NLT; break;\n  case 6: OP = _MM_CMPINT_NLE; break;\n  case 7: OP = _MM_CMPINT_TRUE; break;\n}\nfor (j = 0; j <= 31; j++) {\n  k[j] = ( a[j] OP b[j] ) ? 1 : 0;\n}" }
+    if m.eq?("vpconflictd") { return "for (j = 0; j <= 15; j++) {\n  for (k = 0; k <= j-1; k++) {\n    m = k*32;\n    dst[i+k] = (a[j] == a[j]) ? 1 : 0;\n  }\n  dst[i+31:i+j] = 0;\n}" }
+    if m.eq?("vpconflictq") { return "for (j = 0; j <= 7; j++) {\n  for (k = 0; k <= j-1; k++) {\n    m = k*64;\n    dst[i+k] = (a[j] == a[j]) ? 1 : 0;\n  }\n  dst[i+63:i+j] = 0;\n}" }
+    if m.eq?("vpdpbusd") { return "for (j = 0; j <= 15; j++) {\n  tmp1.word = Signed(ZeroExtend16(a.byte[4*j]) * SignExtend16(b.byte[4*j]));\n  tmp2.word = Signed(ZeroExtend16(a.byte[4*j+1]) * SignExtend16(b.byte[4*j+1]));\n  tmp3.word = Signed(ZeroExtend16(a.byte[4*j+2]) * SignExtend16(b.byte[4*j+2]));\n  tmp4.word = Signed(ZeroExtend16(a.byte[4*j+3]) * SignExtend16(b.byte[4*j+3]));\n  dst.dword[j] = src.dword[j] + tmp1 + tmp2 + tmp3 + tmp4;\n}" }
+    if m.eq?("vpdpbusds") { return "for (j = 0; j <= 15; j++) {\n  tmp1.word = Signed(ZeroExtend16(a.byte[4*j]) * SignExtend16(b.byte[4*j]));\n  tmp2.word = Signed(ZeroExtend16(a.byte[4*j+1]) * SignExtend16(b.byte[4*j+1]));\n  tmp3.word = Signed(ZeroExtend16(a.byte[4*j+2]) * SignExtend16(b.byte[4*j+2]));\n  tmp4.word = Signed(ZeroExtend16(a.byte[4*j+3]) * SignExtend16(b.byte[4*j+3]));\n  dst.dword[j] = Saturate32(src.dword[j] + tmp1 + tmp2 + tmp3 + tmp4);\n}" }
+    if m.eq?("vpdpwssd") { return "for (j = 0; j <= 15; j++) {\n  tmp1.dword = SignExtend32(a.word[2*j]) * SignExtend32(b.word[2*j]);\n  tmp2.dword = SignExtend32(a.word[2*j+1]) * SignExtend32(b.word[2*j+1]);\n  dst.dword[j] = src.dword[j] + tmp1 + tmp2;\n}" }
+    if m.eq?("vpdpwssds") { return "for (j = 0; j <= 15; j++) {\n  tmp1.dword = SignExtend32(a.word[2*j]) * SignExtend32(b.word[2*j]);\n  tmp2.dword = SignExtend32(a.word[2*j+1]) * SignExtend32(b.word[2*j+1]);\n  dst.dword[j] = Saturate32(src.dword[j] + tmp1 + tmp2);\n}" }
+    if m.eq?("vpmaxsb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = MAX(a[j], b[j]);\n}" }
+    if m.eq?("vpmaxsd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = MAX(a[j], b[j]);\n}" }
+    if m.eq?("vpmaxsq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = MAX(a[j], b[j]);\n}" }
+    if m.eq?("vpmaxsw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = MAX(a[j], b[j]);\n}" }
+    if m.eq?("vpmaxub") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = MAX(a[j], b[j]);\n}" }
+    if m.eq?("vpmaxud") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = MAX(a[j], b[j]);\n}" }
+    if m.eq?("vpmaxuq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = MAX(a[j], b[j]);\n}" }
+    if m.eq?("vpmaxuw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = MAX(a[j], b[j]);\n}" }
+    if m.eq?("vpminsb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = MIN(a[j], b[j]);\n}" }
+    if m.eq?("vpminsd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = MIN(a[j], b[j]);\n}" }
+    if m.eq?("vpminsq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = MIN(a[j], b[j]);\n}" }
+    if m.eq?("vpminsw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = MIN(a[j], b[j]);\n}" }
+    if m.eq?("vpminub") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = MIN(a[j], b[j]);\n}" }
+    if m.eq?("vpminud") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = MIN(a[j], b[j]);\n}" }
+    if m.eq?("vpminuq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = MIN(a[j], b[j]);\n}" }
+    if m.eq?("vpminuw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = MIN(a[j], b[j]);\n}" }
+    if m.eq?("vpmovb2m") { return "for (j = 0; j <= 63; j++) {\n  if (a[i+7]) {\n    k[j] = 1;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vpmovd2m") { return "for (j = 0; j <= 15; j++) {\n  if (a[i+31]) {\n    k[j] = 1;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vpmovdb") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Truncate8(a[j]);\n}" }
+    if m.eq?("vpmovdw") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Truncate16(a[j]);\n}" }
+    if m.eq?("vpmovq2m") { return "for (j = 0; j <= 7; j++) {\n  if (a[i+63]) {\n    k[j] = 1;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vpmovqb") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Truncate8(a[j]);\n}" }
+    if m.eq?("vpmovqd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Truncate32(a[j]);\n}" }
+    if m.eq?("vpmovqw") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Truncate16(a[j]);\n}" }
+    if m.eq?("vpmovsdb") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Saturate8(a[j]);\n}" }
+    if m.eq?("vpmovsdw") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = Saturate16(a[j]);\n}" }
+    if m.eq?("vpmovsqb") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Saturate8(a[j]);\n}" }
+    if m.eq?("vpmovsqd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Saturate32(a[j]);\n}" }
+    if m.eq?("vpmovsqw") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = Saturate16(a[j]);\n}" }
+    if m.eq?("vpmovswb") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = Saturate8(a[j]);\n}" }
+    if m.eq?("vpmovsxbd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = SignExtend32(a[j]);\n}" }
+    if m.eq?("vpmovsxbq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = SignExtend64(a[j]);\n}" }
+    if m.eq?("vpmovsxbw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = SignExtend16(a[j]);\n}" }
+    if m.eq?("vpmovsxdq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = SignExtend64(a[j]);\n}" }
+    if m.eq?("vpmovsxwd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = SignExtend32(a[j]);\n}" }
+    if m.eq?("vpmovsxwq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = SignExtend64(a[j]);\n}" }
+    if m.eq?("vpmovusdb") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = SaturateU8(a[j]);\n}" }
+    if m.eq?("vpmovusdw") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = SaturateU16(a[j]);\n}" }
+    if m.eq?("vpmovusqb") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = SaturateU8(a[j]);\n}" }
+    if m.eq?("vpmovusqd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = SaturateU32(a[j]);\n}" }
+    if m.eq?("vpmovusqw") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = SaturateU16(a[j]);\n}" }
+    if m.eq?("vpmovuswb") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = SaturateU8(a[j]);\n}" }
+    if m.eq?("vpmovw2m") { return "for (j = 0; j <= 31; j++) {\n  if (a[i+15]) {\n    k[j] = 1;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vpmovwb") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = Truncate8(a[j]);\n}" }
+    if m.eq?("vpmovzxbd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = ZeroExtend32(a[j]);\n}" }
+    if m.eq?("vpmovzxbq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = ZeroExtend64(a[j]);\n}" }
+    if m.eq?("vpmovzxbw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = ZeroExtend16(a[j]);\n}" }
+    if m.eq?("vpmovzxdq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = ZeroExtend64(a[j]);\n}" }
+    if m.eq?("vpmovzxwd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = ZeroExtend32(a[j]);\n}" }
+    if m.eq?("vpmovzxwq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = ZeroExtend64(a[j]);\n}" }
+    if m.eq?("vpmuldq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = SignExtend64(a[j]) * SignExtend64(b[j]);\n}" }
+    if m.eq?("vpmuludq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = a[j] * b[j];\n}" }
+    if m.eq?("vpsubb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = a[j] - b[j];\n}" }
+    if m.eq?("vpsubd") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = a[j] - b[j];\n}" }
+    if m.eq?("vpsubq") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = a[j] - b[j];\n}" }
+    if m.eq?("vpsubsb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = Saturate8(a[j] - b[j]);\n}" }
+    if m.eq?("vpsubsw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = Saturate16(a[j] - b[j]);\n}" }
+    if m.eq?("vpsubusb") { return "for (j = 0; j <= 63; j++) {\n  dst[j] = SaturateU8(a[j] - b[j]);\n}" }
+    if m.eq?("vpsubusw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = SaturateU16(a[j] - b[j]);\n}" }
+    if m.eq?("vpsubw") { return "for (j = 0; j <= 31; j++) {\n  dst[j] = a[j] - b[j];\n}" }
+    if m.eq?("vptestmb") { return "for (j = 0; j <= 63; j++) {\n  if (k1[j]) {\n    k[j] = ((a[j] & b[j]) != 0) ? 1 : 0;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vptestmd") { return "for (j = 0; j <= 15; j++) {\n  if (k1[j]) {\n    k[j] = ((a[j] & b[j]) != 0) ? 1 : 0;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vptestmq") { return "for (j = 0; j <= 7; j++) {\n  if (k1[j]) {\n    k[j] = ((a[j] & b[j]) != 0) ? 1 : 0;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vptestmw") { return "for (j = 0; j <= 31; j++) {\n  if (k1[j]) {\n    k[j] = ((a[j] & b[j]) != 0) ? 1 : 0;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vptestnmb") { return "for (j = 0; j <= 63; j++) {\n  if (k1[j]) {\n    k[j] = ((a[j] & b[j]) == 0) ? 1 : 0;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vptestnmd") { return "for (j = 0; j <= 15; j++) {\n  if (k1[j]) {\n    k[j] = ((a[j] & b[j]) == 0) ? 1 : 0;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vptestnmq") { return "for (j = 0; j <= 7; j++) {\n  if (k1[j]) {\n    k[j] = ((a[j] & b[j]) == 0) ? 1 : 0;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vptestnmw") { return "for (j = 0; j <= 31; j++) {\n  if (k1[j]) {\n    k[j] = ((a[j] & b[j]) == 0) ? 1 : 0;\n  } else {\n    k[j] = 0;\n  }\n}" }
+    if m.eq?("vpxord") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = a[j] ^ b[j];\n}" }
+    if m.eq?("vrcp14pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = (1.0 / a[j]);\n}" }
+    if m.eq?("vrcp14ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (1.0 / a[j]);\n}" }
+    if m.eq?("vrcp14sd") { return "dst[0] = (1.0 / b[0]);" }
+    if m.eq?("vrcp14ss") { return "dst[0] = (1.0 / b[0]);" }
+    if m.eq?("vrcpph") { return "for (i = 0; i <= 31; i++) {\n  dst.fp16[i] = (1.0 / a.fp16[i]);\n}" }
+    if m.eq?("vrcpsh") { return "dst.fp16[0] = (1.0 / b.fp16[0]);" }
+    if m.eq?("vrsqrt14pd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = (1.0 / SQRT(a[j]));\n}" }
+    if m.eq?("vrsqrt14ps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = (1.0 / SQRT(a[j]));\n}" }
+    if m.eq?("vrsqrt14sd") { return "dst[0] = (1.0 / SQRT(b[0]));" }
+    if m.eq?("vrsqrt14ss") { return "dst[0] = (1.0 / SQRT(b[0]));" }
+    if m.eq?("vrsqrtph") { return "for (i = 0; i <= 31; i++) {\n  dst.fp16[i] = (1.0 / SQRT(a.fp16[i]));\n}" }
+    if m.eq?("vrsqrtsh") { return "dst.fp16[0] = (1.0 / SQRT(b.fp16[0]));" }
+    if m.eq?("vsqrtpd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = SQRT(a[j]);\n}" }
+    if m.eq?("vsqrtph") { return "for (i = 0; i <= 31; i++) {\n  dst.fp16[i] = SQRT(a.fp16[i]);\n}" }
+    if m.eq?("vsqrtps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = SQRT(a[j]);\n}" }
+    if m.eq?("vsqrtsd") { return "dst[0] = SQRT(b[0]);" }
+    if m.eq?("vsqrtsh") { return "dst.fp16[0] = SQRT(b.fp16[0]);" }
+    if m.eq?("vsqrtss") { return "dst[0] = SQRT(b[0]);" }
+    if m.eq?("vsubpd") { return "for (j = 0; j <= 7; j++) {\n  dst[j] = a[j] - b[j];\n}" }
+    if m.eq?("vsubps") { return "for (j = 0; j <= 15; j++) {\n  dst[j] = a[j] - b[j];\n}" }
+    if m.eq?("vsubsd") { return "dst[0] = a[0] - b[0];" }
+    if m.eq?("vsubss") { return "dst[0] = a[0] - b[0];" }
+    return ""
+}

@@ -2,7 +2,7 @@
 # JIT + AOT + memcheck (string elems must not double-free).
 cmake_minimum_required(VERSION 3.20)
 
-set(MAIN "${SAMPLE_DIR}/vec_get_unsafe_test.ls")
+set(MAIN "${SAMPLE_DIR}/vec_get_unsafe_test.lls")
 set(_expected "VEC_GET_UNSAFE PASS")
 
 execute_process(COMMAND "${LS_EXE}" run "${MAIN}"

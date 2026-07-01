@@ -25,7 +25,7 @@ set(_samples guard_thread_test atomic_thread_test chan_mpmc_test
              nested_closure_thread par_for_test)
 set(_fail 0)
 foreach(_s IN LISTS _samples)
-    set(_f "${SAMPLE_DIR}/${_s}.ls")
+    set(_f "${SAMPLE_DIR}/${_s}.lls")
     if(NOT EXISTS "${_f}")
         message(WARNING "missing sample: ${_f}")
         set(_fail 1)

@@ -600,7 +600,7 @@ def main():
     if args.emit_corpus:
         os.makedirs(args.emit_corpus, exist_ok=True)
         env = dict(os.environ); env["LS_HOME"] = ROOT
-        tmp = os.path.join(args.emit_corpus, "_probe.ls")
+        tmp = os.path.join(args.emit_corpus, "_probe.lls")
         kept = 0; it = 0
         while kept < args.count and it < args.count * 50:
             rng = random.Random(args.seed * 1000000 + it); it += 1
@@ -615,7 +615,7 @@ def main():
             except subprocess.TimeoutExpired:
                 continue
             if p.returncode == 0 and "OK clean" in err:
-                dst = os.path.join(args.emit_corpus, "owned_%02d.ls" % kept)
+                dst = os.path.join(args.emit_corpus, "owned_%02d.lls" % kept)
                 with open(dst, "wb") as f:
                     f.write(src.encode("utf-8"))
                 kept += 1
@@ -629,7 +629,7 @@ def main():
         print("build/Release/ls.exe not found", file=sys.stderr); return 2
     os.makedirs(args.keep_dir, exist_ok=True)
     env = dict(os.environ); env["LS_HOME"] = ROOT
-    tmp = os.path.join(args.keep_dir, "_gen.ls")
+    tmp = os.path.join(args.keep_dir, "_gen.lls")
 
     findings = {"crash": 0, "memcheck": 0, "aotdiff": 0}
     compiled = 0
@@ -680,7 +680,7 @@ def main():
         if kind:
             findings[kind] += 1
             tag = "%s_seed%d_it%d" % (kind, args.seed, it)
-            with open(os.path.join(args.keep_dir, tag + ".ls"), "wb") as f:
+            with open(os.path.join(args.keep_dir, tag + ".lls"), "wb") as f:
                 f.write(src.encode("utf-8"))
             with open(os.path.join(args.keep_dir, tag + ".err.txt"), "wb") as f:
                 f.write(err.encode("utf-8", "replace"))

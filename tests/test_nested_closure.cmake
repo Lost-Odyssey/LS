@@ -1,17 +1,17 @@
 # Closure-foundation Phase B — nested closure literals (transitive capture).
 #
-#   nested_closure.ls         single-threaded: inner closures reference enclosing-
+#   nested_closure.lls         single-threaded: inner closures reference enclosing-
 #                             closure locals/params (not transitive), function-
 #                             level POD (transitive by-copy), and Block
 #                             (transitive by-clone); 2-level nesting; by-move of an
 #                             enclosing local into an inner closure. JIT + AOT +
 #                             --memcheck (0/0/0) for env clone/drop balance.
-#   nested_closure_thread.ls  threaded: a nested closure inside a Task worker
+#   nested_closure_thread.lls  threaded: a nested closure inside a Task worker
 #                             closure touches a shared global Atomic and captures a
 #                             function-scope POD transitively. NO --memcheck
 #                             (tracker not thread-safe — same as task/sync);
 #                             soundness via repeated AOT runs.
-#   nested_closure_reject.ls  negative: transitive by-move capture -> compile error.
+#   nested_closure_reject.lls  negative: transitive by-move capture -> compile error.
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
@@ -21,7 +21,7 @@ endif()
 set(SDIR "${CMAKE_CURRENT_LIST_DIR}/samples")
 
 # ===================== single-threaded nested closures (memcheck) =====================
-set(NC "${SDIR}/nested_closure.ls")
+set(NC "${SDIR}/nested_closure.lls")
 
 # JIT
 execute_process(COMMAND "${LS}" run "${NC}"
@@ -56,7 +56,7 @@ if(NOT nar EQUAL 0 OR NOT nao MATCHES "NC PASS" OR nao MATCHES "NC FAIL")
 endif()
 
 # ===================== threaded integration (Task + nested closure) =====================
-set(NT "${SDIR}/nested_closure_thread.ls")
+set(NT "${SDIR}/nested_closure_thread.lls")
 
 # JIT
 execute_process(COMMAND "${LS}" run "${NT}"
@@ -84,7 +84,7 @@ foreach(i RANGE 1 6)
 endforeach()
 
 # ===================== negative: transitive by-move rejected =====================
-set(NR "${SDIR}/nested_closure_reject.ls")
+set(NR "${SDIR}/nested_closure_reject.lls")
 execute_process(COMMAND "${LS}" run "${NR}"
     OUTPUT_VARIABLE ro ERROR_VARIABLE re RESULT_VARIABLE rr TIMEOUT 30)
 if(rr EQUAL 0)

@@ -1,4 +1,4 @@
-# std/perf.ls: import std.perf as p — now / rdtsc / rdtscp / elapsed_*
+# std/perf.lls: import std.perf as p — now / rdtsc / rdtscp / elapsed_*
 # Verifies: JIT output / AOT output / JIT memcheck 0 leaks
 # (std.perf uses no heap allocation; 0-leak check confirms no hidden allocs)
 
@@ -12,7 +12,7 @@ endif()
 set(ENV{LS_HOME} "${_ls_root}")
 
 set(LS      "${LS_EXE}")
-set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/std_perf_test.ls")
+set(SRC     "${CMAKE_CURRENT_LIST_DIR}/samples/std_perf_test.lls")
 set(OUT_EXE "${CMAKE_BINARY_DIR}/std_perf_test.exe")
 
 # ── Step 1: JIT run ──────────────────────────────────────────────────────────

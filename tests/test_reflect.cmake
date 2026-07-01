@@ -4,7 +4,7 @@
 #  * JIT + AOT + memcheck
 cmake_minimum_required(VERSION 3.20)
 
-set(POS "${SAMPLE_DIR}/derive_reflect.ls")
+set(POS "${SAMPLE_DIR}/derive_reflect.lls")
 
 execute_process(COMMAND "${LS_EXE}" run "${POS}"
     OUTPUT_VARIABLE r_out ERROR_VARIABLE r_err RESULT_VARIABLE r_rc)
@@ -44,7 +44,7 @@ message(STATUS "derive_reflect: OK")
 # before std.core.reflect. Used to spuriously fail with "unknown type 'TypeInfo'"
 # (transitive trait propagation re-resolved interface Reflect's
 # `reflect() -> TypeInfo` in the importer's scope before TypeInfo was bound). ---
-set(IMP "${SAMPLE_DIR}/reflect_imported.ls")
+set(IMP "${SAMPLE_DIR}/reflect_imported.lls")
 execute_process(COMMAND "${LS_EXE}" run "${IMP}"
     OUTPUT_VARIABLE i_out ERROR_VARIABLE i_err RESULT_VARIABLE i_rc)
 if(NOT i_rc EQUAL 0 OR NOT "${i_out}" MATCHES "REFLECT IMPORTED DONE")
@@ -84,7 +84,7 @@ message(STATUS "reflect_imported (cross-module derive): OK")
 
 # --- Foundational containers Vec / Str / Map reflect via the from_raw bridge
 # (Vec/Str derive ReflectRaw in their leaf-safe modules; Map derives Reflect). ---
-set(CON "${SAMPLE_DIR}/reflect_containers.ls")
+set(CON "${SAMPLE_DIR}/reflect_containers.lls")
 execute_process(COMMAND "${LS_EXE}" run "${CON}"
     OUTPUT_VARIABLE c_out ERROR_VARIABLE c_err RESULT_VARIABLE c_rc)
 if(NOT c_rc EQUAL 0 OR NOT "${c_out}" MATCHES "REFLECT CONTAINERS DONE")

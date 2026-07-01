@@ -1,8 +1,8 @@
 # test_extern_struct.cmake — Phase E.1 end-to-end test
-# Runs extern_struct_test.ls via JIT and AOT, asserts "ALL PASS" in output.
+# Runs extern_struct_test.lls via JIT and AOT, asserts "ALL PASS" in output.
 # Variables injected by CMakeLists.txt:
 #   LS_EXE    — path to ls.exe
-#   SAMPLE    — path to extern_struct_test.ls
+#   SAMPLE    — path to extern_struct_test.lls
 #   WORK_DIR  — build directory (for AOT output)
 
 # ---- JIT path ----

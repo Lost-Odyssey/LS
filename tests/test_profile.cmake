@@ -2,7 +2,7 @@
 #
 # Required variables (passed by add_test):
 #   LS_EXE    — path to ls.exe
-#   SAMPLE    — absolute path to the .ls sample
+#   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — directory for AOT output
 
 if(NOT LS_EXE OR NOT SAMPLE OR NOT WORK_DIR)

@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
-set(SAMPLE "${SAMPLE_DIR}/enum_vec_payload_test.ls")
+set(SAMPLE "${SAMPLE_DIR}/enum_vec_payload_test.lls")
 
 # ---- Expected output lines ----
 set(_expected "numbers: len=3" "lookup: has_a=true" "mixed: test" "empty" "done")
