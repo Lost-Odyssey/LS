@@ -553,6 +553,11 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
 
+# Retired legacy intrinsic spelling (__take) must be rejected at compile time.
+add_test(NAME test_retired_take
+    COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_take.ls)
+set_tests_properties(test_retired_take PROPERTIES WILL_FAIL TRUE)
+
 # std.html Phase H1 (generation + render): functional bottom-up construction,
 # escaping, void tags, fmt_tag. JIT + AOT correctness + memcheck.
 add_test(

@@ -33,6 +33,7 @@ static int find_struct_template_idx_pull(Checker *c, const char *base_name);
 static Type *find_type_alias(Checker *c, const char *name);
 static bool generic_method_is_eager(const char *name);
 static bool is_builtin_function(const char *name);
+static const char *intrinsic_retired_spelling(const char *name);
 static bool is_self_placeholder(const Type *t);
 static Type *lookup_impl_type_arg(char **tp_names, Type **type_args, int tp_count, const char *name);
 static int method_is_static(Checker *c, const char *struct_name, const char *method_name);
@@ -2825,6 +2826,16 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
     int argc = call_node->as.call.arg_count;
     AstNode **args = call_node->as.call.args;
 
+    /* Phase 2: the legacy __take/__drop_at/__dup/__move spellings are retired.
+       Reject them with a clear pointer to the @-sigil replacement. */
+    const char *retired = intrinsic_retired_spelling(name);
+    if (retired != NULL)
+    {
+        checker_error(c, call_node->line, call_node->column,
+                      "'%s' is retired; use '%s'", name, retired);
+        return NULL;
+    }
+
     /* Phase E.3.1: errno() -> int  — read C runtime errno (thread-local).
        On Windows uses _errno(), on POSIX uses __errno_location(). The codegen
        emits the platform-specific dereference inline. */
@@ -3453,6 +3464,18 @@ const IntrinsicDef *intrinsic_lookup(const char *name)
         if (strcmp(name, d->canonical) == 0) return d;
         if (d->legacy != NULL && strcmp(name, d->legacy) == 0) return d;
     }
+    return NULL;
+}
+
+/* A legacy __ spelling of a now-@ intrinsic. Returns the canonical @-name, or
+   NULL. Used to give a clear "retired; use @name" diagnostic (Phase 2). */
+static const char *intrinsic_retired_spelling(const char *name)
+{
+    if (name == NULL) return NULL;
+    for (size_t i = 0; i < sizeof(k_intrinsics) / sizeof(k_intrinsics[0]); i++)
+        if (k_intrinsics[i].legacy != NULL &&
+            strcmp(name, k_intrinsics[i].legacy) == 0)
+            return k_intrinsics[i].canonical;
     return NULL;
 }
 
