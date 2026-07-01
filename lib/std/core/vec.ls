@@ -16,7 +16,7 @@
 //   * @dispose(slot)   — recursive destructor on a slot (frees owned data)
 //   * @move(local)     — transfer ownership of a named local
 //   * Clone interface (def clone) — user deep-copy hook (Vec(Vec(T)) reads deep-clone)
-//   * def __from_list    — list-literal init opt-in (the `[..]` protocol)
+//   * methods Vec(T): FromList — list-literal init opt-in (the `[..]` protocol)
 //
 // Ownership contract:
 //   push/insert  move T into the buffer.   pop/remove  move T out (no clone).
@@ -107,10 +107,6 @@ methods Vec(T) {
         self.data[i] = x
         self.len = self.len + 1
     }
-
-    // List-literal init opt-in (reserved-method protocol, like __drop/__clone):
-    // having this method enables `Vec(T) v = [a, b, c]`.
-    def __from_list(&!self, T x) { self.push(x) }
 
     // ---- remove ----
 
@@ -608,6 +604,11 @@ methods Vec(T) {
         return out
     }
 
+}
+
+methods Vec(T): FromList {
+    // List-literal init opt-in: implementing FromList enables `Vec(T) v = [a, b, c]`.
+    def from_list(&!self, T x) { self.push(x) }
 }
 
 methods Vec(T): Clone {

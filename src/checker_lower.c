@@ -1241,6 +1241,12 @@ void register_builtin_operator_traits(Checker *c)
        RAII machinery scans for. */
     add_builtin_lifecycle_trait(c, "Destroy", "__drop",  type_void(), 2);            /* def ~(&!self) */
     add_builtin_lifecycle_trait(c, "Clone",   "__clone", &g_self_placeholder_type, 1); /* def clone(&self) -> Self */
+    /* Protocol interfaces (reserved-method facades, like Destroy/Clone). Marker
+       traits: the internal method name is what the literal-init / index detection
+       scans for (find_method(..., "__from_list") etc.). Element/key/value types
+       come from the implementing type's own generics — no interface type parameter
+       needed. The `from_list`→`__from_list` rename happens in check_impl_trait_decl. */
+    add_builtin_lifecycle_trait(c, "FromList",  "__from_list",  type_void(), 2); /* def from_list(&!self, E x) */
 }
 
 /* Build `obj.method(arg)` as a fresh AST_CALL. obj/arg are TAKEN BY OWNERSHIP

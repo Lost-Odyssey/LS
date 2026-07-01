@@ -553,6 +553,17 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
 
+# FromList protocol interface: list-literal init `Vec(T) v = [..]` via the facade.
+add_test(
+    NAME test_protocol_fromlist
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/protocol_fromlist.ls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=protocol_fromlist
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
+)
+
 # Retired legacy intrinsic spelling (__take) must be rejected at compile time.
 add_test(NAME test_retired_take
     COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_take.ls)

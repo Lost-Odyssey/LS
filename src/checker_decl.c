@@ -1030,6 +1030,33 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
         }
     }
 
+    /* Protocol interface facades: rename the user-facing method to the internal
+       reserved name the literal-init / index detection scans for (mirrors
+       clone→__clone). from_list→__from_list, from_pairs→__from_pairs,
+       index→__index. */
+    {
+        const char *user_m = NULL, *internal_m = NULL;
+        if (strcmp(trait_name, "FromList") == 0)  { user_m = "from_list";  internal_m = "__from_list"; }
+        else if (strcmp(trait_name, "FromPairs") == 0) { user_m = "from_pairs"; internal_m = "__from_pairs"; }
+        else if (strcmp(trait_name, "Index") == 0)     { user_m = "index";      internal_m = "__index"; }
+        if (user_m != NULL)
+        {
+            for (int i = 0; i < node->as.impl_trait_decl.method_count; i++)
+            {
+                AstNode *m = node->as.impl_trait_decl.methods[i];
+                if (m != NULL && m->kind == AST_FN_DECL && m->as.fn_decl.name != NULL &&
+                    strcmp(m->as.fn_decl.name, user_m) == 0)
+                {
+                    free(m->as.fn_decl.name);
+                    size_t ln = strlen(internal_m) + 1;
+                    char *nm = (char *)malloc_safe(ln);
+                    memcpy(nm, internal_m, ln);
+                    m->as.fn_decl.name = nm;
+                }
+            }
+        }
+    }
+
     /* Generic trait impl: `impl(T) Add for Complex(T)`. The struct is generic, so
        its methods are monomorphized per concrete instance. Rather than build a
        parallel instantiation path, FOLD this impl's method nodes into the struct's
