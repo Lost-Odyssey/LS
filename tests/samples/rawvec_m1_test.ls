@@ -5,12 +5,12 @@
 //
 // Confirmed memory-safe idioms (each verified individually during Step 5):
 //   * push owned temp   : v.push(f"...")                — temp consumed, no caller drop
-//   * push named local  : v.push(__move(local))         — explicit move marks the local
+//   * push named local  : v.push(@move(local))         — explicit move marks the local
 //   * Str read/get      : Str t = self.data[i]; return t  — var_decl deep-clones Str
-//   * pop / move-out     : Str o = self.data[i]; __drop_at(self.data[i]); len-=1; return o
-//   * set (overwrite)    : __drop_at(self.data[i]); self.data[i] = x
-//   * __drop             : for i in 0..len { __drop_at(self.data[i]) }; free(data)
-//   * __drop_at recurses via emit_drop_value -> Str.__drop / struct.__drop / nested.
+//   * pop / move-out     : Str o = self.data[i]; @dispose(self.data[i]); len-=1; return o
+//   * set (overwrite)    : @dispose(self.data[i]); self.data[i] = x
+//   * __drop             : for i in 0..len { @dispose(self.data[i]) }; free(data)
+//   * @dispose recurses via emit_drop_value -> Str.__drop / struct.__drop / nested.
 //
 // Reads match Vec[i] exactly: p[i] DEEP-CLONES owned element data (Str/struct/
 // has_drop), so struct element reads and field read-throughs (self.data[i].name)
@@ -47,11 +47,11 @@ methods RawVecS {
     def pop(&!self) -> Str {
         self.len = self.len - 1
         Str out = self.data[self.len]    // clone out
-        __drop_at(self.data[self.len])   // drop the slot original
+        @dispose(self.data[self.len])   // drop the slot original
         return out
     }
     def set(&!self, int i, Str x) {
-        __drop_at(self.data[i])          // drop old element
+        @dispose(self.data[i])          // drop old element
         self.data[i] = x                 // raw store new
     }
     def length(&self) -> int { return self.len }
@@ -72,7 +72,7 @@ methods RawVecS: Clone {
 
 methods RawVecS: Destroy {
     def ~(&!self) {
-        for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
+        for (int i = 0; i < self.len; i = i + 1) { @dispose(self.data[i]) }
         if self.cap > 0 { std.sys.c.free(self.data as *u8) }
     }
 }
@@ -102,9 +102,9 @@ methods RawVecP {
 
 methods RawVecP: Destroy {
     def ~(&!self) {
-        // __drop_at on each struct slot recurses into Person's auto __drop, which
+        // @dispose on each struct slot recurses into Person's auto __drop, which
         // frees the `name` Str field — proving recursive (nested) struct drop.
-        for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
+        for (int i = 0; i < self.len; i = i + 1) { @dispose(self.data[i]) }
         if self.cap > 0 { std.sys.c.free(self.data as *u8) }
     }
 }
@@ -140,9 +140,9 @@ methods RawVecV {
 
 methods RawVecV: Destroy {
     def ~(&!self) {
-        // recurses two levels: __drop_at -> RawVecS.__drop -> inner Str frees
+        // recurses two levels: @dispose -> RawVecS.__drop -> inner Str frees
         // + inner buffer free, then this outer buffer free.
-        for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
+        for (int i = 0; i < self.len; i = i + 1) { @dispose(self.data[i]) }
         if self.cap > 0 { std.sys.c.free(self.data as *u8) }
     }
 }
@@ -168,7 +168,7 @@ def main() {
     RawVecP pv = new_rvp()
     for (int i = 0; i < 5; i = i + 1) {
         Person p = Person { name: f"person-{i}", age: i * 10 }
-        pv.push(__move(p))              // named local -> explicit move
+        pv.push(@move(p))              // named local -> explicit move
     }
     check(pv.count() == 5, "RawVecP count 5")
     // aggregate element reads (now clone-on-read, matching vec[i])
@@ -184,7 +184,7 @@ def main() {
         RawVecS inner = new_rvs()
         inner.push(f"row{i}-a")
         inner.push(f"row{i}-b")
-        vv.push(__move(inner))          // move the inner container in
+        vv.push(@move(inner))          // move the inner container in
     }
     check(vv.count() == 3, "nested outer count 3")
     // nested element reads via RawVecS.__clone (matches Vec(Vec(T)))

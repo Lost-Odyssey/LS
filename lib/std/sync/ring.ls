@@ -19,7 +19,7 @@
 // Element ownership: slots are raw T in a *T buffer. The cursor protocol grants
 // each slot to exactly one side at a time. enqueue MOVES T into the slot (owned-
 // param ABI, like Vec.push — a NAMED var is cloned, an rvalue is moved); dequeue
-// MOVES it out (__take, no clone). __drop drops any [cons_tail, prod_tail)
+// MOVES it out (@take, no clone). __drop drops any [cons_tail, prod_tail)
 // residual, then frees buf.
 //
 // Caveat (MPMC under oversubscription): the publish-order wait spins on a peer
@@ -163,7 +163,7 @@ methods Ring(T) {
                 }
                 __cpu_relax()
             }
-            T out = __take(self.data[(oh as int) & self.mask])   // move out
+            T out = @take(self.data[(oh as int) & self.mask])   // move out
             while self.cons_tail.get() != oh {                   // wait for predecessors
                 __cpu_relax()
             }
@@ -179,7 +179,7 @@ methods Ring(T) {
         if c >= p {
             return None
         }
-        T out = __take(self.data[(c as int) & self.mask])
+        T out = @take(self.data[(c as int) & self.mask])
         self.cons_tail.store_release(c + 1)              // release publish: frees the slot
         return Some(out)
     }
@@ -203,7 +203,7 @@ methods Ring(T) {
         i64 c = self.cons_tail.get()
         i64 p = self.prod_tail.get()
         while c < p {
-            __drop_at(self.data[(c as int) & self.mask])
+            @dispose(self.data[(c as int) & self.mask])
             c = c + 1
         }
         self.prod_head.set(0)
@@ -220,7 +220,7 @@ methods Ring(T): Destroy {
         i64 c = self.cons_tail.get()
         i64 p = self.prod_tail.get()
         while c < p {
-            __drop_at(self.data[(c as int) & self.mask])
+            @dispose(self.data[(c as int) & self.mask])
             c = c + 1
         }
         if self.cap > 0 {

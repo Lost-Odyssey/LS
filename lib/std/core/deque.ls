@@ -12,7 +12,7 @@
 // compiler does not auto-derive drop/clone — Destroy and Clone are written
 // explicitly (mirroring Map).
 //
-// Ownership: push moves T in; pop moves T OUT (no clone) via __take; front/back/
+// Ownership: push moves T in; pop moves T OUT (no clone) via @take; front/back/
 // get/iter CLONE. Growth and the destructor move/drop only the LIVE elements
 // (head .. head+len), so has_drop T (Str/Vec/Map/struct) is never double-freed.
 
@@ -58,7 +58,7 @@ methods Deque(T) {
     // ---- capacity ----
 
     // Double the buffer (8 first), relocating the live elements into a compacted
-    // [0, len) layout (head resets to 0). Elements are MOVED (__take, no clone).
+    // [0, len) layout (head resets to 0). Elements are MOVED (@take, no clone).
     def _grow(&!self) {
         int newcap = 8
         if self.cap > 0 { newcap = self.cap * 2 }
@@ -66,7 +66,7 @@ methods Deque(T) {
         *T nd = std.sys.c.realloc(z, newcap * sizeof(T)) as *T
         for (int i = 0; i < self.len; i = i + 1) {
             int src = (self.head + i) & (self.cap - 1)
-            nd[i] = __take(self.data[src])
+            nd[i] = @take(self.data[src])
         }
         if self.cap > 0 { std.sys.c.free(self.data as *u8) }
         self.data = nd
@@ -95,7 +95,7 @@ methods Deque(T) {
     // Remove & return the front element (moved out — no clone), or None if empty.
     def pop_front(&!self) -> Option(T) {
         if self.len == 0 { return None }
-        T out = __take(self.data[self.head])
+        T out = @take(self.data[self.head])
         self.head = (self.head + 1) & (self.cap - 1)
         self.len = self.len - 1
         return Some(out)
@@ -105,7 +105,7 @@ methods Deque(T) {
     def pop_back(&!self) -> Option(T) {
         if self.len == 0 { return None }
         int idx = (self.head + self.len - 1) & (self.cap - 1)
-        T out = __take(self.data[idx])
+        T out = @take(self.data[idx])
         self.len = self.len - 1
         return Some(out)
     }
@@ -116,7 +116,7 @@ methods Deque(T) {
     def clear(&!self) {
         for (int i = 0; i < self.len; i = i + 1) {
             int idx = (self.head + i) & (self.cap - 1)
-            __drop_at(self.data[idx])
+            @dispose(self.data[idx])
         }
         self.len = 0
         self.head = 0
@@ -181,7 +181,7 @@ methods Deque(T): Destroy {
     def ~(&!self) {
         for (int i = 0; i < self.len; i = i + 1) {
             int idx = (self.head + i) & (self.cap - 1)
-            __drop_at(self.data[idx])
+            @dispose(self.data[idx])
         }
         if self.cap > 0 { std.sys.c.free(self.data as *u8) }
     }

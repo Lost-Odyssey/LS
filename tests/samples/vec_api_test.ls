@@ -1,6 +1,6 @@
 // vec_api_test.ls — comprehensive Vec(T) API parity with builtin vec.
 // Exercises every method on int (POD) and Str (has_drop), incl. move-out
-// (pop/remove/swap/reverse via __take) and search (index_of/contains/count).
+// (pop/remove/swap/reverse via @take) and search (index_of/contains/count).
 // memcheck must be 0/0/0. Prints "ok <l>" / "FAIL <l>" then "API PASS".
 
 import std.core.vec

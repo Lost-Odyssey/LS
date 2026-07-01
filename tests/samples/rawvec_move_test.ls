@@ -18,7 +18,7 @@ methods RawVecS {
 
 methods RawVecS: Destroy {
     def ~(&!self) {
-        for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
+        for (int i = 0; i < self.len; i = i + 1) { @dispose(self.data[i]) }
         if self.cap > 0 { std.sys.c.free(self.data as *u8) }
     }
 }
@@ -37,8 +37,8 @@ def main() {
     check(x.eq?("hello world"), "named var still valid")
 
     Str y = f"move_test"
-    v.push(__move(y))
-    check(v.get(v.len-1).eq?("move_test"), "__move push value")
+    v.push(@move(y))
+    check(v.get(v.len-1).eq?("move_test"), "@move push value")
 
     RawVecS v2 = new_rvs()
     for i in 0..10 { v2.push(f"n{i}") }

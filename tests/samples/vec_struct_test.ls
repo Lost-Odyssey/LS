@@ -79,7 +79,7 @@ def clear_test() -> int {
     v.push(a)
     v.push(b)
     v.push(c)
-    v.clear()     // Vec.clear calls __drop_at on each element
+    v.clear()     // Vec.clear calls @dispose on each element
     if (v.len() != 0) { return -1 }
     return 1
     // scope exit: vec is empty, no further drops

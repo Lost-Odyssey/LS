@@ -15,7 +15,7 @@
 // (many producers AND many consumers).
 //
 // Ownership: send MOVES T into the ring (owned-param ABI for an rvalue, clone
-// for a named var — same as Vec.push); recv MOVES it out (__take, no clone).
+// for a named var — same as Vec.push); recv MOVES it out (@take, no clone).
 // __drop drops any unconsumed residual, then frees the buffer and destroys the
 // lock + condvars.
 //
@@ -106,7 +106,7 @@ methods Chan(T) {
             __mutex_unlock(self.mtx)
             return None
         }
-        T out = __take(self.data[self.head])
+        T out = @take(self.data[self.head])
         self.head = (self.head + 1) & self.mask
         self.count = self.count - 1
         __cond_signal(self.not_full)
@@ -137,7 +137,7 @@ methods Chan(T) {
             __mutex_unlock(self.mtx)
             return None
         }
-        T out = __take(self.data[self.head])
+        T out = @take(self.data[self.head])
         self.head = (self.head + 1) & self.mask
         self.count = self.count - 1
         __cond_signal(self.not_full)
@@ -176,7 +176,7 @@ methods Chan(T): Destroy {
     def ~(&!self) {
         int h = self.head
         for (int i = 0; i < self.count; i = i + 1) {
-            __drop_at(self.data[h])
+            @dispose(self.data[h])
             h = (h + 1) & self.mask
         }
         if self.cap > 0 {

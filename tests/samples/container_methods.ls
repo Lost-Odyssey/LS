@@ -32,7 +32,7 @@ def main() {
     ws.retain(|s| s.len() == 5)        // alpha, gamma, delta
     check(ws.len() == 3, "retain Str by len -> 3")
 
-    // fill (via __dup): POD + has_drop
+    // fill (via @dup): POD + has_drop
     Vec(int) fi = [9, 9, 9, 9]
     fi.fill(0)
     check(fi[0] == 0 && fi[3] == 0, "fill int -> all 0")
@@ -79,7 +79,7 @@ def main() {
     check(m1.get_or("b", 0) == 20, "merge overwrites b -> 20")
     check(m1.get_or("c", 0) == 3, "merge adds c -> 3")
 
-    // get_or_insert (via __dup): present returns existing, absent inserts+returns
+    // get_or_insert (via @dup): present returns existing, absent inserts+returns
     Map(Str, int) gi = {}
     gi.set("a", 1)
     check(gi.get_or_insert("a", 99) == 1, "get_or_insert present -> existing 1")

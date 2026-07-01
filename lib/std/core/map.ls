@@ -14,7 +14,7 @@
 // scatter. No tombstones (backward-shift delete, M-1, keeps the invariant).
 //
 // Ownership (M-0 is POD-only, so these are all bit-copies; M-2 wires up the
-// __take/__move/__drop_at paths for has_drop K/V):
+// @take/@move/@dispose paths for has_drop K/V):
 //   set    moves K,V into the table (overwrite drops the old value).
 //   get    returns a CLONE of the value (Option(V)); buffer keeps its own.
 
@@ -123,8 +123,8 @@ methods Map(K, V) {
         for (int i = 0; i < oldcap; i = i + 1) {
             int c = oldctrl[i] as int
             if c != 255 {
-                K k = __take(oldkeys[i])
-                V v = __take(oldvals[i])
+                K k = @take(oldkeys[i])
+                V v = @take(oldvals[i])
                 u64 h = k.hash()
                 self._insert_no_grow(k, v, h)
             }
@@ -143,7 +143,7 @@ methods Map(K, V) {
     // a key match (update), an empty slot, or the first resident closer to its
     // home than us (the swap point). Then move k/v in exactly ONCE at that slot;
     // if it was occupied, first shift the contiguous run forward by one (PSL+1) to
-    // open it. Moving only slot entries (via __take) — never reassigning k inside
+    // open it. Moving only slot entries (via @take) — never reassigning k inside
     // the loop — keeps the move checker happy with has_drop K/V. h = hash(k).
     def _insert_no_grow(&!self, K k, V v, u64 h) where K: Equal {
         int mask = self.cap - 1
@@ -160,7 +160,7 @@ methods Map(K, V) {
             if self.keys[idx] == k {
                 // Update in place: drop the old value, move the new one in.
                 // k is unused here and is dropped at scope exit (RAII).
-                __drop_at(self.vals[idx])
+                @dispose(self.vals[idx])
                 self.vals[idx] = v
                 return
             }
@@ -181,8 +181,8 @@ methods Map(K, V) {
             int p = tail
             while p != idx {
                 int prev = (p - 1) & mask
-                K mk = __take(self.keys[prev])
-                V mv = __take(self.vals[prev])
+                K mk = @take(self.keys[prev])
+                V mv = @take(self.vals[prev])
                 self.keys[p] = mk
                 self.vals[p] = mv
                 self.ctrl[p] = ((self.ctrl[prev] as int) + 1) as u8
@@ -217,13 +217,13 @@ methods Map(K, V) {
     // does one hash + one find instead of `get(...).unwrap_or(d)` + `set(...)`.
     // Ownership: on the present path `key`/`dflt` are unused → dropped at scope
     // exit (has_drop K/V handled by the maybe-moved flag, since the absent path
-    // moves them in); the old value is moved out (`__take`) into `update`, whose
+    // moves them in); the old value is moved out (`@take`) into `update`, whose
     // result is raw-stored back into the vacated slot (no double-drop).
     def upsert(&!self, K key, V dflt, Block(V) -> V update) where K: Hash + Equal {
         u64 h = key.hash()
         int idx = self._find(key, h)        // one probe; handles cap==0 (-> -1)
         if idx >= 0 {
-            V old = __take(self.vals[idx])  // move out the current value
+            V old = @take(self.vals[idx])  // move out the current value
             self.vals[idx] = update(old)    // raw store into the vacated slot
             return
         }
@@ -253,7 +253,7 @@ methods Map(K, V) {
 
     // Value for k (a CLONE) if present; otherwise insert (k, dflt) and return a
     // copy of dflt. The get-family's mutating member (cf. `get_or` which never
-    // inserts, and `upsert` which transforms an existing value). Uses __dup to
+    // inserts, and `upsert` which transforms an existing value). Uses @dup to
     // make the returned copy before moving dflt into the table, so POD and
     // has_drop V both work. `freq.get_or_insert(k, mk_empty())`.
     def get_or_insert(&!self, K k, V dflt) -> V where K: Hash + Equal {
@@ -263,7 +263,7 @@ methods Map(K, V) {
             V v = self.vals[idx]      // clone existing; k,dflt unused → dropped
             return v
         }
-        V ret = __dup(dflt)           // independent copy to hand back
+        V ret = @dup(dflt)           // independent copy to hand back
         self.set(k, dflt)             // move k,dflt into the table
         return ret
     }
@@ -360,8 +360,8 @@ methods Map(K, V) {
         int i = self._find(k, h)
         if i < 0 { return None }
         // Take the value out (to return), drop the key in place.
-        V out = __take(self.vals[i])
-        __drop_at(self.keys[i])
+        V out = @take(self.vals[i])
+        @dispose(self.keys[i])
         // Backward-shift the run that follows.
         int mask = self.cap - 1
         int j = i
@@ -376,8 +376,8 @@ methods Map(K, V) {
                 self.ctrl[j] = 255 as u8        // next is at home → must not move it
                 break
             }
-            K mk = __take(self.keys[nk])
-            V mv = __take(self.vals[nk])
+            K mk = @take(self.keys[nk])
+            V mv = @take(self.vals[nk])
             self.keys[j] = mk
             self.vals[j] = mv
             self.ctrl[j] = (c - 1) as u8        // moved one closer to its home
@@ -393,8 +393,8 @@ methods Map(K, V) {
         for (int i = 0; i < self.cap; i = i + 1) {
             int c = self.ctrl[i] as int
             if c != 255 {
-                __drop_at(self.keys[i])
-                __drop_at(self.vals[i])
+                @dispose(self.keys[i])
+                @dispose(self.vals[i])
                 self.ctrl[i] = 255 as u8
             }
         }
@@ -440,8 +440,8 @@ methods Map(K, V): Destroy {
         for (int i = 0; i < self.cap; i = i + 1) {
             int c = self.ctrl[i] as int
             if c != 255 {
-                __drop_at(self.keys[i])
-                __drop_at(self.vals[i])
+                @dispose(self.keys[i])
+                @dispose(self.vals[i])
             }
         }
         if self.cap > 0 {

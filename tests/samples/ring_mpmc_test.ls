@@ -2,7 +2,7 @@
 // new_mpmc_ring uses prod_head/cons_head CAS to hand each producer/consumer a
 // unique slot, so there is no mutex. POD path proves exact conservation (count +
 // sum); the Str path is the sharper test — if two consumers reserved the SAME
-// slot, the second __take would double-free a string (crash), so a clean run
+// slot, the second @take would double-free a string (crash), so a clean run
 // over owned has_drop elements proves the reservation is correct.
 //
 // Ring has no close, so consumers stop once the global received count hits the

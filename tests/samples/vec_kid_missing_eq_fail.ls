@@ -9,7 +9,7 @@ struct Pt { Str tag; int v }
 def main() {
     Vec(Pt) ps = {}
     Pt a = Pt { tag: f"a", v: 10 }
-    ps.push(__move(a))
+    ps.push(@move(a))
 
     Pt needle = Pt { tag: f"a", v: 10 }
     bool ok = ps.has?(needle)

@@ -12,8 +12,8 @@ def main() {
     Vec(Pt) ps = {}
     Pt a = Pt { tag: f"a", v: 10 }
     Pt b = Pt { tag: f"b", v: 20 }
-    ps.push(__move(a))
-    ps.push(__move(b))
+    ps.push(@move(a))
+    ps.push(@move(b))
 
     check(ps.len() == 2, "len")
     Pt got = ps.get!(1)

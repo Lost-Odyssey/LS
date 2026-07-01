@@ -16,7 +16,7 @@
 // Mechanism (docs/plan_task_generic.md §2): codegen synthesises a per-T thunk
 // `*box = closure(env)` that stores the closure's by-value result into a `*T`
 // box the Task owns; the runtime only runs threads and never touches the result
-// bytes. join() moves the result out of the box via __take, then frees the box
+// bytes. join() moves the result out of the box via @take, then frees the box
 // slot (not the T heap inside it).
 //
 // `run` is a plain instance method on Task(T), so the closure's expected return
@@ -43,7 +43,7 @@ methods Task(T) {
     // Wait for the worker and MOVE its result back. Terminal — call once.
     def join(&self) -> T {
         __task_join(self.h)
-        T r = __take(self.box[0])        // move the result out of the box
+        T r = @take(self.box[0])        // move the result out of the box
         std.sys.c.free(self.box as *u8)      // free the slot (not the T heap)
         return r
     }

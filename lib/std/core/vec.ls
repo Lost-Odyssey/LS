@@ -12,9 +12,9 @@
 //   * realloc / free    — grow / release the raw buffer (memcheck-tracked)
 //   * p[i] (read)       — typed element read; DEEP-CLONES owned data (matches vec[i])
 //   * p[i] = x (write)  — raw store (no drop of the old slot)
-//   * __take(slot)      — move OUT of a slot (bit-read, no clone)
-//   * __drop_at(slot)   — recursive destructor on a slot (frees owned data)
-//   * __move(local)     — transfer ownership of a named local
+//   * @take(slot)      — move OUT of a slot (bit-read, no clone)
+//   * @dispose(slot)   — recursive destructor on a slot (frees owned data)
+//   * @move(local)     — transfer ownership of a named local
 //   * Clone interface (def clone) — user deep-copy hook (Vec(Vec(T)) reads deep-clone)
 //   * def __from_list    — list-literal init opt-in (the `[..]` protocol)
 //
@@ -100,7 +100,7 @@ methods Vec(T) {
         self.reserve(self.len + 1)
         int j = self.len
         while j > i {
-            T e = __take(self.data[j - 1])   // move element right (no clone)
+            T e = @take(self.data[j - 1])   // move element right (no clone)
             self.data[j] = e
             j = j - 1
         }
@@ -118,7 +118,7 @@ methods Vec(T) {
     def pop(&!self) -> Option(T) {
         if self.len == 0 { return None }
         self.len = self.len - 1
-        T out = __take(self.data[self.len])   // move out (no clone); slot vacated
+        T out = @take(self.data[self.len])   // move out (no clone); slot vacated
         return Some(out)
     }
 
@@ -129,10 +129,10 @@ methods Vec(T) {
             @print(f"Vec.remove index out of bounds: len={self.len} index={i}")
             std.sys.c.abort()
         }
-        T out = __take(self.data[i])
+        T out = @take(self.data[i])
         int j = i
         while j < self.len - 1 {
-            T e = __take(self.data[j + 1])    // move element left (no clone)
+            T e = @take(self.data[j + 1])    // move element left (no clone)
             self.data[j] = e
             j = j + 1
         }
@@ -141,20 +141,20 @@ methods Vec(T) {
     }
 
     // Drop elements [n, len); keep the first n. n >= len is a no-op; n < 0 is an
-    // invalid length and aborts (would otherwise __drop_at a negative slot).
+    // invalid length and aborts (would otherwise @dispose a negative slot).
     def truncate(&!self, int n) {
         if n < 0 {
             @print(f"Vec.truncate negative length: n={n}")
             std.sys.c.abort()
         }
         if n >= self.len { return }
-        for (int i = n; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
+        for (int i = n; i < self.len; i = i + 1) { @dispose(self.data[i]) }
         self.len = n
     }
 
     // Drop every element, keep the buffer (len -> 0).
     def clear(&!self) {
-        for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
+        for (int i = 0; i < self.len; i = i + 1) { @dispose(self.data[i]) }
         self.len = 0
     }
 
@@ -192,7 +192,7 @@ methods Vec(T) {
     // UNCHECKED raw overwrite of slot i: drop the old, move the new in. Caller MUST
     // keep i in [0, len); out-of-range drops/stores at a bogus address (UB).
     def set!(&!self, int i, T x) {
-        __drop_at(self.data[i])
+        @dispose(self.data[i])
         self.data[i] = x
     }
 
@@ -267,8 +267,8 @@ methods Vec(T) {
             std.sys.c.abort()
         }
         if i == j { return }
-        T a = __take(self.data[i])
-        T b = __take(self.data[j])
+        T a = @take(self.data[i])
+        T b = @take(self.data[j])
         self.data[i] = b
         self.data[j] = a
     }
@@ -278,8 +278,8 @@ methods Vec(T) {
         int i = 0
         int j = self.len - 1
         while i < j {
-            T a = __take(self.data[i])
-            T b = __take(self.data[j])
+            T a = @take(self.data[i])
+            T b = @take(self.data[j])
             self.data[i] = b
             self.data[j] = a
             i = i + 1
@@ -295,7 +295,7 @@ methods Vec(T) {
             std.sys.c.abort()
         }
         if n <= self.len {
-            for (int i = n; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
+            for (int i = n; i < self.len; i = i + 1) { @dispose(self.data[i]) }
             self.len = n
             return                           // `fill` unused → dropped at scope exit
         }
@@ -434,10 +434,10 @@ methods Vec(T) {
         int w = 0
         for (int r = 0; r < self.len; r = r + 1) {
             if keep(&self.data[r]) {
-                if w != r { self.data[w] = __take(self.data[r]) }
+                if w != r { self.data[w] = @take(self.data[r]) }
                 w = w + 1
             } else {
-                __drop_at(self.data[r])
+                @dispose(self.data[r])
             }
         }
         self.len = w
@@ -450,9 +450,9 @@ methods Vec(T) {
         int w = 1
         for (int r = 1; r < self.len; r = r + 1) {
             if self.data[r] == self.data[w - 1] {
-                __drop_at(self.data[r])
+                @dispose(self.data[r])
             } else {
-                if w != r { self.data[w] = __take(self.data[r]) }
+                if w != r { self.data[w] = @take(self.data[r]) }
                 w = w + 1
             }
         }
@@ -460,13 +460,13 @@ methods Vec(T) {
     }
 
     // Set every existing slot to an independent copy of `x` (old values dropped
-    // first); `x` itself is dropped once at scope exit. Uses __dup so it works for
+    // first); `x` itself is dropped once at scope exit. Uses @dup so it works for
     // POD T (bit-copy) and has_drop T (deep clone) alike. Does NOT change len —
     // fill an empty/short Vec with `resize` first if you need N slots.
     def fill(&!self, T x) {
         for (int i = 0; i < self.len; i = i + 1) {
-            __drop_at(self.data[i])
-            self.data[i] = __dup(x)
+            @dispose(self.data[i])
+            self.data[i] = @dup(x)
         }
     }
 
@@ -477,9 +477,9 @@ methods Vec(T) {
             @print("Vec.swap_remove: index out of bounds")
             std.sys.c.abort()
         }
-        T out = __take(self.data[i])
+        T out = @take(self.data[i])
         int last = self.len - 1
-        if i != last { self.data[i] = __take(self.data[last]) }
+        if i != last { self.data[i] = @take(self.data[last]) }
         self.len = last
         return out
     }
@@ -555,7 +555,7 @@ methods Vec(T) {
     // keep their original order, matching the previous insertion sort). `cmp(a,b)`
     // returns <0 if a<b, 0 if equal, >0 if a>b; the result is ascending by cmp.
     // (Was an O(n^2) insertion sort.) Uses a scratch buffer of n slots; elements
-    // are MOVED (`__take`, no clone) between data and scratch, so has_drop T is
+    // are MOVED (`@take`, no clone) between data and scratch, so has_drop T is
     // never double-freed. Comparisons still clone-read the two operands (cmp takes
     // T by value) — that per-compare clone is the separate concern tracked in
     // docs/limitations.md (functional/sort clone-on-read).
@@ -577,17 +577,17 @@ methods Vec(T) {
                 int k = lo
                 while i < mid && j < hi {
                     if cmp(&self.data[i], &self.data[j]) <= 0 {   // borrow operands, zero-copy compare; <= keeps left first on tie (stable)
-                        buf[k] = __take(self.data[i]); i = i + 1
+                        buf[k] = @take(self.data[i]); i = i + 1
                     } else {
-                        buf[k] = __take(self.data[j]); j = j + 1
+                        buf[k] = @take(self.data[j]); j = j + 1
                     }
                     k = k + 1
                 }
-                while i < mid { buf[k] = __take(self.data[i]); i = i + 1; k = k + 1 }
-                while j < hi  { buf[k] = __take(self.data[j]); j = j + 1; k = k + 1 }
+                while i < mid { buf[k] = @take(self.data[i]); i = i + 1; k = k + 1 }
+                while j < hi  { buf[k] = @take(self.data[j]); j = j + 1; k = k + 1 }
                 // Move the merged run back into place (source slots were vacated).
                 int t = lo
-                while t < hi { self.data[t] = __take(buf[t]); t = t + 1 }
+                while t < hi { self.data[t] = @take(buf[t]); t = t + 1 }
                 lo = lo + width + width
             }
             width = width + width
@@ -620,7 +620,7 @@ methods Vec(T): Clone {
 methods Vec(T): Destroy {
     // Drop every live element (recursively), then free the buffer.
     def ~(&!self) {
-        for (int i = 0; i < self.len; i = i + 1) { __drop_at(self.data[i]) }
+        for (int i = 0; i < self.len; i = i + 1) { @dispose(self.data[i]) }
         if self.cap > 0 { std.sys.c.free(self.data as *u8) }
     }
 }

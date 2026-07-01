@@ -11,7 +11,7 @@
 // Order is reversed.
 //
 // Ownership: push moves T in; pop moves the max OUT (no clone) via Vec.pop; peek
-// returns a CLONE of the max. Sift up/down MOVE elements with Vec.swap (__take,
+// returns a CLONE of the max. Sift up/down MOVE elements with Vec.swap (@take,
 // no clone) and compare them in place through the raw `data` pointer (borrow, no
 // per-compare clone). The heap drops its Vec(T) on scope exit (auto-derived
 // Destroy), which drops every remaining element.
@@ -38,7 +38,7 @@ methods BinaryHeap(T) {
 
     // Insert x and restore the heap order by sifting it up toward the root while
     // it is larger than its parent. Compares through the raw data pointer (borrow,
-    // no clone); swaps move elements (Vec.swap = __take, no clone).
+    // no clone); swaps move elements (Vec.swap = @take, no clone).
     def push(&!self, T x) where T: Order {
         self.data.push(x)
         int i = self.data.len() - 1

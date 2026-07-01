@@ -1,6 +1,6 @@
 // map_owndrop_test.ls — std.core.map M-2: has_drop K/V ownership. Verifies set
 // (move-in + overwrite drops old), get (clone), remove (move out + drop key),
-// clear, grow/rehash (moves has_drop entries via __take), and auto-drop of Map
+// clear, grow/rehash (moves has_drop entries via @take), and auto-drop of Map
 // as a struct field — all memcheck 0/0/0 for has_drop keys, Str values,
 // container values (Vec), and nested maps. See docs/plan_std_map.md §8.
 

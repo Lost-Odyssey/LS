@@ -2,7 +2,7 @@
 // var / assignment when the checker confirms ownership transfer. The source is
 // invalidated at runtime so scope-drop never double-frees. This sample exercises
 // every elided clone site (Str/struct/enum/Vec/Map, var_decl + assign +
-// field-assign + explicit __move + conditional move) and self-checks that the
+// field-assign + explicit @move + conditional move) and self-checks that the
 // moved data survived intact (a corrupted move would garble the printed values).
 // Registered under JIT memcheck: must be 0 leak / 0 double-free / 0 invalid free.
 
@@ -23,9 +23,9 @@ def main() {
     Str s2 = s1                       // move-elision: s1 invalidated
     check(s2.eq?("ALPHA"), "string-var")
 
-    // --- explicit __move ---
+    // --- explicit @move ---
     Str m1 = "beta".upper()
-    Str m2 = __move(m1)
+    Str m2 = @move(m1)
     check(m2.eq?("BETA"), "string-move")
 
     // --- Str assign ---

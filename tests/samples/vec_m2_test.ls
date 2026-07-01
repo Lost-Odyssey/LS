@@ -45,7 +45,7 @@ def main() {
     Vec(Pt) vp = {}
     for (int i = 0; i < 5; i = i + 1) {
         Pt e = Pt { tag: f"t{i}", v: i * 10 }
-        vp.push(__move(e))
+        vp.push(@move(e))
     }
     check(vp.len() == 5, "struct: len 5")
     // aggregate element reads (clone-on-read) + field read-through of a method result
