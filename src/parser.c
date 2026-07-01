@@ -865,6 +865,17 @@ static AstNode *prefix_at_print(Parser *p) {
     return n;
 }
 
+/* @take/@dispose/@dup/@move — place/ownership intrinsics. Mirrors prefix_at_print:
+   produce the IDENT whose name IS the lexeme ("@take"), so the Pratt call-infix
+   forms AST_CALL callee "@take", which the checker/codegen recognize via
+   intrinsic_lookup. */
+static AstNode *prefix_at_intrinsic(Parser *p) {
+    Token tok = p->previous; /* TOKEN_AT_INTRINSIC, lexeme spans "@name" */
+    AstNode *n = new_node(AST_IDENT, tok.line, tok.column);
+    n->as.ident.name = str_dup_n(tok.start, tok.length);
+    return n;
+}
+
 /* Phase A.5: Ruby-style closure literal. Param list already past the leading
    '|' (or, for the no-arg ||, past the '||' itself). When `parse_params` is
    true, we still need to consume identifiers and the trailing '|'.
@@ -1909,6 +1920,7 @@ static void init_parse_rules(void) {
     rules[TOKEN_AT_TIME]    = (ParseRule){ prefix_at_time,   NULL,              PREC_NONE };
     rules[TOKEN_AT_BENCH]   = (ParseRule){ prefix_at_bench,  NULL,              PREC_NONE };
     rules[TOKEN_AT_PRINT]   = (ParseRule){ prefix_at_print,  NULL,              PREC_NONE };
+    rules[TOKEN_AT_INTRINSIC] = (ParseRule){ prefix_at_intrinsic, NULL,          PREC_NONE };
 }
 
 static const ParseRule *get_rule(TokenType type) {
