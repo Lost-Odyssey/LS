@@ -1,0 +1,27 @@
+// C1 §3.5 has_drop worklist stress: a deep propagation chain plus nested
+// generic containers. Legacy needs several full-registry rounds to settle
+// (Leaf owns Str -> D -> C -> B -> A); the worklist flips each once. Run under
+// LS_HASDROP_VERIFY=1 the two algorithms must agree per type; under --memcheck
+// every has_drop type must be destructed (0 leaks) — i.e. has_drop was set.
+import std.core.vec
+import std.core.map
+struct Leaf { Str s }
+struct D { Leaf f }
+enum C { CV(D), CE }
+struct B { C c }
+struct A { B b }
+struct GenBox(T) {
+    T val
+    Str tag
+}
+def main() -> int {
+    A a = A{ b: B{ c: CV(D{ f: Leaf{ s: "leaf" } }) } }
+    Vec(Map(Str, Vec(A))) deep = {}
+    GenBox(A) gb = GenBox(A){ val: a, tag: "tag" }
+    Option(D) od = mk_none()
+    if gb.tag.len() == 3 {
+        @print("HASDROP OK")
+    }
+    return 0
+}
+def mk_none() -> Option(D) { return None }

@@ -3135,6 +3135,17 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_destroy.cmake
 )
 
+# C1 §3.5 has_drop fixpoint worklist：LS_HASDROP_VERIFY=1 让 worklist 与 legacy
+# 全表扫 oracle 从同一 seed 双跑、逐类型对比不一致即 abort；+ memcheck 保证
+# 漏翻 has_drop（漏析构）会以泄漏暴露。深层传播链 + 嵌套泛型容器。
+add_test(
+    NAME test_hasdrop_worklist
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_hasdrop_worklist.cmake
+)
+
 # Read-only `&field` / `&element` borrow — the twin of the `&!field` writable
 # field borrow. `&obj.field` / `&arr[i]` to a read-only `&T` param (fn or
 # Block(&T)) lends a zero-copy read-only borrow of a has_drop field/element

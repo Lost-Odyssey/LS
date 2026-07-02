@@ -9683,48 +9683,242 @@ static void register_builtins(Checker *c)
    instantiations are processed, re-propagate has_drop across every registered
    struct/enum type until stable. Monotonic (only ever sets true, never clears —
    so user-__drop structs with POD fields keep their has_drop), so it converges. */
-static void checker_propagate_has_drop_fixpoint(Checker *c)
+/* ---- C1 §3.5: has_drop fixpoint --------------------------------------------
+   A struct/enum owns heap (has_drop) iff a DIRECT struct/enum field or payload
+   does — type_owns_heap_for_enum() looks exactly one level deep (Vec/Map/Str
+   ARE has_drop structs, so a `Vec(T)` field is already a direct struct field).
+   Propagation therefore flows strictly along "type T is a direct field of
+   container U" edges. The legacy driver rescans the entire registry each round
+   until nothing flips (O(rounds×types×fields)); the worklist flips each type at
+   most once and re-examines only the containers that name a just-flipped type.
+   Both are retained: LS_HASDROP_VERIFY=1 runs them from an identical seed and
+   asserts per-type parity (plan §3.5 + §5 risk row). */
+
+/* Read has_drop for a struct/enum (false for anything else / NULL). */
+static bool hasdrop_is_set(const Type *t)
+{
+    if (t == NULL) return false;
+    if (t->kind == TYPE_STRUCT) return t->as.strukt.has_drop;
+    if (t->kind == TYPE_ENUM)   return t->as.enom.has_drop;
+    return false;
+}
+
+/* Recompute has_drop for one type from its fields/payloads, setting the flag if
+   a direct heap-owning member is found. Returns whether has_drop is set on exit
+   (already-set types short-circuit true). */
+static bool hasdrop_eval(Type *t)
+{
+    if (t == NULL) return false;
+    if (t->kind == TYPE_STRUCT) {
+        if (t->as.strukt.has_drop) return true;
+        for (int f = 0; f < t->as.strukt.field_count; f++)
+            if (type_owns_heap_for_enum(t->as.strukt.fields[f].type)) {
+                t->as.strukt.has_drop = true;
+                return true;
+            }
+        return false;
+    }
+    if (t->kind == TYPE_ENUM) {
+        if (t->as.enom.has_drop) return true;
+        for (int v = 0; v < t->as.enom.variant_count; v++)
+            for (int p = 0; p < t->as.enom.variants[v].payload_count; p++) {
+                Type *pt = t->as.enom.variants[v].payload_types[p];
+                if (pt == t || type_owns_heap_for_enum(pt)) {  /* self-ref = box heap */
+                    t->as.enom.has_drop = true;
+                    return true;
+                }
+            }
+        return false;
+    }
+    return false;
+}
+
+/* Reference oracle: rescan the whole registry until stable. */
+static void checker_propagate_has_drop_legacy(Checker *c)
 {
     bool changed = true;
     int guard = 0;
-    while (changed && guard++ < 4096)
-    {
+    while (changed && guard++ < 4096) {
         changed = false;
-        for (int i = 0; i < c->struct_type_count; i++)
-        {
+        for (int i = 0; i < c->struct_type_count; i++) {
             Type *st = c->struct_types[i].type;
-            if (st == NULL || st->kind != TYPE_STRUCT || st->as.strukt.has_drop)
-                continue;
-            for (int f = 0; f < st->as.strukt.field_count; f++)
-            {
-                if (type_owns_heap_for_enum(st->as.strukt.fields[f].type))
-                {
-                    st->as.strukt.has_drop = true;
-                    changed = true;
-                    break;
-                }
-            }
+            if (st && st->kind == TYPE_STRUCT && !st->as.strukt.has_drop && hasdrop_eval(st))
+                changed = true;
         }
-        for (int i = 0; i < c->enum_type_count; i++)
-        {
+        for (int i = 0; i < c->enum_type_count; i++) {
             Type *et = c->enum_types[i].type;
-            if (et == NULL || et->kind != TYPE_ENUM || et->as.enom.has_drop)
-                continue;
-            for (int v = 0; v < et->as.enom.variant_count && !et->as.enom.has_drop; v++)
-            {
-                for (int p = 0; p < et->as.enom.variants[v].payload_count; p++)
-                {
-                    Type *pt = et->as.enom.variants[v].payload_types[p];
-                    if (pt == et || type_owns_heap_for_enum(pt))
-                    {
-                        et->as.enom.has_drop = true;
-                        changed = true;
-                        break;
+            if (et && et->kind == TYPE_ENUM && !et->as.enom.has_drop && hasdrop_eval(et))
+                changed = true;
+        }
+    }
+}
+
+/* Worklist: seed every type once, then re-examine a container only when one of
+   its direct field types just flipped to has_drop. */
+static void checker_propagate_has_drop_worklist(Checker *c)
+{
+    int ns = c->struct_type_count, ne = c->enum_type_count;
+    int n = ns + ne;
+    if (n == 0) return;
+
+    Type **types = malloc_safe((size_t)n * sizeof(Type *));
+    for (int i = 0; i < ns; i++) types[i]      = c->struct_types[i].type;
+    for (int i = 0; i < ne; i++) types[ns + i] = c->enum_types[i].type;
+
+    /* pointer -> index, open addressing (keep first on a duplicate pointer). */
+    int hcap = 16;
+    while (hcap < n * 2) hcap <<= 1;
+    int *hslot = malloc_safe((size_t)hcap * sizeof(int));
+    for (int i = 0; i < hcap; i++) hslot[i] = -1;
+    unsigned long long hmask = (unsigned long long)hcap - 1;
+    for (int i = 0; i < n; i++) {
+        if (types[i] == NULL) continue;
+        unsigned long long h =
+            ((unsigned long long)(uintptr_t)types[i] * 0x9E3779B97F4A7C15ULL) & hmask;
+        while (hslot[h] != -1 && types[hslot[h]] != types[i]) h = (h + 1) & hmask;
+        if (hslot[h] == -1) hslot[h] = i;
+    }
+    #define HD_IDX_OF(p, out) do {                                              \
+        (out) = -1;                                                            \
+        if (p) {                                                               \
+            unsigned long long _h =                                            \
+                ((unsigned long long)(uintptr_t)(p) * 0x9E3779B97F4A7C15ULL) & hmask; \
+            while (hslot[_h] != -1) {                                          \
+                if (types[hslot[_h]] == (p)) { (out) = hslot[_h]; break; }     \
+                _h = (_h + 1) & hmask;                                         \
+            }                                                                  \
+        }                                                                      \
+    } while (0)
+
+    /* Collect edges (dep_index -> container_index) for every direct struct/enum
+       member, then pack into CSR keyed by dep_index. Deps not in the registry
+       (idx == -1) can never flip, so they need no edge. */
+    int ecap = n + 8, ecount = 0;
+    int *edge_t = malloc_safe((size_t)ecap * sizeof(int));
+    int *edge_u = malloc_safe((size_t)ecap * sizeof(int));
+    for (int u = 0; u < n; u++) {
+        Type *U = types[u];
+        if (U == NULL) continue;
+        if (U->kind == TYPE_STRUCT) {
+            for (int f = 0; f < U->as.strukt.field_count; f++) {
+                Type *ft = U->as.strukt.fields[f].type;
+                if (!ft || (ft->kind != TYPE_STRUCT && ft->kind != TYPE_ENUM)) continue;
+                int ti; HD_IDX_OF(ft, ti);
+                if (ti < 0) continue;
+                if (ecount == ecap) {
+                    ecap *= 2;
+                    edge_t = realloc_safe(edge_t, (size_t)ecap * sizeof(int));
+                    edge_u = realloc_safe(edge_u, (size_t)ecap * sizeof(int));
+                }
+                edge_t[ecount] = ti; edge_u[ecount] = u; ecount++;
+            }
+        } else if (U->kind == TYPE_ENUM) {
+            for (int v = 0; v < U->as.enom.variant_count; v++)
+                for (int p = 0; p < U->as.enom.variants[v].payload_count; p++) {
+                    Type *pt = U->as.enom.variants[v].payload_types[p];
+                    if (!pt || pt == U ||
+                        (pt->kind != TYPE_STRUCT && pt->kind != TYPE_ENUM)) continue;
+                    int ti; HD_IDX_OF(pt, ti);
+                    if (ti < 0) continue;
+                    if (ecount == ecap) {
+                        ecap *= 2;
+                        edge_t = realloc_safe(edge_t, (size_t)ecap * sizeof(int));
+                        edge_u = realloc_safe(edge_u, (size_t)ecap * sizeof(int));
                     }
+                    edge_t[ecount] = ti; edge_u[ecount] = u; ecount++;
+                }
+        }
+    }
+
+    int *roff = malloc_safe((size_t)(n + 1) * sizeof(int));
+    memset(roff, 0, (size_t)(n + 1) * sizeof(int));
+    for (int e = 0; e < ecount; e++) roff[edge_t[e] + 1]++;
+    for (int i = 0; i < n; i++) roff[i + 1] += roff[i];
+    int *rtargets = ecount ? malloc_safe((size_t)ecount * sizeof(int)) : NULL;
+    int *rfill = malloc_safe((size_t)n * sizeof(int));
+    memset(rfill, 0, (size_t)n * sizeof(int));
+    for (int e = 0; e < ecount; e++) {
+        int t = edge_t[e];
+        rtargets[roff[t] + rfill[t]++] = edge_u[e];
+    }
+
+    /* Ring worklist (<= n live at once thanks to the in-queue flag). */
+    int qcap = n + 1;
+    int *queue = malloc_safe((size_t)qcap * sizeof(int));
+    bool *inq = malloc_safe((size_t)n * sizeof(bool));
+    memset(inq, 0, (size_t)n * sizeof(bool));
+    int head = 0, tail = 0;
+    for (int i = 0; i < n; i++) { queue[tail] = i; tail = (tail + 1) % qcap; inq[i] = true; }
+
+    while (head != tail) {
+        int u = queue[head]; head = (head + 1) % qcap; inq[u] = false;
+        Type *U = types[u];
+        if (hasdrop_is_set(U)) continue;   /* already propagated when it flipped */
+        if (hasdrop_eval(U)) {             /* just flipped false -> true */
+            for (int e = roff[u]; e < roff[u + 1]; e++) {
+                int w = rtargets[e];
+                if (!inq[w] && !hasdrop_is_set(types[w])) {
+                    queue[tail] = w; tail = (tail + 1) % qcap; inq[w] = true;
                 }
             }
         }
     }
+
+    #undef HD_IDX_OF
+    free(types); free(hslot);
+    free(edge_t); free(edge_u);
+    free(roff); free(rtargets); free(rfill);
+    free(queue); free(inq);
+}
+
+static void checker_propagate_has_drop_fixpoint(Checker *c)
+{
+    if (!getenv("LS_HASDROP_VERIFY")) {
+        checker_propagate_has_drop_worklist(c);
+        return;
+    }
+
+    /* Parity harness: run both from the identical seed, assert per-type match. */
+    int ns = c->struct_type_count, ne = c->enum_type_count;
+    bool *seedS = malloc_safe((size_t)(ns ? ns : 1) * sizeof(bool));
+    bool *seedE = malloc_safe((size_t)(ne ? ne : 1) * sizeof(bool));
+    bool *wl_S  = malloc_safe((size_t)(ns ? ns : 1) * sizeof(bool));
+    bool *wl_E  = malloc_safe((size_t)(ne ? ne : 1) * sizeof(bool));
+    for (int i = 0; i < ns; i++)
+        seedS[i] = hasdrop_is_set(c->struct_types[i].type);
+    for (int i = 0; i < ne; i++)
+        seedE[i] = hasdrop_is_set(c->enum_types[i].type);
+
+    checker_propagate_has_drop_worklist(c);
+    for (int i = 0; i < ns; i++)
+        wl_S[i] = hasdrop_is_set(c->struct_types[i].type);
+    for (int i = 0; i < ne; i++)
+        wl_E[i] = hasdrop_is_set(c->enum_types[i].type);
+
+    /* Restore seed, run legacy oracle. */
+    for (int i = 0; i < ns; i++) {
+        Type *st = c->struct_types[i].type;
+        if (st && st->kind == TYPE_STRUCT) st->as.strukt.has_drop = seedS[i];
+    }
+    for (int i = 0; i < ne; i++) {
+        Type *et = c->enum_types[i].type;
+        if (et && et->kind == TYPE_ENUM) et->as.enom.has_drop = seedE[i];
+    }
+    checker_propagate_has_drop_legacy(c);
+
+    for (int i = 0; i < ns; i++)
+        if (hasdrop_is_set(c->struct_types[i].type) != wl_S[i]) {
+            fprintf(stderr, "[hasdrop-verify] MISMATCH struct '%s': worklist=%d legacy=%d\n",
+                    c->struct_types[i].name, wl_S[i], !wl_S[i]);
+            abort();
+        }
+    for (int i = 0; i < ne; i++)
+        if (hasdrop_is_set(c->enum_types[i].type) != wl_E[i]) {
+            fprintf(stderr, "[hasdrop-verify] MISMATCH enum '%s': worklist=%d legacy=%d\n",
+                    c->enum_types[i].name, wl_E[i], !wl_E[i]);
+            abort();
+        }
+    free(seedS); free(seedE); free(wl_S); free(wl_E);
 }
 
 /* ---- Public entry point ---- */
