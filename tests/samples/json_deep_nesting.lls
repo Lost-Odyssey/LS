@@ -1,0 +1,39 @@
+// json_deep_nesting.lls — regression for the exponential Vec.copy clone bug
+// (found by stdfuzz) and the deep-recursion crash guard.
+//
+// Root cause: Vec.copy did `T e = self.data[i]; out.push(e)` which deep-cloned
+// EACH element twice (clone-on-read + by-value push clone). For a nested
+// Vec(has_drop) that recursed, cost was O(2^depth) — a 100-deep balanced JSON
+// array (well-formed, legal) hung for minutes. Fixed by cloning once:
+// `out.push(self.data[i])`. Before the fix this program never finishes; after,
+// it runs in well under the test's timeout.
+//
+// Also checks json's depth guard: deeply-nested UNCLOSED input must return a
+// clean error, not overflow the native stack and crash.
+
+import std.text.json as json
+import std.core.str
+
+def main() -> int {
+    // ---- 1. deep BALANCED array (depth 100, legal) must parse fast ----
+    // Pre-fix: O(2^100) clones -> effectively never returns.
+    Str s = "["
+    for i in 0..99 { s = s + "[" }
+    s = s + "1"
+    for i in 0..99 { s = s + "]" }
+    s = s + "]"
+    match json.parse(s) {
+        Ok(v) => { @print("PASS deep-balanced") }
+        Err(e) => { @print(f"FAIL deep-balanced: {e}") }
+    }
+
+    // ---- 2. deep UNCLOSED array must error cleanly (no stack-overflow crash) ----
+    Str u = "["
+    for i in 0..3000 { u = u + "[" }
+    match json.parse(u) {
+        Ok(v) => { @print("FAIL unclosed: parsed?!") }
+        Err(e) => { @print("PASS deep-unclosed-guarded") }
+    }
+
+    return 0
+}

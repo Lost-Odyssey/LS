@@ -1171,7 +1171,7 @@ just call <code>.reflect()</code>; the result is an ordinary <code>TypeInfo</cod
 <!-- ===================== REGEX ===================== -->
 <section id="regex">
 <h2>regex<span class="imp">import std.text.regex as re</span></h2>
-<p class="purpose">Regular expressions (Pike-VM NFA backend). Invalid patterns return false/empty/0 — never crash.</p>
+<p class="purpose">Regular expressions (Pike-VM NFA backend). Invalid patterns return false/empty/0 — never crash. Group nesting is capped at 256 levels; a deeper pattern is rejected as invalid.</p>
 <p>Flags (OR together, or inline <code>(?i)</code>/<code>(?m)</code>/<code>(?s)</code>):
 <code>LS_RE_IGNORECASE=1</code>, <code>LS_RE_MULTILINE=2</code>, <code>LS_RE_DOTALL=4</code>.</p>
 <table class="api">
@@ -1328,7 +1328,7 @@ struct File { object handle; bool is_binary }   // move-only RAII handle: auto-c
     Object(Vec(Str) keys, Map(Str, JsonValue) entries)
 }</pre></div>
 <table class="api">
-<tr><td class="s"><span class="sig">def parse(Str input) -&gt; Result(JsonValue, Str)</span></td><td class="d">Parse a JSON string.</td></tr>
+<tr><td class="s"><span class="sig">def parse(Str input) -&gt; Result(JsonValue, Str)</span></td><td class="d">Parse a JSON string. Nesting is capped at 128 levels — deeper input returns <code>Err("json: nesting too deep")</code> instead of overflowing the stack.</td></tr>
 <tr><td class="s"><span class="sig">def stringify(JsonValue v) -&gt; Str</span></td><td class="d">Compact serialization.</td></tr>
 <tr><td class="s"><span class="sig">def stringify_pretty(JsonValue v, int indent) -&gt; Str</span></td><td class="d">Indented serialization.</td></tr>
 <tr><td class="s"><span class="sig">def load_file/save_file/save_compact(...)</span></td><td class="d">File round-trips (all <code>Result</code>).</td></tr>
@@ -1356,7 +1356,7 @@ enum HtmlNode {
 }
 struct HtmlDoc { Vec(HtmlNode) roots }</pre></div>
 <table class="api">
-<tr><td class="s"><span class="sig">def parse(Str input) -&gt; HtmlDoc</span></td><td class="d">Parse tolerant HTML into a forest.</td></tr>
+<tr><td class="s"><span class="sig">def parse(Str input) -&gt; HtmlDoc</span></td><td class="d">Parse tolerant HTML into a forest. Tag nesting is capped at 256 levels — deeper elements are dropped (partial tree) rather than overflowing the stack.</td></tr>
 <tr><td class="s"><span class="sig">def render(&amp;HtmlDoc d) -&gt; Str</span></td><td class="d">Compact render.</td></tr>
 <tr><td class="s"><span class="sig">def render_pretty(&amp;HtmlDoc d, int step) -&gt; Str</span></td><td class="d">Indented render.</td></tr>
 <tr><td class="s"><span class="sig">def escape(Str s) -&gt; Str</span></td><td class="d">Escape <code>&amp; &lt; &gt;</code> to entities.</td></tr>

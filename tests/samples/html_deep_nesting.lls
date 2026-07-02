@@ -1,0 +1,21 @@
+// html_deep_nesting.lls — regression for the html.parse deep-recursion crash
+// (found by stdfuzz). Deeply-nested tags ("<a><a><a>...") drove the mutually
+// recursive _parse_element/_parse_nodes past the native stack and crashed the
+// process. Fixed with a nesting-depth cap that returns the partial tree. This
+// input MUST parse without crashing.
+
+import std.text.html as html
+import std.core.str
+
+def main() -> int {
+    // 2000 nested <a> tags — well past the pre-fix crash point (~1000).
+    Str s = ""
+    for i in 0..2000 { s = s + "<a>" }
+    HtmlDoc d = html.parse(s)
+    @print("PASS html-deep-nesting")
+
+    // normal HTML must still parse fine
+    HtmlDoc d2 = html.parse("<div class=\"x\"><p>hi</p><ul><li>a</li></ul></div>")
+    @print("PASS html-normal")
+    return 0
+}

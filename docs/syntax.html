@@ -95,6 +95,7 @@
   <div class="group">Ownership &amp; Move</div>
   <a class="item" href="#ow-model">value &amp; move model</a>
   <a class="item" href="#ow-bind">binding vs argument</a>
+  <a class="item" href="#ow-clone">the double-clone trap</a>
   <a class="item" href="#ow-uam">use-after-move</a>
   <a class="item" href="#ow-raii">destructors / RAII</a>
   <div class="group">Borrowing</div>
@@ -680,6 +681,44 @@ m[<span class="s">"a"</span>] = 1
     <a href="#er-bang"><code>!</code></a>, and passing an owned <em>temporary</em> into a
     container (<code>v.push("x".upper())</code> — an rvalue, moved in; a named variable
     there is cloned, not moved).</p>
+  </section>
+
+  <section id="ow-clone">
+    <h2>The double-clone trap — copy once, not twice</h2>
+    <p>The two rules above interact in a way that bites hard. <b>Binding clones-on-read</b>
+    out of a place (an index, a field), and a <b>by-value argument clones again</b>. So the
+    innocent two-step "read an element, then hand it on" makes <b>two</b> deep copies:</p>
+    <div class="ex"><pre><span class="c">// ❌ TWO deep clones per element</span>
+<span class="t">T</span> e = <span class="k">self</span>.data[i]      <span class="c">// clone #1 — clone-on-read out of the buffer</span>
+out.push(e)              <span class="c">// clone #2 — e is a named local, cloned into the by-value arg</span></pre></div>
+    <p>On flat data that is a harmless <b>2×</b> constant. On a <b>nested owning</b> structure it
+    <b>compounds</b>: cloning a depth-<i>d</i> value clones its child twice, and each of those
+    clones clones <i>its</i> child twice, all the way down —</p>
+    <div class="ex"><pre>clone Wrap(depth 3)
+└─ clone its Vec → clone the one child <b>TWICE</b>
+   ├─ clone#1 (depth 2) → clone its Vec → child <b>TWICE</b> → depth1 ×2 → leaf ×2
+   └─ clone#2 (depth 2) → clone its Vec → child <b>TWICE</b> → depth1 ×2 → leaf ×2
+
+   Cost(d) = 2 · Cost(d−1)   ⟹   Cost(d) = O(2^d)
+   the deepest node is copied 2^depth times</pre></div>
+    <p>A perfectly legal 100-deep nested <code>Vec</code> (or JSON array — its payload is a
+    <code>Vec</code>) then costs 2¹⁰⁰ clones and never returns. This was a real bug in
+    <code>Vec.copy</code>; a fuzzer found it as a hang on deep-but-valid input.</p>
+    <p><b>Fix — clone exactly once.</b> Don't materialise the intermediate named local. Use
+    <code>@dup</code> (the explicit single-copy primitive: POD bit-copy / owning deep-clone,
+    source untouched) — its fresh rvalue then <em>moves</em> into <code>push</code> instead of
+    being re-cloned. Passing the place straight into the by-value slot is equivalent:</p>
+    <div class="ex"><pre><span class="c">// ✓ ONE clone per element — both spellings are O(depth)</span>
+out.push(<span class="k">@dup</span>(<span class="k">self</span>.data[i]))   <span class="c">// explicit: dup once; the rvalue moves into push</span>
+out.push(<span class="k">self</span>.data[i])         <span class="c">// implicit: the place is cloned once into the arg</span></pre></div>
+    <div class="warn"><b><code>@move</code> does NOT solve this in generic code.</b>
+    <code>@move(e)</code> would turn clone #2 into a move — but only for <em>owning</em> element
+    types. <code>@move</code> is a <b>compile error on a POD</b> (<code>int</code>/<code>f64</code>/
+    <code>bool</code>): a plain value has no ownership to transfer. A generic container method like
+    <code>Vec(T).copy</code> is instantiated for POD <em>and</em> owning <code>T</code>, so it must
+    use <code>@dup</code> / a place — those degrade to a bit-copy for POD and a deep-clone for
+    owning <code>T</code>, compiling for every <code>T</code>. Reach for <code>@move</code> only to
+    consume one specific named owning variable, never for generic per-element copying.</div>
   </section>
 
   <section id="ow-uam">

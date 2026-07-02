@@ -1,0 +1,22 @@
+// regex_deep_nesting.lls — regression for the regex-compiler deep-group crash
+// (found by stdfuzz). A pattern of deeply-nested groups ("(((((...") drove the
+// recursive-descent compiler in runtime/ls_regex.c past the native stack and
+// crashed. Fixed with a nesting-depth cap (RE_MAX_DEPTH) that rejects the
+// pattern (matches -> false) instead of crashing. This MUST not crash.
+
+import std.text.regex as re
+import std.core.str
+
+def main() -> int {
+    // 3000 nested '(' — past the pre-fix crash point (~2000). Compiles to an
+    // over-deep pattern the engine rejects; matches returns false, no crash.
+    Str deep = ""
+    for i in 0..3000 { deep = deep + "(" }
+    bool m = re.matches("anything", deep)
+    if m { @print("FAIL deep-regex matched?!") } else { @print("PASS regex-deep-guarded") }
+
+    // a normal (moderately nested) pattern still works
+    if re.full_match("2024-01", "(\\d+)-(\\d+)") { @print("PASS regex-normal") }
+    else { @print("FAIL regex-normal") }
+    return 0
+}

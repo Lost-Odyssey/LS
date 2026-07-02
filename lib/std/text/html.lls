@@ -640,7 +640,7 @@ def _hp_scan_raw_until_close(&!HtmlParser p, Str tag) -> Str {
     return body
 }
 
-def _parse_element(&!HtmlParser p) -> HtmlNode {
+def _parse_element(&!HtmlParser p, int depth) -> HtmlNode {
     p.pos = p.pos + 1                    // consume '<'
     Str tag = _hp_lower(_hp_scan_tag_name(&!p))
     Vec(Attr) attrs = _parse_attrs(&!p)  // stops at '/' or '>' or EOF
@@ -662,14 +662,21 @@ def _parse_element(&!HtmlParser p) -> HtmlNode {
         rc.push(RawText(raw))
         return Element(tag, attrs, rc)
     }
-    Vec(HtmlNode) children = _parse_nodes(&!p, tag)
+    Vec(HtmlNode) children = _parse_nodes(&!p, tag, depth + 1)
     return Element(tag, attrs, children)
 }
 
 // Parse a run of sibling nodes until the matching `</close_tag>` (consumed) or
 // EOF. `close_tag == ""` means top level: a stray close tag is skipped.
-def _parse_nodes(&!HtmlParser p, Str close_tag) -> Vec(HtmlNode) {
+def _parse_nodes(&!HtmlParser p, Str close_tag, int depth) -> Vec(HtmlNode) {
     Vec(HtmlNode) nodes = {}
+    // Bound nesting depth: deeply-nested tags (e.g. "<a><a><a>...") would
+    // otherwise recurse until the native stack overflows and the process
+    // crashes. Stop descending past the limit — the tolerant parser just
+    // returns the partial tree. Found by stdfuzz (crash at ~1000 levels).
+    if depth > 256 {
+        return nodes
+    }
     while p.pos < p.len {
         int c = p.input.byte_at(p.pos)
         if c == '<' {
@@ -694,7 +701,7 @@ def _parse_nodes(&!HtmlParser p, Str close_tag) -> Vec(HtmlNode) {
             } else if _hp_matches(&!p, "<!") {
                 nodes.push(_parse_doctype(&!p))
             } else {
-                nodes.push(_parse_element(&!p))
+                nodes.push(_parse_element(&!p, depth))
             }
         } else {
             nodes.push(_parse_text(&!p))
@@ -705,7 +712,7 @@ def _parse_nodes(&!HtmlParser p, Str close_tag) -> Vec(HtmlNode) {
 
 def parse(Str input) -> HtmlDoc {
     HtmlParser p = _hp_new(input)
-    Vec(HtmlNode) roots = _parse_nodes(&!p, "")
+    Vec(HtmlNode) roots = _parse_nodes(&!p, "", 0)
     return HtmlDoc { roots: roots }
 }
 

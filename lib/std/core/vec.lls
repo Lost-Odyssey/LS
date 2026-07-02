@@ -598,8 +598,13 @@ methods Vec(T) {
         Vec(T) out = {}
         out.reserve(self.len)
         for (int i = 0; i < self.len; i = i + 1) {
-            T e = self.data[i]               // clone-on-read each element
-            out.push(e)
+            // Clone each element EXACTLY once: @dup is POD bit-copy / has_drop
+            // deep-clone, and the fresh rvalue is moved into push (not re-cloned).
+            // Do NOT write `T e = self.data[i]  out.push(e)` — that clones twice
+            // (clone-on-read + by-value-arg clone of the named local), which
+            // compounds to O(2^depth) on nested Vec(has_drop). See syntax.html
+            // "Move semantics" › the double-clone pitfall.
+            out.push(@dup(self.data[i]))
         }
         return out
     }

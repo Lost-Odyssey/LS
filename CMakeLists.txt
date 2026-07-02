@@ -3502,6 +3502,49 @@ set_tests_properties(test_std_json PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Deep-nesting regressions (stdfuzz-found): recursive-descent parsers overflowed
+# the native stack on deeply-nested input; json additionally hung on legal deep-
+# balanced arrays via the exponential Vec.copy clone. Both timeout-guarded.
+add_test(
+    NAME test_json_deep_nesting
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/json_deep_nesting.lls
+        -DLS_HOME=${CMAKE_SOURCE_DIR}
+        -DTEST_NAME=test_json_deep_nesting
+        -P ${CMAKE_SOURCE_DIR}/tests/test_deep_nesting.cmake
+)
+set_tests_properties(test_json_deep_nesting PROPERTIES
+    DEPENDS "test_std_json"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+add_test(
+    NAME test_html_deep_nesting
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/html_deep_nesting.lls
+        -DLS_HOME=${CMAKE_SOURCE_DIR}
+        -DTEST_NAME=test_html_deep_nesting
+        -P ${CMAKE_SOURCE_DIR}/tests/test_deep_nesting.cmake
+)
+set_tests_properties(test_html_deep_nesting PROPERTIES
+    DEPENDS "test_std_html_parse"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+add_test(
+    NAME test_regex_deep_nesting
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/regex_deep_nesting.lls
+        -DLS_HOME=${CMAKE_SOURCE_DIR}
+        -DTEST_NAME=test_regex_deep_nesting
+        -P ${CMAKE_SOURCE_DIR}/tests/test_deep_nesting.cmake
+)
+set_tests_properties(test_regex_deep_nesting PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- L-009 cross-module function name mangling ----
 add_test(
     NAME test_l009_mangle

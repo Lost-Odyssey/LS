@@ -389,7 +389,7 @@ def _parse_number(&!JParser p) -> Result(JsonValue, Str) {
     }
 }
 
-def _parse_array(&!JParser p) -> Result(JsonValue, Str) {
+def _parse_array(&!JParser p, int depth) -> Result(JsonValue, Str) {
     // '[' already peeked, consume it
     p.pos = p.pos + 1
     _skip_ws(&!p)
@@ -403,7 +403,7 @@ def _parse_array(&!JParser p) -> Result(JsonValue, Str) {
     }
 
     // First element
-    Result(JsonValue, Str) first = _parse_value(&!p)
+    Result(JsonValue, Str) first = _parse_value(&!p, depth + 1)
     match first {
         Err(e) => { return Err(e) }
         Ok(v) => { items.push(v) }
@@ -413,7 +413,7 @@ def _parse_array(&!JParser p) -> Result(JsonValue, Str) {
     while _peek(&!p) == ',' {
         p.pos = p.pos + 1
         _skip_ws(&!p)
-        Result(JsonValue, Str) elem = _parse_value(&!p)
+        Result(JsonValue, Str) elem = _parse_value(&!p, depth + 1)
         match elem {
             Err(e) => { return Err(e) }
             Ok(v) => { items.push(v) }
@@ -428,7 +428,7 @@ def _parse_array(&!JParser p) -> Result(JsonValue, Str) {
     return Ok(Array(items))
 }
 
-def _parse_object(&!JParser p) -> Result(JsonValue, Str) {
+def _parse_object(&!JParser p, int depth) -> Result(JsonValue, Str) {
     // '{' already peeked, consume it
     p.pos = p.pos + 1
     _skip_ws(&!p)
@@ -455,7 +455,7 @@ def _parse_object(&!JParser p) -> Result(JsonValue, Str) {
             }
             p.pos = p.pos + 1
             _skip_ws(&!p)
-            Result(JsonValue, Str) val_r = _parse_value(&!p)
+            Result(JsonValue, Str) val_r = _parse_value(&!p, depth + 1)
             match val_r {
                 Err(e) => { return Err(e) }
                 Ok(val) => {
@@ -480,7 +480,7 @@ def _parse_object(&!JParser p) -> Result(JsonValue, Str) {
                 }
                 p.pos = p.pos + 1
                 _skip_ws(&!p)
-                Result(JsonValue, Str) val_r = _parse_value(&!p)
+                Result(JsonValue, Str) val_r = _parse_value(&!p, depth + 1)
                 match val_r {
                     Err(e) => { return Err(e) }
                     Ok(val) => {
@@ -517,7 +517,14 @@ def _match5(&!JParser p, int c0, int c1, int c2, int c3, int c4) -> bool {
            p.input.byte_at!(p.pos+4) == c4
 }
 
-def _parse_value(&!JParser p) -> Result(JsonValue, Str) {
+def _parse_value(&!JParser p, int depth) -> Result(JsonValue, Str) {
+    // Bound recursion depth: deeply-nested input (e.g. "[[[[...") would otherwise
+    // recurse until the native stack overflows and the process crashes. Return a
+    // clean error instead. Found by stdfuzz (crash at ~300 nesting levels; 128
+    // leaves a safe margin and matches the serde_json default).
+    if depth > 128 {
+        return Err("json: nesting too deep (max 128)")
+    }
     _skip_ws(&!p)
     if p.pos >= p.len {
         return Err("json: unexpected end of input")
@@ -556,8 +563,8 @@ def _parse_value(&!JParser p) -> Result(JsonValue, Str) {
             }
             return Err(f"json: unexpected token at position {p.pos}")
         }
-        '[' => { return _parse_array(&!p) }
-        '{' => { return _parse_object(&!p) }
+        '[' => { return _parse_array(&!p, depth) }
+        '{' => { return _parse_object(&!p, depth) }
         _   => { return Err(f"json: unexpected character at position {p.pos}") }
     }
 }
@@ -566,7 +573,7 @@ def _parse_value(&!JParser p) -> Result(JsonValue, Str) {
 
 def parse(Str input) -> Result(JsonValue, Str) {
     JParser p = _new_parser(input)
-    Result(JsonValue, Str) result = _parse_value(&!p)
+    Result(JsonValue, Str) result = _parse_value(&!p, 0)
     match result {
         Err(e) => { return Err(e) }
         Ok(v) => {

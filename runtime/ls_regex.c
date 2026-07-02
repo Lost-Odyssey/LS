@@ -127,7 +127,13 @@ typedef struct {
     int         group_counter;
     char        error[256];
     int         had_error;
+    int         depth;          /* current group-nesting depth (recursion guard) */
 } Compiler;
+
+/* Cap on regex group nesting. Deeply-nested groups ("(((((...") would otherwise
+   recurse until the native stack overflows and the process crashes. Real
+   patterns never nest anywhere near this; found by stdfuzz (crash at ~2000). */
+#define RE_MAX_DEPTH 256
 
 static void comp_error(Compiler *c, const char *msg) {
     if (!c->had_error) {
@@ -146,6 +152,7 @@ static int  emit(ReHandle *re, ReOpCode op, int a, int b) {
 
 /* Forward declarations for recursive descent */
 static int parse_expr(Compiler *c);
+static int parse_expr_inner(Compiler *c);
 static int parse_concat(Compiler *c);
 static int parse_piece(Compiler *c);
 static int parse_atom(Compiler *c);
@@ -567,7 +574,21 @@ static int parse_concat(Compiler *c) {
 
 /* ---- Expr = concat (| concat)* ---- */
 
+/* Depth-guarding wrapper: every recursion into a group goes through parse_expr,
+   so bounding it here (inc on enter, dec on exit) caps nesting without crashing
+   on adversarial input like "(((((...". */
 static int parse_expr(Compiler *c) {
+    if (c->depth >= RE_MAX_DEPTH) {
+        comp_error(c, "regex nested too deeply");
+        return -1;
+    }
+    c->depth++;
+    int r = parse_expr_inner(c);
+    c->depth--;
+    return r;
+}
+
+static int parse_expr_inner(Compiler *c) {
     ReHandle *re = c->re;
     int alt_start = re->prog_len;
     int r = parse_concat(c);
