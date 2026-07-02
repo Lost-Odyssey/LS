@@ -53,9 +53,8 @@ static void test_type_equality(void) {
     Type *p3 = type_pointer(type_f64());
     ASSERT_TRUE(type_equals(p1, p2));
     ASSERT_FALSE(type_equals(p1, p3));
-    type_free(p1);
-    type_free(p2);
-    type_free(p3);
+    /* p1/p2/p3 are factory Types owned by the type arena — never type_free them
+       (freeing an interior arena pointer corrupts the heap; see types.h). */
 
     /* Array equality (includes size) */
     Type *a1 = type_array(type_int(), 10);
@@ -65,10 +64,7 @@ static void test_type_equality(void) {
     ASSERT_TRUE(type_equals(a1, a2));
     ASSERT_FALSE(type_equals(a1, a3));
     ASSERT_FALSE(type_equals(a1, a4));   /* same elem, different size */
-    type_free(a1);
-    type_free(a2);
-    type_free(a3);
-    type_free(a4);
+    /* a1..a4 are arena-owned factory Types — do not type_free. */
 
     printf(" ok\n");
 }
@@ -119,12 +115,11 @@ static void test_type_clone(void) {
     ASSERT_TRUE(type_clone(type_int()) == type_int());
 
     /* Pointer clone */
-    Type *p = type_pointer(type_int());
-    Type *pc = type_clone(p);
+    Type *p = type_pointer(type_int());   /* arena-owned factory Type */
+    Type *pc = type_clone(p);             /* malloc'd clone — type_free's sole valid input */
     ASSERT_TRUE(type_equals(p, pc));
     ASSERT_TRUE(p != pc);
-    type_free(p);
-    type_free(pc);
+    type_free(pc);                        /* only the clone is freeable; p lives in the arena */
 
     printf(" ok\n");
 }
@@ -170,9 +165,10 @@ static void test_type_enum(void) {
     ASSERT_TRUE(t != clone);
     ASSERT_EQ(clone->as.enom.has_drop, true);
 
-    type_free(t);
-    type_free(t2);
-    type_free(t3);
+    /* t/t2/t3 are arena-owned factory Types — never type_free them.  The manual
+       variant name / payload_types allocations attached to `t` leak until the
+       process exits, which is fine for a unit test.  Only `clone` (a type_clone
+       result) is malloc'd and safe to free. */
     type_free(clone);
 
     printf(" ok\n");

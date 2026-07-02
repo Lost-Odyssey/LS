@@ -163,7 +163,8 @@ static void test_type_module_exports(void) {
     ASSERT_NOT_NULL(name);
     ASSERT_TRUE(strstr(name, "test_mod") != NULL);
 
-    type_free(mod);
+    /* `mod` is a factory Type owned by the type arena — never type_free it
+       (freeing an interior arena pointer corrupts the heap; see types.h). */
     tests_passed++;
     printf(" ok\n");
 }
@@ -498,7 +499,7 @@ static void test_type_module_var_exports(void) {
     ASSERT_TRUE(strcmp(mod->as.module.exports[2].name, "PI") == 0);
     ASSERT_TRUE(mod->as.module.exports[2].type->kind == TYPE_F64);
 
-    type_free(mod);
+    /* `mod` is arena-owned — do not type_free (see types.h contract). */
     tests_passed++;
     printf(" ok\n");
 }
