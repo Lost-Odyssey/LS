@@ -200,6 +200,12 @@ typedef struct Checker {
        in different modules don't collide (silent-wrong) at codegen. */
     const char *module_name;
 
+    /* A1 clone-elision (checker_elide.c): master switch for the last-use
+       analysis pass that downgrades provably-final by-value clones to moves.
+       Default true; set from checker_elide_env_enabled() at Checker creation
+       (LS_NO_ELIDE=1 disables — A/B comparison + escape hatch). */
+    bool elide_pass_enabled;
+
     /* B-4: struct/enum type names that are exported by 2+ imported modules.
        Bare (unqualified) reference to such a name is an error — the user must
        qualify it as `mod.Type` / `alias.Type`. Qualified references resolve

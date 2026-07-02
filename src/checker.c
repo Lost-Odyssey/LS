@@ -1645,6 +1645,7 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
     if (struct_type && struct_type->kind == TYPE_STRUCT)
         c->current_impl_struct_type = struct_type;
     check_stmt(c, cloned->as.fn_decl.body);
+    checker_elide_last_use(c, cloned); /* A1 clone-elision (instance body) */
     c->current_impl_struct_type = saved_impl_st;
     c->current_fn_return = saved_ret;
     chk_pop_scope(c);
@@ -1958,6 +1959,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
         c->in_return_expr = false;
 
         check_stmt(c, cloned->as.fn_decl.body);
+        checker_elide_last_use(c, cloned); /* A1 clone-elision (instance body) */
 
         c->in_return_expr = old_return;
         c->silent_move_errors = old_silent;
@@ -4704,6 +4706,7 @@ Type *check_expr(Checker *c, AstNode *node)
             Type *saved_ret = c->current_fn_return;
             c->current_fn_return = ret;
             check_stmt(c, cloned->as.fn_decl.body);
+            checker_elide_last_use(c, cloned); /* A1 clone-elision */
             c->current_fn_return = saved_ret;
             chk_pop_scope(c);
 
@@ -9518,6 +9521,7 @@ static void check_pass(Checker *c, AstNode *program)
             Type *saved_ret = c->current_fn_return;
             c->current_fn_return = fn_type->as.function.return_type;
             check_stmt(c, decl->as.fn_decl.body);
+            checker_elide_last_use(c, decl); /* A1 clone-elision */
             c->current_fn_return = saved_ret;
             chk_pop_scope(c);
             break;
@@ -10691,6 +10695,7 @@ int checker_inspect_ex(AstNode *program, const char *source_path,
     c.source_path = source_path;
     c.registry = registry;
     c.module_name = registry ? registry->current_check_module : NULL;
+    c.elide_pass_enabled = checker_elide_env_enabled();
     c.current_scope = scope_new(NULL);
 
     register_builtins(&c);
@@ -10733,6 +10738,7 @@ bool checker_check(AstNode *program, const char *source_path,
     /* A2: NULL for the root program; set to the module name when this is a
        recursive module check (the import handler stashes it on the registry). */
     c.module_name = registry ? registry->current_check_module : NULL;
+    c.elide_pass_enabled = checker_elide_env_enabled();
     c.current_scope = scope_new(NULL);
 
     register_builtins(&c);
