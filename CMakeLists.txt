@@ -4325,3 +4325,19 @@ add_test(
 set_tests_properties(test_method_on_borrow_call PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---- A4 noalias-recovery safety gold standard (plan_opt_noalias_recovery.md) ----
+# Cross-thread &!self sharing patterns (SpinGuard spin / Guard mutex / Chan
+# blocking) that deadlock if noalias is ever emitted on their borrow params.
+# LS_FORCE_NOALIAS=1 hangs this sample (manual positive control); the default
+# whitelist build must keep passing. JIT + 6x AOT, no memcheck (threads).
+add_test(
+    NAME test_noalias_guard
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/noalias_guard.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_noalias_guard.cmake
+)
+set_tests_properties(test_noalias_guard PROPERTIES DEPENDS "test_chan_mpmc")

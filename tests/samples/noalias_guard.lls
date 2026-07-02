@@ -1,0 +1,123 @@
+// noalias_guard.lls — A4 noalias-recovery SAFETY GOLD STANDARD.
+//
+// Reproduces the historical full-noalias deadlock scenario (docs/
+// plan_borrow_noalias.md §1): concurrency primitives deliberately share
+// &!self-pointed memory ACROSS THREADS (another thread writes the same bytes
+// through a different pointer / the global's name). If `noalias` is emitted on
+// these &!self params, LLVM may hoist the spin/recv-loop load out of the loop
+// → the loop never observes the other thread's update → deadlock (observed on
+// test_chan_mpmc / test_chan_forin when noalias was emitted unconditionally).
+//
+// The A4 whitelist must PERMANENTLY disqualify every function on these paths
+// (rule 1: sync/atomic/chan module + intrinsic contact). Verification protocol:
+//   * LS_FORCE_NOALIAS=1 (unsound diagnostic switch, forces noalias on all
+//     &!T): this sample MUST hang or fail — proving it exercises the danger.
+//   * default (whitelist): passes, JIT + repeated AOT.
+//
+// Three cross-thread patterns under one roof:
+//   1. SpinGuard(int) — CAS spin lock; loser thread spins until the HOLDER
+//      (another thread) writes flag=0 through its own pointer.
+//   2. Guard(Vec(int)) — OS mutex; guarded value mutated by all workers.
+//   3. Chan(int) — small-cap blocking channel; recv loop must observe the
+//      producer's writes (count/slots) to wake and drain.
+//
+// NO --memcheck (tracker not thread-safe, same as task/sync/chan tests).
+
+import std.core.vec
+import std.sync.task
+import std.sync.lock
+import std.sync.chan
+import std.sync.atomic
+
+SpinGuard(int) g_spin = {}
+Guard(Vec(int)) g_vec = {}
+Chan(int) g_ch = {}
+Atomic(int) g_recv = {}
+
+def spin_worker() -> int {
+    for i in 0..10000 {
+        g_spin.lock(|v| { v = v + 1 })      // contended CAS spin
+    }
+    return 0
+}
+
+def vec_worker() -> int {
+    for i in 0..5000 {
+        g_vec.lock(|v| { v.push(1) })
+    }
+    return 0
+}
+
+def main() -> int {
+    g_vec.init()
+    g_ch = channel(int)(16)                 // cap 16 << 20000 -> real blocking
+
+    // -- pattern 1+2: spin + mutex workers --
+    int NS = 4
+    Vec(Task(int)) sw = []
+    for w in 0..NS {
+        Task(int) t = {}
+        t.run(|| { return spin_worker() })
+        sw.push(t)
+    }
+    Vec(Task(int)) vw = []
+    for w in 0..NS {
+        Task(int) t = {}
+        t.run(|| { return vec_worker() })
+        vw.push(t)
+    }
+
+    // -- pattern 3: chan producers + consumers --
+    int NP = 2
+    int PER = 10000
+    Vec(Task(int)) cons = []
+    for ci in 0..NP {
+        Task(int) t = {}
+        t.run(|| {
+            while true {
+                match g_ch.recv() {
+                    Some(x) => { int n = g_recv.fetch_add(1) }
+                    None => { return 0 }
+                }
+            }
+            return 0
+        })
+        cons.push(t)
+    }
+    Vec(Task(int)) prods = []
+    for pi in 0..NP {
+        Task(int) t = {}
+        t.run(|| {
+            for j in 0..10000 {
+                bool ok = g_ch.send(j)
+            }
+            return 0
+        })
+        prods.push(t)
+    }
+
+    for w in 0..NS { int r = sw.get!(w).join() }
+    for w in 0..NS { int r = vw.get!(w).join() }
+    for pi in 0..NP { int r = prods.get!(pi).join() }
+    g_ch.close()
+    for ci in 0..NP { int r = cons.get!(ci).join() }
+
+    int spun = g_spin.get(int)(|v| { return v })
+    int pushed = g_vec.get(int)(|v| { return v.len() })
+    int received = g_recv.get()
+
+    if spun != 40000 {
+        @print(f"NOALIAS-GUARD FAIL spin={spun}")
+        return 1
+    }
+    if pushed != 20000 {
+        @print(f"NOALIAS-GUARD FAIL vec={pushed}")
+        return 1
+    }
+    if received != 20000 {
+        @print(f"NOALIAS-GUARD FAIL chan={received}")
+        return 1
+    }
+    @print("NOALIAS-GUARD OK")
+    return 0
+}

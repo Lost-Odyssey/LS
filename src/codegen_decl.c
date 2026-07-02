@@ -437,15 +437,21 @@ static void cg_attach_borrow_attrs(CodegenContext *ctx, LLVMValueRef fn,
     if (al > 0) cg_add_enum_attr(ctx, fn, attr_idx, "align", al);
     if (nocapture_ok) cg_add_enum_attr(ctx, fn, attr_idx, "nocapture", 0);
     if (!is_mut) cg_add_enum_attr(ctx, fn, attr_idx, "readonly", 0);
-    /* NOTE: `noalias` on &!T is intentionally NOT emitted. Borrow exclusivity is
-       a single-thread property; LS's concurrency primitives (std.chan / std.sync
-       Guard / Ring) deliberately share &!self memory across threads, where a
-       second thread writes through a different pointer to the same bytes. noalias
-       would let LLVM hoist/reorder a load past that cross-thread write and a spin
-       /recv loop would deadlock (observed: test_chan_mpmc / test_chan_forin AOT
-       hang). The sound, concurrency-safe subset is kept. See
-       docs/plan_borrow_noalias.md §3. */
-    (void)is_mut;
+    /* NOTE: `noalias` on &!T is intentionally NOT emitted unconditionally.
+       Borrow exclusivity is a single-thread property; LS's concurrency
+       primitives (std.chan / std.sync Guard / Ring) deliberately share &!self
+       memory across threads, where a second thread writes through a different
+       pointer to the same bytes. noalias would let LLVM hoist/reorder a load
+       past that cross-thread write and a spin/recv loop would deadlock
+       (observed: test_chan_mpmc / test_chan_forin AOT hang). See
+       docs/plan_borrow_noalias.md §3. A4 recovers it per-function for bodies
+       the checker proves thread-local (docs/plan_opt_noalias_recovery.md). */
+    /* A4: UNSOUND diagnostic switch — force noalias on every &!T to reproduce
+       the historical cross-thread deadlock (the gold-standard sample
+       noalias_guard.lls must hang/fail under it). Never set in normal use;
+       exists so a future "is noalias the culprit?" bisect takes one env var. */
+    if (is_mut && getenv("LS_FORCE_NOALIAS") != NULL)
+        cg_add_enum_attr(ctx, fn, attr_idx, "noalias", 0);
 }
 
 void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
