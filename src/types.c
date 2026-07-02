@@ -2,6 +2,7 @@
 #include "types.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* ---- Primitive singletons ---- */
 
@@ -57,10 +58,81 @@ static bool is_singleton(const Type *t) {
            t == &PRIM_NIL || t == &PRIM_LIB || t == &PRIM_OBJECT;
 }
 
+/* ---- C1 §3.2/§3.4: process-level bump arena for semantic Type nodes -------
+   Every never-freed Type factory allocates from here (all constructors below
+   EXCEPT type_clone, whose results ARE reclaimed by type_free — that pair stays
+   on malloc/free). One arena for the whole process: Types outlive the checker
+   (codegen and the REPL reference them across snapshots, see L-010), so v1 does
+   not reclaim per-session. This turns L-014 from "unbounded scatter of small
+   mallocs with no single owner" into "a handful of contiguous blocks with one
+   reclaim point" (type_arena_free_all — the future hook for §3.4 generation GC;
+   not auto-called in v1 since a batch compile exits and the OS reclaims). The
+   bump pointer never realloc's, so every Type* address is stable for life. */
+#define TYPE_ARENA_BLOCK (16 * 1024)
+typedef struct TypeArenaBlock {
+    struct TypeArenaBlock *next;
+    size_t used;
+    size_t cap;
+    /* payload follows the header */
+} TypeArenaBlock;
+
+static TypeArenaBlock *g_type_arena = NULL;
+static size_t g_type_arena_objs  = 0;   /* stats: objects handed out */
+static size_t g_type_arena_bytes = 0;   /* stats: aligned payload bytes */
+
+static void type_arena_stats_dump(void) {
+    size_t blocks = 0, reserved = 0;
+    for (TypeArenaBlock *b = g_type_arena; b; b = b->next) { blocks++; reserved += b->cap; }
+    fprintf(stderr,
+        "[type-arena] objs=%zu payload=%zuB blocks=%zu reserved=%zuB\n",
+        g_type_arena_objs, g_type_arena_bytes, blocks, reserved);
+}
+
+static TypeArenaBlock *type_arena_new_block(size_t need) {
+    size_t cap = TYPE_ARENA_BLOCK;
+    if (need > cap) cap = need;   /* oversize request gets its own block */
+    TypeArenaBlock *b = (TypeArenaBlock *)malloc_safe(sizeof(TypeArenaBlock) + cap);
+    b->next = g_type_arena;
+    b->used = 0;
+    b->cap  = cap;
+    g_type_arena = b;
+    return b;
+}
+
+/* Allocate `n` bytes (16-byte aligned) from the type arena. NUL-init is the
+   caller's job (factories already memset). */
+void *type_arena_alloc(size_t n) {
+    static int stats_on = -1;
+    if (stats_on < 0) {                       /* resolve LS_TYPE_STATS once */
+        stats_on = getenv("LS_TYPE_STATS") ? 1 : 0;
+        if (stats_on) atexit(type_arena_stats_dump);
+    }
+    n = (n + 15) & ~(size_t)15;               /* 16-byte alignment */
+    TypeArenaBlock *b = g_type_arena;
+    if (b == NULL || b->used + n > b->cap)
+        b = type_arena_new_block(n);
+    void *p = (char *)(b + 1) + b->used;
+    b->used += n;
+    g_type_arena_objs++;
+    g_type_arena_bytes += n;
+    return p;
+}
+
+/* Free the entire arena in one pass. v1 leaves this for the caller to invoke at
+   a genuine process-exit boundary (§3.4 generation GC will call it per snapshot
+   in the REPL); a batch `compile`/`run` never needs it (OS reclaims on exit). */
+void type_arena_free_all(void) {
+    TypeArenaBlock *b = g_type_arena;
+    while (b) { TypeArenaBlock *next = b->next; free(b); b = next; }
+    g_type_arena = NULL;
+    g_type_arena_objs = 0;
+    g_type_arena_bytes = 0;
+}
+
 /* ---- Composite constructors ---- */
 
 Type *type_pointer(Type *pointee) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_POINTER;
     t->as.pointer_to = pointee;
@@ -68,7 +140,7 @@ Type *type_pointer(Type *pointee) {
 }
 
 Type *type_reference(Type *pointee) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_REFERENCE;
     t->is_mut = false;
@@ -77,7 +149,7 @@ Type *type_reference(Type *pointee) {
 }
 
 Type *type_mut_reference(Type *pointee) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_REFERENCE;
     t->is_mut = true;
@@ -86,7 +158,7 @@ Type *type_mut_reference(Type *pointee) {
 }
 
 Type *type_array(Type *elem, int size) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_ARRAY;
     t->as.array.elem = elem;
@@ -95,7 +167,7 @@ Type *type_array(Type *elem, int size) {
 }
 
 Type *type_simd(Type *elem, int lanes) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_SIMD;
     t->as.simd.elem = elem;
@@ -106,7 +178,7 @@ Type *type_simd(Type *elem, int lanes) {
 /* &[T] (is_mut=false) / &![T] (is_mut=true): a borrowed {ptr,len} slice over a
    contiguous range. Element type stored in as.array.elem (size unused). */
 Type *type_slice(Type *elem, bool is_mut) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_SLICE;
     t->is_mut = is_mut;
@@ -115,7 +187,7 @@ Type *type_slice(Type *elem, bool is_mut) {
 }
 
 Type *type_function(Type **params, int param_count, Type *return_type, bool is_vararg) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_FUNCTION;
     t->as.function.params = params;
@@ -126,7 +198,7 @@ Type *type_function(Type **params, int param_count, Type *return_type, bool is_v
 }
 
 Type *type_block(Type **params, int param_count, Type *return_type) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_BLOCK;
     t->as.function.params = params;
@@ -137,34 +209,36 @@ Type *type_block(Type **params, int param_count, Type *return_type) {
 }
 
 Type *type_struct(const char *name, int field_count) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_STRUCT;
     t->as.strukt.name = name;
     t->as.strukt.field_count = field_count;
     if (field_count > 0) {
         size_t sz = (size_t)field_count * sizeof(t->as.strukt.fields[0]);
-        t->as.strukt.fields = malloc_safe(sz);
+        t->as.strukt.fields = type_arena_alloc(sz);   /* never freed/realloc'd */
         memset(t->as.strukt.fields, 0, sz);
     }
     return t;
 }
 
 Type *type_enum(const char *name, int variant_count) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_ENUM;
-    /* Duplicate name so callers can free their source string independently. */
+    /* Duplicate name so callers can free their source string independently.
+       Arena copy: a factory-built enum type is never freed (only type_clone's
+       are, and those keep their own malloc'd name — see type_free). */
     if (name) {
         size_t len = strlen(name);
-        char *copy = (char *)malloc_safe(len + 1);
+        char *copy = (char *)type_arena_alloc(len + 1);
         memcpy(copy, name, len + 1);
         t->as.enom.name = copy;
     }
     t->as.enom.variant_count = variant_count;
     if (variant_count > 0) {
         size_t sz = (size_t)variant_count * sizeof(t->as.enom.variants[0]);
-        t->as.enom.variants = malloc_safe(sz);
+        t->as.enom.variants = type_arena_alloc(sz);   /* never freed/realloc'd */
         memset(t->as.enom.variants, 0, sz);
     }
     return t;
@@ -173,7 +247,7 @@ Type *type_enum(const char *name, int variant_count) {
 /* ---- Module type ---- */
 
 Type *type_module_new(const char *name) {
-    Type *t = (Type *)malloc_safe(sizeof(Type));
+    Type *t = (Type *)type_arena_alloc(sizeof(Type));
     memset(t, 0, sizeof(Type));
     t->kind = TYPE_MODULE;
     t->as.module.name = name;  /* not owned — must outlive the type */

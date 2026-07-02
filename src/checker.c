@@ -951,23 +951,17 @@ bool register_method(Checker *c, int impl_idx, const char *name,
             continue;
 
         if (strcmp(name, "__drop") == 0) {
-            /* Replace the existing __drop entry. Free the old compiler-generated
-               function type and its param array + pointer type to avoid a
-               compile-time leak. */
+            /* Replace the existing __drop entry. The old compiler-generated
+               function type (`old`) and its pointer param (params[0], from
+               type_pointer(st)) now live in the type arena (C1 §3.2) — never
+               free Type nodes, or free() corrupts the CRT heap. They become
+               controlled arena residency instead (subsumed by L-014's model).
+               The params ARRAY itself is a plain malloc_safe Type* array
+               (checker.c ~2348), owned by nobody else, so free that to avoid a
+               per-Destroy-type compile-time leak. */
             Type *old = c->impl_registry[impl_idx].methods[j].type;
-            if (old && old->kind == TYPE_FUNCTION) {
-                /* The pointer param (old->as.function.params[0]) was created
-                   by type_pointer(st); it outlives use here so free it.
-                   Must happen BEFORE freeing params itself (use-after-free
-                   otherwise — glibc's tcache overwrites the freed block with
-                   freelist metadata, corrupting params[0] before this read). */
-                if (old->as.function.params &&
-                    old->as.function.params[0] &&
-                    old->as.function.params[0]->kind == TYPE_POINTER)
-                    free(old->as.function.params[0]);
+            if (old && old->kind == TYPE_FUNCTION)
                 free(old->as.function.params);
-                free(old);
-            }
             c->impl_registry[impl_idx].methods[j].type = type;
             c->impl_registry[impl_idx].methods[j].is_static = is_static;
             c->impl_registry[impl_idx].methods[j].self_borrow_kind = self_borrow_kind;

@@ -155,8 +155,19 @@ Type *type_module_find_export(Type *mod, const char *name);
 /* Deep-copy a type */
 Type *type_clone(const Type *t);
 
-/* Free a non-singleton type (safe to call on singletons — does nothing) */
+/* Free a non-singleton type (safe to call on singletons — does nothing).
+   Only valid on type_clone results (e.g. AstNode.coerce_block_type); factory
+   Types live in the type arena and must never be passed here. */
 void type_free(Type *t);
+
+/* C1 §3.2: process-level bump arena backing all never-freed Type factories.
+   type_arena_alloc hands out 16-byte-aligned, address-stable memory (bump
+   pointer, no realloc). type_arena_free_all reclaims the whole arena in one
+   pass — the single reclaim point for future §3.4 REPL generation GC; a batch
+   compile need not call it (process exit reclaims). LS_TYPE_STATS=1 dumps
+   allocation counts at exit. */
+void *type_arena_alloc(size_t n);
+void type_arena_free_all(void);
 
 /* Check structural equality of two types */
 bool type_equals(const Type *a, const Type *b);
