@@ -16,9 +16,16 @@
    cg_invalidate_moved_source, which refuses borrows and sources without a
    runtime moved_flag and makes the caller fall back to the clone — so even a
    wrong mark degrades to the old behavior instead of a double-free. To keep
-   marks true by construction we only consider NAMED LOCALS declared by a
-   var_decl directly inside a block of this body (those always carry a
-   moved_flag) and exclude everything the predicates below reject.
+   marks true by construction we only consider names that always carry a
+   runtime moved_flag and exclude everything the predicates below reject:
+     - v1: NAMED LOCALS declared by a var_decl directly inside a block of
+       this body;
+     - v2: owned by-value has_drop PARAMS (codegen allocates a "param.moved"
+       flag for exactly these, codegen_decl.c) — the Map.upsert forwarding
+       chain (`upsert(K key,..)` passing `key` on to `_insert_no_grow`) was
+       the measured motivation: build-workload spike −27%. Borrow (&T/&!T),
+       slice and Block params fail elide_type_eligible and never enter; a
+       generic param instantiated at a POD type drops out the same way.
 
    v1 exclusions (plan §3.1 — one predicate each, see prescan):
      - globals / struct fields / container slots: never candidates, only a
@@ -840,6 +847,47 @@ void checker_elide_last_use(Checker *c, AstNode *fn_decl)
         ename_bind(&e, fn_decl->as.fn_decl.param_names
                        ? fn_decl->as.fn_decl.param_names[i] : NULL);
     ename_bind(&e, "self");
+
+    /* v2: owned by-value has_drop params are candidates. decl stays NULL (no
+       var_decl ever closes the region — a param is live from the body's
+       start, and the AST_VAR_DECL close / SCAN_LOOP decl checks compare
+       against the var_decl node, which never matches NULL); decl_block = the
+       body block, so the backward walk opens the region at the body's end
+       and, being function-scoped, a read inside any loop keeps it used via
+       the back-edge preset (loop_decl can never fire). The param's Type*
+       comes from the fn's resolved TYPE_FUNCTION (same pointer the checker
+       stamps on the param's use-site IDENTs), offset by one for instance
+       methods whose fn type carries self as param 0 — same heuristic as the
+       call-site whitelist above. */
+    {
+        Type *ft = fn_decl->resolved_type;
+        char **pnames = fn_decl->as.fn_decl.param_names;
+        if (ft != NULL && ft->kind == TYPE_FUNCTION && pnames != NULL)
+        {
+            int self_off = (ft->as.function.param_count ==
+                            fn_decl->as.fn_decl.param_count + 1) ? 1 : 0;
+            for (int i = 0; i < fn_decl->as.fn_decl.param_count; i++)
+            {
+                int ti = i + self_off;
+                if (pnames[i] == NULL || ti >= ft->as.function.param_count)
+                    continue;
+                Type *pt = ft->as.function.params[ti];
+                if (!elide_type_eligible(pt)) continue;
+                if (e.var_count >= e.var_cap)
+                {
+                    e.var_cap = e.var_cap < 8 ? 8 : e.var_cap * 2;
+                    e.vars = (EVar *)realloc_safe(
+                        e.vars, (size_t)e.var_cap * sizeof(EVar));
+                }
+                EVar *v = &e.vars[e.var_count++];
+                memset(v, 0, sizeof(EVar));
+                v->name = pnames[i];
+                v->decl = NULL;
+                v->decl_block = body;
+                v->type = pt;
+            }
+        }
+    }
 
     EScan pre = { &e, SCAN_PRESCAN, NULL };
     elide_scan(&pre, body);

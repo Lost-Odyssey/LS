@@ -1645,7 +1645,12 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
     if (struct_type && struct_type->kind == TYPE_STRUCT)
         c->current_impl_struct_type = struct_type;
     check_stmt(c, cloned->as.fn_decl.body);
-    checker_elide_last_use(c, cloned); /* A1 clone-elision (instance body) */
+    /* Stamp the instantiated fn type BEFORE the elide pass: its v2 param
+       candidates read fn_decl->resolved_type for the concrete param types
+       (the assignment further down is now a no-op re-stamp; Type is shared,
+       so the error path's ast_free(cloned) is unaffected). */
+    cloned->resolved_type = mtype;
+    checker_elide_last_use(c, cloned); /* A1/v2 clone-elision (instance body) */
     c->current_impl_struct_type = saved_impl_st;
     c->current_fn_return = saved_ret;
     chk_pop_scope(c);
@@ -1959,7 +1964,10 @@ static Type *try_instantiate_method_level_generic(Checker *c,
         c->in_return_expr = false;
 
         check_stmt(c, cloned->as.fn_decl.body);
-        checker_elide_last_use(c, cloned); /* A1 clone-elision (instance body) */
+        /* Same early stamp as the struct-level instance path: the elide v2
+           param candidates need the instantiated fn type on the decl node. */
+        cloned->resolved_type = concrete_type;
+        checker_elide_last_use(c, cloned); /* A1/v2 clone-elision (instance body) */
 
         c->in_return_expr = old_return;
         c->silent_move_errors = old_silent;

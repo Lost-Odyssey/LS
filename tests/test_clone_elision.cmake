@@ -25,6 +25,9 @@ endif()
 if(NOT TEST_NAME)
     set(TEST_NAME "clone_elision")
 endif()
+if(NOT PASS_TOKEN)
+    set(PASS_TOKEN "CE PASS")   # the sample's success marker line
+endif()
 
 # ---- 1. JIT run: correctness ----
 execute_process(
@@ -37,8 +40,8 @@ endif()
 if(_jit_out MATCHES "FAIL")
     message(FATAL_ERROR "${TEST_NAME} JIT reported a FAIL:\n${_jit_out}")
 endif()
-if(NOT _jit_out MATCHES "CE PASS")
-    message(FATAL_ERROR "${TEST_NAME} JIT missing 'CE PASS':\n${_jit_out}")
+if(NOT _jit_out MATCHES "${PASS_TOKEN}")
+    message(FATAL_ERROR "${TEST_NAME} JIT missing '${PASS_TOKEN}':\n${_jit_out}")
 endif()
 
 # ---- 2. AOT compile + run: correctness on the native path ----
@@ -64,8 +67,8 @@ endif()
 if(_aot_out MATCHES "FAIL")
     message(FATAL_ERROR "${TEST_NAME} AOT reported a FAIL (likely a bad elision):\n${_aot_out}")
 endif()
-if(NOT _aot_out MATCHES "CE PASS")
-    message(FATAL_ERROR "${TEST_NAME} AOT missing 'CE PASS':\n${_aot_out}")
+if(NOT _aot_out MATCHES "${PASS_TOKEN}")
+    message(FATAL_ERROR "${TEST_NAME} AOT missing '${PASS_TOKEN}':\n${_aot_out}")
 endif()
 
 # ---- 3. JIT memcheck: memory safety ----

@@ -1677,6 +1677,22 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_clone_elision.cmake
 )
 
+# Clone-elision v2 (owned by-value PARAM last-use): a has_drop param forwarded
+# / stashed / returned at its last use gets the clone downgraded to a move
+# (codegen's param.moved flag). Same driver, param-focused sample: forwarding
+# chains (the Map.upsert shape) as eligible, re-read / loop / capture /
+# borrowed / twin as must-clone exclusions.
+add_test(
+    NAME test_clone_elision_param
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/clone_elision_param.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=clone_elision_param
+        "-DPASS_TOKEN=CEP PASS"
+        -P ${CMAKE_SOURCE_DIR}/tests/test_clone_elision.cmake
+)
+
 # Phase G (Block env deep-clone, resolves L-007): copying a Block out of a vec
 # element / struct field / map value deep-clones the closure env so the
 # destination owns an independent one. Asserts JIT + AOT correctness + memcheck.

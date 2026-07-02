@@ -1,0 +1,118 @@
+// Clone-elision v2 (owned by-value PARAM last-use) semantic guard.
+//
+// Written BEFORE the v2 pass exists: every case passes on the v1 baseline
+// (params always clone at by-value consumption). After v2 lands the outputs
+// must be IDENTICAL — elision only removes defensive clones, never changes
+// values. "eligible" = v2 may downgrade the param's clone to a move (codegen
+// already gives has_drop params a param.moved flag, so the moved_out channel
+// works); "must clone" = the exclusions. Registered JIT + AOT + memcheck.
+
+import std.core.vec
+import std.core.str
+
+struct Pack { Str tag }
+
+type Fn0 = Block() -> int
+
+def check(bool ok, Str what) {
+    if ok { @print(f"ok {what}") } else { @print(f"FAIL {what}") }
+}
+
+// By-value sinks.
+def sink_str(Str s) -> int { return s.len() }
+def sink_pack(Pack p) -> int { return p.tag.len() }
+def twin(Str a, Str b) -> int { return a.len() + b.len() }
+
+// P1 (eligible): the upsert-chain shape — an owned param forwarded to another
+// by-value sink as its last use. v2's flagship case.
+def fwd(Str s) -> int { return sink_str(s) }
+
+// P2 (eligible): param moved into a container, never read again.
+def stash(Str s, &!Vec(Str) out) { out.push(s) }
+
+// P3 (eligible): param returned (pass-through).
+def pass_through(Str s) -> Str { return s }
+
+// P4 (eligible): struct param forwarded.
+def fwd_pack(Pack p) -> int { return sink_pack(p) }
+
+// P5 (eligible): two-hop forwarding chain — each hop is a last use.
+def hop2(Str s) -> int { return fwd(s) }
+
+// X1 (must clone): param consumed then re-read.
+def use_twice(Str s, &!Vec(Str) out) -> int {
+    out.push(s)
+    return s.len()          // read AFTER the push -> the push must clone
+}
+
+// X2 (must clone): consumption inside a loop — alive across the back edge.
+def loop_push(Str s, int k) -> Vec(Str) {
+    Vec(Str) v = {}
+    for i in 0..k { v.push(s) }
+    return v
+}
+
+// X3 (must clone): param captured by a closure — excluded outright.
+def capture_it(Str s, &!Vec(Str) out) -> int {
+    out.push(s)             // consumption BEFORE the capture: must clone
+    Fn0 f = || s.len()
+    return f()
+}
+
+// X4 (must clone): param borrowed somewhere — name-level exclusion.
+def peek(&Str r) -> int { return r.len() }
+def borrowed(Str s, &!Vec(Str) out) -> int {
+    int n = peek(&s)
+    out.push(s)             // & appeared on s in this body -> must clone
+    return n
+}
+
+// X5 (must clone leading / may move trailing): same param twice in one call.
+def twin_fwd(Str s) -> int { return twin(s, s) }
+
+def main() {
+    // P1
+    Str a = "alpha".upper()
+    check(fwd(a) == 5 && a.eq?("ALPHA"), "param-fwd")
+
+    // P2
+    Vec(Str) box2 = {}
+    stash("beta".upper(), &!box2)
+    check(box2.len() == 1 && box2.get!(0).eq?("BETA"), "param-stash")
+
+    // P3
+    Str t = pass_through("gamma".upper())
+    check(t.eq?("GAMMA"), "param-return")
+
+    // P4
+    Pack pk = Pack { tag: "delta".upper() }
+    check(fwd_pack(pk) == 5 && pk.tag.eq?("DELTA"), "param-struct-fwd")
+
+    // P5
+    check(hop2("epsln".upper()) == 5, "param-hop2")
+
+    // X1
+    Vec(Str) box6 = {}
+    check(use_twice("zeta".upper(), &!box6) == 4, "param-reuse")
+    check(box6.get!(0).eq?("ZETA"), "param-reuse-content")
+
+    // X2
+    Vec(Str) lp = loop_push("eta".upper(), 3)
+    check(lp.len() == 3 && lp.get!(0).eq?("ETA") && lp.get!(2).eq?("ETA"),
+          "param-loop")
+
+    // X3
+    Vec(Str) box7 = {}
+    check(capture_it("theta".upper(), &!box7) == 5, "param-capture")
+    check(box7.get!(0).eq?("THETA"), "param-capture-content")
+
+    // X4
+    Vec(Str) box8 = {}
+    check(borrowed("iota".upper(), &!box8) == 4, "param-borrowed")
+    check(box8.get!(0).eq?("IOTA"), "param-borrowed-content")
+
+    // X5
+    check(twin_fwd("kp".upper()) == 4, "param-twin")
+
+    @print("CEP PASS")
+}
