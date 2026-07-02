@@ -50,6 +50,12 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node);
 LLVMValueRef codegen_try_expr(CodegenContext *ctx, AstNode *node);
 LLVMValueRef codegen_force_unwrap_expr(CodegenContext *ctx, AstNode *node);
 
+/* A2 lifetime markers (codegen_lifetime.c) — no-ops unless AOT + LS_NO_LIFETIME
+   unset. cg_emit_lifetime_start returns whether it emitted, so the var_decl site
+   can stamp CgSymbol.lifetime_marked for the paired end at scope cleanup. */
+bool cg_emit_lifetime_start(CodegenContext *ctx, LLVMValueRef slot, LLVMTypeRef ty);
+void cg_emit_lifetime_end(CodegenContext *ctx, LLVMValueRef slot, LLVMTypeRef ty);
+
 /* D1 debug info hooks (codegen_di.c) — no-ops unless ctx->debug_info. */
 void cg_di_init(CodegenContext *ctx);
 void cg_di_finalize(CodegenContext *ctx);

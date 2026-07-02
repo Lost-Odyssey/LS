@@ -106,6 +106,7 @@ set(LS_CODEGEN_SOURCES
     src/codegen_expr.c
     src/codegen_noalias.c
     src/codegen_di.c
+    src/codegen_lifetime.c
     src/optpipe.c
 )
 
@@ -4398,4 +4399,18 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_debug_info.cmake
+)
+
+# ---- A2 llvm.lifetime.start/end markers regression (plan_opt_lifetime_markers.md) ----
+# Paired markers + verifier clean in emit-ir, kill-switch strips them, output is
+# identical on both settings, and the O2 frame coalesces two disjoint aggregate
+# locals. Unique work files: lifetime_markers_on/off.exe.
+add_test(
+    NAME test_lifetime_markers
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/lifetime_markers.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_lifetime_markers.cmake
 )

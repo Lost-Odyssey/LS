@@ -59,6 +59,7 @@ CgSymbol *cg_scope_define(CgScope *s, const char *name, LLVMValueRef val, Type *
     s->symbols[s->count].moved_flag = moved_flag;
     s->symbols[s->count].is_borrowed = false;
     s->symbols[s->count].is_mut_borrow = false;
+    s->symbols[s->count].lifetime_marked = false;
     return &s->symbols[s->count++];
 }
 
@@ -933,6 +934,16 @@ void emit_scope_cleanup(CodegenContext *ctx)
         }
         /* Trivial types (int, float, bool, vec, etc.) need no cleanup here. */
     }
+    /* A2: emit the paired lifetime.end for every marked aggregate slot in this
+       scope, after all its drops above (a lifetime.end must follow the last read
+       of the slot, and the drop is that read). No-op when lifetime is disabled
+       (no slot is ever marked in that case). */
+    for (int i = scope->count - 1; i >= 0; i--)
+    {
+        CgSymbol *sym = &scope->symbols[i];
+        if (sym->lifetime_marked && sym->type != NULL)
+            cg_emit_lifetime_end(ctx, sym->value, type_to_llvm(ctx, sym->type));
+    }
     /* After this returns, the builder is positioned at the last cont_bb,
        ready for the caller to add the next instruction (e.g. LLVMBuildBr). */
 }
@@ -996,14 +1007,39 @@ void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloc
         }
     }
 
-    if (count == 0)
+    /* A2: does any marked aggregate slot in this scope range need a lifetime.end?
+       (Excludes the return-value slot — skip_alloca — whose storage is still
+       read to materialise the return value; and mirrors the drop exclusions.)
+       When lifetime is disabled no slot is ever marked, so has_ends stays false
+       and the count==0 early-return path below is byte-identical to the baseline. */
+    bool has_ends = false;
+    for (CgScope *s = ctx->current_scope; s != NULL && s != stop && !has_ends; s = s->parent)
+    {
+        for (int i = 0; i < s->count; i++)
+        {
+            CgSymbol *sym = &s->symbols[i];
+            if (sym->lifetime_marked && sym->type != NULL &&
+                !(skip_alloca != NULL && sym->value == skip_alloca))
+            {
+                has_ends = true;
+                break;
+            }
+        }
+    }
+
+    if (count == 0 && !has_ends)
         return;
 
-    /* Create single cleanup block and branch to it */
-    LLVMBasicBlockRef cleanup_bb = LLVMAppendBasicBlockInContext(
-        ctx->context, cur_fn, "cleanup");
-    LLVMBuildBr(ctx->builder, cleanup_bb);
-    LLVMPositionBuilderAtEnd(ctx->builder, cleanup_bb);
+    /* Create single cleanup block and branch to it — only when there are actual
+       drops. Pure lifetime.end emission (count==0, has_ends) stays inline in the
+       current block, so it needs no separate block. */
+    if (count > 0)
+    {
+        LLVMBasicBlockRef cleanup_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, cur_fn, "cleanup");
+        LLVMBuildBr(ctx->builder, cleanup_bb);
+        LLVMPositionBuilderAtEnd(ctx->builder, cleanup_bb);
+    }
 
     /* Emit all cleanups inline in the cleanup block.
        For each cleanup, emit the free/drop logic directly.
@@ -1192,6 +1228,23 @@ void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloc
                 LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
                 idx++;
             }
+        }
+    }
+
+    /* A2: paired lifetime.end for every marked aggregate slot in the cleaned
+       scope range, after all drops above and before the caller's ret/br. Skips
+       the return-value slot (skip_alloca) — its storage still feeds the return.
+       No-op when lifetime is disabled (nothing is ever marked then). */
+    for (CgScope *s = ctx->current_scope; s != NULL && s != stop; s = s->parent)
+    {
+        for (int i = s->count - 1; i >= 0; i--)
+        {
+            CgSymbol *sym = &s->symbols[i];
+            if (!sym->lifetime_marked || sym->type == NULL)
+                continue;
+            if (skip_alloca != NULL && sym->value == skip_alloca)
+                continue;
+            cg_emit_lifetime_end(ctx, sym->value, type_to_llvm(ctx, sym->type));
         }
     }
 }

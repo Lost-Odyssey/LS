@@ -1,0 +1,45 @@
+// A2 llvm.lifetime.start/end markers regression
+// (docs/plan_opt_lifetime_markers.md).
+//
+// Exercises the three things the markers must get right:
+//   - aggregate POD-array locals in DISJOINT block scopes: the StackColoring
+//     coalescing target — with markers the two 256B arrays share one frame slot;
+//   - a has_drop Str local: lifetime.end must be emitted strictly AFTER the
+//     slot's scope-exit drop (a premature end would be a use-after-free of the
+//     dropped Str's buffer at O2);
+//   - a match whose arm bodies bind aggregate locals: the emit_scope_cleanup
+//     (arm-scope) end path.
+// The output must be identical with and without LS_NO_LIFETIME=1.
+
+def work(int n) -> int {
+    if n <= 0 { return 0 }
+    int s = 0
+    if n > 0 {
+        array(int, 256) a
+        for i in 0..256 { a[i] = i * n }
+        for i in 0..256 { s = s + a[i] }
+    }
+    if n > 0 {
+        array(int, 256) b
+        for i in 0..256 { b[i] = i + n }
+        for i in 0..256 { s = s + b[i] }
+    }
+    return s + work(n - 1)
+}
+
+def label(int n) -> Str {
+    Str tag = f"n={n}"
+    match n {
+        0 => { Str z = f"zero"; return z }
+        _ => { return tag }
+    }
+}
+
+def main() {
+    Str acc = f""
+    for i in 0..4 {
+        Str part = label(i)
+        acc = acc + part
+    }
+    @print(f"{work(6)} {acc}")
+}

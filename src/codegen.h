@@ -23,6 +23,10 @@ typedef struct {
     bool is_mut_borrow;      /* true for &! params: `value` is a pointer supplied by
                                 caller (not a local alloca). Load/store go through the pointer,
                                 scope cleanup skips it entirely. */
+    bool lifetime_marked;    /* A2: a llvm.lifetime.start was emitted for this slot at its
+                                var_decl, so scope cleanup must emit the paired lifetime.end
+                                after the slot's drop. Set only for AOT aggregate locals; the
+                                explicit flag guarantees start/end pairing. */
 } CgSymbol;
 
 /* Codegen scope: mirrors the checker's scope chain */

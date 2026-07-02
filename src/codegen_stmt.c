@@ -409,6 +409,13 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMValueRef alloca = LLVMBuildAlloca(tmp, llvm_type, node->as.var_decl.name);
         LLVMDisposeBuilder(tmp);
 
+        /* A2: mark this slot's lexical live range so StackColoring can reuse the
+           frame slot once the scope exits. Emitted at the var_decl position (not
+           the hoisted entry alloca) for the tightest range, BEFORE any zero-init
+           store below. Only aggregate AOT locals qualify; the returned flag is
+           stamped onto the CgSymbol so scope cleanup emits the paired end. */
+        bool var_lifetime_marked = cg_emit_lifetime_start(ctx, alloca, llvm_type);
+
         /* Allocate moved_flag for struct-with-drop and has_drop enum types.
            F.5: enum with heap payload also needs move tracking so closure
            by-move capture can prevent double-free via scope cleanup. */
@@ -639,7 +646,11 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
             }
         }
 
-        cg_scope_define(ctx->current_scope, node->as.var_decl.name, alloca, var_type, moved_flag);
+        {
+            CgSymbol *vsym = cg_scope_define(ctx->current_scope, node->as.var_decl.name,
+                                             alloca, var_type, moved_flag);
+            if (vsym) vsym->lifetime_marked = var_lifetime_marked;
+        }
         break;
     }
 
