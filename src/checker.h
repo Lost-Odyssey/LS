@@ -48,6 +48,12 @@ typedef struct Checker {
     int enum_type_count;
     int enum_type_cap;
 
+    /* C1: hash index over enum_types (mangled-name -> Type*). Same open-address
+       scheme as struct_tab; see there. */
+    TypeTabEntry *enum_tab;
+    int enum_tab_cap;
+    int enum_tab_count;
+
     /* Enum templates (Option / Result).  Each variant payload slot is either
        a concrete type or a type-parameter index (param_idx >= 0). */
     struct {

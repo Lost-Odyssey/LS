@@ -645,10 +645,13 @@ void register_enum_type(Checker *c, const char *name, Type *type)
     c->enum_types[c->enum_type_count].name = name;
     c->enum_types[c->enum_type_count].type = type;
     c->enum_type_count++;
+    type_tab_insert(&c->enum_tab, &c->enum_tab_cap, &c->enum_tab_count, name, type);
 }
 
 Type *find_enum_type(Checker *c, const char *name)
 {
+    if (!type_tab_disabled())
+        return type_tab_find(c->enum_tab, c->enum_tab_cap, name);
     for (int i = 0; i < c->enum_type_count; i++)
     {
         if (strcmp(c->enum_types[i].name, name) == 0)
@@ -9775,6 +9778,7 @@ static void checker_teardown(Checker *c, CheckerGenericMethods *out_gm)
     free(c->struct_types);
     free(c->struct_tab);
     free(c->enum_types);
+    free(c->enum_tab);
     free(c->type_aliases);
     for (int i = 0; i < c->enum_template_count; i++)
     {
