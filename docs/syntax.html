@@ -681,6 +681,13 @@ m[<span class="s">"a"</span>] = 1
     <a href="#er-bang"><code>!</code></a>, and passing an owned <em>temporary</em> into a
     container (<code>v.push("x".upper())</code> — an rvalue, moved in; a named variable
     there is cloned, not moved).</p>
+    <div class="note"><b>The compiler elides the clone when it can prove it's wasted.</b>
+    If a by-value argument is a named local's <em>final</em> use — nothing ever reads,
+    borrows, or captures it again on any path — the deep copy is silently downgraded to a
+    move (last-use elision). Semantics are unchanged, only the copy disappears; you never
+    annotate anything. <code>total(c)</code> above still clones because
+    <code>c.len()</code> reads <code>c</code> afterward. <code>LS_NO_ELIDE=1</code>
+    switches the analysis off.</div>
   </section>
 
   <section id="ow-clone">
@@ -704,7 +711,15 @@ out.push(e)              <span class="c">// clone #2 — e is a named local, clo
     <p>A perfectly legal 100-deep nested <code>Vec</code> (or JSON array — its payload is a
     <code>Vec</code>) then costs 2¹⁰⁰ clones and never returns. This was a real bug in
     <code>Vec.copy</code>; a fuzzer found it as a hang on deep-but-valid input.</p>
-    <p><b>Fix — clone exactly once.</b> Don't materialise the intermediate named local. Use
+    <p><b>The compiler now defuses this pattern automatically when the hand-off is the
+    local's last use.</b> The by-value clone of a named local whose final use it is gets
+    downgraded to a move (last-use elision, see the note in the previous section) — so
+    the ❌ snippet above actually compiles to <b>one</b> clone per element, and the
+    O(2^d) blow-up cannot happen through it. The explicit spellings below are still worth
+    knowing: they are guaranteed regardless of the analysis, and they cover the cases it
+    excludes — the local is read again later, is carried across loop iterations, is
+    captured by a closure, or is a by-value <em>parameter</em> being forwarded onward.</p>
+    <p><b>Guaranteed fix — clone exactly once.</b> Don't materialise the intermediate named local. Use
     <code>@dup</code> (the explicit single-copy primitive: POD bit-copy / owning deep-clone,
     source untouched) — its fresh rvalue then <em>moves</em> into <code>push</code> instead of
     being re-cloned. Passing the place straight into the by-value slot is equivalent:</p>
