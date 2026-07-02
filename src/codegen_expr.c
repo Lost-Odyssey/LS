@@ -3694,6 +3694,21 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                                                    argsym->moved_flag);
                                 }
                             }
+                            else if (unwrapped->moved_out &&
+                                     cg_invalidate_moved_source(ctx, raw, arg_type))
+                            {
+                                /* A1 clone-elision: the checker's last-use pass
+                                   proved this argument is the variable's final
+                                   use — transfer the heap instead of cloning.
+                                   cg_invalidate_moved_source suppressed the
+                                   caller-side scope drop; when it can't (borrow /
+                                   no moved_flag) it returns false and the clone
+                                   below keeps the old behavior (§3.2 safety net). */
+#if CG_DEBUG
+                                cg_emit_debug_printf(ctx, "[cg] elide.arg.move struct\n",
+                                                     NULL, 0);
+#endif
+                            }
                             else
                             {
                                 LLVMTypeRef llvm_st = type_to_llvm(ctx, arg_type);
@@ -3736,6 +3751,18 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                                                    LLVMConstInt(i1_t, 1, 0),
                                                    argsym->moved_flag);
                                 }
+                            }
+                            else if (unwrapped->moved_out &&
+                                     cg_invalidate_moved_source(ctx, raw, arg_type))
+                            {
+                                /* A1 clone-elision: last use — move, not clone
+                                   (mirrors the struct branch above; §3.2 safety
+                                   net falls back to the clone when the source
+                                   can't be invalidated). */
+#if CG_DEBUG
+                                cg_emit_debug_printf(ctx, "[cg] elide.arg.move enum\n",
+                                                     NULL, 0);
+#endif
                             }
                             else
                             {

@@ -160,6 +160,7 @@ static void check_fn_decl(Checker *c, AstNode *node)
     Type *saved_ret = c->current_fn_return;
     c->current_fn_return = ret;
     check_stmt(c, node->as.fn_decl.body);
+    checker_elide_last_use(c, node); /* A1 clone-elision */
     c->current_fn_return = saved_ret;
     chk_pop_scope(c);
 
@@ -695,6 +696,7 @@ void check_impl_decl(Checker *c, AstNode *node)
             c->in_user_defined_drop = true;
         }
         check_stmt(c, method->as.fn_decl.body);
+        checker_elide_last_use(c, method); /* A1 clone-elision */
         c->current_fn_return = saved_ret;
         c->in_user_defined_drop = saved_in_drop;
         chk_pop_scope(c);
@@ -1420,6 +1422,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
         Type *saved_ret = c->current_fn_return;
         c->current_fn_return = ret;
         check_stmt(c, method->as.fn_decl.body);
+        checker_elide_last_use(c, method); /* A1 clone-elision */
         c->current_fn_return = saved_ret;
         chk_pop_scope(c);
 

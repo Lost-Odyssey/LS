@@ -1,0 +1,112 @@
+// Clone-elision (A1, last-use analysis) semantic guard.
+//
+// Written BEFORE the elision pass exists: every case passes on the pure-clone
+// baseline. After the pass lands the outputs must be IDENTICAL — elision only
+// removes defensive clones, never changes values. Cases marked "eligible" are
+// where the pass may downgrade a clone to a move; cases marked "must clone"
+// are the exclusions (any behavior change there = an elision soundness bug).
+// Registered to run JIT + AOT + JIT --memcheck (0 leak / 0 dfree / 0 ifree).
+
+import std.core.vec
+import std.core.str
+
+struct Item { Str name }
+
+type Fn0 = Block() -> int
+
+def check(bool ok, Str what) {
+    if ok { @print(f"ok {what}") } else { @print(f"FAIL {what}") }
+}
+
+// Case 1 (eligible): `Str e = src.get!(i); out.push(e)` — the push is e's last
+// use, so its by-value clone may become a move. The get! clone (container
+// slot read) must stay. This is the Vec.copy double-clone pattern.
+def copy_vec(&Vec(Str) src) -> Vec(Str) {
+    Vec(Str) out = {}
+    for i in 0..src.len() {
+        Str e = src.get!(i)
+        out.push(e)
+    }
+    return out
+}
+
+// Case 6 (eligible): returning a named local.
+def make_tag() -> Str {
+    Str r = "tag".upper()
+    return r
+}
+
+// By-value sinks (owned has_drop params: callee owns and destroys its copy).
+def sink_str(Str s) -> int { return s.len() }
+def sink_item(Item it) -> int { return it.name.len() }
+def twin(Str a, Str b) -> int { return a.len() + b.len() }
+
+def main() {
+    // Case 1: bind-then-consume in a loop body (eligible inside copy_vec).
+    Vec(Str) src = ["alpha".upper(), "beta".upper(), "gamma".upper()]
+    Vec(Str) cp = copy_vec(&src)
+    check(cp.len() == 3, "copy-len")
+    check(cp.get!(0).eq?("ALPHA") && cp.get!(2).eq?("GAMMA"), "copy-content")
+    check(src.get!(1).eq?("BETA"), "src-intact")
+
+    // Case 2 (must clone): consume then re-read the same variable.
+    Str a = "alpha2".upper()
+    int n1 = sink_str(a)
+    check(a.eq?("ALPHA2") && n1 == 6, "reuse-after-arg")
+
+    // Case 1b (eligible): struct flavour — last-use by-value arg.
+    Item it = Item { name: "widget".upper() }
+    int n2 = sink_item(it)
+    check(n2 == 6, "struct-arg-lastuse")
+
+    // Case 3 (must clone): consumption in a loop, re-read on the next
+    // iteration via the back edge — x is NOT last-used at the push.
+    Vec(Str) acc = {}
+    Str x = "seed".upper()
+    for i in 0..3 {
+        acc.push(x)
+    }
+    check(acc.len() == 3 && acc.get!(0).eq?("SEED") && acc.get!(2).eq?("SEED"),
+          "loop-reread")
+    check(x.eq?("SEED"), "loop-src-live")
+
+    // Case 4 (must clone): consumption followed by a read on ONE branch only.
+    Str y = "cond".upper()
+    Vec(Str) box4 = {}
+    box4.push(y)
+    if box4.len() == 1 {
+        check(y.eq?("COND"), "one-arm-read")
+    } else {
+        check(false, "one-arm-read")
+    }
+
+    // Case 5 (must clone): variable captured by a closure — excluded outright.
+    // The push happens before the capture; the by-move capture then consumes z.
+    Str z = "zeta".upper()
+    Vec(Str) box5 = {}
+    box5.push(z)
+    Fn0 c = || z.len()
+    check(c() == 4 && box5.get!(0).eq?("ZETA"), "closure-capture")
+
+    // Case 6: return of a named local (eligible inside make_tag).
+    Str t = make_tag()
+    check(t.eq?("TAG"), "return-local")
+
+    // Case 7: same variable twice in one call — the first arg must clone
+    // (the second still reads it), only the trailing use may move.
+    Str w = "wv".upper()
+    check(twin(w, w) == 4, "twin-args")
+
+    // Case 8 (eligible): consumption on BOTH branches, no later use — each
+    // arm may move independently (only one path executes at runtime).
+    Str u = "u8".upper()
+    Vec(Str) box8 = {}
+    if src.len() == 3 {
+        box8.push(u)
+    } else {
+        box8.push(u)
+    }
+    check(box8.get!(0).eq?("U8"), "both-arm-consume")
+
+    @print("CE PASS")
+}

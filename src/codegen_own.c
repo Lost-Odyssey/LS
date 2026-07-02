@@ -224,6 +224,19 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
         }
         if (user_clone != NULL)
         {
+#if CG_DEBUG
+            {
+                /* Same tracking as the auto-clone path below — the user-clone
+                   early return previously skipped it, hiding Str/Vec/Map
+                   clones from CG_DEBUG counts. */
+                char dbg_fmt[128];
+                snprintf(dbg_fmt, sizeof(dbg_fmt),
+                         "[cg] struct.clone  user type=%s\n",
+                         struct_type->as.strukt.name ? struct_type->as.strukt.name
+                                                     : "?");
+                cg_emit_debug_printf(ctx, dbg_fmt, NULL, 0);
+            }
+#endif
             /* __clone(&self): spill the value to a temp to get a self pointer. */
             LLVMValueRef self_tmp = cg_entry_alloca(ctx, llvm_struct_type, "uc.self");
             LLVMBuildStore(ctx->builder, struct_val, self_tmp);

@@ -91,6 +91,7 @@ set(LS_CHECKER_SOURCES
     src/checker_borrow.c
     src/checker_lower.c
     src/checker_decl.c
+    src/checker_elide.c
 )
 
 # codegen translation units (split per docs/plan_codegen_split.md).
@@ -1659,6 +1660,21 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -DTEST_NAME=move_elision
         -P ${CMAKE_SOURCE_DIR}/tests/test_move_elision.cmake
+)
+
+# Clone-elision (A1 last-use analysis): a has_drop local whose by-value
+# consumption is its last use gets its defensive clone downgraded to a move.
+# The sample fixes the semantic baseline (authored pre-pass, pure-clone) and
+# covers the exclusions (re-read, loop back edge, one-arm read, closure
+# capture, twin args). Asserts JIT + AOT correctness + memcheck cleanliness.
+add_test(
+    NAME test_clone_elision
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/clone_elision.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DTEST_NAME=clone_elision
+        -P ${CMAKE_SOURCE_DIR}/tests/test_clone_elision.cmake
 )
 
 # Phase G (Block env deep-clone, resolves L-007): copying a Block out of a vec

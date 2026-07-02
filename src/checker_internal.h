@@ -36,6 +36,14 @@ typedef struct {
 
 const IntrinsicDef *intrinsic_lookup(const char *name);
 
+/* ---- A1 clone-elision (checker_elide.c) ----
+   Last-use analysis over a fully-checked fn body: tags provably-final
+   by-value uses of named has_drop locals with moved_out so codegen moves
+   instead of clones. Call after every body check_stmt convergence point.
+   No-op when c->elide_pass_enabled is false or the check had errors. */
+bool checker_elide_env_enabled(void);
+void checker_elide_last_use(Checker *c, AstNode *fn_decl);
+
 /* ---- Internal types shared across checker TUs ----
    (moved out of checker.c so cross-TU prototypes below can reference them). */
 
