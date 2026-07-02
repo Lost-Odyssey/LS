@@ -242,6 +242,86 @@ static bool checker_type_is_ambiguous(Checker *c, const char *name)
     return false;
 }
 
+/* --- C1: type-registry hash index (open addressing, linear probe) --------- */
+/* FxHash over a NUL-terminated key. Mirrors runtime __ls_fxhash_bytes so the
+   mix is well-understood; the checker never shares buckets with the runtime so
+   only the distribution matters here, not bit-identical values. */
+static unsigned long long type_name_hash(const char *s)
+{
+    unsigned long long h = 0;
+    const unsigned long long SEED = 0x517cc1b727220a95ULL;
+    for (; *s; s++) {
+        unsigned long long x = h ^ (unsigned long long)(unsigned char)*s;
+        h = ((x << 5) | (x >> 59)) * SEED;
+    }
+    return h;
+}
+
+/* LS_NO_TYPETAB=1 → skip the hash index, fall back to the linear array scan
+   (kept for one release as a safety valve; see plan §5 rollback row). */
+static bool type_tab_disabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) cached = getenv("LS_NO_TYPETAB") ? 1 : 0;
+    return cached != 0;
+}
+
+/* Rehash into a table twice the size (or 16 when empty). Never called with
+   LS_NO_TYPETAB set — insert short-circuits before reaching here. */
+static void type_tab_grow(TypeTabEntry **tab, int *cap)
+{
+    int oldcap = *cap;
+    TypeTabEntry *old = *tab;
+    int newcap = oldcap < 16 ? 16 : oldcap * 2;
+    TypeTabEntry *nt = malloc_safe((size_t)newcap * sizeof(TypeTabEntry));
+    memset(nt, 0, (size_t)newcap * sizeof(TypeTabEntry));
+    unsigned long long mask = (unsigned long long)newcap - 1;
+    for (int i = 0; i < oldcap; i++) {
+        if (old[i].name == NULL) continue;
+        unsigned long long j = type_name_hash(old[i].name) & mask;
+        while (nt[j].name != NULL) j = (j + 1) & mask;
+        nt[j] = old[i];
+    }
+    free(old);
+    *tab = nt;
+    *cap = newcap;
+}
+
+/* Insert name->type. Keeps the FIRST entry on a duplicate name (matching the
+   old linear find, which returned the earliest registration). No deletion ever
+   happens on these tables, so open addressing needs no tombstones. */
+static void type_tab_insert(TypeTabEntry **tab, int *cap, int *count,
+                            const char *name, Type *type)
+{
+    if (type_tab_disabled()) return;
+    if (*cap == 0 || (*count + 1) * 10 >= *cap * 7)   /* grow past 70% load */
+        type_tab_grow(tab, cap);
+    unsigned long long mask = (unsigned long long)*cap - 1;
+    unsigned long long i = type_name_hash(name) & mask;
+    for (;;) {
+        if ((*tab)[i].name == NULL) {
+            (*tab)[i].name = name;
+            (*tab)[i].type = type;
+            (*count)++;
+            return;
+        }
+        if (strcmp((*tab)[i].name, name) == 0) return;  /* keep first */
+        i = (i + 1) & mask;
+    }
+}
+
+static Type *type_tab_find(TypeTabEntry *tab, int cap, const char *name)
+{
+    if (cap == 0) return NULL;
+    unsigned long long mask = (unsigned long long)cap - 1;
+    unsigned long long i = type_name_hash(name) & mask;
+    for (;;) {
+        if (tab[i].name == NULL) return NULL;
+        if (strcmp(tab[i].name, name) == 0) return tab[i].type;
+        i = (i + 1) & mask;
+    }
+}
+
 void register_struct_type(Checker *c, const char *name, Type *type)
 {
     if (c->struct_type_count >= c->struct_type_cap)
@@ -253,10 +333,13 @@ void register_struct_type(Checker *c, const char *name, Type *type)
     c->struct_types[c->struct_type_count].name = name;
     c->struct_types[c->struct_type_count].type = type;
     c->struct_type_count++;
+    type_tab_insert(&c->struct_tab, &c->struct_tab_cap, &c->struct_tab_count, name, type);
 }
 
 Type *find_struct_type(Checker *c, const char *name)
 {
+    if (!type_tab_disabled())
+        return type_tab_find(c->struct_tab, c->struct_tab_cap, name);
     for (int i = 0; i < c->struct_type_count; i++)
     {
         if (strcmp(c->struct_types[i].name, name) == 0)
@@ -9690,6 +9773,7 @@ static void checker_teardown(Checker *c, CheckerGenericMethods *out_gm)
        since AST nodes reference them via resolved_type. They will be freed
        when the full compilation pipeline is in place. */
     free(c->struct_types);
+    free(c->struct_tab);
     free(c->enum_types);
     free(c->type_aliases);
     for (int i = 0; i < c->enum_template_count; i++)

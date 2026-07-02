@@ -11,6 +11,15 @@
 /* Forward declaration (full definition in module.h) */
 struct ModuleRegistry;
 
+/* C1: open-addressing hash index entry over a type registry (name -> Type*).
+   Runs parallel to the existing struct_types/enum_types arrays (arrays kept
+   for the ordered traversals: has_drop fixpoint, pass-2.5 drop codegen). The
+   key is borrowed from the registry entry's own `name` (not copied). */
+typedef struct TypeTabEntry {
+    const char *name;
+    Type *type;
+} TypeTabEntry;
+
 typedef struct Checker {
     Scope *current_scope;       /* Current symbol scope */
     Type *current_fn_return;    /* Expected return type of current function */
@@ -23,6 +32,13 @@ typedef struct Checker {
     struct { const char *name; Type *type; } *struct_types;
     int struct_type_count;
     int struct_type_cap;
+
+    /* C1: hash index over struct_types (name -> Type*). First-registered wins
+       on a duplicate name, matching the old linear find. cap is a power of two
+       (0 = not yet allocated). LS_NO_TYPETAB=1 bypasses it (legacy scan). */
+    TypeTabEntry *struct_tab;
+    int struct_tab_cap;
+    int struct_tab_count;
 
     /* Enum type registry (mangled-name keyed; e.g. "Option(int)" and
        "Option(string)" are distinct entries). User-declared enums register
