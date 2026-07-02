@@ -17,6 +17,7 @@
 #include <llvm-c/Transforms/PassBuilder.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 
@@ -2290,6 +2291,53 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
     return ctx->had_error ? -1 : 0;
 }
 
+/* A5 (docs/plan_opt_internalize_dce.md): must a definition keep external
+   linkage? Everything else is internalized so GlobalDCE inside the
+   default<O*> pipeline can strip the stdlib instances this program never
+   reaches (single-module emission instantiates far more than main uses). */
+static bool cg_fn_must_keep(CodegenContext *ctx, LLVMValueRef f)
+{
+    (void)ctx;
+    /* The C runtime entry: the only symbol the static link resolves by name
+       in the reverse direction (mainCRTStartup -> main). */
+    const char *name = LLVMGetValueName(f);
+    if (name && strcmp(name, "main") == 0) return true;
+    return false;
+}
+
+/* Give every non-entry definition internal linkage before the pass pipeline
+   runs. AOT-only: LLJIT resolves REPL/JIT cross-module calls by symbol name
+   (DynamicLibrarySearchGenerator), so this never runs without ctx->aot_entry.
+   LS_NO_INTERNALIZE=1 disables it (rollback / A-B switch).
+
+   Conservative FFI gate (v1): a module that loads shared libraries gets no
+   internalize at all. lib.call resolves symbols in the loaded DLL (never in
+   the exe), so this is stricter than needed — but it removes the whole
+   "function address escapes through FFI" analysis from v1. */
+static void cg_internalize_for_aot(CodegenContext *ctx)
+{
+    if (!ctx->aot_entry) return;
+    const char *off = getenv("LS_NO_INTERNALIZE");
+    if (off && off[0] != '\0' && off[0] != '0') return;
+    if (LLVMGetNamedFunction(ctx->module, "__ls_ffi_init") != NULL) return;
+
+    for (LLVMValueRef f = LLVMGetFirstFunction(ctx->module); f;
+         f = LLVMGetNextFunction(f))
+    {
+        if (LLVMCountBasicBlocks(f) == 0) continue;  /* declaration: .lib owns it */
+        if (cg_fn_must_keep(ctx, f)) continue;
+        LLVMSetLinkage(f, LLVMInternalLinkage);
+    }
+    for (LLVMValueRef g = LLVMGetFirstGlobal(ctx->module); g;
+         g = LLVMGetNextGlobal(g))
+    {
+        if (LLVMIsDeclaration(g)) continue;
+        const char *name = LLVMGetValueName(g);
+        if (name && strncmp(name, "llvm.", 5) == 0) continue;  /* appending-linkage intrinsics */
+        LLVMSetLinkage(g, LLVMInternalLinkage);
+    }
+}
+
 int codegen_emit_object(CodegenContext *ctx, const char *output_path)
 {
     /* Build a TargetMachine configured for the requested opt level + CPU
@@ -2301,6 +2349,10 @@ int codegen_emit_object(CodegenContext *ctx, const char *output_path)
     LLVMTargetMachineRef tm = ls_opt_create_target_machine(triple, &ctx->opt);
     LLVMDisposeMessage(triple);
     if (tm == NULL) tm = ctx->target_machine;  /* fallback: keep building */
+
+    /* A5: internalize before the pipeline so its GlobalDCE (and ABI-level
+       IPO, which only fires on internal functions) can act. */
+    cg_internalize_for_aot(ctx);
 
     ls_opt_run_passes(ctx->module, tm, &ctx->opt);
 
