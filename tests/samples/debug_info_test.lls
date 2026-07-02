@@ -1,0 +1,21 @@
+// D1 debug info (-g) regression sample: exercises the three subprogram
+// sources (root free fn / generic method instance from an imported module /
+// closure literal) plus f-string lowering (line-0 synthesised statements).
+import std.core.vec
+
+type Doubler = Block(int) -> int
+
+def add_all(Vec(int) v) -> int {
+    int s = 0
+    for i in 0..v.len() {
+        s = s + v[i]
+    }
+    return s
+}
+
+def main() {
+    Vec(int) v = [1, 2, 3]
+    int s = add_all(v)
+    Doubler dbl = |x| x * 2
+    @print(f"sum={s} dbl={dbl(21)}")
+}

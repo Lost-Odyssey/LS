@@ -4386,3 +4386,16 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_noalias_guard.cmake
 )
 set_tests_properties(test_noalias_guard PROPERTIES DEPENDS "test_chan_mpmc")
+
+# ---- D1 -g line-table debug info regression (plan_debug_info.md phase 1) ----
+# DI skeleton + statement locations in emit-ir -g, DI-free default IR, and a
+# PDB next to the -g AOT exe. Unique work files: debug_info_aot.exe/.pdb.
+add_test(
+    NAME test_debug_info
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/debug_info_test.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_debug_info.cmake
+)
