@@ -105,6 +105,7 @@ set(LS_CODEGEN_SOURCES
     src/codegen_stmt.c
     src/codegen_expr.c
     src/codegen_noalias.c
+    src/codegen_di.c
     src/optpipe.c
 )
 

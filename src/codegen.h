@@ -11,6 +11,7 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Analysis.h>
+#include <llvm-c/DebugInfo.h>
 
 /* Codegen symbol: associates a name with an LLVM alloca/global and its type */
 typedef struct {
@@ -137,6 +138,14 @@ typedef struct {
        it via cg_module_fn_symbol so that same-named functions in different
        modules get distinct LLVM symbols (root functions stay unmangled). */
     const char *current_emit_module;
+
+    /* D1 debug info (docs/plan_debug_info.md phase 1: line tables only).
+       All of this stays NULL/false unless `-g` was passed — the default
+       pipeline never touches the DIBuilder. */
+    bool debug_info;              /* -g: emit line-table debug info */
+    LLVMDIBuilderRef dib;         /* NULL when debug info is off */
+    LLVMMetadataRef di_cu;        /* compile unit */
+    LLVMMetadataRef di_file;      /* DIFile of the root source file */
 } CodegenContext;
 
 /* Initialize the codegen context (creates LLVM module, target, etc.) */

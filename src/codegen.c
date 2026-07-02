@@ -1367,6 +1367,8 @@ void codegen_destroy(CodegenContext *ctx)
     ctx->mc_site_count = 0;
     ctx->mc_site_cap = 0;
 
+    if (ctx->dib)
+        LLVMDisposeDIBuilder(ctx->dib);
     if (ctx->builder)
         LLVMDisposeBuilder(ctx->builder);
     if (ctx->target_machine)
@@ -1454,6 +1456,9 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
     {
         ctx->current_scope = cg_scope_new(NULL);
     }
+
+    /* D1: create the DIBuilder skeleton (-g only) before any body is emitted. */
+    cg_di_init(ctx);
 
     declare_builtins(ctx);
 
@@ -2246,6 +2251,9 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         LLVMValueRef pe = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
         if (pe) cg_mark_noreturn_cold(ctx, pe);
     }
+
+    /* D1: materialise deferred DI nodes before the verifier / pass pipeline. */
+    cg_di_finalize(ctx);
 
     /* Verify module */
     char *error = NULL;

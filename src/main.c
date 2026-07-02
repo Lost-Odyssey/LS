@@ -192,7 +192,8 @@ static int cmd_emit_c(const char *path, const char *out_path,
    are resolved at link time and the program prints a leak report at exit. */
 static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
                        bool memcheck, bool profile, bool opt_set,
-                       LsOptLevel opt_level, bool native, const char *target_cpu) {
+                       LsOptLevel opt_level, bool native, const char *target_cpu,
+                       bool debug_info) {
     char *source = read_file(path);
     if (source == NULL) return 1;
 
@@ -225,6 +226,7 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
     if (opt_set) ctx.opt.level = opt_level;
     if (native) ctx.opt.native = true;
     if (target_cpu) ctx.opt.target_cpu = target_cpu;  /* --target / cross-target AOT */
+    ctx.debug_info = debug_info;  /* -g: line-table debug info (D1) */
 
     /* G1.5: transfer pending generic methods to codegen */
     if (gm.count > 0) {
@@ -401,7 +403,7 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
 /* Dump LLVM IR without compiling. When opt_set, the requested pass pipeline is
    run first so the optimized IR (inlining, vectorization, etc.) can be inspected. */
 static int cmd_emit_ir(const char *path, bool opt_set, LsOptLevel opt_level, bool native,
-                       const char *target_cpu) {
+                       const char *target_cpu, bool debug_info) {
     char *source = read_file(path);
     if (source == NULL) return 1;
 
@@ -434,6 +436,7 @@ static int cmd_emit_ir(const char *path, bool opt_set, LsOptLevel opt_level, boo
     if (opt_set) ctx.opt.level = opt_level;
     if (native) ctx.opt.native = true;
     if (target_cpu) ctx.opt.target_cpu = target_cpu;  /* --target / cross-target AOT */
+    ctx.debug_info = debug_info;  /* -g: line-table debug info (D1) */
 
     if (codegen_compile(&ctx, ast, reg) != 0) {
         codegen_destroy(&ctx); module_registry_free(reg);
@@ -1566,6 +1569,7 @@ static void usage(void) {
         "  compile <file> [-o out]    Compile to executable\n"
         "       [-O0|-O1|-O2|-O3|-Os|-Oz]  optimization level (default -O2)\n"
         "       [--native]            target the host CPU (unlocks AVX etc.; non-portable)\n"
+        "       [-g]                  emit line-table debug info (PDB on Windows)\n"
         "  run <file>                 JIT execute (Phase 5)\n"
         "  run [-O|-O1..-O3|-Os|-Oz] <file>  JIT with optimization (native CPU)\n"
         "  repl                       Interactive REPL (Phase 5)\n"
@@ -1670,10 +1674,12 @@ int main(int argc, char *argv[]) {
         const char *file = NULL;
         bool native = false;
         bool opt_set = false;
+        bool debug_info = false;
         const char *target_cpu = NULL;  /* --target=<cpu>: emit IR for a named CPU */
         LsOptLevel opt_level = LS_OPT_O2;
         for (int i = 2; i < argc; i++) {
             if (strcmp(argv[i], "--native") == 0) native = true;
+            else if (strcmp(argv[i], "-g") == 0) debug_info = true;
             else if (strncmp(argv[i], "--target=", 9) == 0) target_cpu = argv[i] + 9;
             else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) target_cpu = argv[++i];
             else if (ls_opt_parse_flag(argv[i], &opt_level)) opt_set = true;
@@ -1683,7 +1689,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "error: 'emit-ir' requires a file path\n");
             return 1;
         }
-        return cmd_emit_ir(file, opt_set, opt_level, native, target_cpu);
+        return cmd_emit_ir(file, opt_set, opt_level, native, target_cpu, debug_info);
     }
 
     if (strcmp(cmd, "emit-c") == 0) {
@@ -1731,6 +1737,7 @@ int main(int argc, char *argv[]) {
         bool profile = false;
         bool native = false;
         bool opt_set = false;
+        bool debug_info = false;
         const char *target_cpu = NULL;  /* --target=<cpu>: cross-target AOT (e.g. graniterapids) */
         LsOptLevel opt_level = LS_OPT_O2;
         for (int i = 2; i < argc; i++) {
@@ -1744,6 +1751,8 @@ int main(int argc, char *argv[]) {
                 profile = true;
             } else if (strcmp(argv[i], "--native") == 0) {
                 native = true;
+            } else if (strcmp(argv[i], "-g") == 0) {
+                debug_info = true;
             } else if (strncmp(argv[i], "--target=", 9) == 0) {
                 target_cpu = argv[i] + 9;
             } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
@@ -1759,7 +1768,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         return cmd_compile(file, output, dump_ir, memcheck, profile,
-                           opt_set, opt_level, native, target_cpu);
+                           opt_set, opt_level, native, target_cpu, debug_info);
     }
 
     if (strcmp(cmd, "run") == 0) {
