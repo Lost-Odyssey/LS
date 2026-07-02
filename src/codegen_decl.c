@@ -452,6 +452,16 @@ static void cg_attach_borrow_attrs(CodegenContext *ctx, LLVMValueRef fn,
        exists so a future "is noalias the culprit?" bisect takes one env var. */
     if (is_mut && getenv("LS_FORCE_NOALIAS") != NULL)
         cg_add_enum_attr(ctx, fn, attr_idx, "noalias", 0);
+    /* A4: mark writable borrows as noalias CANDIDATES. The recovery pass
+       (codegen_noalias.c) later upgrades the marker to a real `noalias` on
+       functions it proves thread-local, and strips it everywhere else. Gated
+       on nocapture_ok: a function that can return a borrow keeps the derived
+       pointer alive past its own frame — excluded conservatively. */
+    else if (is_mut && nocapture_ok) {
+        LLVMAttributeRef cand = LLVMCreateStringAttribute(
+            ctx->context, "ls-noalias-cand", 15, "", 0);
+        LLVMAddAttributeAtIndex(fn, attr_idx, cand);
+    }
 }
 
 void codegen_fn_decl(CodegenContext *ctx, AstNode *node)

@@ -1,5 +1,6 @@
 /* optpipe.c — see optpipe.h / docs/plan_opt_pipeline.md */
 #include "optpipe.h"
+#include "codegen_noalias.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -141,6 +142,11 @@ int ls_opt_run_passes(LLVMModuleRef module, LLVMTargetMachineRef tm,
                       const LsOptConfig *cfg) {
     const char *passes = ls_opt_pass_string(cfg->level);
     if (passes == NULL) return 0;  /* O0: no IR passes */
+
+    /* A4: upgrade "ls-noalias-cand" markers to `noalias` on functions proven
+       thread-local, strip the rest — must run before the optimizer so the
+       vectorizer/LICM can use the attribute. Idempotent (markers consumed). */
+    ls_noalias_recover(module);
 
     LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
     if (cfg->verify_each)

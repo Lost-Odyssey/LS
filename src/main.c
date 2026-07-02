@@ -7,6 +7,7 @@
 #include "module.h"
 #include "debug.h"
 #include "jit.h"
+#include "codegen_noalias.h"
 #include "format.h"
 #include "doc_assets.h"
 #include "emit_c.h"
@@ -438,6 +439,11 @@ static int cmd_emit_ir(const char *path, bool opt_set, LsOptLevel opt_level, boo
         codegen_destroy(&ctx); module_registry_free(reg);
         ast_free(ast); free(source); return 1;
     }
+
+    /* A4: run noalias recovery even for unoptimized dumps so `emit-ir` shows
+       the final attribute set (the pass is idempotent — ls_opt_run_passes
+       below finds the markers already consumed and does nothing). */
+    ls_noalias_recover(ctx.module);
 
     /* Optionally optimize before dumping so the user can inspect the post-pass
        IR (e.g. vector widths under -O3 --native). */
