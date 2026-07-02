@@ -146,6 +146,15 @@ typedef struct {
     LLVMDIBuilderRef dib;         /* NULL when debug info is off */
     LLVMMetadataRef di_cu;        /* compile unit */
     LLVMMetadataRef di_file;      /* DIFile of the root source file */
+
+    /* Source path of the module whose bodies are being emitted, so imported
+       functions get a DIFile pointing at their own .lls file (NULL = root
+       file). Set alongside current_emit_module in codegen_compile's Pass B
+       and per pending generic method (via its defining module stamp). */
+    const char *current_emit_file;
+    struct { const char *path; LLVMMetadataRef file; } *di_files; /* DIFile cache */
+    int di_file_count;
+    int di_file_cap;
 } CodegenContext;
 
 /* Initialize the codegen context (creates LLVM module, target, etc.) */

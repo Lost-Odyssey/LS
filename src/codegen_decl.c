@@ -555,6 +555,9 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
     LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ctx->context, fn, "entry");
     LLVMPositionBuilderAtEnd(ctx->builder, entry);
 
+    /* D1 (-g): attach the subprogram before any body instruction is emitted. */
+    cg_di_fn_begin(ctx, fn, node);
+
     /* D.1 — push a frame for this user function so allocations made within
        its dynamic extent capture this function in their backtrace. We pull
        the file from the module identifier (same pattern as cg_make_site).

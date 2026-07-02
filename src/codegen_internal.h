@@ -53,6 +53,8 @@ LLVMValueRef codegen_force_unwrap_expr(CodegenContext *ctx, AstNode *node);
 /* D1 debug info hooks (codegen_di.c) — no-ops unless ctx->debug_info. */
 void cg_di_init(CodegenContext *ctx);
 void cg_di_finalize(CodegenContext *ctx);
+void cg_di_fn_begin(CodegenContext *ctx, LLVMValueRef fn, AstNode *node);
+void cg_di_stmt_loc(CodegenContext *ctx, AstNode *node);
 
 /* ---- Internal codegen helper prototypes (auto-consolidated, Step 3a) ---- */
 void cg_module_fn_symbol(char *out, size_t cap, const char *module_path, const char *fn);

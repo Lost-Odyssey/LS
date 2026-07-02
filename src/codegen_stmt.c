@@ -337,6 +337,10 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
     if (node == NULL)
         return;
 
+    /* D1 (-g): statement-level line info — one location per statement,
+       sticky across the expressions it lowers (docs/plan_debug_info.md §3.2). */
+    cg_di_stmt_loc(ctx, node);
+
 #if CG_DEBUG_LV2
     printf(">>>>> codegen_stmt, node->kind:%u\n", node->kind);
 #endif
@@ -1909,6 +1913,12 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
 
     /* 4) Save outer codegen state and switch to the new function's body. */
     LLVMBasicBlockRef saved_block = LLVMGetInsertBlock(ctx->builder);
+    /* D1: the closure gets its own subprogram, so the sticky debug location
+       switches scope with it. Snapshot the outer statement's location and
+       reinstate it after the mid-statement body emission — otherwise the rest
+       of the enclosing statement carries closure-scoped (broken) locations. */
+    LLVMMetadataRef saved_di_loc =
+        ctx->dib ? LLVMGetCurrentDebugLocation2(ctx->builder) : NULL;
     LLVMValueRef saved_fn = ctx->current_fn;
     Type *saved_fn_ret = ctx->current_fn_return_type;
     /* The closure is its own function, never `main`: a void closure must ret
@@ -1933,6 +1943,8 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     LLVMBasicBlockRef entry =
         LLVMAppendBasicBlockInContext(ctx->context, fn, "entry");
     LLVMPositionBuilderAtEnd(ctx->builder, entry);
+    /* D1 (-g): closures are real user code with real source lines. */
+    cg_di_fn_begin(ctx, fn, node);
     ctx->current_fn = fn;
     ctx->current_fn_return_type = ret_lst;
     ctx->temp_drop_count = 0;
@@ -2067,6 +2079,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     ctx->temp_block_env_count = saved_temp_block_env_count;
     ctx->temp_drop_base = saved_temp_drop_base;
     if (saved_block) LLVMPositionBuilderAtEnd(ctx->builder, saved_block);
+    if (ctx->dib) LLVMSetCurrentDebugLocation2(ctx->builder, saved_di_loc);
 
     /* 9a) If any capture needs heap drop (string in v1) synthesise a per-
        closure __env_drop_<id> and remember its address — stored into env

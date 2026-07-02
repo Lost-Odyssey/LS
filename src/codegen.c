@@ -1369,6 +1369,10 @@ void codegen_destroy(CodegenContext *ctx)
 
     if (ctx->dib)
         LLVMDisposeDIBuilder(ctx->dib);
+    free(ctx->di_files);
+    ctx->di_files = NULL;
+    ctx->di_file_count = 0;
+    ctx->di_file_cap = 0;
     if (ctx->builder)
         LLVMDisposeBuilder(ctx->builder);
     if (ctx->target_machine)
@@ -1566,6 +1570,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
 
             /* L-009: functions in this module get module-prefixed symbols. */
             ctx->current_emit_module = registry->modules[m].name;
+            /* D1: their subprograms map lines into the module's own file. */
+            ctx->current_emit_file = registry->modules[m].file_path;
 
             /* P1-1: push a temporary scope layer so module functions can
                resolve this module's global variables by their bare names.
@@ -1611,6 +1617,7 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         }
         /* Root/main-file functions follow — unmangled. */
         ctx->current_emit_module = NULL;
+        ctx->current_emit_file = NULL;
     }
 
     /* Phase E.2: ensure all extern struct LLVM types are emitted with their
@@ -2011,12 +2018,27 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             if (existing && LLVMCountBasicBlocks(existing) > 0)
                 continue;
 
+            /* D1: the cloned template AST keeps the defining module's line
+               numbers — point the instance's DIFile at that module's source
+               (falls back to the root file when the stamp/lookup misses). */
+            ctx->current_emit_file = NULL;
+            Type *gst = ctx->pending_generic_methods[i].struct_type;
+            if (registry && gst && gst->kind == TYPE_STRUCT &&
+                gst->as.strukt.generic_module)
+            {
+                ModuleInfo *gmod = module_find(registry,
+                                               gst->as.strukt.generic_module);
+                if (gmod)
+                    ctx->current_emit_file = gmod->file_path;
+            }
+
             /* codegen_fn_decl uses node->as.fn_decl.name as the LLVM function name.
                Temporarily set it to the mangled name (e.g. "Pair(int,string).get_first"). */
             const char *orig_name = cfn->as.fn_decl.name;
             cfn->as.fn_decl.name = (char *)mname;
             codegen_fn_decl(ctx, cfn);
             cfn->as.fn_decl.name = (char *)orig_name;
+            ctx->current_emit_file = NULL;
         }
 
         /* Free cloned AST nodes and mangled names */
