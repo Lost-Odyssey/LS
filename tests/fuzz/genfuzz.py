@@ -23,7 +23,7 @@ Usage:
 import os, sys, random, subprocess, argparse, time, hashlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LS = os.path.join(ROOT, "build", "Release", "ls.exe")
+LS = os.path.join(ROOT, "build", "Release", "lls.exe")
 
 WORDS = ["alpha", "beta", "gamma", "x", "y", "hi", "", "a,b,c", "  ", "zzz",
          "the quick", "1", "0", "-5", "key", "val"]
@@ -32,6 +32,9 @@ HEADER = """\
 import std.core.vec
 import std.core.map
 import std.core.str
+import std.core.set
+import std.core.deque
+import std.core.heap
 import std.sync.lock
 import std.mem.arena
 
@@ -50,6 +53,15 @@ enum Tree {
     Leaf(int)
     Node(Vec(Tree))
 }
+
+// L-002: two interfaces with a same-named method on Box. Box has no inherent
+// `describe`, so a bare `b.describe()` is ambiguous — only the qualified form
+// `Loud.describe(b)` / `Quiet.describe(b)` resolves (contended-mangle path).
+interface Loud  { def describe(&self) -> Str }
+interface Quiet { def describe(&self) -> Str }
+
+methods Box: Loud  { def describe(&self) -> Str { return f"LOUD {self.name}" } }
+methods Box: Quiet { def describe(&self) -> Str { return f"quiet {self.name}" } }
 
 def mk_str(int k) -> Str { return f"s{k}" }
 def mk_veci(int k) -> Vec(int) { Vec(int) r = [k, k] return r }
@@ -143,15 +155,15 @@ class Gen:
                               "filter", "reduce", "clone", "len"])
         if op == "push":   self.emit("%s.push(%s)" % (v, self.intexpr()))
         elif op == "pop":  self.emit("%s.pop()" % v)        # owned Option drop
-        elif op == "len":  self.emit("print(%s.len())" % v)
+        elif op == "len":  self.emit("@print(%s.len())" % v)
         elif op == "clone":
             n = self.fresh(); self.emit("Vec(int) %s = %s.clone()" % (n, v))
             self.env[n] = "Vec(int)"
         elif op == "match_get":
-            self.emit("match %s.get(%s) { Some(x) => { print(x) } None => {} }"
+            self.emit("match %s.get(%s) { Some(x) => { @print(x) } None => {} }"
                       % (v, self.intexpr()))
         elif op == "forin":
-            self.emit("for x in %s { print(x) }" % v)
+            self.emit("for x in %s { @print(x) }" % v)
         elif op == "map":
             n = self.fresh()
             self.emit("Vec(int) %s = %s.map(int)(|x| x + 1)" % (n, v))
@@ -171,39 +183,39 @@ class Gen:
         op = self.rng.choice(["push", "pop", "match_get", "forin_borrow", "len"])
         if op == "push":   self.emit("%s.push(%s)" % (v, self.strexpr()))
         elif op == "pop":  self.emit("%s.pop()" % v)
-        elif op == "len":  self.emit("print(%s.len())" % v)
+        elif op == "len":  self.emit("@print(%s.len())" % v)
         elif op == "match_get":
-            self.emit("match %s.get(%s) { Some(s) => { print(s) } None => {} }"
+            self.emit("match %s.get(%s) { Some(s) => { @print(s) } None => {} }"
                       % (v, self.intexpr()))
         elif op == "forin_borrow":
-            self.emit("for s in &%s { print(s.len()) }" % v)
+            self.emit("for s in &%s { @print(s.len()) }" % v)
 
     def op_map(self):
         v = self.pick("Map(Str,int)")
         if not v: return
         op = self.rng.choice(["set", "get", "remove", "len", "forin"])
         if op == "set":  self.emit("%s.set(%s, %s)" % (v, self.strexpr(), self.intexpr()))
-        elif op == "len": self.emit("print(%s.len())" % v)
+        elif op == "len": self.emit("@print(%s.len())" % v)
         elif op == "get":
-            self.emit("match %s.get(%s) { Some(n) => { print(n) } None => {} }"
+            self.emit("match %s.get(%s) { Some(n) => { @print(n) } None => {} }"
                       % (v, self.strexpr()))
         elif op == "remove":
             self.emit("%s.remove(%s)" % (v, self.strexpr()))
         elif op == "forin":
-            self.emit("for e in %s { print(e.val) }" % v)
+            self.emit("for e in %s { @print(e.val) }" % v)
 
     def op_box(self):
         v = self.pick("Box")
         if not v: return
         op = self.rng.choice(["read_name", "read_nums", "push_num"])
-        if op == "read_name": self.emit("print(%s.name.len())" % v)
-        elif op == "read_nums": self.emit("print(%s.nums.len())" % v)
+        if op == "read_name": self.emit("@print(%s.name.len())" % v)
+        elif op == "read_nums": self.emit("@print(%s.nums.len())" % v)
         elif op == "push_num": self.emit("%s.nums.push(%s)" % (v, self.intexpr()))
 
     def op_tag(self):
         v = self.pick("Tag")
         if not v: return
-        self.emit("match %s { A(s) => { print(s.len()) } B(n) => { print(n) } C => {} }"
+        self.emit("match %s { A(s) => { @print(s.len()) } B(n) => { @print(n) } C => {} }"
                   % v)
 
     # ---- high-risk owned-result patterns (L-013 nest) ----
@@ -224,9 +236,9 @@ class Gen:
             src = self.pick("Vec(int)")
             if src: self.emit("%s.push(%s.clone())" % (v, src))
             else:   self.emit("%s.push([%s])" % (v, self.intexpr()))
-        elif op == "len":  self.emit("print(%s.len())" % v)
+        elif op == "len":  self.emit("@print(%s.len())" % v)
         elif op == "match_get":
-            self.emit("match %s.get(%s) { Some(inner) => { print(inner.len()) } None => {} }"
+            self.emit("match %s.get(%s) { Some(inner) => { @print(inner.len()) } None => {} }"
                       % (v, self.intexpr()))
 
     def op_map_vec(self):
@@ -234,9 +246,9 @@ class Gen:
         if not v: return
         op = self.rng.choice(["set_mk", "get", "len"])
         if op == "set_mk":  self.emit("%s.set(%s, mk_veci(%s))" % (v, self.strexpr(), self.intexpr()))
-        elif op == "len":   self.emit("print(%s.len())" % v)
+        elif op == "len":   self.emit("@print(%s.len())" % v)
         elif op == "get":
-            self.emit("match %s.get(%s) { Some(inner) => { print(inner.len()) } None => {} }"
+            self.emit("match %s.get(%s) { Some(inner) => { @print(inner.len()) } None => {} }"
                       % (v, self.strexpr()))
 
     # match yielding an OWNED payload binder as the RESULT into an outer var
@@ -280,7 +292,7 @@ class Gen:
         if not v: return
         op = self.rng.choice(["match_print", "match_to_var", "match_count"])
         if op == "match_print":
-            self.emit("match %s { Leaf(n) => { print(n) } Node(kids) => { print(kids.len()) } }" % v)
+            self.emit("match %s { Leaf(n) => { @print(n) } Node(kids) => { @print(kids.len()) } }" % v)
         elif op == "match_to_var":
             # owned Vec(Tree) payload moved out of a recursive enum into a var
             n = self.fresh()
@@ -505,7 +517,7 @@ class Gen:
         if not v: return
         it = self.fresh(); k = self.rng.randint(2, 5)
         self.emit('for %s in 0..%d { Str _m = match %s.get(%s) '
-                  '{ Some(x) => x None => f"d{%s}" } print(_m.len()) }' %
+                  '{ Some(x) => x None => f"d{%s}" } @print(_m.len()) }' %
                   (it, k, v, it, it))
 
     # ---- memory: arena / bump allocator (reset-reuse path) ----
@@ -524,7 +536,113 @@ class Gen:
         elif op == "reset":
             self.emit("%s.reset()" % v)         # O(1) reuse — bump pointer reset
         else:
-            self.emit("print(%s.get(0).unwrap_or(-1))" % v)
+            self.emit("@print(%s.get(0).unwrap_or(-1))" % v)
+
+    # ---- Set(T): pure-LS hash set over Map(T,bool) (2026-06-30) ----
+    #      element type fixed to int (satisfies T: Hash + Equal). Exercises the
+    #      __from_list literal path, iterator drop, and set-algebra owned results.
+    def decl_set(self):
+        n = self.fresh()
+        if self.rng.random() < 0.5:
+            elems = ", ".join(self.intexpr() for _ in range(self.rng.randint(0, 4)))
+            self.emit("Set(int) %s = [%s]" % (n, elems))   # __from_list / FromList
+        else:
+            self.emit("Set(int) %s = {}" % n)
+        self.env[n] = "Set(int)"
+
+    def op_set(self):
+        v = self.pick("Set(int)")
+        if not v: return
+        others = [s for s in self.vars_of("Set(int)") if s != v]
+        choices = ["insert", "has", "remove", "len", "to_vec"]
+        if others: choices += ["union", "intersect", "difference",
+                                "op_add", "op_sub", "is_subset"]
+        op = self.rng.choice(choices)
+        if op == "insert":   self.emit("%s.insert(%s)" % (v, self.intexpr()))
+        elif op == "has":    self.emit("@print(%s.has?(%s))" % (v, self.intexpr()))
+        elif op == "remove": self.emit("%s.remove(%s)" % (v, self.intexpr()))
+        elif op == "len":    self.emit("@print(%s.len())" % v)
+        elif op == "to_vec":
+            n = self.fresh(); self.emit("Vec(int) %s = %s.to_vec()" % (n, v))
+            self.env[n] = "Vec(int)"
+        elif op == "is_subset":
+            self.emit("@print(%s.is_subset(%s))" % (v, self.rng.choice(others)))
+        else:
+            b = self.rng.choice(others); n = self.fresh()
+            expr = {"union": "%s.union(%s)", "intersect": "%s.intersect(%s)",
+                    "difference": "%s.difference(%s)",
+                    "op_add": "%s + %s", "op_sub": "%s - %s"}[op] % (v, b)
+            self.emit("Set(int) %s = %s" % (n, expr))
+            self.env[n] = "Set(int)"
+
+    # ---- Deque(T): growable ring buffer, self-managed *T buffer (2026-06-30) ----
+    #      element type fixed to int. The point is the ring buffer's own
+    #      Destroy/Clone (@dispose loop) + owned Option results from pop/front.
+    def decl_deque(self):
+        n = self.fresh()
+        if self.rng.random() < 0.5:
+            elems = ", ".join(self.intexpr() for _ in range(self.rng.randint(0, 4)))
+            self.emit("Deque(int) %s = [%s]" % (n, elems))
+        else:
+            self.emit("Deque(int) %s = {}" % n)
+        self.env[n] = "Deque(int)"
+
+    def op_deque(self):
+        v = self.pick("Deque(int)")
+        if not v: return
+        op = self.rng.choice(["push_back", "push_front", "pop_back", "pop_front",
+                              "match_front", "match_back", "get", "len", "to_vec"])
+        if op == "push_back":   self.emit("%s.push_back(%s)" % (v, self.intexpr()))
+        elif op == "push_front": self.emit("%s.push_front(%s)" % (v, self.intexpr()))
+        elif op == "pop_back":  self.emit("%s.pop_back()" % v)   # owned Option drop
+        elif op == "pop_front": self.emit("%s.pop_front()" % v)
+        elif op == "len":       self.emit("@print(%s.len())" % v)
+        elif op == "match_front":
+            self.emit("match %s.front() { Some(x) => { @print(x) } None => {} }" % v)
+        elif op == "match_back":
+            self.emit("match %s.back() { Some(x) => { @print(x) } None => {} }" % v)
+        elif op == "get":
+            self.emit("match %s.get(%s) { Some(x) => { @print(x) } None => {} }"
+                      % (v, self.intexpr()))
+        elif op == "to_vec":
+            n = self.fresh(); self.emit("Vec(int) %s = %s.to_vec()" % (n, v))
+            self.env[n] = "Vec(int)"
+
+    # ---- BinaryHeap(T:Order): pure-LS max-heap over Vec(T) (2026-06-30) ----
+    #      element type fixed to int (satisfies T: Order). Exercises sift-up/down
+    #      (Vec.swap = @take moves) + owned Option from pop/peek + __from_list.
+    def decl_heap(self):
+        n = self.fresh()
+        if self.rng.random() < 0.5:
+            elems = ", ".join(self.intexpr() for _ in range(self.rng.randint(0, 5)))
+            self.emit("BinaryHeap(int) %s = [%s]" % (n, elems))   # heapify via push
+        else:
+            self.emit("BinaryHeap(int) %s = {}" % n)
+        self.env[n] = "BinaryHeap(int)"
+
+    def op_heap(self):
+        v = self.pick("BinaryHeap(int)")
+        if not v: return
+        op = self.rng.choice(["push", "pop", "peek", "len", "clear"])
+        if op == "push":  self.emit("%s.push(%s)" % (v, self.intexpr()))
+        elif op == "pop":
+            self.emit("match %s.pop() { Some(x) => { @print(x) } None => {} }" % v)
+        elif op == "peek":
+            self.emit("match %s.peek() { Some(x) => { @print(x) } None => {} }" % v)
+        elif op == "len":   self.emit("@print(%s.len())" % v)
+        elif op == "clear": self.emit("%s.clear()" % v)
+
+    # ---- L-002: qualified same-named interface method call (2026-06-30) ----
+    #      Box has no inherent `describe`; Loud & Quiet both define one. The only
+    #      way to call is the qualified form — exercises the contended-mangle
+    #      symbol path + borrow-shell stripping of the receiver.
+    def op_box_qualified(self):
+        v = self.pick("Box")
+        if not v: return
+        iface = self.rng.choice(["Loud", "Quiet"])
+        n = self.fresh()
+        self.emit("Str %s = %s.describe(%s)" % (n, iface, v))
+        self.env[n] = "Str"
 
     def build(self, nstmts):
         self.lines = ["def main() -> int {"]
@@ -533,7 +651,9 @@ class Gen:
                  self.decl_vecveci, self.decl_map_vec, self.decl_tree,
                  self.decl_guard_vec, self.decl_guard_str, self.decl_guard_map,
                  self.decl_spinguard_str, self.decl_rwlock_box,
-                 self.decl_arena]
+                 self.decl_arena,
+                 # new pure-LS containers (2026-06-30)
+                 self.decl_set, self.decl_deque, self.decl_heap]
         ops = [self.op_veci, self.op_vecs, self.op_map, self.op_box, self.op_tag,
                self.op_vecveci, self.op_map_vec, self.op_tree,
                # concurrency data guards (single-threaded) + closure deepening
@@ -555,7 +675,9 @@ class Gen:
                self.combinator_str,
                # new owned-result match paths weighted in (historically buggy)
                self.match_int_switch_str, self.match_nested_owned,
-               self.match_float_condchain, self.loop_accum_str]
+               self.match_float_condchain, self.loop_accum_str,
+               # new pure-LS containers + L-002 qualified interface calls (2026-06-30)
+               self.op_set, self.op_deque, self.op_heap, self.op_box_qualified]
         # seed a few decls first
         for _ in range(self.rng.randint(2, 4)):
             self.rng.choice(decls)()
@@ -626,14 +748,18 @@ def main():
         return 0
 
     if not os.path.exists(LS):
-        print("build/Release/ls.exe not found", file=sys.stderr); return 2
+        print("build/Release/lls.exe not found", file=sys.stderr); return 2
     os.makedirs(args.keep_dir, exist_ok=True)
     env = dict(os.environ); env["LS_HOME"] = ROOT
-    tmp = os.path.join(args.keep_dir, "_gen.lls")
+    # Per-process temp files: parallel instances (different --seed) must NOT
+    # share one _gen.lls / _gen_aot.exe or they clobber each other between write
+    # and run, producing bogus findings. Key by seed + pid.
+    _sfx = "s%d_p%d" % (args.seed, os.getpid())
+    tmp = os.path.join(args.keep_dir, "_gen_%s.lls" % _sfx)
 
     findings = {"crash": 0, "memcheck": 0, "aotdiff": 0}
     compiled = 0
-    aot_exe = os.path.join(args.keep_dir, "_gen_aot.exe")
+    aot_exe = os.path.join(args.keep_dir, "_gen_aot_%s.exe" % _sfx)
     t0 = time.time()
     for it in range(args.iters):
         rng = random.Random(args.seed * 1000000 + it)

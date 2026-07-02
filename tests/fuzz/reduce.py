@@ -13,7 +13,7 @@ Usage:
 import subprocess, sys, os, argparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LS = os.path.join(ROOT, "build", "Release", "ls.exe")
+LS = os.path.join(ROOT, "build", "Release", "lls.exe")
 SCRATCH = os.path.join(ROOT, "tests", "fuzz", "_red.lls")
 
 def make_triggers(verb, timeout, want_crash):

@@ -22,7 +22,7 @@ Stdlib-only (Python 3.x). Designed to later wire into ctest as a bounded batch.
 import os, sys, random, subprocess, hashlib, argparse, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LS_EXE = os.path.join(ROOT, "build", "Release", "ls.exe")
+LS_EXE = os.path.join(ROOT, "build", "Release", "lls.exe")
 SAMPLES = os.path.join(ROOT, "tests", "samples")
 CRASH_DIR = os.path.join(ROOT, "tests", "fuzz", "crashes")
 
@@ -111,7 +111,7 @@ def main():
     args = ap.parse_args()
 
     if not os.path.exists(LS_EXE):
-        print("error: build/Release/ls.exe not found; build first", file=sys.stderr)
+        print("error: build/Release/lls.exe not found; build first", file=sys.stderr)
         return 2
     os.makedirs(CRASH_DIR, exist_ok=True)
     seeds = load_seeds()
