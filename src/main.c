@@ -352,21 +352,25 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
             if (tf) { fclose(tf); clang = clang_paths[ci]; break; }
         }
         /* ls_memcheck.lib and ls_os_backend.lib are built with /MD (dynamic
-           CRT), so the linker needs the dynamic CRT import libraries. */
+           CRT), so the linker needs the dynamic CRT import libraries.
+           -g (D1): clang -g makes lld-link collect the object's .debug$S
+           CodeView into a PDB next to the exe. */
         if (clang) {
             snprintf(link_cmd, sizeof(link_cmd),
-                     "cmd.exe /c \"\"%s\" -o \"%s\" \"%s\" %s %s %s"
+                     "cmd.exe /c \"\"%s\" %s -o \"%s\" \"%s\" %s %s %s"
                      " -llegacy_stdio_definitions -lucrt"
                      " -Xlinker /NODEFAULTLIB:libucrt.lib"
                      " -Xlinker /NODEFAULTLIB:libcmt.lib\"",
-                     clang, exe_path, obj_path, mc_lib, prof_lib, os_lib);
+                     clang, debug_info ? "-g" : "",
+                     exe_path, obj_path, mc_lib, prof_lib, os_lib);
         } else {
             /* Fallback: assume clang is in PATH */
             snprintf(link_cmd, sizeof(link_cmd),
-                     "clang -o \"%s\" \"%s\" %s %s %s"
+                     "clang %s -o \"%s\" \"%s\" %s %s %s"
                      " -llegacy_stdio_definitions -lucrt"
                      " -Xlinker /NODEFAULTLIB:libucrt.lib"
                      " -Xlinker /NODEFAULTLIB:libcmt.lib",
+                     debug_info ? "-g" : "",
                      exe_path, obj_path, mc_lib, prof_lib, os_lib);
         }
     }
@@ -377,7 +381,9 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
        distros (Ubuntu >=17.10, etc.) default `cc` to -pie, which rejects the
        absolute relocations in those objects ("recompile with -fPIE"). */
     snprintf(link_cmd, sizeof(link_cmd),
-             "cc -no-pie \"%s\" -o \"%s\" %s %s %s -lm -lpthread", obj_path, exe_path, mc_lib, prof_lib, os_lib);
+             "cc %s -no-pie \"%s\" -o \"%s\" %s %s %s -lm -lpthread",
+             debug_info ? "-g" : "",
+             obj_path, exe_path, mc_lib, prof_lib, os_lib);
 #endif
 
     printf("Linking: %s\n", link_cmd);
