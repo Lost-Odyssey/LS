@@ -106,6 +106,7 @@ void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot);
 void cg_push_temp_block_env(CodegenContext *ctx, LLVMValueRef env_ptr);
 void cg_emit_block_env_drop(CodegenContext *ctx, LLVMValueRef env_ptr);
 void cg_emit_block_drop_at(CodegenContext *ctx, LLVMValueRef blk_alloca);
+LLVMValueRef cg_emit_block_env_clone(CodegenContext *ctx, LLVMValueRef block_val);
 void cg_null_block_env(CodegenContext *ctx, LLVMValueRef blk_alloca);
 LLVMValueRef codegen_fn_to_block(CodegenContext *ctx, AstNode *node);
 bool cg_block_source_is_aliased(AstNode *src);

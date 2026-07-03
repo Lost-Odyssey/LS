@@ -1,0 +1,111 @@
+// match_block_yield_test.lls — match arms yielding Block (closure) values.
+// Guardrail for the TYPE_BLOCK extension of the arm ownership protocol
+// (docs/match_codegen_guide.md §3.1/§3.3): a closure env is heap-owned like
+// a has_drop struct, so every arm-yield shape must leave the result as the
+// env's sole owner (or an independent deep clone of it).
+//   (1) block-tail local  `=> { Getter b = || ..; b }` — transfer, the block
+//       scope cleanup must NOT free the env the result still holds
+//   (2) outer local       `=> outer` — deep-clone (env[1] __env_clone), the
+//       outer local stays usable and both frees are independent
+//   (3) enum payload      `Some(f) => f` — binder transfer-by-share
+//   (4) literal tail      `=> || ..` — the arm-local env temp is transferred
+//       into the result inside the arm (cross-block flush was invalid IR)
+// Every closure captures a heap Str so the env owns real heap and a stale
+// double-free corrupts loudly. JIT + AOT + memcheck 0/0/0.
+// Prints "BLOCKYIELD PASS".
+
+type Getter = Block() -> int
+
+enum Holder { Wrap(Getter g) Empty }
+
+def mk_cap() -> Str {
+    Str cap = "captured "
+    cap.push_str("heap string")   // force a heap buffer (len 20)
+    return cap
+}
+
+// (1) arm yields a Block local declared inside the arm's block body.
+def block_tail(int i) -> int {
+    Str cap = mk_cap()
+    Getter g = match i {
+        1 => { Getter b = || cap.len(); b }
+        _ => { Getter c = || 0 - 1; c }
+    }
+    return g()
+}
+
+// (2) arm yields an OUTER Block local; the outer local is called again
+//     afterwards, so the result must own an independent env clone.
+def outer_local(int i) -> int {
+    Str cap = mk_cap()
+    Getter outer = || cap.len() * 2
+    Getter fallback = || 0 - 2
+    Getter g = match i {
+        1 => outer
+        _ => fallback
+    }
+    return g() + outer()
+}
+
+// (3) Block moved out of an enum payload by the match binder.
+def enum_payload() -> int {
+    Str cap = mk_cap()
+    Getter inner = || cap.len() * 3
+    Holder h = Wrap(inner)
+    Getter g = match h {
+        Wrap(f) => f
+        Empty => || 0 - 3
+    }
+    return g()
+}
+
+// (4) arm tail is a closure literal itself.
+def literal_tail(int i) -> int {
+    Str cap = mk_cap()
+    Getter g = match i {
+        1 => || cap.len() * 4
+        _ => || 0 - 4
+    }
+    return g()
+}
+
+def main() -> int {
+    int fails = 0
+
+    // amplify x25: a stale double-free/leak in any shape trips memcheck loudly
+    for round in 0..25 {
+        if block_tail(1) != 20 {
+            @print("FAIL: block_tail owned", block_tail(1))
+            fails = fails + 1
+        }
+        if block_tail(9) != (0 - 1) {
+            @print("FAIL: block_tail wildcard")
+            fails = fails + 1
+        }
+        if outer_local(1) != 80 {
+            @print("FAIL: outer_local clone", outer_local(1))
+            fails = fails + 1
+        }
+        if outer_local(9) != (0 - 2) + 40 {
+            @print("FAIL: outer_local wildcard")
+            fails = fails + 1
+        }
+        if enum_payload() != 60 {
+            @print("FAIL: enum_payload", enum_payload())
+            fails = fails + 1
+        }
+        if literal_tail(1) != 80 {
+            @print("FAIL: literal_tail", literal_tail(1))
+            fails = fails + 1
+        }
+        if literal_tail(9) != (0 - 4) {
+            @print("FAIL: literal_tail wildcard")
+            fails = fails + 1
+        }
+    }
+
+    if fails == 0 {
+        @print("BLOCKYIELD PASS")
+    }
+    return fails
+}

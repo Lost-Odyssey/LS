@@ -23,7 +23,6 @@
 /* File-local helpers (single-TU; re-static'd at codegen split §7). */
 static bool capture_type_is_by_move_cg(const Type *t);
 static bool capture_type_is_by_ref_cg(const Type *t);
-static LLVMValueRef cg_emit_block_env_clone(CodegenContext *ctx, LLVMValueRef block_val);
 static LLVMValueRef cg_resolve_function_for_block(CodegenContext *ctx, AstNode *node, char *name_buf, size_t name_cap);
 
 /* Phase C.5/C.7: capture types that need release work in env_drop.
@@ -140,8 +139,8 @@ void cg_null_block_env(CodegenContext *ctx, LLVMValueRef blk_alloca)
    when env != NULL, clone_fn is guaranteed non-NULL. Runtime shape:
        new_env = env ? ((ptr(*)(ptr))env[1])(env) : NULL
        result  = { blk.fn, new_env }                                       */
-static LLVMValueRef cg_emit_block_env_clone(CodegenContext *ctx,
-                                            LLVMValueRef block_val)
+LLVMValueRef cg_emit_block_env_clone(CodegenContext *ctx,
+                                     LLVMValueRef block_val)
 {
     LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
     LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);

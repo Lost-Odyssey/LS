@@ -428,13 +428,16 @@ void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type)
         return;
     bool is_drop_struct = (type->kind == TYPE_STRUCT && type->as.strukt.has_drop);
     bool is_drop_enum   = (type->kind == TYPE_ENUM   && type->as.enom.has_drop);
+    bool is_block       = (type->kind == TYPE_BLOCK); /* closure: owns its heap env */
     if (getenv("LS_DEBUG_TEMPS"))
         fprintf(stderr, "[tmp] push fn=%s type=%s drop=%d n=%d\n",
                 ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
                 type->kind == TYPE_STRUCT ? (type->as.strukt.name ? type->as.strukt.name : "?")
-                                          : "(enum)",
-                (int)(is_drop_struct || is_drop_enum), ctx->temp_drop_count);
-    if (!is_drop_struct && !is_drop_enum)
+                : type->kind == TYPE_BLOCK ? "(block)"
+                                           : "(enum)",
+                (int)(is_drop_struct || is_drop_enum || is_block),
+                ctx->temp_drop_count);
+    if (!is_drop_struct && !is_drop_enum && !is_block)
         return; /* nothing to drop — POD struct/enum or non-drop type */
 
     if (ctx->temp_drop_count >= ctx->temp_drop_cap)
@@ -450,7 +453,8 @@ void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type)
     {
         char dbg_fmt[96];
         const char *tn = (type->kind == TYPE_STRUCT) ? type->as.strukt.name
-                                                      : type->as.enom.name;
+                       : (type->kind == TYPE_BLOCK)  ? "(block)"
+                                                     : type->as.enom.name;
         snprintf(dbg_fmt, sizeof(dbg_fmt),
                  "[cg] tdrop.push  type=%s n=%d\n", tn ? tn : "?",
                  ctx->temp_drop_count);
@@ -505,6 +509,8 @@ static void cg_flush_temp_drops(CodegenContext *ctx)
             emit_struct_drop(ctx, slot, t);
         else if (t->kind == TYPE_ENUM)
             emit_enum_drop(ctx, slot, t);
+        else if (t->kind == TYPE_BLOCK)
+            cg_emit_block_drop_at(ctx, slot);
     }
     ctx->temp_drop_count = base;
 }
@@ -824,6 +830,8 @@ void cg_flush_temps_from(CodegenContext *ctx, int env_floor, int drop_floor)
                 emit_struct_drop(ctx, slot, t);
             else if (t->kind == TYPE_ENUM)
                 emit_enum_drop(ctx, slot, t);
+            else if (t->kind == TYPE_BLOCK)
+                cg_emit_block_drop_at(ctx, slot);
         }
     }
     if (ctx->temp_block_env_count > env_floor)  ctx->temp_block_env_count = env_floor;

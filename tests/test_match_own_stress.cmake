@@ -2,14 +2,17 @@
 # (docs/plan_match_hardening.md Task 1): nested match, match-in-loop,
 # valued/bare early returns from arms, int-switch & cond-chain has_drop
 # results, block-tail owned locals (block-as-expression ownership
-# transfer), borrow-match binder cloned into an owned result.
+# transfer), borrow-match binder cloned into an owned result, and arms
+# yielding Block (closure) values in all four shapes (block-tail local /
+# outer local / enum payload / literal tail).
 # JIT + AOT + memcheck per sample, plus one negative check: match on an
 # aggregate (Str) subject must be a clear checker error, not invalid IR.
 cmake_minimum_required(VERSION 3.20)
 
 foreach(pair
     "match_own_stress_test.lls=MATCHSTRESS PASS"
-    "match_borrow_mix_test.lls=BORROWMIX PASS")
+    "match_borrow_mix_test.lls=BORROWMIX PASS"
+    "match_block_yield_test.lls=BLOCKYIELD PASS")
     string(REGEX REPLACE "=.*$" "" _file "${pair}")
     string(REGEX REPLACE "^[^=]*=" "" _expected "${pair}")
     set(SRC "${SAMPLE_DIR}/${_file}")

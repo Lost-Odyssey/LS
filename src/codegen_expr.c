@@ -4523,7 +4523,11 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     ((ts->type->kind == TYPE_STRUCT &&
                       ts->type->as.strukt.has_drop) ||
                      (ts->type->kind == TYPE_ENUM &&
-                      ts->type->as.enom.has_drop)))
+                      ts->type->as.enom.has_drop) ||
+                     /* Block local: the slot owns a heap closure env — same
+                        transfer, or the scope cleanup frees the env the
+                        yielded fat pointer still aliases (double-free). */
+                     ts->type->kind == TYPE_BLOCK))
                 {
                     ts->is_borrowed = true;      /* skip drop: moved out */
                     /* The slot is read again by the temp-table drop AFTER the

@@ -22,7 +22,7 @@
 #include <ctype.h>
 /* File-local helpers (single-TU; re-static'd at codegen split §7). */
 static LLVMValueRef cg_emit_bit_pattern_seq(CodegenContext *ctx, AstNode *seq, LLVMValueRef subject, LLVMTypeRef subj_llvm, bool bind);
-static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor, Type *result_type);
+static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor, int env_floor, Type *result_type);
 static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail, LLVMValueRef body_val, LLVMTypeRef res_llvm, Type *result_type, int drop_floor, bool did_move_out_binder);
 static AstNode *cg_match_arm_tail(AstNode *arm_body);
 static bool cg_pattern_has_bit_seq(const AstNode *pat);
@@ -63,7 +63,8 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
         return body_val;
     bool owned_heap =
         (result_type->kind == TYPE_STRUCT && result_type->as.strukt.has_drop) ||
-        (result_type->kind == TYPE_ENUM   && result_type->as.enom.has_drop);
+        (result_type->kind == TYPE_ENUM   && result_type->as.enom.has_drop) ||
+        (result_type->kind == TYPE_BLOCK); /* closure: result must own its env */
     if (!owned_heap)
         return body_val;
     /* Fresh owned temp produced by this body → an rvalue we will transfer (no clone). */
@@ -81,6 +82,14 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
             ((s->type->kind == TYPE_STRUCT && s->type->as.strukt.has_drop) ||
              (s->type->kind == TYPE_ENUM   && s->type->as.enom.has_drop)))
             return emit_clone_value(ctx, body_val, res_llvm, result_type);
+        /* Block tail naming an OWNED outer local: deep-clone the env
+           (__env_clone via env[1]) so the result and the outer local free
+           independent envs. A BORROWED Block IDENT (enum payload binder) keeps
+           today's transfer-by-share: the enum's drop does not own payload envs,
+           so cloning here would leak the payload env instead. */
+        if (s && s->value && s->type && s->type->kind == TYPE_BLOCK &&
+            !s->is_borrowed)
+            return cg_emit_block_env_clone(ctx, body_val);
     }
     return body_val;
 }
@@ -95,12 +104,13 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
    - The tail temp matching result_type is neutralized (removed from the drop
      list) — the result owns its buffer. */
 static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
-                                     Type *result_type)
+                                     int env_floor, Type *result_type)
 {
     bool res_is_drop =
         result_type &&
         ((result_type->kind == TYPE_STRUCT && result_type->as.strukt.has_drop) ||
-         (result_type->kind == TYPE_ENUM   && result_type->as.enom.has_drop));
+         (result_type->kind == TYPE_ENUM   && result_type->as.enom.has_drop) ||
+         (result_type->kind == TYPE_BLOCK));
 
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
     bool terminated = cur && LLVMGetBasicBlockTerminator(cur) != NULL;
@@ -109,15 +119,31 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
        drop entry without emitting its drop (the result owns that buffer). */
     if (res_is_drop && ctx->temp_drop_count > drop_floor)
         ctx->temp_drop_count--;
-    /* Drop the remaining arm-body has_drop temps in [drop_floor, count). */
+    /* Block result whose tail is a closure LITERAL (`=> || ...`): the literal
+       registered its env in the temp_block_env table inside THIS arm's basic
+       block. Transfer it into the result likewise — leaving it for the
+       statement-end flush would both double-free (result owns the env) and
+       reference the arm-local env value from the merge block (dominance
+       violation, invalid IR). */
+    if (result_type && result_type->kind == TYPE_BLOCK &&
+        ctx->temp_block_env_count > env_floor)
+        ctx->temp_block_env_count--;
+    /* Drop the remaining arm-body temps in [floor, count) inside the arm. */
     if (!terminated)
+    {
         for (int i = drop_floor; i < ctx->temp_drop_count; i++)
         {
             Type *t = ctx->temp_drop_types[i];
             if (t->kind == TYPE_STRUCT)    emit_struct_drop(ctx, ctx->temp_drop_slots[i], t);
             else if (t->kind == TYPE_ENUM) emit_enum_drop(ctx, ctx->temp_drop_slots[i], t);
+            else if (t->kind == TYPE_BLOCK) cg_emit_block_drop_at(ctx, ctx->temp_drop_slots[i]);
         }
+        for (int i = env_floor; i < ctx->temp_block_env_count; i++)
+            cg_emit_block_env_drop(ctx, ctx->temp_block_envs[i]);
+    }
     ctx->temp_drop_count = drop_floor;
+    if (ctx->temp_block_env_count > env_floor)
+        ctx->temp_block_env_count = env_floor;
 }
 
 /* Shared arm-body emission for the 7 binder-less arm-store sites: the
@@ -135,6 +161,7 @@ static void cg_match_emit_arm_body(CodegenContext *ctx, AstNode *arm_body,
                                    LLVMBasicBlockRef merge_bb)
 {
     int arm_drop_floor = ctx->temp_drop_count;
+    int arm_env_floor  = ctx->temp_block_env_count;
     LLVMValueRef body_val = codegen_expr(ctx, arm_body);
     if (result_alloca && body_val)
     {
@@ -144,7 +171,7 @@ static void cg_match_emit_arm_body(CodegenContext *ctx, AstNode *arm_body,
                                          /*did_move_out_binder=*/false);
         LLVMBuildStore(ctx->builder, body_val, result_alloca);
     }
-    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
+    cg_match_arm_encapsulate(ctx, arm_drop_floor, arm_env_floor, result_type);
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
         LLVMBuildBr(ctx->builder, merge_bb);
 }
@@ -563,6 +590,7 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                 }
 
                 int arm_drop_floor = ctx->temp_drop_count;
+                int arm_env_floor  = ctx->temp_block_env_count;
                 LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                 bool did_move_out_binder = false;
                 AstNode *tail = cg_match_arm_tail(arm->body);
@@ -613,7 +641,8 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                 /* L-013: encapsulate arm-body temps (transfer the tail temp into the
                    result, free the rest). Subject drop (index < arm_drop_floor) and
                    outer temps are preserved. */
-                cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
+                cg_match_arm_encapsulate(ctx, arm_drop_floor, arm_env_floor,
+                                         result_type);
                 /* Guard: arm body may end with 'return', which already terminates
                    the block.  Only emit the merge-branch when the block is still
                    open (no terminator yet). */
