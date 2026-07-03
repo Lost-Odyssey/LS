@@ -120,6 +120,7 @@ set(LS_SOURCES
     src/emit_c.c
     src/ast.c
     src/parser.c
+    src/diag.c
     src/types.c
     src/symtable.c
     ${LS_CHECKER_SOURCES}
@@ -235,6 +236,7 @@ add_executable(test_parser
     src/scanner.c
     src/ast.c
     src/parser.c
+    src/diag.c
     src/types.c
 )
 target_include_directories(test_parser PRIVATE src/ include/)
@@ -245,6 +247,7 @@ add_executable(test_types
     src/scanner.c
     src/ast.c
     src/parser.c
+    src/diag.c
     src/types.c
     src/symtable.c
     ${LS_CHECKER_SOURCES}
@@ -264,6 +267,7 @@ add_executable(test_codegen
     src/scanner.c
     src/ast.c
     src/parser.c
+    src/diag.c
     src/types.c
     src/symtable.c
     ${LS_CHECKER_SOURCES}
@@ -294,6 +298,7 @@ add_executable(test_jit
     src/scanner.c
     src/ast.c
     src/parser.c
+    src/diag.c
     src/types.c
     src/symtable.c
     ${LS_CHECKER_SOURCES}
@@ -331,6 +336,7 @@ add_executable(test_ffi
     src/scanner.c
     src/ast.c
     src/parser.c
+    src/diag.c
     src/types.c
     src/symtable.c
     ${LS_CHECKER_SOURCES}
@@ -368,6 +374,7 @@ add_executable(test_module
     src/scanner.c
     src/ast.c
     src/parser.c
+    src/diag.c
     src/types.c
     src/symtable.c
     ${LS_CHECKER_SOURCES}
@@ -406,6 +413,7 @@ add_executable(test_memory
     src/scanner.c
     src/ast.c
     src/parser.c
+    src/diag.c
     src/types.c
     src/symtable.c
     ${LS_CHECKER_SOURCES}

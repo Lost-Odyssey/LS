@@ -1,6 +1,7 @@
 /* parser.c — Pratt parser: token stream -> AST */
 #include "parser.h"
 #include "common.h"
+#include "diag.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,9 +43,8 @@ static void error_at(Parser *p, Token *tok, const char *msg) {
     if (p->panic_mode) return;
     p->panic_mode = true;
     p->had_error = true;
-    fprintf(stderr, "[error] %s:%d:%d: %s\n",
-            p->source_path ? p->source_path : "<unknown>",
-            tok->line, tok->column, msg);
+    diag_emitf(DIAG_PARSE_ERROR, p->source_path, tok->line, tok->column,
+               tok->length > 0 ? tok->length : 1, NULL, "%s", msg);
 }
 
 static void error_at_current(Parser *p, const char *msg) {
@@ -61,11 +61,10 @@ static void advance(Parser *p) {
     for (;;) {
         p->current = scanner_next(&p->scanner);
         if (p->current.type != TOKEN_ERROR) break;
-        /* Print scanner error and keep going */
-        fprintf(stderr, "[error] %s:%d:%d: %.*s\n",
-                p->source_path ? p->source_path : "<unknown>",
-                p->current.line, p->current.column,
-                p->current.length, p->current.start);
+        /* Report scanner error and keep going */
+        diag_emitf(DIAG_SCAN_ERROR, p->source_path,
+                   p->current.line, p->current.column, 1, NULL,
+                   "%.*s", p->current.length, p->current.start);
         p->had_error = true;
     }
 }

@@ -1,6 +1,7 @@
 /* checker.c — Type checker: walks AST, validates types, fills resolved_type */
 #include "checker.h"
 #include "checker_internal.h"
+#include "diag.h"
 #include "parser.h"
 #include "module.h"
 #include "builtins_math.h"
@@ -94,24 +95,18 @@ void checker_error(Checker *c, int line, int col, const char *fmt, ...)
     c->had_error = true;
     c->error_count++;
 
-    fprintf(stderr, "[type error] %s:%d:%d: ",
-            c->source_path ? c->source_path : "<unknown>", line, col);
     va_list args;
     va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
+    diag_vemitf(DIAG_TYPE_ERROR, c->source_path, line, col, 1, NULL, fmt, args);
     va_end(args);
-    fprintf(stderr, "\n");
 }
 
 static void checker_warning(Checker *c, int line, int col, const char *fmt, ...)
 {
-    fprintf(stderr, "[warning] %s:%d:%d: ",
-            c->source_path ? c->source_path : "<unknown>", line, col);
     va_list args;
     va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
+    diag_vemitf(DIAG_WARNING, c->source_path, line, col, 1, NULL, fmt, args);
     va_end(args);
-    fprintf(stderr, "\n");
 }
 
 /* Move-semantics error — separate from type errors so the user can distinguish them */
@@ -125,13 +120,10 @@ void checker_move_error(Checker *c, int line, int col, const char *fmt, ...)
         return;
     c->had_error = true;
     c->error_count++;
-    fprintf(stderr, "[move error] %s:%d:%d: ",
-            c->source_path ? c->source_path : "<unknown>", line, col);
     va_list args;
     va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
+    diag_vemitf(DIAG_MOVE_ERROR, c->source_path, line, col, 1, NULL, fmt, args);
     va_end(args);
-    fprintf(stderr, "\n");
 }
 
 /* ---- Struct type registry ---- */
