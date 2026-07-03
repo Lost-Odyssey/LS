@@ -6744,6 +6744,24 @@ Type *check_expr(Checker *c, AstNode *node)
             break;
         }
 
+        /* Non-enum, non-bit subjects lower to scalar compares (an LLVM switch
+           or an icmp/fcmp chain) — only scalar subjects are matchable. Reject
+           aggregates (Str / Vec / struct / ...) here: they used to slip through
+           the pattern type-equality check below and reach codegen, which built
+           an invalid icmp on a struct value (module verification failure). */
+        if (!type_is_numeric(subject) &&
+            subject->kind != TYPE_BOOL && subject->kind != TYPE_CHAR)
+        {
+            checker_error(c, node->as.match.subject->line,
+                          node->as.match.subject->column,
+                          "match subject type '%s' is not matchable: expected "
+                          "an enum or a scalar (integer / float / bool / char); "
+                          "compare '%s' values with == in if/else instead",
+                          type_name(subject), type_name(subject));
+            result = NULL;
+            break;
+        }
+
         /* Non-enum subjects: literal/ident/wildcard/OR-pattern handling.
            Walk the (possibly nested) AST_MATCH_OR_PATTERN tree to type-check
            every leaf pattern against the subject type. */

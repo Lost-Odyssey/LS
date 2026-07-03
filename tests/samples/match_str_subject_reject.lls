@@ -1,0 +1,14 @@
+// match_str_subject_reject.lls — match on an aggregate (Str) subject must be
+// a clear checker error ("not matchable"), not invalid IR. Before the scalar
+// subject gate (docs/plan_match_hardening.md Task 1) this slipped through the
+// pattern type-equality check and codegen built an icmp on a struct value ->
+// LLVM module verification failure.
+
+def main() -> int {
+    Str k = "x"
+    match k {
+        "x" => { @print("unreachable") }
+        _ => { @print("unreachable") }
+    }
+    return 0
+}
