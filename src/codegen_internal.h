@@ -160,4 +160,8 @@ LLVMValueRef cg_fp_contract(LLVMValueRef inst);
    the abort / bounds-check / unwrap paths off the hot path. */
 void cg_mark_noreturn_cold(CodegenContext *ctx, LLVMValueRef fn);
 
+/* A3: attach !range [0, variant_count) to an enum tag (i8) load so LLVM can
+   drop switch bounds compares. LS_NO_ENUM_RANGE=1 disables. */
+void cg_attach_tag_range(CodegenContext *ctx, LLVMValueRef load, int variant_count);
+
 #endif /* LS_CODEGEN_INTERNAL_H */

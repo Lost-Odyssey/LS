@@ -342,6 +342,7 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
 
             LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, subj_alloca, 0, "disc.p");
             LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "disc");
+            cg_attach_tag_range(ctx, disc, subj_type->as.enom.variant_count);
             LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, subj_alloca, 1, "payload.p");
 
             /* Default block: holds wildcard arm (if any) or unreachable. */
@@ -602,9 +603,27 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                     LLVMBuildBr(ctx->builder, merge_bb);
             }
 
-            /* Fill in the default block with unreachable when no wildcard arm. */
+            /* Fill in the default block with unreachable when no wildcard arm.
+               The checker's exhaustiveness guarantee (Phase 8) makes this block
+               dead. CG_DEBUG builds abort loudly first: a corrupt tag (FFI /
+               manual memory) then diagnoses instead of running into UB. */
             if (!default_used) {
                 LLVMPositionBuilderAtEnd(ctx->builder, default_bb);
+#if CG_DEBUG
+                {
+                    cg_emit_debug_printf(ctx, "[cg] corrupt enum tag in match default\n",
+                                         NULL, 0);
+                    LLVMTypeRef di32 = LLVMInt32TypeInContext(ctx->context);
+                    LLVMTypeRef exit_ty = LLVMFunctionType(
+                        LLVMVoidTypeInContext(ctx->context),
+                        (LLVMTypeRef[]){ di32 }, 1, 0);
+                    LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
+                    if (exit_fn == NULL)
+                        exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
+                    LLVMBuildCall2(ctx->builder, exit_ty, exit_fn,
+                                   (LLVMValueRef[]){ LLVMConstInt(di32, 1, 0) }, 1, "");
+                }
+#endif
                 LLVMBuildUnreachable(ctx->builder);
             }
 
@@ -1077,6 +1096,7 @@ LLVMValueRef codegen_try_expr(CodegenContext *ctx, AstNode *node)
         LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, inner_llvm,
                                                     inner_alloca, 0, "try.disc.p");
         LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "try.disc");
+        cg_attach_tag_range(ctx, disc, inner_type->as.enom.variant_count);
         LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntEQ, disc,
                                          LLVMConstInt(i8, (unsigned long long)success_idx, 0),
                                          "try.is_ok");
@@ -1224,6 +1244,7 @@ LLVMValueRef codegen_force_unwrap_expr(CodegenContext *ctx, AstNode *node)
         LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, inner_llvm,
                                                     inner_alloca, 0, "fuw.disc.p");
         LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "fuw.disc");
+        cg_attach_tag_range(ctx, disc, inner_type->as.enom.variant_count);
         LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntEQ, disc,
                                          LLVMConstInt(i8, (unsigned long long)success_idx, 0),
                                          "fuw.is_ok");

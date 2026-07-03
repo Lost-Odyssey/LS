@@ -38,6 +38,30 @@ LLVMValueRef cg_fp_contract(LLVMValueRef inst)
     return inst;
 }
 
+/* A3 (docs/plan_opt_enum_range.md): an enum tag load is always in
+   [0, variant_count) — the checker's exhaustiveness guarantee (Phase 8) plus
+   tag-only construction make any other value memory-unsafety. Attach !range
+   so LLVM can drop the switch bounds compare and tighten the lowering.
+   Tags are i8, so a count that doesn't fit (or covers the full i8 domain)
+   carries no information — skip it. LS_NO_ENUM_RANGE=1 disables all
+   emission (FFI / @take escape hatch). */
+void cg_attach_tag_range(CodegenContext *ctx, LLVMValueRef load, int variant_count)
+{
+    static int disabled = -1;
+    if (disabled < 0)
+        disabled = (getenv("LS_NO_ENUM_RANGE") != NULL) ? 1 : 0;
+    if (disabled || load == NULL || variant_count <= 0 || variant_count > 255)
+        return;
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
+    LLVMMetadataRef pair[2] = {
+        LLVMValueAsMetadata(LLVMConstInt(i8, 0, 0)),
+        LLVMValueAsMetadata(LLVMConstInt(i8, (unsigned long long)variant_count, 0)),
+    };
+    LLVMMetadataRef md = LLVMMDNodeInContext2(ctx->context, pair, 2);
+    LLVMSetMetadata(load, LLVMGetMDKindIDInContext(ctx->context, "range", 5),
+                    LLVMMetadataAsValue(ctx->context, md));
+}
+
 /* B (docs/plan_fma_coldpath.md): mark a never-returning runtime sink (the
    __ls_proc_exit family that backs abort / bounds-check / unwrap failures) as
    `noreturn cold`. LLVM then propagates coldness to every block that leads to
@@ -919,6 +943,7 @@ static void codegen_print_enum_value(CodegenContext *ctx, LLVMValueRef val, Type
 
     LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, ea, 0, "pe.disc.p");
     LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "pe.disc");
+    cg_attach_tag_range(ctx, disc, t->as.enom.variant_count);
     LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, ea, 1, "pe.payload.p");
 
     LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(

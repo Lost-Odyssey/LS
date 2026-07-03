@@ -1774,6 +1774,7 @@ void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
 
     LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, self_ptr, 0, "disc.p");
     LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "disc");
+    cg_attach_tag_range(ctx, disc, enum_type->as.enom.variant_count);
     LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, self_ptr, 1, "payload.p");
 
     LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, drop_fn, "drop.end");
@@ -2007,6 +2008,7 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
     /* disc = tmp->field[0] */
     LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 0, "ec.discp");
     LLVMValueRef disc     = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "ec.disc");
+    cg_attach_tag_range(ctx, disc, enum_type->as.enom.variant_count);
 
     /* payload_ptr = &tmp->field[1] */
     LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 1, "ec.payp");
