@@ -120,6 +120,35 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
     ctx->temp_drop_count = drop_floor;
 }
 
+/* Shared arm-body emission for the 7 binder-less arm-store sites: the
+   wildcard arms of all four lowering paths plus the int-switch case /
+   bit-pattern then / cond-chain then arms. Evaluates the body in the
+   CURRENT insert block, funnels the tail into result_alloca
+   (own_tail -> store -> encapsulate, match_codegen_guide.md §3), then
+   branches to merge_bb unless the body already terminated (a `return`
+   inside the arm). The enum VARIANT arm keeps its bespoke sequence —
+   it alone has payload binders, an arm scope, move-out detection and a
+   did_move_out_binder that isn't constant false. */
+static void cg_match_emit_arm_body(CodegenContext *ctx, AstNode *arm_body,
+                                   LLVMValueRef result_alloca,
+                                   LLVMTypeRef res_llvm, Type *result_type,
+                                   LLVMBasicBlockRef merge_bb)
+{
+    int arm_drop_floor = ctx->temp_drop_count;
+    LLVMValueRef body_val = codegen_expr(ctx, arm_body);
+    if (result_alloca && body_val)
+    {
+        body_val = cg_match_arm_own_tail(ctx, cg_match_arm_tail(arm_body),
+                                         body_val, res_llvm, result_type,
+                                         arm_drop_floor,
+                                         /*did_move_out_binder=*/false);
+        LLVMBuildStore(ctx->builder, body_val, result_alloca);
+    }
+    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
+    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+        LLVMBuildBr(ctx->builder, merge_bb);
+}
+
 /* Return true if 'pat' (possibly an OR-pattern tree) consists entirely of
    integer-literal leaves.  Wildcards are checked separately and skipped. */
 static bool match_pattern_all_int_const(AstNode *pat)
@@ -373,19 +402,8 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                     /* Wildcard → fill in the default block */
                     LLVMPositionBuilderAtEnd(ctx->builder, default_bb);
                     default_used = true;
-                    int arm_drop_floor = ctx->temp_drop_count;
-                    LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                    if (result_alloca && body_val)
-                    {
-                        body_val = cg_match_arm_own_tail(
-                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_drop_floor,
-                            /*did_move_out_binder=*/false);
-                        LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                    }
-                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
-                    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-                        LLVMBuildBr(ctx->builder, merge_bb);
+                    cg_match_emit_arm_body(ctx, arm->body, result_alloca,
+                                           res_llvm, result_type, merge_bb);
                     continue;
                 }
 
@@ -724,18 +742,8 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                 if (is_wild)
                 {
                     /* Wildcard runs in the current (last next_bb) block. */
-                    int arm_drop_floor = ctx->temp_drop_count;
-                    LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                    if (result_alloca && body_val)
-                    {
-                        body_val = cg_match_arm_own_tail(
-                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_drop_floor, false);
-                        LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                    }
-                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
-                    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-                        LLVMBuildBr(ctx->builder, merge_bb);
+                    cg_match_emit_arm_body(ctx, arm->body, result_alloca,
+                                           res_llvm, result_type, merge_bb);
                     continue;
                 }
 
@@ -782,19 +790,11 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                 LLVMBuildCondBr(ctx->builder, combined, then_bb, next_bb);
 
                 LLVMPositionBuilderAtEnd(ctx->builder, then_bb);
-                int arm_drop_floor = ctx->temp_drop_count;
-                LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                if (result_alloca && body_val)
-                {
-                    body_val = cg_match_arm_own_tail(
-                        ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                        result_type, arm_drop_floor, false);
-                    LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                }
-                cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
+                cg_match_emit_arm_body(ctx, arm->body, result_alloca,
+                                       res_llvm, result_type, merge_bb);
+                /* pop_scope after the helper's merge-branch is fine: it is a
+                   compile-time symbol-stack operation and emits no IR. */
                 pop_scope(ctx);
-                if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-                    LLVMBuildBr(ctx->builder, merge_bb);
 
                 LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
             }
@@ -866,18 +866,8 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                     /* Wildcard → default block */
                     LLVMPositionBuilderAtEnd(ctx->builder, default_bb);
                     default_used = true;
-                    int arm_drop_floor = ctx->temp_drop_count;
-                    LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                    if (result_alloca && body_val)
-                    {
-                        body_val = cg_match_arm_own_tail(
-                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_drop_floor, false);
-                        LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                    }
-                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
-                    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-                        LLVMBuildBr(ctx->builder, merge_bb);
+                    cg_match_emit_arm_body(ctx, arm->body, result_alloca,
+                                           res_llvm, result_type, merge_bb);
                 }
                 else
                 {
@@ -896,18 +886,8 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                     }
 
                     LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-                    int arm_drop_floor = ctx->temp_drop_count;
-                    LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                    if (result_alloca && body_val)
-                    {
-                        body_val = cg_match_arm_own_tail(
-                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_drop_floor, false);
-                        LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                    }
-                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
-                    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-                        LLVMBuildBr(ctx->builder, merge_bb);
+                    cg_match_emit_arm_body(ctx, arm->body, result_alloca,
+                                           res_llvm, result_type, merge_bb);
                 }
             }
 
@@ -929,18 +909,8 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
 
                 if (is_wildcard)
                 {
-                    int arm_drop_floor = ctx->temp_drop_count;
-                    LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                    if (result_alloca && body_val)
-                    {
-                        body_val = cg_match_arm_own_tail(
-                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_drop_floor, false);
-                        LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                    }
-                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
-                    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-                        LLVMBuildBr(ctx->builder, merge_bb);
+                    cg_match_emit_arm_body(ctx, arm->body, result_alloca,
+                                           res_llvm, result_type, merge_bb);
                 }
                 else
                 {
@@ -999,19 +969,8 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                     LLVMBuildCondBr(ctx->builder, combined_cmp, then_bb, next_bb);
 
                     LLVMPositionBuilderAtEnd(ctx->builder, then_bb);
-                    int arm_drop_floor = ctx->temp_drop_count;
-                    LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                    if (result_alloca && body_val)
-                    {
-                        body_val = cg_match_arm_own_tail(
-                            ctx, cg_match_arm_tail(arm->body), body_val, res_llvm,
-                            result_type, arm_drop_floor, false);
-                        LLVMBuildStore(ctx->builder, body_val, result_alloca);
-                    }
-                    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
-                    /* Guard: arm body may end with 'return'. */
-                    if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-                        LLVMBuildBr(ctx->builder, merge_bb);
+                    cg_match_emit_arm_body(ctx, arm->body, result_alloca,
+                                           res_llvm, result_type, merge_bb);
 
                     LLVMPositionBuilderAtEnd(ctx->builder, next_bb);
                 }
@@ -1032,9 +991,6 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
         }
 
         LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-        /* L-013: register the funneled owned result as the single result temp
-           (mirrors the enum path); no-op for static/POD results. */
-        if (result_alloca)
         if (result_alloca)
             return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
         return NULL;
