@@ -1,0 +1,148 @@
+// match_own_stress_test.lls — match × ownership interaction stress
+// (docs/plan_match_hardening.md Task 1). Guardrail corpus for the
+// codegen_match arm-store dedup: nested match over has_drop payloads,
+// match-in-loop with owned rvalue subjects, valued/bare early returns
+// from arms, int-switch and cond-chain paths yielding has_drop results.
+// JIT + AOT + memcheck 0/0/0. Prints "MATCHSTRESS PASS".
+
+import std.core.vec
+
+def mk(int i) -> Result(Str, Str) {
+    if i % 2 == 0 {
+        Str s = "even: "
+        s.push_str("heap payload")
+        return Ok(s)
+    }
+    Str e = "odd: "
+    e.push_str("heap error payload")
+    return Err(e)
+}
+
+def mk_vec(int n) -> Result(Vec(Str), Str) {
+    if n < 0 {
+        Str e = "neg: "
+        e.push_str("no vec")
+        return Err(e)
+    }
+    Vec(Str) v = []
+    for i in 0..n {
+        Str s = f"elem {i} "
+        s.push_str("padded to force heap")
+        v.push(s)
+    }
+    return Ok(v)
+}
+
+// (1) nested match: outer subject owned rvalue, inner match sits in the
+//     arm body over ANOTHER owned rvalue; both payloads are heap Str.
+def nested(int i) -> Str {
+    match mk(i) {
+        Ok(s) => {
+            match mk(i + 1) {
+                Ok(t) => t
+                Err(e) => e
+            }
+        }
+        Err(e) => e
+    }
+}
+
+// (2) match-in-loop: a fresh owned rvalue subject each iteration must be
+//     dropped each iteration (leak amplifier x50).
+def loop_drop() -> int {
+    int n = 0
+    for i in 0..50 {
+        match mk(i) {
+            Ok(s) => { n = n + s.len() }
+            Err(e) => { n = n + 1 }
+        }
+    }
+    return n
+}
+
+// (3) valued early return of a binder from an arm (move-out + return).
+def early(int i) -> Str {
+    match mk(i) {
+        Ok(s) => { return s }
+        Err(e) => { }
+    }
+    Str d = "default after non-returning arm"
+    return d
+}
+
+// (4) bare return in a void fn, subject payload is a DEEP container
+//     (Vec(Str)) — container-deepened twin of the 29b4fa3 regression.
+def bare_vec() {
+    match mk_vec(4) {
+        Ok(v) => { return }
+        Err(e) => { @print("FAIL: bare_vec unexpected err") }
+    }
+}
+
+// (5) int-switch yielding has_drop results: outer local (own_tail must
+//     clone), block-tail local (transfer), f-string rvalue (transfer).
+def pick(int i) -> Str {
+    Str a = "alpha (outer local kept alive)"
+    Str r = match i {
+        0 => a
+        1 | 2 => {
+            Str b = "beta block tail "
+            b.push_str("heap")
+            b
+        }
+        _ => f"other {i} padded to spill onto heap"
+    }
+    // a must still be alive and intact after the match cloned it
+    if a.len() < 5 { @print("FAIL: outer local corrupted") }
+    return r
+}
+
+// (6) cond-chain (float subject -> fcmp chain) yielding has_drop results:
+//     block-tail local (transfer), f-string rvalue (transfer), outer local
+//     via wildcard (own_tail must clone).
+def pick_f(f64 x, Str fallback) -> Str {
+    match x {
+        1.0 => {
+            Str v = "cond one "
+            v.push_str("heap")
+            v
+        }
+        2.5 => f"cond two-and-a-half {x}"
+        _ => fallback
+    }
+}
+
+def main() -> int {
+    Str n0 = nested(0)   // even -> inner odd -> inner Err path
+    Str n1 = nested(1)   // odd  -> outer Err
+    if n0.len() == 0 || n1.len() == 0 { @print("FAIL: nested"); return 1 }
+
+    int l = loop_drop()
+    if l < 50 { @print("FAIL: loop_drop", l); return 1 }
+
+    Str e0 = early(0)
+    Str e1 = early(1)
+    if e0.len() == 0 || e1.len() == 0 { @print("FAIL: early"); return 1 }
+
+    bare_vec()
+
+    Str p0 = pick(0)
+    Str p1 = pick(2)
+    Str p2 = pick(9)
+    if p0.len() == 0 || p1.len() == 0 || p2.len() == 0 {
+        @print("FAIL: pick"); return 1
+    }
+
+    Str fb = "fallback heap string "
+    fb.push_str("padded")
+    Str s0 = pick_f(1.0, fb)
+    Str s1 = pick_f(2.5, fb)
+    Str s2 = pick_f(9.0, fb)
+    if s0.len() == 0 || s1.len() == 0 || s2.len() == 0 {
+        @print("FAIL: pick_f"); return 1
+    }
+    if fb.len() == 0 { @print("FAIL: fallback consumed"); return 1 }
+
+    @print("MATCHSTRESS PASS")
+    return 0
+}

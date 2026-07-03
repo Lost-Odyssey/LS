@@ -1232,6 +1232,23 @@ set_tests_properties(test_enum_own_regress PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# match × ownership interaction stress guardrails (nested match, match in
+# loop, early/bare returns from arms, int-switch & cond-chain has_drop
+# results, block-tail owned locals, borrow-match clone-into-result) plus
+# the aggregate-subject negative check — guardrail corpus for any
+# codegen_match.c change (docs/match_codegen_guide.md).
+add_test(
+    NAME test_match_own_stress
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_match_own_stress.cmake
+)
+set_tests_properties(test_match_own_stress PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Move-only resource types (Destroy + raw ptr/object field, no Clone) matched
 # out of an owned enum subject by move (not clone) — enables RAII handles like
 # io.File with the inline `match open(p) { Ok(f) => ... }`.

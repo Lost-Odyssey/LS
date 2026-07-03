@@ -1,0 +1,58 @@
+// match_borrow_mix_test.lls — borrow-match × owned interaction
+// (docs/plan_match_hardening.md Task 1). &Enum subjects: an arm yields a
+// BORROWED binder into an owned result (own_tail clones; the original value
+// stays untouched); the same enum is then matched again and consumed owned.
+// A self-recursive Tree borrow walk stays zero-copy (no double-free).
+// JIT + AOT + memcheck 0/0/0. Prints "BORROWMIX PASS".
+
+enum Msg {
+    Quit
+    Text(Str body)
+}
+
+enum Tree {
+    Leaf
+    Node(int value, Tree left, Tree right)
+}
+
+// Borrow subject: yields the borrowed binder -> own_tail must clone it
+// into the result; the caller's Msg stays intact.
+def peek(&Msg m) -> Str {
+    match m {
+        Quit => "quit"
+        Text(b) => b
+    }
+}
+
+def sum(&Tree t) -> int {
+    match t {
+        Leaf => 0
+        Node(v, l, r) => v + sum(l) + sum(r)
+    }
+}
+
+def main() -> int {
+    Str body = "hello heap body "
+    body.push_str("padded")
+    Msg m = Text(body)
+
+    // borrow-match twice: neither consumes m
+    Str a = peek(m)
+    Str b = peek(m)
+    if a.len() == 0 || b.len() == 0 { @print("FAIL: peek"); return 1 }
+
+    // owned consumption still works after the borrows
+    match m {
+        Quit => { @print("FAIL: wrong variant"); return 1 }
+        Text(t) => { if t.len() == 0 { @print("FAIL: text"); return 1 } }
+    }
+
+    Tree t1 = Leaf
+    Tree t2 = Leaf
+    Tree root = Node(7, t1, t2)
+    if sum(root) != 7 { @print("FAIL: sum"); return 1 }
+    if sum(root) != 7 { @print("FAIL: sum2"); return 1 }
+
+    @print("BORROWMIX PASS")
+    return 0
+}

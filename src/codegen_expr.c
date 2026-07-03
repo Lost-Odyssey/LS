@@ -4476,16 +4476,62 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         push_scope(ctx);
         CgScope *block_parent = ctx->current_scope->parent;
         LLVMValueRef last = NULL;
+        AstNode *tail_expr = NULL;
         for (int i = 0; i < node->as.block.stmt_count; i++)
         {
             AstNode *s = node->as.block.stmts[i];
             if (i == node->as.block.stmt_count - 1 && s->kind == AST_EXPR_STMT)
             {
-                last = codegen_expr(ctx, s->as.expr_stmt.expr);
+                tail_expr = s->as.expr_stmt.expr;
+                last = codegen_expr(ctx, tail_expr);
             }
             else
             {
                 codegen_stmt(ctx, s);
+            }
+        }
+        /* A tail IDENT naming a has_drop local of THIS block would be dropped
+           by the cleanup below while its loaded value escapes with `last` —
+           the yielded value would alias freed heap (double-free at the
+           consumer, memcheck-confirmed via a match arm `=> { Str b = ..; b }`).
+           Transfer ownership out instead: skip the scope drop and hand the
+           slot to the statement-level temp table — a value-consuming match
+           arm transfers it into the result (cg_match_arm_encapsulate), a
+           discarding consumer's statement-end flush drops it. An OUTER local
+           resolves outside this block's scopes and stays untouched (its
+           consumer clones, e.g. cg_match_arm_own_tail). */
+        if (last && tail_expr && tail_expr->kind == AST_IDENT)
+        {
+            for (CgScope *sc = ctx->current_scope;
+                 sc != NULL && sc != block_parent; sc = sc->parent)
+            {
+                CgSymbol *ts = NULL;
+                for (int si = sc->count - 1; si >= 0; si--)
+                {
+                    if (sc->symbols[si].name &&
+                        strcmp(sc->symbols[si].name,
+                               tail_expr->as.ident.name) == 0)
+                    {
+                        ts = &sc->symbols[si];
+                        break;
+                    }
+                }
+                if (ts == NULL)
+                    continue;
+                if (!ts->is_borrowed && !ts->is_mut_borrow && ts->value &&
+                    ts->type &&
+                    ((ts->type->kind == TYPE_STRUCT &&
+                      ts->type->as.strukt.has_drop) ||
+                     (ts->type->kind == TYPE_ENUM &&
+                      ts->type->as.enom.has_drop)))
+                {
+                    ts->is_borrowed = true;      /* skip drop: moved out */
+                    /* The slot is read again by the temp-table drop AFTER the
+                       block ends — an end marker here would be premature. */
+                    ts->lifetime_marked = false;
+                    cg_push_temp_drop(ctx, ts->value, ts->type);
+                }
+                break; /* innermost (shadowing) symbol decides */
             }
         }
         /* Only clean up variables declared in THIS block, not outer scopes */
