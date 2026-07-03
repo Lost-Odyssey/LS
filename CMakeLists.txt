@@ -1203,6 +1203,22 @@ set_tests_properties(test_opt_owned_rvalue PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Ownership regressions found by memcheck: self-recursive enum ctor must
+# transfer ownership of named enum args (was: shared boxes double-freed), and
+# a bare `return` inside a match arm over an owned rvalue subject must flush
+# the subject temp (was: payload leaked).
+add_test(
+    NAME test_enum_own_regress
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_own_regress.cmake
+)
+set_tests_properties(test_enum_own_regress PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Move-only resource types (Destroy + raw ptr/object field, no Clone) matched
 # out of an owned enum subject by move (not clone) — enables RAII handles like
 # io.File with the inline `match open(p) { Ok(f) => ... }`.

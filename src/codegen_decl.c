@@ -1012,26 +1012,24 @@ LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
             {
                 /* Self-recursive payload: heap-box the value, store the pointer.
                    `v` from codegen_expr may be an alloca pointer (variable ref)
-                   or an SSA value (fn call returning aggregate). */
+                   or an SSA value (fn call returning aggregate). Ownership goes
+                   through cg_store_owned with the box as the destination slot,
+                   the same move/clone decision as every non-recursive payload:
+                   a named owned source is moved with its moved_flag set so
+                   scope-cleanup skips it (the boxes inside are owned by this
+                   new box now). The old approach — memset-zeroing the source
+                   alloca — silently rewrote a live variable to variant 0 and
+                   stopped firing entirely once codegen_expr began returning
+                   loaded values, leaving shared boxes to double-free. */
                 LLVMValueRef sz_arg = LLVMConstInt(i64, total_sz, 0);
                 LLVMValueRef box = cg_emit_alloc(ctx, sz_arg, "enum.box",
                                                   CG_LINE(ctx), CG_COL(ctx));
                 LLVMValueRef box_val = v;
-                if (LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMPointerTypeKind) {
-                    /* v is an alloca pointer — load the value, then zero the
-                       source so scope-cleanup won't double-free the heap boxes
-                       now owned by this new box. */
+                if (LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMPointerTypeKind)
                     box_val = LLVMBuildLoad2(ctx->builder, enum_llvm, v, "box.val");
-                    if (memset_fn) {
-                        LLVMValueRef z_args[3] = {
-                            v,
-                            LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
-                            LLVMConstInt(i64, total_sz, 0)
-                        };
-                        LLVMBuildCall2(ctx->builder, memset_ty, memset_fn, z_args, 3, "");
-                    }
-                }
-                LLVMBuildStore(ctx->builder, box_val, box);
+                cg_store_owned(ctx, box, box_val, pt,
+                               args[i],
+                               CG_XFER_INTO_CONTAINER);
                 LLVMBuildStore(ctx->builder, box, field_ptr);
             }
             else if (pt)

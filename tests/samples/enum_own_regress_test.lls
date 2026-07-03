@@ -1,0 +1,66 @@
+// enum_own_regress_test.lls — two ownership regressions, both memcheck-found:
+// (1) A self-recursive enum ctor (Node(.., tree, tree)) must transfer
+//     ownership of named enum args through the shared move/clone decision
+//     (cg_store_owned). It used to bit-copy the boxes and leave the source
+//     live -> the shared boxes double-freed at scope exit.
+// (2) A bare `return` inside a match arm over an owned rvalue subject must
+//     flush the base-protected subject temp like valued returns do. It used
+//     to skip the flush entirely -> the subject's heap payload leaked.
+
+enum Tree {
+    Leaf
+    Node(int value, Tree left, Tree right)
+}
+
+def sum(Tree t) -> int {
+    match t {
+        Leaf => 0
+        Node(v, l, r) => v + sum(l) + sum(r)
+    }
+}
+
+def mk_err() -> Result(Str, Str) {
+    Str e = "prefix: "
+    e.push_str("heap buffer for the error payload")
+    return Err(e)
+}
+
+def bare_return_arm() {
+    match mk_err() {
+        Ok(s) => { @print("FAIL: unexpected ok") }
+        Err(e) => { return }
+    }
+}
+
+def main() -> int {
+    // (1a) non-last use -> ctor clones, a/b stay live and independent
+    Tree a = Leaf
+    Tree b = Leaf
+    Tree n1 = Node(1, a, b)
+    // (1b) last use -> ctor moves, moved_flag skips the source scope drop
+    Tree n2 = Node(2, a, b)
+    int s = sum(n1) + sum(n2)
+    if s != 3 {
+        @print("FAIL: sum =", s)
+        return 1
+    }
+
+    // (1c) boxes-of-boxes: inner Nodes moved into an outer Node
+    Tree c1 = Leaf
+    Tree c2 = Leaf
+    Tree c3 = Leaf
+    Tree c4 = Leaf
+    Tree l1 = Node(4, c1, c2)
+    Tree l2 = Node(5, c3, c4)
+    Tree root = Node(6, l1, l2)
+    if sum(root) != 15 {
+        @print("FAIL: root sum")
+        return 1
+    }
+
+    // (2) bare-return arm over an owned rvalue subject with heap payload
+    bare_return_arm()
+
+    @print("OWNREG PASS")
+    return 0
+}

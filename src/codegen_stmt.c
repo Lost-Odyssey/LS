@@ -1238,12 +1238,15 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
             /* void return: clean up everything. If a value expression is
                present (void function returning a void-typed expr, e.g. the
                desugared `|x| print(x)` closure body), evaluate it first for
-               its side effects, then discard the value and ret void. */
+               its side effects, then discard the value and ret void. The
+               temp flush runs for the BARE `return` too: a match over an
+               owned rvalue subject registers the subject as a base-protected
+               temp, and this exiting path must release it like the valued
+               return paths do (`match f() { Err(e) => { return } }` leaked
+               the subject's payload). */
             if (node->as.return_stmt.value)
-            {
                 codegen_expr(ctx, node->as.return_stmt.value);
-                cg_flush_temps_scope_exit(ctx);
-            }
+            cg_flush_temps_scope_exit(ctx);
             emit_cleanup_to(ctx, NULL, NULL);
             /* For user-defined __drop: inject string field cleanup before return */
             emit_drop_field_cleanup(ctx);
