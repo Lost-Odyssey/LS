@@ -1,7 +1,122 @@
-/* diag.c — Diagnostic sink: text renderer (default). */
+/* diag.c — Diagnostic sink: text renderer (default) with source snippet,
+   caret line, and VT colors (C2-1, docs/plan_diagnostics_v2.md §3.2). */
 #include "diag.h"
+#include "common.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#define ls_isatty _isatty
+#define ls_fileno _fileno
+#else
+#include <unistd.h>
+#define ls_isatty isatty
+#define ls_fileno fileno
+#endif
+
+/* ---- VT color support ----
+   Colors are used only when stderr is a terminal. On Windows 10+ the console
+   needs ENABLE_VIRTUAL_TERMINAL_PROCESSING switched on once; if that fails
+   (old console) we stay colorless. Redirected stderr (!isatty) is colorless. */
+
+static int g_color_state = -1; /* -1 = not probed, 0 = off, 1 = on */
+
+static bool diag_color_enabled(void)
+{
+    if (g_color_state >= 0)
+        return g_color_state == 1;
+    g_color_state = 0;
+    if (!ls_isatty(ls_fileno(stderr)))
+        return false;
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD mode = 0;
+    if (h == INVALID_HANDLE_VALUE || !GetConsoleMode(h, &mode))
+        return false;
+    if (!(mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) &&
+        !SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+        return false;
+#endif
+    g_color_state = 1;
+    return true;
+}
+
+/* ---- Source line cache ----
+   Lazily reads the diagnosed file once and indexes line starts. Single slot:
+   diagnostics arrive grouped by file, and this is the error path — perf is
+   irrelevant. Unreadable files (REPL synthetic sources) are remembered as
+   failed so we silently fall back to the one-line format without re-probing. */
+
+typedef struct {
+    char *path;     /* owned; NULL = empty slot */
+    char *src;      /* owned file contents (NUL-terminated) */
+    long *line_off; /* owned; byte offset of each line start */
+    int   line_count;
+    bool  failed;   /* path known unreadable */
+} SrcCache;
+
+static SrcCache g_src;
+
+static void src_cache_load(const char *path)
+{
+    free(g_src.path);
+    free(g_src.src);
+    free(g_src.line_off);
+    memset(&g_src, 0, sizeof(g_src));
+
+    g_src.path = (char *)malloc_safe(strlen(path) + 1);
+    strcpy(g_src.path, path);
+
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) { g_src.failed = true; return; }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0) { fclose(f); g_src.failed = true; return; }
+    g_src.src = (char *)malloc_safe((size_t)size + 1);
+    size_t got = fread(g_src.src, 1, (size_t)size, f);
+    fclose(f);
+    g_src.src[got] = '\0';
+
+    /* Index line starts. */
+    int cap = 128, n = 0;
+    long *off = (long *)malloc_safe(sizeof(long) * (size_t)cap);
+    off[n++] = 0;
+    for (size_t i = 0; i < got; i++) {
+        if (g_src.src[i] == '\n') {
+            if (n == cap) {
+                cap *= 2;
+                off = (long *)realloc_safe(off, sizeof(long) * (size_t)cap);
+            }
+            off[n++] = (long)i + 1;
+        }
+    }
+    g_src.line_off = off;
+    g_src.line_count = n;
+}
+
+/* Returns a pointer to the start of 1-based `line` and its length (without
+   the trailing newline), or NULL when the file/line is unavailable. */
+static const char *diag_source_line(const char *path, int line, int *out_len)
+{
+    if (path == NULL || line < 1)
+        return NULL;
+    if (g_src.path == NULL || strcmp(g_src.path, path) != 0)
+        src_cache_load(path);
+    if (g_src.failed || line > g_src.line_count)
+        return NULL;
+    const char *s = g_src.src + g_src.line_off[line - 1];
+    const char *e = strchr(s, '\n');
+    size_t len = e ? (size_t)(e - s) : strlen(s);
+    while (len > 0 && s[len - 1] == '\r')
+        len--;
+    *out_len = (int)len;
+    return s;
+}
 
 /* ---- Text renderer (default sink) ---- */
 
@@ -20,10 +135,38 @@ static const char *diag_prefix(DiagKind kind)
 static void text_sink_emit(DiagSink *self, const Diagnostic *d)
 {
     (void)self;
-    fprintf(stderr, "%s %s:%d:%d: %s\n",
-            diag_prefix(d->kind),
+    bool color = diag_color_enabled();
+    const char *c_pre   = !color ? ""
+                        : d->kind == DIAG_WARNING ? "\x1b[33m" : "\x1b[31m";
+    const char *c_caret = color ? "\x1b[36m" : "";
+    const char *c_rst   = color ? "\x1b[0m"  : "";
+
+    fprintf(stderr, "%s%s%s %s:%d:%d: %s\n",
+            c_pre, diag_prefix(d->kind), c_rst,
             d->file ? d->file : "<unknown>",
             d->line, d->col, d->message);
+
+    int slen = 0;
+    const char *sline = diag_source_line(d->file, d->line, &slen);
+    if (sline && d->col >= 1) {
+        char numbuf[16];
+        int w = snprintf(numbuf, sizeof(numbuf), "%5d", d->line);
+        fprintf(stderr, "%s | %.*s\n", numbuf, slen, sline);
+        fprintf(stderr, "%*s | ", w, "");
+        /* Re-emit the prefix chars as whitespace, preserving tabs so the
+           caret stays aligned under tab-indented code. */
+        for (int i = 0; i < d->col - 1 && i < slen; i++)
+            fputc(sline[i] == '\t' ? '\t' : ' ', stderr);
+        int squiggle = d->len - 1;
+        int remain = slen - d->col; /* line chars after the caret column */
+        if (squiggle > remain) squiggle = remain > 0 ? remain : 0;
+        fprintf(stderr, "%s^", c_caret);
+        for (int i = 0; i < squiggle; i++)
+            fputc('~', stderr);
+        fprintf(stderr, "%s\n", c_rst);
+    }
+    if (d->help[0])
+        fprintf(stderr, "   help: %s\n", d->help);
 }
 
 static DiagSink g_text_sink = { text_sink_emit, NULL };

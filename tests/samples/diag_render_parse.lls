@@ -1,0 +1,5 @@
+// C2-1 diagnostics: parse error must render source snippet + caret squiggle.
+def main() -> int {
+    int x = (1 +
+    return 0
+}

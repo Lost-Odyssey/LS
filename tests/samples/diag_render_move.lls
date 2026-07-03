@@ -1,0 +1,7 @@
+// C2-1 diagnostics: move error must render source snippet + caret.
+def main() -> int {
+    Str s = "hi"
+    Str t = s
+    @print(s)
+    return 0
+}

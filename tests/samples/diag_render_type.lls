@@ -1,0 +1,5 @@
+// C2-1 diagnostics: type error must render source snippet + caret.
+def main() -> int {
+    int n = lenght
+    return n
+}
