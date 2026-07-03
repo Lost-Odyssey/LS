@@ -2079,6 +2079,13 @@ def build_forward_transformer(&LsModel m, Str wpath, Str ginpath, Str goutpath) 
             } else {
                 r.push_str(f"nn.maxpool2d({xin}, {dst}, {C}, {Hh}, {Ww}, {pk}, {ps})\n")
             }
+        } else if kind.eq?("reshape") {
+            // Row-major reshape moves no data. Copy into the op's own Pool
+            // slot rather than aliasing: an alias would extend the source's
+            // live range beyond what assign_pool_slots reserved for it.
+            Str xin = o.ins.get!(0)
+            r.push_str(f"*f32 {dst} = pool.at({offsets.get!(k)}, {outE})\n")
+            r.push_str(f"vcopy({dst}, {xin}, {outE})\n")
         }
         k = k + 1
     }
