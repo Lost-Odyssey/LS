@@ -1,0 +1,7 @@
+// C2-2 diagnostics: undefined variable with a unique near-miss in scope
+// must render a "did you mean" help line.
+def main() -> int {
+    int length = 3
+    int n = lenght
+    return n
+}

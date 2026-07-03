@@ -109,6 +109,140 @@ static void checker_warning(Checker *c, int line, int col, const char *fmt, ...)
     va_end(args);
 }
 
+/* checker_error variant carrying a squiggle length and a help suggestion
+   (C2-2 did-you-mean). help may be NULL. */
+static void checker_error_help(Checker *c, int line, int col, int len,
+                               const char *help, const char *fmt, ...)
+{
+    if (c->silent_type_errors)
+        return;
+    if (c->error_count >= CHECKER_MAX_ERRORS)
+        return;
+    c->had_error = true;
+    c->error_count++;
+
+    va_list args;
+    va_start(args, fmt);
+    diag_vemitf(DIAG_TYPE_ERROR, c->source_path, line, col, len, help, fmt, args);
+    va_end(args);
+}
+
+/* ---- did-you-mean candidate iterators (C2-2) ----
+   Pull-based iterators fed to diag_suggest. Each covers one high-frequency
+   error's candidate namespace (plan_diagnostics_v2.md §3.3). */
+
+/* Undefined variable/function: every symbol on the scope chain. */
+typedef struct { Scope *sc; int i; } DiagScopeIter;
+
+static const char *diag_scope_iter_next(void *ctx)
+{
+    DiagScopeIter *it = (DiagScopeIter *)ctx;
+    while (it->sc) {
+        if (it->i < it->sc->count)
+            return it->sc->symbols[it->i++].name;
+        it->sc = it->sc->parent;
+        it->i = 0;
+    }
+    return NULL;
+}
+
+/* Unknown type: struct registry, enum registry, type aliases, generic struct
+   templates, and the builtin type keywords. */
+static const char *k_diag_builtin_types[] = {
+    "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+    "f16", "bf16", "f32", "f64", "bool", "char", "object", "void",
+    "array", "Block", "Simd",
+};
+
+typedef struct { Checker *c; int stage; int i; } DiagTypeIter;
+
+static const char *diag_type_iter_next(void *ctx)
+{
+    DiagTypeIter *it = (DiagTypeIter *)ctx;
+    Checker *c = it->c;
+    for (;;) {
+        switch (it->stage) {
+        case 0:
+            if (it->i < c->struct_type_count)
+                return c->struct_types[it->i++].name;
+            break;
+        case 1:
+            if (it->i < c->enum_type_count)
+                return c->enum_types[it->i++].name;
+            break;
+        case 2:
+            if (it->i < c->type_alias_count)
+                return c->type_aliases[it->i++].name;
+            break;
+        case 3:
+            if (it->i < c->struct_template_count)
+                return c->struct_templates[it->i++].base_name;
+            break;
+        case 4:
+            if (it->i < (int)(sizeof(k_diag_builtin_types) /
+                              sizeof(k_diag_builtin_types[0])))
+                return k_diag_builtin_types[it->i++];
+            break;
+        default:
+            return NULL;
+        }
+        it->stage++;
+        it->i = 0;
+    }
+}
+
+/* Unknown method (or struct field): the receiver's field names followed by
+   its impl-registry method table. Internal methods (__drop/__clone, $op_*)
+   are not suggestions. strukt may be NULL (method-call path: methods only). */
+typedef struct {
+    Checker *c;
+    const Type *strukt;    /* NULL or TYPE_STRUCT: fields first */
+    const char *impl_key;  /* impl_registry key of the receiver */
+    int fi;                /* field cursor */
+    int ii;                /* impl_registry cursor (find once) */
+    int mi;                /* method cursor */
+    bool impl_found;
+} DiagMethodIter;
+
+static const char *diag_method_iter_next(void *ctx)
+{
+    DiagMethodIter *it = (DiagMethodIter *)ctx;
+    Checker *c = it->c;
+    if (it->strukt && it->strukt->kind == TYPE_STRUCT &&
+        it->fi < it->strukt->as.strukt.field_count)
+        return it->strukt->as.strukt.fields[it->fi++].name;
+    if (!it->impl_found) {
+        if (it->impl_key == NULL)
+            return NULL;
+        while (it->ii < c->impl_count &&
+               strcmp(c->impl_registry[it->ii].struct_name, it->impl_key) != 0)
+            it->ii++;
+        if (it->ii >= c->impl_count)
+            return NULL;
+        it->impl_found = true;
+    }
+    while (it->mi < c->impl_registry[it->ii].method_count) {
+        const char *m = c->impl_registry[it->ii].methods[it->mi++].name;
+        if (m[0] == '$' || (m[0] == '_' && m[1] == '_'))
+            continue; /* __drop/__clone/$op_* are not user-callable */
+        return m;
+    }
+    return NULL;
+}
+
+/* Build "did you mean 'X'?" into buf; returns buf or NULL when no unique
+   near-miss candidate exists. */
+static const char *diag_help_suggestion(char *buf, size_t bufsz,
+                                        const char *bad,
+                                        DiagCandidateFn next, void *ctx)
+{
+    const char *sugg = diag_suggest(bad, next, ctx);
+    if (sugg == NULL)
+        return NULL;
+    snprintf(buf, bufsz, "did you mean '%s'?", sugg);
+    return buf;
+}
+
 /* Move-semantics error — separate from type errors so the user can distinguish them */
 void checker_move_error(Checker *c, int line, int col, const char *fmt, ...)
 {
@@ -2689,7 +2823,16 @@ Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
             if (st) return st;
             Type *et = find_enum_type(c, tn->as.named.name);
             if (et) return et;
-            checker_error(c, line, col, "unknown type '%s'", tn->as.named.name);
+            {
+                char helpbuf[256];
+                DiagTypeIter it = { c, 0, 0 };
+                const char *help = diag_help_suggestion(
+                    helpbuf, sizeof(helpbuf), tn->as.named.name,
+                    diag_type_iter_next, &it);
+                checker_error_help(c, line, col,
+                                   (int)strlen(tn->as.named.name), help,
+                                   "unknown type '%s'", tn->as.named.name);
+            }
             return NULL;
         }
 
@@ -4009,8 +4152,16 @@ Type *check_expr(Checker *c, AstNode *node)
                               "full path)", node->as.ident.name, modpath, modpath,
                               node->as.ident.name);
             else
-                checker_error(c, node->line, node->column,
-                              "undefined variable '%s'", node->as.ident.name);
+            {
+                char helpbuf[256];
+                DiagScopeIter it = { c->current_scope, 0 };
+                const char *help = diag_help_suggestion(
+                    helpbuf, sizeof(helpbuf), node->as.ident.name,
+                    diag_scope_iter_next, &it);
+                checker_error_help(c, node->line, node->column,
+                                   (int)strlen(node->as.ident.name), help,
+                                   "undefined variable '%s'", node->as.ident.name);
+            }
             result = NULL;
         }
         else if (sym->is_comptime_const)
@@ -5511,8 +5662,14 @@ Type *check_expr(Checker *c, AstNode *node)
             callee_type = find_method(c, method_struct, method_name);
             if (callee_type == NULL)
             {
-                checker_error(c, node->line, node->column,
-                              "type '%s' has no method '%s'", method_struct, method_name);
+                char helpbuf[256];
+                DiagMethodIter it = { c, NULL, method_struct, 0, 0, 0, false };
+                const char *help = diag_help_suggestion(
+                    helpbuf, sizeof(helpbuf), method_name,
+                    diag_method_iter_next, &it);
+                checker_error_help(c, node->line, node->column, 1, help,
+                                   "type '%s' has no method '%s'",
+                                   method_struct, method_name);
                 result = NULL;
                 break;
             }
@@ -6159,7 +6316,13 @@ Type *check_expr(Checker *c, AstNode *node)
             }
             if (result == NULL && !priv_rejected)
             {
-                checker_error(c, node->line, node->column,
+                char helpbuf[256];
+                DiagMethodIter it = { c, obj, impl_key_of_type(obj),
+                                      0, 0, 0, false };
+                const char *help = diag_help_suggestion(
+                    helpbuf, sizeof(helpbuf), field_name,
+                    diag_method_iter_next, &it);
+                checker_error_help(c, node->line, node->column, 1, help,
                               "struct '%s' has no field or method '%s'",
                               obj->as.strukt.name ? obj->as.strukt.name : "<anon>",
                               field_name);
@@ -6174,7 +6337,13 @@ Type *check_expr(Checker *c, AstNode *node)
             }
             if (result == NULL)
             {
-                checker_error(c, node->line, node->column,
+                char helpbuf[256];
+                DiagMethodIter it = { c, NULL, impl_key_of_type(obj),
+                                      0, 0, 0, false };
+                const char *help = diag_help_suggestion(
+                    helpbuf, sizeof(helpbuf), field_name,
+                    diag_method_iter_next, &it);
+                checker_error_help(c, node->line, node->column, 1, help,
                               "enum '%s' has no method '%s'",
                               obj->as.enom.name ? obj->as.enom.name : "<anon>",
                               field_name);

@@ -231,6 +231,11 @@ add_executable(test_scanner tests/test_scanner.c src/scanner.c)
 target_include_directories(test_scanner PRIVATE src/ include/)
 add_test(NAME test_scanner COMMAND test_scanner)
 
+# C2-2 did-you-mean: diag_suggest unit tests (pure logic, no LLVM)
+add_executable(test_diag_suggest tests/test_diag_suggest.c src/diag.c)
+target_include_directories(test_diag_suggest PRIVATE src/ include/)
+add_test(NAME test_diag_suggest COMMAND test_diag_suggest)
+
 add_executable(test_parser
     tests/test_parser.c
     src/scanner.c

@@ -118,6 +118,77 @@ static const char *diag_source_line(const char *path, int line, int *out_len)
     return s;
 }
 
+/* ---- did-you-mean (C2-2) ---- */
+
+#define DIAG_SUGG_MAX_NAME 64
+
+/* Optimal-string-alignment Damerau-Levenshtein distance between a and b,
+   early-outing to max+1 when the distance provably exceeds `max`. */
+static int diag_osa_distance(const char *a, const char *b, int max)
+{
+    int la = (int)strlen(a), lb = (int)strlen(b);
+    int diff = la > lb ? la - lb : lb - la;
+    if (diff > max)
+        return max + 1;
+    if (la > DIAG_SUGG_MAX_NAME || lb > DIAG_SUGG_MAX_NAME)
+        return max + 1;
+
+    /* Rolling three rows (OSA needs row i-2 for transpositions). */
+    int rows[3][DIAG_SUGG_MAX_NAME + 1];
+    int *prev2 = rows[0], *prev = rows[1], *cur = rows[2];
+    for (int j = 0; j <= lb; j++)
+        prev[j] = j;
+    for (int i = 1; i <= la; i++) {
+        cur[0] = i;
+        int row_min = cur[0];
+        for (int j = 1; j <= lb; j++) {
+            int cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+            int d = prev[j] + 1;                     /* deletion */
+            if (cur[j - 1] + 1 < d) d = cur[j - 1] + 1;      /* insertion */
+            if (prev[j - 1] + cost < d) d = prev[j - 1] + cost; /* subst */
+            if (i > 1 && j > 1 &&
+                a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] &&
+                prev2[j - 2] + 1 < d)
+                d = prev2[j - 2] + 1;                /* transposition */
+            cur[j] = d;
+            if (d < row_min) row_min = d;
+        }
+        if (row_min > max)
+            return max + 1;
+        int *t = prev2; prev2 = prev; prev = cur; cur = t;
+    }
+    return prev[lb];
+}
+
+const char *diag_suggest(const char *bad, DiagCandidateFn next, void *ctx)
+{
+    int blen = (int)strlen(bad);
+    int limit = blen / 3;
+    if (limit > 2) limit = 2;
+    if (limit <= 0)
+        return NULL; /* names under 3 chars: any suggestion is a coin flip */
+
+    const char *best = NULL;
+    int best_d = limit + 1;
+    bool tie = false;
+    const char *cand;
+    while ((cand = next(ctx)) != NULL) {
+        if (cand[0] == '\0' || strcmp(cand, bad) == 0)
+            continue;
+        int d = diag_osa_distance(bad, cand, limit);
+        if (d > limit)
+            continue;
+        if (d < best_d) {
+            best_d = d;
+            best = cand;
+            tie = false;
+        } else if (d == best_d && strcmp(cand, best) != 0) {
+            tie = true;
+        }
+    }
+    return tie ? NULL : best;
+}
+
 /* ---- Text renderer (default sink) ---- */
 
 static const char *diag_prefix(DiagKind kind)

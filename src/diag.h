@@ -45,6 +45,16 @@ void diag_emit(DiagSink *sink, const Diagnostic *d);
 DiagSink *diag_current_sink(void);
 void diag_set_sink(DiagSink *sink);
 
+/* ---- did-you-mean (C2-2) ----
+   Pull-based candidate iterator: return the next candidate name, or NULL
+   when exhausted. `diag_suggest` scans all candidates with a
+   Damerau-Levenshtein (OSA) distance capped at min(2, strlen(bad)/3) and
+   returns the unique closest one — NULL when nothing is close enough or
+   two distinct candidates tie (a wrong suggestion is worse than none).
+   The returned pointer is borrowed from the iterator's backing storage. */
+typedef const char *(*DiagCandidateFn)(void *ctx);
+const char *diag_suggest(const char *bad, DiagCandidateFn next, void *ctx);
+
 /* Convenience: format the message and emit through the current sink.
    help may be NULL ("" = no suggestion). */
 void diag_emitf(DiagKind kind, const char *file, int line, int col, int len,

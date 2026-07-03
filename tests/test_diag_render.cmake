@@ -13,6 +13,7 @@ set(_cases
     "diag_render_type#undefined variable 'lenght'#\\| +\\^"
     "diag_render_move#use of moved variable 's'#\\| +\\^"
     "diag_render_parse#expected expression#\\| +\\^~~~"
+    "diag_render_suggest#undefined variable 'lenght'#help: did you mean 'length'\\?"
 )
 
 foreach(_case ${_cases})
