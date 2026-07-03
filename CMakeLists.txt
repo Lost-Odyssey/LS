@@ -1249,6 +1249,22 @@ set_tests_properties(test_match_own_stress PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Kill-switch A/B parity for optimization passes (LS_NO_ELIDE /
+# LS_NO_INTERNALIZE / LS_NO_ENUM_RANGE): the "off" path must produce
+# identical program output — a silently-broken pass fails loudly here.
+add_test(
+    NAME test_opt_parity
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_opt_parity.cmake
+)
+set_tests_properties(test_opt_parity PROPERTIES
+    DEPENDS "test_match_own_stress"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Move-only resource types (Destroy + raw ptr/object field, no Clone) matched
 # out of an owned enum subject by move (not clone) — enables RAII handles like
 # io.File with the inline `match open(p) { Ok(f) => ... }`.
