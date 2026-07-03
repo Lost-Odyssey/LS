@@ -415,6 +415,14 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
            stamped onto the CgSymbol so scope cleanup emits the paired end. */
         bool var_lifetime_marked = cg_emit_lifetime_start(ctx, alloca, llvm_type);
 
+        /* F5: a Block local initialized from a RAW ptr/array index read
+           (`V v = self.vals[idx]` inside a pure-LS container method) holds an
+           ALIAS of an env the container owns — the alias-through read protocol
+           never clones those. Mark the symbol borrowed (set below) so scope
+           cleanup skips it and downstream ownership boundaries (enum ctor
+           payload store) know to deep-clone. */
+        bool block_alias_init = false;
+
         /* Allocate moved_flag for struct-with-drop and has_drop enum types.
            F.5: enum with heap payload also needs move tracking so closure
            by-move capture can prevent double-free via scope cleanup. */
@@ -630,6 +638,14 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                independent one (no shared-env double-free). */
                             init = cg_emit_block_env_clone(ctx, init);
                         }
+                        else if (blk_init && blk_init->kind == AST_INDEX)
+                        {
+                            /* Raw ptr/array index read (not a struct-container
+                               read, those cloned above): the loaded Block
+                               aliases storage owned elsewhere. Bind as a
+                               BORROW — no clone, no scope drop. */
+                            block_alias_init = true;
+                        }
                         else if (ctx->temp_block_env_count > 0)
                         {
                             /* Phase C.5: closure literal → pop trailing temp env;
@@ -649,6 +665,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
             CgSymbol *vsym = cg_scope_define(ctx->current_scope, node->as.var_decl.name,
                                              alloca, var_type, moved_flag);
             if (vsym) vsym->lifetime_marked = var_lifetime_marked;
+            if (vsym && block_alias_init) vsym->is_borrowed = true;
         }
         break;
     }
@@ -921,6 +938,12 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         {
                             /* moved + invalidated (real owned source) — no clone.
                                Borrow source → false → clone below. */
+                        }
+                        else if (field_type->kind == TYPE_BLOCK)
+                        {
+                            /* Closure field from a shared IDENT: deep-clone the
+                               env so field and source free independently. */
+                            val = cg_emit_block_env_clone(ctx, val);
                         }
                         else
                         {

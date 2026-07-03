@@ -300,6 +300,7 @@ bool type_owns_heap_for_enum(const Type *t)
     {
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;
+    case TYPE_BLOCK:  return true; /* closure owns its heap env (F.2) */
     default:          return false;
     }
 }

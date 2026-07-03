@@ -12,7 +12,8 @@ cmake_minimum_required(VERSION 3.20)
 foreach(pair
     "match_own_stress_test.lls=MATCHSTRESS PASS"
     "match_borrow_mix_test.lls=BORROWMIX PASS"
-    "match_block_yield_test.lls=BLOCKYIELD PASS")
+    "match_block_yield_test.lls=BLOCKYIELD PASS"
+    "enum_block_payload_test.lls=ENUMBLOCK PASS")
     string(REGEX REPLACE "=.*$" "" _file "${pair}")
     string(REGEX REPLACE "^[^=]*=" "" _expected "${pair}")
     set(SRC "${SAMPLE_DIR}/${_file}")

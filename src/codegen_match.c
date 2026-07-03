@@ -82,13 +82,13 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
             ((s->type->kind == TYPE_STRUCT && s->type->as.strukt.has_drop) ||
              (s->type->kind == TYPE_ENUM   && s->type->as.enom.has_drop)))
             return emit_clone_value(ctx, body_val, res_llvm, result_type);
-        /* Block tail naming an OWNED outer local: deep-clone the env
-           (__env_clone via env[1]) so the result and the outer local free
-           independent envs. A BORROWED Block IDENT (enum payload binder) keeps
-           today's transfer-by-share: the enum's drop does not own payload envs,
-           so cloning here would leak the payload env instead. */
-        if (s && s->value && s->type && s->type->kind == TYPE_BLOCK &&
-            !s->is_borrowed)
+        /* Block tail naming an owning IDENT — an outer local, or a borrowed
+           payload binder whose env the enum subject's drop now frees — gets a
+           deep env clone (__env_clone via env[1]) so the result frees
+           independently. A moved-out owned binder hit did_move_out_binder
+           above; a fresh literal tail grew the temp tables and never reaches
+           here. */
+        if (s && s->value && s->type && s->type->kind == TYPE_BLOCK)
             return cg_emit_block_env_clone(ctx, body_val);
     }
     return body_val;
@@ -548,6 +548,11 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                                    resource types (previously a compile error). */
                                 LLVMBuildStore(ctx->builder,
                                                LLVMConstNull(field_llvm), field_ptr);
+                            } else if (pt->kind == TYPE_BLOCK) {
+                                /* Owned-temp subject with closure payload: the
+                                   subject's drop frees the payload env, so the
+                                   binder needs an independent env clone. */
+                                val = cg_emit_block_env_clone(ctx, val);
                             } else {
                                 /* Owned-temp subject: clone every has_drop binder so
                                    it is independent of the subject (which we drop). */
@@ -618,7 +623,8 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                         bool owns_heap =
                             bt && !bs->is_borrowed && bs->value &&
                             ((bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
-                             (bt->kind == TYPE_ENUM && bt->as.enom.has_drop));
+                             (bt->kind == TYPE_ENUM && bt->as.enom.has_drop) ||
+                             bt->kind == TYPE_BLOCK);
                         if (owns_heap)
                         {
                             bs->is_borrowed = true; /* skip drop: moved out */

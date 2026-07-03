@@ -414,6 +414,10 @@ LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
     case TYPE_STRUCT:
         return type->as.strukt.has_drop
                    ? emit_struct_clone_val(ctx, val, llvm_type, type) : val;
+    /* TYPE_BLOCK deliberately falls through to the shallow default: container
+       reads (ptr[i]/arr[i]) hand out an ALIAS and the consumer clones per the
+       Phase G copy-out protocol (cg_block_source_is_aliased). Sites that need
+       an owned duplicate call cg_emit_block_env_clone explicitly. */
     default: return val;
     }
 }
@@ -1700,6 +1704,7 @@ bool cg_type_owns_heap_for_enum(const Type *t)
     {
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;
+    case TYPE_BLOCK:  return true; /* closure owns its heap env (F.2) */
     default:          return false;
     }
 }
@@ -1859,6 +1864,12 @@ void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
                     LLVMBuildCall2(ctx->builder, neft, nedfn, &field_ptr, 1, "");
                 }
             }
+            else if (pt && pt->kind == TYPE_BLOCK)
+            {
+                /* Closure payload: free its heap env (running the env drop_fn
+                   for captured has_drop values first). */
+                cg_emit_block_drop_at(ctx, field_ptr);
+            }
         }
 
         LLVMBuildBr(ctx->builder, end_bb);
@@ -1964,7 +1975,8 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
         {
             Type *pt = enum_type->as.enom.variants[v].payload_types[fi];
             if (pt && ((pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop) ||
-                       (pt->kind == TYPE_ENUM   && pt->as.enom.has_drop)))
+                       (pt->kind == TYPE_ENUM   && pt->as.enom.has_drop) ||
+                       pt->kind == TYPE_BLOCK))
             {
                 needs_count++;
                 break;
@@ -2038,7 +2050,8 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
         {
             Type *pt = enum_type->as.enom.variants[v].payload_types[fi];
             if (pt && ((pt->kind == TYPE_STRUCT && pt->as.strukt.has_drop) ||
-                       (pt->kind == TYPE_ENUM   && pt->as.enom.has_drop)))
+                       (pt->kind == TYPE_ENUM   && pt->as.enom.has_drop) ||
+                       pt->kind == TYPE_BLOCK))
             {
                 needs = true;
                 break;
@@ -2101,6 +2114,15 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
                                                              &field_ptr, 1, "ec.nev");
                     LLVMBuildStore(ctx->builder, cloned_ev, field_ptr);
                 }
+            }
+            else if (pt->kind == TYPE_BLOCK)
+            {
+                /* Closure payload — deep-clone its env via env[1] clone_fn so
+                   the clone and the original free independent envs. */
+                LLVMTypeRef  bt_t   = type_to_llvm(ctx, pt);
+                LLVMValueRef old_bv = LLVMBuildLoad2(ctx->builder, bt_t, field_ptr, "ec.oldbv");
+                LLVMValueRef new_bv = cg_emit_block_env_clone(ctx, old_bv);
+                LLVMBuildStore(ctx->builder, new_bv, field_ptr);
             }
         }
 

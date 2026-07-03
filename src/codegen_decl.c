@@ -1034,6 +1034,41 @@ LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
             }
             else if (pt)
             {
+                /* Block payload: the enum OWNS its payload env (its __drop
+                   frees it), so a source that merely aliases storage owned
+                   elsewhere must be deep-cloned at this ownership boundary —
+                   a borrowed IDENT (match binder / borrow param), a container
+                   read (vec[i]/field/map.get), or a raw ptr/array index (a
+                   pure-LS container method's own storage, `Some(self.vals[i])`
+                   in Map.get: the alias-through read protocol never cloned
+                   it). Owned IDENTs still move via cg_store_owned (env
+                   nulled); a literal's temp env transfers (popped); a
+                   factory-call rvalue is already owned. NOTE this boundary
+                   clone belongs HERE, not inside cg_store_owned: the raw
+                   container store `self.data[len] = x` in Vec.push shares the
+                   same helper, and there the borrowed param's env was already
+                   relinquished by the CALLER (the F5 storing-method transfer)
+                   — cloning it would strand the original env (leak). */
+                if (pt->kind == TYPE_BLOCK)
+                {
+                    AstNode *se = ast_unwrap_move(args[i]);
+                    bool src_borrowed = false;
+                    if (se && se->kind == AST_IDENT)
+                    {
+                        CgSymbol *ss = cg_scope_resolve(ctx->current_scope,
+                                                        se->as.ident.name);
+                        src_borrowed = ss && ss->is_borrowed;
+                    }
+                    bool alias_read = se &&
+                        (se->kind == AST_INDEX || se->kind == AST_FIELD ||
+                         cg_block_source_is_aliased(args[i]));
+                    if (src_borrowed || alias_read)
+                    {
+                        LLVMValueRef owned = cg_emit_block_env_clone(ctx, v);
+                        LLVMBuildStore(ctx->builder, owned, field_ptr);
+                        continue;
+                    }
+                }
                 /* M-3: 统一所有权转移（string/vec/map/struct/enum/POD）。
                    cg_store_owned 根据类型和 source 节点自动选择
                    move/clone/store 语义，内部处理 borrowed 深克隆。

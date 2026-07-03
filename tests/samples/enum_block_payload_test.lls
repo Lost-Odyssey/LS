@@ -1,0 +1,81 @@
+// enum_block_payload_test.lls — enum variants carrying Block (closure)
+// payloads. Guardrail for the TYPE_BLOCK extension of the heap-ownership
+// predicate (type_owns_heap_for_enum / cg_type_owns_heap_for_enum): an enum
+// holding a closure is has_drop, its synthesized __drop frees the payload
+// env and its synthesized __clone deep-clones it (env[1] __env_clone).
+//   (1) drop_unused    — enum dropped WITHOUT extracting the payload
+//                        (previously leaked env + captured Str, memcheck)
+//   (2) owned_subject  — owned rvalue subject: binder env-cloned, subject
+//                        temp-dropped by the match
+//   (3) enum_clone     — 'Holder h2 = h' deep-clones the payload env, both
+//                        drop independently
+//   (4) vec_of_holders — Vec element drop frees payload envs; get()! clone
+//                        path through Option(Holder)
+// Every closure captures a heap Str so a stale shallow copy corrupts loudly.
+// JIT + AOT + memcheck 0/0/0. Prints "ENUMBLOCK PASS".
+
+import std.core.vec
+
+type Getter = Block() -> int
+enum Holder { Wrap(Getter g) Empty }
+
+def mk_cap() -> Str {
+    Str cap = "captured "
+    cap.push_str("heap string")   // force a heap buffer (len 20)
+    return cap
+}
+
+def mk_holder() -> Holder {
+    Str cap = mk_cap()
+    Getter inner = || cap.len()
+    return Wrap(inner)
+}
+
+// (1) the original leak: enum dropped without extracting the payload
+def drop_unused() {
+    Holder h = mk_holder()
+}
+
+// (2) owned rvalue subject: binder cloned, subject dropped by the match
+def owned_subject() -> int {
+    Getter g = match mk_holder() {
+        Wrap(f) => f
+        Empty => || 0 - 1
+    }
+    return g()
+}
+
+// (3) enum clone: h and h2 must drop independent payload envs
+def enum_clone() -> int {
+    Holder h = mk_holder()
+    Holder h2 = h
+    int a = match h { Wrap(f) => f() Empty => 0 }
+    int b = match h2 { Wrap(f) => f() Empty => 0 }
+    return a + b
+}
+
+// (4) container of Block-payload enums + Option(Holder) unwrap clone
+def vec_of_holders() -> int {
+    Vec(Holder) v = []
+    for i in 0..8 {
+        v.push(mk_holder())
+    }
+    int n = 0
+    for i in 0..8 {
+        n = n + match v.get(i)! { Wrap(f) => f() Empty => 0 }
+    }
+    return n
+}
+
+def main() -> int {
+    int fails = 0
+    // amplify x20: any stale shallow copy / missed drop trips memcheck loudly
+    for round in 0..20 {
+        drop_unused()
+        if owned_subject() != 20 { @print("FAIL: owned_subject"); fails = fails + 1 }
+        if enum_clone() != 40 { @print("FAIL: enum_clone"); fails = fails + 1 }
+        if vec_of_holders() != 160 { @print("FAIL: vec_of_holders"); fails = fails + 1 }
+    }
+    if fails == 0 { @print("ENUMBLOCK PASS") }
+    return fails
+}
