@@ -4127,6 +4127,15 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_diag_render.cmake
 )
 
+# ---- C2-3 diagnostics: `lls check --json` schema-v1 structured output ----
+add_test(
+    NAME test_diag_json
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -P ${CMAKE_SOURCE_DIR}/tests/test_diag_json.cmake
+)
+
 # ---- Block(&!T) 可写借用块参数（plan_std_map §13 收官） ----
 add_test(
     NAME test_block_mutref

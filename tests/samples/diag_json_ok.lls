@@ -1,0 +1,5 @@
+// C2-3 diagnostics: a clean file must produce an empty --json diagnostics
+// array and exit 0.
+def main() -> int {
+    return 0
+}

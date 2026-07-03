@@ -3,6 +3,7 @@
 #include "scanner.h"
 #include "parser.h"
 #include "checker.h"
+#include "diag.h"
 #include "codegen.h"
 #include "module.h"
 #include "debug.h"
@@ -142,23 +143,40 @@ static int cmd_parse(const char *path) {
     return 0;
 }
 
-static int cmd_check(const char *path) {
+/* C2-3 (docs/plan_diagnostics_v2.md §3.4): with `--json` all diagnostics
+   (parse + check stages) are collected and written as one schema-v1 JSON
+   object to stdout; stderr stays empty and the exit code is unchanged
+   (non-zero on any error). Unreadable input files keep the plain text
+   path — there are no diagnostics to report, only a CLI error. */
+static int cmd_check(const char *path, bool json) {
     char *source = read_file(path);
     if (source == NULL) return 1;
-    AstNode *ast = parse(source, path);
-    if (ast == NULL) {
-        free(source);
-        return 1;
+
+    DiagSink *js = NULL;
+    if (json) {
+        js = diag_json_sink_new();
+        diag_set_sink(js);
     }
-    ast_inject_std_str_import(ast);
-    ModuleRegistry *reg = module_registry_new();
-    bool ok = checker_check(ast, path, reg, NULL);
-    if (ok) {
+
+    bool ok = false;
+    AstNode *ast = parse(source, path);
+    if (ast != NULL) {
+        ast_inject_std_str_import(ast);
+        ModuleRegistry *reg = module_registry_new();
+        ok = checker_check(ast, path, reg, NULL);
+        module_registry_free(reg);
+        ast_free(ast);
+    }
+    free(source);
+
+    if (json) {
+        diag_set_sink(NULL);
+        bool truncated = diag_json_sink_checker_errors(js) >= CHECKER_MAX_ERRORS;
+        diag_json_sink_write(js, stdout, truncated);
+        diag_json_sink_free(js);
+    } else if (ok) {
         printf("Type check passed.\n");
     }
-    module_registry_free(reg);
-    ast_free(ast);
-    free(source);
     return ok ? 0 : 1;
 }
 
@@ -1560,7 +1578,9 @@ static void usage(void) {
         "Commands:\n"
         "  tokens <file>              Print token stream\n"
         "  parse <file>               Parse and print AST\n"
-        "  check <file>               Parse and type-check\n"
+        "  check <file> [--json]      Parse and type-check\n"
+        "       [--json]              print diagnostics as one JSON object on stdout\n"
+        "                             (schema v1, see docs/plan_diagnostics_v2.md)\n"
         "  symbol <file> <line> <col>  Print {query,candidates:[{file,line,kind,name,signature,doc}]}\n"
         "       JSON for the identifier at (line, col) — name-based lookup across the\n"
         "       file + its imports, for editor hover/go-to-definition (not a real\n"
@@ -1626,11 +1646,19 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(cmd, "check") == 0) {
-        if (argc < 3) {
+        bool json = false;
+        const char *file = NULL;
+        for (int i = 2; i < argc; i++) {
+            if (strcmp(argv[i], "--json") == 0)
+                json = true;
+            else
+                file = argv[i];
+        }
+        if (file == NULL) {
             fprintf(stderr, "error: 'check' requires a file path\n");
             return 1;
         }
-        return cmd_check(argv[2]);
+        return cmd_check(file, json);
     }
 
     if (strcmp(cmd, "symbol") == 0) {

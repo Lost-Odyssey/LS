@@ -14,7 +14,7 @@ const {
   TextDocumentSyncKind,
 } = require('vscode-languageserver/node');
 const { TextDocument } = require('vscode-languageserver-textdocument');
-const { parseDiagnostics } = require('./parseDiagnostics');
+const { parseDiagnostics, parseJsonDiagnostics } = require('./parseDiagnostics');
 const { querySymbol } = require('./querySymbol');
 const { queryComplete } = require('./queryComplete');
 const { toCompletionItems, keywordCompletionItems } = require('./parseCompletionItems');
@@ -68,8 +68,12 @@ async function runCheck(doc) {
   }
 
   const compilerPath = await resolveCompilerPath();
-  const child = spawn(compilerPath, ['check', filePath], { windowsHide: true });
+  // C2-3: --json makes the compiler print one structured JSON object on
+  // stdout (stable contract) instead of us regex-scraping stderr text.
+  const child = spawn(compilerPath, ['check', '--json', filePath], { windowsHide: true });
+  let stdout = '';
   let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
   child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
   child.on('error', (err) => {
     if (warnedMissingCompiler) return;
@@ -80,7 +84,11 @@ async function runCheck(doc) {
     );
   });
   child.on('close', () => {
-    connection.sendDiagnostics({ uri: doc.uri, diagnostics: parseDiagnostics(stderr) });
+    // Prefer the JSON contract; fall back to the legacy stderr regex (kept
+    // for one version) when stdout isn't a valid v1 payload — e.g. an older
+    // compiler that doesn't know --json.
+    const diagnostics = parseJsonDiagnostics(stdout) ?? parseDiagnostics(stderr);
+    connection.sendDiagnostics({ uri: doc.uri, diagnostics });
   });
 }
 

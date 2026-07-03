@@ -261,6 +261,121 @@ void diag_emit(DiagSink *sink, const Diagnostic *d)
     sink->emit(sink, d);
 }
 
+/* ---- JSON collector sink (C2-3) ---- */
+
+typedef struct {
+    Diagnostic d;
+    char *file_copy; /* owned; d.file borrows the emitter's path, which may
+                        not outlive the collection phase */
+} DiagJsonRec;
+
+typedef struct {
+    DiagJsonRec *items;
+    int count, cap;
+} DiagJsonBuf;
+
+static void json_sink_emit(DiagSink *self, const Diagnostic *d)
+{
+    DiagJsonBuf *buf = (DiagJsonBuf *)self->user;
+    if (buf->count == buf->cap) {
+        buf->cap = buf->cap ? buf->cap * 2 : 16;
+        buf->items = (DiagJsonRec *)realloc_safe(
+            buf->items, sizeof(DiagJsonRec) * (size_t)buf->cap);
+    }
+    DiagJsonRec *rec = &buf->items[buf->count++];
+    rec->d = *d;
+    if (d->file) {
+        rec->file_copy = (char *)malloc_safe(strlen(d->file) + 1);
+        strcpy(rec->file_copy, d->file);
+    } else {
+        rec->file_copy = NULL;
+    }
+    rec->d.file = rec->file_copy;
+}
+
+DiagSink *diag_json_sink_new(void)
+{
+    DiagSink *s = (DiagSink *)malloc_safe(sizeof(DiagSink));
+    DiagJsonBuf *buf = (DiagJsonBuf *)malloc_safe(sizeof(DiagJsonBuf));
+    memset(buf, 0, sizeof(*buf));
+    s->emit = json_sink_emit;
+    s->user = buf;
+    return s;
+}
+
+int diag_json_sink_checker_errors(const DiagSink *sink)
+{
+    const DiagJsonBuf *buf = (const DiagJsonBuf *)sink->user;
+    int n = 0;
+    for (int i = 0; i < buf->count; i++) {
+        DiagKind k = buf->items[i].d.kind;
+        if (k == DIAG_TYPE_ERROR || k == DIAG_MOVE_ERROR)
+            n++;
+    }
+    return n;
+}
+
+static void json_write_escaped(FILE *out, const char *s)
+{
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '"':  fputs("\\\"", out); break;
+        case '\\': fputs("\\\\", out); break;
+        case '\n': fputs("\\n", out); break;
+        case '\r': fputs("\\r", out); break;
+        case '\t': fputs("\\t", out); break;
+        default:
+            if (*p < 0x20)
+                fprintf(out, "\\u%04x", *p);
+            else
+                fputc(*p, out);
+        }
+    }
+}
+
+/* Schema v1 (frozen; additive-only): docs/plan_diagnostics_v2.md §6. */
+void diag_json_sink_write(DiagSink *sink, FILE *out, int truncated)
+{
+    DiagJsonBuf *buf = (DiagJsonBuf *)sink->user;
+    fprintf(out, "{\"version\":1,\"truncated\":%s,\"diagnostics\":[",
+            truncated ? "true" : "false");
+    for (int i = 0; i < buf->count; i++) {
+        const Diagnostic *d = &buf->items[i].d;
+        const char *severity = d->kind == DIAG_WARNING ? "warning" : "error";
+        const char *kind =
+            d->kind == DIAG_MOVE_ERROR  ? "move"  :
+            d->kind == DIAG_PARSE_ERROR ? "parse" :
+            d->kind == DIAG_SCAN_ERROR  ? "scan"  : "type";
+        const char *stage =
+            (d->kind == DIAG_PARSE_ERROR || d->kind == DIAG_SCAN_ERROR)
+                ? "parse" : "check";
+        fprintf(out, "%s{\"severity\":\"%s\",\"kind\":\"%s\",\"stage\":\"%s\","
+                     "\"file\":\"", i ? "," : "", severity, kind, stage);
+        json_write_escaped(out, d->file ? d->file : "<unknown>");
+        fprintf(out, "\",\"line\":%d,\"col\":%d,\"len\":%d,\"message\":\"",
+                d->line, d->col, d->len);
+        json_write_escaped(out, d->message);
+        fputc('"', out);
+        if (d->help[0]) {
+            fputs(",\"help\":\"", out);
+            json_write_escaped(out, d->help);
+            fputc('"', out);
+        }
+        fputc('}', out);
+    }
+    fputs("]}\n", out);
+}
+
+void diag_json_sink_free(DiagSink *sink)
+{
+    DiagJsonBuf *buf = (DiagJsonBuf *)sink->user;
+    for (int i = 0; i < buf->count; i++)
+        free(buf->items[i].file_copy);
+    free(buf->items);
+    free(buf);
+    free(sink);
+}
+
 void diag_vemitf(DiagKind kind, const char *file, int line, int col, int len,
                  const char *help, const char *fmt, va_list args)
 {

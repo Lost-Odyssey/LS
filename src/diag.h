@@ -7,6 +7,7 @@
 #define LS_DIAG_H
 
 #include <stdarg.h>
+#include <stdio.h>
 
 /* Kind decides both the legacy text prefix and the JSON "kind" field:
      DIAG_TYPE_ERROR  -> "[type error]" / "type"
@@ -44,6 +45,24 @@ void diag_emit(DiagSink *sink, const Diagnostic *d);
    diag_set_sink(NULL) restores the default. */
 DiagSink *diag_current_sink(void);
 void diag_set_sink(DiagSink *sink);
+
+/* ---- JSON collector (C2-3: `lls check --json`) ----
+   Collects every emitted Diagnostic (deep-copying the file path), then
+   writes the whole batch as one schema-v1 JSON object
+   (docs/plan_diagnostics_v2.md §6). Typical use:
+
+     DiagSink *js = diag_json_sink_new();
+     diag_set_sink(js);
+     ... parse + check ...
+     diag_set_sink(NULL);
+     diag_json_sink_write(js, stdout, truncated);
+     diag_json_sink_free(js);                                            */
+DiagSink *diag_json_sink_new(void);
+/* Number of collected checker-stage errors (type + move; the two kinds
+   subject to CHECKER_MAX_ERRORS) — for the "truncated" flag. */
+int diag_json_sink_checker_errors(const DiagSink *sink);
+void diag_json_sink_write(DiagSink *sink, FILE *out, int truncated);
+void diag_json_sink_free(DiagSink *sink);
 
 /* ---- did-you-mean (C2-2) ----
    Pull-based candidate iterator: return the next candidate name, or NULL
