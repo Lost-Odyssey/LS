@@ -100,9 +100,9 @@ why that list isn't filtered to "things that actually apply here").
 - [x] Phase 1 — grammar coverage polish (f-string edge cases, numeric literal
       accuracy) + snippets (`def`/`struct`/`methods`/`match`/... — type a
       prefix and hit Tab)
-- [x] Phase 2 — LSP diagnostics (spawns `lls check <file>` on open/save,
-      republishes its stderr as inline errors — see "How diagnostics work"
-      below)
+- [x] Phase 2 — LSP diagnostics (spawns `lls check --json <file>` on
+      open/save, republishes its structured output as inline errors — see
+      "How diagnostics work" below)
 - [x] Phase 3 — LSP hover / go-to-definition (spawns `lls symbol <file> <line>
       <col>`, a small new CLI command — see "How hover/go-to-def work" below)
 - [x] Phase 4 — LSP completion (spawns `lls complete <file>` on open/save,
@@ -110,15 +110,17 @@ why that list isn't filtered to "things that actually apply here").
 
 ## How diagnostics work
 
-No in-process type checking, and zero changes to the LS compiler itself —
-same "consume what already exists" approach as `lls fmt` (which reuses the
-scanner's token stream rather than re-implementing tokenization). The
-language server (`server/server.js`) shells out to `lls check <file>` —
-a CLI subcommand that already existed — on `textDocument/didOpen` and
-`textDocument/didSave`, and regex-parses its stderr (`[type error]` /
-`[move error]` / `[error]` in the form `category] path:line:col: message`,
-the exact convention CLAUDE.md §5.3 documents) into LSP diagnostics
-(`server/parseDiagnostics.js`).
+No in-process type checking — the language server (`server/server.js`)
+shells out to `lls check --json <file>` on `textDocument/didOpen` and
+`textDocument/didSave` and maps the compiler's schema-v1 JSON payload
+(`{"version":1,"diagnostics":[{severity,kind,stage,file,line,col,len,
+message,help}]}`, the frozen contract in docs/plan_diagnostics_v2.md §6)
+straight into LSP diagnostics (`server/parseDiagnostics.js`): real spans
+from `len`, warning severity, did-you-mean help folded into the message.
+When stdout isn't a valid v1 payload (an older compiler that doesn't know
+`--json`), it falls back to regex-parsing stderr (`[type error]` /
+`[move error]` / `[error]` in the form `[category] path:line:col: message`)
+— kept for one version.
 
 Consequence: diagnostics reflect what's on disk, not unsaved keystrokes —
 they refresh on open and on save, not on every edit. `lls check` is a full
