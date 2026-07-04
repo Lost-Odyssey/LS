@@ -1194,10 +1194,25 @@ LLVMValueRef codegen_try_expr(CodegenContext *ctx, AstNode *node)
         int success_idx = is_result ? 0 : 1;   /* Ok=0 / Some=1 */
         int failure_idx = is_result ? 1 : 0;   /* Err=1 / None=0 */
 
-        /* Save temp mark: inner_expr eval may create temps (f-string, concat,
-           upper, etc.) that aren't consumed by the try's payload extraction. */
+        /* Ledger floors (stage 8 fix, audit M-4's "try full-flush asymmetry"):
+           entries below these belong to the ENCLOSING statement/match (e.g. a
+           base-protected owned match subject when this try sits in an arm);
+           entries pushed by the inner eval below are the try's own. The error
+           path drains EVERYTHING (it leaves the function), which is correct
+           IR for that path — but it also zeroed the compile-time ledger for
+           every subsequently emitted path: a sibling arm's early return then
+           missed the subject drop (leak) and downstream bookkeeping was
+           misaligned (invalid free / crash; match_own_stress try-in-arm shape
+           first caught it, fn_end/A4 flagged the same function). The merge
+           path must therefore RESTORE the ledger and flush only the try's own
+           temps — mirroring the AST_IF snapshot/restore and the loop
+           break/continue floor protocol (164f90f). */
+        int try_pre_count = ctx->temp_drop_count;
+        int try_pre_env   = ctx->temp_block_env_count;
         LLVMValueRef inner_val = codegen_expr(ctx, inner_expr);
         if (inner_val == NULL) return NULL;
+        int try_inner_count = ctx->temp_drop_count;
+        int try_inner_env   = ctx->temp_block_env_count;
 
         LLVMTypeRef inner_llvm = type_to_llvm(ctx, inner_type);
         LLVMTypeRef ret_llvm   = type_to_llvm(ctx, fn_ret_type);
@@ -1317,10 +1332,17 @@ LLVMValueRef codegen_try_expr(CodegenContext *ctx, AstNode *node)
 
         /* ---- Merge: yield unwrapped value ---- */
         LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-        /* Flush temp strings from inner expression before yielding the
-           unwrapped value. These temps (e.g. f-string buffers, concat results)
-           have been cloned into the Result payload and are safe to free. */
-        cg_flush_temps(ctx);
+        /* Restore the ledger the error-path drain zeroed — the entries (and
+           their array slots) are intact, and everything below the pre-try
+           floor is still LIVE on this path (owned by the enclosing statement:
+           match subject, pre-try spills, literal envs). Then flush only the
+           inner expression's own temps (f-string buffers, concat results —
+           already cloned into the Result payload): their error-path drops
+           were emitted separately on err_bb, so each runtime path drops them
+           exactly once. */
+        ctx->temp_drop_count      = try_inner_count;
+        ctx->temp_block_env_count = try_inner_env;
+        cg_flush_temps_from(ctx, try_pre_env, try_pre_count);
         if (result_alloca && success_llvm)
             return LLVMBuildLoad2(ctx->builder, success_llvm, result_alloca, "try.val");
         return NULL;

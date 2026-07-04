@@ -3,9 +3,16 @@
 // codegen_match arm-store dedup: nested match over has_drop payloads,
 // match-in-loop with owned rvalue subjects, valued/bare early returns
 // from arms, int-switch and cond-chain paths yielding has_drop results.
+// v2 (plan_footgun_remediation stage 8): + try-in-arm early return,
+// outer-binder-field inner subject (AST_FIELD neighborhood of BUG-1),
+// mid-arm binder move into a container, and a deep Block-captures-Block
+// chain mixed with Vec(Block) (exponential-clone canary, stdfuzz
+// Vec.copy precedent — the ctest timeout is the time assertion).
 // JIT + AOT + memcheck 0/0/0. Prints "MATCHSTRESS PASS".
 
 import std.core.vec
+
+type F = Block()->int
 
 def mk(int i) -> Result(Str, Str) {
     if i % 2 == 0 {
@@ -112,6 +119,97 @@ def pick_f(f64 x, Str fallback) -> Str {
     }
 }
 
+// (7) try-in-arm: owned rvalue subject; the arm body contains a `try`
+//     whose Err path early-returns THROUGH the arm — the registered
+//     subject must be dropped exactly once on that path (scope-exit
+//     flush) and the success path must not leak the try payload.
+def try_in_arm(int i, int j) -> Result(Str, Str) {
+    match mk(i) {
+        Ok(s) => {
+            Str t = try mk(j)
+            t.push_str(" after try")
+            return Ok(t)
+        }
+        Err(e) => { return Err(e) }
+    }
+}
+
+// (8) outer binder as the inner subject ROOT: `Some(b) => match b.inner`
+//     — the inner subject is an AST_FIELD read of a has_drop enum field
+//     (clones per BUG-1 fix 72c3f9d), judged owned and dropped at merge,
+//     while the binder struct keeps its own payload.
+struct Carton {
+    Str tag
+    Result(Str, Str) inner
+}
+
+def mk_carton(int i) -> Option(Carton) {
+    if i < 0 {
+        return None
+    }
+    Str t = f"carton {i} "
+    t.push_str("heap tag")
+    return Some(Carton{tag: t, inner: mk(i)})
+}
+
+def binder_field_subject(int i) -> Str {
+    match mk_carton(i) {
+        Some(b) => {
+            Str r = match b.inner {
+                Ok(s) => s
+                Err(e) => e
+            }
+            // the binder's own Str field must still be intact after the
+            // inner match dropped its cloned field-subject
+            if b.tag.len() < 5 { @print("FAIL: binder tag corrupted") }
+            r
+        }
+        None => f"none {i}"
+    }
+}
+
+// (9) mid-arm binder move: the binder is consumed into a container in the
+//     MIDDLE of the arm body (clone-elision moves the last use), and the
+//     arm tail never touches it — the moved_flag path must keep the arm
+//     exit from double-dropping it.
+def binder_move(int i) -> int {
+    Vec(Str) v = []
+    int n = 0
+    match mk(i) {
+        Ok(s) => {
+            v.push(s)
+            n = 100
+        }
+        Err(e) => { n = e.len() }
+    }
+    return n + v.len()
+}
+
+// (10) deep Block-captures-Block chain (6 levels, each capture deep-clones
+//      the previous env transitively) mixed with Vec(Block). Canary for
+//      exponential clone blowups (stdfuzz Vec.copy O(2^depth) precedent);
+//      completing inside the ctest timeout IS the time assertion.
+def deep_blocks() -> int {
+    int base = 1
+    F b1 = || base
+    F b2 = || b1() + 1
+    F b3 = || b2() + 1
+    F b4 = || b3() + 1
+    F b5 = || b4() + 1
+    F b6 = || b5() + 1
+    Vec(F) v = []
+    v.push(@dup(b3))
+    v.push(@dup(b6))
+    // heap churn before the value checks
+    for i in 0..64 {
+        Str junk = f"churn {i} "
+        junk.push_str("0123456789abcdef0123456789abcdef")
+    }
+    F g0 = v.get(0)!
+    F g1 = v.get(1)!
+    return b6() + g0() + g1()   // 6 + 3 + 6 = 15
+}
+
 def main() -> int {
     Str n0 = nested(0)   // even -> inner odd -> inner Err path
     Str n1 = nested(1)   // odd  -> outer Err
@@ -142,6 +240,41 @@ def main() -> int {
         @print("FAIL: pick_f"); return 1
     }
     if fb.len() == 0 { @print("FAIL: fallback consumed"); return 1 }
+
+    // (7) try-in-arm: Err-propagating and success paths
+    Str t_ok = match try_in_arm(0, 2) {
+        Ok(s) => s
+        Err(e) => f"BAD ok path {e.len()}"
+    }
+    Str t_err = match try_in_arm(0, 1) {
+        Ok(s) => f"BAD err path {s.len()}"
+        Err(e) => e
+    }
+    Str t_arm = match try_in_arm(1, 2) {
+        Ok(s) => f"BAD arm-err path {s.len()}"
+        Err(e) => e
+    }
+    if !t_ok.starts_with?("even") { @print("FAIL: try_in_arm ok"); return 1 }
+    if !t_err.starts_with?("odd") { @print("FAIL: try_in_arm err"); return 1 }
+    if !t_arm.starts_with?("odd") { @print("FAIL: try_in_arm arm-err"); return 1 }
+
+    // (8) binder field subject
+    Str bf0 = binder_field_subject(0)   // Some -> inner Ok
+    Str bf1 = binder_field_subject(1)   // Some -> inner Err
+    Str bfn = binder_field_subject(0 - 1)
+    if !bf0.starts_with?("even") { @print("FAIL: binder_field ok"); return 1 }
+    if !bf1.starts_with?("odd") { @print("FAIL: binder_field err"); return 1 }
+    if !bfn.starts_with?("none") { @print("FAIL: binder_field none"); return 1 }
+
+    // (9) mid-arm binder move
+    int bm0 = binder_move(0)   // Ok: 100 + vec holds the moved binder -> +1
+    int bm1 = binder_move(1)   // Err: e.len() + empty vec
+    if bm0 != 101 { @print("FAIL: binder_move ok", bm0); return 1 }
+    if bm1 < 4 { @print("FAIL: binder_move err", bm1); return 1 }
+
+    // (10) deep Block chain + Vec(Block)
+    int db = deep_blocks()
+    if db != 15 { @print("FAIL: deep_blocks", db); return 1 }
 
     @print("MATCHSTRESS PASS")
     return 0
