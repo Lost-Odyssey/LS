@@ -4286,9 +4286,14 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            (memcheck-found 2026-07-04; field_enum_subject_test.lls.) */
         else if (field_type && field_type->kind == TYPE_ENUM && field_type->as.enom.has_drop)
             field_val = emit_enum_clone_val(ctx, field_val, field_type);
-        /* F.3: Block field read — struct retains env ownership; return value directly.
-           checker already rejected `Block g = p.step1`; direct call `p.step1(args)`
-           is allowed — codegen_block_call will use the loaded value. */
+        /* F.3: Block field read — the struct retains env ownership, so the loaded
+           LsBlock is a shallow ALIAS; return it directly (do NOT clone here).
+           Phase G removed the old `Block g = p.step1` rejection
+           (checker.c:3026-3029): binding a Block out of a field now deep-clones
+           the env at the BIND site (cg_emit_block_env_clone), and a direct call
+           `p.step1(args)` just uses the aliased value. (When the WHOLE struct is
+           cloned by value, emit_struct_clone_val deep-clones its Block fields —
+           a separate path.) */
         return field_val;
     }
 

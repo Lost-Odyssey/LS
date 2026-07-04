@@ -1,5 +1,5 @@
 /* codegen_match.c
-   match / try / force-unwrap 下沉 + match-arm 所有权 helper + int-switch + bit-pattern。见 docs/match_codegen_guide.md（6 臂体存储点 / 三 helper）
+   match / try / force-unwrap 下沉 + match-arm 所有权 helper + int-switch + bit-pattern。见 docs/match_codegen_guide.md（8 臂体存储点 / 三 helper）
 
    Bodies mechanically relocated from codegen.c (docs/plan_codegen_split.md).
    No logic changes. All prototypes live in codegen_internal.h. */
