@@ -628,6 +628,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
             }
             else
             {
+                int blk_drop_floor = ctx->temp_drop_count;
                 LLVMValueRef init = codegen_expr(ctx, node->as.var_decl.init);
                 if (init)
                 {
@@ -720,9 +721,15 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                No retain (the var owns that one reference). */
                             ctx->temp_block_env_count--;
                         }
-                        /* else: a fresh rvalue not tracked as a temp (factory /
-                           match / try / unwrap return) — it carries refcount=1 and
-                           the var takes that reference. No retain. */
+                        else
+                        {
+                            /* Fresh OWNED Block rvalue (factory call / force-unwrap,
+                               P3-tracked as a temp_drop): the var takes that single
+                               reference — claim the temp so the statement-end flush
+                               doesn't release the env the var now owns. No-op for an
+                               untracked rvalue. */
+                            cg_claim_block_temp_above(ctx, blk_drop_floor);
+                        }
                     }
 
                     LLVMBuildStore(ctx->builder, init, alloca);
@@ -929,11 +936,15 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         if (src && !src->is_borrowed)
                             cg_null_block_env(ctx, src->value);
                     }
-                    else if (!cg_block_source_is_aliased(rhs_node) &&
-                             ctx->temp_block_env_count > 0)
+                    else if (!cg_block_source_is_aliased(rhs_node))
                     {
-                        /* Closure literal on RHS — pop temp env; dst now owns it */
-                        ctx->temp_block_env_count--;
+                        /* Fresh rvalue on RHS — dst takes its single reference, so
+                           the statement flush must not also release it. A factory
+                           call / force-unwrap is P3-tracked as a temp_drop (claim
+                           it); a closure literal uses temp_block_env (pop it). */
+                        if (!cg_claim_block_temp_above(ctx, assign_drop_floor) &&
+                            ctx->temp_block_env_count > 0)
+                            ctx->temp_block_env_count--;
                     }
                 }
                 else
@@ -950,6 +961,19 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                        here would double-free, e.g. by-value struct args in
                        `acc = f(x) && f(x) && acc`). */
                     LLVMBuildStore(ctx->builder, val, sym->value);
+                    /* P3 (block-refcount): a Block rvalue discarded in the RHS
+                       (`n = n + make()()`) was tracked as a temp_drop. The struct
+                       concern above is about STRUCT temps — release only TYPE_BLOCK
+                       ones here, at THIS statement's boundary. Per-iteration matters
+                       in a loop: the block-temp slot is reused, so deferring to the
+                       post-loop flush would release only the last iteration's env
+                       and leak the rest. */
+                    for (int ti = ctx->temp_drop_count - 1; ti >= assign_drop_floor; ti--)
+                        if (ctx->temp_drop_types[ti]->kind == TYPE_BLOCK)
+                        {
+                            cg_emit_block_drop_at(ctx, ctx->temp_drop_slots[ti]);
+                            cg_remove_temp_drop(ctx, ctx->temp_drop_slots[ti]);
+                        }
                 }
             }
             else
@@ -1263,6 +1287,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                            ctx->current_fn_return_type->kind == TYPE_VOID);
         if (node->as.return_stmt.value && !fn_is_void)
         {
+            int ret_drop_floor = ctx->temp_drop_count;
             LLVMValueRef val = codegen_expr(ctx, node->as.return_stmt.value);
             if (val)
             {
@@ -1276,9 +1301,14 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                    caller — pop the trailing temp env so flush doesn't free
                    it. The caller will store into a Block local (or pass it
                    onward) and own the released env. */
-                if (ret_type && ret_type->kind == TYPE_BLOCK &&
-                    ctx->temp_block_env_count > 0) {
-                    ctx->temp_block_env_count--;
+                if (ret_type && ret_type->kind == TYPE_BLOCK) {
+                    /* Block return transfers env ownership to the caller — claim
+                       the tracked temp (factory / force-unwrap, P3) or pop the
+                       closure-literal temp_env, so the scope-exit flush below does
+                       not release the env the caller now owns. */
+                    if (!cg_claim_block_temp_above(ctx, ret_drop_floor) &&
+                        ctx->temp_block_env_count > 0)
+                        ctx->temp_block_env_count--;
                 }
                 cg_flush_temps_scope_exit(ctx);
                 /* P1-3 fix: returning a GLOBAL string by name shares the global's

@@ -3605,6 +3605,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             for (int i = 0; i < user_argc; i++)
             {
                 LLVMValueRef arg_val = NULL;
+                /* P3 (block-refcount): floor for claiming this arg's Block rvalue
+                   temp when it is moved into a container/worker (F5 below). */
+                int arg_drop_floor = ctx->temp_drop_count;
                 /* Read-only &T borrow of a stable place (struct field / array or
                    *T element): take its lvalue address directly instead of
                    codegen_expr'ing a by-value CLONE. The §13 amp-strip turned an
@@ -3848,7 +3851,12 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             if (bsym && !bsym->is_borrowed)
                                 cg_null_block_env(ctx, bsym->value);
                         }
-                        else if (ctx->temp_block_env_count > 0)
+                        /* Fresh rvalue arg moved into the container/worker: claim
+                           its P3 temp_drop (factory / force-unwrap) or pop the
+                           closure-literal temp_env, so the caller's statement flush
+                           doesn't free the env the container now owns. */
+                        else if (!cg_claim_block_temp_above(ctx, arg_drop_floor) &&
+                                 ctx->temp_block_env_count > 0)
                             ctx->temp_block_env_count--;
                     }
                 }
@@ -4005,6 +4013,14 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 
 
         free(args);
+        /* P3 (block-refcount): a factory call `make()->Block` returns an OWNED
+           env — track it as a statement-level temp so a discarded `make()()` is
+           released at flush and a binding claims it (cg_claim_block_temp_above).
+           Container readers that return a borrowed alias (Vec.get! loads
+           self.data[i] without cloning) are excluded by cg_block_source_is_aliased;
+           the helper is a no-op for non-Block returns. */
+        if (!cg_block_source_is_aliased(node))
+            cg_track_block_rvalue(ctx, result, node->resolved_type);
         return result;
     }
 
@@ -4266,7 +4282,14 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return codegen_try_expr(ctx, node);
 
     case AST_FORCE_UNWRAP:
-        return codegen_force_unwrap_expr(ctx, node);
+    {
+        LLVMValueRef fuw = codegen_force_unwrap_expr(ctx, node);
+        /* P3 (block-refcount): `opt!` on Option/Result(Block) yields an OWNED
+           Block — the container-get cloned the payload env. Track it so a
+           discarded `v.get(i)!()` releases at flush and a binding claims it. */
+        cg_track_block_rvalue(ctx, fuw, node->resolved_type);
+        return fuw;
+    }
 
     case AST_AT_TIME:
     {

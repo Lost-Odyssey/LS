@@ -103,6 +103,8 @@ void cg_emit_bounds_guard(CodegenContext *ctx, LLVMValueRef ok_cond, const char 
 LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val, LLVMTypeRef llvm_type, Type *type);
 void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type);
 void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot);
+void cg_track_block_rvalue(CodegenContext *ctx, LLVMValueRef block_val, Type *type);
+bool cg_claim_block_temp_above(CodegenContext *ctx, int floor);
 void cg_push_temp_block_env(CodegenContext *ctx, LLVMValueRef env_ptr);
 void cg_emit_block_env_drop(CodegenContext *ctx, LLVMValueRef env_ptr);
 void cg_emit_block_env_retain(CodegenContext *ctx, LLVMValueRef env_ptr);

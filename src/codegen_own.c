@@ -486,6 +486,55 @@ void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot)
     ctx->temp_drop_count = keep;
 }
 
+/* P3 (feat/block-ownership-unify): a fresh OWNED Block rvalue — a factory call
+   `make()->Block`, or a force-unwrap `opt!` of an Option/Result(Block) whose
+   payload the container-get already cloned — is born with env refcount 1 and no
+   owner yet. Spill it to an entry-block slot and register that slot as a
+   statement-level temp_drop (TYPE_BLOCK → release at flush). A durable binding
+   claims it via cg_claim_block_temp_above (pops the temp so only the binding's
+   owner releases the env); an unclaimed rvalue (`make()()` called-and-discarded)
+   is released by the statement-end flush. The slot (not the SSA env) is
+   registered so the release point is dominated by the entry alloca — a branch
+   producer (force-unwrap / match) inside a loop stays dominance-safe.
+
+   Container READERS that return a borrowed alias (Vec.get! loads `self.data[i]`
+   without cloning) must NOT be tracked here — releasing that env would free
+   storage the container still owns. The caller guards with
+   cg_block_source_is_aliased; force-unwrap always yields an owned value. */
+void cg_track_block_rvalue(CodegenContext *ctx, LLVMValueRef block_val, Type *type)
+{
+    if (block_val == NULL || type == NULL || type->kind != TYPE_BLOCK)
+        return;
+    if (ctx->current_fn == NULL)
+        return;
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
+    if (cur == NULL || LLVMGetBasicBlockTerminator(cur) != NULL)
+        return;
+    LLVMTypeRef blk_llvm = type_to_llvm(ctx, type);
+    LLVMValueRef slot = cg_entry_alloca(ctx, blk_llvm, "blk.rval.tmp");
+    LLVMBuildStore(ctx->builder, block_val, slot);
+    cg_push_temp_drop(ctx, slot, type);
+}
+
+/* Claim (remove without releasing) the most-recently registered Block rvalue
+   temp at or above `floor` — the value a durable binding is taking ownership of,
+   so the statement-end flush must not also release it. Only the single topmost
+   TYPE_BLOCK entry is removed (the just-evaluated rvalue); lower entries belong
+   to enclosing expressions. Returns true if one was claimed. */
+bool cg_claim_block_temp_above(CodegenContext *ctx, int floor)
+{
+    if (floor < 0) floor = 0;
+    for (int i = ctx->temp_drop_count - 1; i >= floor; i--)
+    {
+        if (ctx->temp_drop_types[i]->kind == TYPE_BLOCK)
+        {
+            cg_remove_temp_drop(ctx, ctx->temp_drop_slots[i]);
+            return true;
+        }
+    }
+    return false;
+}
+
 /* M-4.5: drop and release all statement-level temp_drop slots. Marks were
    full flush (which has been the runtime behavior since literals went Str). */
 static void cg_flush_temp_drops(CodegenContext *ctx)
@@ -760,8 +809,18 @@ void cg_store_owned(CodegenContext *ctx,
         LLVMBuildStore(ctx->builder, val, dst_ptr);
         if (src_sym && !src_sym->is_borrowed)
             cg_null_block_env(ctx, src_sym->value);
-        else if (!src_sym && ctx->temp_block_env_count > 0)
-            ctx->temp_block_env_count--;
+        else if (!src_sym)
+        {
+            /* Fresh rvalue moved into this container slot: claim its P3 temp_drop
+               (a non-aliased factory / force-unwrap) or pop the closure-literal
+               temp_env, so the statement flush doesn't release the env the
+               container now owns. An aliased reader (Vec.get!) is a borrow and was
+               never tracked — leave it to the enum-ctor clone boundary. */
+            if (!(is_rvalue && !cg_block_source_is_aliased(src) &&
+                  cg_claim_block_temp_above(ctx, 0)) &&
+                ctx->temp_block_env_count > 0)
+                ctx->temp_block_env_count--;
+        }
         return;
     }
 
