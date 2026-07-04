@@ -2736,14 +2736,21 @@ LLVMValueRef codegen_block_call(CodegenContext *ctx, AstNode *node)
             {
                 LLVMValueRef av = codegen_expr(ctx, a);
                 if (av == NULL) { free(args); return NULL; }
-                LLVMTypeRef store_t = type_to_llvm(ctx, pointee ? pointee : src_t);
-                LLVMValueRef tmp = cg_entry_alloca(ctx, store_t, "blk.borrow.tmp");
-                LLVMBuildStore(ctx->builder, av, tmp);
-                ptr = tmp;
+                /* Owned heap in the rvalue: the closure only borrows — spill +
+                   register so the statement flush releases it. POD rvalues
+                   still need the spill for the borrow ABI (bare alloca). */
                 if (pointee &&
                     ((pointee->kind == TYPE_STRUCT && pointee->as.strukt.has_drop) ||
                      (pointee->kind == TYPE_ENUM   && pointee->as.enom.has_drop)))
-                    cg_push_temp_drop(ctx, tmp, pointee);
+                    ptr = cg_spill_owned_rvalue(ctx, av, pointee,
+                                                false, "blk.borrow.tmp");
+                else
+                {
+                    LLVMTypeRef store_t = type_to_llvm(ctx, pointee ? pointee : src_t);
+                    LLVMValueRef tmp = cg_entry_alloca(ctx, store_t, "blk.borrow.tmp");
+                    LLVMBuildStore(ctx->builder, av, tmp);
+                    ptr = tmp;
+                }
             }
             args[i + 1] = ptr;
             continue;
