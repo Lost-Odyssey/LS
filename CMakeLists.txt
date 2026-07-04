@@ -1264,6 +1264,23 @@ set_tests_properties(test_vec_block_own PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Owned Block rvalue lifetime (P3 block-refcount) + Map(Block) rehash (O2). A
+# factory call / force-unwrap of a container-get yields an OWNED closure env
+# tracked as a statement temp: discarded => released, bound => owner releases.
+# Guards O1 (make()() leak), O3 (Vec/Map get!() consistency) and O2 (Map rehash
+# relocation double-free). JIT + AOT + memcheck 0/0/0.
+add_test(
+    NAME test_block_refcount
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_block_refcount.cmake
+)
+set_tests_properties(test_block_refcount PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Kill-switch A/B parity for optimization passes (LS_NO_ELIDE /
 # LS_NO_INTERNALIZE / LS_NO_ENUM_RANGE): the "off" path must produce
 # identical program output — a silently-broken pass fails loudly here.

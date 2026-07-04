@@ -3825,7 +3825,14 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     bool stores = mname &&
                         (strcmp(mname, "push") == 0 || strcmp(mname, "insert") == 0 ||
                          strcmp(mname, "set") == 0 || strcmp(mname, "__index_set") == 0 ||
-                         strcmp(mname, "__from_list") == 0 || strcmp(mname, "extend") == 0);
+                         strcmp(mname, "__from_list") == 0 || strcmp(mname, "extend") == 0 ||
+                         /* O2: Map._grow rehash relocates entries by @take-ing each
+                            from the old buffer into a local and passing it to
+                            _insert_no_grow, which moves it into the new table. That
+                            internal insert is a storing method too — without the
+                            transfer the caller (_grow) also drops the local Block,
+                            double-freeing the env now owned by the table. */
+                         strcmp(mname, "_insert_no_grow") == 0);
                     /* std.task: `t.run(|| ..)` forwards the closure into the worker
                        thread (via __task_spawn), which frees the env once the body
                        runs — so the caller must NOT also free it. Consume the temp

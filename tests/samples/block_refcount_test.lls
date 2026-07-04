@@ -1,0 +1,59 @@
+// block_refcount_test.lls — P3 / O2 block-refcount guardrail.
+// A fresh OWNED Block rvalue (factory call, force-unwrap of a container-get)
+// carries env refcount 1: discarded => released at statement flush, bound =>
+// the binding owns the single reference. Map(Block) rehash relocates entries by
+// move (no double-free). Covers O1 (factory make()()), O3 (Vec/Map get!()
+// discarded, now consistent), binding+call, and O2 (Map rehash).
+// JIT + AOT + memcheck 0/0/0.
+import std.core.vec
+import std.core.map
+
+type F = Block()->int
+
+def make_adder(int base) -> F { return || base + 1 }
+
+def main() -> int {
+    int ok = 1
+
+    // O1: factory-returned owned Block rvalue, called-and-discarded.
+    int a = make_adder(10)()
+    if a != 11 { ok = 0 }
+
+    // O3: Vec.get!() discarded — the owned clone is released at the flush.
+    Vec(F) v = []
+    for i in 0..3 { int c = i * 10; v.push(|| c + 1) }
+    int vg = v.get(0)!()
+    if vg != 1 { ok = 0 }
+
+    // O3: Map.get!() discarded with a CAPTURING closure (non-null env) — Vec and
+    // Map behave identically (the old "asymmetry" was a capture-less-probe artifact).
+    Map(Str, F) m = {}
+    int seed = 100
+    m["seedkeypaddedoutlonger"] = || seed + 1
+    int mg = m.get("seedkeypaddedoutlonger")!()
+    if mg != 101 { ok = 0 }
+
+    // Binding then call — the var owns the single reference, released at scope exit.
+    F b = v.get(1)!
+    if b() != 11 { ok = 0 }
+
+    // O2: Map(Block) rehash relocation. Bind one out first, then force many
+    // rehashes; the held clone stays valid and the table relocates by move.
+    F held = m.get("seedkeypaddedoutlonger")!
+    for i in 0..40 {
+        Str key = f"rehash_key_{i}_pad"
+        int cap = i * 2
+        m[key] = || cap + 5
+    }
+    if held() != 101 { ok = 0 }
+    if m.len() != 41 { ok = 0 }
+
+    // Vec(Block).copy + get! loop — element copies own independent envs.
+    Vec(F) dst = v.copy()
+    int sum = 0
+    for i in 0..3 { sum = sum + dst.get(i)!() }
+    if sum != 33 { ok = 0 }
+
+    if ok == 1 { @print("BLOCKRC PASS") } else { @print("BLOCKRC FAIL") }
+    return 0
+}
