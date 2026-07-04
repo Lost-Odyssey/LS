@@ -1366,9 +1366,16 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMBasicBlockRef saved_break = ctx->break_bb;
         LLVMBasicBlockRef saved_continue = ctx->continue_bb;
         CgScope *saved_loop_scope = ctx->loop_scope;
+        int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
+        int saved_loop_temp_env_floor  = ctx->loop_temp_env_floor;
         ctx->break_bb = end_bb;
         ctx->continue_bb = cond_bb;
         ctx->loop_scope = ctx->current_scope;
+        /* Floor for break/continue statement-level temp flush: temps live now
+           predate the loop body (e.g. an enclosing match's protected subject);
+           break/continue must release only temps created inside the loop. */
+        ctx->loop_temp_drop_floor = ctx->temp_drop_count;
+        ctx->loop_temp_env_floor  = ctx->temp_block_env_count;
 
         LLVMBuildBr(ctx->builder, cond_bb);
 
@@ -1392,6 +1399,8 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         ctx->break_bb = saved_break;
         ctx->continue_bb = saved_continue;
         ctx->loop_scope = saved_loop_scope;
+        ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
+        ctx->loop_temp_env_floor  = saved_loop_temp_env_floor;
 
         LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
         break;
@@ -1549,9 +1558,13 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMBasicBlockRef saved_break = ctx->break_bb;
         LLVMBasicBlockRef saved_continue = ctx->continue_bb;
         CgScope *saved_loop_scope = ctx->loop_scope;
+        int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
+        int saved_loop_temp_env_floor  = ctx->loop_temp_env_floor;
         ctx->break_bb = end_bb;
         ctx->continue_bb = update_bb;
         ctx->loop_scope = ctx->current_scope;
+        ctx->loop_temp_drop_floor = ctx->temp_drop_count;
+        ctx->loop_temp_env_floor  = ctx->temp_block_env_count;
 
         /* Branch to condition */
         LLVMBuildBr(ctx->builder, cond_bb);
@@ -1611,6 +1624,8 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         ctx->break_bb = saved_break;
         ctx->continue_bb = saved_continue;
         ctx->loop_scope = saved_loop_scope;
+        ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
+        ctx->loop_temp_env_floor  = saved_loop_temp_env_floor;
 
         pop_scope(ctx);
         LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
@@ -1643,9 +1658,13 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMBasicBlockRef saved_break = ctx->break_bb;
         LLVMBasicBlockRef saved_continue = ctx->continue_bb;
         CgScope *saved_loop_scope = ctx->loop_scope;
+        int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
+        int saved_loop_temp_env_floor  = ctx->loop_temp_env_floor;
         ctx->break_bb = end_bb;
         ctx->continue_bb = update_bb; /* continue jumps to update, not cond */
         ctx->loop_scope = ctx->current_scope;
+        ctx->loop_temp_drop_floor = ctx->temp_drop_count;
+        ctx->loop_temp_env_floor  = ctx->temp_block_env_count;
 
         /* Branch to condition check */
         LLVMBuildBr(ctx->builder, cond_bb);
@@ -1689,6 +1708,8 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         ctx->break_bb = saved_break;
         ctx->continue_bb = saved_continue;
         ctx->loop_scope = saved_loop_scope;
+        ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
+        ctx->loop_temp_env_floor  = saved_loop_temp_env_floor;
 
         pop_scope(ctx);
         LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
@@ -1749,6 +1770,17 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
     case AST_BREAK:
         if (ctx->break_bb)
         {
+            /* Release statement-level temps created inside the loop before the
+               scope-local cleanup. An owned rvalue match subject inside the loop
+               body registers itself in the temp_drop table (base-protected for
+               the fall-through arms); a break escaping the arm skips the normal
+               statement-boundary flush, leaking the subject (same escape class
+               as the 29b4fa3 bare-return leak). Flush only [loop_floor, count):
+               temps that predate the loop (an enclosing match's subject) are the
+               enclosing construct's to drop — mirrors emit_cleanup_to(loop_scope)
+               only freeing locals declared inside the loop. */
+            cg_flush_temps_from(ctx, ctx->loop_temp_env_floor,
+                                ctx->loop_temp_drop_floor);
             /* Free string locals from current scope up to (not including) loop scope */
             emit_cleanup_to(ctx, ctx->loop_scope, NULL);
             LLVMBuildBr(ctx->builder, ctx->break_bb);
@@ -1758,6 +1790,10 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
     case AST_CONTINUE:
         if (ctx->continue_bb)
         {
+            /* See AST_BREAK: release loop-internal statement temps so a continue
+               escaping a match arm doesn't leak an owned rvalue subject. */
+            cg_flush_temps_from(ctx, ctx->loop_temp_env_floor,
+                                ctx->loop_temp_drop_floor);
             /* Free string locals from current scope up to (not including) loop scope */
             emit_cleanup_to(ctx, ctx->loop_scope, NULL);
             LLVMBuildBr(ctx->builder, ctx->continue_bb);

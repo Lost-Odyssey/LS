@@ -52,6 +52,8 @@ typedef struct {
     LLVMBasicBlockRef break_bb;     /* break target (while/for) */
     LLVMBasicBlockRef continue_bb;  /* continue target (while/for) */
     CgScope *loop_scope;            /* scope at loop entry (for break/continue cleanup) */
+    int loop_temp_drop_floor;       /* temp_drop_count at loop entry (break/continue flush floor) */
+    int loop_temp_env_floor;        /* temp_block_env_count at loop entry (ditto) */
 
     /* Struct type registry (name -> LLVMTypeRef) */
     struct { const char *name; LLVMTypeRef llvm_type; Type *ls_type; } *struct_types;

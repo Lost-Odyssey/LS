@@ -4,7 +4,9 @@
 # results, block-tail owned locals (block-as-expression ownership
 # transfer), borrow-match binder cloned into an owned result, and arms
 # yielding Block (closure) values in all four shapes (block-tail local /
-# outer local / enum payload / literal tail).
+# outer local / enum payload / literal tail), and break/continue escaping a
+# match arm over an owned rvalue subject (loop-floor temp flush: leak +
+# nested double-free guard).
 # JIT + AOT + memcheck per sample, plus one negative check: match on an
 # aggregate (Str) subject must be a clear checker error, not invalid IR.
 cmake_minimum_required(VERSION 3.20)
@@ -13,6 +15,7 @@ foreach(pair
     "match_own_stress_test.lls=MATCHSTRESS PASS"
     "match_borrow_mix_test.lls=BORROWMIX PASS"
     "match_block_yield_test.lls=BLOCKYIELD PASS"
+    "match_break_continue_test.lls=MATCHBREAK PASS"
     "enum_block_payload_test.lls=ENUMBLOCK PASS")
     string(REGEX REPLACE "=.*$" "" _file "${pair}")
     string(REGEX REPLACE "^[^=]*=" "" _expected "${pair}")

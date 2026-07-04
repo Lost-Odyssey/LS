@@ -1,0 +1,133 @@
+// match_break_continue_test.lls — break/continue escaping a match arm must
+// not leak the owned-rvalue match subject (same escape-skips-flush class as
+// the 29b4fa3 bare-return leak). An owned rvalue subject inside a loop body
+// registers itself in the statement-level temp_drop table (base-protected
+// for the fall-through arms); break/continue previously only ran the scope
+// -local cleanup (emit_cleanup_to loop_scope) and skipped the temp flush,
+// leaking the subject payload every escape.
+//
+// The fix flushes [loop_temp_floor, count) on break/continue — releasing
+// temps created inside the loop while PRESERVING temps that predate it (an
+// enclosing match's protected subject), so an outer arm that keeps using its
+// binder after an inner loop does NOT double-free. This corpus exercises
+// both: the leak (simple break/continue) and the double-free guard (nested).
+// JIT + AOT + memcheck 0/0/0. Prints "MATCHBREAK PASS".
+
+def mk(int i) -> Result(Str, Str) {
+    if i % 2 == 0 {
+        Str s = "even: "
+        s.push_str("heap payload forced onto heap")
+        return Ok(s)
+    }
+    Str e = "odd: "
+    e.push_str("heap error payload forced onto heap")
+    return Err(e)
+}
+
+def inner(int i) -> Result(Str, Str) {
+    if i % 3 == 0 {
+        Str s = "inner payload forced onto heap here now"
+        return Ok(s)
+    }
+    Str e = "inner err payload forced onto heap here"
+    return Err(e)
+}
+
+// (1) break out of a match arm; subject mk(i) is an owned rvalue temp.
+def loop_break() -> int {
+    int n = 0
+    for i in 0..10 {
+        match mk(i) {
+            Ok(s) => { n = n + s.len(); if i >= 3 { break } }
+            Err(e) => { n = n + 1 }
+        }
+    }
+    return n
+}
+
+// (2) continue out of a match arm every Ok iteration.
+def loop_continue() -> int {
+    int n = 0
+    for i in 0..10 {
+        match mk(i) {
+            Ok(s) => { n = n + s.len(); continue }
+            Err(e) => { n = n + 1 }
+        }
+    }
+    return n
+}
+
+// (3) double-free guard: outer match over an owned rvalue subject; the Ok arm
+// runs a loop that breaks/continues out of an INNER match (another owned
+// rvalue subject), then STILL uses the outer binder `s` after the loop. A
+// flush-from-0 (return-style) would drop the outer subject early -> double
+// free at the outer merge. Must stay 0/0/0.
+def nested(int seed) -> int {
+    int acc = 0
+    match mk(seed) {
+        Ok(s) => {
+            for i in 0..8 {
+                match inner(i) {
+                    Ok(t) => { acc = acc + t.len(); if i >= 4 { break } }
+                    Err(e) => { acc = acc + e.len(); continue }
+                }
+            }
+            acc = acc + s.len()   // outer binder still live — not dropped by break
+        }
+        Err(e) => { acc = acc + e.len() }
+    }
+    return acc
+}
+
+// (4) while-loop variant: break out of a match arm, outer binder used after.
+def nested_while(int seed) -> int {
+    int acc = 0
+    match mk(seed) {
+        Ok(s) => {
+            int i = 0
+            while i < 8 {
+                match inner(i) {
+                    Ok(t) => { acc = acc + t.len(); if i >= 3 { break } }
+                    Err(e) => { acc = acc + e.len() }
+                }
+                i = i + 1
+            }
+            acc = acc + s.len()
+        }
+        Err(e) => { acc = acc + e.len() }
+    }
+    return acc
+}
+
+// (5) C-style for variant: break + continue out of a match arm.
+def nested_forc(int seed) -> int {
+    int acc = 0
+    match mk(seed) {
+        Ok(s) => {
+            for (int i = 0; i < 8; i = i + 1) {
+                match inner(i) {
+                    Ok(t) => { acc = acc + t.len(); if i >= 5 { break } }
+                    Err(e) => { acc = acc + e.len(); continue }
+                }
+            }
+            acc = acc + s.len()
+        }
+        Err(e) => { acc = acc + e.len() }
+    }
+    return acc
+}
+
+def main() -> int {
+    int a = loop_break()
+    int b = loop_continue()
+    if a == 0 || b == 0 { @print("FAIL: simple"); return 1 }
+
+    int c = nested(0)          // outer Ok
+    int d = nested(1)          // outer Err
+    int e = nested_while(0)
+    int f = nested_forc(0)
+    if c == 0 || d == 0 || e == 0 || f == 0 { @print("FAIL: nested"); return 1 }
+
+    @print("MATCHBREAK PASS", a, b, c, d, e, f)
+    return 0
+}
