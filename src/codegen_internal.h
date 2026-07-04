@@ -104,14 +104,6 @@ static inline bool cg_expr_yields_owned_rvalue(const AstNode *e, const Type *t)
     return has_drop && cg_expr_is_fresh_rvalue_kind(e);
 }
 
-/* DEPRECATED alias (pre-§p3 name; kept one release for out-of-tree greps).
-   The two members it listed are subsumed by cg_expr_is_fresh_rvalue_kind. */
-static inline bool cg_is_owned_combinator_rvalue(const AstNode *n)
-{
-    return n != NULL &&
-           (n->kind == AST_MATCH || n->kind == AST_FORCE_UNWRAP);
-}
-
 /* M-3: 统一所有权转移 API (used by cg_store_owned below). */
 typedef enum {
     CG_XFER_INTO_CONTAINER,  /* vec.push / vec[i]= / enum ctor / struct ctor */

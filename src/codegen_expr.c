@@ -4240,18 +4240,20 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    temporary here does not invalidate the returned value. */
                 /* Owned rvalue struct sources whose temp must be dropped after the
                    field read: container index (vec[i]/p[i]), a CALL returning a
-                   has_drop struct by value (f().field / obj.method(i).field), AND a
+                   has_drop struct by value (f().field / obj.method(i).field), a
                    nested field read whose own object had no stable lvalue
-                   (`v[i].inner.field`): there the intermediate `v[i].inner` is itself
-                   an owned struct clone (emit_struct_clone_val), so its other owned
-                   fields would leak. Reaching this else-branch at all means obj_node
-                   has no backing lvalue (codegen_lvalue_ptr returned NULL above) → the
-                   spilled struct value is an owned rvalue → the accessed field is
-                   cloned below, so dropping the temp is safe for any has_drop source. */
+                   (`v[i].inner.field`), and the other fresh-rvalue producers
+                   (`(match …).field` / `(try f()).field` / lowered-operator
+                   results) — the old INDEX/CALL/FIELD list missed those, leaking
+                   the spilled struct's OTHER owned fields
+                   (own_rvalue_sites_test.lls). Reaching this else-branch at all
+                   means obj_node has no backing lvalue (codegen_lvalue_ptr
+                   returned NULL above) → the spilled struct value is an owned
+                   rvalue → the accessed field is cloned below, so dropping the
+                   temp is safe for any has_drop source. Membership rationale
+                   lives on cg_expr_yields_owned_rvalue (codegen_internal.h). */
                 AstNode *uobj_src = ast_unwrap_move(obj_node);
-                if (struct_type->as.strukt.has_drop &&
-                    (uobj_src->kind == AST_INDEX || uobj_src->kind == AST_CALL ||
-                     uobj_src->kind == AST_FIELD))
+                if (cg_expr_yields_owned_rvalue(uobj_src, struct_type))
                 {
                     cg_push_temp_drop(ctx, struct_ptr, struct_type);
                 }
