@@ -5,6 +5,7 @@
    No logic changes. All prototypes live in codegen_internal.h. */
 #include "codegen.h"
 #include "codegen_internal.h"
+#include "block_protocol.h"
 #include "module.h"
 #define LS_INCLUDE_CODEGEN 1
 #include "builtins_math.h"
@@ -639,15 +640,12 @@ bool cg_block_source_is_aliased(AstNode *src)
         AstNode *callee = src->as.call.callee;
         if (!callee || callee->kind != AST_FIELD) return false;
         const char *m = callee->as.field_access.field;
-        /* F5: a copy-out reader on a container — map.get, or a pure-LS
-           Vec(Block)'s get/get!/__index/first/last (the returned Block aliases
+        /* F5: a copy-out reader on a container (the returned Block aliases
            the container's env, so the BIND site clones; a discarded rvalue like
            `v[i](arg)` borrows and is not cloned → no leak). Cloning here rather
-           than inside the method keeps discarded copy-out rvalues leak-free. */
-        bool reader = strcmp(m, "get") == 0 || strcmp(m, "get!") == 0 ||
-                      strcmp(m, "__index") == 0 || strcmp(m, "first") == 0 ||
-                      strcmp(m, "last") == 0;
-        if (!reader) return false;
+           than inside the method keeps discarded copy-out rvalues leak-free.
+           Name registry: block_protocol.h (single authority). */
+        if (!cg_block_method_is_alias_source(m)) return false;
         AstNode *mo = callee->as.field_access.object;
         return mo && mo->resolved_type &&
                 mo->resolved_type->kind == TYPE_STRUCT;

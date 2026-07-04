@@ -24,14 +24,14 @@ static void checker_mark_ambiguous_type(Checker *c, const char *name);
 static void checker_propagate_has_drop_fixpoint(Checker *c);
 static Type *checker_str_type(Checker *c);
 static bool checker_type_is_ambiguous(Checker *c, const char *name);
-static void checker_warning(Checker *c, int line, int col, const char *fmt, ...);
+void checker_warning(Checker *c, int line, int col, const char *fmt, ...);
 static bool ensure_generic_method_instantiated(Checker *c, const char *mangled_struct, const char *method_name, int line, int col);
 static void ensure_generic_struct_impls_local(Checker *c, Type *st);
 /* Non-static: also used by the from_list/from_pairs taggers in checker_lower.c
    (declared in checker_internal.h). */
 Type *find_method_ensured(Checker *c, Type *st, const char *mname);
 static int find_struct_template_idx_pull(Checker *c, const char *base_name);
-static Type *find_type_alias(Checker *c, const char *name);
+Type *find_type_alias(Checker *c, const char *name);
 static bool generic_method_is_eager(const char *name);
 static bool is_builtin_function(const char *name);
 static const char *intrinsic_retired_spelling(const char *name);
@@ -101,7 +101,7 @@ void checker_error(Checker *c, int line, int col, const char *fmt, ...)
     va_end(args);
 }
 
-static void checker_warning(Checker *c, int line, int col, const char *fmt, ...)
+void checker_warning(Checker *c, int line, int col, const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
@@ -740,7 +740,7 @@ static void register_type_alias(Checker *c, const char *name, Type *type)
     c->type_alias_count++;
 }
 
-static Type *find_type_alias(Checker *c, const char *name)
+Type *find_type_alias(Checker *c, const char *name)
 {
     /* VR-LIM-013: type aliases form a stack — generic instantiations push their
        type-param bindings and pop (restore count) on exit. Nested generics that

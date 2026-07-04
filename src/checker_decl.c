@@ -5,6 +5,7 @@
    No logic changes. All prototypes live in checker_internal.h. */
 #include "checker.h"
 #include "checker_internal.h"
+#include "block_protocol.h"
 #include "module.h"
 #include "builtins_math.h"
 #include "builtins_perf.h"
@@ -15,6 +16,127 @@ static void check_fn_decl(Checker *c, AstNode *node);
 static int find_trait(Checker *c, const char *name);
 static bool has_member_drop_call(AstNode *node, Type *struct_type);
 static bool type_is_c_compatible(const Type *t);
+
+/* ---- Stage 5 (plan_footgun_remediation): block-protocol method-name lint ----
+   The container-ownership protocol is METHOD-NAME driven (block_protocol.h):
+   a user struct that defines one of the reserved names with a Block in its
+   signature silently gets container env move-in / alias-out semantics at
+   every call site (e.g. a factory `def get() -> Block`: the caller treats
+   the fresh env as an alias and clones it at bind — the original leaks).
+   Warn (never error) on such definitions in USER code; std modules under
+   <LS_HOME>/lib/ implement the protocol and are exempt. Fires once, at the
+   definition site: non-generic methods when the resolved signature mentions
+   TYPE_BLOCK, generic templates by a syntactic Block-TypeNode scan
+   (instantiations do NOT re-report). Tracked in docs/known_limitations.md. */
+
+/* Syntactic: does this TypeNode mention a Block type anywhere? (generic
+   template level — no full resolution available; bare-shape walk plus a
+   type-alias peek, since bare Block returns are rejected by the checker and
+   real code must spell them through an alias: `type Getter = Block()->int`) */
+static bool type_node_mentions_block(Checker *c, const TypeNode *tn)
+{
+    if (tn == NULL) return false;
+    switch (tn->kind)
+    {
+    case TYPE_NODE_BLOCK:
+        return true;
+    case TYPE_NODE_POINTER:
+        return type_node_mentions_block(c, tn->as.pointee);
+    case TYPE_NODE_REFERENCE:
+        return type_node_mentions_block(c, tn->as.pointee);
+    case TYPE_NODE_ARRAY:
+    case TYPE_NODE_SIMD:
+    case TYPE_NODE_SLICE:
+        return type_node_mentions_block(c, tn->as.array.elem);
+    case TYPE_NODE_VECTOR:
+        return type_node_mentions_block(c, tn->as.vec.elem);
+    case TYPE_NODE_MAP:
+        return type_node_mentions_block(c, tn->as.map.key) ||
+               type_node_mentions_block(c, tn->as.map.val);
+    case TYPE_NODE_FN:
+        for (int i = 0; i < tn->as.fn.param_count; i++)
+            if (type_node_mentions_block(c, tn->as.fn.params[i])) return true;
+        return type_node_mentions_block(c, tn->as.fn.ret);
+    case TYPE_NODE_NAMED:
+    {
+        if (tn->as.named.arg_count == 0 && tn->as.named.name != NULL)
+        {
+            Type *aliased = find_type_alias(c, tn->as.named.name);
+            if (aliased != NULL && aliased->kind == TYPE_BLOCK)
+                return true;
+        }
+        for (int i = 0; i < tn->as.named.arg_count; i++)
+            if (type_node_mentions_block(c, tn->as.named.args[i])) return true;
+        return false;
+    }
+    default:
+        return false;
+    }
+}
+
+static void lint_block_protocol_warn(Checker *c, const AstNode *method,
+                                     const char *mname, bool is_sink)
+{
+    checker_warning(c, method->line, method->column,
+        "method name '%s' is a container-ownership protocol reserved name "
+        "(block_protocol.h): a Block parameter/return value in this signature "
+        "is handled with container %s semantics at every call site — "
+        "rename the method if it is not a container %s",
+        mname,
+        is_sink ? "move-in (env ownership transfers to the receiver)"
+                : "alias-out (bind sites deep-clone the returned Block's env)",
+        is_sink ? "storing method" : "copy-out reader");
+}
+
+/* Non-generic path: resolved method type available (mtype params include the
+   injected *Self at [0] for instance methods — skipped). */
+static void lint_block_protocol_method(Checker *c, AstNode *method,
+                                       const Type *mtype, bool is_static)
+{
+    const char *mn = method->as.fn_decl.name;
+    if (mn == NULL) return;
+    bool sink  = cg_block_method_is_store_sink(mn);
+    bool alias = cg_block_method_is_alias_source(mn);
+    if (!sink && !alias) return;
+    if (module_path_is_stdlib(c->source_path)) return;
+
+    bool has_block = false;
+    if (mtype != NULL && mtype->kind == TYPE_FUNCTION)
+    {
+        int start = is_static ? 0 : 1;
+        for (int j = start; j < mtype->as.function.param_count && !has_block; j++)
+            has_block = mtype->as.function.params[j] != NULL &&
+                        mtype->as.function.params[j]->kind == TYPE_BLOCK;
+        if (!has_block && mtype->as.function.return_type != NULL)
+            has_block = mtype->as.function.return_type->kind == TYPE_BLOCK;
+    }
+    if (has_block)
+        lint_block_protocol_warn(c, method, mn, sink);
+}
+
+/* Generic template path: bare-name TypeNode scan (plan stage 5: judge at the
+   template level; the per-instance monomorphization loop does not re-run
+   this lint, so each definition warns at most once). */
+static void lint_block_protocol_generic_impl(Checker *c, const AstNode *impl_node)
+{
+    if (module_path_is_stdlib(c->source_path)) return;
+    for (int i = 0; i < impl_node->as.impl_decl.method_count; i++)
+    {
+        AstNode *method = impl_node->as.impl_decl.methods[i];
+        if (method == NULL || method->kind != AST_FN_DECL) continue;
+        const char *mn = method->as.fn_decl.name;
+        if (mn == NULL) continue;
+        bool sink  = cg_block_method_is_store_sink(mn);
+        bool alias = cg_block_method_is_alias_source(mn);
+        if (!sink && !alias) continue;
+
+        bool has_block = type_node_mentions_block(c, method->as.fn_decl.return_type);
+        for (int j = 0; j < method->as.fn_decl.param_count && !has_block; j++)
+            has_block = type_node_mentions_block(c, method->as.fn_decl.param_types[j]);
+        if (has_block)
+            lint_block_protocol_warn(c, method, mn, sink);
+    }
+}
 
 /* G2: register a generic function template */
 void register_fn_template(Checker *c, AstNode *node) {
@@ -509,6 +631,9 @@ void check_impl_decl(Checker *c, AstNode *node)
                           "methods for undefined generic struct '%s'", name);
             return;
         }
+        /* Stage 5: protocol-name lint at the TEMPLATE level (syntactic Block
+           scan) — the monomorphization loop never re-reports. */
+        lint_block_protocol_generic_impl(c, node);
         c->struct_templates[tidx].impl_node = node;
         return;
     }
@@ -623,6 +748,10 @@ void check_impl_decl(Checker *c, AstNode *node)
         }
 
         Type *method_type = type_function(all_params, total_n, ret, false);
+
+        /* Stage 5: warn when a user method collides with the Block container
+           protocol names (see helpers at the top of this file). */
+        lint_block_protocol_method(c, method, method_type, is_static);
 
         if (!register_method(c, impl_idx, method->as.fn_decl.name, method_type, is_static,
                         method->as.fn_decl.self_borrow_kind,

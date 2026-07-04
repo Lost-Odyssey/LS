@@ -182,6 +182,36 @@ static char *resolve_stdlib_path(const char *import_path) {
     return hit2;
 }
 
+/* Stage 5 (block-protocol lint): true when `file_path` lives under the
+   stdlib root <LS_HOME>/lib/ — the std modules are exempt from the
+   container-protocol method-name lint (they IMPLEMENT the protocol).
+   Uses the same root computation as resolve_stdlib_path above, so the
+   prefix compares byte-for-byte against paths that resolver produced
+   (case-insensitive on Windows to be safe against drive-letter casing). */
+bool module_path_is_stdlib(const char *file_path) {
+    if (file_path == NULL) return false;
+
+    const char *ls_home_env = getenv("LS_HOME");
+    char exe_dir[1024];
+    const char *root = NULL;
+    if (ls_home_env && ls_home_env[0] != '\0') {
+        root = ls_home_env;
+    } else if (ls_executable_dir(exe_dir, sizeof(exe_dir)) == 0) {
+        root = exe_dir;
+    } else {
+        return false;
+    }
+
+    char prefix[1200];
+    snprintf(prefix, sizeof(prefix), "%s%slib%s",
+             root, PATH_SEP_STR, PATH_SEP_STR);
+#ifdef _WIN32
+    return _strnicmp(file_path, prefix, strlen(prefix)) == 0;
+#else
+    return strncmp(file_path, prefix, strlen(prefix)) == 0;
+#endif
+}
+
 /* ---- Public API ---- */
 
 ModuleRegistry *module_registry_new(void) {

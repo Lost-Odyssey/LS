@@ -1,0 +1,60 @@
+// block_protocol_lint_test.lls — stage 5 (plan_footgun_remediation):
+// container-ownership protocol method-name lint (audit B-2).
+//
+// A user struct that defines a reserved container-protocol name
+// (block_protocol.h: get/get!/__index/first/last readers,
+// push/insert/set/__index_set/__from_list/extend/_insert_no_grow sinks)
+// with a Block in its signature gets container env move/alias semantics
+// at every call site whether it wants them or not. The checker WARNS
+// (never errors) at the definition site. This corpus pins:
+//   1. warning fires: non-generic `get() -> Block` (factory, alias-out)
+//   2. warning fires: non-generic `push(Block)` (store sink, move-in)
+//   3. warning fires: generic-template method with Block via type alias
+//   4. NO warning: reserved name without any Block in the signature
+//   5. NO warning: Block signature under a NON-reserved name
+//   6. the program still compiles and runs (rc=0, output pinned)
+//
+// NOTE (known_limitations L-017): the lint does not CHANGE runtime
+// behavior — a `get()` factory's returned Block is still treated as an
+// alias (bind-site clone; the fresh env leaks). The corpus therefore only
+// value-checks the calls, not memcheck cleanliness, and main() avoids
+// binding from the fake `get` (that leak is exactly what the lint warns
+// about).
+
+type Getter = Block() -> int
+
+struct Factory { int id }
+
+methods Factory {
+    // [expect warning] reader name + Block return
+    def get() -> Getter {
+        return || 42
+    }
+    // [expect warning] sink name + Block param
+    def push(Getter b) -> int {
+        return b()
+    }
+    // [no warning] reserved name, no Block anywhere
+    def set(int v) -> int { return v + 1 }
+    // [no warning] Block signature under a free name
+    def register_cb(Getter b) -> int { return b() }
+}
+
+struct GBox(T) { T v }
+
+methods GBox(T) {
+    // [expect warning] generic template + Block via alias
+    def get() -> Getter { return || 7 }
+    def plain(&self) -> int { return 1 }
+}
+
+def main() -> int {
+    Factory f = Factory{id: 1}
+    int a = f.push(|| 10)        // sink call still works (borrow-call shape)
+    int b = f.set(4)
+    int c = f.register_cb(|| 20)
+    GBox(int) g = GBox(int){v: 3}
+    int d = g.plain()
+    @print(f"LINT PASS {a} {b} {c} {d}")
+    return 0
+}

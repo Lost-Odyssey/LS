@@ -101,6 +101,8 @@ typedef enum {
 
 /* ---- Internal checker helper prototypes (auto-consolidated, Step 1) ---- */
 void checker_error(Checker *c, int line, int col, const char *fmt, ...);
+void checker_warning(Checker *c, int line, int col, const char *fmt, ...);
+Type *find_type_alias(Checker *c, const char *name);
 void checker_move_error(Checker *c, int line, int col, const char *fmt, ...);
 bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const Type *concrete);
 char *checker_module_type_llvmname(Checker *c, const char *bare_name);

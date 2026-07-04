@@ -57,6 +57,11 @@ char *module_resolve_path(const char *import_path, const char *current_file);
    decide whether a user file shadows a built-in stdlib module. */
 bool module_user_file_exists(const char *import_path, const char *current_file);
 
+/* True when file_path lives under the stdlib root <LS_HOME>/lib/ (same root
+   computation as stdlib import resolution). Used by the checker's
+   block-protocol method-name lint to exempt std modules. */
+bool module_path_is_stdlib(const char *file_path);
+
 /* Resolve `import_path` to the file that module_load() would actually parse:
    user-relative-to-current_file first (module_resolve_path), falling back to
    <LS_HOME>/lib/... (the same private resolve_stdlib_path() module_load()

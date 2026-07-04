@@ -1334,6 +1334,23 @@ set_tests_properties(test_array_lit_own PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Block container-ownership protocol lint (stage 5, audit B-2): user methods
+# that collide with the reserved container method names (block_protocol.h)
+# while carrying a Block in the signature get a checker WARNING (not error);
+# std modules are path-exempt. Pins 3 firing shapes + 2 silent shapes +
+# unaffected runtime + std exemption.
+add_test(
+    NAME test_block_protocol_lint
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_block_protocol_lint.cmake
+)
+set_tests_properties(test_block_protocol_lint PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Owned Block rvalue lifetime (P3 block-refcount) + Map(Block) rehash (O2). A
 # factory call / force-unwrap of a container-get yields an OWNED closure env
 # tracked as a statement temp: discarded => released, bound => owner releases.
