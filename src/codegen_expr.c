@@ -3887,30 +3887,29 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                             continue;
                         }
                     }
-                    /* Fallback: materialise a temporary alloca to stabilise addr. */
-                    LLVMTypeRef store_t;
-                    const char *tmp_name;
-                    if (arg_type->kind == TYPE_ENUM) {
-                        store_t = type_to_llvm(ctx, arg_type);
-                        tmp_name = "enum.borrow.tmp";
-                    } else {
-                        store_t = type_to_llvm(ctx, arg_type);
-                        tmp_name = "struct.borrow.tmp";
-                    }
-                    LLVMValueRef tmp = cg_entry_alloca(ctx, store_t, tmp_name);
-                    LLVMBuildStore(ctx->builder, args[i], tmp);
-                    args[i] = tmp;
-                    /* Phase B: for owned rvalue (non-IDENT, non-vec[i]) passed as &T,
-                       the callee borrows but doesn't own — register the temp for drop
-                       so the heap inside is released after the statement. */
-                    AstNode *aa = node->as.call.args[i - arg_offset];
-                    bool is_rvalue_temp = (aa->kind != AST_IDENT);
-                    if (is_rvalue_temp &&
+                    /* Fallback: materialise a temporary alloca to stabilise addr.
+                       Phase B: an owned rvalue (non-IDENT) passed as &T — the
+                       callee borrows but doesn't own, so spill + register the
+                       temp for drop (heap released after the statement). The
+                       spill itself is borrow-ABI plumbing needed for POD too;
+                       only the owned-rvalue branch is an ownership operation. */
+                    const char *tmp_name = (arg_type->kind == TYPE_ENUM)
+                                               ? "enum.borrow.tmp"
+                                               : "struct.borrow.tmp";
+                    bool owned_rvalue_arg = (a->kind != AST_IDENT) &&
                         ((arg_type->kind == TYPE_ENUM   && arg_type->as.enom.has_drop) ||
-                         (arg_type->kind == TYPE_STRUCT && arg_type->as.strukt.has_drop)))
+                         (arg_type->kind == TYPE_STRUCT && arg_type->as.strukt.has_drop));
+                    LLVMValueRef tmp;
+                    if (owned_rvalue_arg)
+                        tmp = cg_spill_owned_rvalue(ctx, args[i], arg_type,
+                                                    false, tmp_name);
+                    else
                     {
-                        cg_push_temp_drop(ctx, tmp, arg_type);
+                        tmp = cg_entry_alloca(ctx, type_to_llvm(ctx, arg_type),
+                                              tmp_name);
+                        LLVMBuildStore(ctx->builder, args[i], tmp);
                     }
+                    args[i] = tmp;
                 }
             }
 
