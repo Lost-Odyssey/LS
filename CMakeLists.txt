@@ -1299,6 +1299,25 @@ set_tests_properties(test_vec_block_own PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# OWN-1 (plan_footgun_remediation phase 3): unified owned-rvalue predicate.
+# The 7 per-site consumer whitelists ("does this expr yield a fresh owned
+# rvalue the consumer must drop?") had drifted; every gap was a real leak
+# (combinators in @print's inline f-string, FIELD clones passed to print,
+# AST_TRY everywhere, bare f-string/FIELD/INDEX/lowered-`+` discards, owned
+# MATCH/TRY objects spilled for field reads). Guards
+# cg_expr_yields_owned_rvalue / cg_expr_is_fresh_rvalue_kind.
+add_test(
+    NAME test_own_rvalue_sites
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_own_rvalue_sites.cmake
+)
+set_tests_properties(test_own_rvalue_sites PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Owned Block rvalue lifetime (P3 block-refcount) + Map(Block) rehash (O2). A
 # factory call / force-unwrap of a container-get yields an OWNED closure env
 # tracked as a statement temp: discarded => released, bound => owner releases.

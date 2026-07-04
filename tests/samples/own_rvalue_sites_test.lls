@@ -1,0 +1,100 @@
+// own_rvalue_sites_test.lls — OWN-1 unified owned-rvalue predicate regression
+// (docs/plan_footgun_remediation.html phase 3, 2026-07-04).
+//
+// "Does this expression yield a fresh owned rvalue the consumer must drop?"
+// used to be answered by 7 per-site inline AST-kind whitelists that had
+// drifted apart (audit OWN-1). Unified into cg_expr_yields_owned_rvalue /
+// cg_expr_is_fresh_rvalue_kind (codegen_internal.h). Every form below was a
+// REAL leak under memcheck before unification (leak counts in parens):
+//
+//   (1) @print inline f-string x combinator lowering          (10 leaks)
+//   (2) @print(obj.field), field a has_drop struct — the FIELD
+//       read clone was never dropped                          (10 leaks)
+//   (3) @print(obj.field), field a has_drop enum              (10 leaks)
+//   (4) discard statements: bare f-string / bare FIELD /
+//       bare fixed-array INDEX / discarded lowered `+`        (1+1+1+1)
+//   (5) AST_TRY at EVERY consumer site (print / discard /
+//       standalone f-string / inline f-string / chained
+//       receiver / field-read object) — codegen_try_expr moves
+//       the payload out and registers nothing; the old helper
+//       cg_is_owned_combinator_rvalue listed only
+//       MATCH+FORCE_UNWRAP despite its own header comment      (4+1+2)
+//   (6) (match ...).field — an owned MATCH/TRY OBJECT spilled
+//       for a field read leaked its other owned fields
+//       (8th same-family site, found during cleanup)           (4 leaks)
+//
+// NOT covered here: array LITERAL owned elements ([heaped(..), ..]) leak —
+// that is a separate pre-existing array-ctor bug (subscript-assign is clean,
+// which is why the INDEX form below builds its array that way).
+//
+// Self-verifying (value checks + OWNRVAL PASS marker); the driver runs
+// JIT + AOT + memcheck (0 leak / 0 double-free / 0 invalid free).
+
+struct Inner { Str name }
+struct Outer { Inner inn }
+struct Holder { Option(Str) opt }
+struct P { Str name, Str tag }
+
+// Force heap Strs — a static literal (cap==0) frees nothing and masks leaks.
+def heaped(Str tail) -> Str {
+    Str s = "payload: "
+    s.push_str(tail)
+    return s
+}
+def some_str(int n) -> Option(Str) { return Some(f"s{n}") }
+def ok_str(int n) -> Result(Str, int) { return Ok(f"n{n}") }
+def mk(int n) -> P { return P{ name: f"n{n}", tag: f"t{n}" } }
+def ok_p(int n) -> Result(P, int) { return Ok(mk(n)) }
+
+// (5) try consumer forms — must live in a Result-returning fn.
+def try_forms() -> Result(int, int) {
+    @print(try ok_str(1))            // print-Str site
+    try ok_str(2)                    // discard site
+    Str s3 = f"[{try ok_str(3)}]"    // standalone f-string site
+    if !s3.eq?("[n3]") { return Err(93) }
+    @print(f"v={try ok_str(4)}")     // @print inline f-string site
+    Str u = (try ok_str(5)).upper()  // chained-receiver site
+    if !u.eq?("N5") { return Err(95) }
+    Str fy = (try ok_p(6)).name      // field-read object site (8th)
+    if !fy.eq?("n6") { return Err(96) }
+    return Ok(0)
+}
+
+def main() -> int {
+    int fails = 0
+
+    // (1) @print inline f-string x combinator (AST_MATCH lowering)
+    @print(f"v={some_str(1).unwrap_or("fb")}!")
+
+    // (2) print-struct x FIELD (the read clones; the clone must be dropped)
+    Outer o = Outer{ inn: Inner{ name: heaped("x") } }
+    @print(o.inn)
+
+    // (3) print-enum x FIELD
+    Holder h = Holder{ opt: Some(heaped("y")) }
+    @print(h.opt)
+
+    // (4) discard-statement forms
+    f"a{1}b"                        // bare f-string (no self-registration)
+    o.inn                           // bare FIELD (clone)
+    array(Str, 2) a = ["", ""]
+    a[0] = heaped("a0")             // subscript-assign, NOT a literal (see header)
+    a[1] = heaped("a1")
+    a[0]                            // bare fixed-array INDEX (element clone)
+    Str x = heaped("x")
+    Str y = heaped("y")
+    x + y                           // discarded lowered operator result
+
+    // (5) try consumer forms, value-checked
+    match try_forms() {
+        Ok(v) => { if v != 0 { fails = fails + 1 } }
+        Err(e) => { @print("FAIL: try form", e)  fails = fails + 1 }
+    }
+
+    // (6) owned MATCH object spilled for a field read (int-switch match)
+    Str mn = (match 1 { 1 => mk(1)  _ => mk(9) }).name
+    if !mn.eq?("n1") { @print("FAIL: match-obj field")  fails = fails + 1 }
+
+    if fails == 0 { @print("OWNRVAL PASS") } else { @print("OWNRVAL FAIL", fails) }
+    return fails
+}
