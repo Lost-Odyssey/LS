@@ -1169,13 +1169,14 @@ LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
             /* F3 (VR-LIM-008): an owned has_drop struct rvalue passed to print —
                e.g. `print(vp[0])`, where `Vec(T).get`/`__index` deep-clones the
                element — is fully consumed here and bound to nothing, so its owned
-               fields (strings/vecs/…) leak. Drop the clone. Restricted to
-               owned-rvalue producers (index / call); a bare ident or field read
-               of a LIVE binding must NOT be dropped (it's a borrow — dropping
-               would corrupt/double-free the source). */
-            if (t->as.strukt.has_drop &&
-                (arg->kind == AST_INDEX || arg->kind == AST_CALL ||
-                 cg_is_owned_combinator_rvalue(arg)))
+               fields (strings/vecs/…) leak. Drop the clone. Membership rationale
+               lives on cg_expr_yields_owned_rvalue (codegen_internal.h). NOTE a
+               FIELD read of a has_drop struct IS an owned clone (AST_FIELD read
+               site runs emit_struct_clone_val), not a borrow — this site's old
+               whitelist missed FIELD (and BINARY.lowered / TRY), so
+               @print(obj.inner) leaked the clone (own_rvalue_sites_test.lls).
+               Only a bare ident stays a borrow and must not be dropped. */
+            if (cg_expr_yields_owned_rvalue(arg, t))
             {
                 LLVMValueRef stmp = cg_entry_alloca(ctx, type_to_llvm(ctx, t),
                                                     "print.drop");
