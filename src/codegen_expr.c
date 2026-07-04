@@ -4274,7 +4274,12 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         /* Struct field access is a READ — the struct retains ownership of its fields.
            Clone owned data so the caller gets an independent copy.
            Without this, both the caller's variable and the struct would try to free
-           the same string/owned-struct data → double-free. */
+           the same string/owned-struct data → double-free.
+           CONTRACT: this clone behavior is one half of the table on
+           cg_match_subject_is_owned_rvalue (codegen_match.c) — an AST_FIELD match
+           subject is judged owned and dropped at merge, which is only sound
+           because the read here yields an independent copy. Change one side,
+           re-check the other. */
         if (field_type && field_type->kind == TYPE_STRUCT && field_type->as.strukt.has_drop)
             field_val = emit_struct_clone_val(ctx, field_val, field_llvm, field_type);
         /* Symmetric to the struct branch: reading a has_drop ENUM field
@@ -4282,9 +4287,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            the struct keeps ownership of its payload. Without a clone the loaded enum
            aliases the struct's payload heap; a consumer that treats it as owned
            (e.g. a `match` subject — a non-IDENT AST_FIELD is an owned rvalue temp,
-           dropped at merge) then double-frees that payload against the struct's own
+           dropped at merge, see cg_match_subject_is_owned_rvalue in
+           codegen_match.c) then double-frees that payload against the struct's own
            scope-exit drop. Mirrors AST_INDEX enum reads, which already clone.
-           (memcheck-found 2026-07-04; field_enum_subject_test.lls.) */
+           (memcheck-found 2026-07-04; field_enum_subject_test.lls = BUG-1.) */
         else if (field_type && field_type->kind == TYPE_ENUM && field_type->as.enom.has_drop)
             field_val = emit_enum_clone_val(ctx, field_val, field_type);
         /* F.3: Block field read — the struct retains env ownership, so the loaded
@@ -4671,6 +4677,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.array.elem);
             LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, sptr, &index, 1, "s.elem.p");
             LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "s.elem");
+            /* READ = independent copy; contract with
+               cg_match_subject_is_owned_rvalue (codegen_match.c). */
             return emit_clone_value(ctx, elem, elem_llvm, obj_type->as.array.elem);
         }
 
@@ -4699,7 +4707,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val,
                                              &index, 1, "ptr.idx");
             LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "ptr.elem");
-            /* Deep-clone owned element data (string/vec/has_drop struct|enum). */
+            /* Deep-clone owned element data (string/vec/has_drop struct|enum).
+               Contract with cg_match_subject_is_owned_rvalue (codegen_match.c). */
             elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
             return elem;
         }
@@ -4752,7 +4761,10 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
         LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "arr.elem");
         /* array[i] is a READ — the array retains ownership.  Clone owned data
-           to give the caller an independent copy (mirrors vec[i] semantics). */
+           to give the caller an independent copy (mirrors vec[i] semantics).
+           CONTRACT with cg_match_subject_is_owned_rvalue (codegen_match.c):
+           an AST_INDEX match subject is dropped at merge as an owned temp —
+           sound only while this read clones. */
         elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
         return elem;
     }
@@ -4939,8 +4951,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             /* cg_store_owned 处理：string clone/move、Block env 转移、
                struct/enum/vec/map move 标记，以及 POD 直接 store */
             cg_store_owned(ctx, field_ptr, val, field_type,
-                           node->as.new_expr.field_inits[i].value,
-                           CG_XFER_INTO_CONTAINER);
+                           node->as.new_expr.field_inits[i].value);
         }
 
         /* Fill any field not explicitly initialized with its declared default
@@ -4977,8 +4988,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             LLVMValueRef val = codegen_expr(ctx, deflt);
             if (val == NULL)
                 return NULL;
-            cg_store_owned(ctx, field_ptr, val, field_type, deflt,
-                           CG_XFER_INTO_CONTAINER);
+            cg_store_owned(ctx, field_ptr, val, field_type, deflt);
         }
 
         if (on_stack)

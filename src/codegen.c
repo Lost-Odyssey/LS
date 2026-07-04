@@ -220,7 +220,7 @@ void cg_dbg_block_op(CodegenContext *ctx,
 
 
 /* Forward declarations for the ownership engine, closure lowering, and the
-   CgTransferKind ownership-transfer API moved to codegen_internal.h (Step 1 of
+   cg_store_owned ownership-transfer API moved to codegen_internal.h (Step 1 of
    the codegen.c split, docs/plan_codegen_split.md). */
 
 

@@ -661,7 +661,7 @@ bool cg_block_source_is_aliased(AstNode *src)
    `moved_out` (see ast.h) — i.e. the source is a named, owned, non-borrow
    variable whose later use the checker already rejects.
 
-   The invalidation per type mirrors the existing CG_XFER_INTO_CONTAINER paths in
+   The invalidation per type mirrors the existing container-store paths in
    cg_store_owned:
      - string : mark_string_moved (cap = -1; runtime-guarded, no-op if static)
      - struct : set moved_flag = 1 (scope-drop is moved_flag-conditional)
@@ -707,18 +707,38 @@ bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Type *type
     }
 }
 
-/* M-3: 统一所有权转移 API
-   将 val 存入 dst_ptr，根据类型和来源节点自动选择 move/clone/store 语义。
-   kind:      CG_XFER_INTO_CONTAINER — 存入容器（move 语义，source 被消耗）
-              CG_XFER_ASSIGN_VAR     — 变量赋值（clone 语义，string source 保持有效）
-              CG_XFER_RETURN         — return（同 INTO_CONTAINER，move 语义）
-*/
+/* Ownership-transferring store: put `val` into `dst_ptr`, choosing
+   move / clone / plain-store from the value's TYPE and the SOURCE AST node
+   (named owned source → move + moved_flag; borrowed source → deep clone;
+   fresh rvalue → take over; POD → plain store).
+
+   HONEST SCOPE (audit OWN-7): despite the "统一 API" ambition of its birth
+   (M-3), this helper only covers the CONTAINER-STORE sites:
+     - enum ctor payload stores (plain field + self-recursive box),
+       codegen_decl.c:1030/:1077;
+     - slice `s[i] = v` / raw-pointer `p[i] = v` element stores,
+       codegen_stmt.c:1096/:1120;
+     - struct literal field inits + field defaults,
+       codegen_expr.c:4953/:4992.
+   All are move-into-container semantics (the old 3-value transfer-kind
+   selector parameter was never read — `(void)kind` — and has been deleted).
+   The OTHER ownership-transfer sites each have an independent protocol —
+   do NOT assume they route through here:
+     - var_decl init: codegen_stmt.c case AST_VAR_DECL (:412), its own
+       move/clone decision + A1 clone-elision;
+     - return: codegen_stmt.c case AST_RETURN (:1193), return-clone guard +
+       skip-alloca;
+     - match arm results / binders: codegen_match.c cg_match_arm_own_tail +
+       the variant-arm binder clone (decision key = subj_owned_temp, not a
+       source AST node — unification rejected, audit M-6);
+     - Block alias-boundary clone: caller-side, e.g. the enum-ctor Block
+       payload guard right above its cg_store_owned call
+       (codegen_decl.c:1052) — see that comment for why it cannot live here. */
 void cg_store_owned(CodegenContext *ctx,
                            LLVMValueRef dst_ptr,
                            LLVMValueRef val,
                            Type *type,
-                           AstNode *source,
-                           CgTransferKind kind)
+                           AstNode *source)
 {
     if (!val || !dst_ptr || !type) {
         if (dst_ptr && val)
@@ -743,7 +763,6 @@ void cg_store_owned(CodegenContext *ctx,
         else
             break;
     }
-    (void)kind;
 
     /* 解析 source 是否是命名变量 IDENT */
     CgSymbol *src_sym = NULL;

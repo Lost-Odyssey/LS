@@ -104,13 +104,6 @@ static inline bool cg_expr_yields_owned_rvalue(const AstNode *e, const Type *t)
     return has_drop && cg_expr_is_fresh_rvalue_kind(e);
 }
 
-/* M-3: 统一所有权转移 API (used by cg_store_owned below). */
-typedef enum {
-    CG_XFER_INTO_CONTAINER,  /* vec.push / vec[i]= / enum ctor / struct ctor */
-    CG_XFER_ASSIGN_VAR,      /* string a = b（clone 语义，source 保持有效） */
-    CG_XFER_RETURN,          /* return val */
-} CgTransferKind;
-
 /* match / try / force-unwrap case bodies extracted from codegen_expr (Step 4). */
 LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node);
 LLVMValueRef codegen_try_expr(CodegenContext *ctx, AstNode *node);
@@ -181,7 +174,7 @@ void cg_null_block_env(CodegenContext *ctx, LLVMValueRef blk_alloca);
 LLVMValueRef codegen_fn_to_block(CodegenContext *ctx, AstNode *node);
 bool cg_block_source_is_aliased(AstNode *src);
 bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Type *type);
-void cg_store_owned(CodegenContext *ctx, LLVMValueRef dst_ptr, LLVMValueRef val, Type *type, AstNode *source, CgTransferKind kind);
+void cg_store_owned(CodegenContext *ctx, LLVMValueRef dst_ptr, LLVMValueRef val, Type *type, AstNode *source);
 void cg_flush_temps(CodegenContext *ctx);
 void cg_flush_temps_from(CodegenContext *ctx, int env_floor, int drop_floor);
 void cg_flush_temps_scope_exit(CodegenContext *ctx);

@@ -1093,8 +1093,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                      (elem_ty->kind == TYPE_ENUM && elem_ty->as.enom.has_drop));
                 if (elem_has_drop)
                     emit_drop_value(ctx, gep, elem_ty);
-                cg_store_owned(ctx, gep, val, elem_ty, node->as.assign.value,
-                               CG_XFER_INTO_CONTAINER);
+                cg_store_owned(ctx, gep, val, elem_ty, node->as.assign.value);
                 cg_flush_temps(ctx);
             }
             else if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
@@ -1118,8 +1117,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val,
                                                  &index, 1, "pis.ep");
                 cg_store_owned(ctx, gep, val, obj_type->as.pointer_to,
-                               node->as.assign.value,
-                               CG_XFER_INTO_CONTAINER);
+                               node->as.assign.value);
                 cg_flush_temps(ctx);
             }
             else

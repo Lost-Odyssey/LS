@@ -1027,9 +1027,7 @@ LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                 LLVMValueRef box_val = v;
                 if (LLVMGetTypeKind(LLVMTypeOf(v)) == LLVMPointerTypeKind)
                     box_val = LLVMBuildLoad2(ctx->builder, enum_llvm, v, "box.val");
-                cg_store_owned(ctx, box, box_val, pt,
-                               args[i],
-                               CG_XFER_INTO_CONTAINER);
+                cg_store_owned(ctx, box, box_val, pt, args[i]);
                 LLVMBuildStore(ctx->builder, box, field_ptr);
             }
             else if (pt)
@@ -1074,9 +1072,7 @@ LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                    move/clone/store 语义，内部处理 borrowed 深克隆。
                    enum_temp_mark 记录了本次 codegen_expr(args[i]) 前的
                    temp count，用于 rvalue string 的 pop-temp 操作。 */
-                cg_store_owned(ctx, field_ptr, v, pt,
-                               args[i],
-                               CG_XFER_INTO_CONTAINER);
+                cg_store_owned(ctx, field_ptr, v, pt, args[i]);
             }
             else
             {

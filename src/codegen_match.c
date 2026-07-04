@@ -28,6 +28,7 @@ static AstNode *cg_match_arm_tail(AstNode *arm_body);
 static bool cg_pattern_has_bit_seq(const AstNode *pat);
 static int match_collect_int_vals(AstNode *pat, long long *out, int max);
 static bool match_pattern_all_int_const(AstNode *pat);
+static bool cg_match_subject_is_owned_rvalue(const AstNode *subject);
 
 /* L-013: unwrap a match-arm body to its tail expression (the value the arm yields).
    For a block body `=> { ...; E }` the tail is the last statement's expression;
@@ -285,6 +286,56 @@ static LLVMValueRef cg_emit_bit_pattern_seq(CodegenContext *ctx, AstNode *seq,
     return cond;
 }
 
+/* L-012 subject-ownership predicate (single source of truth, audit M-2/MB).
+   true = the match subject is an OWNED rvalue temp with no other owner, so the
+   match itself must (a) clone every has_drop binder off it and (b) register the
+   subject for drop (cg_push_temp_drop; dropped at statement end / on escape).
+   false = someone else owns the subject storage; binders alias it read-only.
+
+   This is a NEGATIVE list ("owned unless proven otherwise"), deliberately wider
+   than the positive fresh-rvalue kind list in codegen_internal.h
+   (cg_expr_is_fresh_rvalue_kind) — e.g. a block-tail subject is owned here but
+   is not a fresh-rvalue kind. Do NOT merge the two predicates: membership
+   drift IS a behavior change (this stage shipped under a zero-IR-diff gate).
+
+   Subject AST form × who owns / where the read path clones
+   (CONTRACT: every form judged owned below must have a read path that yields
+   an INDEPENDENT copy — otherwise the merge-point subject drop double-frees
+   heap shared with the real owner. That gap was exactly BUG-1, 72c3f9d.
+   When you change a read-path clone site, re-check this table; the clone
+   sites carry back-references to this predicate.)
+
+     AST_IDENT       NOT owned — named var / param / binder: its owner's scope
+                     drop (or a borrow-match zero-copy path) frees it.
+     AST_UNARY       NOT owned — `&x` read-only borrow; owner keeps ownership.
+     AST_MUT_BORROW  NOT owned — `&!x` writable borrow; owner keeps ownership.
+     AST_FIELD       owned — field READ clones: has_drop struct field via
+                     emit_struct_clone_val (codegen_expr.c:4279), has_drop enum
+                     field via emit_enum_clone_val (codegen_expr.c:4289,
+                     BUG-1 fix 72c3f9d; guide 坑⑧).
+     AST_INDEX       owned — element READ clones: fixed array arr[i] via
+                     emit_clone_value (codegen_expr.c:4756), slice s[i]
+                     (:4674), raw-pointer p[i] (:4703). Vec `v[i]` desugars to
+                     the __index method → AST_CALL, cloned by the callee.
+     AST_CALL        owned — fn/method/ctor result is a fresh value (container
+                     getters like Vec.get! clone inside the callee).
+     AST_MATCH / AST_TRY / AST_FORCE_UNWRAP / AST_FORMAT_STRING / AST_BLOCK
+                     owned — fresh rvalue temps (or block-tail self-transfer,
+                     guide §3.3).
+
+   Only meaningful for has_drop enum subjects: anything else returns false
+   (POD/scalar subjects need no drop; non-enum aggregates are rejected by the
+   checker as match subjects). */
+static bool cg_match_subject_is_owned_rvalue(const AstNode *subject)
+{
+    const Type *t = subject ? subject->resolved_type : NULL;
+    if (t == NULL || t->kind != TYPE_ENUM || !t->as.enom.has_drop)
+        return false;
+    return subject->kind != AST_IDENT &&
+           subject->kind != AST_UNARY &&
+           subject->kind != AST_MUT_BORROW;
+}
+
 /* Extracted from codegen_expr's switch (codegen.c split Step 4): the
    AST_MATCH case body, verbatim. Behavior unchanged — ctx->current_node is
    already set by codegen_expr before dispatch. */
@@ -334,18 +385,10 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
         Type *subj_type = node->as.match.subject->resolved_type;
         bool is_fp = subj_type && type_is_float(subj_type);
 
-        /* L-012: an OWNED rvalue-temp scrutinee (a call/index/field/ctor result,
-           not a named var or borrow) has no other owner, so the match itself must
-           drop it. For such subjects we (a) clone every has_drop binder so it is
-           independent of the subject, and (b) register the subject for drop. A
-           named-var / &self subject keeps the existing borrow behavior (its owner
-           drops it; binders alias read-only). */
+        /* L-012: owned rvalue-temp scrutinee → clone binders + drop subject.
+           Full form × read-path-clone contract table lives on the predicate. */
         bool subj_owned_temp =
-            subj_type && subj_type->kind == TYPE_ENUM &&
-            subj_type->as.enom.has_drop &&
-            node->as.match.subject->kind != AST_IDENT &&
-            node->as.match.subject->kind != AST_UNARY &&
-            node->as.match.subject->kind != AST_MUT_BORROW;
+            cg_match_subject_is_owned_rvalue(node->as.match.subject);
 
         /* ---- Enum subject: switch on discriminant + binder extraction ---- */
         if (subj_type && subj_type->kind == TYPE_ENUM)
