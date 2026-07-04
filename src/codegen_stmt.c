@@ -1940,13 +1940,8 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
            binding and must NOT be dropped here. */
         if (ev != NULL &&
             cg_expr_yields_owned_rvalue(estmt, estmt->resolved_type))
-        {
-            Type *rt = estmt->resolved_type;
-            LLVMTypeRef rllvm = type_to_llvm(ctx, rt);
-            LLVMValueRef tmp = cg_entry_alloca(ctx, rllvm, "discard.drop");
-            LLVMBuildStore(ctx->builder, ev, tmp);
-            cg_push_temp_drop(ctx, tmp, rt);
-        }
+            cg_spill_owned_rvalue(ctx, ev, estmt->resolved_type,
+                                  false, "discard.drop");
         /* Free all temps produced (none are moved/kept — this is a discarded result) */
         cg_flush_temps(ctx);
         break;
