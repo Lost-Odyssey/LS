@@ -1801,14 +1801,11 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
            value is an address. */
         if (rtype->kind == TYPE_REFERENCE)
             return val;
-        LLVMTypeRef rllvm = type_to_llvm(ctx, rtype);
-        /* Zero-init in entry block: this spill's drop may be reached on a path
-           that skipped the store below (chained-op receiver inside a match-arm
-           conditional). Stray drop then no-ops instead of freeing stack garbage. */
-        LLVMValueRef tmp = cg_entry_alloca_zeroed(ctx, rllvm, "tmp.rval.self");
-        LLVMBuildStore(ctx->builder, val, tmp);
-        cg_push_temp_drop(ctx, tmp, rtype);
-        return tmp;
+        /* Zero-init in entry block (zeroed=true): this spill's drop may be
+           reached on a path that skipped the store (chained-op receiver inside
+           a match-arm conditional). Stray drop then no-ops instead of freeing
+           stack garbage. */
+        return cg_spill_owned_rvalue(ctx, val, rtype, true, "tmp.rval.self");
     }
 
     return NULL; /* Other lvalue forms not yet handled */
