@@ -1208,9 +1208,11 @@ LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
                 return NULL;
             }
             codegen_print_enum_value(ctx, eval, t);
-            if (t->as.enom.has_drop &&
-                (arg->kind == AST_INDEX || arg->kind == AST_CALL ||
-                 cg_is_owned_combinator_rvalue(arg)))
+            /* Same as the struct branch: a has_drop ENUM field read is an owned
+               clone (emit_enum_clone_val, 72c3f9d) — the old whitelist missed
+               FIELD/BINARY.lowered/TRY, leaking e.g. @print(h.opt)
+               (own_rvalue_sites_test.lls). */
+            if (cg_expr_yields_owned_rvalue(arg, t))
             {
                 LLVMValueRef etmp = cg_entry_alloca(ctx, type_to_llvm(ctx, t),
                                                     "print.enum.drop");
