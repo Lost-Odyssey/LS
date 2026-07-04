@@ -1232,6 +1232,23 @@ set_tests_properties(test_enum_own_regress PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Ownership regression found by memcheck (2026-07-04): `match struct.field` where
+# the field holds a has_drop enum (Option(Str) / user enum with Str payload). The
+# AST_FIELD read cloned only has_drop structs, so the enum field read aliased the
+# struct's payload heap -> match (owned-rvalue subject) double-freed it against the
+# struct's own drop. Fixed by cloning the enum field read (emit_enum_clone_val).
+add_test(
+    NAME test_field_enum_subject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_field_enum_subject.cmake
+)
+set_tests_properties(test_field_enum_subject PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # match × ownership interaction stress guardrails (nested match, match in
 # loop, early/bare returns from arms, int-switch & cond-chain has_drop
 # results, block-tail owned locals, borrow-match clone-into-result) plus

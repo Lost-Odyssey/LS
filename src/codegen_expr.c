@@ -4276,6 +4276,16 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            the same string/owned-struct data → double-free. */
         if (field_type && field_type->kind == TYPE_STRUCT && field_type->as.strukt.has_drop)
             field_val = emit_struct_clone_val(ctx, field_val, field_llvm, field_type);
+        /* Symmetric to the struct branch: reading a has_drop ENUM field
+           (Option(Str), a user enum with a Str/owned payload, ...) is also a READ —
+           the struct keeps ownership of its payload. Without a clone the loaded enum
+           aliases the struct's payload heap; a consumer that treats it as owned
+           (e.g. a `match` subject — a non-IDENT AST_FIELD is an owned rvalue temp,
+           dropped at merge) then double-frees that payload against the struct's own
+           scope-exit drop. Mirrors AST_INDEX enum reads, which already clone.
+           (memcheck-found 2026-07-04; field_enum_subject_test.lls.) */
+        else if (field_type && field_type->kind == TYPE_ENUM && field_type->as.enom.has_drop)
+            field_val = emit_enum_clone_val(ctx, field_val, field_type);
         /* F.3: Block field read — struct retains env ownership; return value directly.
            checker already rejected `Block g = p.step1`; direct call `p.step1(args)`
            is allowed — codegen_block_call will use the loaded value. */

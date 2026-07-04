@@ -1,0 +1,105 @@
+// field_enum_subject_test.lls — match over a struct FIELD holding a has_drop enum
+// (AST_FIELD subject). memcheck-found 2026-07-04 (main @ fc741bf).
+//
+// Root cause: the AST_FIELD value-read path deep-cloned only has_drop TYPE_STRUCT
+// fields; a has_drop TYPE_ENUM field (Option(Str), or a user enum with a Str
+// payload) was read WITHOUT a clone, so the loaded enum value aliased the struct's
+// payload heap. `match` treats a non-IDENT subject as an owned rvalue temp and
+// drops it at merge -> the shared payload was double-freed against the struct's own
+// scope-exit drop. Fix: read the enum field through emit_enum_clone_val, symmetric
+// with the struct-field clone (codegen_expr.c AST_FIELD read site).
+//
+// Covers the three field-subject forms x {discard arm, value-yield binder arm} x
+// {Option(Str) field, user-enum Str-payload field}. JIT + AOT + memcheck 0/0/0.
+
+enum Msg {
+    Empty
+    Text(Str body)
+}
+
+struct Holder { Option(Str) opt }
+struct Box { Msg msg }
+
+// Force a heap Str — a static literal (cap==0) would not exercise the double-free.
+def heaped(Str tail) -> Str {
+    Str s = "payload: "
+    s.push_str(tail)
+    return s
+}
+
+methods Holder {
+    // Form 3: &self method — self.opt is an AST_FIELD read through a borrow pointer.
+    def probe(&self) -> int {
+        match self.opt {
+            Some(v) => { v.len() }
+            None => -1
+        }
+    }
+}
+
+methods Box {
+    def probe(&self) -> int {
+        match self.msg {
+            Text(b) => { b.len() }
+            Empty => -1
+        }
+    }
+}
+
+// Form 2: owned parameter field — h/b are by-value (cloned) owned locals.
+def consume_opt(Holder h) -> int {
+    match h.opt {
+        Some(v) => { v.len() }
+        None => -1
+    }
+}
+
+def consume_msg(Box b) -> int {
+    match b.msg {
+        Text(t) => { t.len() }
+        Empty => -1
+    }
+}
+
+def main() -> int {
+    Holder h = Holder{ opt: Some(heaped("holder")) }   // len 15
+    Box bx = Box{ msg: Text(heaped("boxmsg")) }         // len 15
+
+    // Form 1: local struct field, discard context (statement match, no value).
+    int n1 = 0
+    match h.opt {
+        Some(v) => { n1 = v.len() }
+        None => { n1 = -1 }
+    }
+    if n1 != 15 { @print("FAIL: local Option field len", n1); return 1 }
+
+    int m1 = 0
+    match bx.msg {
+        Text(t) => { m1 = t.len() }
+        Empty => { m1 = -1 }
+    }
+    if m1 != 15 { @print("FAIL: local Msg field len", m1); return 1 }
+
+    // Form 2: owned parameter field (by-value clone at the call site).
+    if consume_opt(h) != 15 { @print("FAIL: owned-param Option field"); return 1 }
+    if consume_msg(bx) != 15 { @print("FAIL: owned-param Msg field"); return 1 }
+
+    // Form 3: &self method field.
+    if h.probe() != 15 { @print("FAIL: &self Option field"); return 1 }
+    if bx.probe() != 15 { @print("FAIL: &self Msg field"); return 1 }
+
+    // Value-yield: the arm yields the payload binder as the match result (owned Str).
+    Holder h2 = Holder{ opt: Some(heaped("second")) }   // len 15
+    Str got = match h2.opt {
+        Some(v) => { v }
+        None => { heaped("none") }
+    }
+    if got.len() != 15 { @print("FAIL: value-yield binder len", got.len()); return 1 }
+
+    // The sources still own their payloads here (reads never moved/freed them).
+    if h.probe() != 15 { @print("FAIL: h payload disturbed after reads"); return 1 }
+    if h2.probe() != 15 { @print("FAIL: h2 payload disturbed after value-yield"); return 1 }
+
+    @print("FIELDENUM PASS")
+    return 0
+}
