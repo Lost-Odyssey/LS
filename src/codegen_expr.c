@@ -1060,13 +1060,14 @@ LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
                     }
                     printf_args[printf_argc++] = cg_str_len(ctx, sval);
                     printf_args[printf_argc++] = cg_str_data(ctx, sval);
-                    /* Owned Str rvalue interpolated → register for drop. Besides
-                       call/index clones this covers FIELD reads (a terminal
-                       has_drop field read clones, e.g. f"{e.color}") and lowered
-                       operator chains (f"{a + b}"). Bare ident stays a borrow. */
-                    if (expr->kind == AST_CALL || expr->kind == AST_INDEX ||
-                        expr->kind == AST_FIELD ||
-                        (expr->kind == AST_BINARY && expr->as.binary.lowered != NULL))
+                    /* Owned Str rvalue interpolated → register for drop.
+                       Membership rationale lives on cg_expr_yields_owned_rvalue
+                       (codegen_internal.h). This site's inline whitelist had
+                       drifted: it missed the combinator lowerings
+                       (AST_MATCH/AST_FORCE_UNWRAP) and AST_TRY —
+                       @print(f"{opt.unwrap_or(s)}") leaked the payload
+                       (own_rvalue_sites_test.lls). Bare ident stays a borrow. */
+                    if (cg_expr_yields_owned_rvalue(expr, expr->resolved_type))
                     {
                         LLVMValueRef stmp = cg_entry_alloca(
                             ctx, type_to_llvm(ctx, expr->resolved_type), "fstr.str.drop");
