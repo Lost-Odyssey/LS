@@ -118,6 +118,44 @@ void cg_emit_block_env_drop(CodegenContext *ctx, LLVMValueRef env_ptr)
     LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
 }
 
+/* P2 (feat/block-ownership-unify): RETAIN one reference to an env
+   (env->refcount += 1). A null env (capture-less closure) is a no-op. Mirror of
+   the release in cg_emit_block_env_drop. Used everywhere a Block VALUE is copied
+   into a new slot that will later be released — under reference semantics that
+   copy shares the env rather than cloning/moving it. */
+void cg_emit_block_env_retain(CodegenContext *ctx, LLVMValueRef env_ptr)
+{
+    LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
+    if (cur_bb == NULL || LLVMGetBasicBlockTerminator(cur_bb) != NULL) return;
+    cg_dbg_block_op(ctx, "env.retain", "", env_ptr);
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(cur_bb);
+    LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMTypeRef hdr_fields[3] = { ptr_t, ptr_t, i64_t };
+    LLVMTypeRef hdr_t = LLVMStructTypeInContext(ctx->context, hdr_fields, 3, 0);
+    LLVMValueRef is_nn = LLVMBuildICmp(ctx->builder, LLVMIntNE, env_ptr,
+                                       LLVMConstNull(ptr_t), "ret.env.nn");
+    LLVMBasicBlockRef inc_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ret.inc");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "ret.cont");
+    LLVMBuildCondBr(ctx->builder, is_nn, inc_bb, cont_bb);
+    LLVMPositionBuilderAtEnd(ctx->builder, inc_bb);
+    LLVMValueRef rc_slot = LLVMBuildStructGEP2(ctx->builder, hdr_t, env_ptr, 2u, "ret.rcslot");
+    LLVMValueRef rc  = LLVMBuildLoad2(ctx->builder, i64_t, rc_slot, "ret.rc");
+    LLVMValueRef rc1 = LLVMBuildAdd(ctx->builder, rc, LLVMConstInt(i64_t, 1, 0), "ret.rc1");
+    LLVMBuildStore(ctx->builder, rc1, rc_slot);
+    LLVMBuildBr(ctx->builder, cont_bb);
+    LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+}
+
+/* P2: retain the env of a Block VALUE (extract env field, retain). */
+void cg_emit_block_retain_val(CodegenContext *ctx, LLVMValueRef block_val)
+{
+    LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
+    if (cur_bb == NULL || LLVMGetBasicBlockTerminator(cur_bb) != NULL) return;
+    LLVMValueRef env = LLVMBuildExtractValue(ctx->builder, block_val, 1, "rt.env");
+    cg_emit_block_env_retain(ctx, env);
+}
+
 /* F.2: Drop the Block env stored at blk_alloca:
    load the Block, extract env_ptr, then call cg_emit_block_env_drop on it. */
 void cg_emit_block_drop_at(CodegenContext *ctx, LLVMValueRef blk_alloca)
@@ -647,36 +685,44 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                         AstNode *blk_init = ast_unwrap_move(node->as.var_decl.init);
                         if (blk_init && blk_init->kind == AST_IDENT)
                         {
-                            /* F.2: Block variable initialized from another Block variable.
-                               Move semantics: zero source's env_ptr so its scope cleanup
-                               skips (this new variable now owns the env). */
+                            /* F.2: Block variable initialized from another Block
+                               variable. Move semantics (P1): zero source's env_ptr
+                               so its scope cleanup skips (this var now owns the
+                               env). Switching to a shared retain is coupled with
+                               checker move-relaxation + discarded-rvalue release —
+                               done together in the reference-semantics phase. */
                             CgSymbol *src = cg_scope_resolve(ctx->current_scope,
                                                               blk_init->as.ident.name);
                             if (src && !src->is_borrowed)
-                                cg_null_block_env(ctx, src->value); /* logs block.move internally */
+                                cg_null_block_env(ctx, src->value);
                         }
                         else if (cg_block_source_is_aliased(blk_init))
                         {
-                            /* Phase G: Block copied out of a vec/struct/map — the
-                               source LsBlock aliases an env owned by the container.
-                               Deep-clone the env so this variable owns an
-                               independent one (no shared-env double-free). */
+                            /* Container read (vec[i]/struct.field/map.get): deep
+                               clone the env (P1 behaviour). Switching this to a
+                               shared retain is coupled with releasing discarded
+                               container-read rvalues — deferred to P3. */
                             init = cg_emit_block_env_clone(ctx, init);
                         }
                         else if (blk_init && blk_init->kind == AST_INDEX)
                         {
-                            /* Raw ptr/array index read (not a struct-container
-                               read, those cloned above): the loaded Block
-                               aliases storage owned elsewhere. Bind as a
-                               BORROW — no clone, no scope drop. */
+                            /* Raw ptr/array index read: bind as a borrow (P1) —
+                               no retain, no scope release. Its owner (the
+                               container) releases it. Retain-sharing here is
+                               coupled with P3 (discarded-rvalue release). */
                             block_alias_init = true;
                         }
                         else if (ctx->temp_block_env_count > 0)
                         {
-                            /* Phase C.5: closure literal → pop trailing temp env;
-                               the var now owns it and scope cleanup is the sole releaser. */
+                            /* Fresh rvalue (closure literal, refcount=1): transfer
+                               the single reference it was born with — pop the temp
+                               so the statement-end flush doesn't also release it.
+                               No retain (the var owns that one reference). */
                             ctx->temp_block_env_count--;
                         }
+                        /* else: a fresh rvalue not tracked as a temp (factory /
+                           match / try / unwrap return) — it carries refcount=1 and
+                           the var takes that reference. No retain. */
                     }
 
                     LLVMBuildStore(ctx->builder, init, alloca);
