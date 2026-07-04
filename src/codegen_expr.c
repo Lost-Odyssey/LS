@@ -1132,16 +1132,11 @@ LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
             if (sval == NULL) { free(printf_args); return NULL; }
             cg_print_str_value(ctx, sval);
             /* Owned Str rvalue consumed by print → drop it (F3 analog).
-               Besides index/call clones this covers terminal FIELD reads
-               (a has_drop field read clones, e.g. print(x.first)) and
-               lowered operator chains (print(a + b)) — the same whitelist
-               as the f-string interpolation site above; a static-Str clone
-               allocates nothing, which masked the field-read leak until an
-               owned field was printed. Bare ident stays a borrow: skip. */
-            if (arg->kind == AST_INDEX || arg->kind == AST_CALL ||
-                arg->kind == AST_FIELD ||
-                cg_is_owned_combinator_rvalue(arg) ||
-                (arg->kind == AST_BINARY && arg->as.binary.lowered != NULL))
+               Membership rationale lives on cg_expr_yields_owned_rvalue
+               (codegen_internal.h); a static-Str clone allocates nothing,
+               which masked the field-read leak until an owned field was
+               printed. Bare ident stays a borrow: skip. */
+            if (cg_expr_yields_owned_rvalue(arg, t))
             {
                 LLVMValueRef stmp = cg_entry_alloca(ctx, type_to_llvm(ctx, t),
                                                     "print.str.drop");
@@ -1333,14 +1328,10 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
             vals[val_count++] = cg_str_len(ctx, val);
             vals[val_count++] = cg_str_data(ctx, val);
             /* Owned Str rvalue interpolated → drop after the result is built
-               (statement-end flush runs after the snprintf below). Besides
-               call/index clones this covers FIELD reads (a terminal has_drop
-               field read CLONES — f"{e.color}" leaked one per evaluation) and
-               lowered operator chains (f"{a + b}"). Bare ident is a borrow. */
-            if (expr->kind == AST_CALL || expr->kind == AST_INDEX ||
-                expr->kind == AST_FIELD ||
-                cg_is_owned_combinator_rvalue(expr) ||
-                (expr->kind == AST_BINARY && expr->as.binary.lowered != NULL))
+               (statement-end flush runs after the snprintf below). Membership
+               rationale lives on cg_expr_yields_owned_rvalue
+               (codegen_internal.h). Bare ident is a borrow. */
+            if (cg_expr_yields_owned_rvalue(expr, expr->resolved_type))
             {
                 LLVMValueRef stmp = cg_entry_alloca(
                     ctx, type_to_llvm(ctx, expr->resolved_type), "fstr.str.drop");

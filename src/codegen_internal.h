@@ -21,17 +21,91 @@
 #define CG_LINE(ctx) ((ctx)->current_node ? (ctx)->current_node->line   : 0)
 #define CG_COL(ctx)  ((ctx)->current_node ? (ctx)->current_node->column : 0)
 
-/* L-013 follow-up: a `match` / force-unwrap (`expr!`, `unwrap`, `expect`) /
-   try expression always yields a FRESH owned rvalue (its arms clone/transfer
-   into the result per cg_match_arm_own_tail; force-unwrap moves the payload
-   out). Unlike a bare ident/field read, it is never a borrow of a live
-   binding, so an owned has_drop result must be dropped at the consuming site
-   (print / discard / chained receiver) exactly like an AST_CALL result. The
-   owned-rvalue consumer whitelists historically listed AST_CALL but missed
-   these, leaking the Option/Result combinators (unwrap_or/ok_or/map/…) whose
-   checker-lowering produces an AST_MATCH/AST_FORCE_UNWRAP. Mirror AST_CALL.
-   Move-by-value consumers (var-decl/assign/return/by-value user-call arg) do
-   NOT route through those sites, so this never double-frees. */
+/* Unified owned-rvalue predicate (OWN-1 fix, plan_footgun_remediation §p3).
+   Replaces 7 per-site inline AST-kind whitelists (and the old
+   cg_is_owned_combinator_rvalue helper) that had drifted apart — every gap
+   below was a REAL leak, reproduced under memcheck 2026-07-04
+   (own_rvalue_sites_test.lls):
+
+     site (pre-unification)          old whitelist                    gaps (all leaked)
+     ------------------------------  -------------------------------  -----------------------
+     print-Str        expr.c:1141    CALL INDEX FIELD M/FU BIN.low    TRY
+     standalone f-str expr.c:1340    CALL INDEX FIELD M/FU BIN.low    TRY
+     @print inline f-str expr.c:1067 CALL INDEX FIELD      BIN.low    MATCH FORCE_UNWRAP TRY
+     print-struct     expr.c:1181    CALL INDEX       M/FU            FIELD BIN.low TRY
+     print-enum       expr.c:1215    CALL INDEX       M/FU            FIELD BIN.low TRY
+     discard stmt     stmt.c:1852    CALL             M/FU            INDEX FIELD FSTR BIN.low TRY
+     chained receiver expr.c:1795    CALL FSTR        M/FU            TRY
+     (M/FU = AST_MATCH + AST_FORCE_UNWRAP via cg_is_owned_combinator_rvalue)
+
+   Membership rationale (kind layer — each kind produces a FRESH rvalue that
+   no other party registered for cleanup):
+     AST_CALL          by-value return is a fresh owned value
+     AST_INDEX         fixed-array element read CLONES (Vec's v[i] lowers to a
+                       __index CALL instead, so this member covers array(T,N))
+     AST_FIELD         has_drop field read CLONES (struct: emit_struct_clone_val;
+                       enum: emit_enum_clone_val, 72c3f9d) — the AST_FIELD read
+                       site in codegen_expr.c
+     AST_MATCH         match rvalue: arms clone/transfer into a fresh result
+                       (cg_match_arm_own_tail; L-013) — also the checker
+                       lowering of Option/Result combinators (unwrap_or/…)
+     AST_FORCE_UNWRAP  payload moved out of the inner enum
+     AST_TRY           payload moved out, exactly like force-unwrap
+                       (codegen_try_expr does NOT self-register a temp) —
+                       was missing from EVERY site
+     AST_FORMAT_STRING fresh heap Str; codegen_format_string does NOT
+                       self-register (a bare `f"…"` statement leaked)
+     AST_BINARY        only when .lowered != NULL (operator overload → hidden
+                       method call producing a fresh owned result)
+   Anything else (bare ident, borrow deref, literal, …) reads/borrows a live
+   binding — dropping it at a consumer site would double-free the source.
+
+   Move-by-value consumers (var-decl / assign / return / by-value call arg)
+   do NOT route through the consumer sites above, so this predicate never
+   double-registers a value that a binding claims. */
+static inline bool cg_expr_is_fresh_rvalue_kind(const AstNode *e)
+{
+    if (e == NULL)
+        return false;
+    switch (e->kind)
+    {
+    case AST_CALL:
+    case AST_INDEX:
+    case AST_FIELD:
+    case AST_MATCH:
+    case AST_FORCE_UNWRAP:
+    case AST_TRY:
+    case AST_FORMAT_STRING:
+        return true;
+    case AST_BINARY:
+        return e->as.binary.lowered != NULL;
+    default:
+        return false;
+    }
+}
+
+/* Type-aware layer: true = evaluating `e` produced a fresh owned value of
+   type `t` that the CONSUMING site (print / discard / f-string interpolation)
+   is responsible for dropping. False for non-has_drop types: a POD rvalue
+   owns no heap, there is nothing to drop.
+
+   NOTE the chained-receiver site (codegen_addr_of, expr.c) deliberately uses
+   the kind layer instead: a POD rvalue receiver still needs the spill slot to
+   be addressable as `self` (drop registration is separately self-filtered by
+   cg_push_temp_drop). Using this type-aware layer there would return NULL for
+   a POD `match`/call receiver and break compilation. */
+static inline bool cg_expr_yields_owned_rvalue(const AstNode *e, const Type *t)
+{
+    if (t == NULL)
+        return false;
+    bool has_drop =
+        (t->kind == TYPE_STRUCT && t->as.strukt.has_drop) ||
+        (t->kind == TYPE_ENUM   && t->as.enom.has_drop);
+    return has_drop && cg_expr_is_fresh_rvalue_kind(e);
+}
+
+/* DEPRECATED alias (pre-§p3 name; kept one release for out-of-tree greps).
+   The two members it listed are subsumed by cg_expr_is_fresh_rvalue_kind. */
 static inline bool cg_is_owned_combinator_rvalue(const AstNode *n)
 {
     return n != NULL &&
