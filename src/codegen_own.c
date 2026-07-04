@@ -885,10 +885,11 @@ void emit_scope_cleanup(CodegenContext *ctx)
         }
         else if (sym->type->kind == TYPE_BLOCK)
         {
-            /* Phase C/C.5 closure RAII: free the heap env if non-NULL.
-               env layout = { ptr drop_fn, T0 cap0, ... }; if drop_fn slot
-               is non-NULL we call it first to release any heap-owning
-               captures (string in v1) before freeing the env block. */
+            /* P1 (feat/block-ownership-unify): release one reference to this
+               local's closure env (dec refcount, drop_fn + free only at 0).
+               A moved-out Block has env_ptr == NULL (cg_null_block_env) which
+               the release helper skips. Delegates to cg_emit_block_env_drop so
+               the refcount protocol lives in exactly one place. */
             LLVMTypeRef block_llvm = type_to_llvm(ctx, sym->type);
             LLVMValueRef blk_val = LLVMBuildLoad2(ctx->builder, block_llvm,
                                                   sym->value, "blk.cleanup");
@@ -896,53 +897,13 @@ void emit_scope_cleanup(CodegenContext *ctx)
                 ctx->builder, blk_val, 1, "blk.env.cleanup");
 #if CG_DEBUG
             {
-                /* F.6: log block.drop at scope exit. */
+                /* F.6: log block.release at scope exit. */
                 char lbl[64];
                 snprintf(lbl, sizeof(lbl), "var='%s'", sym->name ? sym->name : "?");
-                cg_dbg_block_op(ctx, "drop", lbl, env_ptr);
+                cg_dbg_block_op(ctx, "release", lbl, env_ptr);
             }
 #endif
-            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-            LLVMValueRef is_nn = LLVMBuildICmp(
-                ctx->builder, LLVMIntNE, env_ptr,
-                LLVMConstNull(ptr_t), "blk.env.nn");
-            LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
-                LLVMGetInsertBlock(ctx->builder));
-            LLVMBasicBlockRef do_bb = LLVMAppendBasicBlockInContext(
-                ctx->context, cur_fn, "blk.free");
-            LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(
-                ctx->context, cur_fn, "blk.cont");
-            LLVMBuildCondBr(ctx->builder, is_nn, do_bb, cont_bb);
-            LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
-
-            /* Conditional drop_fn dispatch (NULL slot → POD-only env). */
-            LLVMValueRef drop_fn_p = LLVMBuildLoad2(
-                ctx->builder, ptr_t, env_ptr, "blk.drop");
-            LLVMValueRef has_drop = LLVMBuildICmp(
-                ctx->builder, LLVMIntNE, drop_fn_p,
-                LLVMConstNull(ptr_t), "blk.has_drop");
-            LLVMBasicBlockRef call_bb = LLVMAppendBasicBlockInContext(
-                ctx->context, cur_fn, "blk.dropcall");
-            LLVMBasicBlockRef freebb  = LLVMAppendBasicBlockInContext(
-                ctx->context, cur_fn, "blk.dofree");
-            LLVMBuildCondBr(ctx->builder, has_drop, call_bb, freebb);
-            LLVMPositionBuilderAtEnd(ctx->builder, call_bb);
-            {
-                LLVMTypeRef dp[1] = { ptr_t };
-                LLVMTypeRef dft = LLVMFunctionType(
-                    LLVMVoidTypeInContext(ctx->context), dp, 1, 0);
-                LLVMBuildCall2(ctx->builder, dft, drop_fn_p, &env_ptr, 1, "");
-            }
-            LLVMBuildBr(ctx->builder, freebb);
-            LLVMPositionBuilderAtEnd(ctx->builder, freebb);
-
-            LLVMValueRef free_fn = LLVMGetNamedFunction(ctx->module, "free");
-            if (free_fn) {
-                LLVMTypeRef ft = LLVMGlobalGetValueType(free_fn);
-                LLVMBuildCall2(ctx->builder, ft, free_fn, &env_ptr, 1, "");
-            }
-            LLVMBuildBr(ctx->builder, cont_bb);
-            LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
+            cg_emit_block_env_drop(ctx, env_ptr);
         }
         /* Trivial types (int, float, bool, vec, etc.) need no cleanup here. */
     }

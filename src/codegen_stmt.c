@@ -57,29 +57,54 @@ static bool capture_type_is_by_ref_cg(const Type *t) {
     return false;
 }
 
-/* Emit "if env != NULL { (drop_fn?(env))(); free(env) }" for one env_ptr. */
+/* P1 (feat/block-ownership-unify): RELEASE one reference to an env.
+   Emits: if (env != NULL) { if (--env->refcount == 0) { drop_fn?(env); free(env) } }
+   The name stays cg_emit_block_env_drop so every existing drop site becomes a
+   release site automatically. In the current single-owner model refcount is
+   always 1 at this point, so "dec → 0 → free" is behaviour-equivalent to the
+   old unconditional free (P1 keeps ctest identical); P2+ introduce shared
+   references (refcount > 1) that this correctly keeps alive. */
 void cg_emit_block_env_drop(CodegenContext *ctx, LLVMValueRef env_ptr)
 {
     LLVMBasicBlockRef cur_bb = LLVMGetInsertBlock(ctx->builder);
     if (cur_bb == NULL) return;
     if (LLVMGetBasicBlockTerminator(cur_bb) != NULL) return;
-    /* F.6: log block env drop (runtime ptr). */
-    cg_dbg_block_op(ctx, "env.drop", "", env_ptr);
+    /* F.6: log block env release (runtime ptr). */
+    cg_dbg_block_op(ctx, "env.release", "", env_ptr);
     LLVMValueRef cur_fn = LLVMGetBasicBlockParent(cur_bb);
     LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    /* env header prefix { drop_fn@0, clone_fn@1, refcount@2 } — the refcount is
+       at a fixed offset so this generic code needs no per-closure type. */
+    LLVMTypeRef hdr_fields[3] = { ptr_t, ptr_t, i64_t };
+    LLVMTypeRef hdr_t = LLVMStructTypeInContext(ctx->context, hdr_fields, 3, 0);
+
     LLVMValueRef is_nn = LLVMBuildICmp(ctx->builder, LLVMIntNE, env_ptr,
-                                       LLVMConstNull(ptr_t), "tmp.env.nn");
-    LLVMBasicBlockRef maybe_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tmp.env.maybe");
-    LLVMBasicBlockRef call_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tmp.env.dropcall");
-    LLVMBasicBlockRef do_bb    = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tmp.env.dofree");
-    LLVMBasicBlockRef cont_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "tmp.env.cont");
-    LLVMBuildCondBr(ctx->builder, is_nn, maybe_bb, cont_bb);
-    LLVMPositionBuilderAtEnd(ctx->builder, maybe_bb);
-    LLVMValueRef drop_fn_p = LLVMBuildLoad2(ctx->builder, ptr_t, env_ptr, "tmp.drop");
-    LLVMValueRef has_drop  = LLVMBuildICmp(ctx->builder, LLVMIntNE, drop_fn_p,
-                                           LLVMConstNull(ptr_t), "tmp.has_drop");
-    LLVMBuildCondBr(ctx->builder, has_drop, call_bb, do_bb);
+                                       LLVMConstNull(ptr_t), "rel.env.nn");
+    LLVMBasicBlockRef dec_bb  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rel.dec");
+    LLVMBasicBlockRef call_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rel.dropchk");
+    LLVMBasicBlockRef df_bb   = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rel.dropcall");
+    LLVMBasicBlockRef do_bb   = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rel.dofree");
+    LLVMBasicBlockRef cont_bb = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "rel.cont");
+    LLVMBuildCondBr(ctx->builder, is_nn, dec_bb, cont_bb);
+
+    /* dec_bb: refcount -= 1; free only when it reaches 0. */
+    LLVMPositionBuilderAtEnd(ctx->builder, dec_bb);
+    LLVMValueRef rc_slot = LLVMBuildStructGEP2(ctx->builder, hdr_t, env_ptr, 2u, "rel.rcslot");
+    LLVMValueRef rc  = LLVMBuildLoad2(ctx->builder, i64_t, rc_slot, "rel.rc");
+    LLVMValueRef rc1 = LLVMBuildSub(ctx->builder, rc, LLVMConstInt(i64_t, 1, 0), "rel.rc1");
+    LLVMBuildStore(ctx->builder, rc1, rc_slot);
+    LLVMValueRef is_zero = LLVMBuildICmp(ctx->builder, LLVMIntEQ, rc1,
+                                         LLVMConstInt(i64_t, 0, 0), "rel.zero");
+    LLVMBuildCondBr(ctx->builder, is_zero, call_bb, cont_bb);
+
+    /* call_bb: dropped to 0 — run drop_fn (frees captured has_drop) if present. */
     LLVMPositionBuilderAtEnd(ctx->builder, call_bb);
+    LLVMValueRef drop_fn_p = LLVMBuildLoad2(ctx->builder, ptr_t, env_ptr, "rel.drop"); /* drop_fn@0 */
+    LLVMValueRef has_drop  = LLVMBuildICmp(ctx->builder, LLVMIntNE, drop_fn_p,
+                                           LLVMConstNull(ptr_t), "rel.has_drop");
+    LLVMBuildCondBr(ctx->builder, has_drop, df_bb, do_bb);
+    LLVMPositionBuilderAtEnd(ctx->builder, df_bb);
     {
         LLVMTypeRef dp[1] = { ptr_t };
         LLVMTypeRef dft = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
@@ -1934,22 +1959,28 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
        unaffected by the inserted clone_fn slot. */
     LLVMTypeRef env_struct_t = NULL;
     if (cap_n > 0) {
+        /* P1 (feat/block-ownership-unify): field 2 is an i64 refcount — the
+           number of live Block values pointing at this env. env is freed only
+           when it drops to 0 (see cg_emit_block_env_release). Header stays
+           drop_fn@0 / clone_fn@1 (raw offset-0 drop_fn load unchanged); captures
+           shift to fields 3..N+2. */
         LLVMTypeRef *fields = (LLVMTypeRef*)malloc_safe(
-            (size_t)(cap_n + 2) * sizeof(LLVMTypeRef));
+            (size_t)(cap_n + 3) * sizeof(LLVMTypeRef));
         fields[0] = ptr_t; /* drop_fn slot */
         fields[1] = ptr_t; /* clone_fn slot (Phase G) */
+        fields[2] = LLVMInt64TypeInContext(ctx->context); /* refcount (P1) */
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
             bool explicit_move = node->as.closure.captures[i].is_explicit_move;
             bool is_default_by_ref = capture_type_is_by_ref_cg(ct) && !explicit_move;
             if (is_default_by_ref) {
-                fields[i + 2] = ptr_t; /* pointer to outer alloca */
+                fields[i + 3] = ptr_t; /* pointer to outer alloca */
             } else {
-                fields[i + 2] = type_to_llvm(ctx, ct);
+                fields[i + 3] = type_to_llvm(ctx, ct);
             }
         }
         env_struct_t = LLVMStructTypeInContext(ctx->context, fields,
-                                               (unsigned)(cap_n + 2), 0);
+                                               (unsigned)(cap_n + 3), 0);
         free(fields);
     }
 
@@ -2048,7 +2079,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             bool is_default_by_ref = capture_type_is_by_ref_cg(ct) && !explicit_move;
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, env_param,
-                (unsigned)(i + 2), "cap.gep");
+                (unsigned)(i + 3), "cap.gep");  /* P1: +refcount@2 → caps at i+3 */
 
             if (is_default_by_ref) {
                 /* By-ref (default map): load the outer alloca pointer.
@@ -2186,7 +2217,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             if (!needs_drop) continue;
             LLVMValueRef slot = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, d_env,
-                (unsigned)(i + 2), "cap.slot");
+                (unsigned)(i + 3), "cap.slot");  /* P1: caps at i+3 */
 
             if (ct->kind == TYPE_STRUCT && ct->as.strukt.has_drop) {
                 /* Call the struct's auto/user-defined __drop on its slot. */
@@ -2280,6 +2311,15 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             LLVMValueRef hv = LLVMBuildLoad2(ctx->builder, ptr_t, sp, "cl.hdr");
             LLVMBuildStore(ctx->builder, hv, dp);
         }
+        /* P1: the deep-cloned env is an INDEPENDENT allocation — start its
+           refcount at 1 (do NOT copy src's count). */
+        {
+            LLVMValueRef c_rc_slot = LLVMBuildStructGEP2(ctx->builder,
+                                        env_struct_t, c_dst, 2u, "cl.rcslot");
+            LLVMBuildStore(ctx->builder,
+                LLVMConstInt(LLVMInt64TypeInContext(ctx->context), 1, 0),
+                c_rc_slot);
+        }
 
         /* Per-capture deep copy. */
         for (int i = 0; i < cap_n; i++) {
@@ -2288,9 +2328,9 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             bool is_default_by_ref_i =
                 capture_type_is_by_ref_cg(ct) && !explicit_move_i;
             LLVMValueRef s_slot = LLVMBuildStructGEP2(
-                ctx->builder, env_struct_t, c_src, (unsigned)(i + 2), "cl.sslot");
+                ctx->builder, env_struct_t, c_src, (unsigned)(i + 3), "cl.sslot");
             LLVMValueRef d_slot = LLVMBuildStructGEP2(
-                ctx->builder, env_struct_t, c_dst, (unsigned)(i + 2), "cl.dslot");
+                ctx->builder, env_struct_t, c_dst, (unsigned)(i + 3), "cl.dslot");
             if (is_default_by_ref_i) {
                 LLVMValueRef p = LLVMBuildLoad2(ctx->builder, ptr_t, s_slot,
                                                 "cl.refp");
@@ -2350,11 +2390,18 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             ctx->builder, env_struct_t, env_val, 1u, "env.cloneslot");
         LLVMBuildStore(ctx->builder, env_clone_fn, clone_slot);
 
+        /* P1: refcount slot at field 2 — a freshly-built env has exactly one
+           live Block value (the one being returned here), so start at 1. */
+        LLVMValueRef rc_slot = LLVMBuildStructGEP2(
+            ctx->builder, env_struct_t, env_val, 2u, "env.rcslot");
+        LLVMBuildStore(ctx->builder,
+            LLVMConstInt(LLVMInt64TypeInContext(ctx->context), 1, 0), rc_slot);
+
         for (int i = 0; i < cap_n; i++) {
             Type *ct = node->as.closure.captures[i].type;
             LLVMValueRef field_ptr = LLVMBuildStructGEP2(
                 ctx->builder, env_struct_t, env_val,
-                (unsigned)(i + 2), "cap.slot");
+                (unsigned)(i + 3), "cap.slot");
 
             /* Store capture into env:
                - by-ref (map): cap_outer_vals[i] IS the outer alloca ptr,
