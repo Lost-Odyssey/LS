@@ -1332,12 +1332,8 @@ static LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node)
                rationale lives on cg_expr_yields_owned_rvalue
                (codegen_internal.h). Bare ident is a borrow. */
             if (cg_expr_yields_owned_rvalue(expr, expr->resolved_type))
-            {
-                LLVMValueRef stmp = cg_entry_alloca(
-                    ctx, type_to_llvm(ctx, expr->resolved_type), "fstr.str.drop");
-                LLVMBuildStore(ctx->builder, val, stmp);
-                cg_push_temp_drop(ctx, stmp, expr->resolved_type);
-            }
+                cg_spill_owned_rvalue(ctx, val, expr->resolved_type,
+                                      false, "fstr.str.drop");
             continue;
         }
         val = cg_fstring_emit_arg(ctx, expr, val, uspec, fmt_buf, &fmt_len, 1024);
