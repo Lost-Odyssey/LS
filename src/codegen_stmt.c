@@ -57,6 +57,70 @@ static bool capture_type_is_by_ref_cg(const Type *t) {
     return false;
 }
 
+/* ---- Stage 7 (audit B-3): Block env poison checks -----------------------
+   The refcount blinds memcheck to Block double-releases (the second release
+   reads a freed rc, sees != 1 after heap reuse, and silently skips the free
+   — "memcheck 双盲"). These debug-tier checks make detection STRONGER than
+   the pre-refcount model: the rc slot is stamped with a poison value right
+   before free(env), and every release/retain first traps on
+     rc == POISON  → touching a freed env (use-after-release; both orders of
+                     the classic double-release hit this on the second call)
+     rc <  1       → over-release (a live env can never sit below 1)
+   Gated like the memcheck allocator: emitted only under `--memcheck` (or
+   any CG_DEBUG build) — the Release fast path is byte-identical. Poison is
+   probabilistic once the freed block is recycled, but "release right after
+   the freeing release" — the typical double-free timing — hits reliably.
+   (Str/Vec cap sentinels deliberately NOT here: they conflict with the
+   enum zero-idempotent-drop contract, deferred to stage 12 per plan.) */
+#define CG_ENV_RC_POISON 0xDEADBEEFDEADBEEFULL
+
+static bool cg_env_poison_on(CodegenContext *ctx)
+{
+#if CG_DEBUG
+    (void)ctx;
+    return true;
+#else
+    return ctx->memcheck_enabled;
+#endif
+}
+
+/* Branch to a diagnostic+exit block when bad_cond holds; continues emission
+   in the ok block. Mirrors cg_emit_bounds_guard's printf/__ls_proc_exit
+   shape (runtime diagnostic, not CG_DEBUG tracing). */
+static void cg_emit_env_poison_trap(CodegenContext *ctx, LLVMValueRef bad_cond,
+                                    LLVMValueRef env_ptr, LLVMValueRef rc,
+                                    const char *what)
+{
+    LLVMValueRef cur_fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+    LLVMBasicBlockRef bad = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "envp.bad");
+    LLVMBasicBlockRef ok  = LLVMAppendBasicBlockInContext(ctx->context, cur_fn, "envp.ok");
+    LLVMBuildCondBr(ctx->builder, bad_cond, bad, ok);
+    LLVMPositionBuilderAtEnd(ctx->builder, bad);
+    LLVMValueRef printf_fn = LLVMGetNamedFunction(ctx->module, "printf");
+    if (printf_fn == NULL)
+    {
+        LLVMTypeRef pty = LLVMFunctionType(LLVMInt32TypeInContext(ctx->context),
+            (LLVMTypeRef[]){ LLVMPointerTypeInContext(ctx->context, 0) }, 1, 1);
+        printf_fn = LLVMAddFunction(ctx->module, "printf", pty);
+    }
+    char fmt[160];
+    snprintf(fmt, sizeof fmt, "[block-poison] %s: env=%%p rc=%%lld\n", what);
+    LLVMValueRef f = LLVMBuildGlobalStringPtr(ctx->builder, fmt, "envp.fmt");
+    LLVMValueRef pa[3] = { f, env_ptr, rc };
+    LLVMBuildCall2(ctx->builder, LLVMGlobalGetValueType(printf_fn), printf_fn,
+                   pa, 3, "");
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+    LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
+    LLVMTypeRef exit_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx->context),
+        (LLVMTypeRef[]){ i32 }, 1, 0);
+    if (exit_fn == NULL)
+        exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
+    LLVMBuildCall2(ctx->builder, exit_ty, exit_fn,
+                   (LLVMValueRef[]){ LLVMConstInt(i32, 1, 0) }, 1, "");
+    LLVMBuildUnreachable(ctx->builder);
+    LLVMPositionBuilderAtEnd(ctx->builder, ok);
+}
+
 /* P1 (feat/block-ownership-unify): RELEASE one reference to an env.
    Emits: if (env != NULL) { if (--env->refcount == 0) { drop_fn?(env); free(env) } }
    The name stays cg_emit_block_env_drop so every existing drop site becomes a
@@ -92,6 +156,19 @@ void cg_emit_block_env_drop(CodegenContext *ctx, LLVMValueRef env_ptr)
     LLVMPositionBuilderAtEnd(ctx->builder, dec_bb);
     LLVMValueRef rc_slot = LLVMBuildStructGEP2(ctx->builder, hdr_t, env_ptr, 2u, "rel.rcslot");
     LLVMValueRef rc  = LLVMBuildLoad2(ctx->builder, i64_t, rc_slot, "rel.rc");
+    if (cg_env_poison_on(ctx))
+    {
+        /* Order matters: poison is a huge negative i64, so test it before
+           the generic < 1 over-release check to get the precise message. */
+        cg_emit_env_poison_trap(ctx,
+            LLVMBuildICmp(ctx->builder, LLVMIntEQ, rc,
+                          LLVMConstInt(i64_t, CG_ENV_RC_POISON, 0), "rel.uaf"),
+            env_ptr, rc, "block env use-after-release (release)");
+        cg_emit_env_poison_trap(ctx,
+            LLVMBuildICmp(ctx->builder, LLVMIntSLT, rc,
+                          LLVMConstInt(i64_t, 1, 0), "rel.over"),
+            env_ptr, rc, "block env over-release");
+    }
     LLVMValueRef rc1 = LLVMBuildSub(ctx->builder, rc, LLVMConstInt(i64_t, 1, 0), "rel.rc1");
     LLVMBuildStore(ctx->builder, rc1, rc_slot);
     LLVMValueRef is_zero = LLVMBuildICmp(ctx->builder, LLVMIntEQ, rc1,
@@ -113,6 +190,11 @@ void cg_emit_block_env_drop(CodegenContext *ctx, LLVMValueRef env_ptr)
     }
     LLVMBuildBr(ctx->builder, do_bb);
     LLVMPositionBuilderAtEnd(ctx->builder, do_bb);
+    /* Stage 7: stamp the rc slot BEFORE the free so any later touch of this
+       env (release/retain) trips the poison traps above. */
+    if (cg_env_poison_on(ctx))
+        LLVMBuildStore(ctx->builder,
+                       LLVMConstInt(i64_t, CG_ENV_RC_POISON, 0), rc_slot);
     cg_emit_free(ctx, env_ptr, "closure.env.tmp", CG_LINE(ctx), CG_COL(ctx));
     LLVMBuildBr(ctx->builder, cont_bb);
     LLVMPositionBuilderAtEnd(ctx->builder, cont_bb);
@@ -141,6 +223,11 @@ void cg_emit_block_env_retain(CodegenContext *ctx, LLVMValueRef env_ptr)
     LLVMPositionBuilderAtEnd(ctx->builder, inc_bb);
     LLVMValueRef rc_slot = LLVMBuildStructGEP2(ctx->builder, hdr_t, env_ptr, 2u, "ret.rcslot");
     LLVMValueRef rc  = LLVMBuildLoad2(ctx->builder, i64_t, rc_slot, "ret.rc");
+    if (cg_env_poison_on(ctx))
+        cg_emit_env_poison_trap(ctx,
+            LLVMBuildICmp(ctx->builder, LLVMIntEQ, rc,
+                          LLVMConstInt(i64_t, CG_ENV_RC_POISON, 0), "ret.uaf"),
+            env_ptr, rc, "block env use-after-release (retain)");
     LLVMValueRef rc1 = LLVMBuildAdd(ctx->builder, rc, LLVMConstInt(i64_t, 1, 0), "ret.rc1");
     LLVMBuildStore(ctx->builder, rc1, rc_slot);
     LLVMBuildBr(ctx->builder, cont_bb);
