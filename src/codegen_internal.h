@@ -152,6 +152,7 @@ void cg_emit_prof_enter(CodegenContext *ctx, const char *fn_name, const char *fi
 void cg_emit_prof_leave(CodegenContext *ctx);
 LLVMValueRef cg_make_site(CodegenContext *ctx, const char *kind, int line, int col);
 LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const char *name);
+LLVMValueRef cg_entry_alloca_zeroed(CodegenContext *ctx, LLVMTypeRef ty, const char *name);
 LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_type, AstNode *lit);
 void cg_emit_free(CodegenContext *ctx, LLVMValueRef ptr, const char *kind, int line, int col);
 bool cg_struct_is_move_only(const Type *t);
@@ -162,6 +163,16 @@ void cg_emit_bounds_guard(CodegenContext *ctx, LLVMValueRef ok_cond, const char 
 LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val, LLVMTypeRef llvm_type, Type *type);
 void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type);
 void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot);
+/* Stage 9 (OWN-2): THE one way to hand a fresh owned rvalue to the statement
+   temp ledger — spill `val` into an entry-block alloca, store at the current
+   position, register the slot via cg_push_temp_drop. Returns the slot.
+   zeroed: zero-initialise the alloca in the entry block — required when the
+           registered drop can be reached on a path that skipped the store
+           (conditional producer, e.g. the chained-receiver spill; see the
+           dominance rationale at that site). Keep explicit, do not default.
+   why:    alloca name AND diagnostic label (LS_DEBUG_TEMPS output). */
+LLVMValueRef cg_spill_owned_rvalue(CodegenContext *ctx, LLVMValueRef val,
+                                   Type *type, bool zeroed, const char *why);
 /* Stage 6 temp-ledger oracle (LS_OWN_AUDIT=1; CG_DEBUG builds default-on;
    LS_DEBUG_TEMPS=abort is an alias). Pure compile-time assertions on the
    temp_drop / temp_block_env ledgers — never emits IR; Release default off. */

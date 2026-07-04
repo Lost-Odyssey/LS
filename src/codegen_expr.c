@@ -84,7 +84,6 @@ void cg_mark_noreturn_cold(CodegenContext *ctx, LLVMValueRef fn)
 /* File-local helpers (single-TU; re-static'd at codegen split §7). */
 static int append_text_escaped(char *dst, int len, int cap, const char *src);
 static bool cg_build_spec_conv(CodegenContext *ctx, int line, int col, Type *et, const char *spec, char *out, size_t out_sz, bool *out_to_double);
-static LLVMValueRef cg_entry_alloca_zeroed(CodegenContext *ctx, LLVMTypeRef ty, const char *name);
 static LLVMValueRef cg_fstring_emit_arg(CodegenContext *ctx, AstNode *expr, LLVMValueRef val, const char *user_spec, char *fmt_buf, int *p_fmt_len, int fmt_cap);
 static LLVMValueRef cg_make_slice(CodegenContext *ctx, LLVMTypeRef elem_llvm, LLVMValueRef base_ptr, LLVMValueRef start_i64, LLVMValueRef len_i64, Type *slice_type);
 static void cg_print_str_value(CodegenContext *ctx, LLVMValueRef val);
@@ -255,8 +254,8 @@ LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const char *na
    store (e.g. a chained-operator receiver spill inside a match-arm `if` body).
    The entry-block zeroinit makes such a stray drop a safe no-op (cap=0/data=NULL),
    the same defense the match result_alloca uses. */
-static LLVMValueRef cg_entry_alloca_zeroed(CodegenContext *ctx, LLVMTypeRef ty,
-                                           const char *name)
+LLVMValueRef cg_entry_alloca_zeroed(CodegenContext *ctx, LLVMTypeRef ty,
+                                    const char *name)
 {
     LLVMValueRef slot = cg_entry_alloca(ctx, ty, name);
     /* Insert the zero store in the entry block, right after the alloca, so it

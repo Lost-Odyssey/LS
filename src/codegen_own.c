@@ -579,6 +579,32 @@ void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot)
     ctx->temp_drop_count = keep;
 }
 
+/* Stage 9 (OWN-2): the ONE way to hand a fresh owned rvalue to the statement
+   temp ledger. Spill `val` into an entry-block alloca (zero-initialised when
+   `zeroed` — for drops reachable on a path that skipped the store, see the
+   chained-receiver site), store at the current builder position, register the
+   slot as a statement-level temp_drop. cg_push_temp_drop self-filters: a POD
+   spill gets its addressable slot but no ledger entry. `why` doubles as the
+   alloca name (keeps emit-ir byte-identical at converted sites) and the
+   LS_DEBUG_TEMPS label. Returns the slot. */
+LLVMValueRef cg_spill_owned_rvalue(CodegenContext *ctx, LLVMValueRef val,
+                                   Type *type, bool zeroed, const char *why)
+{
+    if (val == NULL || type == NULL || ctx->current_fn == NULL)
+        return NULL;
+    LLVMTypeRef llvm_ty = type_to_llvm(ctx, type);
+    LLVMValueRef slot = zeroed ? cg_entry_alloca_zeroed(ctx, llvm_ty, why)
+                               : cg_entry_alloca(ctx, llvm_ty, why);
+    LLVMBuildStore(ctx->builder, val, slot);
+    if (getenv("LS_DEBUG_TEMPS"))
+        fprintf(stderr, "[tmp] spill why=%s fn=%s zeroed=%d\n",
+                why ? why : "?",
+                ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
+                (int)zeroed);
+    cg_push_temp_drop(ctx, slot, type);
+    return slot;
+}
+
 /* P3 (feat/block-ownership-unify): a fresh OWNED Block rvalue — a factory call
    `make()->Block`, or a force-unwrap `opt!` of an Option/Result(Block) whose
    payload the container-get already cloned — is born with env refcount 1 and no
