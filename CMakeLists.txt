@@ -1266,6 +1266,24 @@ set_tests_properties(test_match_own_stress PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# struct/array with a Block field: a by-value CLONE must DEEP-CLONE the Block
+# field's env, else the clone and the source release the same refcount=1 env at
+# scope exit -> UAF + double-release. memcheck is blind to the double-release
+# (audit B-3), so the sample value-checks captured ints after heap churn.
+# Guards emit_struct_clone_val / emit_array_clone_val Block-field deep-clone
+# (audit B-1 / BUG-2, symmetric with the enum path 03386d5).
+add_test(
+    NAME test_struct_block_field_own
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_struct_block_field_own.cmake
+)
+set_tests_properties(test_struct_block_field_own PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Vec(Block) element-copy ownership: copy()/extend() deep-clone each element's
 # closure env (a shared env double-frees at scope exit). Guards the @dup(Block)
 # env-clone + Vec.extend-via-@dup fix (match_codegen_guide §7.A).

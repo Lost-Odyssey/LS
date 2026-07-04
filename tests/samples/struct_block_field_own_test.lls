@@ -1,0 +1,143 @@
+// struct_block_field_own_test.lls — a struct with a Block (closure) field is
+// has_drop (its __drop releases the field's env). A by-value CLONE of such a
+// struct must DEEP-CLONE the Block field (independent env), otherwise the clone
+// and the source release the SAME refcount=1 env at scope exit -> UAF +
+// double-release. The double-release is INVISIBLE to memcheck (the second
+// release reads the freed env's refcount, finds it != 1, skips free — audit
+// B-3), so the VALUE is the judge: read the captured value after heap churn.
+//
+// Fix: emit_struct_clone_val / emit_array_clone_val deep-clone Block fields via
+// cg_emit_block_env_clone (audit B-1 / BUG-2, symmetric with the enum path
+// 03386d5). Covers: by-value param, Vec(S).push clone-into-container, match
+// own_tail struct result, and nested struct-in-struct-with-Block.
+// JIT + AOT + memcheck 0/0/0. Prints "STRUCTBLOCK PASS".
+
+import std.core.vec
+
+type F = Block()->int
+
+struct Holder {
+    F   cb
+    int tag
+}
+
+struct Inner {
+    F   cb
+    int tag
+}
+
+struct Outer {
+    Inner inner
+    int   mark
+}
+
+// Heap churn: allocate many identical-shape (32B {drop,clone,rc,i32}) closure
+// envs carrying a poison value. A freed Block env is reused and its captured
+// slot overwritten, so a dangling read returns the poison instead of the
+// original capture. (A no-op churn would let a stale-but-intact read pass.)
+def churn() -> int {
+    int poison = 424242
+    Vec(F) z = []
+    for i in 0..128 {
+        z.push(|| poison)
+    }
+    int s = 0
+    for i in 0..z.len() {
+        F b = z.get(i)!
+        s = s + b()
+    }
+    return s
+}
+
+// (1) by-value parameter: consume(h) clones holder; the clone must own an
+// independent env. consume drops its clone at return; holder must still read 8.
+def consume(Holder h) -> int {
+    return h.cb()
+}
+
+def test_by_value() -> int {
+    int secret = 8
+    Holder holder = Holder { cb: || secret, tag: 1 }
+    int a = consume(holder)   // clones holder (independent env with the fix)
+    churn()                   // reuse any freed 32B env block
+    int b = holder.cb()       // must still be 8 (holder's env untouched)
+    if a == 8 && b == 8 { return 1 }
+    @print("FAIL by_value", a, b)
+    return 0
+}
+
+// (2) Vec(S).push(s) clones s into the vec. Build the vec in a helper so the
+// source `s` is dropped at the helper's scope exit; the pushed element must own
+// an independent env, else the drop frees the element's env too. `s` is read
+// after the push (dead branch) so the push is a real CLONE — otherwise
+// clone-elision would move `s` (last-use) and never exercise the clone path.
+def build_vec(int secret) -> Vec(Holder) {
+    Holder s = Holder { cb: || secret, tag: 2 }
+    Vec(Holder) v = []
+    v.push(s)                 // clone s into v (s used again below)
+    if s.cb() == 999999 { return v }   // dead branch; keeps s live -> real clone
+    return v                  // s dropped here; the pushed element is independent
+}
+
+def test_vec_push() -> int {
+    Vec(Holder) v = build_vec(21)
+    churn()                   // reuse the env freed if push had shared it
+    Holder got = v.get(0)!
+    int b = got.cb()          // must be 21 (element owns its own env)
+    if b == 21 { return 1 }
+    @print("FAIL vec_push", b)
+    return 0
+}
+
+// (3) match own_tail: an arm yielding a named owning local (`=> base`) clones it
+// into the result (codegen_match.c:84 -> emit_struct_clone_val). `base` is read
+// after the match so it stays live (the arm clones, not moves), then dropped;
+// the returned clone must own an independent env.
+def pick_ret(int which, int secret) -> Holder {
+    Holder base = Holder { cb: || secret, tag: 3 }
+    Holder r = match which {
+        0 => base
+        _ => base
+    }
+    if base.cb() == 999999 { return base }   // dead branch; keeps base live
+    return r                                 // base dropped here; r independent
+}
+
+def test_match_tail() -> int {
+    Holder r = pick_ret(1, 33)
+    churn()
+    int b = r.cb()            // must be 33
+    if b == 33 { return 1 }
+    @print("FAIL match_tail", b)
+    return 0
+}
+
+// (4) nested: struct-in-struct with a Block at the innermost level. A by-value
+// clone recurses Outer -> Inner -> Block, deep-cloning the env at the leaf.
+def consume_outer(Outer o) -> int {
+    return o.inner.cb()
+}
+
+def test_nested() -> int {
+    int secret = 44
+    Outer o = Outer { inner: Inner { cb: || secret, tag: 4 }, mark: 9 }
+    int a = consume_outer(o)  // recursive clone; leaf Block env independent
+    churn()
+    int b = o.inner.cb()      // must be 44
+    if a == 44 && b == 44 { return 1 }
+    @print("FAIL nested", a, b)
+    return 0
+}
+
+def main() -> int {
+    int t1 = test_by_value()
+    int t2 = test_vec_push()
+    int t3 = test_match_tail()
+    int t4 = test_nested()
+    if t1 == 1 && t2 == 1 && t3 == 1 && t4 == 1 {
+        @print("STRUCTBLOCK PASS", t1, t2, t3, t4)
+        return 0
+    }
+    @print("STRUCTBLOCK FAIL", t1, t2, t3, t4)
+    return 1
+}

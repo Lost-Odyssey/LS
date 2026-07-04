@@ -287,17 +287,38 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
         /* Deep-clone every heap-owning field so the cloned struct owns
            independent buffers. Without this, a shallow-copied vec/map/string
            field shares the caller's heap → callee scope_drop + caller
-           scope_drop double-free (e.g. by-value `struct { vec(int) }` arg). */
+           scope_drop double-free (e.g. by-value `struct { vec(int) }` arg).
+           A Block (closure) field owns a refcount=1 env; it must be included —
+           a struct with a Block field is has_drop (checker_decl.c:269-272) and
+           its __drop releases the env, so a shallow field copy would make the
+           clone and the source release the SAME env (UAF/double-release,
+           audit B-1/BUG-2). */
         bool field_needs_clone =
             (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop) ||
-            (ft->kind == TYPE_ENUM && ft->as.enom.has_drop);
+            (ft->kind == TYPE_ENUM && ft->as.enom.has_drop) ||
+            (ft->kind == TYPE_BLOCK);
         if (!field_needs_clone)
             continue;
 
         LLVMValueRef field_val = LLVMBuildExtractValue(ctx->builder, result,
                                                        (unsigned)fi, "sc.fld");
-        LLVMTypeRef ft_llvm = type_to_llvm(ctx, ft);
-        LLVMValueRef cloned = emit_clone_value(ctx, field_val, ft_llvm, ft);
+        LLVMValueRef cloned;
+        if (ft->kind == TYPE_BLOCK)
+        {
+            /* emit_clone_value is INTENTIONALLY shallow for Block (the Phase G
+               alias-passthrough protocol, own.c:417-420) — it hands out the
+               same env. An owned struct clone needs an INDEPENDENT env, so call
+               the deep-clone helper explicitly (mirrors the enum-clone Block
+               payload path own.c:2138-2146 and __env_clone's nested Block
+               codegen_stmt.c:2418-2424). NULL env (no captures) is handled by
+               the helper. Do NOT route this through emit_clone_value. */
+            cloned = cg_emit_block_env_clone(ctx, field_val);
+        }
+        else
+        {
+            LLVMTypeRef ft_llvm = type_to_llvm(ctx, ft);
+            cloned = emit_clone_value(ctx, field_val, ft_llvm, ft);
+        }
         result = LLVMBuildInsertValue(ctx->builder, result, cloned,
                                       (unsigned)fi, "sc.ins");
     }
@@ -369,7 +390,8 @@ LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val,
 
     bool elem_needs_clone =
                             (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
-                            (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop);
+                            (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop) ||
+                            (elem_type->kind == TYPE_BLOCK);
     if (!elem_needs_clone)
         return arr_val; /* trivial elements — value copy is fine */
 
@@ -393,6 +415,15 @@ LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val,
         LLVMValueRef cloned;
         if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
             cloned = emit_enum_clone_val(ctx, elem, elem_type);
+        else if (elem_type->kind == TYPE_BLOCK)
+            /* Deep-clone the closure env (symmetric with emit_struct_clone_val's
+               Block field). Defensive: array(Block,N) is checker-accepted, but no
+               current caller reaches here with bare Block elements — the return
+               clone guard (codegen_stmt.c:1345) filters to struct elements and
+               by-value arrays aren't cloned, so array(Block,N) is presently sound
+               without this. Kept for symmetry (audit root cause ②) so any future
+               clone-and-both-drop caller gets independent envs, not a shared one. */
+            cloned = cg_emit_block_env_clone(ctx, elem);
         else
             cloned = emit_struct_clone_val(ctx, elem, elem_llvm, elem_type);
         result = LLVMBuildInsertValue(ctx->builder, result, cloned,
