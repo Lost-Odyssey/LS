@@ -622,17 +622,16 @@ LLVMValueRef cg_spill_owned_rvalue(CodegenContext *ctx, LLVMValueRef val,
    cg_block_source_is_aliased; force-unwrap always yields an owned value. */
 void cg_track_block_rvalue(CodegenContext *ctx, LLVMValueRef block_val, Type *type)
 {
+    /* Stage 9: Block specialisation of cg_spill_owned_rvalue — this wrapper
+       only adds the TYPE_BLOCK filter and the dead-block guard (a terminated
+       insert block means the producer already diverged; storing would be
+       ill-formed IR). */
     if (block_val == NULL || type == NULL || type->kind != TYPE_BLOCK)
-        return;
-    if (ctx->current_fn == NULL)
         return;
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
     if (cur == NULL || LLVMGetBasicBlockTerminator(cur) != NULL)
         return;
-    LLVMTypeRef blk_llvm = type_to_llvm(ctx, type);
-    LLVMValueRef slot = cg_entry_alloca(ctx, blk_llvm, "blk.rval.tmp");
-    LLVMBuildStore(ctx->builder, block_val, slot);
-    cg_push_temp_drop(ctx, slot, type);
+    cg_spill_owned_rvalue(ctx, block_val, type, false, "blk.rval.tmp");
 }
 
 /* Claim (remove without releasing) the most-recently registered Block rvalue
