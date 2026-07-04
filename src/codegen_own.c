@@ -19,6 +19,8 @@
 #include <llvm-c/Analysis.h>
 
 #include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 /* File-local helpers (single-TU; re-static'd at codegen split §7). */
@@ -454,6 +456,53 @@ LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
     }
 }
 
+/* ---- Stage 6: temp-ledger oracle (plan_footgun_remediation, audit
+   OWN-2/OWN-10/M-3/M-C) ----------------------------------------------------
+   Compile-time (compiler-process) assertions over the two statement-temp
+   ledgers. They encode the PAIRING protocol the guide documents in prose:
+   every push is claimed or flushed, floors are never undershot in an open
+   block, a match leaves the ledgers exactly as it found them (+1 for a
+   still-registered owned subject), and a match result slot is never itself
+   registered. No IR is emitted; Release users pay one cached getenv.
+
+   Enable: LS_OWN_AUDIT=1 (any non-"0" value), or LS_DEBUG_TEMPS=abort
+   (the print-only LS_DEBUG_TEMPS stays print-only otherwise), or any
+   CG_DEBUG build (default-on there). A violation prints the function,
+   site and expected/actual counts, then exits — the IR being built is by
+   definition wrong, continuing would emit a memory bug. */
+bool cg_own_audit_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+#if CG_DEBUG
+        cached = 1;
+#else
+        const char *e = getenv("LS_OWN_AUDIT");
+        const char *d = getenv("LS_DEBUG_TEMPS");
+        cached = ((e != NULL && e[0] != '\0' && strcmp(e, "0") != 0) ||
+                  (d != NULL && strcmp(d, "abort") == 0)) ? 1 : 0;
+#endif
+    }
+    return cached == 1;
+}
+
+void cg_own_audit_fail(CodegenContext *ctx, const char *site, const char *fmt, ...)
+{
+    fprintf(stderr, "[own-audit] %s: temp-ledger invariant violated in '%s': ",
+            site,
+            (ctx && ctx->current_fn) ? LLVMGetValueName(ctx->current_fn) : "?");
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    fprintf(stderr,
+            "\n[own-audit] this is a compiler bug (or a new ledger protocol "
+            "this oracle must learn) — aborting compilation.\n");
+    fflush(stderr);
+    exit(1);
+}
+
 /* M-4.5: register a statement-level temporary has_drop struct/enum value.
    `slot` is the alloca holding the deep-cloned value (e.g. result of vec[i]);
    `type` is its LS type (TYPE_STRUCT has_drop or TYPE_ENUM has_drop).
@@ -475,6 +524,18 @@ void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type)
                 ctx->temp_drop_count);
     if (!is_drop_struct && !is_drop_enum && !is_block)
         return; /* nothing to drop — POD struct/enum or non-drop type */
+
+    /* A6: a match's result_alloca must NEVER be registered as a temp_drop
+       (guide 坑① — the consumer transfers the result; registration means a
+       guaranteed double-free). Machine-checks what used to be a prose rule. */
+    if (cg_own_audit_enabled())
+    {
+        for (int i = 0; i < ctx->own_audit_match_res_depth; i++)
+            CG_OWN_AUDIT(ctx, slot != ctx->own_audit_match_res[i],
+                         "push_temp_drop/A6",
+                         "attempted to register a live match result_alloca "
+                         "(depth %d) as a statement temp", i);
+    }
 
     if (ctx->temp_drop_count >= ctx->temp_drop_cap)
     {

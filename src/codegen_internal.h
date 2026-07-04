@@ -162,6 +162,14 @@ void cg_emit_bounds_guard(CodegenContext *ctx, LLVMValueRef ok_cond, const char 
 LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val, LLVMTypeRef llvm_type, Type *type);
 void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type);
 void cg_remove_temp_drop(CodegenContext *ctx, LLVMValueRef slot);
+/* Stage 6 temp-ledger oracle (LS_OWN_AUDIT=1; CG_DEBUG builds default-on;
+   LS_DEBUG_TEMPS=abort is an alias). Pure compile-time assertions on the
+   temp_drop / temp_block_env ledgers — never emits IR; Release default off. */
+bool cg_own_audit_enabled(void);
+void cg_own_audit_fail(CodegenContext *ctx, const char *site, const char *fmt, ...);
+#define CG_OWN_AUDIT(ctx, cond, site, ...) \
+    do { if (cg_own_audit_enabled() && !(cond)) \
+             cg_own_audit_fail((ctx), (site), __VA_ARGS__); } while (0)
 void cg_track_block_rvalue(CodegenContext *ctx, LLVMValueRef block_val, Type *type);
 bool cg_claim_block_temp_above(CodegenContext *ctx, int floor);
 void cg_push_temp_block_env(CodegenContext *ctx, LLVMValueRef env_ptr);

@@ -790,6 +790,30 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
 
     /* Ensure function has a terminator — clean up remaining string locals first */
     LLVMBasicBlockRef current_bb = LLVMGetInsertBlock(ctx->builder);
+
+    /* A4 (own-audit): on the open fall-through tail every statement flush has
+       run, so both ledgers must be fully drained — leftover entries mean a
+       forgotten claim/flush that the function-entry reset silently papers
+       over for the NEXT function. Terminated tails are skipped: an
+       all-arms-return match leaves its subject registered after the per-path
+       scope-exit flushes already released it (the historical reason the
+       entry reset exists — see the reset comment at the top of this fn). */
+    if (cg_own_audit_enabled() &&
+        LLVMGetBasicBlockTerminator(current_bb) == NULL)
+    {
+        CG_OWN_AUDIT(ctx, ctx->temp_drop_count == 0, "fn_end/A4",
+                     "temp_drop_count %d != 0 on open function tail "
+                     "(unclaimed/unflushed statement temps)",
+                     ctx->temp_drop_count);
+        CG_OWN_AUDIT(ctx, ctx->temp_block_env_count == 0, "fn_end/A4",
+                     "temp_block_env_count %d != 0 on open function tail",
+                     ctx->temp_block_env_count);
+        CG_OWN_AUDIT(ctx, ctx->temp_drop_base == 0, "fn_end/A4",
+                     "temp_drop_base %d != 0 at function end "
+                     "(a match failed to restore the protected floor)",
+                     ctx->temp_drop_base);
+    }
+
     if (LLVMGetBasicBlockTerminator(current_bb) == NULL)
     {
         emit_cleanup_to(ctx, NULL, NULL); /* clean param-scope strings before implicit ret */

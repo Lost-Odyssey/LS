@@ -129,6 +129,17 @@ typedef struct {
     int temp_block_env_count;
     int temp_block_env_cap;
 
+    /* Stage 6 (LS_OWN_AUDIT) temp-ledger oracle: stack of result_alloca slots
+       of the matches currently being emitted. cg_push_temp_drop consults it
+       to enforce guide 坑① — "a has_drop match result is NEVER registered as
+       a temp_drop" (registration would double-free: the consumer transfers
+       the result). Maintained unconditionally (two pointer writes per match);
+       checked only when the audit is enabled. Depth 32 = nesting of match
+       EXPRESSIONS being emitted at once, far beyond real code; overflow just
+       stops pushing (audit degrades, never corrupts). */
+    LLVMValueRef own_audit_match_res[32];
+    int own_audit_match_res_depth;
+
     /* G1.5: Pending generic method instantiations from checker.
        Set by caller before codegen_compile; processed during Pass 2a. */
     struct {

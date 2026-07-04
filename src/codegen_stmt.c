@@ -2229,6 +2229,25 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     /* 6) Compile the body. */
     codegen_stmt(ctx, node->as.closure.body);
 
+    /* A4-closure (own-audit): the body ran with zeroed, isolated ledgers; on
+       its open tail (before the implicit ret below) they must be drained —
+       the restore at step 8 would silently discard any leftover, exactly the
+       cross-function leak shape the isolation comment above describes.
+       Terminated tails skipped as in fn_end/A4. */
+    if (cg_own_audit_enabled())
+    {
+        LLVMBasicBlockRef cl_tail = LLVMGetInsertBlock(ctx->builder);
+        if (cl_tail && LLVMGetBasicBlockTerminator(cl_tail) == NULL)
+        {
+            CG_OWN_AUDIT(ctx, ctx->temp_drop_count == 0, "closure_end/A4",
+                         "temp_drop_count %d != 0 on open closure tail",
+                         ctx->temp_drop_count);
+            CG_OWN_AUDIT(ctx, ctx->temp_block_env_count == 0, "closure_end/A4",
+                         "temp_block_env_count %d != 0 on open closure tail",
+                         ctx->temp_block_env_count);
+        }
+    }
+
     /* 7) Ensure the entry block (and any continuation block) has a terminator.
        If the user body has no explicit return, default to ret 0 / ret void. */
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);

@@ -116,6 +116,22 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
     bool terminated = cur && LLVMGetBasicBlockTerminator(cur) != NULL;
 
+    /* A2 (own-audit): on an OPEN arm tail the ledger must never sit BELOW the
+       arm floor — that means an arm-internal statement flush collapsed past
+       the protected base (multi-arm pollution, guide 坑③: later borrow-arg
+       temps then reuse freed low slots). A TERMINATED tail (return / break /
+       continue in the arm) is exempt: its scope-exit flush legitimately
+       drained everything, floor included — first fired on the bare-return
+       corpus (match_own_stress 'early'), formula corrected per protocol.
+       temp_block_env has no floor protection by design (cg_flush_temps zeroes
+       it; the > env_floor guards below tolerate that), so only the drop
+       ledger is asserted. */
+    if (!terminated)
+        CG_OWN_AUDIT(ctx, ctx->temp_drop_count >= drop_floor,
+                     "arm_encapsulate/A2",
+                     "temp_drop_count %d fell below arm floor %d on an open "
+                     "arm tail", ctx->temp_drop_count, drop_floor);
+
     /* Transfer the tail has_drop temp into the result: remove the last body-registered
        drop entry without emitting its drop (the result owns that buffer). */
     if (res_is_drop && ctx->temp_drop_count > drop_floor)
@@ -336,14 +352,70 @@ static bool cg_match_subject_is_owned_rvalue(const AstNode *subject)
            subject->kind != AST_MUT_BORROW;
 }
 
+static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node,
+                                            int *audit_env_base_out);
+
+/* Stage 6 (own-audit) wrapper — A1 ledger pairing around a whole match:
+   a match may leave AT MOST one extra temp_drop entry (its still-registered
+   owned subject, L-012; the merge fall-through path removes it after the
+   explicit drop, early-return arms leave it for scope-exit flushes, and the
+   self-recursive-enum case deliberately keeps it for the statement flush).
+   It must never CONSUME outer entries, never leak arm temps (encapsulate
+   collapses to floors), and must restore the protected base. temp_block_env
+   may legitimately shrink (arm-internal statement flushes zero that table —
+   no floor protection by design) but never grow. Also scopes the A6
+   result_alloca stack: depth is restored on every exit path. */
+LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
+{
+    int in_count = ctx->temp_drop_count;
+    int in_base  = ctx->temp_drop_base;
+    int in_res_depth = ctx->own_audit_match_res_depth;
+    /* env baseline is written by impl AFTER subject evaluation: a closure
+       literal inside the SUBJECT (e.g. `match v.map(|e| ..)`) registers an
+       env temp the enclosing STATEMENT owns — legitimate growth the match
+       itself must not be blamed for. First fired on vec_functional_p3;
+       formula corrected per protocol. */
+    int env_base = ctx->temp_block_env_count;
+
+    LLVMValueRef r = codegen_match_expr_impl(ctx, node, &env_base);
+
+    ctx->own_audit_match_res_depth = in_res_depth;  /* pop A6 scope */
+    if (cg_own_audit_enabled())
+    {
+        /* Growth direction only: an early-return arm's scope-exit flush may
+           legitimately drain the subject and even OUTER entries (negative
+           delta) — their runtime drops belong to the returning path. What
+           must never happen is net growth beyond the subject (+1): that is
+           an arm temp leaking past encapsulate into the outer statement. */
+        int delta = ctx->temp_drop_count - in_count;
+        CG_OWN_AUDIT(ctx, delta <= 1, "match_expr/A1",
+                     "temp_drop_count delta %d (in %d, out %d) — a match may "
+                     "add at most its own subject (+1)",
+                     delta, in_count, ctx->temp_drop_count);
+        CG_OWN_AUDIT(ctx, ctx->temp_drop_base == in_base, "match_expr/A1",
+                     "temp_drop_base not restored (in %d, out %d)",
+                     in_base, ctx->temp_drop_base);
+        CG_OWN_AUDIT(ctx, ctx->temp_block_env_count <= env_base, "match_expr/A1",
+                     "temp_block_env_count grew across match arms (post-subject "
+                     "%d, out %d) — an arm literal env leaked past encapsulate",
+                     env_base, ctx->temp_block_env_count);
+    }
+    return r;
+}
+
 /* Extracted from codegen_expr's switch (codegen.c split Step 4): the
    AST_MATCH case body, verbatim. Behavior unchanged — ctx->current_node is
    already set by codegen_expr before dispatch. */
-LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
+static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node,
+                                            int *audit_env_base_out)
 {
         /* Compile match as cascading if-else.
            Subject is only read (compared against patterns), so borrow vec[i] strings. */
         LLVMValueRef subject = codegen_expr_or_borrow(ctx, node->as.match.subject);
+        /* own-audit: statement-owned env temps created by the subject are not
+           the match's to account for — rebase the wrapper's env check here. */
+        if (audit_env_base_out)
+            *audit_env_base_out = ctx->temp_block_env_count;
         if (subject == NULL)
             return NULL;
 
@@ -380,6 +452,12 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                registered result temp with cap=0 / empty → its free/drop is skipped. */
             LLVMBuildStore(tmp, LLVMConstNull(res_llvm), result_alloca);
             LLVMDisposeBuilder(tmp);
+
+            /* A6 (own-audit): expose this slot to cg_push_temp_drop's guard;
+               the wrapper restores the depth on every exit path. */
+            if (ctx->own_audit_match_res_depth <
+                    (int)(sizeof ctx->own_audit_match_res / sizeof ctx->own_audit_match_res[0]))
+                ctx->own_audit_match_res[ctx->own_audit_match_res_depth++] = result_alloca;
         }
 
         Type *subj_type = node->as.match.subject->resolved_type;
@@ -389,6 +467,11 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
            Full form × read-path-clone contract table lives on the predicate. */
         bool subj_owned_temp =
             cg_match_subject_is_owned_rvalue(node->as.match.subject);
+        /* own-audit A1 (enum path): entry snapshot for the exit upper-bound
+           check. (An exact-occupancy formula was tried and reverted: an
+           early-return arm's scope-exit flush legitimately drains the subject
+           and outer entries, so only the growth direction is checkable.) */
+        int audit_in_count = ctx->temp_drop_count;
 
         /* ---- Enum subject: switch on discriminant + binder extraction ---- */
         if (subj_type && subj_type->kind == TYPE_ENUM)
@@ -782,6 +865,20 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
                "last temp moved" protocol — exactly one drop, no leak / no double-free.
                Non-owned (static/POD) results are no-ops here. */
             ctx->temp_drop_base = saved_drop_base;  /* leave arm scope: drop the protection */
+
+            /* own-audit A1 upper bound (enum path): the ledger may hold at
+               most ONE entry beyond the entry count — the subject. More means
+               drift (double registration / arm temps leaking past
+               encapsulate). No lower bound: an early-return arm's scope-exit
+               flush legitimately drains the subject AND any outer entries
+               (their runtime drops belong to the returning path; fall-through
+               relies on the merge drop above). */
+            CG_OWN_AUDIT(ctx,
+                ctx->temp_drop_count <= audit_in_count + 1,
+                "match_expr/A1-enum",
+                "temp_drop_count %d exceeds entry %d + subject (leaked arm "
+                "temps past encapsulate?)",
+                ctx->temp_drop_count, audit_in_count);
 
             if (result_alloca)
                 return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
