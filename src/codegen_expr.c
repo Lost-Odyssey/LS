@@ -1780,15 +1780,19 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
     if (node->kind == AST_BINARY && node->as.binary.lowered != NULL)
         return codegen_addr_of(ctx, node->as.binary.lowered);
 
-    /* Owned-rvalue receiver: evaluate it, spill to temp alloca so the caller
+    /* Fresh-rvalue receiver: evaluate it, spill to temp alloca so the caller
        can use it as `self` pointer for a chained method call. Register for
-       has_drop cleanup so the temporary's buffer is freed at end-of-scope.
+       has_drop cleanup so the temporary's buffer is freed at end-of-scope
+       (cg_push_temp_drop self-filters: a POD spill is not registered, but it
+       still needs the slot to be addressable — hence the KIND-layer predicate
+       here, not the type-aware one; see codegen_internal.h). Examples:
          - AST_CALL          — `vec.map(U)(...).reduce(U)(...)`
-         - AST_FORMAT_STRING — `f"...".upper()` (the f-string Str temp would
-           otherwise leak: it never binds to a variable and the receiver path
-           did not register it for drop). */
-    if (node->kind == AST_CALL || node->kind == AST_FORMAT_STRING ||
-        cg_is_owned_combinator_rvalue(node))
+         - AST_FORMAT_STRING — `f"...".upper()`
+         - AST_TRY           — `(try f()).upper()` (payload moved out, nobody
+           registered it: the old whitelist missed TRY and leaked it).
+       INDEX / FIELD / BINARY.lowered members are unreachable here: they were
+       already handled by the lvalue/GEP/reroute branches above. */
+    if (cg_expr_is_fresh_rvalue_kind(node))
     {
         Type *rtype = node->resolved_type;
         if (rtype == NULL)
