@@ -502,20 +502,18 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node,
             if (subj_is_enum_borrow) {
                 /* Borrow path: use the incoming pointer directly — no copy. */
                 subj_alloca = subj_ptr_val;
+            } else if (subj_owned_temp) {
+                /* L-012: own the temp scrutinee — spill + register so it is
+                   dropped at statement end / on escape (binders below are
+                   cloned, so this never double-frees). */
+                subj_alloca = cg_spill_owned_rvalue(ctx, subject, subj_type,
+                                                    false, "match.subj");
             } else {
-                /* Owned path: stash subject in an alloca so we can GEP into the payload. */
-                LLVMBuilderRef tmp_b = LLVMCreateBuilderInContext(ctx->context);
-                LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
-                if (first_inst) LLVMPositionBuilderBefore(tmp_b, first_inst);
-                else            LLVMPositionBuilderAtEnd(tmp_b, entry);
-                subj_alloca = LLVMBuildAlloca(tmp_b, enum_llvm, "match.subj");
-                LLVMDisposeBuilder(tmp_b);
+                /* Named-value subject: stash a copy in an alloca purely so we
+                   can GEP into the payload — the named binding keeps ownership,
+                   nothing to register. */
+                subj_alloca = cg_entry_alloca(ctx, enum_llvm, "match.subj");
                 LLVMBuildStore(ctx->builder, subject, subj_alloca);
-
-                /* L-012: own the temp scrutinee — drop it at statement end / on return
-                   (binders below are cloned, so this never double-frees). */
-                if (subj_owned_temp)
-                    cg_push_temp_drop(ctx, subj_alloca, subj_type);
             }
 
             /* Subject (and any enclosing temps) are now live below the arm bodies;
