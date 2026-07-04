@@ -4206,16 +4206,11 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             }
             else
             {
-                /* Spill struct value to a temp alloca */
-                LLVMTypeRef st_llvm = type_to_llvm(ctx, struct_type);
-                struct_ptr = cg_entry_alloca(ctx, st_llvm, "tmp.struct");
-                LLVMBuildStore(ctx->builder, sub_val, struct_ptr);
-
                 /* M-4.5: when the object is vec[i]/arr[i] of a has_drop struct,
                    sub_val is an owned deep clone (the container keeps its own copy).
                    Field access reads one field; the rest of this temporary struct's
                    owned resources (other string fields, nested drops) would leak.
-                   Register the spill slot so the statement-end flush drops it. The
+                   Spill + register so the statement-end flush drops it. The
                    accessed field is independently cloned below, so dropping the
                    temporary here does not invalidate the returned value. */
                 /* Owned rvalue struct sources whose temp must be dropped after the
@@ -4231,11 +4226,18 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                    returned NULL above) → the spilled struct value is an owned
                    rvalue → the accessed field is cloned below, so dropping the
                    temp is safe for any has_drop source. Membership rationale
-                   lives on cg_expr_yields_owned_rvalue (codegen_internal.h). */
+                   lives on cg_expr_yields_owned_rvalue (codegen_internal.h).
+                   A POD source still needs the spill for the GEP below — bare
+                   alloca+store, nothing to register. */
                 AstNode *uobj_src = ast_unwrap_move(obj_node);
                 if (cg_expr_yields_owned_rvalue(uobj_src, struct_type))
+                    struct_ptr = cg_spill_owned_rvalue(ctx, sub_val, struct_type,
+                                                       false, "tmp.struct");
+                else
                 {
-                    cg_push_temp_drop(ctx, struct_ptr, struct_type);
+                    struct_ptr = cg_entry_alloca(
+                        ctx, type_to_llvm(ctx, struct_type), "tmp.struct");
+                    LLVMBuildStore(ctx->builder, sub_val, struct_ptr);
                 }
             }
         }
