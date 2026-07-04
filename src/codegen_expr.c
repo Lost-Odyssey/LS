@@ -1068,12 +1068,8 @@ LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
                        @print(f"{opt.unwrap_or(s)}") leaked the payload
                        (own_rvalue_sites_test.lls). Bare ident stays a borrow. */
                     if (cg_expr_yields_owned_rvalue(expr, expr->resolved_type))
-                    {
-                        LLVMValueRef stmp = cg_entry_alloca(
-                            ctx, type_to_llvm(ctx, expr->resolved_type), "fstr.str.drop");
-                        LLVMBuildStore(ctx->builder, sval, stmp);
-                        cg_push_temp_drop(ctx, stmp, expr->resolved_type);
-                    }
+                        cg_spill_owned_rvalue(ctx, sval, expr->resolved_type,
+                                              false, "fstr.str.drop");
                     continue;
                 }
                 LLVMValueRef val = codegen_expr_or_borrow(ctx, expr);
