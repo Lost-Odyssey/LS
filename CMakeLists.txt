@@ -1318,6 +1318,22 @@ set_tests_properties(test_own_rvalue_sites PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Array-literal element ownership + single evaluation: the AST_ARRAY_LIT
+# const-fold probe used to emit every element to test LLVMIsConstant, then
+# the var-decl fallback re-emitted them (double side effects; the first
+# emission's owned results leaked). Guards the AST pre-scan fix.
+add_test(
+    NAME test_array_lit_own
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_array_lit_own.cmake
+)
+set_tests_properties(test_array_lit_own PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Owned Block rvalue lifetime (P3 block-refcount) + Map(Block) rehash (O2). A
 # factory call / force-unwrap of a container-get yields an OWNED closure env
 # tracked as a statement temp: discarded => released, bound => owner releases.

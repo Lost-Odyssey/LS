@@ -1,0 +1,59 @@
+// array_lit_own_test.lls — array-literal element ownership & single evaluation
+// (found 2026-07-04 while building the own-rvalue corpus, fixed same day).
+//
+// The AST_ARRAY_LIT const-fold probe used to EMIT every element expression
+// just to test LLVMIsConstant on the results; on a non-constant element it
+// returned NULL and the var-decl fallback emitted every element AGAIN:
+//   - element side effects ran TWICE (probe() below printed twice), and
+//   - the first emission's owned results were bound to nothing and LEAKED
+//     (`array(Str,2) a = [heaped(..), ..]` leaked one heap buffer per elem).
+// Fixed by pre-scanning the AST: only pure literals (int/float/bool/nil/
+// static-Str, and -numeric) attempt const folding; anything else defers to
+// the caller's element-by-element store with ZERO emission from the probe.
+//
+// Self-verifying; the driver runs JIT + AOT + memcheck (0/0/0).
+
+int calls = 0
+
+// Force heap Strs — a static literal (cap==0) frees nothing and masks leaks.
+def probe(int n) -> Str {
+    calls = calls + 1
+    Str s = "payload: "
+    s.push_str(f"e{n}")
+    return s
+}
+
+def main() -> int {
+    int fails = 0
+
+    // (1) owned CALL rvalue elements: evaluated ONCE each, values land, no leak
+    array(Str, 2) a = [probe(1), probe(2)]
+    if calls != 2 {
+        @print("FAIL: elements evaluated", calls, "times (want 2)")
+        fails = fails + 1
+    }
+    if !a[0].eq?("payload: e1") { @print("FAIL: a[0] value")  fails = fails + 1 }
+    if !a[1].eq?("payload: e2") { @print("FAIL: a[1] value")  fails = fails + 1 }
+
+    // (2) const-fold regression guard: pure-literal arrays (incl. negation)
+    array(int, 3) ci = [1, -2, 3]
+    if ci[0] != 1 || ci[1] != -2 || ci[2] != 3 {
+        @print("FAIL: int literal array")  fails = fails + 1
+    }
+    array(f64, 2) cf = [1.5, -2.5]
+    if cf[1] != -2.5 { @print("FAIL: f64 literal array")  fails = fails + 1 }
+    array(Str, 2) cs = ["st", "atic"]
+    if !cs[0].eq?("st") || !cs[1].eq?("atic") {
+        @print("FAIL: static Str array")  fails = fails + 1
+    }
+
+    // (3) non-literal elements take the element-by-element path (single eval)
+    int x = 7
+    array(int, 3) nx = [x, x + 1, 2 + 2]
+    if nx[0] != 7 || nx[1] != 8 || nx[2] != 4 {
+        @print("FAIL: non-literal int array")  fails = fails + 1
+    }
+
+    if fails == 0 { @print("ARRLIT PASS") } else { @print("ARRLIT FAIL", fails) }
+    return fails
+}
