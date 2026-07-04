@@ -1249,6 +1249,21 @@ set_tests_properties(test_match_own_stress PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Vec(Block) element-copy ownership: copy()/extend() deep-clone each element's
+# closure env (a shared env double-frees at scope exit). Guards the @dup(Block)
+# env-clone + Vec.extend-via-@dup fix (match_codegen_guide §7.A).
+add_test(
+    NAME test_vec_block_own
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_vec_block_own.cmake
+)
+set_tests_properties(test_vec_block_own PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Kill-switch A/B parity for optimization passes (LS_NO_ELIDE /
 # LS_NO_INTERNALIZE / LS_NO_ENUM_RANGE): the "off" path must produce
 # identical program output — a silently-broken pass fails loudly here.

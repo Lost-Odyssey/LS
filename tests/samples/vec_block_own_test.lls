@@ -1,0 +1,72 @@
+// vec_block_own_test.lls — Vec(Block) element-copy ownership: copy() and
+// extend() must DEEP-CLONE each element's closure env, not share it. A shared
+// env is freed by both the source and destination Vec at scope exit ->
+// double-free (0xC0000374). Root fix: @dup(Block) env-clones (codegen_expr.c)
+// and Vec.extend routes element copy through @dup (lib/std/core/vec.lls),
+// mirroring Vec.copy. (match_codegen_guide §7.A, previously OPEN.)
+//
+// NOTE: elements are observed via a BOUND named variable (`F b = v.get(i)!;
+// b()`), never an inline `v.get(i)!()` — calling an owned Block rvalue temp
+// inline still leaks its env (a separate, still-open bug in codegen_block_call;
+// see the report). Binding into a scope local drops it cleanly.
+// JIT + AOT + memcheck 0/0/0. Prints "VECBLOCK PASS".
+
+import std.core.vec
+
+type F = Block()->int
+
+def fill(int n, int step) -> Vec(F) {
+    Vec(F) v = []
+    for i in 0..n {
+        int cap = i * step
+        v.push(|| cap + 1)
+    }
+    return v
+}
+
+// sum a Vec(F) by binding each element into a scope local before calling
+// (avoids the inline-rvalue-call leak).
+def sum(&Vec(F) v) -> int {
+    int acc = 0
+    for i in 0..v.len() {
+        F b = v.get(i)!
+        acc = acc + b()
+    }
+    return acc
+}
+
+// (1) copy(): dst must own INDEPENDENT env clones; dropping both is 0/0/0.
+def test_copy() -> int {
+    Vec(F) src = fill(4, 10)
+    Vec(F) dst = src.copy()
+    int s = sum(&src)          // src still valid (copy didn't move)
+    int d = sum(&dst)          // dst holds independent clones
+    return s + d               // src + dst dropped here — must not double-free
+}
+
+// (2) extend(): appended elements must be env clones of src's, not aliases.
+def test_extend() -> int {
+    Vec(F) a = fill(3, 10)
+    Vec(F) b = fill(2, 5)
+    a.extend(b)                // a grows to 5 independent-env closures; b intact
+    int total = sum(&a) + sum(&b)
+    return total               // a + b dropped here — must not double-free
+}
+
+// (3) copy-of-extend chain (stacked element clones).
+def test_chain() -> int {
+    Vec(F) a = fill(2, 100)
+    Vec(F) b = fill(2, 7)
+    a.extend(b)
+    Vec(F) c = a.copy()
+    return sum(&a) + sum(&c)
+}
+
+def main() -> int {
+    int c = test_copy()
+    int e = test_extend()
+    int h = test_chain()
+    if c == 0 || e == 0 || h == 0 { @print("FAIL", c, e, h); return 1 }
+    @print("VECBLOCK PASS", c, e, h)
+    return 0
+}

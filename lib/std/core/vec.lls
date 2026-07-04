@@ -216,11 +216,14 @@ methods Vec(T) {
 
     // Append deep clones of every element in src. The source Vec is borrowed
     // and remains usable after extend, matching builtin vec.extend.
+    // @dup clones the element EXACTLY once and, crucially, deep-clones a Block
+    // element's closure env (a plain `T e = src.data[i]` binding is a shallow
+    // Phase-G alias for closures -> src and self would share and double-free the
+    // env). Mirrors copy()'s `push(@dup(...))`.
     def extend(&!self, &Vec(T) src) {
         self.reserve(self.len + src.len)
         for (int i = 0; i < src.len; i = i + 1) {
-            T e = src.data[i]
-            self.push(e)
+            self.push(@dup(src.data[i]))
         }
     }
 

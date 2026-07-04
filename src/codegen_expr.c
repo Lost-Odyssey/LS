@@ -2645,6 +2645,15 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             Type *et = place->resolved_type;
             LLVMTypeRef elt = type_to_llvm(ctx, et);
             LLVMValueRef loaded = LLVMBuildLoad2(ctx->builder, elt, ptr, "dup.src");
+            /* TYPE_BLOCK: emit_clone_value is INTENTIONALLY shallow for closures
+               (the aliasing pass-through protocol container reads rely on, see
+               match_codegen_guide §4B boundary A). @dup's contract is an owned,
+               independent duplicate, so deep-clone the env here explicitly —
+               without this, Vec(Block).copy / @dup(Block) share the env and
+               double-free (§7.A). Must NOT touch emit_clone_value (would break
+               container element reads). */
+            if (et && et->kind == TYPE_BLOCK)
+                return cg_emit_block_env_clone(ctx, loaded);
             return emit_clone_value(ctx, loaded, elt, et);
         }
 
