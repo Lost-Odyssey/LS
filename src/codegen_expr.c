@@ -4576,6 +4576,9 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                     /* The slot is read again by the temp-table drop AFTER the
                        block ends — an end marker here would be premature. */
                     ts->lifetime_marked = false;
+                    /* Bare cg_push_temp_drop, NOT cg_spill_owned_rvalue: the
+                       local's slot already exists — this is a registration-only
+                       ownership transfer, there is nothing to spill. */
                     cg_push_temp_drop(ctx, ts->value, ts->type);
                 }
                 break; /* innermost (shadowing) symbol decides */
