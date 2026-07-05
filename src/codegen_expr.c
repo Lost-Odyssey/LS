@@ -83,6 +83,8 @@ void cg_mark_noreturn_cold(CodegenContext *ctx, LLVMValueRef fn)
 
 /* File-local helpers (single-TU; re-static'd at codegen split §7). */
 static int append_text_escaped(char *dst, int len, int cap, const char *src);
+static bool cg_memcpy_prim_enabled(void);
+static LLVMValueRef cg_emit_bytecopy_memcpy(CodegenContext *ctx, AstNode *node);
 static bool cg_build_spec_conv(CodegenContext *ctx, int line, int col, Type *et, const char *spec, char *out, size_t out_sz, bool *out_to_double);
 static LLVMValueRef cg_fstring_emit_arg(CodegenContext *ctx, AstNode *expr, LLVMValueRef val, const char *user_spec, char *fmt_buf, int *p_fmt_len, int fmt_cap);
 static LLVMValueRef cg_make_slice(CodegenContext *ctx, LLVMTypeRef elem_llvm, LLVMValueRef base_ptr, LLVMValueRef start_i64, LLVMValueRef len_i64, Type *slice_type);
@@ -234,6 +236,48 @@ static LLVMValueRef cg_get_or_declare(LLVMModuleRef mod, const char *name,
    on function return) → stack overflow. Entry-block allocas live once per call
    and are reused. Use this for any scratch slot created during expression /
    statement codegen (string method temps, loop indices, etc.). */
+/* __ls_bytecopy prim switch — cached like the other LS_NO_* toggles. */
+static bool cg_memcpy_prim_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        const char *e = getenv("LS_NO_MEMCPY_PRIM");
+        cached = (e != NULL && e[0] != '\0' && strcmp(e, "0") != 0) ? 0 : 1;
+    }
+    return cached == 1;
+}
+
+/* Lower `c.__ls_bytecopy(dst, doff, src, soff, n)` to
+       memcpy(dst + doff, src + soff, n)   as @llvm.memcpy.p0.p0.i64.
+   Offsets/len are LS `int` (i32) — sign-extend to i64. GEPs are plain
+   (non-inbounds) i8 element steps so a nil base + 0 offset is not poison;
+   llvm.memcpy len==0 is a defined no-op, matching the C helper's guard.
+   Returns the memcpy call value (callers treat the expr as void). */
+static LLVMValueRef cg_emit_bytecopy_memcpy(CodegenContext *ctx, AstNode *node)
+{
+    LLVMValueRef a[5];
+    for (int i = 0; i < 5; i++)
+    {
+        a[i] = codegen_expr(ctx, node->as.call.args[i]);
+        if (a[i] == NULL)
+            return NULL;
+    }
+    LLVMTypeRef i8t  = LLVMInt8TypeInContext(ctx->context);
+    LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx->context);
+    LLVMValueRef idx[3] = { a[1], a[3], a[4] };  /* doff, soff, n */
+    for (int i = 0; i < 3; i++)
+    {
+        if (idx[i] != NULL &&
+            LLVMGetTypeKind(LLVMTypeOf(idx[i])) == LLVMIntegerTypeKind &&
+            LLVMGetIntTypeWidth(LLVMTypeOf(idx[i])) < 64)
+            idx[i] = LLVMBuildSExt(ctx->builder, idx[i], i64t, "bc.i64");
+    }
+    LLVMValueRef dst = LLVMBuildGEP2(ctx->builder, i8t, a[0], &idx[0], 1, "bc.dst");
+    LLVMValueRef src = LLVMBuildGEP2(ctx->builder, i8t, a[2], &idx[1], 1, "bc.src");
+    return LLVMBuildMemCpy(ctx->builder, dst, 1, src, 1, idx[2]);
+}
+
 LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const char *name)
 {
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
@@ -3465,6 +3509,31 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 /* Phase E.4: io has been migrated to pure-LS stdlib/io.ls.
                    `import io` now goes through the normal user-module path
                    (is_builtin == false). No special dispatch here. */
+
+                /* __ls_bytecopy → llvm.memcpy (form-③ primitive; the runtime
+                   C helper is exactly one memcpy, so this lowering is
+                   semantics-preserving — including the `n <= 0` guard:
+                   llvm.memcpy with len 0 is a DEFINED no-op even for null /
+                   dangling pointers since LLVM 12, and the GEPs below are
+                   deliberately non-inbounds so a nil base + 0 offset stays
+                   well-defined). Overlapping ranges were already UB in the C
+                   helper (plain memcpy); the no-overlap contract is now
+                   documented on the extern decl in std/sys/c.lls. Inlining
+                   the copy makes it transparent to LLVM: constant lengths
+                   fold to loads/stores, len==0 calls vanish, and
+                   DSE/memcpyopt/heap-elision can see through Str building
+                   (an unobserved build+free chain folds away entirely).
+                   Only the real std.sys.c module owns this symbol (`__ls_`
+                   names are reserved for the runtime). LS_NO_MEMCPY_PRIM=1
+                   falls back to the extern call (A/B + escape hatch). */
+                if (strcmp(fn_name, "__ls_bytecopy") == 0 &&
+                    mod_t->as.module.name &&
+                    strcmp(mod_t->as.module.name, "std.sys.c") == 0 &&
+                    node->as.call.arg_count == 5 &&
+                    cg_memcpy_prim_enabled())
+                {
+                    return cg_emit_bytecopy_memcpy(ctx, node);
+                }
 
                 /* L-009: the callee lives in module `mod_t->name`; look it up by
                    its module-prefixed symbol. Fall back to the bare name for

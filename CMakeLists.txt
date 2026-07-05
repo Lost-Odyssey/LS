@@ -1381,6 +1381,20 @@ set_tests_properties(test_enum_move_semantics PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# __ls_bytecopy → llvm.memcpy primitive (form ③): IR lowering both modes,
+# runtime parity under LS_NO_MEMCPY_PRIM, memcheck clean.
+add_test(
+    NAME test_memcpy_prim
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_memcpy_prim.cmake
+)
+set_tests_properties(test_memcpy_prim PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Owned Block rvalue lifetime (P3 block-refcount) + Map(Block) rehash (O2). A
 # factory call / force-unwrap of a container-get yields an OWNED closure env
 # tracked as a statement temp: discarded => released, bound => owner releases.

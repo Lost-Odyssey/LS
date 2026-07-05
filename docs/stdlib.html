@@ -1852,6 +1852,28 @@ internally by other stdlib modules. Surface includes <code>malloc</code>/<code>r
 <code>abort()</code>, file CRT functions (<code>fopen</code>/<code>fread</code>/…), and <code>__ls_*</code>
 runtime helpers (substring search, byte copy, FxHash, byte loads, readline, regex engine).
 Canonical primitives are also reachable as <code>std.sys.c.malloc</code> without an alias.</p>
+<p><b>Three lowering forms.</b> A <code>c.*</code> call compiles to one of three shapes,
+which differ in how much the LLVM optimizer understands the call:</p>
+<table class="api">
+<tr><td class="s"><b>① extern call</b><br><span class="sig">__ls_str_find, __ls_ptr_at,
+readline/regex/… helpers</span></td>
+<td class="d">A plain call to the runtime C library. Opaque to the optimizer (custom symbol
+names carry no built-in semantics) — correct, but never inlined or folded. The right form
+for platform plumbing.</td></tr>
+<tr><td class="s"><b>② libc call</b><br><span class="sig">malloc / realloc / free</span></td>
+<td class="d">Lowered to a direct call to the libc symbol. LLVM has built-in knowledge of
+allocator functions (attribute inference, allocation semantics), and the call boundary is
+kept intact on purpose: <code>--memcheck</code> intercepts allocations by wrapping exactly
+these symbols.</td></tr>
+<tr><td class="s"><b>③ intrinsic</b><br><span class="sig">__ls_bytecopy(dst, doff, src,
+soff, n)</span></td>
+<td class="d">Recognised by the compiler and emitted inline as
+<code>@llvm.memcpy</code> — constant sizes fold to plain loads/stores, <code>n == 0</code>
+calls vanish, and dead build-and-discard chains are eliminated entirely (DSE / heap
+elision). <b>Contract: memcpy semantics — the two byte ranges must not overlap</b> (an
+overlapping move would need a separate <code>__ls_bytemove</code>).
+<code>LS_NO_MEMCPY_PRIM=1</code> falls back to form ①.</td></tr>
+</table>
 
 <h3>perf <span class="imp">import std.sys.perf</span></h3>
 <table class="api">

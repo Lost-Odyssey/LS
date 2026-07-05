@@ -1,0 +1,28 @@
+/* __ls_bytecopy → llvm.memcpy primitive lowering. Str building routes
+   through push_str/reserve/concat, all of which call c.__ls_bytecopy —
+   this program pins that the lowered code behaves identically to the
+   extern-call fallback (LS_NO_MEMCPY_PRIM=1) and stays memcheck-clean.
+   Expected output:
+     hello world
+     11
+     ababab
+     PASS
+*/
+import std.core.str
+
+def heap(Str b) -> Str { Str s = ""; s.push_str(&b); return s }
+
+def main() {
+    /* grow-from-static (reserve copy) + append (push_str copy) */
+    Str a = heap("hello")
+    Str w = " world"
+    a.push_str(&w)
+    @print(a)
+    @print(a.len())
+
+    /* concat + repeat exercise the fresh-buffer copy sites */
+    Str r = "ab".repeat(3)
+    @print(r)
+
+    @print("PASS")
+}

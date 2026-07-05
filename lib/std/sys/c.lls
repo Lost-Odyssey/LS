@@ -48,8 +48,17 @@ extern def __ls_proc_exit(int code)
 // Returns the byte offset of `needle` in `hay` at/after `start`, or -1.
 extern def __ls_str_find(*u8 hay, int hlen, *u8 needle, int nlen, int start) -> int
 
-// Copy `n` bytes from src+soff to dst+doff (one memcpy, SIMD in the CRT). Byte
-// offsets because LS has no pointer arithmetic. n <= 0 is a no-op.
+// Copy `n` bytes from src+soff to dst+doff. Byte offsets because LS has no
+// pointer arithmetic. n <= 0 is a no-op.
+// CONTRACT: memcpy semantics — the two ranges MUST NOT overlap (always true
+// of the C helper, which is a single memcpy; now a formal contract). All
+// stdlib call sites copy into fresh buffers or append past the source range.
+// If an overlapping move is ever needed, add a separate __ls_bytemove
+// (memmove) instead of bending this one.
+// LOWERING: the compiler recognises std.sys.c.__ls_bytecopy and emits an
+// inline @llvm.memcpy (constant sizes fold to loads/stores, len==0 calls
+// vanish, DSE / heap-elision can see through Str building).
+// LS_NO_MEMCPY_PRIM=1 falls back to calling the extern below (A/B switch).
 extern def __ls_bytecopy(*u8 dst, int doff, *u8 src, int soff, int n)
 
 // Pointer arithmetic primitive: returns base + off (byte offset). Lets a
