@@ -448,6 +448,16 @@ b.tag()           <span class="c">// "inherent"</span>
     1 | 2 | 3 =&gt; <span class="k">@print</span>(<span class="s">"small"</span>)      <span class="c">// OR-pattern: any of these → this arm</span>
     _         =&gt; <span class="k">@print</span>(<span class="s">"other"</span>)      <span class="c">// wildcard catch-all</span>
 }</pre></div>
+    <div class="warn"><b>A value-producing scalar <code>match</code> requires <code>_</code>.</b>
+    When a <code>match</code> over an <code>int</code>/<code>char</code>/float <em>yields a
+    value</em>, a missing wildcard is a <b>compile error</b> — a scalar domain can't be
+    enumerated, and an unmatched subject would otherwise silently produce a zeroed result:
+    <div class="ex"><pre><span class="t">Str</span> s = <span class="k">match</span> i { 1 =&gt; <span class="s">"a"</span>  2 =&gt; <span class="s">"b"</span> }              <span class="c">// ❌ error: no '_' arm</span>
+<span class="t">Str</span> s = <span class="k">match</span> i { 1 =&gt; <span class="s">"a"</span>  2 =&gt; <span class="s">"b"</span>  _ =&gt; <span class="s">"?"</span> }    <span class="c">// ✓</span></pre></div>
+    Exempt: a <code>bool</code> subject covering both <code>true</code> and
+    <code>false</code> (exhaustive), and statement-position matches whose arms yield no
+    value (pure control flow — an unmatched subject just does nothing). Enum subjects have
+    their own variant-exhaustiveness error above.</div>
     <p>Arm bodies are an expression or a brace block; the separator between arms can be a
     comma or just a newline. A block arm yields its value with <code>return</code> only when
     inside a function whose value it is; as a sub-expression the last expression is the
@@ -663,6 +673,9 @@ m[<span class="s">"a"</span>] = 1
     <div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) a = [1, 2, 3]
 <span class="t">Vec</span>(<span class="t">int</span>) b = a            <span class="c">// MOVE — b owns it now, a is dead</span>
 <span class="c">// @print(a.len())          // ❌ compile error: use after move</span>
+
+<span class="t">JsonValue</span> j2 = j1          <span class="c">// enums with owning payloads follow the SAME rule: move</span>
+<span class="t">JsonValue</span> j3 = <span class="k">@dup</span>(j2)    <span class="c">// want both alive? take an explicit deep copy</span>
 
 <span class="k">def</span> total(<span class="t">Vec</span>(<span class="t">int</span>) xs) -&gt; <span class="t">int</span> {     <span class="c">// by-value param</span>
     <span class="t">int</span> s = 0
