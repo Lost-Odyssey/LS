@@ -3887,6 +3887,89 @@ static LLVMValueRef cg_expr_binary(CodegenContext *ctx, AstNode *node)
     }
 }
 
+static LLVMValueRef cg_expr_array_lit(CodegenContext *ctx, AstNode *node)
+{
+    /* Array literal — build constant array if possible, else return NULL
+       (caller VAR_DECL handles element-by-element store) */
+    Type *arr_type = node->resolved_type;
+    if (arr_type && arr_type->kind == TYPE_STRUCT)
+        return emit_user_from_list_value(ctx, arr_type, node);
+    if (arr_type == NULL || arr_type->kind != TYPE_ARRAY)
+        return NULL;
+
+    int count = node->as.array_lit.count;
+    LLVMTypeRef elem_llvm = type_to_llvm(ctx, arr_type->as.array.elem);
+
+    /* Constant-fold PRE-SCAN on the AST — decide WITHOUT emitting.
+       The old probe emitted every element first and tested
+       LLVMIsConstant on the results: on a non-constant element it
+       returned NULL, but the already-emitted element code stayed in
+       the IR, so the caller's element-by-element fallback evaluated
+       every element a SECOND time. Consequences (2026-07-04, found
+       via own-rvalue corpus): element side effects ran twice, and the
+       first emission's owned results (e.g. `[heaped(..), ..]` Str
+       returns) were bound to nothing and leaked. Only pure literals
+       qualify for folding; anything else defers to the caller's
+       element-by-element path — the single emission. */
+    bool all_lit = true;
+    for (int i = 0; i < count && all_lit; i++)
+    {
+        AstNode *el = node->as.array_lit.elements[i];
+        switch (el->kind)
+        {
+        case AST_INT_LIT:
+        case AST_FLOAT_LIT:
+        case AST_BOOL_LIT:
+        case AST_NIL_LIT:
+        case AST_STRING_LIT: /* static Str struct — no heap, no drop */
+            break;
+        case AST_UNARY:
+            /* [-1, 2.5]: negation over a numeric literal const-folds. */
+            if (el->as.unary.op == TOKEN_MINUS && el->as.unary.operand &&
+                (el->as.unary.operand->kind == AST_INT_LIT ||
+                 el->as.unary.operand->kind == AST_FLOAT_LIT))
+                break;
+            all_lit = false;
+            break;
+        default:
+            all_lit = false;
+            break;
+        }
+    }
+    if (!all_lit)
+        return NULL; /* caller stores element-by-element; nothing emitted */
+
+    /* All pure literals: emit them (constant expressions only — no
+       instruction-stream side effects) and build the constant array.
+       The LLVMIsConstant check stays as a defensive backstop; literal
+       emission produces no instructions, so a surprise non-constant
+       here still cannot double-evaluate or leak. */
+    LLVMValueRef *elems = (LLVMValueRef *)malloc_safe(
+        (size_t)count * sizeof(LLVMValueRef));
+    bool all_const = true;
+    for (int i = 0; i < count; i++)
+    {
+        elems[i] = codegen_expr(ctx, node->as.array_lit.elements[i]);
+        if (elems[i] == NULL)
+        {
+            free(elems);
+            return NULL;
+        }
+        if (!LLVMIsConstant(elems[i]))
+            all_const = false;
+    }
+
+    if (all_const)
+    {
+        LLVMValueRef result = LLVMConstArray2(elem_llvm, elems, (uint64_t)count);
+        free(elems);
+        return result;
+    }
+
+    free(elems);
+    return NULL;
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -4400,87 +4483,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return cg_expr_index(ctx, node);
 
     case AST_ARRAY_LIT:
-    {
-        /* Array literal — build constant array if possible, else return NULL
-           (caller VAR_DECL handles element-by-element store) */
-        Type *arr_type = node->resolved_type;
-        if (arr_type && arr_type->kind == TYPE_STRUCT)
-            return emit_user_from_list_value(ctx, arr_type, node);
-        if (arr_type == NULL || arr_type->kind != TYPE_ARRAY)
-            return NULL;
-
-        int count = node->as.array_lit.count;
-        LLVMTypeRef elem_llvm = type_to_llvm(ctx, arr_type->as.array.elem);
-
-        /* Constant-fold PRE-SCAN on the AST — decide WITHOUT emitting.
-           The old probe emitted every element first and tested
-           LLVMIsConstant on the results: on a non-constant element it
-           returned NULL, but the already-emitted element code stayed in
-           the IR, so the caller's element-by-element fallback evaluated
-           every element a SECOND time. Consequences (2026-07-04, found
-           via own-rvalue corpus): element side effects ran twice, and the
-           first emission's owned results (e.g. `[heaped(..), ..]` Str
-           returns) were bound to nothing and leaked. Only pure literals
-           qualify for folding; anything else defers to the caller's
-           element-by-element path — the single emission. */
-        bool all_lit = true;
-        for (int i = 0; i < count && all_lit; i++)
-        {
-            AstNode *el = node->as.array_lit.elements[i];
-            switch (el->kind)
-            {
-            case AST_INT_LIT:
-            case AST_FLOAT_LIT:
-            case AST_BOOL_LIT:
-            case AST_NIL_LIT:
-            case AST_STRING_LIT: /* static Str struct — no heap, no drop */
-                break;
-            case AST_UNARY:
-                /* [-1, 2.5]: negation over a numeric literal const-folds. */
-                if (el->as.unary.op == TOKEN_MINUS && el->as.unary.operand &&
-                    (el->as.unary.operand->kind == AST_INT_LIT ||
-                     el->as.unary.operand->kind == AST_FLOAT_LIT))
-                    break;
-                all_lit = false;
-                break;
-            default:
-                all_lit = false;
-                break;
-            }
-        }
-        if (!all_lit)
-            return NULL; /* caller stores element-by-element; nothing emitted */
-
-        /* All pure literals: emit them (constant expressions only — no
-           instruction-stream side effects) and build the constant array.
-           The LLVMIsConstant check stays as a defensive backstop; literal
-           emission produces no instructions, so a surprise non-constant
-           here still cannot double-evaluate or leak. */
-        LLVMValueRef *elems = (LLVMValueRef *)malloc_safe(
-            (size_t)count * sizeof(LLVMValueRef));
-        bool all_const = true;
-        for (int i = 0; i < count; i++)
-        {
-            elems[i] = codegen_expr(ctx, node->as.array_lit.elements[i]);
-            if (elems[i] == NULL)
-            {
-                free(elems);
-                return NULL;
-            }
-            if (!LLVMIsConstant(elems[i]))
-                all_const = false;
-        }
-
-        if (all_const)
-        {
-            LLVMValueRef result = LLVMConstArray2(elem_llvm, elems, (uint64_t)count);
-            free(elems);
-            return result;
-        }
-
-        free(elems);
-        return NULL;
-    }
+        return cg_expr_array_lit(ctx, node);
 
     case AST_RANGE:
         /* Range expressions are not first-class values; handled by AST_FOR codegen */
