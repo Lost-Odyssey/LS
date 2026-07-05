@@ -82,6 +82,34 @@ IntrinKind builtin_intrinsic_lookup(const char *name)
         return INTRIN_ATOMIC_UNKNOWN;
     }
 
+    /* simd family: exact names only ("__simd_load" vs "__simd_load_masked"
+       are distinct exact rows — strcmp, no prefix shadowing). */
+    if (strncmp(name, "__simd_", 7) == 0)
+    {
+        static const struct { const char *name; IntrinKind kind; } rows[] = {
+            { "__simd_zero",         INTRIN_SIMD_ZERO },
+            { "__simd_splat",        INTRIN_SIMD_SPLAT },
+            { "__simd_lane",         INTRIN_SIMD_LANE },
+            { "__simd_fma",          INTRIN_SIMD_FMA },
+            { "__simd_max",          INTRIN_SIMD_MAX },
+            { "__simd_min",          INTRIN_SIMD_MIN },
+            { "__simd_reduce_add",   INTRIN_SIMD_REDUCE_ADD },
+            { "__simd_reduce_max",   INTRIN_SIMD_REDUCE_MAX },
+            { "__simd_reduce_min",   INTRIN_SIMD_REDUCE_MIN },
+            { "__simd_load",         INTRIN_SIMD_LOAD },
+            { "__simd_store",        INTRIN_SIMD_STORE },
+            { "__simd_load_masked",  INTRIN_SIMD_LOAD_MASKED },
+            { "__simd_store_masked", INTRIN_SIMD_STORE_MASKED },
+            { "__simd_cast",         INTRIN_SIMD_CAST },
+            { "__simd_floor",        INTRIN_SIMD_FLOOR },
+            { "__simd_bitcast",      INTRIN_SIMD_BITCAST },
+        };
+        for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
+            if (strcmp(name, rows[i].name) == 0)
+                return rows[i].kind;
+        return INTRIN_SIMD_UNKNOWN;
+    }
+
     return INTRIN_NONE;
 }
 
@@ -294,6 +322,378 @@ static LLVMValueRef intrin_atomic_emit(CodegenContext *ctx, const char *aname,
     return NULL;
 }
 
+/* ============================= simd family ============================== */
+/* Helpers moved verbatim from codegen_expr.c (they had no other callers). */
+
+/* Coerce a scalar to a target numeric element type (widen OR narrow):
+   float<->float, int->float, float->int, int<->int. Used by __simd_splat so a
+   literal (e.g. f64 3.0) broadcasts into a Simd of a different element type. */
+static LLVMValueRef cg_simd_coerce(CodegenContext *ctx, LLVMValueRef v,
+                                   Type *from, Type *to)
+{
+    if (v == NULL || from == NULL || to == NULL || type_equals(from, to)) return v;
+    LLVMTypeRef tt = type_to_llvm(ctx, to);
+    bool ff = type_is_float(from), tf = type_is_float(to);
+    if (ff && tf) {
+        int fb = from->kind == TYPE_F64 ? 64 : from->kind == TYPE_F32 ? 32 : 16;
+        int tb = to->kind   == TYPE_F64 ? 64 : to->kind   == TYPE_F32 ? 32 : 16;
+        if (tb > fb) return LLVMBuildFPExt(ctx->builder, v, tt, "simd.fpext");
+        if (tb < fb) return LLVMBuildFPTrunc(ctx->builder, v, tt, "simd.fptrunc");
+        return v;  /* same width (f16<->bf16 not reachable from splat scalars) */
+    }
+    if (!ff && tf)
+        return type_is_unsigned(from)
+            ? LLVMBuildUIToFP(ctx->builder, v, tt, "simd.uitofp")
+            : LLVMBuildSIToFP(ctx->builder, v, tt, "simd.sitofp");
+    if (ff && !tf)
+        return type_is_unsigned(to)
+            ? LLVMBuildFPToUI(ctx->builder, v, tt, "simd.fptoui")
+            : LLVMBuildFPToSI(ctx->builder, v, tt, "simd.fptosi");
+    int fb = type_int_bits(from), tb = type_int_bits(to);
+    if (tb > fb) return type_is_unsigned(from)
+        ? LLVMBuildZExt(ctx->builder, v, tt, "simd.zext")
+        : LLVMBuildSExt(ctx->builder, v, tt, "simd.sext");
+    if (tb < fb) return LLVMBuildTrunc(ctx->builder, v, tt, "simd.trunc");
+    return v;  /* same width (e.g. signedness only) — value bits unchanged */
+}
+
+/* LLVM overloaded-intrinsic mangle for a Simd type: "v16f32"/"v8f64"/"v16i32". */
+static void cg_simd_mangle(Type *simd, char *buf, size_t n)
+{
+    Type *e = simd->as.simd.elem;
+    const char *ec;
+    switch (e->kind) {
+    case TYPE_F32: ec = "f32"; break;
+    case TYPE_F64: ec = "f64"; break;
+    case TYPE_F16: ec = "f16"; break;
+    case TYPE_BF16: ec = "bf16"; break;
+    case TYPE_I8: case TYPE_U8:  ec = "i8";  break;
+    case TYPE_I16: case TYPE_U16: ec = "i16"; break;
+    case TYPE_I64: case TYPE_U64: ec = "i64"; break;
+    default: ec = "i32"; break;  /* int / i32 / u32 / char */
+    }
+    snprintf(buf, n, "v%d%s", simd->as.simd.lanes, ec);
+}
+
+/* Build a <lanes x i1> mask with the first n lanes set: icmp ult(iota, splat n).
+   Hides the i1 vector from the surface — masked load/store take a lane count. */
+static LLVMValueRef cg_simd_lane_mask(CodegenContext *ctx, LLVMValueRef n, unsigned lanes)
+{
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+    LLVMValueRef ncast = LLVMBuildIntCast2(ctx->builder, n, i32, 0, "simd.n32");
+    LLVMValueRef *ic = malloc(sizeof(LLVMValueRef) * lanes);
+    for (unsigned j = 0; j < lanes; j++) ic[j] = LLVMConstInt(i32, j, 0);
+    LLVMValueRef iota = LLVMConstVector(ic, lanes);
+    free(ic);
+    LLVMTypeRef i32v = LLVMVectorType(i32, lanes);
+    LLVMValueRef undef = LLVMGetUndef(i32v);
+    LLVMValueRef ins = LLVMBuildInsertElement(ctx->builder, undef, ncast,
+                           LLVMConstInt(i32, 0, 0), "n.ins");
+    LLVMValueRef zmask = LLVMConstNull(LLVMVectorType(i32, lanes));
+    LLVMValueRef nsplat = LLVMBuildShuffleVector(ctx->builder, ins, undef, zmask, "n.splat");
+    return LLVMBuildICmp(ctx->builder, LLVMIntULT, iota, nsplat, "simd.mask");
+}
+
+/* Get-or-declare an LLVM intrinsic (or any external) by exact name + signature. */
+static LLVMValueRef cg_get_or_declare(LLVMModuleRef mod, const char *name,
+                                      LLVMTypeRef ret, LLVMTypeRef *params, unsigned np)
+{
+    LLVMValueRef fn = LLVMGetNamedFunction(mod, name);
+    if (fn) return fn;
+    return LLVMAddFunction(mod, name, LLVMFunctionType(ret, params, np, 0));
+}
+
+/* SIMD intrinsics __simd_* — lower to a single <N x T> IR instruction
+   (docs/plan_simd.md §4.2), mirroring the __atomic_* name-dispatch. The
+   checker set node->resolved_type (Simd for producers/ops, the element
+   type for lane/reduce). */
+static LLVMValueRef intrin_simd_emit(CodegenContext *ctx, const char *sname,
+                                     IntrinKind kind, AstNode *node)
+{
+    AstNode **sa = node->as.call.args;
+    Type *rt = node->resolved_type;
+
+    switch (kind)
+    {
+    case INTRIN_SIMD_ZERO:
+        return LLVMConstNull(type_to_llvm(ctx, rt));
+
+    case INTRIN_SIMD_SPLAT:
+    {
+        LLVMTypeRef vt = type_to_llvm(ctx, rt);
+        LLVMValueRef s = codegen_expr(ctx, sa[0]);
+        if (s == NULL) return NULL;
+        s = cg_simd_coerce(ctx, s, sa[0]->resolved_type, rt->as.simd.elem);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+        LLVMValueRef undef = LLVMGetUndef(vt);
+        LLVMValueRef ins = LLVMBuildInsertElement(ctx->builder, undef, s,
+                               LLVMConstInt(i32, 0, 0), "splat.ins");
+        LLVMValueRef zmask = LLVMConstNull(
+            LLVMVectorType(i32, (unsigned)rt->as.simd.lanes));
+        return LLVMBuildShuffleVector(ctx->builder, ins, undef, zmask, "splat");
+    }
+
+    case INTRIN_SIMD_LANE:
+    {
+        LLVMValueRef v = codegen_expr(ctx, sa[0]);
+        LLVMValueRef idx = codegen_expr(ctx, sa[1]);
+        if (v == NULL || idx == NULL) return NULL;
+        return LLVMBuildExtractElement(ctx->builder, v, idx, "simd.lane");
+    }
+
+    case INTRIN_SIMD_FMA:
+    {
+        LLVMValueRef a = codegen_expr(ctx, sa[0]);
+        LLVMValueRef b = codegen_expr(ctx, sa[1]);
+        LLVMValueRef cc = codegen_expr(ctx, sa[2]);
+        if (a == NULL || b == NULL || cc == NULL) return NULL;
+        LLVMTypeRef vt = type_to_llvm(ctx, rt);
+        char mg[24], nm[40];
+        cg_simd_mangle(rt, mg, sizeof mg);
+        snprintf(nm, sizeof nm, "llvm.fma.%s", mg);
+        LLVMTypeRef ps[3] = { vt, vt, vt };
+        LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, vt, ps, 3);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef av[3] = { a, b, cc };
+        return LLVMBuildCall2(ctx->builder, fty, fn, av, 3, "simd.fma");
+    }
+
+    case INTRIN_SIMD_MAX:
+    case INTRIN_SIMD_MIN:
+    {
+        LLVMValueRef a = codegen_expr(ctx, sa[0]);
+        LLVMValueRef b = codegen_expr(ctx, sa[1]);
+        if (a == NULL || b == NULL) return NULL;
+        LLVMTypeRef vt = type_to_llvm(ctx, rt);
+        Type *et = rt->as.simd.elem;
+        bool is_max = (kind == INTRIN_SIMD_MAX);
+        const char *base = type_is_float(et) ? (is_max ? "maxnum" : "minnum")
+                         : type_is_unsigned(et) ? (is_max ? "umax" : "umin")
+                         : (is_max ? "smax" : "smin");
+        char mg[24], nm[48];
+        cg_simd_mangle(rt, mg, sizeof mg);
+        snprintf(nm, sizeof nm, "llvm.%s.%s", base, mg);
+        LLVMTypeRef ps[2] = { vt, vt };
+        LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, vt, ps, 2);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef av[2] = { a, b };
+        return LLVMBuildCall2(ctx->builder, fty, fn, av, 2, "simd.mm");
+    }
+
+    case INTRIN_SIMD_REDUCE_ADD:
+    {
+        LLVMValueRef v = codegen_expr(ctx, sa[0]);
+        if (v == NULL) return NULL;
+        Type *st = sa[0]->resolved_type;    /* Simd(T,N) */
+        Type *et = st->as.simd.elem;
+        LLVMTypeRef etl = type_to_llvm(ctx, et);
+        LLVMTypeRef vt = type_to_llvm(ctx, st);
+        char mg[24], nm[48];
+        cg_simd_mangle(st, mg, sizeof mg);
+        if (type_is_float(et)) {
+            /* T @llvm.vector.reduce.fadd.vNfT(T start, <N x T> v) */
+            snprintf(nm, sizeof nm, "llvm.vector.reduce.fadd.%s", mg);
+            LLVMTypeRef ps[2] = { etl, vt };
+            LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, etl, ps, 2);
+            LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+            LLVMValueRef av[2] = { LLVMConstNull(etl), v };
+            return LLVMBuildCall2(ctx->builder, fty, fn, av, 2, "simd.radd");
+        }
+        /* T @llvm.vector.reduce.add.vNiT(<N x T> v) */
+        snprintf(nm, sizeof nm, "llvm.vector.reduce.add.%s", mg);
+        LLVMTypeRef ps[1] = { vt };
+        LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, etl, ps, 1);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef av[1] = { v };
+        return LLVMBuildCall2(ctx->builder, fty, fn, av, 1, "simd.radd");
+    }
+
+    case INTRIN_SIMD_REDUCE_MAX:
+    case INTRIN_SIMD_REDUCE_MIN:
+    {
+        /* Horizontal max/min of <N x T> to a scalar T. The fmax/fmin
+           reduce intrinsics take just the vector (no start value). */
+        LLVMValueRef v = codegen_expr(ctx, sa[0]);
+        if (v == NULL) return NULL;
+        Type *st = sa[0]->resolved_type;    /* Simd(T,N) */
+        Type *et = st->as.simd.elem;
+        LLVMTypeRef etl = type_to_llvm(ctx, et);
+        LLVMTypeRef vt = type_to_llvm(ctx, st);
+        bool is_max = (kind == INTRIN_SIMD_REDUCE_MAX);
+        const char *base = type_is_float(et) ? (is_max ? "fmax" : "fmin")
+                         : type_is_unsigned(et) ? (is_max ? "umax" : "umin")
+                         : (is_max ? "smax" : "smin");
+        char mg[24], nm[48];
+        cg_simd_mangle(st, mg, sizeof mg);
+        snprintf(nm, sizeof nm, "llvm.vector.reduce.%s.%s", base, mg);
+        LLVMTypeRef ps[1] = { vt };
+        LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, etl, ps, 1);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef av[1] = { v };
+        return LLVMBuildCall2(ctx->builder, fty, fn, av, 1, "simd.rmm");
+    }
+
+    case INTRIN_SIMD_LOAD:
+    {
+        /* Load N contiguous elements starting at ptr[off] as a <N x T>.
+           GEP by element offset, then a vector load (element-aligned =
+           unaligned vector access, safe for any pointer). */
+        LLVMValueRef ptr = codegen_expr(ctx, sa[0]);
+        LLVMValueRef off = codegen_expr(ctx, sa[1]);
+        if (ptr == NULL || off == NULL) return NULL;
+        LLVMTypeRef etl = type_to_llvm(ctx, rt->as.simd.elem);
+        LLVMTypeRef vt = type_to_llvm(ctx, rt);
+        LLVMValueRef idx[1] = { off };
+        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, etl, ptr, idx, 1, "simd.ep");
+        LLVMValueRef ld = LLVMBuildLoad2(ctx->builder, vt, ep, "simd.load");
+        LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
+        LLVMSetAlignment(ld, LLVMABIAlignmentOfType(td, etl));
+        return ld;
+    }
+
+    case INTRIN_SIMD_STORE:
+    {
+        LLVMValueRef ptr = codegen_expr(ctx, sa[0]);
+        LLVMValueRef off = codegen_expr(ctx, sa[1]);
+        LLVMValueRef v = codegen_expr(ctx, sa[2]);
+        if (ptr == NULL || off == NULL || v == NULL) return NULL;
+        Type *st = sa[2]->resolved_type;   /* Simd(T,N) */
+        LLVMTypeRef etl = type_to_llvm(ctx, st->as.simd.elem);
+        LLVMValueRef idx[1] = { off };
+        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, etl, ptr, idx, 1, "simd.ep");
+        LLVMValueRef sst = LLVMBuildStore(ctx->builder, v, ep);
+        LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
+        LLVMSetAlignment(sst, LLVMABIAlignmentOfType(td, etl));
+        return NULL;
+    }
+
+    case INTRIN_SIMD_LOAD_MASKED:
+    {
+        /* Load the first n lanes (rest = 0) via @llvm.masked.load. */
+        LLVMValueRef ptr = codegen_expr(ctx, sa[0]);
+        LLVMValueRef off = codegen_expr(ctx, sa[1]);
+        LLVMValueRef n   = codegen_expr(ctx, sa[2]);
+        if (ptr == NULL || off == NULL || n == NULL) return NULL;
+        unsigned lanes = (unsigned)rt->as.simd.lanes;
+        LLVMTypeRef etl = type_to_llvm(ctx, rt->as.simd.elem);
+        LLVMTypeRef vt  = type_to_llvm(ctx, rt);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef i1v = LLVMVectorType(LLVMInt1TypeInContext(ctx->context), lanes);
+        LLVMValueRef idx[1] = { off };
+        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, etl, ptr, idx, 1, "simd.mep");
+        LLVMValueRef mask = cg_simd_lane_mask(ctx, n, lanes);
+        LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
+        LLVMValueRef align = LLVMConstInt(i32, LLVMABIAlignmentOfType(td, etl), 0);
+        char mg[24], nm[56];
+        cg_simd_mangle(rt, mg, sizeof mg);
+        snprintf(nm, sizeof nm, "llvm.masked.load.%s.p0", mg);
+        LLVMTypeRef ps[4] = { LLVMTypeOf(ep), i32, i1v, vt };
+        LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, vt, ps, 4);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef av[4] = { ep, align, mask, LLVMConstNull(vt) };
+        return LLVMBuildCall2(ctx->builder, fty, fn, av, 4, "simd.mload");
+    }
+
+    case INTRIN_SIMD_STORE_MASKED:
+    {
+        /* Store the first n lanes via @llvm.masked.store. */
+        LLVMValueRef ptr = codegen_expr(ctx, sa[0]);
+        LLVMValueRef off = codegen_expr(ctx, sa[1]);
+        LLVMValueRef v   = codegen_expr(ctx, sa[2]);
+        LLVMValueRef n   = codegen_expr(ctx, sa[3]);
+        if (ptr == NULL || off == NULL || v == NULL || n == NULL) return NULL;
+        Type *st = sa[2]->resolved_type;
+        unsigned lanes = (unsigned)st->as.simd.lanes;
+        LLVMTypeRef etl = type_to_llvm(ctx, st->as.simd.elem);
+        LLVMTypeRef vt  = type_to_llvm(ctx, st);
+        LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx->context);
+        LLVMTypeRef i1v = LLVMVectorType(LLVMInt1TypeInContext(ctx->context), lanes);
+        LLVMTypeRef voidty = LLVMVoidTypeInContext(ctx->context);
+        LLVMValueRef idx[1] = { off };
+        LLVMValueRef ep = LLVMBuildGEP2(ctx->builder, etl, ptr, idx, 1, "simd.mep");
+        LLVMValueRef mask = cg_simd_lane_mask(ctx, n, lanes);
+        LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
+        LLVMValueRef align = LLVMConstInt(i32, LLVMABIAlignmentOfType(td, etl), 0);
+        char mg[24], nm[56];
+        cg_simd_mangle(st, mg, sizeof mg);
+        snprintf(nm, sizeof nm, "llvm.masked.store.%s.p0", mg);
+        LLVMTypeRef ps[4] = { vt, LLVMTypeOf(ep), i32, i1v };
+        LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, voidty, ps, 4);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef av[4] = { v, ep, align, mask };
+        LLVMBuildCall2(ctx->builder, fty, fn, av, 4, "");
+        return NULL;
+    }
+
+    case INTRIN_SIMD_CAST:
+    {
+        /* Element-wise numeric conversion to <N x U> (same N). */
+        LLVMValueRef v = codegen_expr(ctx, sa[0]);
+        if (v == NULL) return NULL;
+        Type *st = sa[0]->resolved_type;    /* Simd(T,N) */
+        Type *se = st->as.simd.elem;
+        Type *de = rt->as.simd.elem;
+        LLVMTypeRef vt = type_to_llvm(ctx, rt);  /* <N x U> */
+        if (se->kind == de->kind) return v;
+        bool sf = type_is_float(se), df = type_is_float(de);
+        if (sf && df) {
+            int sb = se->kind==TYPE_F64?64:se->kind==TYPE_F32?32:16;
+            int db = de->kind==TYPE_F64?64:de->kind==TYPE_F32?32:16;
+            if (db > sb) return LLVMBuildFPExt(ctx->builder, v, vt, "simd.cast.fpext");
+            if (db < sb) return LLVMBuildFPTrunc(ctx->builder, v, vt, "simd.cast.fptrunc");
+            /* same width, different 16-bit format (f16<->bf16): via f32 */
+            LLVMTypeRef f32v = LLVMVectorType(
+                LLVMFloatTypeInContext(ctx->context), (unsigned)st->as.simd.lanes);
+            LLVMValueRef up = LLVMBuildFPExt(ctx->builder, v, f32v, "simd.cast.up");
+            return LLVMBuildFPTrunc(ctx->builder, up, vt, "simd.cast.dn");
+        }
+        if (!sf && df)
+            return type_is_unsigned(se)
+                ? LLVMBuildUIToFP(ctx->builder, v, vt, "simd.cast.uitofp")
+                : LLVMBuildSIToFP(ctx->builder, v, vt, "simd.cast.sitofp");
+        if (sf && !df)
+            return type_is_unsigned(de)
+                ? LLVMBuildFPToUI(ctx->builder, v, vt, "simd.cast.fptoui")
+                : LLVMBuildFPToSI(ctx->builder, v, vt, "simd.cast.fptosi");
+        int sb = type_int_bits(se), db = type_int_bits(de);
+        if (db > sb) return type_is_unsigned(se)
+            ? LLVMBuildZExt(ctx->builder, v, vt, "simd.cast.zext")
+            : LLVMBuildSExt(ctx->builder, v, vt, "simd.cast.sext");
+        if (db < sb) return LLVMBuildTrunc(ctx->builder, v, vt, "simd.cast.trunc");
+        return v;
+    }
+
+    case INTRIN_SIMD_FLOOR:
+    {
+        LLVMValueRef v = codegen_expr(ctx, sa[0]);
+        if (v == NULL) return NULL;
+        LLVMTypeRef vt = type_to_llvm(ctx, rt);
+        char mg[24], nm[40];
+        cg_simd_mangle(rt, mg, sizeof mg);
+        snprintf(nm, sizeof nm, "llvm.floor.%s", mg);
+        LLVMTypeRef ps[1] = { vt };
+        LLVMValueRef fn = cg_get_or_declare(ctx->module, nm, vt, ps, 1);
+        LLVMTypeRef fty = LLVMGlobalGetValueType(fn);
+        LLVMValueRef av[1] = { v };
+        return LLVMBuildCall2(ctx->builder, fty, fn, av, 1, "simd.floor");
+    }
+
+    case INTRIN_SIMD_BITCAST:
+    {
+        /* Reinterpret the lane bits (i32 <-> f32, same total width). */
+        LLVMValueRef v = codegen_expr(ctx, sa[0]);
+        if (v == NULL) return NULL;
+        LLVMTypeRef vt = type_to_llvm(ctx, rt);  /* <N x U> */
+        return LLVMBuildBitCast(ctx->builder, v, vt, "simd.bitcast");
+    }
+
+    default:
+        cg_error(ctx, node->line, node->column,
+                 "internal: unknown simd intrinsic '%s'", sname);
+        return NULL;
+    }
+}
+
 /* ============================== dispatch ================================ */
 
 LLVMValueRef builtin_intrinsic_emit_call(CodegenContext *ctx, const char *name,
@@ -313,6 +713,24 @@ LLVMValueRef builtin_intrinsic_emit_call(CodegenContext *ctx, const char *name,
     case INTRIN_ATOMIC_CAS:
     case INTRIN_ATOMIC_UNKNOWN:
         return intrin_atomic_emit(ctx, name, kind, node);
+    case INTRIN_SIMD_ZERO:
+    case INTRIN_SIMD_SPLAT:
+    case INTRIN_SIMD_LANE:
+    case INTRIN_SIMD_FMA:
+    case INTRIN_SIMD_MAX:
+    case INTRIN_SIMD_MIN:
+    case INTRIN_SIMD_REDUCE_ADD:
+    case INTRIN_SIMD_REDUCE_MAX:
+    case INTRIN_SIMD_REDUCE_MIN:
+    case INTRIN_SIMD_LOAD:
+    case INTRIN_SIMD_STORE:
+    case INTRIN_SIMD_LOAD_MASKED:
+    case INTRIN_SIMD_STORE_MASKED:
+    case INTRIN_SIMD_CAST:
+    case INTRIN_SIMD_FLOOR:
+    case INTRIN_SIMD_BITCAST:
+    case INTRIN_SIMD_UNKNOWN:
+        return intrin_simd_emit(ctx, name, kind, node);
     default:
         return intrin_sync_emit(ctx, name, kind, node);
     }

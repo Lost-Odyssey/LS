@@ -80,6 +80,27 @@ typedef enum {
     INTRIN_ATOMIC_CAS,
     INTRIN_ATOMIC_UNKNOWN,  /* __atomic_ prefixed, unknown member */
 
+    /* ---- simd family (__simd_*; one <N x T> IR instruction each, exact
+       names — docs/plan_simd.md §4.2). The checker set node->resolved_type
+       (Simd for producers/ops, the element type for lane/reduce). ---- */
+    INTRIN_SIMD_ZERO,
+    INTRIN_SIMD_SPLAT,
+    INTRIN_SIMD_LANE,
+    INTRIN_SIMD_FMA,
+    INTRIN_SIMD_MAX,
+    INTRIN_SIMD_MIN,
+    INTRIN_SIMD_REDUCE_ADD,
+    INTRIN_SIMD_REDUCE_MAX,
+    INTRIN_SIMD_REDUCE_MIN,
+    INTRIN_SIMD_LOAD,
+    INTRIN_SIMD_STORE,
+    INTRIN_SIMD_LOAD_MASKED,
+    INTRIN_SIMD_STORE_MASKED,
+    INTRIN_SIMD_CAST,
+    INTRIN_SIMD_FLOOR,
+    INTRIN_SIMD_BITCAST,
+    INTRIN_SIMD_UNKNOWN,    /* __simd_ prefixed, unknown member */
+
     INTRIN_KIND_COUNT
 } IntrinKind;
 
