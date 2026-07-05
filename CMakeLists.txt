@@ -4673,3 +4673,18 @@ add_test(
         -DSTDLIB=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_lifetime_markers.cmake
 )
+
+# ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
+# Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
+# clean "nesting too deep" diagnostic instead of a stack-overflow crash, the
+# error-flood cap must bound diagnostic output, and 64-level nesting stays legal.
+add_test(
+    NAME test_parse_depth
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_parse_depth.cmake
+)
+set_tests_properties(test_parse_depth PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

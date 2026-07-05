@@ -22,6 +22,13 @@ typedef struct {
        Set in parse_statement; cleared on entry to parse_expr_prec so nested
        sub-expressions never inherit it. */
     bool stmt_boundary;
+    /* Recursion depth guard shared by the three mutually recursive entry
+       points (parse_expr_prec / parse_type / parse_block): pathological
+       nesting fails with a diagnostic instead of overflowing the C stack. */
+    int depth;
+    /* Total parse errors seen; rendering stops after LS_MAX_PARSE_ERRORS
+       (had_error stays authoritative regardless). */
+    int error_count;
 } Parser;
 
 /* Parse source text -> AST_PROGRAM node.

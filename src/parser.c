@@ -39,10 +39,22 @@ static TypeNode *new_type_node(TypeNodeKind kind, int line, int col) {
 
 /* ---- Error Handling ---- */
 
+/* Cap on rendered parse diagnostics, mirroring CHECKER_MAX_ERRORS. Panic-mode
+   recovery resets per statement, so a pathological input (e.g. thousands of
+   stray '}') can otherwise render one full snippet+caret diagnostic per token
+   — tens of MB of stderr and minutes of wall clock. Past the cap we keep
+   counting (had_error stays authoritative) but stop rendering. */
+#define LS_MAX_PARSE_ERRORS 20
+
 static void error_at(Parser *p, Token *tok, const char *msg) {
     if (p->panic_mode) return;
     p->panic_mode = true;
     p->had_error = true;
+    if (p->error_count >= LS_MAX_PARSE_ERRORS) {
+        p->error_count++;
+        return;
+    }
+    p->error_count++;
     diag_emitf(DIAG_PARSE_ERROR, p->source_path, tok->line, tok->column,
                tok->length > 0 ? tok->length : 1, NULL, "%s", msg);
 }
@@ -226,6 +238,63 @@ static AstNode *parse_statement(Parser *p);
 static AstNode *parse_block(Parser *p);
 static TypeNode *parse_type(Parser *p);
 static bool is_type_keyword(TokenType t);
+
+/* ---- Recursion depth guard --------------------------------------------
+   Hard cap on nested expression/type/block recursion so pathological
+   inputs fail with a diagnostic instead of overflowing the C stack (the
+   stdlib text parsers cap at 128/256; the compiler parser gets the same
+   discipline). One user-visible nesting level costs a few C frames, so
+   256 levels stays well inside the default 1 MB Windows stack.
+
+   parse_expr_prec / parse_type return NULL on exhaustion (their callers
+   already handle NULL as an ordinary error path). parse_block instead
+   reports, skips to a recovery point (so the enclosing statement loop
+   always makes progress), and returns an empty block — its callers rely
+   on it never returning NULL. */
+#define LS_MAX_PARSE_DEPTH 256
+
+static AstNode *parse_expr_prec_inner(Parser *p, Precedence min_prec);
+static AstNode *parse_block_inner(Parser *p);
+static TypeNode *parse_type_inner(Parser *p);
+
+static bool parse_depth_enter(Parser *p) {
+    if (p->depth >= LS_MAX_PARSE_DEPTH) {
+        error_at_current(p, "nesting too deep (limit 256)");
+        return false;
+    }
+    p->depth++;
+    return true;
+}
+
+static AstNode *parse_expr_prec(Parser *p, Precedence min_prec) {
+    if (!parse_depth_enter(p)) return NULL;
+    AstNode *r = parse_expr_prec_inner(p, min_prec);
+    p->depth--;
+    return r;
+}
+
+static TypeNode *parse_type(Parser *p) {
+    if (!parse_depth_enter(p)) return NULL;
+    TypeNode *r = parse_type_inner(p);
+    p->depth--;
+    return r;
+}
+
+static AstNode *parse_block(Parser *p) {
+    if (!parse_depth_enter(p)) {
+        /* Consume tokens up to a sync point so the enclosing statement
+           loop cannot spin on the same '{' forever, then yield an empty
+           block (this function's callers never expect NULL). */
+        recover_in_body(p);
+        AstNode *n = new_node(AST_BLOCK, p->current.line, p->current.column);
+        n->as.block.stmts = NULL;
+        n->as.block.stmt_count = 0;
+        return n;
+    }
+    AstNode *r = parse_block_inner(p);
+    p->depth--;
+    return r;
+}
 
 /* ---- Prefix parse functions ---- */
 
@@ -1930,7 +1999,7 @@ static const ParseRule *get_rule(TokenType type) {
 
 /* ---- Core expression parser ---- */
 
-static AstNode *parse_expr_prec(Parser *p, Precedence min_prec) {
+static AstNode *parse_expr_prec_inner(Parser *p, Precedence min_prec) {
     init_parse_rules();
     /* Capture and clear the statement-boundary flag: only this top-level call
        may split a trailing `*Ident Ident` into a pointer declaration. Nested
@@ -2046,7 +2115,7 @@ static bool is_type_keyword(TokenType t) {
     }
 }
 
-static TypeNode *parse_type(Parser *p) {
+static TypeNode *parse_type_inner(Parser *p) {
     int line = p->current.line;
     int col  = p->current.column;
 
@@ -4130,7 +4199,7 @@ static AstNode *parse_return_stmt(Parser *p) {
     return n;
 }
 
-static AstNode *parse_block(Parser *p) {
+static AstNode *parse_block_inner(Parser *p) {
     int line = p->current.line;
     int col  = p->current.column;
 
