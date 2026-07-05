@@ -3970,6 +3970,84 @@ static LLVMValueRef cg_expr_array_lit(CodegenContext *ctx, AstNode *node)
     return NULL;
 }
 
+static LLVMValueRef cg_expr_at_bench(CodegenContext *ctx, AstNode *node)
+{
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
+    LLVMTypeRef f64_t = LLVMDoubleTypeInContext(ctx->context);
+    int iterations = node->as.at_bench.iterations;
+
+    LLVMValueRef now_fn = cg_get_perf_now(ctx);
+    LLVMTypeRef now_fn_ty = LLVMGlobalGetValueType(now_fn);
+
+    /* total_ns alloca */
+    LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(ctx->current_fn);
+    LLVMBuilderRef tmp_b = LLVMCreateBuilderInContext(ctx->context);
+    LLVMValueRef first_inst = LLVMGetFirstInstruction(entry_bb);
+    if (first_inst) LLVMPositionBuilderBefore(tmp_b, first_inst);
+    else            LLVMPositionBuilderAtEnd(tmp_b, entry_bb);
+    LLVMValueRef total_alloca = LLVMBuildAlloca(tmp_b, i64_t, "bench.total");
+    LLVMValueRef i_alloca = LLVMBuildAlloca(tmp_b, i32_t, "bench.i");
+    LLVMDisposeBuilder(tmp_b);
+
+    /* total = 0; i = 0 */
+    LLVMBuildStore(ctx->builder, LLVMConstInt(i64_t, 0, 0), total_alloca);
+    LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), i_alloca);
+
+    /* Loop: for (i = 0; i < N; i++) */
+    LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(
+        ctx->context, ctx->current_fn, "bench.cond");
+    LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+        ctx->context, ctx->current_fn, "bench.body");
+    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
+        ctx->context, ctx->current_fn, "bench.done");
+
+    LLVMBuildBr(ctx->builder, cond_bb);
+
+    /* cond: i < N */
+    LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
+    LLVMValueRef i_val = LLVMBuildLoad2(ctx->builder, i32_t, i_alloca, "bench.i.v");
+    LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_val,
+                                      LLVMConstInt(i32_t, (unsigned long long)iterations, 0),
+                                      "bench.cmp");
+    LLVMBuildCondBr(ctx->builder, cmp, body_bb, done_bb);
+
+    /* body: t0 = now(); expr; t1 = now(); total += (t1-t0); i++ */
+    LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+    LLVMValueRef t0 = LLVMBuildCall2(ctx->builder, now_fn_ty, now_fn,
+                                      NULL, 0, "bench.t0");
+    codegen_expr(ctx, node->as.at_bench.expr);
+    LLVMValueRef t1 = LLVMBuildCall2(ctx->builder, now_fn_ty, now_fn,
+                                      NULL, 0, "bench.t1");
+    LLVMValueRef diff = LLVMBuildSub(ctx->builder, t1, t0, "bench.diff");
+    LLVMValueRef old_total = LLVMBuildLoad2(ctx->builder, i64_t, total_alloca, "bench.old");
+    LLVMValueRef new_total = LLVMBuildAdd(ctx->builder, old_total, diff, "bench.new");
+    LLVMBuildStore(ctx->builder, new_total, total_alloca);
+    LLVMValueRef i_next = LLVMBuildAdd(ctx->builder, i_val,
+                                        LLVMConstInt(i32_t, 1, 0), "bench.i.next");
+    LLVMBuildStore(ctx->builder, i_next, i_alloca);
+    LLVMBuildBr(ctx->builder, cond_bb);
+
+    /* done: mean_ns = (f64)total / (f64)N */
+    LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+    LLVMValueRef final_total = LLVMBuildLoad2(ctx->builder, i64_t, total_alloca, "bench.ft");
+    LLVMValueRef total_f = LLVMBuildSIToFP(ctx->builder, final_total, f64_t, "bench.tf");
+    LLVMValueRef n_f = LLVMConstReal(f64_t, (double)iterations);
+    LLVMValueRef mean_ns = LLVMBuildFDiv(ctx->builder, total_f, n_f, "bench.mean");
+
+    /* printf("[@bench] %.1f ns (N=%d)\n", mean_ns, N) */
+    LLVMValueRef printf_fn = LLVMGetNamedFunction(ctx->module, "printf");
+    if (printf_fn) {
+        LLVMTypeRef printf_ty = LLVMGlobalGetValueType(printf_fn);
+        LLVMValueRef fmt = LLVMBuildGlobalStringPtr(ctx->builder,
+            "[@bench] mean %.1f ns (%d iterations)\n", "bench.fmt");
+        LLVMValueRef pargs[3] = { fmt, mean_ns, LLVMConstInt(i32_t, (unsigned long long)iterations, 0) };
+        LLVMBuildCall2(ctx->builder, printf_ty, printf_fn, pargs, 3, "");
+    }
+
+    return mean_ns;
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -4228,82 +4306,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
     }
 
     case AST_AT_BENCH:
-    {
-        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-        LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-        LLVMTypeRef f64_t = LLVMDoubleTypeInContext(ctx->context);
-        int iterations = node->as.at_bench.iterations;
-
-        LLVMValueRef now_fn = cg_get_perf_now(ctx);
-        LLVMTypeRef now_fn_ty = LLVMGlobalGetValueType(now_fn);
-
-        /* total_ns alloca */
-        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(ctx->current_fn);
-        LLVMBuilderRef tmp_b = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef first_inst = LLVMGetFirstInstruction(entry_bb);
-        if (first_inst) LLVMPositionBuilderBefore(tmp_b, first_inst);
-        else            LLVMPositionBuilderAtEnd(tmp_b, entry_bb);
-        LLVMValueRef total_alloca = LLVMBuildAlloca(tmp_b, i64_t, "bench.total");
-        LLVMValueRef i_alloca = LLVMBuildAlloca(tmp_b, i32_t, "bench.i");
-        LLVMDisposeBuilder(tmp_b);
-
-        /* total = 0; i = 0 */
-        LLVMBuildStore(ctx->builder, LLVMConstInt(i64_t, 0, 0), total_alloca);
-        LLVMBuildStore(ctx->builder, LLVMConstInt(i32_t, 0, 0), i_alloca);
-
-        /* Loop: for (i = 0; i < N; i++) */
-        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "bench.cond");
-        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "bench.body");
-        LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "bench.done");
-
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* cond: i < N */
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        LLVMValueRef i_val = LLVMBuildLoad2(ctx->builder, i32_t, i_alloca, "bench.i.v");
-        LLVMValueRef cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT, i_val,
-                                          LLVMConstInt(i32_t, (unsigned long long)iterations, 0),
-                                          "bench.cmp");
-        LLVMBuildCondBr(ctx->builder, cmp, body_bb, done_bb);
-
-        /* body: t0 = now(); expr; t1 = now(); total += (t1-t0); i++ */
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        LLVMValueRef t0 = LLVMBuildCall2(ctx->builder, now_fn_ty, now_fn,
-                                          NULL, 0, "bench.t0");
-        codegen_expr(ctx, node->as.at_bench.expr);
-        LLVMValueRef t1 = LLVMBuildCall2(ctx->builder, now_fn_ty, now_fn,
-                                          NULL, 0, "bench.t1");
-        LLVMValueRef diff = LLVMBuildSub(ctx->builder, t1, t0, "bench.diff");
-        LLVMValueRef old_total = LLVMBuildLoad2(ctx->builder, i64_t, total_alloca, "bench.old");
-        LLVMValueRef new_total = LLVMBuildAdd(ctx->builder, old_total, diff, "bench.new");
-        LLVMBuildStore(ctx->builder, new_total, total_alloca);
-        LLVMValueRef i_next = LLVMBuildAdd(ctx->builder, i_val,
-                                            LLVMConstInt(i32_t, 1, 0), "bench.i.next");
-        LLVMBuildStore(ctx->builder, i_next, i_alloca);
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* done: mean_ns = (f64)total / (f64)N */
-        LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
-        LLVMValueRef final_total = LLVMBuildLoad2(ctx->builder, i64_t, total_alloca, "bench.ft");
-        LLVMValueRef total_f = LLVMBuildSIToFP(ctx->builder, final_total, f64_t, "bench.tf");
-        LLVMValueRef n_f = LLVMConstReal(f64_t, (double)iterations);
-        LLVMValueRef mean_ns = LLVMBuildFDiv(ctx->builder, total_f, n_f, "bench.mean");
-
-        /* printf("[@bench] %.1f ns (N=%d)\n", mean_ns, N) */
-        LLVMValueRef printf_fn = LLVMGetNamedFunction(ctx->module, "printf");
-        if (printf_fn) {
-            LLVMTypeRef printf_ty = LLVMGlobalGetValueType(printf_fn);
-            LLVMValueRef fmt = LLVMBuildGlobalStringPtr(ctx->builder,
-                "[@bench] mean %.1f ns (%d iterations)\n", "bench.fmt");
-            LLVMValueRef pargs[3] = { fmt, mean_ns, LLVMConstInt(i32_t, (unsigned long long)iterations, 0) };
-            LLVMBuildCall2(ctx->builder, printf_ty, printf_fn, pargs, 3, "");
-        }
-
-        return mean_ns;
-    }
+        return cg_expr_at_bench(ctx, node);
 
     case AST_CAST:
     {
