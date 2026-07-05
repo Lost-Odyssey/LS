@@ -3171,6 +3171,282 @@ static LLVMValueRef cg_expr_call(CodegenContext *ctx, AstNode *node)
     return result;
 }
 
+static LLVMValueRef cg_expr_field(CodegenContext *ctx, AstNode *node)
+{
+    if (node->coerce_fn_to_block)
+        return codegen_fn_to_block(ctx, node);
+
+    AstNode *obj_node = node->as.field_access.object;
+    Type *obj_type = obj_node->resolved_type;
+
+    /* Module-qualified access (e.g., math.add or math.PI) */
+    if (obj_type && obj_type->kind == TYPE_MODULE)
+    {
+        const char *name = node->as.field_access.field;
+
+        /* Built-in stdlib module: emit constant inline (PI/E/INF/NAN/...).
+           Functions reached as bare field-access (without a call) are
+           unsupported for now — taking math.sqrt as a function pointer
+           would need a wrapper since we have no IR-level body. */
+        if (obj_type->as.module.is_builtin &&
+            obj_type->as.module.name &&
+            strcmp(obj_type->as.module.name, "std.core.math") == 0)
+        {
+            LLVMValueRef cst = builtin_math_emit_const(ctx, name);
+            if (cst) return cst;
+            cg_error(ctx, node->line, node->column,
+                     "math.%s is not a constant; use it in a call expression",
+                     name);
+            return NULL;
+        }
+
+        /* Try function first: module-prefixed (L-009), then bare. */
+        char fn_sym[512];
+        cg_module_fn_symbol(fn_sym, sizeof(fn_sym),
+                            obj_type->as.module.name, name);
+        LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, fn_sym);
+        if (!fn)
+            fn = LLVMGetNamedFunction(ctx->module, name);
+        if (fn)
+            return fn;
+        /* Try global variable: P1-1 module globals use prefixed name. */
+        char gv_sym[512];
+        cg_module_fn_symbol(gv_sym, sizeof(gv_sym),
+                            obj_type->as.module.name, name);
+        LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, gv_sym);
+        if (!gv)
+            gv = LLVMGetNamedGlobal(ctx->module, name);
+        if (gv)
+        {
+            Type *rt = node->resolved_type;
+            if (rt && rt->kind == TYPE_ARRAY)
+            {
+                /* For arrays, return the pointer to the global array directly */
+                return gv;
+            }
+            LLVMTypeRef load_type = type_to_llvm(ctx, rt);
+            return LLVMBuildLoad2(ctx->builder, load_type, gv, name);
+        }
+        cg_error(ctx, node->line, node->column,
+                 "undefined symbol '%s' in module '%s'",
+                 name, obj_type->as.module.name ? obj_type->as.module.name : "?");
+        return NULL;
+    }
+
+    /* Array .length — compile-time constant */
+    if (obj_type && obj_type->kind == TYPE_ARRAY)
+    {
+        if (strcmp(node->as.field_access.field, "length") == 0)
+        {
+            return LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
+                                (unsigned long long)obj_type->as.array.size, 0);
+        }
+        cg_error(ctx, node->line, node->column,
+                 "array has no field '%s'", node->as.field_access.field);
+        return NULL;
+    }
+
+
+    /* Auto-dereference pointer-to-struct for field access (self.x where self is *Struct) */
+    bool is_ptr_deref = false;
+    /* Phase 2 (borrow extension): obj is a borrow result (&Struct), e.g.
+       `obj.get_ref().field`. The evaluated value IS the struct pointer (the
+       pointer ABI of &T), so GEP it directly — no alloca spill. */
+    bool is_ref_value = false;
+    Type *struct_type = obj_type;
+    if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to &&
+        obj_type->as.pointer_to->kind == TYPE_STRUCT)
+    {
+        struct_type = obj_type->as.pointer_to;
+        is_ptr_deref = true;
+    }
+    else if (obj_type && obj_type->kind == TYPE_REFERENCE && obj_type->as.pointer_to &&
+             obj_type->as.pointer_to->kind == TYPE_STRUCT)
+    {
+        struct_type = obj_type->as.pointer_to;
+        is_ref_value = true;
+    }
+
+    /* obj.field — struct field access */
+    if (struct_type == NULL || struct_type->kind != TYPE_STRUCT)
+    {
+        cg_error(ctx, node->line, node->column, "field access on non-struct");
+        return NULL;
+    }
+
+    const char *field_name = node->as.field_access.field;
+    int field_idx = -1;
+    for (int i = 0; i < struct_type->as.strukt.field_count; i++)
+    {
+        if (strcmp(struct_type->as.strukt.fields[i].name, field_name) == 0)
+        {
+            field_idx = i;
+            break;
+        }
+    }
+    if (field_idx < 0)
+    {
+        cg_error(ctx, node->line, node->column,
+                 "struct '%s' has no field '%s'",
+                 struct_type->as.strukt.name, field_name);
+        return NULL;
+    }
+
+    /* Get the pointer to the struct for GEP */
+    LLVMValueRef struct_ptr = NULL;
+    if (is_ref_value)
+    {
+        /* Phase 2: the borrow result evaluates to the struct pointer. */
+        struct_ptr = codegen_expr(ctx, obj_node);
+    }
+    else if (obj_node->kind == AST_IDENT)
+    {
+        CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj_node->as.ident.name);
+        if (sym)
+        {
+            if (is_ptr_deref)
+            {
+                /* self is *Struct: alloca holds a pointer, load it to get the actual struct ptr */
+                LLVMTypeRef ptr_llvm = LLVMPointerTypeInContext(ctx->context, 0);
+                struct_ptr = LLVMBuildLoad2(ctx->builder, ptr_llvm, sym->value, "self.deref");
+            }
+            else
+            {
+                /* obj is a struct value: alloca IS the struct pointer */
+                struct_ptr = sym->value;
+            }
+        }
+    }
+    /* BF-040: array element field read (arr[i].field). The element lives
+       in-place inside the array alloca, so take its lvalue address via GEP
+       and read the field directly — instead of cloning the whole has_drop
+       struct (the M-4.5 clone+temp_drop path below). Cloning would invoke
+       the user __drop on a transient clone, double-firing side effects
+       (drop_count doubled per read). Only arrays expose a stable element
+       lvalue here; vec[i] returns NULL from codegen_lvalue_ptr and keeps
+       the clone path (its heap data may realloc, so no stable address). */
+    if (struct_ptr == NULL && !is_ptr_deref)
+    {
+        AstNode *uobj = ast_unwrap_move(obj_node);
+        if (uobj->kind == AST_INDEX &&
+            uobj->as.index_expr.object->resolved_type &&
+            uobj->as.index_expr.object->resolved_type->kind == TYPE_ARRAY)
+        {
+            struct_ptr = codegen_lvalue_ptr(ctx, uobj);
+        }
+        /* Transient read-through of a chained struct field: `a.b.c` where the
+           object `a.b` is itself a struct field rooted in stable named storage
+           (or an array element). Borrow `&a.b` via GEP instead of deep-cloning
+           the whole intermediate has_drop struct. The clone path below (11873)
+           produces an owned temporary that is never registered for drop → it
+           leaks its vec/map/string/nested heap, and re-fires user __drop side
+           effects. Reading through the borrow is safe — only the finally
+           accessed field is cloned below. When `a.b` is a terminal value
+           binding (`Box x = a.b`), the AST_FIELD object is an IDENT and is
+           handled above (struct_ptr from the symbol), so the clone is retained
+           there and correctly consumed by the binding. Mirrors the BF-040
+           array-element borrow; codegen_lvalue_ptr returns NULL for non-lvalue
+           roots (e.g. `make_box().inner`), falling through to the clone path. */
+        else if (uobj->kind == AST_FIELD)
+        {
+            struct_ptr = codegen_lvalue_ptr(ctx, uobj);
+        }
+    }
+    if (struct_ptr == NULL)
+    {
+        /* obj_node is not a simple identifier (e.g. px.color.r — chained field access).
+           Evaluate the sub-expression to get a struct value, then spill to a temp alloca
+           so we can use GEP to read the field. */
+        LLVMValueRef sub_val = codegen_expr(ctx, obj_node);
+        if (sub_val == NULL)
+            return NULL;
+        /* If sub_val is already a pointer to the struct (is_ptr_deref), use directly */
+        if (is_ptr_deref)
+        {
+            struct_ptr = sub_val;
+        }
+        else
+        {
+            /* M-4.5: when the object is vec[i]/arr[i] of a has_drop struct,
+               sub_val is an owned deep clone (the container keeps its own copy).
+               Field access reads one field; the rest of this temporary struct's
+               owned resources (other string fields, nested drops) would leak.
+               Spill + register so the statement-end flush drops it. The
+               accessed field is independently cloned below, so dropping the
+               temporary here does not invalidate the returned value. */
+            /* Owned rvalue struct sources whose temp must be dropped after the
+               field read: container index (vec[i]/p[i]), a CALL returning a
+               has_drop struct by value (f().field / obj.method(i).field), a
+               nested field read whose own object had no stable lvalue
+               (`v[i].inner.field`), and the other fresh-rvalue producers
+               (`(match …).field` / `(try f()).field` / lowered-operator
+               results) — the old INDEX/CALL/FIELD list missed those, leaking
+               the spilled struct's OTHER owned fields
+               (own_rvalue_sites_test.lls). Reaching this else-branch at all
+               means obj_node has no backing lvalue (codegen_lvalue_ptr
+               returned NULL above) → the spilled struct value is an owned
+               rvalue → the accessed field is cloned below, so dropping the
+               temp is safe for any has_drop source. Membership rationale
+               lives on cg_expr_yields_owned_rvalue (codegen_internal.h).
+               A POD source still needs the spill for the GEP below — bare
+               alloca+store, nothing to register. */
+            AstNode *uobj_src = ast_unwrap_move(obj_node);
+            if (cg_expr_yields_owned_rvalue(uobj_src, struct_type))
+                struct_ptr = cg_spill_owned_rvalue(ctx, sub_val, struct_type,
+                                                   false, "tmp.struct");
+            else
+            {
+                struct_ptr = cg_entry_alloca(
+                    ctx, type_to_llvm(ctx, struct_type), "tmp.struct");
+                LLVMBuildStore(ctx->builder, sub_val, struct_ptr);
+            }
+        }
+    }
+
+    LLVMTypeRef struct_llvm = find_struct_llvm(ctx, struct_type->as.strukt.name);
+    if (struct_llvm == NULL)
+    {
+        struct_llvm = type_to_llvm(ctx, struct_type);
+    }
+
+    LLVMValueRef gep = LLVMBuildStructGEP2(ctx->builder, struct_llvm,
+                                           struct_ptr, (unsigned)field_idx, "field");
+    Type *field_type = struct_type->as.strukt.fields[field_idx].type;
+    LLVMTypeRef field_llvm = type_to_llvm(ctx, field_type);
+    LLVMValueRef field_val = LLVMBuildLoad2(ctx->builder, field_llvm, gep, field_name);
+    /* Struct field access is a READ — the struct retains ownership of its fields.
+       Clone owned data so the caller gets an independent copy.
+       Without this, both the caller's variable and the struct would try to free
+       the same string/owned-struct data → double-free.
+       CONTRACT: this clone behavior is one half of the table on
+       cg_match_subject_is_owned_rvalue (codegen_match.c) — an AST_FIELD match
+       subject is judged owned and dropped at merge, which is only sound
+       because the read here yields an independent copy. Change one side,
+       re-check the other. */
+    if (field_type && field_type->kind == TYPE_STRUCT && field_type->as.strukt.has_drop)
+        field_val = emit_struct_clone_val(ctx, field_val, field_llvm, field_type);
+    /* Symmetric to the struct branch: reading a has_drop ENUM field
+       (Option(Str), a user enum with a Str/owned payload, ...) is also a READ —
+       the struct keeps ownership of its payload. Without a clone the loaded enum
+       aliases the struct's payload heap; a consumer that treats it as owned
+       (e.g. a `match` subject — a non-IDENT AST_FIELD is an owned rvalue temp,
+       dropped at merge, see cg_match_subject_is_owned_rvalue in
+       codegen_match.c) then double-frees that payload against the struct's own
+       scope-exit drop. Mirrors AST_INDEX enum reads, which already clone.
+       (memcheck-found 2026-07-04; field_enum_subject_test.lls = BUG-1.) */
+    else if (field_type && field_type->kind == TYPE_ENUM && field_type->as.enom.has_drop)
+        field_val = emit_enum_clone_val(ctx, field_val, field_type);
+    /* F.3: Block field read — the struct retains env ownership, so the loaded
+       LsBlock is a shallow ALIAS; return it directly (do NOT clone here).
+       Phase G removed the old `Block g = p.step1` rejection
+       (checker.c:3026-3029): binding a Block out of a field now deep-clones
+       the env at the BIND site (cg_emit_block_env_clone), and a direct call
+       `p.step1(args)` just uses the aliased value. (When the WHOLE struct is
+       cloned by value, emit_struct_clone_val deep-clones its Block fields —
+       a separate path.) */
+    return field_val;
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -3506,280 +3782,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return cg_expr_call(ctx, node);
 
     case AST_FIELD:
-    {
-        if (node->coerce_fn_to_block)
-            return codegen_fn_to_block(ctx, node);
-
-        AstNode *obj_node = node->as.field_access.object;
-        Type *obj_type = obj_node->resolved_type;
-
-        /* Module-qualified access (e.g., math.add or math.PI) */
-        if (obj_type && obj_type->kind == TYPE_MODULE)
-        {
-            const char *name = node->as.field_access.field;
-
-            /* Built-in stdlib module: emit constant inline (PI/E/INF/NAN/...).
-               Functions reached as bare field-access (without a call) are
-               unsupported for now — taking math.sqrt as a function pointer
-               would need a wrapper since we have no IR-level body. */
-            if (obj_type->as.module.is_builtin &&
-                obj_type->as.module.name &&
-                strcmp(obj_type->as.module.name, "std.core.math") == 0)
-            {
-                LLVMValueRef cst = builtin_math_emit_const(ctx, name);
-                if (cst) return cst;
-                cg_error(ctx, node->line, node->column,
-                         "math.%s is not a constant; use it in a call expression",
-                         name);
-                return NULL;
-            }
-
-            /* Try function first: module-prefixed (L-009), then bare. */
-            char fn_sym[512];
-            cg_module_fn_symbol(fn_sym, sizeof(fn_sym),
-                                obj_type->as.module.name, name);
-            LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, fn_sym);
-            if (!fn)
-                fn = LLVMGetNamedFunction(ctx->module, name);
-            if (fn)
-                return fn;
-            /* Try global variable: P1-1 module globals use prefixed name. */
-            char gv_sym[512];
-            cg_module_fn_symbol(gv_sym, sizeof(gv_sym),
-                                obj_type->as.module.name, name);
-            LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, gv_sym);
-            if (!gv)
-                gv = LLVMGetNamedGlobal(ctx->module, name);
-            if (gv)
-            {
-                Type *rt = node->resolved_type;
-                if (rt && rt->kind == TYPE_ARRAY)
-                {
-                    /* For arrays, return the pointer to the global array directly */
-                    return gv;
-                }
-                LLVMTypeRef load_type = type_to_llvm(ctx, rt);
-                return LLVMBuildLoad2(ctx->builder, load_type, gv, name);
-            }
-            cg_error(ctx, node->line, node->column,
-                     "undefined symbol '%s' in module '%s'",
-                     name, obj_type->as.module.name ? obj_type->as.module.name : "?");
-            return NULL;
-        }
-
-        /* Array .length — compile-time constant */
-        if (obj_type && obj_type->kind == TYPE_ARRAY)
-        {
-            if (strcmp(node->as.field_access.field, "length") == 0)
-            {
-                return LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
-                                    (unsigned long long)obj_type->as.array.size, 0);
-            }
-            cg_error(ctx, node->line, node->column,
-                     "array has no field '%s'", node->as.field_access.field);
-            return NULL;
-        }
-
-
-        /* Auto-dereference pointer-to-struct for field access (self.x where self is *Struct) */
-        bool is_ptr_deref = false;
-        /* Phase 2 (borrow extension): obj is a borrow result (&Struct), e.g.
-           `obj.get_ref().field`. The evaluated value IS the struct pointer (the
-           pointer ABI of &T), so GEP it directly — no alloca spill. */
-        bool is_ref_value = false;
-        Type *struct_type = obj_type;
-        if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to &&
-            obj_type->as.pointer_to->kind == TYPE_STRUCT)
-        {
-            struct_type = obj_type->as.pointer_to;
-            is_ptr_deref = true;
-        }
-        else if (obj_type && obj_type->kind == TYPE_REFERENCE && obj_type->as.pointer_to &&
-                 obj_type->as.pointer_to->kind == TYPE_STRUCT)
-        {
-            struct_type = obj_type->as.pointer_to;
-            is_ref_value = true;
-        }
-
-        /* obj.field — struct field access */
-        if (struct_type == NULL || struct_type->kind != TYPE_STRUCT)
-        {
-            cg_error(ctx, node->line, node->column, "field access on non-struct");
-            return NULL;
-        }
-
-        const char *field_name = node->as.field_access.field;
-        int field_idx = -1;
-        for (int i = 0; i < struct_type->as.strukt.field_count; i++)
-        {
-            if (strcmp(struct_type->as.strukt.fields[i].name, field_name) == 0)
-            {
-                field_idx = i;
-                break;
-            }
-        }
-        if (field_idx < 0)
-        {
-            cg_error(ctx, node->line, node->column,
-                     "struct '%s' has no field '%s'",
-                     struct_type->as.strukt.name, field_name);
-            return NULL;
-        }
-
-        /* Get the pointer to the struct for GEP */
-        LLVMValueRef struct_ptr = NULL;
-        if (is_ref_value)
-        {
-            /* Phase 2: the borrow result evaluates to the struct pointer. */
-            struct_ptr = codegen_expr(ctx, obj_node);
-        }
-        else if (obj_node->kind == AST_IDENT)
-        {
-            CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj_node->as.ident.name);
-            if (sym)
-            {
-                if (is_ptr_deref)
-                {
-                    /* self is *Struct: alloca holds a pointer, load it to get the actual struct ptr */
-                    LLVMTypeRef ptr_llvm = LLVMPointerTypeInContext(ctx->context, 0);
-                    struct_ptr = LLVMBuildLoad2(ctx->builder, ptr_llvm, sym->value, "self.deref");
-                }
-                else
-                {
-                    /* obj is a struct value: alloca IS the struct pointer */
-                    struct_ptr = sym->value;
-                }
-            }
-        }
-        /* BF-040: array element field read (arr[i].field). The element lives
-           in-place inside the array alloca, so take its lvalue address via GEP
-           and read the field directly — instead of cloning the whole has_drop
-           struct (the M-4.5 clone+temp_drop path below). Cloning would invoke
-           the user __drop on a transient clone, double-firing side effects
-           (drop_count doubled per read). Only arrays expose a stable element
-           lvalue here; vec[i] returns NULL from codegen_lvalue_ptr and keeps
-           the clone path (its heap data may realloc, so no stable address). */
-        if (struct_ptr == NULL && !is_ptr_deref)
-        {
-            AstNode *uobj = ast_unwrap_move(obj_node);
-            if (uobj->kind == AST_INDEX &&
-                uobj->as.index_expr.object->resolved_type &&
-                uobj->as.index_expr.object->resolved_type->kind == TYPE_ARRAY)
-            {
-                struct_ptr = codegen_lvalue_ptr(ctx, uobj);
-            }
-            /* Transient read-through of a chained struct field: `a.b.c` where the
-               object `a.b` is itself a struct field rooted in stable named storage
-               (or an array element). Borrow `&a.b` via GEP instead of deep-cloning
-               the whole intermediate has_drop struct. The clone path below (11873)
-               produces an owned temporary that is never registered for drop → it
-               leaks its vec/map/string/nested heap, and re-fires user __drop side
-               effects. Reading through the borrow is safe — only the finally
-               accessed field is cloned below. When `a.b` is a terminal value
-               binding (`Box x = a.b`), the AST_FIELD object is an IDENT and is
-               handled above (struct_ptr from the symbol), so the clone is retained
-               there and correctly consumed by the binding. Mirrors the BF-040
-               array-element borrow; codegen_lvalue_ptr returns NULL for non-lvalue
-               roots (e.g. `make_box().inner`), falling through to the clone path. */
-            else if (uobj->kind == AST_FIELD)
-            {
-                struct_ptr = codegen_lvalue_ptr(ctx, uobj);
-            }
-        }
-        if (struct_ptr == NULL)
-        {
-            /* obj_node is not a simple identifier (e.g. px.color.r — chained field access).
-               Evaluate the sub-expression to get a struct value, then spill to a temp alloca
-               so we can use GEP to read the field. */
-            LLVMValueRef sub_val = codegen_expr(ctx, obj_node);
-            if (sub_val == NULL)
-                return NULL;
-            /* If sub_val is already a pointer to the struct (is_ptr_deref), use directly */
-            if (is_ptr_deref)
-            {
-                struct_ptr = sub_val;
-            }
-            else
-            {
-                /* M-4.5: when the object is vec[i]/arr[i] of a has_drop struct,
-                   sub_val is an owned deep clone (the container keeps its own copy).
-                   Field access reads one field; the rest of this temporary struct's
-                   owned resources (other string fields, nested drops) would leak.
-                   Spill + register so the statement-end flush drops it. The
-                   accessed field is independently cloned below, so dropping the
-                   temporary here does not invalidate the returned value. */
-                /* Owned rvalue struct sources whose temp must be dropped after the
-                   field read: container index (vec[i]/p[i]), a CALL returning a
-                   has_drop struct by value (f().field / obj.method(i).field), a
-                   nested field read whose own object had no stable lvalue
-                   (`v[i].inner.field`), and the other fresh-rvalue producers
-                   (`(match …).field` / `(try f()).field` / lowered-operator
-                   results) — the old INDEX/CALL/FIELD list missed those, leaking
-                   the spilled struct's OTHER owned fields
-                   (own_rvalue_sites_test.lls). Reaching this else-branch at all
-                   means obj_node has no backing lvalue (codegen_lvalue_ptr
-                   returned NULL above) → the spilled struct value is an owned
-                   rvalue → the accessed field is cloned below, so dropping the
-                   temp is safe for any has_drop source. Membership rationale
-                   lives on cg_expr_yields_owned_rvalue (codegen_internal.h).
-                   A POD source still needs the spill for the GEP below — bare
-                   alloca+store, nothing to register. */
-                AstNode *uobj_src = ast_unwrap_move(obj_node);
-                if (cg_expr_yields_owned_rvalue(uobj_src, struct_type))
-                    struct_ptr = cg_spill_owned_rvalue(ctx, sub_val, struct_type,
-                                                       false, "tmp.struct");
-                else
-                {
-                    struct_ptr = cg_entry_alloca(
-                        ctx, type_to_llvm(ctx, struct_type), "tmp.struct");
-                    LLVMBuildStore(ctx->builder, sub_val, struct_ptr);
-                }
-            }
-        }
-
-        LLVMTypeRef struct_llvm = find_struct_llvm(ctx, struct_type->as.strukt.name);
-        if (struct_llvm == NULL)
-        {
-            struct_llvm = type_to_llvm(ctx, struct_type);
-        }
-
-        LLVMValueRef gep = LLVMBuildStructGEP2(ctx->builder, struct_llvm,
-                                               struct_ptr, (unsigned)field_idx, "field");
-        Type *field_type = struct_type->as.strukt.fields[field_idx].type;
-        LLVMTypeRef field_llvm = type_to_llvm(ctx, field_type);
-        LLVMValueRef field_val = LLVMBuildLoad2(ctx->builder, field_llvm, gep, field_name);
-        /* Struct field access is a READ — the struct retains ownership of its fields.
-           Clone owned data so the caller gets an independent copy.
-           Without this, both the caller's variable and the struct would try to free
-           the same string/owned-struct data → double-free.
-           CONTRACT: this clone behavior is one half of the table on
-           cg_match_subject_is_owned_rvalue (codegen_match.c) — an AST_FIELD match
-           subject is judged owned and dropped at merge, which is only sound
-           because the read here yields an independent copy. Change one side,
-           re-check the other. */
-        if (field_type && field_type->kind == TYPE_STRUCT && field_type->as.strukt.has_drop)
-            field_val = emit_struct_clone_val(ctx, field_val, field_llvm, field_type);
-        /* Symmetric to the struct branch: reading a has_drop ENUM field
-           (Option(Str), a user enum with a Str/owned payload, ...) is also a READ —
-           the struct keeps ownership of its payload. Without a clone the loaded enum
-           aliases the struct's payload heap; a consumer that treats it as owned
-           (e.g. a `match` subject — a non-IDENT AST_FIELD is an owned rvalue temp,
-           dropped at merge, see cg_match_subject_is_owned_rvalue in
-           codegen_match.c) then double-frees that payload against the struct's own
-           scope-exit drop. Mirrors AST_INDEX enum reads, which already clone.
-           (memcheck-found 2026-07-04; field_enum_subject_test.lls = BUG-1.) */
-        else if (field_type && field_type->kind == TYPE_ENUM && field_type->as.enom.has_drop)
-            field_val = emit_enum_clone_val(ctx, field_val, field_type);
-        /* F.3: Block field read — the struct retains env ownership, so the loaded
-           LsBlock is a shallow ALIAS; return it directly (do NOT clone here).
-           Phase G removed the old `Block g = p.step1` rejection
-           (checker.c:3026-3029): binding a Block out of a field now deep-clones
-           the env at the BIND site (cg_emit_block_env_clone), and a direct call
-           `p.step1(args)` just uses the aliased value. (When the WHOLE struct is
-           cloned by value, emit_struct_clone_val deep-clones its Block fields —
-           a separate path.) */
-        return field_val;
-    }
+        return cg_expr_field(ctx, node);
 
     case AST_MATCH:
         return codegen_match_expr(ctx, node);
