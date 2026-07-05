@@ -1,0 +1,32 @@
+// intrinsic_atomic_smoke.lls — emit-ir coverage of EVERY __atomic_* dispatch
+// row (S2 Phase 1 guardrail): fence, load/store x {seqcst, acquire/release,
+// relaxed}, add/sub (int RMW *and* float FAdd/FSub RMW), swap, cas.
+// Not registered in ctest; used for byte-diff of codegen output only.
+// Safe to execute (single thread, plain locals as the atomic places).
+
+def main() {
+    int x = 0
+    f64 g = 0.0
+
+    __atomic_store(x, 1)
+    __atomic_store_release(x, 2)
+    __atomic_store_relaxed(x, 3)
+    int a = __atomic_load(x)
+    int b = __atomic_load_acquire(x)
+    int cc = __atomic_load_relaxed(x)
+    int old1 = __atomic_add(x, 5)
+    int old2 = __atomic_sub(x, 2)
+    int old3 = __atomic_swap(x, 9)
+    bool ok = __atomic_cas(x, 9, 11)
+    __atomic_fence()
+
+    // float RMW rows (FAdd / FSub) + float load/store
+    __atomic_store(g, 1.5)
+    f64 fo1 = __atomic_add(g, 2.5)
+    f64 fo2 = __atomic_sub(g, 1.0)
+    f64 fl = __atomic_load(g)
+
+    int isum = a + b + cc + old1 + old2 + old3
+    f64 fsum = fo1 + fo2 + fl
+    @print(f"atomic smoke {isum} {ok} {fsum}")
+}

@@ -1,0 +1,67 @@
+// intrinsic_simd_smoke.lls — emit-ir coverage of EVERY __simd_* dispatch row
+// (S2 Phase 1 guardrail): zero, splat, lane, fma, max/min (float + signed +
+// unsigned), reduce_add (float + int), reduce_max/min (float + signed +
+// unsigned), load/store, load_masked/store_masked, cast (all conversion
+// branches), floor, bitcast.
+// Not registered in ctest; used for byte-diff of codegen output only.
+// Safe to execute single-threaded; 4-lane vectors are SSE-safe everywhere.
+
+import std.sys.c as sc
+
+def main() {
+    // producers
+    Simd(f32, 4) fz = __simd_zero()
+    Simd(f32, 4) fa = __simd_splat(1.5)
+    Simd(f32, 4) fb = __simd_splat(2.0)
+    Simd(int, 4) ia = __simd_splat(3)
+    Simd(int, 4) ib = __simd_splat(4)
+    Simd(u32, 4) ua = __simd_splat(7)
+    Simd(u32, 4) ub = __simd_splat(2)
+
+    // lane / fma / element-wise max & min (float, signed, unsigned rows)
+    f32 l0 = __simd_lane(fa, 0)
+    Simd(f32, 4) ff = __simd_fma(fa, fb, fz)
+    Simd(f32, 4) fmx = __simd_max(fa, fb)
+    Simd(f32, 4) fmn = __simd_min(fa, fb)
+    Simd(int, 4) imx = __simd_max(ia, ib)
+    Simd(int, 4) imn = __simd_min(ia, ib)
+    Simd(u32, 4) umx = __simd_max(ua, ub)
+    Simd(u32, 4) umn = __simd_min(ua, ub)
+
+    // reductions (float, signed, unsigned rows)
+    f32 rs = __simd_reduce_add(ff)
+    int ri = __simd_reduce_add(imx)
+    f32 rmx = __simd_reduce_max(fmx)
+    f32 rmn = __simd_reduce_min(fmn)
+    int irmx = __simd_reduce_max(imn)
+    int irmn = __simd_reduce_min(imx)
+    u32 urmx = __simd_reduce_max(umn)
+    u32 urmn = __simd_reduce_min(umx)
+
+    // memory: plain + masked
+    *f32 buf = sc.malloc(8 * sizeof(f32)) as *f32
+    __simd_store(buf, 0, fa)
+    Simd(f32, 4) ld = __simd_load(buf, 0)
+    __simd_store_masked(buf, 4, fb, 3)
+    Simd(f32, 4) lm = __simd_load_masked(buf, 4, 3)
+    sc.free(buf as *u8)
+
+    // conversions — one row per cast branch
+    Simd(f64, 4) c_fpext   = __simd_cast(fa)       // f32 -> f64 (fpext)
+    Simd(f32, 4) c_fptrunc = __simd_cast(c_fpext)  // f64 -> f32 (fptrunc)
+    Simd(f32, 4) c_sitofp  = __simd_cast(ia)       // i32 -> f32 (sitofp)
+    Simd(f32, 4) c_uitofp  = __simd_cast(ua)       // u32 -> f32 (uitofp)
+    Simd(int, 4) c_fptosi  = __simd_cast(fa)       // f32 -> i32 (fptosi)
+    Simd(u32, 4) c_fptoui  = __simd_cast(fb)       // f32 -> u32 (fptoui)
+    Simd(i64, 4) c_sext    = __simd_cast(ia)       // i32 -> i64 (sext)
+    Simd(u64, 4) c_zext    = __simd_cast(ua)       // u32 -> u64 (zext)
+    Simd(i8, 4)  c_trunc   = __simd_cast(ia)       // i32 -> i8  (trunc)
+
+    Simd(f32, 4) flr = __simd_floor(fb)
+    Simd(int, 4) bc  = __simd_bitcast(fa)          // f32 bits -> i32
+
+    f32 facc = rs + rmx + rmn + l0 + __simd_lane(ld, 0) + __simd_lane(lm, 0)
+             + __simd_lane(flr, 0)
+    int iacc = ri + irmx + irmn + __simd_lane(bc, 0)
+    @print(f"simd smoke {facc} {iacc} {urmx} {urmn}")
+}

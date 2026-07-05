@@ -1,0 +1,37 @@
+// intrinsic_sync_smoke.lls — emit-ir coverage of EVERY __mutex_/__rwlock_/
+// __cond_/__cpu_* sync-intrinsic dispatch row (S2 Phase 1 guardrail).
+// Not registered in ctest; used for byte-diff of codegen output only.
+// __cond_wait would block forever with no signaller, so it sits behind a
+// runtime-false branch (pre-opt emit-ir still contains the call). The rest
+// is safe to execute: trylock on a held mutex fails without blocking.
+
+def wait_guarded(int n, object c, object m) {
+    if n > 0 {
+        __cond_wait(c, m)
+    }
+}
+
+def main() {
+    object m = __mutex_init()
+    __mutex_lock(m)
+    int got = __mutex_trylock(m)
+    __mutex_unlock(m)
+
+    object rw = __rwlock_init()
+    __rwlock_rdlock(rw)
+    __rwlock_rdunlock(rw)
+    __rwlock_wrlock(rw)
+    __rwlock_wrunlock(rw)
+    __rwlock_destroy(rw)
+
+    object c = __cond_init()
+    wait_guarded(0, c, m)
+    __cond_signal(c)
+    __cond_broadcast(c)
+    __cond_destroy(c)
+    __mutex_destroy(m)
+
+    __cpu_relax()
+    __cpu_yield()
+    @print(f"sync smoke ok {got}")
+}
