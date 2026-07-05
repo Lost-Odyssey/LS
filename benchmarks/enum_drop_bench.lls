@@ -1,0 +1,27 @@
+// enum_drop_bench.lls — isolate the cost of the post-drop slot
+// invalidation store (whole-slot zeroing vs 1-byte dead-tag sentinel).
+// All Str payloads are static literals (cap=0, drop is a no-op), so per
+// iteration the drop path costs: synthesized __drop call (all branches
+// no-op) + the invalidation store. Compare wall clock with
+// LS_NO_DROP_SENTINEL=1 (legacy zeroing) vs default (sentinel).
+
+enum Fat {
+    Nil
+    Big(Str, Str, Str, Str)
+}
+
+def churn(int i) -> int {
+    Fat f = Big("aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd")
+    match f {
+        Big(a, b, c, d) => { return a.len() + i }
+        Nil => { return 0 }
+    }
+}
+
+def main() {
+    int acc = 0
+    for i in 0..2000000 {
+        acc = acc + churn(i)
+    }
+    @print(f"acc={acc}")
+}
