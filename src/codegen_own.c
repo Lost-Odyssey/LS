@@ -945,15 +945,21 @@ void cg_store_owned(CodegenContext *ctx,
             cg_null_block_env(ctx, src_sym->value);
         else if (!src_sym)
         {
-            /* Fresh rvalue moved into this container slot: claim its P3 temp_drop
-               (a non-aliased factory / force-unwrap) or pop the closure-literal
-               temp_env, so the statement flush doesn't release the env the
-               container now owns. An aliased reader (Vec.get!) is a borrow and was
-               never tracked — leave it to the enum-ctor clone boundary. */
-            if (!(is_rvalue && !cg_block_source_is_aliased(src) &&
-                  cg_claim_block_temp_above(ctx, 0)) &&
-                ctx->temp_block_env_count > 0)
-                ctx->temp_block_env_count--;
+            /* Fresh rvalue moved into this container slot: claim its temp_drop
+               entry (factory / force-unwrap / closure literal — unified ledger,
+               stage 10) so the statement flush doesn't release the env the
+               container now owns. AST_CLOSURE is not in the is_rvalue kind list
+               above (it predates the unification and gates Str/struct moves) —
+               a literal is a fresh owned Block rvalue and MUST be claimed here,
+               or the flush releases the env the field now owns (UAF at struct
+               drop; closure_f3 struct-literal fields caught this on day one).
+               An aliased reader (Vec.get!) is a borrow and was never tracked —
+               claim nothing, leave it to the enum-ctor clone boundary.
+               (Pre-unification an aliased source with a pending literal env
+               wrongly popped that unrelated entry.) */
+            if ((is_rvalue || (src && src->kind == AST_CLOSURE)) &&
+                !cg_block_source_is_aliased(src))
+                cg_claim_block_temp_above(ctx, 0);
         }
         return;
     }

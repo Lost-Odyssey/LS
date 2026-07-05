@@ -800,21 +800,19 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                coupled with P3 (discarded-rvalue release). */
                             block_alias_init = true;
                         }
-                        else if (ctx->temp_block_env_count > 0)
-                        {
-                            /* Fresh rvalue (closure literal, refcount=1): transfer
-                               the single reference it was born with — pop the temp
-                               so the statement-end flush doesn't also release it.
-                               No retain (the var owns that one reference). */
-                            ctx->temp_block_env_count--;
-                        }
                         else
                         {
-                            /* Fresh OWNED Block rvalue (factory call / force-unwrap,
-                               P3-tracked as a temp_drop): the var takes that single
-                               reference — claim the temp so the statement-end flush
-                               doesn't release the env the var now owns. No-op for an
-                               untracked rvalue. */
+                            /* Fresh OWNED Block rvalue — factory call / force-unwrap
+                               (P3) or closure literal (stage 10, unified into the
+                               same temp_drop ledger): the var takes the single
+                               reference it was born with — claim the temp so the
+                               statement-end flush doesn't release the env the var
+                               now owns. No retain, no-op for an untracked rvalue.
+                               (Pre-unification this popped the literal's entry from
+                               a separate env table FIRST, which mis-claimed the
+                               literal ARG's env instead of the factory result for
+                               `Block b = make_pair(|| ..)`; topmost-Block claim
+                               picks the result — registered last — correctly.) */
                             cg_claim_block_temp_above(ctx, blk_drop_floor);
                         }
                     }
@@ -1026,12 +1024,10 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     else if (!cg_block_source_is_aliased(rhs_node))
                     {
                         /* Fresh rvalue on RHS — dst takes its single reference, so
-                           the statement flush must not also release it. A factory
-                           call / force-unwrap is P3-tracked as a temp_drop (claim
-                           it); a closure literal uses temp_block_env (pop it). */
-                        if (!cg_claim_block_temp_above(ctx, assign_drop_floor) &&
-                            ctx->temp_block_env_count > 0)
-                            ctx->temp_block_env_count--;
+                           the statement flush must not also release it. Factory
+                           call / force-unwrap (P3) and closure literal (stage 10)
+                           are both temp_drop-tracked now: claim the entry. */
+                        cg_claim_block_temp_above(ctx, assign_drop_floor);
                     }
                 }
                 else
@@ -1388,12 +1384,10 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                    onward) and own the released env. */
                 if (ret_type && ret_type->kind == TYPE_BLOCK) {
                     /* Block return transfers env ownership to the caller — claim
-                       the tracked temp (factory / force-unwrap, P3) or pop the
-                       closure-literal temp_env, so the scope-exit flush below does
-                       not release the env the caller now owns. */
-                    if (!cg_claim_block_temp_above(ctx, ret_drop_floor) &&
-                        ctx->temp_block_env_count > 0)
-                        ctx->temp_block_env_count--;
+                       the tracked temp (factory / force-unwrap / closure literal,
+                       all temp_drop-tracked since stage 10) so the scope-exit
+                       flush below does not release the env the caller now owns. */
+                    cg_claim_block_temp_above(ctx, ret_drop_floor);
                 }
                 cg_flush_temps_scope_exit(ctx);
                 /* P1-3 fix: returning a GLOBAL string by name shares the global's
@@ -2628,13 +2622,18 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     val = LLVMBuildInsertValue(ctx->builder, val, fn, 0, "blk.fn");
     val = LLVMBuildInsertValue(ctx->builder, val, env_val, 1, "blk.env");
 
-    /* 11) Phase C.5: register env as a statement-temp. If a Block-typed
-       var_decl / return / store consumes this literal, it will pop the
-       last entry to claim ownership before flush. Otherwise the env was
-       a true rvalue (e.g. arg to a call that borrowed it) and gets freed
-       at the next statement boundary by cg_flush_temps. NULL envs (no
-       captures) are filtered out by cg_push_temp_block_env. */
-    cg_push_temp_block_env(ctx, env_val);
+    /* 11) Stage 10 (B-4 unification): register the literal like every other
+       fresh owned Block rvalue — spill the fat value to an entry slot and
+       enter it in the temp_drop ledger (this replaced the separate
+       temp_block_env SSA-value table). A consuming var_decl / return /
+       store claims the entry (cg_claim_block_temp_above); an unconsumed
+       rvalue (arg to a call that only borrowed it) is released by the
+       statement-end flush via the slot. zeroed=true: the drop can be
+       reached on a path that skipped a conditionally-emitted literal
+       (same defense as tmp.rval.self); a zero slot releases env=NULL,
+       a runtime no-op — which also covers the captureless case
+       (env_val is ConstNull, release branches past it). */
+    cg_spill_owned_rvalue(ctx, val, block_t, true, "blk.lit.tmp");
     return val;
 }
 

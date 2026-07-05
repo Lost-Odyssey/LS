@@ -2399,6 +2399,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             }
             LLVMTypeRef res_llvm =
                 type_to_llvm(ctx, blk_t->as.function.return_type);
+            int spawn_drop_floor = ctx->temp_drop_count;
             LLVMValueRef closure_val = codegen_expr(ctx, blk);
             if (closure_val == NULL) return NULL;
             LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "task.fn");
@@ -2414,8 +2415,11 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 if (bsym && !bsym->is_borrowed)
                     cg_null_block_env(ctx, bsym->value);
             }
-            else if (ctx->temp_block_env_count > 0)
-                ctx->temp_block_env_count--;
+            else
+                /* Fresh rvalue (literal or factory, both temp_drop-tracked
+                   since stage 10): the thread owns the env — claim so the
+                   caller's statement flush doesn't release it. */
+                cg_claim_block_temp_above(ctx, spawn_drop_floor);
 
             LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
             LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
@@ -3839,12 +3843,12 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                                 cg_null_block_env(ctx, bsym->value);
                         }
                         /* Fresh rvalue arg moved into the container/worker: claim
-                           its P3 temp_drop (factory / force-unwrap) or pop the
-                           closure-literal temp_env, so the caller's statement flush
-                           doesn't free the env the container now owns. */
-                        else if (!cg_claim_block_temp_above(ctx, arg_drop_floor) &&
-                                 ctx->temp_block_env_count > 0)
-                            ctx->temp_block_env_count--;
+                           its temp_drop entry (factory / force-unwrap / closure
+                           literal — unified ledger, stage 10) so the caller's
+                           statement flush doesn't free the env the container now
+                           owns. */
+                        else
+                            cg_claim_block_temp_above(ctx, arg_drop_floor);
                     }
                 }
                 args[i + arg_offset] = arg_val;
