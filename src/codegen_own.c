@@ -1976,9 +1976,13 @@ void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
     LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "disc");
     /* Dead-capable load: after a drop the slot may carry the sentinel tag
        (== variant_count), so promise [0, vc+1) here — one wider than the
-       live-value sites (match/try/unwrap keep [0, vc)). vc==255 → 256 →
-       cg_attach_tag_range skips (no spare i8 value; sentinel emission is
-       also skipped for that domain). Width follows the sentinel switch so
+       live-value sites (match/try/unwrap keep [0, vc)). At vc==255 the
+       sentinel is still emitted (tag=255 is a genuine spare value — live
+       tags occupy only [0,254]); only the range metadata itself is
+       dropped, because cg_attach_tag_range's own >255 guard sees a
+       requested width of 256 and skips. vc>255 is the domain that falls
+       back to whole-slot zeroing (no spare i8 value at all — see
+       emit_enum_drop). Width follows the sentinel switch so
        LS_NO_DROP_SENTINEL=1 stays byte-identical to the legacy baseline. */
     cg_attach_tag_range(ctx, disc, enum_type->as.enom.variant_count
                                    + (cg_drop_sentinel_on() ? 1 : 0));
@@ -2128,8 +2132,12 @@ void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type)
            first-scene instead of silently aliasing freed heap. Gate mirrors
            cg_env_poison_on (codegen_stmt.c): the Release non-memcheck fast
            path stays byte-identical. Uses the same libc-memset-call
-           convention as the enum ctor's payload zeroing above (this file
-           has no LLVMBuildMemSet precedent anywhere). */
+           convention as the enum ctor's payload zeroing in
+           codegen_decl.c:989 (this file has no LLVMBuildMemSet precedent
+           anywhere). memset may not be declared yet in non-memcheck
+           CG_DEBUG builds (only cg_install_memcheck_wrappers declares it),
+           so declare it on demand here, mirroring codegen.c:718-722's
+           signature exactly. */
         if (cg_enum_poison_on(ctx))
         {
             LLVMValueRef pay_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm,
@@ -2138,6 +2146,22 @@ void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type)
             LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
             unsigned long long pay_sz = LLVMABISizeOfType(td, pay_ty);
             LLVMValueRef memset_fn = LLVMGetNamedFunction(ctx->module, "memset");
+            if (!memset_fn)
+            {
+                /* Only cg_install_memcheck_wrappers (codegen.c:718-722)
+                   declares memset today, so a non-memcheck CG_DEBUG build
+                   (this poison block's other trigger, see cg_enum_poison_on)
+                   reaches here with no declaration yet. Declare it on
+                   demand, mirroring codegen.c:718-722's signature exactly:
+                   ptr memset(ptr, i32, i64). */
+                LLVMTypeRef pv_ptr = LLVMPointerTypeInContext(ctx->context, 0);
+                LLVMTypeRef ms_params[3] = {
+                    pv_ptr, LLVMInt32TypeInContext(ctx->context),
+                    LLVMInt64TypeInContext(ctx->context)
+                };
+                memset_fn = LLVMAddFunction(ctx->module, "memset",
+                                            LLVMFunctionType(pv_ptr, ms_params, 3, 0));
+            }
             LLVMTypeRef  memset_ty = memset_fn ? LLVMGlobalGetValueType(memset_fn) : NULL;
             if (memset_fn && pay_sz > 0)
             {
@@ -2271,7 +2295,9 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
     /* disc = tmp->field[0] */
     LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 0, "ec.discp");
     LLVMValueRef disc     = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "ec.disc");
-    /* Dead-capable load: see emit_auto_enum_drop_fn's matching comment. */
+    /* Dead-capable load: see emit_auto_enum_drop_fn's matching comment
+       (vc==255 still emits the sentinel; only the range metadata itself
+       is skipped there). */
     cg_attach_tag_range(ctx, disc, enum_type->as.enom.variant_count
                                    + (cg_drop_sentinel_on() ? 1 : 0));
 
