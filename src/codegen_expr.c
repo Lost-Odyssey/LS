@@ -3608,6 +3608,147 @@ static LLVMValueRef cg_expr_index(CodegenContext *ctx, AstNode *node)
     return elem;
 }
 
+static LLVMValueRef cg_expr_new_expr(CodegenContext *ctx, AstNode *node)
+{
+    bool on_stack = node->as.new_expr.on_stack;
+
+    /* Resolve struct type */
+    Type *struct_type;
+    if (on_stack)
+    {
+        /* StructName{...} — value literal, resolved_type is TYPE_STRUCT */
+        struct_type = node->resolved_type;
+    }
+    else
+    {
+        /* new StructName{...} — heap, resolved_type is *TYPE_STRUCT */
+        Type *ptr_type = node->resolved_type;
+        if (!ptr_type || ptr_type->kind != TYPE_POINTER || !ptr_type->as.pointer_to)
+        {
+            cg_error(ctx, node->line, node->column, "new_expr: bad resolved type");
+            return NULL;
+        }
+        struct_type = ptr_type->as.pointer_to;
+    }
+    if (!struct_type || struct_type->kind != TYPE_STRUCT)
+    {
+        cg_error(ctx, node->line, node->column, "new_expr: not a struct type");
+        return NULL;
+    }
+
+    LLVMTypeRef st_llvm = type_to_llvm(ctx, struct_type);
+
+    /* Allocate storage: stack alloca for value literal, malloc for new.
+       Bug #24: the alloca MUST be in the function entry block, not at the
+       current builder position. If this struct literal is inside a loop
+       body, a per-iteration alloca grows the stack without bound (LLVM
+       alloca is only freed on function return) → stack overflow in JIT
+       (default 1 MB stack; 100k × 16B = 1.6 MB). AOT hides it because
+       the O2 mem2reg pass promotes the alloca to a register. */
+    LLVMValueRef storage;
+    if (on_stack)
+    {
+        LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
+            LLVMGetInsertBlock(ctx->builder));
+        LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
+        LLVMBuilderRef entry_b = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef first_instr = LLVMGetFirstInstruction(entry_bb);
+        if (first_instr)
+            LLVMPositionBuilderBefore(entry_b, first_instr);
+        else
+            LLVMPositionBuilderAtEnd(entry_b, entry_bb);
+        storage = LLVMBuildAlloca(entry_b, st_llvm, "sl.tmp");
+        LLVMDisposeBuilder(entry_b);
+    }
+    else
+    {
+        LLVMValueRef size_val = LLVMSizeOf(st_llvm);
+        LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
+        LLVMTypeRef malloc_type = LLVMGlobalGetValueType(malloc_fn);
+        storage = LLVMBuildCall2(ctx->builder, malloc_type, malloc_fn,
+                                 &size_val, 1, "new_raw");
+    }
+
+    /* Zero-initialize */
+    LLVMBuildStore(ctx->builder, LLVMConstNull(st_llvm), storage);
+
+    /* Apply field initializers — M-3: 统一所有权转移 */
+    int ninits = node->as.new_expr.field_init_count;
+    for (int i = 0; i < ninits; i++)
+    {
+        const char *fname = node->as.new_expr.field_inits[i].name;
+        int field_idx = -1;
+        for (int j = 0; j < struct_type->as.strukt.field_count; j++)
+        {
+            if (strcmp(struct_type->as.strukt.fields[j].name, fname) == 0)
+            {
+                field_idx = j;
+                break;
+            }
+        }
+        if (field_idx < 0)
+            continue;
+
+        /* 记录本字段求值前的 temp mark，供 cg_store_owned 的 rvalue pop 使用 */
+        LLVMValueRef val = codegen_expr(ctx, node->as.new_expr.field_inits[i].value);
+        if (val == NULL)
+            return NULL;
+
+        Type *field_type = struct_type->as.strukt.fields[field_idx].type;
+        LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
+                                                     storage, (unsigned)field_idx,
+                                                     "field_ptr");
+        /* cg_store_owned 处理：string clone/move、Block env 转移、
+           struct/enum/vec/map move 标记，以及 POD 直接 store */
+        cg_store_owned(ctx, field_ptr, val, field_type,
+                       node->as.new_expr.field_inits[i].value);
+    }
+
+    /* Fill any field not explicitly initialized with its declared default
+       (struct field default, v1). Defaults are evaluated here, at the
+       construction site — same ownership path as an explicit initializer. */
+    for (int j = 0; j < struct_type->as.strukt.field_count; j++)
+    {
+        bool provided = false;
+        for (int i = 0; i < ninits; i++)
+        {
+            if (strcmp(node->as.new_expr.field_inits[i].name,
+                       struct_type->as.strukt.fields[j].name) == 0)
+            {
+                provided = true;
+                break;
+            }
+        }
+        if (provided)
+            continue;
+        AstNode *deflt = (AstNode *)struct_type->as.strukt.fields[j].default_expr;
+        if (deflt == NULL)
+            continue; /* checker already errored; leave zero-init */
+
+        Type *field_type = struct_type->as.strukt.fields[j].type;
+        LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
+                                                     storage, (unsigned)j,
+                                                     "field_ptr_def");
+
+        /* v2: vec(T) field with an array-literal default — build the vec in
+           place (codegen_expr on an array literal yields a fixed array, not
+           a vec). The field is already zero-initialized (cap=0/len=0/NULL),
+           so we grow + push each element directly into field_ptr. Empty []
+           leaves the valid zero vec. */
+        LLVMValueRef val = codegen_expr(ctx, deflt);
+        if (val == NULL)
+            return NULL;
+        cg_store_owned(ctx, field_ptr, val, field_type, deflt);
+    }
+
+    if (on_stack)
+    {
+        /* Return the loaded struct aggregate value */
+        return LLVMBuildLoad2(ctx->builder, st_llvm, storage, "sl.val");
+    }
+    return storage; /* new: return pointer */
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -4345,145 +4486,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return NULL;
 
     case AST_NEW_EXPR:
-    {
-        bool on_stack = node->as.new_expr.on_stack;
-
-        /* Resolve struct type */
-        Type *struct_type;
-        if (on_stack)
-        {
-            /* StructName{...} — value literal, resolved_type is TYPE_STRUCT */
-            struct_type = node->resolved_type;
-        }
-        else
-        {
-            /* new StructName{...} — heap, resolved_type is *TYPE_STRUCT */
-            Type *ptr_type = node->resolved_type;
-            if (!ptr_type || ptr_type->kind != TYPE_POINTER || !ptr_type->as.pointer_to)
-            {
-                cg_error(ctx, node->line, node->column, "new_expr: bad resolved type");
-                return NULL;
-            }
-            struct_type = ptr_type->as.pointer_to;
-        }
-        if (!struct_type || struct_type->kind != TYPE_STRUCT)
-        {
-            cg_error(ctx, node->line, node->column, "new_expr: not a struct type");
-            return NULL;
-        }
-
-        LLVMTypeRef st_llvm = type_to_llvm(ctx, struct_type);
-
-        /* Allocate storage: stack alloca for value literal, malloc for new.
-           Bug #24: the alloca MUST be in the function entry block, not at the
-           current builder position. If this struct literal is inside a loop
-           body, a per-iteration alloca grows the stack without bound (LLVM
-           alloca is only freed on function return) → stack overflow in JIT
-           (default 1 MB stack; 100k × 16B = 1.6 MB). AOT hides it because
-           the O2 mem2reg pass promotes the alloca to a register. */
-        LLVMValueRef storage;
-        if (on_stack)
-        {
-            LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
-                LLVMGetInsertBlock(ctx->builder));
-            LLVMBasicBlockRef entry_bb = LLVMGetEntryBasicBlock(cur_fn);
-            LLVMBuilderRef entry_b = LLVMCreateBuilderInContext(ctx->context);
-            LLVMValueRef first_instr = LLVMGetFirstInstruction(entry_bb);
-            if (first_instr)
-                LLVMPositionBuilderBefore(entry_b, first_instr);
-            else
-                LLVMPositionBuilderAtEnd(entry_b, entry_bb);
-            storage = LLVMBuildAlloca(entry_b, st_llvm, "sl.tmp");
-            LLVMDisposeBuilder(entry_b);
-        }
-        else
-        {
-            LLVMValueRef size_val = LLVMSizeOf(st_llvm);
-            LLVMValueRef malloc_fn = LLVMGetNamedFunction(ctx->module, "malloc");
-            LLVMTypeRef malloc_type = LLVMGlobalGetValueType(malloc_fn);
-            storage = LLVMBuildCall2(ctx->builder, malloc_type, malloc_fn,
-                                     &size_val, 1, "new_raw");
-        }
-
-        /* Zero-initialize */
-        LLVMBuildStore(ctx->builder, LLVMConstNull(st_llvm), storage);
-
-        /* Apply field initializers — M-3: 统一所有权转移 */
-        int ninits = node->as.new_expr.field_init_count;
-        for (int i = 0; i < ninits; i++)
-        {
-            const char *fname = node->as.new_expr.field_inits[i].name;
-            int field_idx = -1;
-            for (int j = 0; j < struct_type->as.strukt.field_count; j++)
-            {
-                if (strcmp(struct_type->as.strukt.fields[j].name, fname) == 0)
-                {
-                    field_idx = j;
-                    break;
-                }
-            }
-            if (field_idx < 0)
-                continue;
-
-            /* 记录本字段求值前的 temp mark，供 cg_store_owned 的 rvalue pop 使用 */
-            LLVMValueRef val = codegen_expr(ctx, node->as.new_expr.field_inits[i].value);
-            if (val == NULL)
-                return NULL;
-
-            Type *field_type = struct_type->as.strukt.fields[field_idx].type;
-            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
-                                                         storage, (unsigned)field_idx,
-                                                         "field_ptr");
-            /* cg_store_owned 处理：string clone/move、Block env 转移、
-               struct/enum/vec/map move 标记，以及 POD 直接 store */
-            cg_store_owned(ctx, field_ptr, val, field_type,
-                           node->as.new_expr.field_inits[i].value);
-        }
-
-        /* Fill any field not explicitly initialized with its declared default
-           (struct field default, v1). Defaults are evaluated here, at the
-           construction site — same ownership path as an explicit initializer. */
-        for (int j = 0; j < struct_type->as.strukt.field_count; j++)
-        {
-            bool provided = false;
-            for (int i = 0; i < ninits; i++)
-            {
-                if (strcmp(node->as.new_expr.field_inits[i].name,
-                           struct_type->as.strukt.fields[j].name) == 0)
-                {
-                    provided = true;
-                    break;
-                }
-            }
-            if (provided)
-                continue;
-            AstNode *deflt = (AstNode *)struct_type->as.strukt.fields[j].default_expr;
-            if (deflt == NULL)
-                continue; /* checker already errored; leave zero-init */
-
-            Type *field_type = struct_type->as.strukt.fields[j].type;
-            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
-                                                         storage, (unsigned)j,
-                                                         "field_ptr_def");
-
-            /* v2: vec(T) field with an array-literal default — build the vec in
-               place (codegen_expr on an array literal yields a fixed array, not
-               a vec). The field is already zero-initialized (cap=0/len=0/NULL),
-               so we grow + push each element directly into field_ptr. Empty []
-               leaves the valid zero vec. */
-            LLVMValueRef val = codegen_expr(ctx, deflt);
-            if (val == NULL)
-                return NULL;
-            cg_store_owned(ctx, field_ptr, val, field_type, deflt);
-        }
-
-        if (on_stack)
-        {
-            /* Return the loaded struct aggregate value */
-            return LLVMBuildLoad2(ctx->builder, st_llvm, storage, "sl.val");
-        }
-        return storage; /* new: return pointer */
-    }
+        return cg_expr_new_expr(ctx, node);
 
     case AST_COMPTIME_FIELD:
         /* Leak guard: `v.(f)` is lowered to a concrete field access during comptime
