@@ -14,7 +14,19 @@ set(ENV{LS_HOME} "${_ls_stdlib_root}")
 
 set(SRC "${SAMPLE_DIR}/io_basic_test.lls")
 
+# Parallel safety: io_basic_test.lls writes "io_basic_test.tmp" relative to its
+# cwd, and test_e4_io_basic runs the same sample in the shared build dir. Run
+# this test in a private scratch dir so the two never touch the same file
+# (unique path > RESOURCE_LOCK: keeps full ctest parallelism).
+if(NOT WORK_DIR)
+    # script mode: CMAKE_CURRENT_BINARY_DIR == the cwd ctest launched us in
+    set(WORK_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+set(_scratch "${WORK_DIR}/io_raii_scratch")
+file(MAKE_DIRECTORY "${_scratch}")
+
 execute_process(COMMAND "${LS_EXE}" run --memcheck "${SRC}"
+    WORKING_DIRECTORY "${_scratch}"
     OUTPUT_VARIABLE mc_out ERROR_VARIABLE mc_err RESULT_VARIABLE mc_rc)
 if(NOT mc_rc EQUAL 0)
     message(FATAL_ERROR "io_raii memcheck FAILED (rc=${mc_rc})\n${mc_err}\n${mc_out}")

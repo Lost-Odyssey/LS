@@ -9,6 +9,50 @@
 #
 # All paths in here are absolute (CMAKE_SOURCE_DIR / CMAKE_BINARY_DIR), never
 # CMAKE_CURRENT_*, so the include location is irrelevant to behavior.
+#
+# ---------------------------------------------------------------------------
+# Parallel-safety audit (2026-07-05) — shared-resource inventory & disposition
+# ---------------------------------------------------------------------------
+# The suite runs with `ctest -j N`; every test that writes files, sets env vars
+# or spawns processes was audited for cross-test interference. Findings:
+#
+# | tests                          | resource                        | disposition |
+# |--------------------------------|---------------------------------|-------------|
+# | test_e4_io_basic, test_io_raii | <cwd>/io_basic_test.tmp (name   | FIXED: test_io_raii runs the
+# |                                | hardcoded in io_basic_test.lls, | sample in a private scratch dir
+# |                                | both tests ran it in build/)    | (io_raii_scratch/) -> unique
+# |                                |                                 | path; the old DEPENDS-chain
+# |                                |                                 | serialization was dropped
+# | test_memcheck_aot,             | AOT --memcheck exe/.o output    | already fixed 2026-07-05 as
+# | test_mem_m4_5_aot,             | (three tests once shared one    | aot_mc_<sample-stem>.* in
+# | test_mem_overhaul_aot          | hardcoded name, truncated .o)   | test_memcheck_aot.cmake;
+# |                                |                                 | verified intact, no action
+# | all AOT-compiling drivers      | ${WORK_DIR}/<name>_aot[.exe]    | verified unique: names derive
+# | (~82 registrations)            | (+ linker .o next to it)        | from TEST_NAME/TN/sample stem,
+# |                                |                                 | all distinct; literal names
+# |                                |                                 | cross-checked against every
+# |                                |                                 | TEST_NAME-derived name -> no
+# |                                |                                 | overlap; no action
+# | drivers using set(ENV{...})    | LS_HOME, LS_MEMCHECK_STRICT,    | process-local: env is set in
+# | (memcheck_jit, e3_glue, sim,   | LS_NO_*, LS_HASDROP_VERIFY,     | the per-test `cmake -P` child,
+# | opt_parity, lifetime, ...)     | LS_FORCE_NOALIAS, ...           | never at ctest level (no
+# |                                |                                 | ENVIRONMENT test property in
+# |                                |                                 | the suite); no action
+# | runtime-writing samples (csv   | csv_rt_tmp.csv, fs_test_tmp/,   | one writer test per file, all
+# | fs/io/json/sink/sim tests)     | io_*.tmp, json_rt_tmp.json,     | basenames verified unique
+# |                                | sink_*.tmp, <repo>/tmp/sim_*    | suite-wide; no action
+# | test_parse_depth, test_fmt,    | parse_depth_scratch/,           | single-owner unique paths;
+# | test_block_protocol_lint,      | fmt_fixture_copy.lls,           | no action
+# | test_emit_c, test_debug_info   | bpl_std_import.lls, emit_c_*,   |
+# |                                | debug_info_aot.exe/.pdb         |
+# | test_mem_m4_5_*/_overhaul_*    | same .lls sample read by JIT +  | read-only sharing (samples
+# | and all fixture main.lls dirs  | AOT test pair                   | never modified); no action
+#
+# No test needs RESOURCE_LOCK: every conflict was resolved by unique output
+# paths, which keeps full -j parallelism. If you add a test that writes files,
+# derive the name from the test name / sample stem (never a fixed literal that
+# another test might pick) and extend this table.
+# ---------------------------------------------------------------------------
 
 # Tests (Phase 1 & 2: no LLVM dependency)
 enable_testing()
@@ -1261,17 +1305,20 @@ set_tests_properties(test_enum_print PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
-# io.File RAII auto-close under memcheck (runs after the io chain to avoid tmp
-# file contention — io_basic_test.tmp).
+# io.File RAII auto-close under memcheck. Runs io_basic_test.lls (same sample
+# as test_e4_io_basic, which writes io_basic_test.tmp relative to cwd); the
+# driver isolates itself in ${CMAKE_BINARY_DIR}/io_raii_scratch so the two
+# tests never share the tmp file — the old DEPENDS-on-the-io-chain serialization
+# is no longer needed (parallel-safety audit 2026-07-05, see header of this file).
 add_test(
     NAME test_io_raii
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_io_raii.cmake
 )
 set_tests_properties(test_io_raii PROPERTIES
-    DEPENDS "test_e4_io_seek"
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
