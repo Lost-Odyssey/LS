@@ -451,9 +451,15 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
             LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
             LLVMTypeRef ptr_type = LLVMPointerTypeInContext(ctx->context, 0);
 
-            /* Phase 9: detect borrow subject — AST_IDENT with is_borrowed=true.
+            /* Phase 9: detect borrow subject — an AST_IDENT tagged CG_BORROWED.
                For &Enum params, sym->value IS the pointer; skip alloca+store copy
-               and GEP directly through the pointer (zero-copy borrow match). */
+               and GEP directly through the pointer (zero-copy borrow match).
+               Stage 11 (S3) audit: the only non-OWNED reason reachable on an
+               enum-typed subject IDENT is CG_BORROWED (&Enum param, borrow
+               binding, or a borrowed payload binder rematched by a nested
+               match) — MOVED_OUT subjects are checker-rejected use-after-move
+               and ALIAS is a Block-only tag. Explicit == keeps a future
+               reason value from silently riding the pointer path. */
             bool subj_is_enum_borrow = false;
             LLVMValueRef subj_ptr_val = NULL; /* pointer to the enum, borrow path */
             {
@@ -461,7 +467,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                 if (sn->kind == AST_IDENT) {
                     CgSymbol *bsym = cg_scope_resolve(ctx->current_scope,
                                                       sn->as.ident.name);
-                    if (bsym && bsym->no_drop_reason != CG_OWNED) {
+                    if (bsym && bsym->no_drop_reason == CG_BORROWED) {
                         subj_is_enum_borrow = true;
                         subj_ptr_val = bsym->value;
                     }
@@ -624,7 +630,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                            and the enum's drop (env_drop or scope cleanup) would free the
                            same allocation → double-free.
                            Fix: clone string payloads so each binder independently owns
-                           its data.  With independent ownership, is_borrowed=false and
+                           its data.  With independent ownership, CG_OWNED and
                            scope cleanup frees the binder's copy when the arm exits
                            (unless the binder is being returned, in which case the
                            return_alloca skip list suppresses the scope drop). */
@@ -675,7 +681,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                            dropped here AND owned by the returned value → double-free
                            (0xC0000374), masked for cap-0/POD/empty payloads; an owned
                            Vec/Str payload corrupts the heap. The `=> v` tail-yield
-                           move-out is handled separately below (is_borrowed). */
+                           move-out is handled separately below (CG_MOVED_OUT). */
                         LLVMValueRef binder_moved_flag = NULL;
                         if (binder_owns) {
                             LLVMTypeRef i1t = LLVMInt1TypeInContext(ctx->context);
@@ -776,7 +782,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
             /* Drop the match subject if it's an rvalue temp (e.g. function-call
                result like `match io.read_file(p) { ... }`). The enum's payload
                might own heap data (Ok(string)/Err(string) etc.) and binders are
-               borrowed (is_borrowed=true above), so without this drop the heap
+               borrowed (CG_BORROWED above), so without this drop the heap
                buffer leaks. Skip the drop when the subject is a named scope
                variable — its own scope cleanup will handle it. */
             if (subj_type->as.enom.has_drop) {

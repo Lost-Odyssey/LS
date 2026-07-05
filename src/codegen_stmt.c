@@ -504,7 +504,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
 
         /* Phase 1 (borrow extension): a named local borrow `&T r = &x` aliases
            the referent's storage pointer (no alloca, no copy) — exactly like a
-           borrow parameter. Register the symbol with that pointer + is_borrowed
+           borrow parameter. Register the symbol with that pointer + CG_BORROWED
            so scope cleanup leaves the referent's ownership untouched. The
            checker (check_local_borrow_decl) already validated the source. */
         if (var_type->kind == TYPE_REFERENCE)
@@ -1322,7 +1322,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                        Generalized: a borrowed has_drop struct/enum binder must
                        clone too. A match payload binder of a *borrow* subject
                        (&Enum param OR a closure's by-move capture, which is
-                       marked is_borrowed so the body's scope cleanup leaves the
+                       marked CG_BORROWED so the body's scope cleanup leaves the
                        drop to the env) aliases the subject's payload zero-copy.
                        Returning it by transfer hands the caller an alias the
                        subject's owner (caller / env_drop) will also free →
@@ -2206,11 +2206,11 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
 
        Two strategies depending on capture kind:
        - by-move (string/struct): load value from env slot → alloca →
-         cg_scope_define with is_borrowed=true (env is sole owner of heap).
+         cg_scope_define with CG_BORROWED (env is sole owner of heap).
        - by-ref (map): env slot holds a pointer to the OUTER alloca.
          Load the pointer from env, use it directly as sym->value. Body
          reads/writes go straight to the outer variable, so mutations are
-         visible bidirectionally. Mark is_borrowed=true so scope cleanup
+         visible bidirectionally. Mark CG_BORROWED so scope cleanup
          doesn't call drop on what it doesn't own. */
     if (cap_n > 0) {
         LLVMValueRef env_param = LLVMGetParam(fn, 0);
@@ -2226,7 +2226,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             if (is_default_by_ref) {
                 /* By-ref (default map): load the outer alloca pointer.
                    sym->value = that pointer = the outer alloca itself.
-                   Body accesses the outer map in-place. is_borrowed
+                   Body accesses the outer map in-place. CG_BORROWED
                    prevents scope cleanup from dropping what it doesn't own. */
                 LLVMValueRef outer_ptr = LLVMBuildLoad2(
                     ctx->builder, ptr_t, field_ptr, "cap.refptr");
@@ -2256,7 +2256,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
 
     /* 5b) Define each user parameter as alloca + store. The LLVM param at
        slot (i+1) skips the env at slot 0.
-       map/Block params are marked is_borrowed=true — the caller owns
+       map/Block params are marked CG_BORROWED — the caller owns
        the underlying heap (bucket array / env block), so the
        closure body's scope cleanup must not free it (matches the behaviour
        of regular fn params, codegen_fn_decl line ~12117). */
@@ -2266,7 +2266,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
         /* M5-002: a `&T` closure param uses pointer ABI (borrow), exactly like a
            regular function's &T param (codegen_fn_decl ~13201). The LLVM param IS
            the pointer; register the symbol with that pointer as its value and the
-           UNWRAPPED pointee type, is_borrowed so the body GEPs through it and
+           UNWRAPPED pointee type, no_drop_reason so the body GEPs through it and
            scope cleanup leaves ownership with the caller. (The call site passes a
            pointer for &T params — see codegen_block_call.) */
         if (pt && pt->kind == TYPE_REFERENCE)

@@ -1909,8 +1909,8 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
            alloca. The checker guarantees operand is an IDENT bound to a local
            owned string (not a borrow, not moved, not static). So we just look
            up the symbol and hand its alloca address to the callee. The callee
-           parameter is declared with psym->is_mut_borrow=true and is_borrowed=
-           true so scope cleanup skips it — the caller retains ownership. */
+           parameter is declared with psym->is_mut_borrow=true and
+           no_drop_reason=CG_BORROWED so scope cleanup skips it — the caller retains ownership. */
         AstNode *op = node->as.mut_borrow.operand;
         if (op != NULL && op->kind == AST_FIELD)
         {
@@ -3677,7 +3677,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 /* Phase E.1 note: with by-ref vec/map capture semantics, the
                    closure body's captured sym->value IS the outer alloca pointer.
                    Loading from it gives the outer's {data, len, cap}. Passing to
-                   a value-ABI fn: callee marks its vec/map param as is_borrowed
+                   a value-ABI fn: callee marks its vec/map param CG_BORROWED
                    (Phase C.7.4 fix) so the callee does NOT free the data — the
                    outer's scope cleanup does it. No clone needed; no double-free. */
                 /* Argument ownership policy for struct-with-drop:

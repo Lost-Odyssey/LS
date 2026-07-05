@@ -280,7 +280,7 @@ LLVMTypeRef type_to_llvm(CodegenContext *ctx, Type *t)
            pointees use a uniform pointer borrow ABI; read-only references to
            a scalar pointee degrade to the scalar's by-value ABI (see
            cg_ref_pointee_is_byval — needed for generic `&K` over POD K).
-           emit_scope_cleanup honours is_borrowed on the CgSymbol so
+           emit_scope_cleanup honours no_drop_reason on the CgSymbol so
            borrowed slots are never freed. */
         if (!t->is_mut && cg_ref_pointee_is_byval(t->as.pointer_to))
             return type_to_llvm(ctx, t->as.pointer_to);
@@ -713,14 +713,14 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         if (psym && param_type && param_type->kind == TYPE_BLOCK)
             psym->no_drop_reason = CG_BORROWED;
         /* NOTE (Bug-6 / M-1 overhaul): self-recursive enum parameters were
-           previously marked is_borrowed=true to prevent the callee's scope
+           previously marked CG_BORROWED to prevent the callee's scope
            cleanup from freeing boxes that the caller still owned (Bug 5).
            That logic was correct when the enum was passed by raw alias, but
            the call-site now always emits a full deep-clone (Tree.__clone)
            for has_drop enum arguments not wrapped in __move.  The callee
            therefore owns its own independent copy of the enum and MUST drop
-           it on scope exit — leaving is_borrowed=true causes the clone to
-           leak (34 boxes for build_tree(3) + sum_tree).  The is_borrowed
+           it on scope exit — leaving CG_BORROWED causes the clone to
+           leak (34 boxes for build_tree(3) + sum_tree).  The no_drop_reason
            hack is removed; callee-side drop is now always performed. */
     }
     (void)total_n;
