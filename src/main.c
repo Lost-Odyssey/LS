@@ -44,11 +44,11 @@ extern void __ls_set_args(int, char **);
 
 /* Resolve the full path to the running ls executable (not just its
    containing directory). Returns 0 on success and writes a NUL-terminated
-   path to `out`. Shared by link_driver.c's get_executable_dir() and
-   test_driver.c's self_exe_path() (which needs the executable itself, to
-   spawn `ls run <driver>` for `ls test` without depending on `ls` being
+   path to `out`. Used by test_driver.c's self_exe_path(), which needs the
+   executable itself (not its directory — that is module_executable_dir())
+   to spawn `ls run <driver>` for `ls test` without depending on `ls` being
    first on PATH — on POSIX, coreutils already owns the name `ls` for
-   directory listing). Exported via driver_util.h. */
+   directory listing. Exported via driver_util.h. */
 int get_executable_path(char *out, size_t out_sz) {
     if (out == NULL || out_sz == 0) return -1;
 #ifdef _WIN32

@@ -8,30 +8,7 @@
 #include <stdlib.h>
 
 #include "link_driver.h"
-#include "driver_util.h"
-
-/* Resolve the directory containing the running ls executable.
-   Returns 0 on success and writes a NUL-terminated path (no trailing
-   separator) to `out`. Used by AOT --memcheck to locate ls_memcheck.lib
-   alongside ls.exe. */
-static int get_executable_dir(char *out, size_t out_sz) {
-    char buf[1024];
-    if (get_executable_path(buf, sizeof(buf)) != 0) return -1;
-    size_t len = strlen(buf);
-
-    /* Strip trailing filename component, leaving the directory. */
-    while (len > 0 && buf[len - 1] != '/' && buf[len - 1] != '\\') {
-        len--;
-    }
-    /* Drop the trailing separator unless that would leave an empty string
-       (root on POSIX). */
-    if (len > 1) len--;
-
-    if (len + 1 > out_sz) return -1;
-    memcpy(out, buf, len);
-    out[len] = '\0';
-    return 0;
-}
+#include "module.h"   /* module_executable_dir: dir containing lls.exe (W4 dedupe) */
 
 int link_driver_link(const LinkConfig *cfg) {
     const char *exe_path = cfg->exe_path;
@@ -44,7 +21,7 @@ int link_driver_link(const LinkConfig *cfg) {
     char mc_lib[1280] = "";
     if (cfg->memcheck) {
         char libdir[1024];
-        if (get_executable_dir(libdir, sizeof(libdir)) == 0) {
+        if (module_executable_dir(libdir, sizeof(libdir)) == 0) {
 #ifdef _WIN32
             snprintf(mc_lib, sizeof(mc_lib), "\"%s\\ls_memcheck.lib\"", libdir);
 #else
@@ -62,7 +39,7 @@ int link_driver_link(const LinkConfig *cfg) {
     char prof_lib[1280] = "";
     if (cfg->profile) {
         char libdir[1024];
-        if (get_executable_dir(libdir, sizeof(libdir)) == 0) {
+        if (module_executable_dir(libdir, sizeof(libdir)) == 0) {
 #ifdef _WIN32
             snprintf(prof_lib, sizeof(prof_lib), "\"%s\\ls_profiler.lib\"", libdir);
 #else
@@ -81,7 +58,7 @@ int link_driver_link(const LinkConfig *cfg) {
     char os_lib[1280] = "";
     {
         char libdir[1024];
-        if (get_executable_dir(libdir, sizeof(libdir)) == 0) {
+        if (module_executable_dir(libdir, sizeof(libdir)) == 0) {
 #ifdef _WIN32
             snprintf(os_lib, sizeof(os_lib), "\"%s\\ls_os_backend.lib\"", libdir);
 #else

@@ -62,6 +62,12 @@ bool module_user_file_exists(const char *import_path, const char *current_file);
    block-protocol method-name lint to exempt std modules. */
 bool module_path_is_stdlib(const char *file_path);
 
+/* Locate the directory containing the running lls executable (no trailing
+   separator). Single authority (W4): stdlib path resolution here and the
+   AOT link driver's runtime-archive lookup both use it. Returns 0 on
+   success. */
+int module_executable_dir(char *out, size_t out_sz);
+
 /* Resolve `import_path` to the file that module_load() would actually parse:
    user-relative-to-current_file first (module_resolve_path), falling back to
    <LS_HOME>/lib/... (the same private resolve_stdlib_path() module_load()

@@ -83,12 +83,13 @@ static char *read_file(const char *path) {
     return buf;
 }
 
-/* Phase E.3.4: locate the directory containing the running ls executable.
-   Mirrors main.c's static helper but lives in module.c too so module_load
-   can use it for stdlib path resolution without exposing main internals.
+/* Phase E.3.4 / W4: locate the directory containing the running ls
+   executable. Single authority for "the directory next to lls.exe" —
+   module_load uses it for stdlib path resolution and link_driver.c uses it
+   to find the runtime archives (the former main.c duplicate is gone).
    Writes a NUL-terminated path (no trailing separator) to `out`.
    Returns 0 on success. */
-static int ls_executable_dir(char *out, size_t out_sz) {
+int module_executable_dir(char *out, size_t out_sz) {
     if (out == NULL || out_sz == 0) return -1;
     char buf[1024];
     size_t len = 0;
@@ -155,7 +156,7 @@ static char *resolve_stdlib_path(const char *import_path) {
     const char *root = NULL;
     if (ls_home_env && ls_home_env[0] != '\0') {
         root = ls_home_env;
-    } else if (ls_executable_dir(exe_dir, sizeof(exe_dir)) == 0) {
+    } else if (module_executable_dir(exe_dir, sizeof(exe_dir)) == 0) {
         root = exe_dir;
     } else {
         free(rel_path);
@@ -196,7 +197,7 @@ bool module_path_is_stdlib(const char *file_path) {
     const char *root = NULL;
     if (ls_home_env && ls_home_env[0] != '\0') {
         root = ls_home_env;
-    } else if (ls_executable_dir(exe_dir, sizeof(exe_dir)) == 0) {
+    } else if (module_executable_dir(exe_dir, sizeof(exe_dir)) == 0) {
         root = exe_dir;
     } else {
         return false;

@@ -174,9 +174,9 @@ add_custom_command(TARGET ls POST_BUILD
 add_library(ls_memcheck STATIC runtime/memcheck.c)
 target_include_directories(ls_memcheck PRIVATE src/ include/)
 
-# Make ls_memcheck.lib end up next to ls.exe so main.c can locate it via
-# get_executable_dir() at runtime (works for both single-config Ninja and
-# multi-config Visual Studio generators).
+# Make ls_memcheck.lib end up next to ls.exe so link_driver.c can locate it
+# via module_executable_dir() at runtime (works for both single-config Ninja
+# and multi-config Visual Studio generators).
 set_target_properties(ls_memcheck PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY            "${CMAKE_BINARY_DIR}"
     ARCHIVE_OUTPUT_DIRECTORY_DEBUG      "${CMAKE_BINARY_DIR}/Debug"
