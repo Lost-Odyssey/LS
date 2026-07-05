@@ -65,6 +65,21 @@ typedef enum {
     INTRIN_CPU_YIELD,
     INTRIN_SYNC_UNKNOWN,    /* __mutex_/__rwlock_/__cond_ prefixed, unknown member */
 
+    /* ---- atomic family (__atomic_*; one inline LLVM atomic instruction).
+       Load/store are PREFIX rows: the ordering suffix (_acquire/_release/
+       _relaxed) is parsed off the callee name, so __atomic_load_acquire and
+       friends all map to INTRIN_ATOMIC_LOAD/STORE. The other rows are exact
+       names — a suffixed __atomic_add_relaxed is INTRIN_ATOMIC_UNKNOWN,
+       exactly like the retired strcmp chain (checker rejects it anyway). ---- */
+    INTRIN_ATOMIC_FENCE,
+    INTRIN_ATOMIC_LOAD,     /* prefix "__atomic_load"  (+ optional ordering suffix) */
+    INTRIN_ATOMIC_STORE,    /* prefix "__atomic_store" (+ optional ordering suffix) */
+    INTRIN_ATOMIC_ADD,
+    INTRIN_ATOMIC_SUB,
+    INTRIN_ATOMIC_SWAP,
+    INTRIN_ATOMIC_CAS,
+    INTRIN_ATOMIC_UNKNOWN,  /* __atomic_ prefixed, unknown member */
+
     INTRIN_KIND_COUNT
 } IntrinKind;
 
