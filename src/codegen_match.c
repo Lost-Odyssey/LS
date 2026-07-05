@@ -1244,9 +1244,11 @@ LLVMValueRef codegen_try_expr(CodegenContext *ctx, AstNode *node)
         LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
         unsigned long long ret_sz = LLVMABISizeOfType(td, ret_llvm);
 
-        /* Zero ret_alloca */
-        LLVMValueRef memset_fn = LLVMGetNamedFunction(ctx->module, "memset");
-        if (memset_fn) {
+        /* Zero ret_alloca. cg_ensure_memset_decl declares memset on demand:
+           the old `if (memset_fn)` guard skipped this on every non-memcheck
+           run, leaving the returned enum's tail bytes undef. */
+        LLVMValueRef memset_fn = cg_ensure_memset_decl(ctx);
+        {
             LLVMValueRef ms_args[3] = {
                 ret_alloca,
                 LLVMConstInt(i32, 0, 0),

@@ -153,6 +153,11 @@ void cg_emit_prof_leave(CodegenContext *ctx);
 LLVMValueRef cg_make_site(CodegenContext *ctx, const char *kind, int line, int col);
 LLVMValueRef cg_entry_alloca(CodegenContext *ctx, LLVMTypeRef ty, const char *name);
 LLVMValueRef cg_entry_alloca_zeroed(CodegenContext *ctx, LLVMTypeRef ty, const char *name);
+/* Get-or-declare libc memset (ptr memset(ptr, i32, i64)); never NULL.
+   Sole authority for the declaration — do NOT re-derive it via
+   LLVMGetNamedFunction + `if (memset_fn)` (that pattern was dead code on
+   non-memcheck runs; see the definition in codegen.c). */
+LLVMValueRef cg_ensure_memset_decl(CodegenContext *ctx);
 LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_type, AstNode *lit);
 void cg_emit_free(CodegenContext *ctx, LLVMValueRef ptr, const char *kind, int line, int col);
 bool cg_struct_is_move_only(const Type *t);

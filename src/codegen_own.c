@@ -2134,10 +2134,7 @@ void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type)
            path stays byte-identical. Uses the same libc-memset-call
            convention as the enum ctor's payload zeroing in
            codegen_decl.c:989 (this file has no LLVMBuildMemSet precedent
-           anywhere). memset may not be declared yet in non-memcheck
-           CG_DEBUG builds (only cg_install_memcheck_wrappers declares it),
-           so declare it on demand here, mirroring codegen.c:718-722's
-           signature exactly. */
+           anywhere); cg_ensure_memset_decl declares memset on demand. */
         if (cg_enum_poison_on(ctx))
         {
             LLVMValueRef pay_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm,
@@ -2145,25 +2142,9 @@ void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type)
             LLVMTypeRef pay_ty = LLVMStructGetTypeAtIndex(enum_llvm, 1);
             LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
             unsigned long long pay_sz = LLVMABISizeOfType(td, pay_ty);
-            LLVMValueRef memset_fn = LLVMGetNamedFunction(ctx->module, "memset");
-            if (!memset_fn)
-            {
-                /* Only cg_install_memcheck_wrappers (codegen.c:718-722)
-                   declares memset today, so a non-memcheck CG_DEBUG build
-                   (this poison block's other trigger, see cg_enum_poison_on)
-                   reaches here with no declaration yet. Declare it on
-                   demand, mirroring codegen.c:718-722's signature exactly:
-                   ptr memset(ptr, i32, i64). */
-                LLVMTypeRef pv_ptr = LLVMPointerTypeInContext(ctx->context, 0);
-                LLVMTypeRef ms_params[3] = {
-                    pv_ptr, LLVMInt32TypeInContext(ctx->context),
-                    LLVMInt64TypeInContext(ctx->context)
-                };
-                memset_fn = LLVMAddFunction(ctx->module, "memset",
-                                            LLVMFunctionType(pv_ptr, ms_params, 3, 0));
-            }
-            LLVMTypeRef  memset_ty = memset_fn ? LLVMGlobalGetValueType(memset_fn) : NULL;
-            if (memset_fn && pay_sz > 0)
+            LLVMValueRef memset_fn = cg_ensure_memset_decl(ctx);
+            LLVMTypeRef  memset_ty = LLVMGlobalGetValueType(memset_fn);
+            if (pay_sz > 0)
             {
                 LLVMValueRef ms_args[3] = {
                     pay_ptr,

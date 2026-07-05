@@ -595,6 +595,22 @@ LLVMValueRef cg_make_site(CodegenContext *ctx, const char *kind,
     return gv;
 }
 
+/* Get-or-declare libc memset (ptr memset(ptr, i32, i64)) — the single
+   authority for every codegen byte-zeroing/poison site. Historically only
+   cg_install_memcheck_wrappers declared it, so every `if (memset_fn)`
+   consumer (enum ctor tail-byte zeroing, try err-path ret zeroing) was
+   silently dead code on non-memcheck runs, leaving those bytes undef. */
+LLVMValueRef cg_ensure_memset_decl(CodegenContext *ctx)
+{
+    LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "memset");
+    if (fn) return fn;
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx->context, 0);
+    LLVMTypeRef params[3] = { ptr, LLVMInt32TypeInContext(ctx->context),
+                              LLVMInt64TypeInContext(ctx->context) };
+    return LLVMAddFunction(ctx->module, "memset",
+                           LLVMFunctionType(ptr, params, 3, 0));
+}
+
 /* When memcheck is enabled, install internal wrappers `@malloc` / `@free` in
    the LLVM module that forward to `ls_mc_alloc` / `ls_mc_free` with a
    generic site. Existing codegen call sites (LLVMGetNamedFunction("malloc")
@@ -714,12 +730,7 @@ static void cg_install_memcheck_wrappers(CodegenContext *ctx) {
     LLVMValueRef c_result = LLVMBuildCall2(ctx->builder, mc_alloc_ty2, mc_alloc,
                                            c_args, 2, "cp");
     /* Zero the memory */
-    LLVMValueRef memset_fn = LLVMGetNamedFunction(ctx->module, "memset");
-    if (!memset_fn) {
-        LLVMTypeRef ms_params[3] = { ptr, LLVMInt32TypeInContext(ctx->context), i64 };
-        memset_fn = LLVMAddFunction(ctx->module, "memset",
-                                     LLVMFunctionType(ptr, ms_params, 3, 0));
-    }
+    LLVMValueRef memset_fn = cg_ensure_memset_decl(ctx);
     LLVMValueRef ms_args[3] = { c_result,
                                  LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, 0),
                                  total };

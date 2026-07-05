@@ -986,12 +986,15 @@ LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
     LLVMValueRef ealloca = LLVMBuildAlloca(tmp_b, enum_llvm, "enum.ctor");
     LLVMDisposeBuilder(tmp_b);
 
-    /* Zero the payload bytes via memset so any unused tail bytes are deterministic. */
+    /* Zero the payload bytes via memset so any unused tail bytes are
+       deterministic. cg_ensure_memset_decl declares memset on demand: the
+       old `if (memset_fn)` guard made this a no-op on every non-memcheck
+       run (only the memcheck wrapper installer declared memset), leaving
+       tail bytes as undef alloca residue. */
     LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
     unsigned long long total_sz = LLVMABISizeOfType(td, enum_llvm);
-    LLVMValueRef memset_fn = LLVMGetNamedFunction(ctx->module, "memset");
-    LLVMTypeRef  memset_ty = memset_fn ? LLVMGlobalGetValueType(memset_fn) : NULL;
-    if (memset_fn)
+    LLVMValueRef memset_fn = cg_ensure_memset_decl(ctx);
+    LLVMTypeRef  memset_ty = LLVMGlobalGetValueType(memset_fn);
     {
         LLVMValueRef ms_args[3] = {
             ealloca,
