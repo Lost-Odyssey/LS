@@ -539,7 +539,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                              pointee, NULL);
             if (bsym)
             {
-                bsym->is_borrowed = true;  /* skip scope cleanup (referent owns) */
+                bsym->no_drop_reason = CG_BORROWED;  /* skip scope cleanup (referent owns) */
                 if (var_type->is_mut) bsym->is_mut_borrow = true;
             }
             return;
@@ -781,7 +781,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                                done together in the reference-semantics phase. */
                             CgSymbol *src = cg_scope_resolve(ctx->current_scope,
                                                               blk_init->as.ident.name);
-                            if (src && !src->is_borrowed)
+                            if (src && src->no_drop_reason == CG_OWNED)
                                 cg_null_block_env(ctx, src->value);
                         }
                         else if (cg_block_source_is_aliased(blk_init))
@@ -828,7 +828,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
             CgSymbol *vsym = cg_scope_define(ctx->current_scope, node->as.var_decl.name,
                                              alloca, var_type, moved_flag);
             if (vsym) vsym->lifetime_marked = var_lifetime_marked;
-            if (vsym && block_alias_init) vsym->is_borrowed = true;
+            if (vsym && block_alias_init) vsym->no_drop_reason = CG_ALIAS;
         }
         break;
     }
@@ -1018,7 +1018,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     {
                         CgSymbol *src = cg_scope_resolve(ctx->current_scope,
                                                           rhs_node->as.ident.name);
-                        if (src && !src->is_borrowed)
+                        if (src && src->no_drop_reason == CG_OWNED)
                             cg_null_block_env(ctx, src->value);
                     }
                     else if (!cg_block_source_is_aliased(rhs_node))
@@ -1331,7 +1331,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                        carry no such marker). Clone so the caller owns an
                        independent copy. */
                     bool borrowed_heap =
-                        sym->is_borrowed &&
+                        sym->no_drop_reason != CG_OWNED &&
                         ((ret_type->kind == TYPE_STRUCT && ret_type->as.strukt.has_drop) ||
                          (ret_type->kind == TYPE_ENUM && ret_type->as.enom.has_drop));
                     if (is_global || borrowed_heap)
@@ -1718,7 +1718,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 /* Loop variable is a copy of the element; mark borrowed so scope
                    cleanup doesn't drop it (the container still owns the data). */
                 if (lvsym)
-                    lvsym->is_borrowed = true;
+                    lvsym->no_drop_reason = CG_BORROWED;
             }
         }
         else
@@ -2232,7 +2232,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                     ctx->builder, ptr_t, field_ptr, "cap.refptr");
                 CgSymbol *cs = cg_scope_define(ctx->current_scope,
                                 cap_name, outer_ptr, ct, NULL);
-                if (cs) cs->is_borrowed = true;
+                if (cs) cs->no_drop_reason = CG_BORROWED;
             } else {
                 /* By-move (or POD or explicit [move] map): load value,
                    alloca, store, register. */
@@ -2249,7 +2249,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                    so scope cleanup doesn't free it (env_drop handles it). */
                 bool needs_borrow = capture_type_is_by_move_cg(ct);
                 if (cs && needs_borrow)
-                    cs->is_borrowed = true;
+                    cs->no_drop_reason = CG_BORROWED;
             }
         }
     }
@@ -2277,7 +2277,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                             node->as.closure.param_names[i], ptr, pointee, NULL);
             if (psym)
             {
-                psym->is_borrowed = true;
+                psym->no_drop_reason = CG_BORROWED;
                 if (pt->is_mut) psym->is_mut_borrow = true;
             }
             continue;
@@ -2292,7 +2292,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
                         alloca, pt, NULL);
         if (psym && pt &&
             pt->kind == TYPE_BLOCK)
-            psym->is_borrowed = true;
+            psym->no_drop_reason = CG_BORROWED;
     }
 
     /* 6) Compile the body. */

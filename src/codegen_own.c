@@ -60,7 +60,7 @@ CgSymbol *cg_scope_define(CgScope *s, const char *name, LLVMValueRef val, Type *
     s->symbols[s->count].value = val;
     s->symbols[s->count].type = type;
     s->symbols[s->count].moved_flag = moved_flag;
-    s->symbols[s->count].is_borrowed = false;
+    s->symbols[s->count].no_drop_reason = CG_OWNED;
     s->symbols[s->count].is_mut_borrow = false;
     s->symbols[s->count].lifetime_marked = false;
     return &s->symbols[s->count++];
@@ -745,7 +745,7 @@ bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Type *type
     AstNode *src = ast_unwrap_move(source);
     if (!src || src->kind != AST_IDENT) return false;
     CgSymbol *sym = cg_scope_resolve(ctx->current_scope, src->as.ident.name);
-    if (!sym || !sym->value || sym->is_borrowed || sym->is_mut_borrow)
+    if (!sym || !sym->value || sym->no_drop_reason != CG_OWNED || sym->is_mut_borrow)
         return false;
 
     switch (type->kind)
@@ -853,7 +853,7 @@ void cg_store_owned(CodegenContext *ctx,
     /* ------------------------------------------------------------------ */
     if (type->kind == TYPE_STRUCT && type->as.strukt.has_drop)
     {
-        bool source_borrowed = src_sym && src_sym->is_borrowed;
+        bool source_borrowed = src_sym && src_sym->no_drop_reason != CG_OWNED;
         if (source_borrowed)
         {
             /* borrowed match binder：深克隆，enum subject 仍持有原始堆内存 */
@@ -887,7 +887,7 @@ void cg_store_owned(CodegenContext *ctx,
     /* ------------------------------------------------------------------ */
     if (type->kind == TYPE_ENUM && type->as.enom.has_drop)
     {
-        bool source_borrowed = src_sym && src_sym->is_borrowed;
+        bool source_borrowed = src_sym && src_sym->no_drop_reason != CG_OWNED;
 
         if (is_rvalue)
         {
@@ -925,7 +925,7 @@ void cg_store_owned(CodegenContext *ctx,
     if (type->kind == TYPE_BLOCK)
     {
         LLVMBuildStore(ctx->builder, val, dst_ptr);
-        if (src_sym && !src_sym->is_borrowed)
+        if (src_sym && src_sym->no_drop_reason == CG_OWNED)
             cg_null_block_env(ctx, src_sym->value);
         else if (!src_sym)
         {
@@ -1041,7 +1041,7 @@ void emit_scope_cleanup(CodegenContext *ctx)
     for (int i = scope->count - 1; i >= 0; i--)
     {
         CgSymbol *sym = &scope->symbols[i];
-        if (sym->type == NULL || sym->is_borrowed)
+        if (sym->type == NULL || sym->no_drop_reason != CG_OWNED)
             continue;
 
         if (sym->type->kind == TYPE_STRUCT && sym->type->as.strukt.has_drop)
@@ -1127,8 +1127,9 @@ void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloc
                not by local scope cleanup inside functions. */
             if (sym->value && LLVMIsAGlobalVariable(sym->value))
                 continue;
-            /* Skip borrowed symbols (vec/struct params passed by ref) — caller owns the data */
-            if (sym->is_borrowed)
+            /* Skip non-owned symbols (borrowed params / moved-out / aliases) —
+               someone else owns or already owns the data */
+            if (sym->no_drop_reason != CG_OWNED)
                 continue;
             if ((sym->type->kind == TYPE_STRUCT && sym->type->as.strukt.has_drop) ||
                 (sym->type->kind == TYPE_ENUM && sym->type->as.enom.has_drop))
@@ -1201,8 +1202,8 @@ void emit_cleanup_to(CodegenContext *ctx, CgScope *stop, LLVMValueRef skip_alloc
             /* Skip global variables — handled by __ls_global_cleanup */
             if (sym->value && LLVMIsAGlobalVariable(sym->value))
                 continue;
-            /* Skip borrowed symbols (vec params, etc.) — caller owns the data */
-            if (sym->is_borrowed)
+            /* Skip non-owned symbols (borrowed params / moved-out / aliases) */
+            if (sym->no_drop_reason != CG_OWNED)
                 continue;
 
             if (sym->type->kind == TYPE_ARRAY && sym->type->as.array.elem)

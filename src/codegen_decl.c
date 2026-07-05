@@ -616,7 +616,7 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
                                              ptr, self_struct_type, NULL);
             if (psym)
             {
-                psym->is_borrowed = true; /* skip scope cleanup */
+                psym->no_drop_reason = CG_BORROWED; /* skip scope cleanup */
                 if (sbk == 2) psym->is_mut_borrow = true;
             }
             /* #1: &self (sbk=1) is a read-only borrow, &!self (sbk=2) exclusive. */
@@ -646,7 +646,7 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             if (psym)
             {
                 psym->is_mut_borrow = true;
-                psym->is_borrowed = true; /* skip scope cleanup */
+                psym->no_drop_reason = CG_BORROWED; /* skip scope cleanup */
             }
             /* #1: &!T exclusive borrow → noalias (+ nonnull/deref/align/nocapture). */
             cg_attach_borrow_attrs(ctx, fn, (unsigned)llvm_idx, param_type,
@@ -672,8 +672,8 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
             if (psym)
             {
                 /* No is_mut_borrow flag — mutations are blocked by the checker.
-                   is_borrowed skips scope cleanup so caller retains ownership. */
-                psym->is_borrowed = true;
+                   CG_BORROWED skips scope cleanup so caller retains ownership. */
+                psym->no_drop_reason = CG_BORROWED;
             }
             /* #1: read-only &T aggregate borrow → readonly (+ nonnull/deref/
                align/nocapture). */
@@ -711,7 +711,7 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
            callee can call the closure freely; ownership transfer (Block
            moves) is a future refinement. */
         if (psym && param_type && param_type->kind == TYPE_BLOCK)
-            psym->is_borrowed = true;
+            psym->no_drop_reason = CG_BORROWED;
         /* NOTE (Bug-6 / M-1 overhaul): self-recursive enum parameters were
            previously marked is_borrowed=true to prevent the callee's scope
            cleanup from freeing boxes that the caller still owned (Bug 5).
@@ -1075,7 +1075,7 @@ LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
                     {
                         CgSymbol *ss = cg_scope_resolve(ctx->current_scope,
                                                         se->as.ident.name);
-                        src_borrowed = ss && ss->is_borrowed;
+                        src_borrowed = ss && ss->no_drop_reason != CG_OWNED;
                     }
                     bool alias_read = se &&
                         (se->kind == AST_INDEX || se->kind == AST_FIELD ||

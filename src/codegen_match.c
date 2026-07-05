@@ -462,7 +462,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                 if (sn->kind == AST_IDENT) {
                     CgSymbol *bsym = cg_scope_resolve(ctx->current_scope,
                                                       sn->as.ident.name);
-                    if (bsym && bsym->is_borrowed) {
+                    if (bsym && bsym->no_drop_reason != CG_OWNED) {
                         subj_is_enum_borrow = true;
                         subj_ptr_val = bsym->value;
                     }
@@ -588,7 +588,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                                                                   field_ptr, "box");
                                 CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
                                                                 box, pt, NULL);
-                                if (sym) sym->is_borrowed = true;
+                                if (sym) sym->no_drop_reason = CG_BORROWED;
                                 continue;
                             }
 
@@ -599,7 +599,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                                 (pt->kind == TYPE_ENUM && pt->as.enom.has_drop)) {
                                 CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
                                                                 field_ptr, pt, NULL);
-                                if (sym) sym->is_borrowed = true;
+                                if (sym) sym->no_drop_reason = CG_BORROWED;
                                 continue;
                             }
 
@@ -686,7 +686,8 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                         }
                         CgSymbol *sym = cg_scope_define(ctx->current_scope, bname,
                                                         bind_alloca, pt, binder_moved_flag);
-                        if (sym) sym->is_borrowed = !binder_owns;
+                        if (sym) sym->no_drop_reason =
+                                     binder_owns ? CG_OWNED : CG_BORROWED;
                     }
                 }
 
@@ -716,13 +717,13 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                             continue;
                         Type *bt = bs->type;
                         bool owns_heap =
-                            bt && !bs->is_borrowed && bs->value &&
+                            bt && bs->no_drop_reason == CG_OWNED && bs->value &&
                             ((bt->kind == TYPE_STRUCT && bt->as.strukt.has_drop) ||
                              (bt->kind == TYPE_ENUM && bt->as.enom.has_drop) ||
                              bt->kind == TYPE_BLOCK);
                         if (owns_heap)
                         {
-                            bs->is_borrowed = true; /* skip drop: moved out */
+                            bs->no_drop_reason = CG_MOVED_OUT; /* skip drop: moved out */
                             did_move_out_binder = true;
                         }
                         break;
@@ -788,13 +789,13 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                 if (subj_node->kind == AST_IDENT) {
                     CgSymbol *sym = cg_scope_resolve(ctx->current_scope,
                                                      subj_node->as.ident.name);
-                    if (sym && !sym->is_borrowed && !sym->is_mut_borrow)
+                    if (sym && sym->no_drop_reason == CG_OWNED && !sym->is_mut_borrow)
                         subject_owned_by_scope = true;
                     /* Borrowed self-recursive enum identifiers (e.g. sum_tree's
                        parameter `t`) share heap boxes with the caller. The
                        match.subj copy aliases those boxes, so dropping it
                        recursively would double-free with the caller. Skip drop. */
-                    if (sym && sym->is_borrowed)
+                    if (sym && sym->no_drop_reason != CG_OWNED)
                         subject_owned_by_scope = true;
                 }
                 /* Self-recursive enums (Tree { Node(int, Tree, Tree) }) don't

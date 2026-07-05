@@ -2412,7 +2412,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             if (blk->kind == AST_IDENT)
             {
                 CgSymbol *bsym = cg_scope_resolve(ctx->current_scope, blk->as.ident.name);
-                if (bsym && !bsym->is_borrowed)
+                if (bsym && bsym->no_drop_reason == CG_OWNED)
                     cg_null_block_env(ctx, bsym->value);
             }
             else
@@ -3839,7 +3839,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         {
                             CgSymbol *bsym = cg_scope_resolve(ctx->current_scope,
                                                               uw->as.ident.name);
-                            if (bsym && !bsym->is_borrowed)
+                            if (bsym && bsym->no_drop_reason == CG_OWNED)
                                 cg_null_block_env(ctx, bsym->value);
                         }
                         /* Fresh rvalue arg moved into the container/worker: claim
@@ -4565,7 +4565,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                 }
                 if (ts == NULL)
                     continue;
-                if (!ts->is_borrowed && !ts->is_mut_borrow && ts->value &&
+                if (ts->no_drop_reason == CG_OWNED && !ts->is_mut_borrow && ts->value &&
                     ts->type &&
                     ((ts->type->kind == TYPE_STRUCT &&
                       ts->type->as.strukt.has_drop) ||
@@ -4576,7 +4576,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
                         yielded fat pointer still aliases (double-free). */
                      ts->type->kind == TYPE_BLOCK))
                 {
-                    ts->is_borrowed = true;      /* skip drop: moved out */
+                    ts->no_drop_reason = CG_MOVED_OUT; /* skip drop: moved out */
                     /* The slot is read again by the temp-table drop AFTER the
                        block ends — an end marker here would be premature. */
                     ts->lifetime_marked = false;

@@ -13,13 +13,30 @@
 #include <llvm-c/Analysis.h>
 #include <llvm-c/DebugInfo.h>
 
+/* Stage 11 (OWN-4): WHY scope cleanup must not drop a symbol. One bool
+   (`is_borrowed`) used to encode three meanings; the DROP end treats every
+   non-OWNED value identically (skip), but read ends that need the reason
+   (cg_match_arm_own_tail clone dispatch, cg_store_owned move-vs-clone)
+   branch on the specific value. Keep CG_OWNED == 0 so zero-init means
+   "owned, drop at scope exit". */
+typedef enum {
+    CG_OWNED = 0,   /* symbol owns its value — scope cleanup drops it */
+    CG_BORROWED,    /* true borrow: &self / &T / &!T params, & bindings,
+                       call-borrowed Block params, env-owned captures,
+                       borrow-match payload binders, for-in element copies */
+    CG_MOVED_OUT,   /* ownership transferred out: match binder move-out,
+                       block-tail local transfer (slot lives on in temp_drop) */
+    CG_ALIAS,       /* Block value aliasing container storage it does not own
+                       (raw-pointer/array index read) */
+} CgNoDropReason;
+
 /* Codegen symbol: associates a name with an LLVM alloca/global and its type */
 typedef struct {
     const char *name;
     LLVMValueRef value;     /* alloca or global */
     Type *type;
     LLVMValueRef moved_flag; /* i1 flag: true if value has been moved (for struct) */
-    bool is_borrowed;        /* true for vec/struct params passed by ptr — no cleanup ownership */
+    uint8_t no_drop_reason;  /* CgNoDropReason — CG_OWNED means "drop at scope exit" */
     bool is_mut_borrow;      /* true for &! params: `value` is a pointer supplied by
                                 caller (not a local alloca). Load/store go through the pointer,
                                 scope cleanup skips it entirely. */
