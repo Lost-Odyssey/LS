@@ -4125,6 +4125,76 @@ static LLVMValueRef cg_expr_block(CodegenContext *ctx, AstNode *node)
     return last;
 }
 
+static LLVMValueRef cg_expr_cast(CodegenContext *ctx, AstNode *node)
+{
+    LLVMValueRef val = codegen_expr(ctx, node->as.cast.expr);
+    if (val == NULL)
+        return NULL;
+
+    Type *from = node->as.cast.expr->resolved_type;
+    Type *to = node->resolved_type;
+    if (from == NULL || to == NULL)
+        return val;
+
+    LLVMTypeRef to_llvm = type_to_llvm(ctx, to);
+
+    if (type_is_integer(from) && type_is_integer(to))
+    {
+        unsigned from_bits = LLVMGetIntTypeWidth(LLVMTypeOf(val));
+        unsigned to_bits = LLVMGetIntTypeWidth(to_llvm);
+        if (from_bits < to_bits)
+        {
+            if (type_is_signed(from))
+                return LLVMBuildSExt(ctx->builder, val, to_llvm, "sext");
+            return LLVMBuildZExt(ctx->builder, val, to_llvm, "zext");
+        }
+        else if (from_bits > to_bits)
+        {
+            return LLVMBuildTrunc(ctx->builder, val, to_llvm, "trunc");
+        }
+        return val;
+    }
+    if (type_is_integer(from) && type_is_float(to))
+    {
+        if (type_is_signed(from))
+            return LLVMBuildSIToFP(ctx->builder, val, to_llvm, "sitofp");
+        return LLVMBuildUIToFP(ctx->builder, val, to_llvm, "uitofp");
+    }
+    if (type_is_float(from) && type_is_integer(to))
+    {
+        if (type_is_signed(to))
+            return LLVMBuildFPToSI(ctx->builder, val, to_llvm, "fptosi");
+        return LLVMBuildFPToUI(ctx->builder, val, to_llvm, "fptoui");
+    }
+    if (type_is_float(from) && type_is_float(to))
+    {
+        /* Choose fpext (widen) vs fptrunc (narrow) by bit width; f16/bf16 are
+           16-bit. f16<->bf16 (same width, different format) goes via f32. */
+        int fb = from->kind==TYPE_F64?64 : from->kind==TYPE_F32?32 : 16;
+        int tb = to->kind  ==TYPE_F64?64 : to->kind  ==TYPE_F32?32 : 16;
+        if (tb > fb) return LLVMBuildFPExt(ctx->builder, val, to_llvm, "fpext");
+        if (tb < fb) return LLVMBuildFPTrunc(ctx->builder, val, to_llvm, "fptrunc");
+        /* Same bit width: identical type (f64->f64, f32->f32, f16->f16,
+           bf16->bf16) is a no-op; only differing 16-bit formats
+           (f16<->bf16) need a round-trip via f32. */
+        if (from->kind == to->kind) return val;
+        LLVMValueRef up = LLVMBuildFPExt(ctx->builder, val,
+                              LLVMFloatTypeInContext(ctx->context), "fpext.up");
+        return LLVMBuildFPTrunc(ctx->builder, up, to_llvm, "fptrunc.dn");
+    }
+    /* Pointer/object <-> integer casts */
+    if ((from->kind == TYPE_POINTER || from->kind == TYPE_OBJECT) && type_is_integer(to))
+    {
+        return LLVMBuildPtrToInt(ctx->builder, val, to_llvm, "ptrtoint");
+    }
+    if (type_is_integer(from) && (to->kind == TYPE_POINTER || to->kind == TYPE_OBJECT))
+    {
+        return LLVMBuildIntToPtr(ctx->builder, val, to_llvm, "inttoptr");
+    }
+    /* Pointer/object <-> pointer/object casts (all opaque ptrs in LLVM) */
+    return val;
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -4386,74 +4456,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return cg_expr_at_bench(ctx, node);
 
     case AST_CAST:
-    {
-        LLVMValueRef val = codegen_expr(ctx, node->as.cast.expr);
-        if (val == NULL)
-            return NULL;
-
-        Type *from = node->as.cast.expr->resolved_type;
-        Type *to = node->resolved_type;
-        if (from == NULL || to == NULL)
-            return val;
-
-        LLVMTypeRef to_llvm = type_to_llvm(ctx, to);
-
-        if (type_is_integer(from) && type_is_integer(to))
-        {
-            unsigned from_bits = LLVMGetIntTypeWidth(LLVMTypeOf(val));
-            unsigned to_bits = LLVMGetIntTypeWidth(to_llvm);
-            if (from_bits < to_bits)
-            {
-                if (type_is_signed(from))
-                    return LLVMBuildSExt(ctx->builder, val, to_llvm, "sext");
-                return LLVMBuildZExt(ctx->builder, val, to_llvm, "zext");
-            }
-            else if (from_bits > to_bits)
-            {
-                return LLVMBuildTrunc(ctx->builder, val, to_llvm, "trunc");
-            }
-            return val;
-        }
-        if (type_is_integer(from) && type_is_float(to))
-        {
-            if (type_is_signed(from))
-                return LLVMBuildSIToFP(ctx->builder, val, to_llvm, "sitofp");
-            return LLVMBuildUIToFP(ctx->builder, val, to_llvm, "uitofp");
-        }
-        if (type_is_float(from) && type_is_integer(to))
-        {
-            if (type_is_signed(to))
-                return LLVMBuildFPToSI(ctx->builder, val, to_llvm, "fptosi");
-            return LLVMBuildFPToUI(ctx->builder, val, to_llvm, "fptoui");
-        }
-        if (type_is_float(from) && type_is_float(to))
-        {
-            /* Choose fpext (widen) vs fptrunc (narrow) by bit width; f16/bf16 are
-               16-bit. f16<->bf16 (same width, different format) goes via f32. */
-            int fb = from->kind==TYPE_F64?64 : from->kind==TYPE_F32?32 : 16;
-            int tb = to->kind  ==TYPE_F64?64 : to->kind  ==TYPE_F32?32 : 16;
-            if (tb > fb) return LLVMBuildFPExt(ctx->builder, val, to_llvm, "fpext");
-            if (tb < fb) return LLVMBuildFPTrunc(ctx->builder, val, to_llvm, "fptrunc");
-            /* Same bit width: identical type (f64->f64, f32->f32, f16->f16,
-               bf16->bf16) is a no-op; only differing 16-bit formats
-               (f16<->bf16) need a round-trip via f32. */
-            if (from->kind == to->kind) return val;
-            LLVMValueRef up = LLVMBuildFPExt(ctx->builder, val,
-                                  LLVMFloatTypeInContext(ctx->context), "fpext.up");
-            return LLVMBuildFPTrunc(ctx->builder, up, to_llvm, "fptrunc.dn");
-        }
-        /* Pointer/object <-> integer casts */
-        if ((from->kind == TYPE_POINTER || from->kind == TYPE_OBJECT) && type_is_integer(to))
-        {
-            return LLVMBuildPtrToInt(ctx->builder, val, to_llvm, "ptrtoint");
-        }
-        if (type_is_integer(from) && (to->kind == TYPE_POINTER || to->kind == TYPE_OBJECT))
-        {
-            return LLVMBuildIntToPtr(ctx->builder, val, to_llvm, "inttoptr");
-        }
-        /* Pointer/object <-> pointer/object casts (all opaque ptrs in LLVM) */
-        return val;
-    }
+        return cg_expr_cast(ctx, node);
 
     case AST_SIZEOF:
     {
