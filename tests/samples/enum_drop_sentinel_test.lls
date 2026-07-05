@@ -1,11 +1,19 @@
 // enum_drop_sentinel_test — pins the dead-tag sentinel contract
-// (docs/plan_enum_drop_sentinel.md). Four shapes:
+// (docs/plan_enum_drop_sentinel.md). Five shapes:
 //  1. legal re-drop path (B-MAP-OPT-001 shape: owned rvalue subject,
 //     arm with a loop) must stay silent under memcheck;
 //  2. self-recursive enum construct/drop with value check;
 //  3. nested has_drop enum payload drop;
-//  4. repeated construct+drop in a loop (the slot is reused across
-//     iterations — a stale-dead-state bug would break iteration 2+).
+//  4. repeated construct+destroy of a NAMED local in a loop — guards
+//     decl zero-init + the ctor protocol across iterations. NOTE: `x`
+//     here is a named local, destroyed via emit_enum_drop_cond, which
+//     calls the drop-fn directly and never writes the sentinel — this
+//     shape does NOT exercise slot reuse of a sentinel-carrying slot;
+//  5. repeated match over an OWNED RVALUE subject in a loop — this is
+//     the shape that actually reuses a sentinel-carrying slot every
+//     iteration (emit_enum_drop writes tag=variant_count into
+//     %match.subj, then the next iteration's match reinitializes the
+//     same alloca and dispatches on it again).
 // Every shape prints a value check; harness greps "SENTINEL PASS".
 
 enum Inner { INil IStr(Str) }
@@ -68,12 +76,33 @@ def shape3() -> int {
     return -1
 }
 
-// shape 4: slot reuse across loop iterations
+// shape 4: named-local construct+destroy repeated in a loop (decl
+// zero-init + ctor protocol guard — NOT sentinel slot reuse, see header).
 def shape4() -> int {
     int acc = 0
     for i in 0..100 {
         Inner x = IStr(heaped("xy"))
         match x {
+            IStr(s) => { acc = acc + s.len() }
+            INil => {}
+        }
+    }
+    return acc
+}
+
+def mk_inner(int i) -> Inner {
+    return IStr(heaped("xy"))
+}
+
+// shape 5: owned-rvalue subject repeated in a loop — the slot that
+// carries the sentinel (match.subj) is genuinely reused every
+// iteration: emit_enum_drop writes tag=variant_count into it at the
+// end of one iteration, and the next iteration's match reinitializes
+// the same alloca and dispatches on it again.
+def shape5() -> int {
+    int acc = 0
+    for i in 0..100 {
+        match mk_inner(i) {
             IStr(s) => { acc = acc + s.len() }
             INil => {}
         }
@@ -87,5 +116,6 @@ def main() {
     if shape2() != 15 { ok = 0 @print("FAIL: shape2") }
     if shape3() != 5 { ok = 0 @print("FAIL: shape3") }
     if shape4() != 400 { ok = 0 @print("FAIL: shape4") }
+    if shape5() != 400 { ok = 0 @print("FAIL: shape5") }
     if ok == 1 { @print("SENTINEL PASS") }
 }

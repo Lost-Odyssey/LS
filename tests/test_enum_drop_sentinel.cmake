@@ -53,3 +53,21 @@ if(NOT "${mc_err}" MATCHES "OK clean")
     message(FATAL_ERROR "enum_drop_sentinel memcheck leak/double-free\n${mc_err}")
 endif()
 message(STATUS "enum_drop_sentinel memcheck: OK clean")
+
+# ---- pin sentinel emission (default flavor must actually emit the
+# dead-tag store, not just pass the value checks above). Skipped under
+# LS_NO_DROP_SENTINEL=1 (the A/B escape hatch): that flavor legitimately
+# falls back to whole-slot zeroing and never emits dead.tag.p. ----
+if(NOT DEFINED ENV{LS_NO_DROP_SENTINEL})
+    execute_process(COMMAND "${LS_EXE}" emit-ir "${SRC}"
+        ERROR_VARIABLE ir_err RESULT_VARIABLE ir_rc)
+    if(NOT ir_rc EQUAL 0)
+        message(FATAL_ERROR "enum_drop_sentinel emit-ir FAILED (rc=${ir_rc})\n${ir_err}")
+    endif()
+    if(NOT "${ir_err}" MATCHES "dead\\.tag\\.p")
+        message(FATAL_ERROR "enum_drop_sentinel emit-ir missing dead.tag.p sentinel store\n${ir_err}")
+    endif()
+    message(STATUS "enum_drop_sentinel emit-ir: dead.tag.p present")
+else()
+    message(STATUS "enum_drop_sentinel emit-ir fingerprint check: skipped (LS_NO_DROP_SENTINEL=1)")
+endif()
