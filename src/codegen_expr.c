@@ -3447,6 +3447,167 @@ static LLVMValueRef cg_expr_field(CodegenContext *ctx, AstNode *node)
     return field_val;
 }
 
+static LLVMValueRef cg_expr_index(CodegenContext *ctx, AstNode *node)
+{
+    AstNode *obj = node->as.index_expr.object;
+    AstNode *idx_node = node->as.index_expr.index;
+    Type *obj_type = obj->resolved_type;
+    LLVMTypeRef i64_t0 = LLVMInt64TypeInContext(ctx->context);
+    LLVMValueRef zero64 = LLVMConstInt(i64_t0, 0, 0);
+
+    /* Slice creation `v[a..b]` — build a {ptr,len} view over a Vec(T) (or a
+       sub-slice of a slice), bounds-checked: 0 <= a <= b <= len. */
+    if (node->resolved_type && node->resolved_type->kind == TYPE_SLICE &&
+        idx_node && idx_node->kind == AST_RANGE)
+    {
+        Type *slice_t = node->resolved_type;
+        LLVMTypeRef elem_llvm = type_to_llvm(ctx, slice_t->as.array.elem);
+        LLVMValueRef base_ptr = NULL, src_len = NULL;
+        if (obj_type && obj_type->kind == TYPE_SLICE)
+        {
+            LLVMValueRef sv = codegen_expr(ctx, obj);
+            base_ptr = LLVMBuildExtractValue(ctx->builder, sv, 0, "src.ptr");
+            src_len  = LLVMBuildExtractValue(ctx->builder, sv, 1, "src.len");
+        }
+        else
+        {
+            /* Vec(T): field 0 = *T data, field 1 = i32 len. */
+            LLVMValueRef vec_ptr = codegen_lvalue_ptr(ctx, obj);
+            if (vec_ptr == NULL) { cg_error(ctx, node->line, node->column,
+                "cannot take address of slice source"); return NULL; }
+            LLVMTypeRef vec_llvm = type_to_llvm(ctx, obj_type);
+            LLVMValueRef dgep = LLVMBuildStructGEP2(ctx->builder, vec_llvm, vec_ptr, 0, "v.data.p");
+            base_ptr = LLVMBuildLoad2(ctx->builder,
+                LLVMPointerTypeInContext(ctx->context, 0), dgep, "v.data");
+            LLVMValueRef lgep = LLVMBuildStructGEP2(ctx->builder, vec_llvm, vec_ptr, 1, "v.len.p");
+            LLVMValueRef len32 = LLVMBuildLoad2(ctx->builder,
+                LLVMInt32TypeInContext(ctx->context), lgep, "v.len");
+            src_len = LLVMBuildSExt(ctx->builder, len32, i64_t0, "v.len64");
+        }
+        AstNode *rng = idx_node;
+        LLVMValueRef lo = rng->as.range.start ? codegen_expr(ctx, rng->as.range.start) : zero64;
+        LLVMValueRef hi = rng->as.range.end   ? codegen_expr(ctx, rng->as.range.end)   : src_len;
+        if (LLVMTypeOf(lo) != i64_t0) lo = LLVMBuildSExtOrBitCast(ctx->builder, lo, i64_t0, "lo64");
+        if (LLVMTypeOf(hi) != i64_t0) hi = LLVMBuildSExtOrBitCast(ctx->builder, hi, i64_t0, "hi64");
+        /* 0 <= lo && lo <= hi && hi <= len */
+        LLVMValueRef c1 = LLVMBuildICmp(ctx->builder, LLVMIntSGE, lo, zero64, "c1");
+        LLVMValueRef c2 = LLVMBuildICmp(ctx->builder, LLVMIntSLE, lo, hi, "c2");
+        LLVMValueRef c3 = LLVMBuildICmp(ctx->builder, LLVMIntSLE, hi, src_len, "c3");
+        LLVMValueRef ok = LLVMBuildAnd(ctx->builder,
+            LLVMBuildAnd(ctx->builder, c1, c2, "ok12"), c3, "ok");
+        cg_emit_bounds_guard(ctx, ok, "Slice range out of bounds", node->line, node->column);
+        LLVMValueRef slen = LLVMBuildSub(ctx->builder, hi, lo, "slice.length");
+        return cg_make_slice(ctx, elem_llvm, base_ptr, lo, slen, slice_t);
+    }
+
+    /* `slice[i]` — bounds-checked element read of a borrowed slice. */
+    if (obj_type && obj_type->kind == TYPE_SLICE)
+    {
+        LLVMValueRef sv = codegen_expr(ctx, obj);
+        LLVMValueRef sptr = LLVMBuildExtractValue(ctx->builder, sv, 0, "s.ptr");
+        LLVMValueRef slen = LLVMBuildExtractValue(ctx->builder, sv, 1, "s.len");
+        LLVMValueRef index = codegen_expr(ctx, idx_node);
+        if (LLVMTypeOf(index) != i64_t0)
+            index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t0, "si.idx");
+        LLVMValueRef ge = LLVMBuildICmp(ctx->builder, LLVMIntSGE, index, zero64, "sge");
+        LLVMValueRef lt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, index, slen, "slt");
+        LLVMValueRef ok = LLVMBuildAnd(ctx->builder, ge, lt, "sok");
+        cg_emit_bounds_guard(ctx, ok, "Slice index out of bounds", node->line, node->column);
+        LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.array.elem);
+        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, sptr, &index, 1, "s.elem.p");
+        LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "s.elem");
+        /* READ = independent copy; contract with
+           cg_match_subject_is_owned_rvalue (codegen_match.c). */
+        return emit_clone_value(ctx, elem, elem_llvm, obj_type->as.array.elem);
+    }
+
+    /* p[i] on a raw *T pointer — load the pointer value, typed-GEP element,
+       load it, then DEEP-CLONE owned element data — matching vec[i]/array[i]
+       read semantics exactly (a read yields an independent copy; the slot
+       keeps its own, so both can be dropped without double-free). POD /
+       non-has_drop is returned as-is (emit_clone_value is a no-op). The GEP
+       stride comes from the SAME DataLayout as sizeof(T), so struct padding
+       is handled automatically. No bounds check (unsafe layer).
+       NOTE: zero-copy move-out is NOT done here (would alias); a container
+       that wants move-out reads + __drop_at(slot) (clone + drop original). */
+    if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
+    {
+        LLVMValueRef ptr_val = codegen_expr(ctx, obj);
+        if (ptr_val == NULL)
+            return NULL;
+        LLVMValueRef index = codegen_expr(ctx, idx_node);
+        if (index == NULL)
+            return NULL;
+        LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+        if (LLVMTypeOf(index) != i64_t)
+            index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t, "pi.idx");
+        Type *elem_type = obj_type->as.pointer_to;
+        LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
+        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val,
+                                         &index, 1, "ptr.idx");
+        LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "ptr.elem");
+        /* Deep-clone owned element data (string/vec/has_drop struct|enum).
+           Contract with cg_match_subject_is_owned_rvalue (codegen_match.c). */
+        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
+        return elem;
+    }
+
+    /* arr[index] — GEP into fixed array + load element */
+    if (obj_type == NULL || obj_type->kind != TYPE_ARRAY)
+    {
+        cg_error(ctx, node->line, node->column, "index on non-array/non-vec");
+        return NULL;
+    }
+
+    /* Get the alloca/global pointer for the array (not a load) */
+    LLVMValueRef arr_ptr = NULL;
+    if (obj->kind == AST_IDENT)
+    {
+        CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj->as.ident.name);
+        if (sym)
+            arr_ptr = sym->value;
+    }
+    else if (obj->kind == AST_FIELD &&
+             obj->as.field_access.object->resolved_type &&
+             obj->as.field_access.object->resolved_type->kind == TYPE_MODULE)
+    {
+        /* Module variable: math.PRIMES[0] */
+        arr_ptr = LLVMGetNamedGlobal(ctx->module, obj->as.field_access.field);
+    }
+    if (arr_ptr == NULL)
+    {
+        cg_error(ctx, node->line, node->column, "cannot get address of array");
+        return NULL;
+    }
+
+    LLVMValueRef index = codegen_expr(ctx, idx_node);
+    if (index == NULL)
+        return NULL;
+
+    /* Ensure index is i64 for GEP */
+    LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
+    if (LLVMTypeOf(index) != i64_type)
+    {
+        index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_type, "idx.ext");
+    }
+
+    LLVMTypeRef arr_llvm = type_to_llvm(ctx, obj_type);
+    LLVMValueRef zero = LLVMConstInt(i64_type, 0, 0);
+    LLVMValueRef indices[2] = {zero, index};
+    LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, arr_llvm, arr_ptr,
+                                     indices, 2, "arr.idx");
+    Type *elem_type = obj_type->as.array.elem;
+    LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
+    LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "arr.elem");
+    /* array[i] is a READ — the array retains ownership.  Clone owned data
+       to give the caller an independent copy (mirrors vec[i] semantics).
+       CONTRACT with cg_match_subject_is_owned_rvalue (codegen_match.c):
+       an AST_INDEX match subject is dropped at merge as an owned temp —
+       sound only while this read clones. */
+    elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
+    return elem;
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -4092,165 +4253,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
         return codegen_ffi_call(ctx, node);
 
     case AST_INDEX:
-    {
-        AstNode *obj = node->as.index_expr.object;
-        AstNode *idx_node = node->as.index_expr.index;
-        Type *obj_type = obj->resolved_type;
-        LLVMTypeRef i64_t0 = LLVMInt64TypeInContext(ctx->context);
-        LLVMValueRef zero64 = LLVMConstInt(i64_t0, 0, 0);
-
-        /* Slice creation `v[a..b]` — build a {ptr,len} view over a Vec(T) (or a
-           sub-slice of a slice), bounds-checked: 0 <= a <= b <= len. */
-        if (node->resolved_type && node->resolved_type->kind == TYPE_SLICE &&
-            idx_node && idx_node->kind == AST_RANGE)
-        {
-            Type *slice_t = node->resolved_type;
-            LLVMTypeRef elem_llvm = type_to_llvm(ctx, slice_t->as.array.elem);
-            LLVMValueRef base_ptr = NULL, src_len = NULL;
-            if (obj_type && obj_type->kind == TYPE_SLICE)
-            {
-                LLVMValueRef sv = codegen_expr(ctx, obj);
-                base_ptr = LLVMBuildExtractValue(ctx->builder, sv, 0, "src.ptr");
-                src_len  = LLVMBuildExtractValue(ctx->builder, sv, 1, "src.len");
-            }
-            else
-            {
-                /* Vec(T): field 0 = *T data, field 1 = i32 len. */
-                LLVMValueRef vec_ptr = codegen_lvalue_ptr(ctx, obj);
-                if (vec_ptr == NULL) { cg_error(ctx, node->line, node->column,
-                    "cannot take address of slice source"); return NULL; }
-                LLVMTypeRef vec_llvm = type_to_llvm(ctx, obj_type);
-                LLVMValueRef dgep = LLVMBuildStructGEP2(ctx->builder, vec_llvm, vec_ptr, 0, "v.data.p");
-                base_ptr = LLVMBuildLoad2(ctx->builder,
-                    LLVMPointerTypeInContext(ctx->context, 0), dgep, "v.data");
-                LLVMValueRef lgep = LLVMBuildStructGEP2(ctx->builder, vec_llvm, vec_ptr, 1, "v.len.p");
-                LLVMValueRef len32 = LLVMBuildLoad2(ctx->builder,
-                    LLVMInt32TypeInContext(ctx->context), lgep, "v.len");
-                src_len = LLVMBuildSExt(ctx->builder, len32, i64_t0, "v.len64");
-            }
-            AstNode *rng = idx_node;
-            LLVMValueRef lo = rng->as.range.start ? codegen_expr(ctx, rng->as.range.start) : zero64;
-            LLVMValueRef hi = rng->as.range.end   ? codegen_expr(ctx, rng->as.range.end)   : src_len;
-            if (LLVMTypeOf(lo) != i64_t0) lo = LLVMBuildSExtOrBitCast(ctx->builder, lo, i64_t0, "lo64");
-            if (LLVMTypeOf(hi) != i64_t0) hi = LLVMBuildSExtOrBitCast(ctx->builder, hi, i64_t0, "hi64");
-            /* 0 <= lo && lo <= hi && hi <= len */
-            LLVMValueRef c1 = LLVMBuildICmp(ctx->builder, LLVMIntSGE, lo, zero64, "c1");
-            LLVMValueRef c2 = LLVMBuildICmp(ctx->builder, LLVMIntSLE, lo, hi, "c2");
-            LLVMValueRef c3 = LLVMBuildICmp(ctx->builder, LLVMIntSLE, hi, src_len, "c3");
-            LLVMValueRef ok = LLVMBuildAnd(ctx->builder,
-                LLVMBuildAnd(ctx->builder, c1, c2, "ok12"), c3, "ok");
-            cg_emit_bounds_guard(ctx, ok, "Slice range out of bounds", node->line, node->column);
-            LLVMValueRef slen = LLVMBuildSub(ctx->builder, hi, lo, "slice.length");
-            return cg_make_slice(ctx, elem_llvm, base_ptr, lo, slen, slice_t);
-        }
-
-        /* `slice[i]` — bounds-checked element read of a borrowed slice. */
-        if (obj_type && obj_type->kind == TYPE_SLICE)
-        {
-            LLVMValueRef sv = codegen_expr(ctx, obj);
-            LLVMValueRef sptr = LLVMBuildExtractValue(ctx->builder, sv, 0, "s.ptr");
-            LLVMValueRef slen = LLVMBuildExtractValue(ctx->builder, sv, 1, "s.len");
-            LLVMValueRef index = codegen_expr(ctx, idx_node);
-            if (LLVMTypeOf(index) != i64_t0)
-                index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t0, "si.idx");
-            LLVMValueRef ge = LLVMBuildICmp(ctx->builder, LLVMIntSGE, index, zero64, "sge");
-            LLVMValueRef lt = LLVMBuildICmp(ctx->builder, LLVMIntSLT, index, slen, "slt");
-            LLVMValueRef ok = LLVMBuildAnd(ctx->builder, ge, lt, "sok");
-            cg_emit_bounds_guard(ctx, ok, "Slice index out of bounds", node->line, node->column);
-            LLVMTypeRef elem_llvm = type_to_llvm(ctx, obj_type->as.array.elem);
-            LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, sptr, &index, 1, "s.elem.p");
-            LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "s.elem");
-            /* READ = independent copy; contract with
-               cg_match_subject_is_owned_rvalue (codegen_match.c). */
-            return emit_clone_value(ctx, elem, elem_llvm, obj_type->as.array.elem);
-        }
-
-        /* p[i] on a raw *T pointer — load the pointer value, typed-GEP element,
-           load it, then DEEP-CLONE owned element data — matching vec[i]/array[i]
-           read semantics exactly (a read yields an independent copy; the slot
-           keeps its own, so both can be dropped without double-free). POD /
-           non-has_drop is returned as-is (emit_clone_value is a no-op). The GEP
-           stride comes from the SAME DataLayout as sizeof(T), so struct padding
-           is handled automatically. No bounds check (unsafe layer).
-           NOTE: zero-copy move-out is NOT done here (would alias); a container
-           that wants move-out reads + __drop_at(slot) (clone + drop original). */
-        if (obj_type && obj_type->kind == TYPE_POINTER && obj_type->as.pointer_to)
-        {
-            LLVMValueRef ptr_val = codegen_expr(ctx, obj);
-            if (ptr_val == NULL)
-                return NULL;
-            LLVMValueRef index = codegen_expr(ctx, idx_node);
-            if (index == NULL)
-                return NULL;
-            LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
-            if (LLVMTypeOf(index) != i64_t)
-                index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_t, "pi.idx");
-            Type *elem_type = obj_type->as.pointer_to;
-            LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-            LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, elem_llvm, ptr_val,
-                                             &index, 1, "ptr.idx");
-            LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "ptr.elem");
-            /* Deep-clone owned element data (string/vec/has_drop struct|enum).
-               Contract with cg_match_subject_is_owned_rvalue (codegen_match.c). */
-            elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
-            return elem;
-        }
-
-        /* arr[index] — GEP into fixed array + load element */
-        if (obj_type == NULL || obj_type->kind != TYPE_ARRAY)
-        {
-            cg_error(ctx, node->line, node->column, "index on non-array/non-vec");
-            return NULL;
-        }
-
-        /* Get the alloca/global pointer for the array (not a load) */
-        LLVMValueRef arr_ptr = NULL;
-        if (obj->kind == AST_IDENT)
-        {
-            CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj->as.ident.name);
-            if (sym)
-                arr_ptr = sym->value;
-        }
-        else if (obj->kind == AST_FIELD &&
-                 obj->as.field_access.object->resolved_type &&
-                 obj->as.field_access.object->resolved_type->kind == TYPE_MODULE)
-        {
-            /* Module variable: math.PRIMES[0] */
-            arr_ptr = LLVMGetNamedGlobal(ctx->module, obj->as.field_access.field);
-        }
-        if (arr_ptr == NULL)
-        {
-            cg_error(ctx, node->line, node->column, "cannot get address of array");
-            return NULL;
-        }
-
-        LLVMValueRef index = codegen_expr(ctx, idx_node);
-        if (index == NULL)
-            return NULL;
-
-        /* Ensure index is i64 for GEP */
-        LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
-        if (LLVMTypeOf(index) != i64_type)
-        {
-            index = LLVMBuildSExtOrBitCast(ctx->builder, index, i64_type, "idx.ext");
-        }
-
-        LLVMTypeRef arr_llvm = type_to_llvm(ctx, obj_type);
-        LLVMValueRef zero = LLVMConstInt(i64_type, 0, 0);
-        LLVMValueRef indices[2] = {zero, index};
-        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, arr_llvm, arr_ptr,
-                                         indices, 2, "arr.idx");
-        Type *elem_type = obj_type->as.array.elem;
-        LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
-        LLVMValueRef elem = LLVMBuildLoad2(ctx->builder, elem_llvm, gep, "arr.elem");
-        /* array[i] is a READ — the array retains ownership.  Clone owned data
-           to give the caller an independent copy (mirrors vec[i] semantics).
-           CONTRACT with cg_match_subject_is_owned_rvalue (codegen_match.c):
-           an AST_INDEX match subject is dropped at merge as an owned temp —
-           sound only while this read clones. */
-        elem = emit_clone_value(ctx, elem, elem_llvm, elem_type);
-        return elem;
-    }
+        return cg_expr_index(ctx, node);
 
     case AST_ARRAY_LIT:
     {
