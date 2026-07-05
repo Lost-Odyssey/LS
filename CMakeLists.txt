@@ -137,6 +137,7 @@ set(LS_SOURCES
     src/builtins_math_cg.c
     src/builtins_perf.c
     src/builtins_perf_cg.c
+    src/builtins_intrinsic_cg.c
     runtime/memcheck.c
     runtime/profiler.c
     runtime/builtins.c

@@ -11,6 +11,7 @@
 #include "builtins_math.h"
 #define LS_INCLUDE_CODEGEN 1
 #include "builtins_perf.h"
+#include "builtins_intrinsic_cg.h"
 #include "common.h"
 
 #include <llvm-c/Core.h>
@@ -2530,91 +2531,21 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
             return NULL; /* void */
         }
 
-        /* Mutex + spin runtime intrinsics (std.sync). Emit a call to the OS-
-           backend runtime function on an opaque handle. These are GLOBAL
-           intrinsics (not import aliases), so — like __task_* — they survive
-           generic-method instantiation in a consumer module that hasn't imported
-           std.c. They know nothing about Mutex(T): an opaque handle in/out is the
-           whole interface (the same clean boundary as __atomic_* over scalars). */
+        /* Compiler intrinsic families — sync (__mutex_/__rwlock_/__cond_/
+           __cpu_*, std.sync), __atomic_* (std.atomic) and __simd_* — dispatch
+           through the name-keyed registry in builtins_intrinsic_cg.c (S2).
+           A family-prefixed name is ALWAYS consumed here: unknown members
+           produce the same "internal: unknown ... intrinsic" error the old
+           inline chains did (no fall-through to user-call resolution). The
+           name sets are disjoint from every other name AST_CALL tests, so
+           probing all families at this position is order-equivalent to the
+           retired per-family blocks. */
         if (node->as.call.callee->kind == AST_IDENT &&
-            (strncmp(node->as.call.callee->as.ident.name, "__mutex_", 8) == 0 ||
-             strncmp(node->as.call.callee->as.ident.name, "__rwlock_", 9) == 0 ||
-             strncmp(node->as.call.callee->as.ident.name, "__cond_", 7) == 0 ||
-             strcmp(node->as.call.callee->as.ident.name, "__cpu_relax") == 0 ||
-             strcmp(node->as.call.callee->as.ident.name, "__cpu_yield") == 0))
+            builtin_intrinsic_is_global(
+                builtin_intrinsic_lookup(node->as.call.callee->as.ident.name)))
         {
-            const char *mname = node->as.call.callee->as.ident.name;
-            LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-            LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
-            LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
-
-            const char *sym = NULL;
-            LLVMTypeRef ret_t = void_t;
-            int nargs = 1; /* default: one opaque handle argument */
-            if (strcmp(mname, "__mutex_init") == 0)
-                { sym = "ls_mutex_init"; ret_t = ptr_t; nargs = 0; }
-            else if (strcmp(mname, "__mutex_lock") == 0)
-                { sym = "ls_mutex_lock"; ret_t = i32_t; }
-            else if (strcmp(mname, "__mutex_trylock") == 0)
-                { sym = "ls_mutex_trylock"; ret_t = i32_t; }
-            else if (strcmp(mname, "__mutex_unlock") == 0)
-                { sym = "ls_mutex_unlock"; ret_t = i32_t; }
-            else if (strcmp(mname, "__mutex_destroy") == 0)
-                { sym = "ls_mutex_destroy"; ret_t = void_t; }
-            else if (strcmp(mname, "__rwlock_init") == 0)
-                { sym = "ls_rwlock_init"; ret_t = ptr_t; nargs = 0; }
-            else if (strcmp(mname, "__rwlock_rdlock") == 0)
-                { sym = "ls_rwlock_rdlock"; ret_t = i32_t; }
-            else if (strcmp(mname, "__rwlock_wrlock") == 0)
-                { sym = "ls_rwlock_wrlock"; ret_t = i32_t; }
-            else if (strcmp(mname, "__rwlock_rdunlock") == 0)
-                { sym = "ls_rwlock_rdunlock"; ret_t = i32_t; }
-            else if (strcmp(mname, "__rwlock_wrunlock") == 0)
-                { sym = "ls_rwlock_wrunlock"; ret_t = i32_t; }
-            else if (strcmp(mname, "__rwlock_destroy") == 0)
-                { sym = "ls_rwlock_destroy"; ret_t = void_t; }
-            /* condition variables (std.chan). __cond_wait is the only 2-arg sync
-               intrinsic (cond handle, mutex handle — both opaque pointers). */
-            else if (strcmp(mname, "__cond_init") == 0)
-                { sym = "ls_cond_init"; ret_t = ptr_t; nargs = 0; }
-            else if (strcmp(mname, "__cond_wait") == 0)
-                { sym = "ls_cond_wait"; ret_t = void_t; nargs = 2; }
-            else if (strcmp(mname, "__cond_signal") == 0)
-                { sym = "ls_cond_signal"; ret_t = void_t; }
-            else if (strcmp(mname, "__cond_broadcast") == 0)
-                { sym = "ls_cond_broadcast"; ret_t = void_t; }
-            else if (strcmp(mname, "__cond_destroy") == 0)
-                { sym = "ls_cond_destroy"; ret_t = void_t; }
-            else if (strcmp(mname, "__cpu_relax") == 0)
-                { sym = "ls_cpu_relax"; ret_t = void_t; nargs = 0; }
-            else if (strcmp(mname, "__cpu_yield") == 0)
-                { sym = "ls_cpu_yield"; ret_t = void_t; nargs = 0; }
-            else
-            {
-                cg_error(ctx, node->line, node->column,
-                         "internal: unknown sync intrinsic '%s'", mname);
-                return NULL;
-            }
-
-            /* Build 0, 1, or 2 opaque-pointer arguments. */
-            LLVMValueRef call_args[2];
-            LLVMTypeRef  param_tys[2] = { ptr_t, ptr_t };
-            for (int i = 0; i < nargs; i++)
-            {
-                LLVMValueRef a = codegen_expr(ctx, node->as.call.args[i]);
-                if (a == NULL) return NULL;
-                call_args[i] = a;
-            }
-            LLVMTypeRef fn_ty = LLVMFunctionType(ret_t, nargs ? param_tys : NULL,
-                                                 (unsigned)nargs, 0);
-
-            LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, sym);
-            if (fn == NULL) fn = LLVMAddFunction(ctx->module, sym, fn_ty);
-            bool is_void = (ret_t == void_t);
-            LLVMValueRef rv = LLVMBuildCall2(ctx->builder, fn_ty, fn,
-                                             nargs ? call_args : NULL, (unsigned)nargs,
-                                             is_void ? "" : mname);
-            return is_void ? NULL : rv;
+            return builtin_intrinsic_emit_call(
+                ctx, node->as.call.callee->as.ident.name, node);
         }
 
         /* Intercept __drop_at(place) — run the recursive destructor on the value
