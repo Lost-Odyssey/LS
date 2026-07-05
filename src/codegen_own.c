@@ -853,7 +853,21 @@ void cg_store_owned(CodegenContext *ctx,
     /* ------------------------------------------------------------------ */
     if (type->kind == TYPE_STRUCT && type->as.strukt.has_drop)
     {
-        bool source_borrowed = src_sym && src_sym->no_drop_reason != CG_OWNED;
+        /* Stage 11 (S2): dispatch on the actual no-drop reason, not "any
+           non-owned". Only CG_BORROWED clones — the real owner (borrow-match
+           subject / caller) keeps its heap. Reachability note (stage 11
+           probe): a resolvable CG_MOVED_OUT source cannot reach this store
+           today — its two writers either pop the symbol's scope immediately
+           (block-tail transfer; block-exprs are parser-rejected in argument
+           position, so the peel above only fires for combinator-lowered
+           closure bodies whose binder is not yet moved out) or mark only
+           after every arm-body store already ran (match binder move-out).
+           The MOVED_OUT branch is defensive semantics for future lowerings:
+           the value already owns its heap — cloning would leak a copy;
+           complete the transfer by claiming its pending ledger slot instead.
+           CG_ALIAS is a Block-only tag, never on struct/enum symbols. */
+        bool source_borrowed  = src_sym && src_sym->no_drop_reason == CG_BORROWED;
+        bool source_moved_out = src_sym && src_sym->no_drop_reason == CG_MOVED_OUT;
         if (source_borrowed)
         {
             /* borrowed match binder：深克隆，enum subject 仍持有原始堆内存 */
@@ -861,7 +875,11 @@ void cg_store_owned(CodegenContext *ctx,
             val = emit_struct_clone_val(ctx, val, st_llvm, type);
         }
         LLVMBuildStore(ctx->builder, val, dst_ptr);
-        if (!source_borrowed)
+        if (source_moved_out)
+        {
+            cg_remove_temp_drop(ctx, src_sym->value);
+        }
+        else if (!source_borrowed)
         {
             if (src_sym && src_sym->moved_flag)
             {
@@ -887,7 +905,11 @@ void cg_store_owned(CodegenContext *ctx,
     /* ------------------------------------------------------------------ */
     if (type->kind == TYPE_ENUM && type->as.enom.has_drop)
     {
-        bool source_borrowed = src_sym && src_sym->no_drop_reason != CG_OWNED;
+        /* Stage 11 (S2): same reason-dispatch as the struct branch above —
+           only BORROWED clones; MOVED_OUT is defensive (unreachable today,
+           see the struct branch's reachability note). */
+        bool source_borrowed  = src_sym && src_sym->no_drop_reason == CG_BORROWED;
+        bool source_moved_out = src_sym && src_sym->no_drop_reason == CG_MOVED_OUT;
 
         if (is_rvalue)
         {
@@ -899,6 +921,13 @@ void cg_store_owned(CodegenContext *ctx,
             /* borrowed match binder：必须深克隆 */
             LLVMValueRef cloned = emit_enum_clone_val(ctx, val, type);
             LLVMBuildStore(ctx->builder, cloned, dst_ptr);
+        }
+        else if (source_moved_out)
+        {
+            /* value already owns its heap (transferred) — complete the
+               transfer: no clone, claim the pending ledger slot. */
+            LLVMBuildStore(ctx->builder, val, dst_ptr);
+            cg_remove_temp_drop(ctx, src_sym->value);
         }
         else if (src_sym && src_sym->moved_flag)
         {
@@ -1020,7 +1049,7 @@ void cg_flush_temps_from(CodegenContext *ctx, int drop_floor)
    (emit_struct_drop_cond etc.) branches from the current block to separate cleanup blocks
    and leaves the builder at the continuation block, ready for the next cleanup or
    the caller's next instruction.
-   Skips borrowed symbols (is_borrowed=true) and trivial types.
+   Skips borrowed symbols (CG_BORROWED) and trivial types.
    Does nothing if the current block is already terminated. */
 void emit_scope_cleanup(CodegenContext *ctx)
 {
