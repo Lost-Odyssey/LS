@@ -2,6 +2,7 @@
 // Intel Intrinsics Guide operation pseudocode (transformed, not verbatim) by
 // references/intrinsics/gen_pseudo.py. "" = no clean conversion (complex helper /
 // DEFINE / nested CASE) -> gallery falls back to summary-only.
+// NOTE: domain library — not part of the LS std contract; candidate for extraction to a separate repository.
 import std.core.str
 
 def pseudo_of(&Str mn) -> Str {

@@ -3,6 +3,7 @@
 // label, not document prose). Shippable. Regenerate:
 //   python tools/gen_specdoc_from_sdm.py > lib/sim/intel/specdoc.ls
 // 370 modelled mnemonics.
+// NOTE: domain library — not part of the LS std contract; candidate for extraction to a separate repository.
 import std.core.vec
 import std.core.str
 

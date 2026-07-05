@@ -5,6 +5,7 @@
 // Filtered to intrinsics whose mnemonic the sim models (isa_table.ls).
 // Regenerate: python tools/gen_intrinsics_from_sdm.py > lib/sim/intel/intrinsics.ls
 // 3455 intrinsics -> modelled mnemonic.
+// NOTE: domain library — not part of the LS std contract; candidate for extraction to a separate repository.
 import std.core.vec
 import std.core.str
 

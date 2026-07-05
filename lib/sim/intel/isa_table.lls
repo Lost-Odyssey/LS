@@ -5,6 +5,7 @@
 // op-class/lane/control classification is original. No XED source code is bundled.
 // Regenerate: python tools/gen_isa_from_xed.py <xed/datafiles> > lib/sim/intel/isa_table.ls
 // 549 instructions across the modelled op classes.
+// NOTE: domain library — not part of the LS std contract; candidate for extraction to a separate repository.
 import std.core.vec
 import std.core.str
 import sim.intel.semantics as sem

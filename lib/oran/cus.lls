@@ -16,6 +16,7 @@
 //
 // Reference scenario for tests: NR 100 MHz, numerology mu=1 (30 kHz SCS),
 // 273 PRBs, FFT 4096, 64 antennas.
+// NOTE: domain library — not part of the LS std contract; candidate for extraction to a separate repository.
 
 import std.sys.c as c
 import std.text.bytes as b

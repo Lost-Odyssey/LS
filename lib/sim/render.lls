@@ -15,6 +15,7 @@
 // no roles, no step labels). Mode picks the renderer (text vs html); same analysis.
 //
 // Pure LS, zero compiler changes (same discipline as lib/oran).
+// NOTE: domain library — not part of the LS std contract; candidate for extraction to a separate repository.
 
 import sim.intel.decode as decode
 import sim.intel.ports as ports

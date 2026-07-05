@@ -9,6 +9,7 @@
 //
 // Intel convention: B63 .. B0, left = MSB, right = LSB.
 // Pure LS, zero compiler changes.
+// NOTE: domain library — not part of the LS std contract; candidate for extraction to a separate repository.
 
 import std.core.vec
 import std.core.str

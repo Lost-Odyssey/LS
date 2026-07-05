@@ -140,6 +140,9 @@
     <a class="item" href="#hash">hash</a>
     <a class="item" href="#show">show — Show / to_str</a>
     <a class="item" href="#sink">sink — print redirect</a>
+    <a class="item" href="#value">value — Serialize</a>
+    <a class="item" href="#reflect">reflect — TypeInfo</a>
+    <a class="item" href="#reflect_core">reflect_core — RawType</a>
     <a class="item" href="#regex">regex</a>
     <div class="group">I/O &amp; System</div>
     <a class="item" href="#io">io</a>
@@ -148,6 +151,7 @@
     <a class="item" href="#env">env</a>
     <a class="item" href="#proc">proc</a>
     <a class="item" href="#time">time</a>
+    <a class="item" href="#os">os — raw OS backend</a>
     <div class="group">Data Formats</div>
     <a class="item" href="#json">json</a>
     <a class="item" href="#html">html</a>
@@ -171,7 +175,9 @@
     <a class="item" href="#thread">thread</a>
     <div class="group">Low-level &amp; Tools</div>
     <a class="item" href="#test">test — unit tests</a>
-    <a class="item" href="#misc">c · perf · plot*</a>
+    <a class="item" href="#c">c — C/CRT bindings</a>
+    <a class="item" href="#perf">perf — timing counters</a>
+    <a class="item" href="#plot">plot · plotfmt · plottl</a>
   </div>
 </nav>
 
@@ -189,8 +195,8 @@ taken verbatim from source.</p>
 <p class="purpose">How to read this reference and the language idioms it assumes.</p>
 
 <h3>All modules at a glance</h3>
-<p>34 modules. Most are pure LS under <code>&lt;LS_HOME&gt;/lib/std/</code>; two
-(<code>math</code>, <code>perf</code>) are compiler built-ins. <code>Option</code>/<code>Result</code>
+<p>48 modules. Most are pure LS under <code>&lt;LS_HOME&gt;/lib/std/</code>; two
+(<code>math</code>, <code>perf</code>) wrap compiler built-ins. <code>Option</code>/<code>Result</code>
 are built-in types, not a module.</p>
 <table class="modmap">
 <tr><td class="grp" colspan="2">Core (built-in)</td></tr>
@@ -213,6 +219,7 @@ are built-in types, not a module.</p>
 <tr><td class="m"><a href="#sink">sink</a></td><td><code>Sink</code> byte writer + <code>set_sink</code> (redirect <code>print</code> to file/stderr)</td></tr>
 <tr><td class="m"><a href="#value">value</a></td><td>Neutral value tree + <code>Serialize</code> (<code>@derive(Serialize)</code>)</td></tr>
 <tr><td class="m"><a href="#reflect">reflect</a></td><td>Runtime <code>TypeInfo</code> (<code>@derive(Reflect)</code>)</td></tr>
+<tr><td class="m"><a href="#reflect_core">reflect_core</a></td><td>Raw reflection substrate <code>RawType</code> — leaf layer under Str/Vec (<code>@derive(ReflectRaw)</code>)</td></tr>
 <tr><td class="m"><a href="#test">test</a></td><td>Unit-test assertions + the <code>lls test</code> runner</td></tr>
 <tr><td class="m"><a href="#regex">regex</a></td><td>Regular expressions (Pike-VM)</td></tr>
 <tr><td class="grp" colspan="2">I/O &amp; System</td></tr>
@@ -222,6 +229,7 @@ are built-in types, not a module.</p>
 <tr><td class="m"><a href="#env">env</a></td><td>Environment variables</td></tr>
 <tr><td class="m"><a href="#proc">proc</a></td><td>Process args &amp; subprocesses</td></tr>
 <tr><td class="m"><a href="#time">time</a></td><td>Calendar time, format/parse, sleep</td></tr>
+<tr><td class="m"><a href="#os">os</a></td><td>Raw OS backend (<code>extern ls_os_*</code> wrappers) — internal; use io/fs/env/proc/time</td></tr>
 <tr><td class="grp" colspan="2">Data Formats</td></tr>
 <tr><td class="m"><a href="#json">json</a></td><td>JSON parse / serialize</td></tr>
 <tr><td class="m"><a href="#html">html</a></td><td>HTML parse / build / render</td></tr>
@@ -244,11 +252,11 @@ are built-in types, not a module.</p>
 <tr><td class="m"><a href="#sync">sync</a></td><td>Mutex / SpinLock / Guard / RwLock</td></tr>
 <tr><td class="m"><a href="#thread">thread</a></td><td><code>parallel_for</code>, <code>cpu_count</code></td></tr>
 <tr><td class="grp" colspan="2">Low-level &amp; Tools</td></tr>
-<tr><td class="m"><a href="#misc">c</a></td><td>C/CRT bindings &amp; runtime primitives</td></tr>
-<tr><td class="m"><a href="#misc">perf</a> <span class="tag new">built-in</span></td><td>High-resolution timing &amp; CPU counters</td></tr>
-<tr><td class="m"><a href="#misc">plot</a></td><td>Figure/axes plotting → SVG + ASCII</td></tr>
-<tr><td class="m"><a href="#misc">plotfmt</a></td><td>Number / color formatting helpers</td></tr>
-<tr><td class="m"><a href="#misc">plottl</a></td><td>Timeline / Gantt / CPU-schedule charts</td></tr>
+<tr><td class="m"><a href="#c">c</a></td><td>C/CRT bindings &amp; runtime primitives</td></tr>
+<tr><td class="m"><a href="#perf">perf</a> <span class="tag new">built-in</span></td><td>High-resolution timing &amp; CPU counters</td></tr>
+<tr><td class="m"><a href="#plot">plot</a></td><td>Figure/axes plotting → SVG + ASCII</td></tr>
+<tr><td class="m"><a href="#plot">plotfmt</a></td><td>Number / color formatting helpers</td></tr>
+<tr><td class="m"><a href="#plot">plottl</a></td><td>Timeline / Gantt / CPU-schedule charts</td></tr>
 </table>
 
 <h3>Importing</h3>
@@ -420,6 +428,15 @@ diagnostic message), and most container lookups return <code>Option(T)</code>. C
     <span class="t">Str</span> raw = <span class="k">try</span> io.read_file(p)   <span class="c">// returns Err early on failure</span>
     <span class="k">return</span> <span class="t">Ok</span>(raw.trim())
 }</pre></div>
+
+<div class="note"><b>API policy (normative).</b> New stdlib APIs signal absence with
+<code>Option(T)</code> and fallibility with <code>Result(T, E)</code> — never with sentinel
+values (no <code>-1</code>, no empty-string-as-error, no nil-as-failure). Two existing
+methods predate this rule and keep their contract for compatibility:
+<code>Str.find</code> / <code>Str.rfind</code> return <code>-1</code> if not found
+(legacy contract; new APIs use <code>Option</code>). The <code>-1/0/1</code> of
+<code>compare</code> is an ordering convention, not error signalling — it is not
+affected by this policy.</div>
 </section>
 
 <!-- ===================== VEC ===================== -->
@@ -906,8 +923,8 @@ so it works as a <code>Map</code> key, in comparisons, and with <code>+</code>. 
 
 <h3>Search</h3>
 <table class="api">
-<tr><td class="s"><span class="sig">def find(&amp;self, &amp;Str needle) -&gt; int</span></td><td class="d">Index of first occurrence, or <code>-1</code>.</td></tr>
-<tr><td class="s"><span class="sig">def rfind(&amp;self, &amp;Str needle) -&gt; int</span></td><td class="d">Index of last occurrence, or <code>-1</code>.</td></tr>
+<tr><td class="s"><span class="sig">def find(&amp;self, &amp;Str needle) -&gt; int</span></td><td class="d">Index of first occurrence; returns <code>-1</code> if not found (legacy contract; new APIs use <code>Option</code>).</td></tr>
+<tr><td class="s"><span class="sig">def rfind(&amp;self, &amp;Str needle) -&gt; int</span></td><td class="d">Index of last occurrence; returns <code>-1</code> if not found (legacy contract; new APIs use <code>Option</code>).</td></tr>
 <tr><td class="s"><span class="sig">def contains?(&amp;self, &amp;Str needle) -&gt; bool</span></td><td class="d">Substring test.</td></tr>
 <tr><td class="s"><span class="sig">def starts_with?(&amp;self, &amp;Str prefix) -&gt; bool</span></td><td class="d">Prefix test.</td></tr>
 <tr><td class="s"><span class="sig">def ends_with?(&amp;self, &amp;Str suffix) -&gt; bool</span></td><td class="d">Suffix test.</td></tr>
@@ -1168,6 +1185,31 @@ pointers, no Str/Vec), and <code>reflect</code> grafts a friendly
 just call <code>.reflect()</code>; the result is an ordinary <code>TypeInfo</code>.</p>
 </section>
 
+<!-- ===================== REFLECT_CORE ===================== -->
+<section id="reflect_core">
+<h2>reflect_core<span class="imp">import std.core.reflect_core</span></h2>
+<p class="purpose">Raw reflection substrate — the leaf layer that <code>@derive(ReflectRaw)</code>
+targets. Depends only on <code>std.sys.c</code>, so the foundational types (Str, Vec) can
+carry reflection metadata without an import cycle. <b>Internal plumbing</b>: user code
+normally consumes the friendly <a href="#reflect">reflect</a> layer instead.</p>
+<div class="types"><pre>struct RawField  { *u8 name; *u8 type_name }
+struct RawMethod { *u8 name; *u8 sig; bool is_static }
+struct RawType   { *u8 name; *RawField fields; int field_count; *RawMethod funcs; int func_count }</pre></div>
+<p>Strings are raw <code>*u8</code> pointers into baked <code>.rodata</code> (NUL-terminated,
+never freed); only the <code>fields</code>/<code>funcs</code> arrays are heap-owned.
+<code>RawType</code> implements <code>Clone</code> (deep copy of both arrays) and
+<code>Destroy</code> (<code>~</code> frees them), so it is a proper RAII value.
+<code>std.core.reflect.from_raw</code> converts a <code>RawType</code> into a friendly
+<code>TypeInfo</code>.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">static def make(*u8 name, int nf, int nm) -&gt; RawType</span></td><td class="d">Allocate room for <code>nf</code> fields and <code>nm</code> methods (nil arrays when a count is 0).</td></tr>
+<tr><td class="s"><span class="sig">def set_field(&amp;!self, int i, *u8 name, *u8 type_name)</span></td><td class="d">Fill field slot <code>i</code> <span class="tag mut">mutates</span>.</td></tr>
+<tr><td class="s"><span class="sig">def set_method(&amp;!self, int i, *u8 name, *u8 sig, bool is_static)</span></td><td class="d">Fill method slot <code>i</code> <span class="tag mut">mutates</span>.</td></tr>
+<tr><td class="s"><span class="sig">def field_at(&amp;self, int i) -&gt; RawField</span></td><td class="d">Read field slot <code>i</code> (pointer-index load).</td></tr>
+<tr><td class="s"><span class="sig">def method_at(&amp;self, int i) -&gt; RawMethod</span></td><td class="d">Read method slot <code>i</code>.</td></tr>
+</table>
+</section>
+
 <!-- ===================== REGEX ===================== -->
 <section id="regex">
 <h2>regex<span class="imp">import std.text.regex as re</span></h2>
@@ -1315,6 +1357,27 @@ struct File { object handle; bool is_binary }   // move-only RAII handle: auto-c
 <div class="ex"><pre><span class="t">DateTime</span> now = time.now_utc()
 @print(time.iso8601(now))                       <span class="c">// 2026-06-15T12:30:45Z</span>
 <span class="t">DateTime</span> later = time.add(now, time.duration_s(3600))</pre></div>
+</section>
+
+<!-- ===================== OS ===================== -->
+<section id="os">
+<h2>os<span class="imp">import std.sys.os</span></h2>
+<p class="purpose">Raw OS backend — the <b>only</b> stdlib module that declares
+<code>extern def ls_os_*</code> symbols (runtime/os_win32.c or os_posix.c). Every other
+system module (io, fs, path, env, proc, time) imports it and calls its <code>raw_*</code>
+wrappers instead of touching the C symbols directly.</p>
+<p><b>Internal — do not use directly.</b> The <code>raw_*</code> functions are
+implementation details of the stdlib: they take <code>Str</code>, pass
+<code>.c_str()</code> across the FFI boundary, and return raw <code>object</code> handles
+or C-style <code>int</code> codes with no memory-safety guarantees. Use the high-level
+modules instead; this section exists so the module inventory is complete.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">raw_exec_* / raw_popen / raw_pread / raw_pclose / raw_pid</span></td><td class="d">Process execution backend (used by <a href="#proc">proc</a>).</td></tr>
+<tr><td class="s"><span class="sig">raw_getenv / raw_setenv / raw_unsetenv / raw_env_*</span></td><td class="d">Environment access + snapshot (used by <a href="#env">env</a>).</td></tr>
+<tr><td class="s"><span class="sig">raw_fseek64 / raw_ftell64 / raw_unlink</span></td><td class="d">File positioning &amp; deletion (used by <a href="#io">io</a>).</td></tr>
+<tr><td class="s"><span class="sig">raw_listdir_* / raw_path_* / raw_mkdir* / raw_rmdir / raw_rename_path / raw_getcwd / raw_chdir</span></td><td class="d">Directory listing &amp; filesystem ops (used by <a href="#fs">fs</a>).</td></tr>
+<tr><td class="s"><span class="sig">raw_time_* / raw_sleep_ms / raw_sleep_us</span></td><td class="d">Calendar time, format/parse, sleep (used by <a href="#time">time</a>).</td></tr>
+</table>
 </section>
 
 <!-- ===================== JSON ===================== -->
@@ -1841,12 +1904,10 @@ shared Vec is UB.</div>
 parallel_for(0, n, |i| { out.set!(i, work(i)) })   <span class="c">// distinct indices</span></pre></div>
 </section>
 
-<!-- ===================== MISC ===================== -->
-<section id="misc">
-<h2>Low-level &amp; tools</h2>
-<p class="purpose">Modules you rarely call directly — listed for completeness.</p>
-
-<h3>c <span class="imp">import std.sys.c as c</span></h3>
+<!-- ===================== C ===================== -->
+<section id="c">
+<h2>c<span class="imp">import std.sys.c as c</span></h2>
+<p class="purpose">C/CRT bindings &amp; runtime primitives — a module you rarely call directly.</p>
 <p>Centralized C/CRT bindings and runtime primitives. <b>No memory-safety guarantees</b> — used
 internally by other stdlib modules. Surface includes <code>malloc</code>/<code>realloc</code>/<code>free</code>,
 <code>abort()</code>, file CRT functions (<code>fopen</code>/<code>fread</code>/…), and <code>__ls_*</code>
@@ -1874,15 +1935,24 @@ elision). <b>Contract: memcpy semantics — the two byte ranges must not overlap
 overlapping move would need a separate <code>__ls_bytemove</code>).
 <code>LS_NO_MEMCPY_PRIM=1</code> falls back to form ①.</td></tr>
 </table>
+</section>
 
-<h3>perf <span class="imp">import std.sys.perf</span></h3>
+<!-- ===================== PERF ===================== -->
+<section id="perf">
+<h2>perf<span class="imp">import std.sys.perf</span></h2>
+<p class="purpose">High-resolution timing &amp; CPU cycle counters (wraps compiler built-ins).</p>
 <table class="api">
 <tr><td class="s"><span class="sig">def now() -&gt; i64</span></td><td class="d">Monotonic timestamp (ns).</td></tr>
 <tr><td class="s"><span class="sig">def rdtsc() -&gt; i64</span> / <span class="sig">rdtscp() -&gt; i64</span></td><td class="d">CPU cycle counters.</td></tr>
 <tr><td class="s"><span class="sig">def elapsed_ns/elapsed_ms/elapsed_s(i64 t0)</span></td><td class="d">Elapsed since <code>t0</code>.</td></tr>
 </table>
+</section>
 
-<h3>plot · plotfmt · plottl <span class="imp">import std.chart.plot / std.chart.plotfmt / std.chart.plottl</span></h3>
+<!-- ===================== PLOT ===================== -->
+<section id="plot">
+<h2>plot · plotfmt · plottl<span class="imp">import std.chart.plot / std.chart.plotfmt / std.chart.plottl</span></h2>
+<p class="purpose">Charting family: figure/axes plotting (SVG + ASCII), number/color
+formatting helpers, timeline &amp; CPU-schedule charts.</p>
 <ul class="compact">
   <li><b>plot</b> — figure/axes builder API; line/scatter/bar series; SVG + ASCII rendering.
       Key entry points: <code>figure()</code>, <code>axes()</code>, <code>plot()</code>, <code>line()</code>,

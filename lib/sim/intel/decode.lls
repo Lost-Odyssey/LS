@@ -14,6 +14,7 @@
 //   * blank lines and ';' '#' '//' comments are skipped.
 //
 // Pure LS, zero compiler changes (same discipline as lib/oran).
+// NOTE: domain library — not part of the LS std contract; candidate for extraction to a separate repository.
 
 import std.core.vec
 import std.core.str
