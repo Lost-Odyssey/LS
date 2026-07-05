@@ -12,6 +12,8 @@
 #include "format.h"
 #include "doc_assets.h"
 #include "emit_c.h"
+#include "driver_util.h"
+#include "test_driver.h"
 #include <ctype.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/TargetMachine.h>
@@ -37,16 +39,16 @@ extern void __ls_set_args(int, char **);
 #ifdef _WIN32
   #include <io.h>      /* _setmode, _fileno */
   #include <fcntl.h>   /* _O_BINARY */
-  #include <process.h> /* _spawnv, _P_WAIT */
 #endif
 
 /* Resolve the full path to the running ls executable (not just its
    containing directory). Returns 0 on success and writes a NUL-terminated
-   path to `out`. Shared by get_executable_dir() below and self_exe_path()
-   (which needs the executable itself, to spawn `ls run <driver>` for
-   `ls test` without depending on `ls` being first on PATH — on POSIX,
-   coreutils already owns the name `ls` for directory listing). */
-static int get_executable_path(char *out, size_t out_sz) {
+   path to `out`. Shared by get_executable_dir() below and test_driver.c's
+   self_exe_path() (which needs the executable itself, to spawn
+   `ls run <driver>` for `ls test` without depending on `ls` being first on
+   PATH — on POSIX, coreutils already owns the name `ls` for directory
+   listing). Exported via driver_util.h. */
+int get_executable_path(char *out, size_t out_sz) {
     if (out == NULL || out_sz == 0) return -1;
 #ifdef _WIN32
     DWORD_W32 n = GetModuleFileNameA(NULL, out, (DWORD_W32)out_sz);
@@ -85,7 +87,8 @@ static int get_executable_dir(char *out, size_t out_sz) {
     return 0;
 }
 
-static char *read_file(const char *path) {
+/* Exported via driver_util.h (shared with test_driver.c). */
+char *read_file(const char *path) {
     FILE *file = fopen(path, "rb");
     if (file == NULL) {
         fprintf(stderr, "error: could not open file '%s'\n", path);
@@ -662,8 +665,9 @@ static int cmd_inspect(const char *type_query, const char *path) {
     return rc;
 }
 
-/* Write `content` to `path` (binary, no newline translation). 0 on success. */
-static int write_file_str(const char *path, const char *content) {
+/* Write `content` to `path` (binary, no newline translation). 0 on success.
+   Exported via driver_util.h (shared with test_driver.c). */
+int write_file_str(const char *path, const char *content) {
     FILE *f = fopen(path, "wb");
     if (f == NULL) {
         fprintf(stderr, "error: could not write file '%s'\n", path);
@@ -765,136 +769,7 @@ static int cmd_fmt(int argc, char *argv[]) {
     return rc;
 }
 
-/* ---- ls test: native test runner ---------------------------------------- */
-
-/* Full path to this ls executable (for spawning `ls run <driver>`). Must be
-   an absolute path, not the bare name "ls" -- on POSIX, PATH lookup would
-   resolve "ls" to coreutils' directory-listing tool instead of us. */
-static const char *self_exe_path(void) {
-    static char buf[2048];
-    if (get_executable_path(buf, sizeof(buf)) == 0) return buf;
-    return "ls";  /* last-resort fallback; may collide with coreutils `ls` */
-}
-
-/* Run `ls run [--memcheck] <driver>` as a child, inheriting stdio; return its
-   exit code (test failures => report() exits 1). */
-static int run_driver(const char *driver_path, bool memcheck) {
-    const char *exe = self_exe_path();
-#ifdef _WIN32
-    const char *argv[6];
-    int n = 0;
-    argv[n++] = exe; argv[n++] = "run";
-    if (memcheck) argv[n++] = "--memcheck";
-    argv[n++] = driver_path; argv[n++] = NULL;
-    intptr_t rc = _spawnv(_P_WAIT, exe, argv);
-    return (rc < 0) ? 127 : (int)rc;
-#else
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd), "\"%s\" run %s \"%s\"",
-             exe, memcheck ? "--memcheck" : "", driver_path);
-    int rc = system(cmd);
-    return rc;
-#endif
-}
-
-/* ls test <files...> [--filter <pat>] [--memcheck]
-   Discovers `def test_*()` (zero-arg, non-generic) in each file, generates a
-   driver that runs each test via std.core.test, runs it, aggregates results. */
-static int cmd_test(int argc, char *argv[]) {
-    const char *paths[256];
-    int npaths = 0;
-    const char *filter = NULL;
-    bool memcheck = false;
-    for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--filter") == 0 && i + 1 < argc) filter = argv[++i];
-        else if (strcmp(argv[i], "--memcheck") == 0) memcheck = true;
-        else if (npaths < 256) paths[npaths++] = argv[i];
-    }
-    if (npaths == 0) {
-        fprintf(stderr, "error: 'test' requires at least one file path\n");
-        return 1;
-    }
-
-    int files_failed = 0, total_files = 0, total_tests = 0;
-    for (int fi = 0; fi < npaths; fi++) {
-        const char *path = paths[fi];
-        char *source = read_file(path);
-        if (source == NULL) { files_failed++; continue; }
-
-        /* discover test_* functions */
-        AstNode *ast = parse(source, path);
-        if (ast == NULL || ast->kind != AST_PROGRAM) {
-            fprintf(stderr, "test: skipped %s (parse error)\n", path);
-            if (ast) ast_free(ast);
-            free(source);
-            files_failed++;
-            continue;
-        }
-        char *names[1024];
-        int nnames = 0;
-        for (int d = 0; d < ast->as.program.decl_count && nnames < 1024; d++) {
-            AstNode *dn = ast->as.program.decls[d];
-            if (dn->kind != AST_FN_DECL) continue;
-            const char *nm = dn->as.fn_decl.name;
-            if (nm == NULL) continue;
-            if (strncmp(nm, "test_", 5) != 0) continue;
-            if (dn->as.fn_decl.param_count != 0) continue;
-            if (dn->as.fn_decl.type_param_count != 0) continue;
-            if (filter && strstr(nm, filter) == NULL) continue;
-            names[nnames] = malloc_safe(strlen(nm) + 1);
-            strcpy(names[nnames], nm);
-            nnames++;
-        }
-        ast_free(ast);
-
-        if (nnames == 0) {
-            printf("%s: no matching tests\n", path);
-            free(source);
-            continue;
-        }
-
-        /* build combined driver source = original + generated main() */
-        size_t cap = strlen(source) + (size_t)nnames * 256 + 512;
-        char *combined = malloc_safe(cap);
-        size_t len = 0;
-        len += (size_t)snprintf(combined + len, cap - len, "%s\n\n", source);
-        len += (size_t)snprintf(combined + len, cap - len,
-                                "// === auto-generated by `ls test` ===\ndef main() {\n");
-        for (int t = 0; t < nnames; t++) {
-            len += (size_t)snprintf(combined + len, cap - len,
-                "    std.core.test.start(\"%s\")\n    %s()\n    std.core.test.finish()\n",
-                names[t], names[t]);
-        }
-        len += (size_t)snprintf(combined + len, cap - len,
-                                "    std.core.test.report()\n}\n");
-
-        char driver[1100];
-        snprintf(driver, sizeof(driver), "%s.lstest.ls", path);
-        if (write_file_str(driver, combined) != 0) {
-            free(combined); free(source);
-            for (int t = 0; t < nnames; t++) free(names[t]);
-            files_failed++;
-            continue;
-        }
-
-        printf("running %d test(s) in %s\n", nnames, path);
-        fflush(stdout);   /* flush before the child writes to inherited stdout */
-        int rc = run_driver(driver, memcheck);
-        remove(driver);
-
-        total_files++;
-        total_tests += nnames;
-        if (rc != 0) files_failed++;
-
-        free(combined);
-        free(source);
-        for (int t = 0; t < nnames; t++) free(names[t]);
-    }
-
-    printf("== %d test(s) across %d file(s); %d file(s) failed ==\n",
-           total_tests, total_files, files_failed);
-    return files_failed > 0 ? 1 : 0;
-}
+/* ---- ls test: native test runner — moved to test_driver.c (W4) ---------- */
 
 /* ---- ls doc: API reference generator ------------------------------------ */
 
@@ -1622,7 +1497,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(cmd, "test") == 0) {
-        return cmd_test(argc, argv);
+        return test_driver_run(argc, argv);
     }
 
     if (strcmp(cmd, "doc") == 0) {

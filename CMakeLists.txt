@@ -113,6 +113,7 @@ set(LS_CODEGEN_SOURCES
 # Main executable sources
 set(LS_SOURCES
     src/main.c
+    src/test_driver.c
     src/leakcheck.c
     src/scanner.c
     src/format.c
