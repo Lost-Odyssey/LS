@@ -23,7 +23,7 @@
 /* File-local helpers (single-TU; re-static'd at codegen split §7). */
 static LLVMValueRef cg_emit_bit_pattern_seq(CodegenContext *ctx, AstNode *seq, LLVMValueRef subject, LLVMTypeRef subj_llvm, bool bind);
 static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor, Type *result_type);
-static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail, LLVMValueRef body_val, LLVMTypeRef res_llvm, Type *result_type, int drop_floor, bool did_move_out_binder);
+static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail, LLVMValueRef body_val, LLVMTypeRef res_llvm, Type *result_type, int drop_floor);
 static AstNode *cg_match_arm_tail(AstNode *arm_body);
 static bool cg_pattern_has_bit_seq(const AstNode *pat);
 static int match_collect_int_vals(AstNode *pat, long long *out, int max);
@@ -51,14 +51,12 @@ static AstNode *cg_match_arm_tail(AstNode *arm_body)
    Clone is needed exactly when the tail aliases storage owned elsewhere with no
    fresh owned temp to transfer: an outer local or a borrowed payload binder. A
    freshly-produced rvalue temp (count grew) is transferred (not cloned); a binder
-   we just moved out already owns its independent B2 clone (not cloned); a static
-   literal / POD tail aliases no heap (stored as-is).
-   `did_move_out_binder` = the arm's move-out optimization marked a payload binder
-   borrowed this arm (enum path only; always false for non-enum patterns). */
+   we just moved out already owns its independent B2 clone (not cloned — stage 11:
+   detected per-symbol via CG_MOVED_OUT, replacing the former did_move_out_binder
+   bypass parameter); a static literal / POD tail aliases no heap (stored as-is). */
 static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
                                           LLVMValueRef body_val, LLVMTypeRef res_llvm,
-                                          Type *result_type, int drop_floor,
-                                          bool did_move_out_binder)
+                                          Type *result_type, int drop_floor)
 {
     if (body_val == NULL || result_type == NULL)
         return body_val;
@@ -71,14 +69,17 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
     /* Fresh owned temp produced by this body → an rvalue we will transfer (no clone). */
     if (ctx->temp_drop_count > drop_floor)
         return body_val;
-    /* A binder we just moved out already owns an independent clone (no clone). */
-    if (did_move_out_binder)
-        return body_val;
     /* Tail aliasing an owning IDENT (outer local, or borrowed binder) → clone so the
        result owns independently of the real owner. Static/POD tails alias nothing. */
     if (tail && tail->kind == AST_IDENT)
     {
         CgSymbol *s = cg_scope_resolve(ctx->current_scope, tail->as.ident.name);
+        /* A binder this arm just moved out (CG_MOVED_OUT) already owns its
+           independent clone — the result takes it over; cloning again would
+           leak the transferred copy (L-013 "binder orphan" family). The
+           reason lives on the symbol now, not on a per-arm bypass flag. */
+        if (s && s->no_drop_reason == CG_MOVED_OUT)
+            return body_val;
         if (s && s->value && s->type &&
             ((s->type->kind == TYPE_STRUCT && s->type->as.strukt.has_drop) ||
              (s->type->kind == TYPE_ENUM   && s->type->as.enom.has_drop)))
@@ -86,9 +87,8 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
         /* Block tail naming an owning IDENT — an outer local, or a borrowed
            payload binder whose env the enum subject's drop now frees — gets a
            deep env clone (__env_clone via env[1]) so the result frees
-           independently. A moved-out owned binder hit did_move_out_binder
-           above; a fresh literal tail grew the temp tables and never reaches
-           here. */
+           independently. A moved-out owned binder returned above; a fresh
+           literal tail grew the temp tables and never reaches here. */
         if (s && s->value && s->type && s->type->kind == TYPE_BLOCK)
             return cg_emit_block_env_clone(ctx, body_val);
     }
@@ -159,8 +159,8 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
    (own_tail -> store -> encapsulate, match_codegen_guide.md §3), then
    branches to merge_bb unless the body already terminated (a `return`
    inside the arm). The enum VARIANT arm keeps its bespoke sequence —
-   it alone has payload binders, an arm scope, move-out detection and a
-   did_move_out_binder that isn't constant false. */
+   it alone has payload binders, an arm scope and move-out detection
+   (binders marked CG_MOVED_OUT, which own_tail dispatches on). */
 static void cg_match_emit_arm_body(CodegenContext *ctx, AstNode *arm_body,
                                    LLVMValueRef result_alloca,
                                    LLVMTypeRef res_llvm, Type *result_type,
@@ -172,8 +172,7 @@ static void cg_match_emit_arm_body(CodegenContext *ctx, AstNode *arm_body,
     {
         body_val = cg_match_arm_own_tail(ctx, cg_match_arm_tail(arm_body),
                                          body_val, res_llvm, result_type,
-                                         arm_drop_floor,
-                                         /*did_move_out_binder=*/false);
+                                         arm_drop_floor);
         LLVMBuildStore(ctx->builder, body_val, result_alloca);
     }
     cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
@@ -693,7 +692,6 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
 
                 int arm_drop_floor = ctx->temp_drop_count;
                 LLVMValueRef body_val = codegen_expr(ctx, arm->body);
-                bool did_move_out_binder = false;
                 AstNode *tail = cg_match_arm_tail(arm->body);
                 /* BF-026 / BF-029 / VR-LIM-020: a match arm clones every owned
                    has_drop payload binder (binder_owns above), so the arm scope
@@ -722,10 +720,9 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                              (bt->kind == TYPE_ENUM && bt->as.enom.has_drop) ||
                              bt->kind == TYPE_BLOCK);
                         if (owns_heap)
-                        {
-                            bs->no_drop_reason = CG_MOVED_OUT; /* skip drop: moved out */
-                            did_move_out_binder = true;
-                        }
+                            bs->no_drop_reason = CG_MOVED_OUT; /* skip drop: moved
+                               out — own_tail sees the reason on the symbol and
+                               skips its clone (stage 11) */
                         break;
                     }
                 }
@@ -734,8 +731,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                    scope is still alive so the tail IDENT resolves to the binder). */
                 if (result_alloca && body_val)
                     body_val = cg_match_arm_own_tail(ctx, tail, body_val, res_llvm,
-                                                     result_type,
-                                                     arm_drop_floor, did_move_out_binder);
+                                                     result_type, arm_drop_floor);
                 if (result_alloca && body_val)
                     LLVMBuildStore(ctx->builder, body_val, result_alloca);
                 emit_scope_cleanup(ctx);
