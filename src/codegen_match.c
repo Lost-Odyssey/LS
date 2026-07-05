@@ -22,7 +22,7 @@
 #include <ctype.h>
 /* File-local helpers (single-TU; re-static'd at codegen split §7). */
 static LLVMValueRef cg_emit_bit_pattern_seq(CodegenContext *ctx, AstNode *seq, LLVMValueRef subject, LLVMTypeRef subj_llvm, bool bind);
-static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor, int env_floor, Type *result_type);
+static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor, Type *result_type);
 static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail, LLVMValueRef body_val, LLVMTypeRef res_llvm, Type *result_type, int drop_floor, bool did_move_out_binder);
 static AstNode *cg_match_arm_tail(AstNode *arm_body);
 static bool cg_pattern_has_bit_seq(const AstNode *pat);
@@ -105,7 +105,7 @@ static LLVMValueRef cg_match_arm_own_tail(CodegenContext *ctx, AstNode *tail,
    - The tail temp matching result_type is neutralized (removed from the drop
      list) — the result owns its buffer. */
 static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
-                                     int env_floor, Type *result_type)
+                                     Type *result_type)
 {
     bool res_is_drop =
         result_type &&
@@ -122,10 +122,7 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
        temps then reuse freed low slots). A TERMINATED tail (return / break /
        continue in the arm) is exempt: its scope-exit flush legitimately
        drained everything, floor included — first fired on the bare-return
-       corpus (match_own_stress 'early'), formula corrected per protocol.
-       temp_block_env has no floor protection by design (cg_flush_temps zeroes
-       it; the > env_floor guards below tolerate that), so only the drop
-       ledger is asserted. */
+       corpus (match_own_stress 'early'), formula corrected per protocol. */
     if (!terminated)
         CG_OWN_AUDIT(ctx, ctx->temp_drop_count >= drop_floor,
                      "arm_encapsulate/A2",
@@ -136,15 +133,11 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
        drop entry without emitting its drop (the result owns that buffer). */
     if (res_is_drop && ctx->temp_drop_count > drop_floor)
         ctx->temp_drop_count--;
-    /* Block result whose tail is a closure LITERAL (`=> || ...`): the literal
-       registered its env in the temp_block_env table inside THIS arm's basic
-       block. Transfer it into the result likewise — leaving it for the
-       statement-end flush would both double-free (result owns the env) and
-       reference the arm-local env value from the merge block (dominance
-       violation, invalid IR). */
-    if (result_type && result_type->kind == TYPE_BLOCK &&
-        ctx->temp_block_env_count > env_floor)
-        ctx->temp_block_env_count--;
+    /* (A Block result whose tail is a closure literal takes the SAME pop:
+       since stage 10 the literal's slot lives in temp_drop like a factory
+       rvalue — the former separate env-table transfer is gone, and the old
+       dominance hazard with arm-local env SSA values is structurally
+       impossible with entry-block slots.) */
     /* Drop the remaining arm-body temps in [floor, count) inside the arm. */
     if (!terminated)
     {
@@ -155,12 +148,8 @@ static void cg_match_arm_encapsulate(CodegenContext *ctx, int drop_floor,
             else if (t->kind == TYPE_ENUM) emit_enum_drop(ctx, ctx->temp_drop_slots[i], t);
             else if (t->kind == TYPE_BLOCK) cg_emit_block_drop_at(ctx, ctx->temp_drop_slots[i]);
         }
-        for (int i = env_floor; i < ctx->temp_block_env_count; i++)
-            cg_emit_block_env_drop(ctx, ctx->temp_block_envs[i]);
     }
     ctx->temp_drop_count = drop_floor;
-    if (ctx->temp_block_env_count > env_floor)
-        ctx->temp_block_env_count = env_floor;
 }
 
 /* Shared arm-body emission for the 7 binder-less arm-store sites: the
@@ -178,7 +167,6 @@ static void cg_match_emit_arm_body(CodegenContext *ctx, AstNode *arm_body,
                                    LLVMBasicBlockRef merge_bb)
 {
     int arm_drop_floor = ctx->temp_drop_count;
-    int arm_env_floor  = ctx->temp_block_env_count;
     LLVMValueRef body_val = codegen_expr(ctx, arm_body);
     if (result_alloca && body_val)
     {
@@ -188,7 +176,7 @@ static void cg_match_emit_arm_body(CodegenContext *ctx, AstNode *arm_body,
                                          /*did_move_out_binder=*/false);
         LLVMBuildStore(ctx->builder, body_val, result_alloca);
     }
-    cg_match_arm_encapsulate(ctx, arm_drop_floor, arm_env_floor, result_type);
+    cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
     if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
         LLVMBuildBr(ctx->builder, merge_bb);
 }
@@ -352,8 +340,7 @@ static bool cg_match_subject_is_owned_rvalue(const AstNode *subject)
            subject->kind != AST_MUT_BORROW;
 }
 
-static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node,
-                                            int *audit_env_base_out);
+static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node);
 
 /* Stage 6 (own-audit) wrapper — A1 ledger pairing around a whole match:
    a match may leave AT MOST one extra temp_drop entry (its still-registered
@@ -361,23 +348,17 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node,
    explicit drop, early-return arms leave it for scope-exit flushes, and the
    self-recursive-enum case deliberately keeps it for the statement flush).
    It must never CONSUME outer entries, never leak arm temps (encapsulate
-   collapses to floors), and must restore the protected base. temp_block_env
-   may legitimately shrink (arm-internal statement flushes zero that table —
-   no floor protection by design) but never grow. Also scopes the A6
-   result_alloca stack: depth is restored on every exit path. */
+   collapses to floors), and must restore the protected base. Also scopes
+   the A6 result_alloca stack: depth is restored on every exit path.
+   (Stage 10: the former env-table growth check folded into the temp_drop
+   delta below — literal envs are ordinary ledger entries now.) */
 LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
 {
     int in_count = ctx->temp_drop_count;
     int in_base  = ctx->temp_drop_base;
     int in_res_depth = ctx->own_audit_match_res_depth;
-    /* env baseline is written by impl AFTER subject evaluation: a closure
-       literal inside the SUBJECT (e.g. `match v.map(|e| ..)`) registers an
-       env temp the enclosing STATEMENT owns — legitimate growth the match
-       itself must not be blamed for. First fired on vec_functional_p3;
-       formula corrected per protocol. */
-    int env_base = ctx->temp_block_env_count;
 
-    LLVMValueRef r = codegen_match_expr_impl(ctx, node, &env_base);
+    LLVMValueRef r = codegen_match_expr_impl(ctx, node);
 
     ctx->own_audit_match_res_depth = in_res_depth;  /* pop A6 scope */
     if (cg_own_audit_enabled())
@@ -395,10 +376,6 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
         CG_OWN_AUDIT(ctx, ctx->temp_drop_base == in_base, "match_expr/A1",
                      "temp_drop_base not restored (in %d, out %d)",
                      in_base, ctx->temp_drop_base);
-        CG_OWN_AUDIT(ctx, ctx->temp_block_env_count <= env_base, "match_expr/A1",
-                     "temp_block_env_count grew across match arms (post-subject "
-                     "%d, out %d) — an arm literal env leaked past encapsulate",
-                     env_base, ctx->temp_block_env_count);
     }
     return r;
 }
@@ -406,16 +383,11 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
 /* Extracted from codegen_expr's switch (codegen.c split Step 4): the
    AST_MATCH case body, verbatim. Behavior unchanged — ctx->current_node is
    already set by codegen_expr before dispatch. */
-static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node,
-                                            int *audit_env_base_out)
+static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
 {
         /* Compile match as cascading if-else.
            Subject is only read (compared against patterns), so borrow vec[i] strings. */
         LLVMValueRef subject = codegen_expr_or_borrow(ctx, node->as.match.subject);
-        /* own-audit: statement-owned env temps created by the subject are not
-           the match's to account for — rebase the wrapper's env check here. */
-        if (audit_env_base_out)
-            *audit_env_base_out = ctx->temp_block_env_count;
         if (subject == NULL)
             return NULL;
 
@@ -719,7 +691,6 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node,
                 }
 
                 int arm_drop_floor = ctx->temp_drop_count;
-                int arm_env_floor  = ctx->temp_block_env_count;
                 LLVMValueRef body_val = codegen_expr(ctx, arm->body);
                 bool did_move_out_binder = false;
                 AstNode *tail = cg_match_arm_tail(arm->body);
@@ -771,8 +742,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node,
                 /* L-013: encapsulate arm-body temps (transfer the tail temp into the
                    result, free the rest). Subject drop (index < arm_drop_floor) and
                    outer temps are preserved. */
-                cg_match_arm_encapsulate(ctx, arm_drop_floor, arm_env_floor,
-                                         result_type);
+                cg_match_arm_encapsulate(ctx, arm_drop_floor, result_type);
                 /* Guard: arm body may end with 'return', which already terminates
                    the block.  Only emit the merge-branch when the block is still
                    open (no terminator yet). */
@@ -1206,11 +1176,9 @@ LLVMValueRef codegen_try_expr(CodegenContext *ctx, AstNode *node)
            temps — mirroring the AST_IF snapshot/restore and the loop
            break/continue floor protocol (164f90f). */
         int try_pre_count = ctx->temp_drop_count;
-        int try_pre_env   = ctx->temp_block_env_count;
         LLVMValueRef inner_val = codegen_expr(ctx, inner_expr);
         if (inner_val == NULL) return NULL;
         int try_inner_count = ctx->temp_drop_count;
-        int try_inner_env   = ctx->temp_block_env_count;
 
         LLVMTypeRef inner_llvm = type_to_llvm(ctx, inner_type);
         LLVMTypeRef ret_llvm   = type_to_llvm(ctx, fn_ret_type);
@@ -1338,9 +1306,8 @@ LLVMValueRef codegen_try_expr(CodegenContext *ctx, AstNode *node)
            already cloned into the Result payload): their error-path drops
            were emitted separately on err_bb, so each runtime path drops them
            exactly once. */
-        ctx->temp_drop_count      = try_inner_count;
-        ctx->temp_block_env_count = try_inner_env;
-        cg_flush_temps_from(ctx, try_pre_env, try_pre_count);
+        ctx->temp_drop_count = try_inner_count;
+        cg_flush_temps_from(ctx, try_pre_count);
         if (result_alloca && success_llvm)
             return LLVMBuildLoad2(ctx->builder, success_llvm, result_alloca, "try.val");
         return NULL;

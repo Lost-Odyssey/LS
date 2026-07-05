@@ -805,9 +805,6 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
                      "temp_drop_count %d != 0 on open function tail "
                      "(unclaimed/unflushed statement temps)",
                      ctx->temp_drop_count);
-        CG_OWN_AUDIT(ctx, ctx->temp_block_env_count == 0, "fn_end/A4",
-                     "temp_block_env_count %d != 0 on open function tail",
-                     ctx->temp_block_env_count);
         CG_OWN_AUDIT(ctx, ctx->temp_drop_base == 0, "fn_end/A4",
                      "temp_drop_base %d != 0 at function end "
                      "(a match failed to restore the protected floor)",
@@ -1010,7 +1007,6 @@ LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
        overloads — `Enum(x) == Enum(y)` spills the receiver `Enum(x)` and
        registers its drop before building the rhs `Enum(y)`; a full flush here
        would destroy that live receiver before the comparison call. */
-    int enum_env_floor  = ctx->temp_block_env_count;
     int enum_drop_floor = ctx->temp_drop_count;
 
     /* Store discriminant byte */
@@ -1109,7 +1105,7 @@ LLVMValueRef emit_enum_ctor(CodegenContext *ctx, AstNode *node,
        Ok(f"got {x}")). The enum constructor clones string arguments into the
        payload, so the originals are safe to free here. Floor-based: only this
        ctor's own argument temps, preserving any enclosing-expression temps. */
-    cg_flush_temps_from(ctx, enum_env_floor, enum_drop_floor);
+    cg_flush_temps_from(ctx, enum_drop_floor);
 
     /* Return the loaded enum value */
     return LLVMBuildLoad2(ctx->builder, enum_llvm, ealloca, "enum.val");

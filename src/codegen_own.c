@@ -686,22 +686,6 @@ static void cg_flush_temp_drops(CodegenContext *ctx)
     ctx->temp_drop_count = base;
 }
 
-/* Phase C.5: register a closure literal's env_ptr as a temporary owned by
-   the current statement. Drained by cg_flush_temps. The drop_fn at env[0]
-   (NULL for POD-only envs) handles per-capture cleanup; we then free the
-   env block itself. */
-void cg_push_temp_block_env(CodegenContext *ctx, LLVMValueRef env_ptr)
-{
-    if (env_ptr == NULL) return;
-    if (ctx->temp_block_env_count >= ctx->temp_block_env_cap) {
-        ctx->temp_block_env_cap = GROW_CAPACITY(ctx->temp_block_env_cap);
-        ctx->temp_block_envs = GROW_ARRAY(LLVMValueRef,
-                                          ctx->temp_block_envs,
-                                          ctx->temp_block_env_cap);
-    }
-    ctx->temp_block_envs[ctx->temp_block_env_count++] = env_ptr;
-}
-
 /* Phase G: true when a Block-typed initializer reads a Block out of a container
    it does not own — `vec[i]`, `struct.field`, or `map.get(k)`. These produce an
    LsBlock that aliases the container's env, so a copy-out into a new variable
@@ -970,20 +954,12 @@ void cg_store_owned(CodegenContext *ctx,
     LLVMBuildStore(ctx->builder, val, dst_ptr);
 }
 
-/* Statement-boundary temp flush: drain temporary closure envs (literals
-   consumed as rvalues this statement) and statement-level has_drop temps. */
+/* Statement-boundary temp flush: drain statement-level has_drop temps —
+   including closure-literal / factory Block envs, which live in the same
+   temp_drop ledger since stage 10 (the separate temp_block_env table is
+   gone). */
 void cg_flush_temps(CodegenContext *ctx)
 {
-    LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
-    if (cur && LLVMGetBasicBlockTerminator(cur) != NULL)
-    {
-        ctx->temp_block_env_count = 0;
-        cg_flush_temp_drops(ctx);
-        return;
-    }
-    for (int i = 0; i < ctx->temp_block_env_count; i++)
-        cg_emit_block_env_drop(ctx, ctx->temp_block_envs[i]);
-    ctx->temp_block_env_count = 0;
     cg_flush_temp_drops(ctx);
 }
 
@@ -1007,24 +983,21 @@ void cg_flush_temps_scope_exit(CodegenContext *ctx)
     ctx->temp_drop_base = saved_base;
 }
 
-/* Partial temp flush: drop and release only the temp_block_env / temp_drop
-   slots registered ABOVE the given floors (i.e. created since a snapshot),
-   leaving lower-index temps owned by an enclosing expression intact. With
-   floors of 0 this is identical to cg_flush_temps. Used by emit_enum_ctor so
-   that building an enum-ctor argument (e.g. the rhs of an operator-overload
+/* Partial temp flush: drop and release only the temp_drop slots registered
+   ABOVE the given floor (i.e. created since a snapshot), leaving lower-index
+   temps owned by an enclosing expression intact. With a floor of 0 this is
+   identical to cg_flush_temps. Used by emit_enum_ctor so that building an
+   enum-ctor argument (e.g. the rhs of an operator-overload
    `Enum(x) == Enum(y)`) flushes ONLY that ctor's own argument temps and not
    the enclosing call's already-spilled receiver — which the call still needs
    and will drop at the statement boundary. */
-void cg_flush_temps_from(CodegenContext *ctx, int env_floor, int drop_floor)
+void cg_flush_temps_from(CodegenContext *ctx, int drop_floor)
 {
-    if (env_floor  < 0) env_floor  = 0;
     if (drop_floor < 0) drop_floor = 0;
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
     bool terminated = (cur && LLVMGetBasicBlockTerminator(cur) != NULL);
     if (!terminated)
     {
-        for (int i = env_floor; i < ctx->temp_block_env_count; i++)
-            cg_emit_block_env_drop(ctx, ctx->temp_block_envs[i]);
         for (int i = drop_floor; i < ctx->temp_drop_count; i++)
         {
             Type *t = ctx->temp_drop_types[i];
@@ -1037,8 +1010,7 @@ void cg_flush_temps_from(CodegenContext *ctx, int env_floor, int drop_floor)
                 cg_emit_block_drop_at(ctx, slot);
         }
     }
-    if (ctx->temp_block_env_count > env_floor)  ctx->temp_block_env_count = env_floor;
-    if (ctx->temp_drop_count      > drop_floor) ctx->temp_drop_count      = drop_floor;
+    if (ctx->temp_drop_count > drop_floor) ctx->temp_drop_count = drop_floor;
 }
 
 /* Emit cleanup IR for all dynamic string locals in the current scope.

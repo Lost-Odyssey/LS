@@ -53,7 +53,6 @@ typedef struct {
     LLVMBasicBlockRef continue_bb;  /* continue target (while/for) */
     CgScope *loop_scope;            /* scope at loop entry (for break/continue cleanup) */
     int loop_temp_drop_floor;       /* temp_drop_count at loop entry (break/continue flush floor) */
-    int loop_temp_env_floor;        /* temp_block_env_count at loop entry (ditto) */
 
     /* Struct type registry (name -> LLVMTypeRef) */
     struct { const char *name; LLVMTypeRef llvm_type; Type *ls_type; } *struct_types;
@@ -120,14 +119,9 @@ typedef struct {
        and JIT both see stable names without cross-call collisions. */
     int closure_id_counter;
 
-    /* Phase C.5 temporary closure tracking: env_ptr values for closure
-       literals appearing as rvalue expressions (e.g. function-call args
-       that aren't bound to a local Block var). Flushed at statement
-       boundaries via cg_flush_temps — the caller of the closure, not
-       the callee, owns the env (callee Block params are borrowed). */
-    LLVMValueRef *temp_block_envs;
-    int temp_block_env_count;
-    int temp_block_env_cap;
+    /* (Stage 10: the former Phase C.5 temp_block_env table — a separate SSA
+       env-value ledger for closure literals — was unified into temp_drop:
+       literals spill like every other fresh owned Block rvalue.) */
 
     /* Stage 6 (LS_OWN_AUDIT) temp-ledger oracle: stack of result_alloca slots
        of the matches currently being emitted. cg_push_temp_drop consults it

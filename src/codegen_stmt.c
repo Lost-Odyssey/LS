@@ -1488,7 +1488,6 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
            boundaries, so the slots below it stay intact (a plain count restore is
            exact; cg_flush_temps never mutates the slot arrays). */
         int if_saved_drop_count = ctx->temp_drop_count;
-        int if_saved_env_count  = ctx->temp_block_env_count;
 
         LLVMBasicBlockRef then_bb = LLVMAppendBasicBlockInContext(
             ctx->context, ctx->current_fn, "if.then");
@@ -1518,8 +1517,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         /* else */
         if (else_bb)
         {
-            ctx->temp_drop_count      = if_saved_drop_count;
-            ctx->temp_block_env_count = if_saved_env_count;
+            ctx->temp_drop_count = if_saved_drop_count;
             LLVMPositionBuilderAtEnd(ctx->builder, else_bb);
             codegen_stmt(ctx, node->as.if_stmt.else_block);
             if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
@@ -1528,8 +1526,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
             }
         }
 
-        ctx->temp_drop_count      = if_saved_drop_count;
-        ctx->temp_block_env_count = if_saved_env_count;
+        ctx->temp_drop_count = if_saved_drop_count;
         LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
         break;
     }
@@ -1547,7 +1544,6 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMBasicBlockRef saved_continue = ctx->continue_bb;
         CgScope *saved_loop_scope = ctx->loop_scope;
         int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
-        int saved_loop_temp_env_floor  = ctx->loop_temp_env_floor;
         ctx->break_bb = end_bb;
         ctx->continue_bb = cond_bb;
         ctx->loop_scope = ctx->current_scope;
@@ -1555,7 +1551,6 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
            predate the loop body (e.g. an enclosing match's protected subject);
            break/continue must release only temps created inside the loop. */
         ctx->loop_temp_drop_floor = ctx->temp_drop_count;
-        ctx->loop_temp_env_floor  = ctx->temp_block_env_count;
 
         LLVMBuildBr(ctx->builder, cond_bb);
 
@@ -1580,7 +1575,6 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         ctx->continue_bb = saved_continue;
         ctx->loop_scope = saved_loop_scope;
         ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
-        ctx->loop_temp_env_floor  = saved_loop_temp_env_floor;
 
         LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
         break;
@@ -1739,12 +1733,10 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMBasicBlockRef saved_continue = ctx->continue_bb;
         CgScope *saved_loop_scope = ctx->loop_scope;
         int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
-        int saved_loop_temp_env_floor  = ctx->loop_temp_env_floor;
         ctx->break_bb = end_bb;
         ctx->continue_bb = update_bb;
         ctx->loop_scope = ctx->current_scope;
         ctx->loop_temp_drop_floor = ctx->temp_drop_count;
-        ctx->loop_temp_env_floor  = ctx->temp_block_env_count;
 
         /* Branch to condition */
         LLVMBuildBr(ctx->builder, cond_bb);
@@ -1805,7 +1797,6 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         ctx->continue_bb = saved_continue;
         ctx->loop_scope = saved_loop_scope;
         ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
-        ctx->loop_temp_env_floor  = saved_loop_temp_env_floor;
 
         pop_scope(ctx);
         LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
@@ -1839,12 +1830,10 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         LLVMBasicBlockRef saved_continue = ctx->continue_bb;
         CgScope *saved_loop_scope = ctx->loop_scope;
         int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
-        int saved_loop_temp_env_floor  = ctx->loop_temp_env_floor;
         ctx->break_bb = end_bb;
         ctx->continue_bb = update_bb; /* continue jumps to update, not cond */
         ctx->loop_scope = ctx->current_scope;
         ctx->loop_temp_drop_floor = ctx->temp_drop_count;
-        ctx->loop_temp_env_floor  = ctx->temp_block_env_count;
 
         /* Branch to condition check */
         LLVMBuildBr(ctx->builder, cond_bb);
@@ -1889,7 +1878,6 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         ctx->continue_bb = saved_continue;
         ctx->loop_scope = saved_loop_scope;
         ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
-        ctx->loop_temp_env_floor  = saved_loop_temp_env_floor;
 
         pop_scope(ctx);
         LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
@@ -1953,8 +1941,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                temps that predate the loop (an enclosing match's subject) are the
                enclosing construct's to drop — mirrors emit_cleanup_to(loop_scope)
                only freeing locals declared inside the loop. */
-            cg_flush_temps_from(ctx, ctx->loop_temp_env_floor,
-                                ctx->loop_temp_drop_floor);
+            cg_flush_temps_from(ctx, ctx->loop_temp_drop_floor);
             /* Free string locals from current scope up to (not including) loop scope */
             emit_cleanup_to(ctx, ctx->loop_scope, NULL);
             LLVMBuildBr(ctx->builder, ctx->break_bb);
@@ -1966,8 +1953,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         {
             /* See AST_BREAK: release loop-internal statement temps so a continue
                escaping a match arm doesn't leak an owned rvalue subject. */
-            cg_flush_temps_from(ctx, ctx->loop_temp_env_floor,
-                                ctx->loop_temp_drop_floor);
+            cg_flush_temps_from(ctx, ctx->loop_temp_drop_floor);
             /* Free string locals from current scope up to (not including) loop scope */
             emit_cleanup_to(ctx, ctx->loop_scope, NULL);
             LLVMBuildBr(ctx->builder, ctx->continue_bb);
@@ -2188,9 +2174,8 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
        chained method call `v.map(U)(...).reduce(U)(...)`) would be flushed
        INSIDE the closure body, referencing an alloca from another function
        (LLVM "instruction does not dominate all uses"). */
-    int saved_temp_drop_count  = ctx->temp_drop_count;
-    int saved_temp_block_env_count = ctx->temp_block_env_count;
-    int saved_temp_drop_base = ctx->temp_drop_base;
+    int saved_temp_drop_count = ctx->temp_drop_count;
+    int saved_temp_drop_base  = ctx->temp_drop_base;
 
     LLVMBasicBlockRef entry =
         LLVMAppendBasicBlockInContext(ctx->context, fn, "entry");
@@ -2200,7 +2185,6 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     ctx->current_fn = fn;
     ctx->current_fn_return_type = ret_lst;
     ctx->temp_drop_count = 0;
-    ctx->temp_block_env_count = 0;
     ctx->temp_drop_base = 0;  /* independent body: no enclosing protected floor */
 
     /* Detach from outer scope chain — only params + captures should be
@@ -2318,9 +2302,6 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             CG_OWN_AUDIT(ctx, ctx->temp_drop_count == 0, "closure_end/A4",
                          "temp_drop_count %d != 0 on open closure tail",
                          ctx->temp_drop_count);
-            CG_OWN_AUDIT(ctx, ctx->temp_block_env_count == 0, "closure_end/A4",
-                         "temp_block_env_count %d != 0 on open closure tail",
-                         ctx->temp_block_env_count);
         }
     }
 
@@ -2347,8 +2328,7 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
     ctx->current_fn_return_type = saved_fn_ret;
     ctx->is_main_void = saved_is_main_void;
     ctx->temp_drop_count = saved_temp_drop_count;
-    ctx->temp_block_env_count = saved_temp_block_env_count;
-    ctx->temp_drop_base = saved_temp_drop_base;
+    ctx->temp_drop_base  = saved_temp_drop_base;
     if (saved_block) LLVMPositionBuilderAtEnd(ctx->builder, saved_block);
     if (ctx->dib) LLVMSetCurrentDebugLocation2(ctx->builder, saved_di_loc);
 
