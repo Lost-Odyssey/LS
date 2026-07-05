@@ -1736,461 +1736,8 @@ static LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
     return NULL; /* Other lvalue forms not yet handled */
 }
 
-static LLVMValueRef cg_expr_call(CodegenContext *ctx, AstNode *node)
+static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
 {
-    /* Slice builtin `s.len()` — extract field 1 of the {ptr,len} view,
-       truncated to i32 (LS `int`). */
-    if (node->as.call.callee && node->as.call.callee->kind == AST_FIELD &&
-        node->as.call.callee->as.field_access.field &&
-        strcmp(node->as.call.callee->as.field_access.field, "len") == 0 &&
-        node->as.call.callee->as.field_access.object->resolved_type &&
-        node->as.call.callee->as.field_access.object->resolved_type->kind == TYPE_SLICE)
-    {
-        LLVMValueRef sv = codegen_expr(ctx, node->as.call.callee->as.field_access.object);
-        LLVMValueRef len64 = LLVMBuildExtractValue(ctx->builder, sv, 1, "slen");
-        return LLVMBuildTrunc(ctx->builder, len64,
-                              LLVMInt32TypeInContext(ctx->context), "slen32");
-    }
-
-    /* A-1: canonical-path call to a std.c primitive (std.c.malloc/realloc/
-       free/abort). Lower identically to the bare-name builtins. Must come
-       before the generic field/method dispatch, which can't resolve the
-       `std.c` qualifier. See docs/plan_runtime_primitives.md §5.3. */
-    {
-        int prim = cg_match_stdc_prim(node->as.call.callee);
-        if (prim == 0 || prim == 1) /* malloc(sz) / realloc(p, sz) */
-        {
-            const char *fn = (prim == 0) ? "malloc" : "realloc";
-            int n = node->as.call.arg_count;
-            LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx->context);
-            /* size arg index: malloc → 0, realloc → 1. Coerce it to i64
-               (LS `int` is i32; old builtin widened at the call site). */
-            int size_idx = (prim == 0) ? 0 : 1;
-            LLVMValueRef args[2];
-            for (int i = 0; i < n && i < 2; i++)
-            {
-                LLVMValueRef a = codegen_expr(ctx, node->as.call.args[i]);
-                if (i == size_idx && a != NULL &&
-                    LLVMGetTypeKind(LLVMTypeOf(a)) == LLVMIntegerTypeKind &&
-                    LLVMGetIntTypeWidth(LLVMTypeOf(a)) < 64)
-                    a = LLVMBuildSExt(ctx->builder, a, i64t, "sz.i64");
-                args[i] = a;
-            }
-            LLVMValueRef f = LLVMGetNamedFunction(ctx->module, fn);
-            if (f == NULL)
-            {
-                /* Declare on demand: (i64)->i8* / (i8*,i64)->i8* */
-                LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
-                LLVMTypeRef ps0[2];
-                LLVMTypeRef ft;
-                if (prim == 0) { ps0[0] = LLVMInt64TypeInContext(ctx->context);
-                                 ft = LLVMFunctionType(i8p, ps0, 1, 0); }
-                else { ps0[0] = i8p; ps0[1] = LLVMInt64TypeInContext(ctx->context);
-                       ft = LLVMFunctionType(i8p, ps0, 2, 0); }
-                f = LLVMAddFunction(ctx->module, fn, ft);
-            }
-            LLVMTypeRef ft = LLVMGlobalGetValueType(f);
-            return LLVMBuildCall2(ctx->builder, ft, f, args, n, "");
-        }
-        if (prim == 2) /* free(p) — drop struct payload first, then free */
-        {
-            if (node->as.call.arg_count == 1)
-            {
-                LLVMValueRef ptr = codegen_expr(ctx, node->as.call.args[0]);
-                if (ptr == NULL) return NULL;
-                Type *arg_type = node->as.call.args[0]->resolved_type;
-                if (arg_type && arg_type->kind == TYPE_POINTER &&
-                    arg_type->as.pointer_to &&
-                    arg_type->as.pointer_to->kind == TYPE_STRUCT &&
-                    arg_type->as.pointer_to->as.strukt.has_drop)
-                {
-                    LLVMTypeRef pt = LLVMTypeOf(ptr);
-                    LLVMValueRef isn = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
-                                                     ptr, LLVMConstNull(pt), "free.is_null");
-                    LLVMValueRef cur = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
-                    LLVMBasicBlockRef skip = LLVMAppendBasicBlockInContext(ctx->context, cur, "free.skip_drop");
-                    LLVMBasicBlockRef dod = LLVMAppendBasicBlockInContext(ctx->context, cur, "free.do_drop");
-                    LLVMBuildCondBr(ctx->builder, isn, skip, dod);
-                    LLVMPositionBuilderAtEnd(ctx->builder, dod);
-                    emit_struct_drop(ctx, ptr, arg_type->as.pointer_to);
-                    LLVMBuildBr(ctx->builder, skip);
-                    LLVMPositionBuilderAtEnd(ctx->builder, skip);
-                }
-                LLVMValueRef free_fn = LLVMGetNamedFunction(ctx->module, "free");
-                LLVMTypeRef free_type = LLVMGlobalGetValueType(free_fn);
-                return LLVMBuildCall2(ctx->builder, free_type, free_fn, &ptr, 1, "");
-            }
-        }
-        if (prim == 3 && node->as.call.arg_count == 0) /* abort() */
-        {
-            LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
-            LLVMTypeRef exit_ty = LLVMFunctionType(
-                LLVMVoidTypeInContext(ctx->context),
-                (LLVMTypeRef[]){ LLVMInt32TypeInContext(ctx->context) }, 1, 0);
-            if (exit_fn == NULL)
-                exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
-            LLVMValueRef code = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 1, 0);
-            LLVMBuildCall2(ctx->builder, exit_ty, exit_fn, &code, 1, "");
-            return NULL;
-        }
-    }
-
-    /* Phase B closures: callee is a Block-typed expression (local var or
-       an inline `|x| body` literal). Lower as indirect call through the
-       {fn_ptr, env_ptr} fat pointer. Must come before the user-fn lookup
-       paths, which assume LLVMGetNamedFunction. */
-    if (node->as.call.callee->resolved_type &&
-        node->as.call.callee->resolved_type->kind == TYPE_BLOCK)
-    {
-        return codegen_block_call(ctx, node);
-    }
-
-    /* Variant ctor short-circuit: callee is an IDENT and the checker
-       resolved this CALL to a TYPE_ENUM (which only happens for variant
-       constructors).  Skip method/function dispatch entirely. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        node->resolved_type && node->resolved_type->kind == TYPE_ENUM)
-    {
-        Type *et = node->resolved_type;
-        const char *vname = node->as.call.callee->as.ident.name;
-        for (int v = 0; v < et->as.enom.variant_count; v++)
-        {
-            if (strcmp(et->as.enom.variants[v].name, vname) == 0)
-                return emit_enum_ctor(ctx, node, et, v,
-                                      node->as.call.args, node->as.call.arg_count);
-        }
-    }
-
-    /* Intercept __move(x) — Phase 4: transparent no-op at codegen.
-       The checker has already marked x as moved and rejected subsequent
-       uses. At codegen we just forward to the inner expression's value,
-       so `v.push(__move(s))` behaves identically to `v.push(s)` in the
-       generated IR. Ownership-transfer logic in container ops unwraps
-       via ast_unwrap_move() to see the underlying IDENT. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        cg_is_intrinsic(node->as.call.callee->as.ident.name, "@move", "__move") &&
-        node->as.call.arg_count == 1)
-    {
-        return codegen_expr(ctx, node->as.call.args[0]);
-    }
-
-    /* Intercept @print(...) calls (callee IDENT "@print") — inline printf
-       to the current sink stream with type-aware format. */
-    if (node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "@print") == 0)
-    {
-        return codegen_print_call(ctx, node);
-    }
-
-    /* Phase E.3.3: intercept from_cstr() — copy C char* into LsString */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        strcmp(node->as.call.callee->as.ident.name, "from_cstr") == 0)
-    {
-        return codegen_from_cstr(ctx, node);
-    }
-
-    /* Phase E.3.1: intercept errno() — read libc thread-local errno */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        strcmp(node->as.call.callee->as.ident.name, "errno") == 0)
-    {
-        return codegen_errno_call(ctx);
-    }
-
-    /* Intercept free() calls — call __drop before free for struct pointers */
-    if (node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "free") == 0)
-    {
-        if (node->as.call.arg_count == 1)
-        {
-            /* Get the argument (pointer to free) */
-            LLVMValueRef ptr = codegen_expr(ctx, node->as.call.args[0]);
-            if (ptr == NULL)
-                return NULL;
-
-            /* Check if it's a struct pointer and call __drop before free */
-            Type *arg_type = node->as.call.args[0]->resolved_type;
-            if (arg_type && arg_type->kind == TYPE_POINTER &&
-                arg_type->as.pointer_to &&
-                arg_type->as.pointer_to->kind == TYPE_STRUCT &&
-                arg_type->as.pointer_to->as.strukt.has_drop)
-            {
-                /* Guard: only call __drop if ptr != NULL (C standard: free(NULL) is safe) */
-                LLVMTypeRef ptr_type = LLVMTypeOf(ptr);
-                LLVMValueRef null_val = LLVMConstNull(ptr_type);
-                LLVMValueRef is_null = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
-                                                     ptr, null_val, "free.is_null");
-
-                LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
-                    LLVMGetInsertBlock(ctx->builder));
-                LLVMBasicBlockRef skip_drop_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, cur_fn, "free.skip_drop");
-                LLVMBasicBlockRef do_drop_bb = LLVMAppendBasicBlockInContext(
-                    ctx->context, cur_fn, "free.do_drop");
-
-                LLVMBuildCondBr(ctx->builder, is_null, skip_drop_bb, do_drop_bb);
-
-                /* Emit __drop call in do_drop_bb */
-                LLVMPositionBuilderAtEnd(ctx->builder, do_drop_bb);
-                emit_struct_drop(ctx, ptr, arg_type->as.pointer_to);
-                LLVMBuildBr(ctx->builder, skip_drop_bb);
-
-                /* Emit free() call after drop */
-                LLVMPositionBuilderAtEnd(ctx->builder, skip_drop_bb);
-            }
-
-            /* Call free(ptr) — goes through wrapper when memcheck enabled */
-            LLVMValueRef free_fn = LLVMGetNamedFunction(ctx->module, "free");
-            LLVMTypeRef free_type = LLVMGlobalGetValueType(free_fn);
-            return LLVMBuildCall2(ctx->builder, free_type, free_fn, &ptr, 1, "");
-        }
-    }
-
-    /* Intercept abort() — terminate the process via the runtime helper
-       __ls_proc_exit(1). Registered as a global builtin in the checker, so it
-       is callable unqualified from anywhere (incl. generic method bodies like
-       std.vec's bounds checks) without importing std.c. Returns void. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        strcmp(node->as.call.callee->as.ident.name, "abort") == 0 &&
-        node->as.call.arg_count == 0)
-    {
-        LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
-        LLVMTypeRef exit_ty = LLVMFunctionType(
-            LLVMVoidTypeInContext(ctx->context),
-            (LLVMTypeRef[]){ LLVMInt32TypeInContext(ctx->context) }, 1, 0);
-        if (exit_fn == NULL)
-            exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
-        LLVMValueRef code = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 1, 0);
-        LLVMBuildCall2(ctx->builder, exit_ty, exit_fn, &code, 1, "");
-        return NULL; /* void */
-    }
-
-    /* Structured concurrency (generic Task(T)):
-         __task_spawn(Block()->T, *T box) -> object
-         __task_join(object)              -> void
-       __task_spawn extracts the closure's {code_fn, env}, synthesises a
-       per-T `thunk` that calls the closure and stores its by-value result
-       into the `*T box` slot, then hands {thunk, fn, env, box} to the
-       worker. It MOVES the env into the worker (suppresses the caller-scope
-       env drop — the worker frees it once after the body runs, see
-       ls_thread_trampoline). This is the whole point: a Vec move-captured
-       into the closure is dropped exactly once, by the worker; the spawning
-       scope already marked its source MOVED. The closure returns T by value
-       (LLVM handles sret/register ABI), so `*box = closure(env)` is uniform
-       over POD and aggregate, and the store IS the move (no clone, no drop).
-       The runtime never touches the result bytes — single owner across the
-       boundary; join() moves it out via __take. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        strcmp(node->as.call.callee->as.ident.name, "__task_spawn") == 0 &&
-        node->as.call.arg_count == 2)
-    {
-        AstNode *blk = node->as.call.args[0];
-        AstNode *boxarg = node->as.call.args[1];
-        /* T = the Block's return type (checker validated arg0 is a Block). */
-        Type *blk_t = blk->resolved_type;
-        if (blk_t == NULL || blk_t->kind != TYPE_BLOCK)
-        {
-            cg_error(ctx, node->line, node->column,
-                     "internal: __task_spawn arg0 is not a Block");
-            return NULL;
-        }
-        LLVMTypeRef res_llvm =
-            type_to_llvm(ctx, blk_t->as.function.return_type);
-        int spawn_drop_floor = ctx->temp_drop_count;
-        LLVMValueRef closure_val = codegen_expr(ctx, blk);
-        if (closure_val == NULL) return NULL;
-        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "task.fn");
-        LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "task.env");
-        LLVMValueRef box_ptr = codegen_expr(ctx, boxarg);
-        if (box_ptr == NULL) return NULL;
-        /* Move the env into the thread (mirror the container-store Block
-           handling): a named Block var is nulled; a literal's temp env is
-           consumed so the caller scope does not also free it. */
-        if (blk->kind == AST_IDENT)
-        {
-            CgSymbol *bsym = cg_scope_resolve(ctx->current_scope, blk->as.ident.name);
-            if (bsym && bsym->no_drop_reason == CG_OWNED)
-                cg_null_block_env(ctx, bsym->value);
-        }
-        else
-            /* Fresh rvalue (literal or factory, both temp_drop-tracked
-               since stage 10): the thread owns the env — claim so the
-               caller's statement flush doesn't release it. */
-            cg_claim_block_temp_above(ctx, spawn_drop_floor);
-
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
-
-        /* Synthesise the per-T thunk:
-             void __task_thunk_<id>(ptr fn, ptr env, ptr box):
-                 T r = ((T(*)(ptr))fn)(env)
-                 store r -> box
-                 ret void
-           (save/restore builder, mirroring __env_drop_<id>.) */
-        int tid = ctx->closure_id_counter++;
-        char thunk_name[64];
-        snprintf(thunk_name, sizeof(thunk_name), "__task_thunk_%d", tid);
-        LLVMTypeRef thunk_param_t[3] = { ptr_t, ptr_t, ptr_t };
-        LLVMTypeRef thunk_ty = LLVMFunctionType(void_t, thunk_param_t, 3, 0);
-        LLVMValueRef thunk_fn = LLVMAddFunction(ctx->module, thunk_name, thunk_ty);
-
-        LLVMBasicBlockRef t_saved = LLVMGetInsertBlock(ctx->builder);
-        LLVMBasicBlockRef t_entry =
-            LLVMAppendBasicBlockInContext(ctx->context, thunk_fn, "entry");
-        LLVMPositionBuilderAtEnd(ctx->builder, t_entry);
-        LLVMValueRef t_fn  = LLVMGetParam(thunk_fn, 0);
-        LLVMValueRef t_env = LLVMGetParam(thunk_fn, 1);
-        LLVMValueRef t_box = LLVMGetParam(thunk_fn, 2);
-        LLVMTypeRef clo_ty = LLVMFunctionType(res_llvm, &ptr_t, 1, 0);
-        LLVMValueRef r =
-            LLVMBuildCall2(ctx->builder, clo_ty, t_fn, &t_env, 1, "task.r");
-        LLVMBuildStore(ctx->builder, r, t_box);   /* store IS the move */
-        /* L-015 fix: drop the closure env HERE, in the worker thunk, after
-           the body ran. This is the single owner of the env across the
-           thread boundary (the spawning scope already suppressed its own
-           env drop above). Doing it in LS-emitted code means the free goes
-           through the memcheck-tracked free wrapper (ls_mc_free) — the
-           runtime trampoline previously freed env with a RAW free(), which
-           the tracker never saw, surfacing as a false per-spawn leak.
-           The earlier rc=139 was a genuine double-free: the prior attempt
-           ADDED this drop while the trampoline STILL freed env. The
-           trampoline's drop+free is now removed (os_win32/os_posix). */
-        cg_emit_block_env_drop(ctx, t_env);
-        LLVMBuildRetVoid(ctx->builder);
-        if (t_saved) LLVMPositionBuilderAtEnd(ctx->builder, t_saved);
-
-        LLVMValueRef spawn_fn = LLVMGetNamedFunction(ctx->module, "ls_thread_spawn");
-        LLVMTypeRef spawn_ty = LLVMFunctionType(
-            ptr_t, (LLVMTypeRef[]){ptr_t, ptr_t, ptr_t, ptr_t}, 4, 0);
-        if (spawn_fn == NULL)
-            spawn_fn = LLVMAddFunction(ctx->module, "ls_thread_spawn", spawn_ty);
-        LLVMValueRef sargs[4] = { thunk_fn, fn_ptr, env_ptr, box_ptr };
-        return LLVMBuildCall2(ctx->builder, spawn_ty, spawn_fn, sargs, 4, "task.handle");
-    }
-    if (node->as.call.callee->kind == AST_IDENT &&
-        strcmp(node->as.call.callee->as.ident.name, "__task_join") == 0 &&
-        node->as.call.arg_count == 1)
-    {
-        LLVMValueRef h = codegen_expr(ctx, node->as.call.args[0]);
-        if (h == NULL) return NULL;
-        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
-        LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
-        LLVMValueRef join_fn = LLVMGetNamedFunction(ctx->module, "ls_thread_join");
-        LLVMTypeRef join_ty = LLVMFunctionType(void_t, &ptr_t, 1, 0);
-        if (join_fn == NULL)
-            join_fn = LLVMAddFunction(ctx->module, "ls_thread_join", join_ty);
-        LLVMBuildCall2(ctx->builder, join_ty, join_fn, &h, 1, "");
-        return NULL; /* void */
-    }
-
-    /* Compiler intrinsic families — sync (__mutex_/__rwlock_/__cond_/
-       __cpu_*, std.sync), __atomic_* (std.atomic) and __simd_* — dispatch
-       through the name-keyed registry in builtins_intrinsic_cg.c (S2).
-       A family-prefixed name is ALWAYS consumed here: unknown members
-       produce the same "internal: unknown ... intrinsic" error the old
-       inline chains did (no fall-through to user-call resolution). The
-       name sets are disjoint from every other name AST_CALL tests, so
-       probing all families at this position is order-equivalent to the
-       retired per-family blocks. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        builtin_intrinsic_is_global(
-            builtin_intrinsic_lookup(node->as.call.callee->as.ident.name)))
-    {
-        return builtin_intrinsic_emit_call(
-            ctx, node->as.call.callee->as.ident.name, node);
-    }
-
-    /* Intercept __drop_at(place) — run the recursive destructor on the value
-       stored at an lvalue place (raw pointer slot p[i], field, *p) WITHOUT
-       freeing any backing buffer. No-op for POD. Returns void. The nested
-       drop is automatic: emit_drop_value recurses (string free / vec / map /
-       struct.__drop / enum.__drop), so __drop_at on a RawVec(RawVec(T)) slot
-       dispatches to the inner RawVec's user __drop. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        cg_is_intrinsic(node->as.call.callee->as.ident.name, "@dispose", "__drop_at") &&
-        node->as.call.arg_count == 1)
-    {
-        AstNode *place = node->as.call.args[0];
-        LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
-        if (ptr == NULL)
-        {
-            cg_error(ctx, node->line, node->column,
-                     "__drop_at: argument is not an addressable place");
-            return NULL;
-        }
-        emit_drop_value(ctx, ptr, place->resolved_type);
-        return NULL; /* void */
-    }
-
-    /* Intercept __take(place) — move-OUT: load the value at an lvalue place
-       WITHOUT cloning (the raw bit-read), handing ownership to the caller. The
-       slot is left holding stale bits; the container excludes it via its len
-       (or overwrites it). Counterpart of __drop_at; used to relocate elements
-       (pop/remove/insert/swap) without a clone. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        cg_is_intrinsic(node->as.call.callee->as.ident.name, "@take", "__take") &&
-        node->as.call.arg_count == 1)
-    {
-        AstNode *place = node->as.call.args[0];
-        LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
-        if (ptr == NULL)
-        {
-            cg_error(ctx, node->line, node->column,
-                     "__take: argument is not an addressable place");
-            return NULL;
-        }
-        Type *et = place->resolved_type;
-        LLVMTypeRef elt = type_to_llvm(ctx, et);
-        return LLVMBuildLoad2(ctx->builder, elt, ptr, "take");
-    }
-
-    /* Intercept __dup(place) — DEEP COPY without consuming: load the value at
-       the place and run it through emit_clone_value (POD → the loaded value
-       verbatim; has_drop → a deep clone via __clone). The source place is
-       untouched (stays live). The clone counterpart of __take; the generic
-       value-duplication primitive behind Vec.fill / Map.get_or_insert. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        cg_is_intrinsic(node->as.call.callee->as.ident.name, "@dup", "__dup") &&
-        node->as.call.arg_count == 1)
-    {
-        AstNode *place = node->as.call.args[0];
-        LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
-        if (ptr == NULL)
-        {
-            cg_error(ctx, node->line, node->column,
-                     "__dup: argument is not an addressable place");
-            return NULL;
-        }
-        Type *et = place->resolved_type;
-        LLVMTypeRef elt = type_to_llvm(ctx, et);
-        LLVMValueRef loaded = LLVMBuildLoad2(ctx->builder, elt, ptr, "dup.src");
-        /* TYPE_BLOCK: emit_clone_value is INTENTIONALLY shallow for closures
-           (the aliasing pass-through protocol container reads rely on, see
-           match_codegen_guide §4B boundary A). @dup's contract is an owned,
-           independent duplicate, so deep-clone the env here explicitly —
-           without this, Vec(Block).copy / @dup(Block) share the env and
-           double-free (§7.A). Must NOT touch emit_clone_value (would break
-           container element reads). */
-        if (et && et->kind == TYPE_BLOCK)
-            return cg_emit_block_env_clone(ctx, loaded);
-        return emit_clone_value(ctx, loaded, elt, et);
-    }
-
-    /* __rawstr("literal") -> *u8 : emit the literal's baked .rodata pointer
-       directly (the same i8* Str's .data would hold), without constructing a
-       Str. Used by std.core.reflect_core. */
-    if (node->as.call.callee->kind == AST_IDENT &&
-        strcmp(node->as.call.callee->as.ident.name, "__rawstr") == 0 &&
-        node->as.call.arg_count == 1 &&
-        node->as.call.args[0]->kind == AST_STRING_LIT)
-    {
-        const char *text = node->as.call.args[0]->as.string_lit.value;
-        return LLVMBuildGlobalStringPtr(ctx->builder, text ? text : "", ".ls.rawstr");
-    }
-
-    /* __atomic_* — migrated to builtins_intrinsic_cg.c (registry probe
-       above, S2 P1 2/4). */
-
-    /* __simd_* — migrated to builtins_intrinsic_cg.c (registry probe
-       above, S2 P1 3/4). */
-
     /* Detect struct method calls: obj.method(args) or StructName.method(args).
        The checker has already validated and set resolved_type on the callee. */
     bool cg_is_method_call = false; /* instance method: prepend self */
@@ -3169,6 +2716,464 @@ static LLVMValueRef cg_expr_call(CodegenContext *ctx, AstNode *node)
     if (!cg_block_source_is_aliased(node))
         cg_track_block_rvalue(ctx, result, node->resolved_type);
     return result;
+}
+
+static LLVMValueRef cg_expr_call(CodegenContext *ctx, AstNode *node)
+{
+    /* Slice builtin `s.len()` — extract field 1 of the {ptr,len} view,
+       truncated to i32 (LS `int`). */
+    if (node->as.call.callee && node->as.call.callee->kind == AST_FIELD &&
+        node->as.call.callee->as.field_access.field &&
+        strcmp(node->as.call.callee->as.field_access.field, "len") == 0 &&
+        node->as.call.callee->as.field_access.object->resolved_type &&
+        node->as.call.callee->as.field_access.object->resolved_type->kind == TYPE_SLICE)
+    {
+        LLVMValueRef sv = codegen_expr(ctx, node->as.call.callee->as.field_access.object);
+        LLVMValueRef len64 = LLVMBuildExtractValue(ctx->builder, sv, 1, "slen");
+        return LLVMBuildTrunc(ctx->builder, len64,
+                              LLVMInt32TypeInContext(ctx->context), "slen32");
+    }
+
+    /* A-1: canonical-path call to a std.c primitive (std.c.malloc/realloc/
+       free/abort). Lower identically to the bare-name builtins. Must come
+       before the generic field/method dispatch, which can't resolve the
+       `std.c` qualifier. See docs/plan_runtime_primitives.md §5.3. */
+    {
+        int prim = cg_match_stdc_prim(node->as.call.callee);
+        if (prim == 0 || prim == 1) /* malloc(sz) / realloc(p, sz) */
+        {
+            const char *fn = (prim == 0) ? "malloc" : "realloc";
+            int n = node->as.call.arg_count;
+            LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx->context);
+            /* size arg index: malloc → 0, realloc → 1. Coerce it to i64
+               (LS `int` is i32; old builtin widened at the call site). */
+            int size_idx = (prim == 0) ? 0 : 1;
+            LLVMValueRef args[2];
+            for (int i = 0; i < n && i < 2; i++)
+            {
+                LLVMValueRef a = codegen_expr(ctx, node->as.call.args[i]);
+                if (i == size_idx && a != NULL &&
+                    LLVMGetTypeKind(LLVMTypeOf(a)) == LLVMIntegerTypeKind &&
+                    LLVMGetIntTypeWidth(LLVMTypeOf(a)) < 64)
+                    a = LLVMBuildSExt(ctx->builder, a, i64t, "sz.i64");
+                args[i] = a;
+            }
+            LLVMValueRef f = LLVMGetNamedFunction(ctx->module, fn);
+            if (f == NULL)
+            {
+                /* Declare on demand: (i64)->i8* / (i8*,i64)->i8* */
+                LLVMTypeRef i8p = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
+                LLVMTypeRef ps0[2];
+                LLVMTypeRef ft;
+                if (prim == 0) { ps0[0] = LLVMInt64TypeInContext(ctx->context);
+                                 ft = LLVMFunctionType(i8p, ps0, 1, 0); }
+                else { ps0[0] = i8p; ps0[1] = LLVMInt64TypeInContext(ctx->context);
+                       ft = LLVMFunctionType(i8p, ps0, 2, 0); }
+                f = LLVMAddFunction(ctx->module, fn, ft);
+            }
+            LLVMTypeRef ft = LLVMGlobalGetValueType(f);
+            return LLVMBuildCall2(ctx->builder, ft, f, args, n, "");
+        }
+        if (prim == 2) /* free(p) — drop struct payload first, then free */
+        {
+            if (node->as.call.arg_count == 1)
+            {
+                LLVMValueRef ptr = codegen_expr(ctx, node->as.call.args[0]);
+                if (ptr == NULL) return NULL;
+                Type *arg_type = node->as.call.args[0]->resolved_type;
+                if (arg_type && arg_type->kind == TYPE_POINTER &&
+                    arg_type->as.pointer_to &&
+                    arg_type->as.pointer_to->kind == TYPE_STRUCT &&
+                    arg_type->as.pointer_to->as.strukt.has_drop)
+                {
+                    LLVMTypeRef pt = LLVMTypeOf(ptr);
+                    LLVMValueRef isn = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                                                     ptr, LLVMConstNull(pt), "free.is_null");
+                    LLVMValueRef cur = LLVMGetBasicBlockParent(LLVMGetInsertBlock(ctx->builder));
+                    LLVMBasicBlockRef skip = LLVMAppendBasicBlockInContext(ctx->context, cur, "free.skip_drop");
+                    LLVMBasicBlockRef dod = LLVMAppendBasicBlockInContext(ctx->context, cur, "free.do_drop");
+                    LLVMBuildCondBr(ctx->builder, isn, skip, dod);
+                    LLVMPositionBuilderAtEnd(ctx->builder, dod);
+                    emit_struct_drop(ctx, ptr, arg_type->as.pointer_to);
+                    LLVMBuildBr(ctx->builder, skip);
+                    LLVMPositionBuilderAtEnd(ctx->builder, skip);
+                }
+                LLVMValueRef free_fn = LLVMGetNamedFunction(ctx->module, "free");
+                LLVMTypeRef free_type = LLVMGlobalGetValueType(free_fn);
+                return LLVMBuildCall2(ctx->builder, free_type, free_fn, &ptr, 1, "");
+            }
+        }
+        if (prim == 3 && node->as.call.arg_count == 0) /* abort() */
+        {
+            LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
+            LLVMTypeRef exit_ty = LLVMFunctionType(
+                LLVMVoidTypeInContext(ctx->context),
+                (LLVMTypeRef[]){ LLVMInt32TypeInContext(ctx->context) }, 1, 0);
+            if (exit_fn == NULL)
+                exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
+            LLVMValueRef code = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 1, 0);
+            LLVMBuildCall2(ctx->builder, exit_ty, exit_fn, &code, 1, "");
+            return NULL;
+        }
+    }
+
+    /* Phase B closures: callee is a Block-typed expression (local var or
+       an inline `|x| body` literal). Lower as indirect call through the
+       {fn_ptr, env_ptr} fat pointer. Must come before the user-fn lookup
+       paths, which assume LLVMGetNamedFunction. */
+    if (node->as.call.callee->resolved_type &&
+        node->as.call.callee->resolved_type->kind == TYPE_BLOCK)
+    {
+        return codegen_block_call(ctx, node);
+    }
+
+    /* Variant ctor short-circuit: callee is an IDENT and the checker
+       resolved this CALL to a TYPE_ENUM (which only happens for variant
+       constructors).  Skip method/function dispatch entirely. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        node->resolved_type && node->resolved_type->kind == TYPE_ENUM)
+    {
+        Type *et = node->resolved_type;
+        const char *vname = node->as.call.callee->as.ident.name;
+        for (int v = 0; v < et->as.enom.variant_count; v++)
+        {
+            if (strcmp(et->as.enom.variants[v].name, vname) == 0)
+                return emit_enum_ctor(ctx, node, et, v,
+                                      node->as.call.args, node->as.call.arg_count);
+        }
+    }
+
+    /* Intercept __move(x) — Phase 4: transparent no-op at codegen.
+       The checker has already marked x as moved and rejected subsequent
+       uses. At codegen we just forward to the inner expression's value,
+       so `v.push(__move(s))` behaves identically to `v.push(s)` in the
+       generated IR. Ownership-transfer logic in container ops unwraps
+       via ast_unwrap_move() to see the underlying IDENT. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        cg_is_intrinsic(node->as.call.callee->as.ident.name, "@move", "__move") &&
+        node->as.call.arg_count == 1)
+    {
+        return codegen_expr(ctx, node->as.call.args[0]);
+    }
+
+    /* Intercept @print(...) calls (callee IDENT "@print") — inline printf
+       to the current sink stream with type-aware format. */
+    if (node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "@print") == 0)
+    {
+        return codegen_print_call(ctx, node);
+    }
+
+    /* Phase E.3.3: intercept from_cstr() — copy C char* into LsString */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        strcmp(node->as.call.callee->as.ident.name, "from_cstr") == 0)
+    {
+        return codegen_from_cstr(ctx, node);
+    }
+
+    /* Phase E.3.1: intercept errno() — read libc thread-local errno */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        strcmp(node->as.call.callee->as.ident.name, "errno") == 0)
+    {
+        return codegen_errno_call(ctx);
+    }
+
+    /* Intercept free() calls — call __drop before free for struct pointers */
+    if (node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "free") == 0)
+    {
+        if (node->as.call.arg_count == 1)
+        {
+            /* Get the argument (pointer to free) */
+            LLVMValueRef ptr = codegen_expr(ctx, node->as.call.args[0]);
+            if (ptr == NULL)
+                return NULL;
+
+            /* Check if it's a struct pointer and call __drop before free */
+            Type *arg_type = node->as.call.args[0]->resolved_type;
+            if (arg_type && arg_type->kind == TYPE_POINTER &&
+                arg_type->as.pointer_to &&
+                arg_type->as.pointer_to->kind == TYPE_STRUCT &&
+                arg_type->as.pointer_to->as.strukt.has_drop)
+            {
+                /* Guard: only call __drop if ptr != NULL (C standard: free(NULL) is safe) */
+                LLVMTypeRef ptr_type = LLVMTypeOf(ptr);
+                LLVMValueRef null_val = LLVMConstNull(ptr_type);
+                LLVMValueRef is_null = LLVMBuildICmp(ctx->builder, LLVMIntEQ,
+                                                     ptr, null_val, "free.is_null");
+
+                LLVMValueRef cur_fn = LLVMGetBasicBlockParent(
+                    LLVMGetInsertBlock(ctx->builder));
+                LLVMBasicBlockRef skip_drop_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, cur_fn, "free.skip_drop");
+                LLVMBasicBlockRef do_drop_bb = LLVMAppendBasicBlockInContext(
+                    ctx->context, cur_fn, "free.do_drop");
+
+                LLVMBuildCondBr(ctx->builder, is_null, skip_drop_bb, do_drop_bb);
+
+                /* Emit __drop call in do_drop_bb */
+                LLVMPositionBuilderAtEnd(ctx->builder, do_drop_bb);
+                emit_struct_drop(ctx, ptr, arg_type->as.pointer_to);
+                LLVMBuildBr(ctx->builder, skip_drop_bb);
+
+                /* Emit free() call after drop */
+                LLVMPositionBuilderAtEnd(ctx->builder, skip_drop_bb);
+            }
+
+            /* Call free(ptr) — goes through wrapper when memcheck enabled */
+            LLVMValueRef free_fn = LLVMGetNamedFunction(ctx->module, "free");
+            LLVMTypeRef free_type = LLVMGlobalGetValueType(free_fn);
+            return LLVMBuildCall2(ctx->builder, free_type, free_fn, &ptr, 1, "");
+        }
+    }
+
+    /* Intercept abort() — terminate the process via the runtime helper
+       __ls_proc_exit(1). Registered as a global builtin in the checker, so it
+       is callable unqualified from anywhere (incl. generic method bodies like
+       std.vec's bounds checks) without importing std.c. Returns void. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        strcmp(node->as.call.callee->as.ident.name, "abort") == 0 &&
+        node->as.call.arg_count == 0)
+    {
+        LLVMValueRef exit_fn = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
+        LLVMTypeRef exit_ty = LLVMFunctionType(
+            LLVMVoidTypeInContext(ctx->context),
+            (LLVMTypeRef[]){ LLVMInt32TypeInContext(ctx->context) }, 1, 0);
+        if (exit_fn == NULL)
+            exit_fn = LLVMAddFunction(ctx->module, "__ls_proc_exit", exit_ty);
+        LLVMValueRef code = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 1, 0);
+        LLVMBuildCall2(ctx->builder, exit_ty, exit_fn, &code, 1, "");
+        return NULL; /* void */
+    }
+
+    /* Structured concurrency (generic Task(T)):
+         __task_spawn(Block()->T, *T box) -> object
+         __task_join(object)              -> void
+       __task_spawn extracts the closure's {code_fn, env}, synthesises a
+       per-T `thunk` that calls the closure and stores its by-value result
+       into the `*T box` slot, then hands {thunk, fn, env, box} to the
+       worker. It MOVES the env into the worker (suppresses the caller-scope
+       env drop — the worker frees it once after the body runs, see
+       ls_thread_trampoline). This is the whole point: a Vec move-captured
+       into the closure is dropped exactly once, by the worker; the spawning
+       scope already marked its source MOVED. The closure returns T by value
+       (LLVM handles sret/register ABI), so `*box = closure(env)` is uniform
+       over POD and aggregate, and the store IS the move (no clone, no drop).
+       The runtime never touches the result bytes — single owner across the
+       boundary; join() moves it out via __take. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        strcmp(node->as.call.callee->as.ident.name, "__task_spawn") == 0 &&
+        node->as.call.arg_count == 2)
+    {
+        AstNode *blk = node->as.call.args[0];
+        AstNode *boxarg = node->as.call.args[1];
+        /* T = the Block's return type (checker validated arg0 is a Block). */
+        Type *blk_t = blk->resolved_type;
+        if (blk_t == NULL || blk_t->kind != TYPE_BLOCK)
+        {
+            cg_error(ctx, node->line, node->column,
+                     "internal: __task_spawn arg0 is not a Block");
+            return NULL;
+        }
+        LLVMTypeRef res_llvm =
+            type_to_llvm(ctx, blk_t->as.function.return_type);
+        int spawn_drop_floor = ctx->temp_drop_count;
+        LLVMValueRef closure_val = codegen_expr(ctx, blk);
+        if (closure_val == NULL) return NULL;
+        LLVMValueRef fn_ptr  = LLVMBuildExtractValue(ctx->builder, closure_val, 0, "task.fn");
+        LLVMValueRef env_ptr = LLVMBuildExtractValue(ctx->builder, closure_val, 1, "task.env");
+        LLVMValueRef box_ptr = codegen_expr(ctx, boxarg);
+        if (box_ptr == NULL) return NULL;
+        /* Move the env into the thread (mirror the container-store Block
+           handling): a named Block var is nulled; a literal's temp env is
+           consumed so the caller scope does not also free it. */
+        if (blk->kind == AST_IDENT)
+        {
+            CgSymbol *bsym = cg_scope_resolve(ctx->current_scope, blk->as.ident.name);
+            if (bsym && bsym->no_drop_reason == CG_OWNED)
+                cg_null_block_env(ctx, bsym->value);
+        }
+        else
+            /* Fresh rvalue (literal or factory, both temp_drop-tracked
+               since stage 10): the thread owns the env — claim so the
+               caller's statement flush doesn't release it. */
+            cg_claim_block_temp_above(ctx, spawn_drop_floor);
+
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+        LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
+
+        /* Synthesise the per-T thunk:
+             void __task_thunk_<id>(ptr fn, ptr env, ptr box):
+                 T r = ((T(*)(ptr))fn)(env)
+                 store r -> box
+                 ret void
+           (save/restore builder, mirroring __env_drop_<id>.) */
+        int tid = ctx->closure_id_counter++;
+        char thunk_name[64];
+        snprintf(thunk_name, sizeof(thunk_name), "__task_thunk_%d", tid);
+        LLVMTypeRef thunk_param_t[3] = { ptr_t, ptr_t, ptr_t };
+        LLVMTypeRef thunk_ty = LLVMFunctionType(void_t, thunk_param_t, 3, 0);
+        LLVMValueRef thunk_fn = LLVMAddFunction(ctx->module, thunk_name, thunk_ty);
+
+        LLVMBasicBlockRef t_saved = LLVMGetInsertBlock(ctx->builder);
+        LLVMBasicBlockRef t_entry =
+            LLVMAppendBasicBlockInContext(ctx->context, thunk_fn, "entry");
+        LLVMPositionBuilderAtEnd(ctx->builder, t_entry);
+        LLVMValueRef t_fn  = LLVMGetParam(thunk_fn, 0);
+        LLVMValueRef t_env = LLVMGetParam(thunk_fn, 1);
+        LLVMValueRef t_box = LLVMGetParam(thunk_fn, 2);
+        LLVMTypeRef clo_ty = LLVMFunctionType(res_llvm, &ptr_t, 1, 0);
+        LLVMValueRef r =
+            LLVMBuildCall2(ctx->builder, clo_ty, t_fn, &t_env, 1, "task.r");
+        LLVMBuildStore(ctx->builder, r, t_box);   /* store IS the move */
+        /* L-015 fix: drop the closure env HERE, in the worker thunk, after
+           the body ran. This is the single owner of the env across the
+           thread boundary (the spawning scope already suppressed its own
+           env drop above). Doing it in LS-emitted code means the free goes
+           through the memcheck-tracked free wrapper (ls_mc_free) — the
+           runtime trampoline previously freed env with a RAW free(), which
+           the tracker never saw, surfacing as a false per-spawn leak.
+           The earlier rc=139 was a genuine double-free: the prior attempt
+           ADDED this drop while the trampoline STILL freed env. The
+           trampoline's drop+free is now removed (os_win32/os_posix). */
+        cg_emit_block_env_drop(ctx, t_env);
+        LLVMBuildRetVoid(ctx->builder);
+        if (t_saved) LLVMPositionBuilderAtEnd(ctx->builder, t_saved);
+
+        LLVMValueRef spawn_fn = LLVMGetNamedFunction(ctx->module, "ls_thread_spawn");
+        LLVMTypeRef spawn_ty = LLVMFunctionType(
+            ptr_t, (LLVMTypeRef[]){ptr_t, ptr_t, ptr_t, ptr_t}, 4, 0);
+        if (spawn_fn == NULL)
+            spawn_fn = LLVMAddFunction(ctx->module, "ls_thread_spawn", spawn_ty);
+        LLVMValueRef sargs[4] = { thunk_fn, fn_ptr, env_ptr, box_ptr };
+        return LLVMBuildCall2(ctx->builder, spawn_ty, spawn_fn, sargs, 4, "task.handle");
+    }
+    if (node->as.call.callee->kind == AST_IDENT &&
+        strcmp(node->as.call.callee->as.ident.name, "__task_join") == 0 &&
+        node->as.call.arg_count == 1)
+    {
+        LLVMValueRef h = codegen_expr(ctx, node->as.call.args[0]);
+        if (h == NULL) return NULL;
+        LLVMTypeRef ptr_t = LLVMPointerTypeInContext(ctx->context, 0);
+        LLVMTypeRef void_t = LLVMVoidTypeInContext(ctx->context);
+        LLVMValueRef join_fn = LLVMGetNamedFunction(ctx->module, "ls_thread_join");
+        LLVMTypeRef join_ty = LLVMFunctionType(void_t, &ptr_t, 1, 0);
+        if (join_fn == NULL)
+            join_fn = LLVMAddFunction(ctx->module, "ls_thread_join", join_ty);
+        LLVMBuildCall2(ctx->builder, join_ty, join_fn, &h, 1, "");
+        return NULL; /* void */
+    }
+
+    /* Compiler intrinsic families — sync (__mutex_/__rwlock_/__cond_/
+       __cpu_*, std.sync), __atomic_* (std.atomic) and __simd_* — dispatch
+       through the name-keyed registry in builtins_intrinsic_cg.c (S2).
+       A family-prefixed name is ALWAYS consumed here: unknown members
+       produce the same "internal: unknown ... intrinsic" error the old
+       inline chains did (no fall-through to user-call resolution). The
+       name sets are disjoint from every other name AST_CALL tests, so
+       probing all families at this position is order-equivalent to the
+       retired per-family blocks. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        builtin_intrinsic_is_global(
+            builtin_intrinsic_lookup(node->as.call.callee->as.ident.name)))
+    {
+        return builtin_intrinsic_emit_call(
+            ctx, node->as.call.callee->as.ident.name, node);
+    }
+
+    /* Intercept __drop_at(place) — run the recursive destructor on the value
+       stored at an lvalue place (raw pointer slot p[i], field, *p) WITHOUT
+       freeing any backing buffer. No-op for POD. Returns void. The nested
+       drop is automatic: emit_drop_value recurses (string free / vec / map /
+       struct.__drop / enum.__drop), so __drop_at on a RawVec(RawVec(T)) slot
+       dispatches to the inner RawVec's user __drop. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        cg_is_intrinsic(node->as.call.callee->as.ident.name, "@dispose", "__drop_at") &&
+        node->as.call.arg_count == 1)
+    {
+        AstNode *place = node->as.call.args[0];
+        LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
+        if (ptr == NULL)
+        {
+            cg_error(ctx, node->line, node->column,
+                     "__drop_at: argument is not an addressable place");
+            return NULL;
+        }
+        emit_drop_value(ctx, ptr, place->resolved_type);
+        return NULL; /* void */
+    }
+
+    /* Intercept __take(place) — move-OUT: load the value at an lvalue place
+       WITHOUT cloning (the raw bit-read), handing ownership to the caller. The
+       slot is left holding stale bits; the container excludes it via its len
+       (or overwrites it). Counterpart of __drop_at; used to relocate elements
+       (pop/remove/insert/swap) without a clone. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        cg_is_intrinsic(node->as.call.callee->as.ident.name, "@take", "__take") &&
+        node->as.call.arg_count == 1)
+    {
+        AstNode *place = node->as.call.args[0];
+        LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
+        if (ptr == NULL)
+        {
+            cg_error(ctx, node->line, node->column,
+                     "__take: argument is not an addressable place");
+            return NULL;
+        }
+        Type *et = place->resolved_type;
+        LLVMTypeRef elt = type_to_llvm(ctx, et);
+        return LLVMBuildLoad2(ctx->builder, elt, ptr, "take");
+    }
+
+    /* Intercept __dup(place) — DEEP COPY without consuming: load the value at
+       the place and run it through emit_clone_value (POD → the loaded value
+       verbatim; has_drop → a deep clone via __clone). The source place is
+       untouched (stays live). The clone counterpart of __take; the generic
+       value-duplication primitive behind Vec.fill / Map.get_or_insert. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        cg_is_intrinsic(node->as.call.callee->as.ident.name, "@dup", "__dup") &&
+        node->as.call.arg_count == 1)
+    {
+        AstNode *place = node->as.call.args[0];
+        LLVMValueRef ptr = codegen_lvalue_ptr(ctx, place);
+        if (ptr == NULL)
+        {
+            cg_error(ctx, node->line, node->column,
+                     "__dup: argument is not an addressable place");
+            return NULL;
+        }
+        Type *et = place->resolved_type;
+        LLVMTypeRef elt = type_to_llvm(ctx, et);
+        LLVMValueRef loaded = LLVMBuildLoad2(ctx->builder, elt, ptr, "dup.src");
+        /* TYPE_BLOCK: emit_clone_value is INTENTIONALLY shallow for closures
+           (the aliasing pass-through protocol container reads rely on, see
+           match_codegen_guide §4B boundary A). @dup's contract is an owned,
+           independent duplicate, so deep-clone the env here explicitly —
+           without this, Vec(Block).copy / @dup(Block) share the env and
+           double-free (§7.A). Must NOT touch emit_clone_value (would break
+           container element reads). */
+        if (et && et->kind == TYPE_BLOCK)
+            return cg_emit_block_env_clone(ctx, loaded);
+        return emit_clone_value(ctx, loaded, elt, et);
+    }
+
+    /* __rawstr("literal") -> *u8 : emit the literal's baked .rodata pointer
+       directly (the same i8* Str's .data would hold), without constructing a
+       Str. Used by std.core.reflect_core. */
+    if (node->as.call.callee->kind == AST_IDENT &&
+        strcmp(node->as.call.callee->as.ident.name, "__rawstr") == 0 &&
+        node->as.call.arg_count == 1 &&
+        node->as.call.args[0]->kind == AST_STRING_LIT)
+    {
+        const char *text = node->as.call.args[0]->as.string_lit.value;
+        return LLVMBuildGlobalStringPtr(ctx->builder, text ? text : "", ".ls.rawstr");
+    }
+
+    /* __atomic_* — migrated to builtins_intrinsic_cg.c (registry probe
+       above, S2 P1 2/4). */
+
+    /* __simd_* — migrated to builtins_intrinsic_cg.c (registry probe
+       above, S2 P1 3/4). */
+
+    return cg_expr_call_main(ctx, node);
 }
 
 static LLVMValueRef cg_expr_field(CodegenContext *ctx, AstNode *node)
