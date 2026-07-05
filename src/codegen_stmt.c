@@ -71,7 +71,11 @@ static bool capture_type_is_by_ref_cg(const Type *t) {
    probabilistic once the freed block is recycled, but "release right after
    the freeing release" — the typical double-free timing — hits reliably.
    (Str/Vec cap sentinels deliberately NOT here: they conflict with the
-   enum zero-idempotent-drop contract, deferred to stage 12 per plan.) */
+   enum dead-tag sentinel contract (idempotency semantics unchanged —
+   re-drop still routes to the synthesized __drop switch default and
+   stays a silent no-op; only the on-disk representation of "already
+   dropped" moved from a zeroed slot to tag == variant_count), deferred
+   to stage 12 per plan.) */
 #define CG_ENV_RC_POISON 0xDEADBEEFDEADBEEFULL
 
 static bool cg_env_poison_on(CodegenContext *ctx)
