@@ -3749,6 +3749,144 @@ static LLVMValueRef cg_expr_new_expr(CodegenContext *ctx, AstNode *node)
     return storage; /* new: return pointer */
 }
 
+static LLVMValueRef cg_expr_binary(CodegenContext *ctx, AstNode *node)
+{
+    /* Operator overloading: the checker lowered `a OP b` to a synthesized
+       method-call (or derived) expression. Emit that instead; it reuses the
+       full instance-method-call codegen (self borrow, sret, drop, etc.). */
+    if (node->as.binary.lowered)
+        return codegen_expr(ctx, node->as.binary.lowered);
+
+    /* Short-circuit for logical && and || */
+    if (node->as.binary.op == TOKEN_AND || node->as.binary.op == TOKEN_OR)
+    {
+        return codegen_short_circuit(ctx, node);
+    }
+
+    LLVMValueRef left = codegen_expr_or_borrow(ctx, node->as.binary.left);
+    LLVMValueRef right = codegen_expr_or_borrow(ctx, node->as.binary.right);
+    if (left == NULL || right == NULL)
+        return NULL;
+
+    Type *lt = node->as.binary.left->resolved_type;
+    Type *rt = node->as.binary.right->resolved_type;
+
+    /* Implicit numeric widening: if the operands have different numeric
+       types but the checker accepted them, the result type is the common
+       wider type. Promote each operand to that common type so the
+       subsequent op (add/sub/cmp/...) sees uniform LLVM types. */
+    Type *common = NULL;
+    if (lt && rt &&
+        type_is_numeric(lt) && type_is_numeric(rt))
+    {
+        common = type_numeric_common(lt, rt);
+        if (common != NULL)
+        {
+            left = cg_widen(ctx, left, lt, common);
+            right = cg_widen(ctx, right, rt, common);
+            lt = common;  /* drive is_fp / is_signed off the common type */
+        }
+    }
+
+    /* For Simd(T,N) operands the LLVM op is a vector op (LLVMBuildFAdd on a
+       <N x float> is element-wise vector fadd); pick float vs int by the
+       ELEMENT type, since type_is_float(Simd) is false. */
+    Type *op_t = (lt && lt->kind == TYPE_SIMD) ? lt->as.simd.elem : lt;
+    bool is_fp = op_t && type_is_float(op_t);
+    bool is_signed_int = op_t && type_is_signed(op_t);
+
+    switch (node->as.binary.op)
+    {
+    /* Signed integer arithmetic is emitted with `nsw` (no-signed-wrap):
+       signed overflow is undefined (C semantics), which lets LLVM's
+       IndVarSimplify widen i32 loop induction vars to i64 and LSR
+       strength-reduce affine array addressing into pointer-walking —
+       without nsw the i32 IV can't be widened, forcing a sext (movslq)
+       and explicit offset math (leal) on every indexed access. Measured
+       ~+25% on the packed sgemm micro-kernel. Unsigned keeps wrapping. */
+    case TOKEN_PLUS:
+        if (is_fp)
+            return cg_fp_contract(LLVMBuildFAdd(ctx->builder, left, right, "fadd"));
+        if (is_signed_int)
+            return LLVMBuildNSWAdd(ctx->builder, left, right, "add");
+        return LLVMBuildAdd(ctx->builder, left, right, "add");
+    case TOKEN_MINUS:
+        if (is_fp)
+            return cg_fp_contract(LLVMBuildFSub(ctx->builder, left, right, "fsub"));
+        if (is_signed_int)
+            return LLVMBuildNSWSub(ctx->builder, left, right, "sub");
+        return LLVMBuildSub(ctx->builder, left, right, "sub");
+    case TOKEN_STAR:
+        if (is_fp)
+            return cg_fp_contract(LLVMBuildFMul(ctx->builder, left, right, "fmul"));
+        if (is_signed_int)
+            return LLVMBuildNSWMul(ctx->builder, left, right, "mul");
+        return LLVMBuildMul(ctx->builder, left, right, "mul");
+    case TOKEN_SLASH:
+        if (is_fp)
+            return cg_fp_contract(LLVMBuildFDiv(ctx->builder, left, right, "fdiv"));
+        if (is_signed_int)
+            return LLVMBuildSDiv(ctx->builder, left, right, "sdiv");
+        return LLVMBuildUDiv(ctx->builder, left, right, "udiv");
+    case TOKEN_PERCENT:
+        if (is_signed_int)
+            return LLVMBuildSRem(ctx->builder, left, right, "srem");
+        return LLVMBuildURem(ctx->builder, left, right, "urem");
+
+    /* Bitwise */
+    case TOKEN_AMP:
+        return LLVMBuildAnd(ctx->builder, left, right, "and");
+    case TOKEN_PIPE:
+        return LLVMBuildOr(ctx->builder, left, right, "or");
+    case TOKEN_CARET:
+        return LLVMBuildXor(ctx->builder, left, right, "xor");
+    case TOKEN_LSHIFT:
+        return LLVMBuildShl(ctx->builder, left, right, "shl");
+    case TOKEN_RSHIFT:
+        if (is_signed_int)
+            return LLVMBuildAShr(ctx->builder, left, right, "ashr");
+        return LLVMBuildLShr(ctx->builder, left, right, "lshr");
+
+    /* Comparison */
+    case TOKEN_EQ:
+        if (is_fp)
+            return LLVMBuildFCmp(ctx->builder, LLVMRealOEQ, left, right, "feq");
+        return LLVMBuildICmp(ctx->builder, LLVMIntEQ, left, right, "eq");
+    case TOKEN_NEQ:
+        if (is_fp)
+            return LLVMBuildFCmp(ctx->builder, LLVMRealONE, left, right, "fne");
+        return LLVMBuildICmp(ctx->builder, LLVMIntNE, left, right, "ne");
+    case TOKEN_LT:
+        if (is_fp)
+            return LLVMBuildFCmp(ctx->builder, LLVMRealOLT, left, right, "flt");
+        if (is_signed_int)
+            return LLVMBuildICmp(ctx->builder, LLVMIntSLT, left, right, "slt");
+        return LLVMBuildICmp(ctx->builder, LLVMIntULT, left, right, "ult");
+    case TOKEN_GT:
+        if (is_fp)
+            return LLVMBuildFCmp(ctx->builder, LLVMRealOGT, left, right, "fgt");
+        if (is_signed_int)
+            return LLVMBuildICmp(ctx->builder, LLVMIntSGT, left, right, "sgt");
+        return LLVMBuildICmp(ctx->builder, LLVMIntUGT, left, right, "ugt");
+    case TOKEN_LEQ:
+        if (is_fp)
+            return LLVMBuildFCmp(ctx->builder, LLVMRealOLE, left, right, "fle");
+        if (is_signed_int)
+            return LLVMBuildICmp(ctx->builder, LLVMIntSLE, left, right, "sle");
+        return LLVMBuildICmp(ctx->builder, LLVMIntULE, left, right, "ule");
+    case TOKEN_GEQ:
+        if (is_fp)
+            return LLVMBuildFCmp(ctx->builder, LLVMRealOGE, left, right, "fge");
+        if (is_signed_int)
+            return LLVMBuildICmp(ctx->builder, LLVMIntSGE, left, right, "sge");
+        return LLVMBuildICmp(ctx->builder, LLVMIntUGE, left, right, "uge");
+
+    default:
+        cg_error(ctx, node->line, node->column, "unsupported binary operator");
+        return NULL;
+    }
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -3937,142 +4075,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
     }
 
     case AST_BINARY:
-    {
-        /* Operator overloading: the checker lowered `a OP b` to a synthesized
-           method-call (or derived) expression. Emit that instead; it reuses the
-           full instance-method-call codegen (self borrow, sret, drop, etc.). */
-        if (node->as.binary.lowered)
-            return codegen_expr(ctx, node->as.binary.lowered);
-
-        /* Short-circuit for logical && and || */
-        if (node->as.binary.op == TOKEN_AND || node->as.binary.op == TOKEN_OR)
-        {
-            return codegen_short_circuit(ctx, node);
-        }
-
-        LLVMValueRef left = codegen_expr_or_borrow(ctx, node->as.binary.left);
-        LLVMValueRef right = codegen_expr_or_borrow(ctx, node->as.binary.right);
-        if (left == NULL || right == NULL)
-            return NULL;
-
-        Type *lt = node->as.binary.left->resolved_type;
-        Type *rt = node->as.binary.right->resolved_type;
-
-        /* Implicit numeric widening: if the operands have different numeric
-           types but the checker accepted them, the result type is the common
-           wider type. Promote each operand to that common type so the
-           subsequent op (add/sub/cmp/...) sees uniform LLVM types. */
-        Type *common = NULL;
-        if (lt && rt &&
-            type_is_numeric(lt) && type_is_numeric(rt))
-        {
-            common = type_numeric_common(lt, rt);
-            if (common != NULL)
-            {
-                left = cg_widen(ctx, left, lt, common);
-                right = cg_widen(ctx, right, rt, common);
-                lt = common;  /* drive is_fp / is_signed off the common type */
-            }
-        }
-
-        /* For Simd(T,N) operands the LLVM op is a vector op (LLVMBuildFAdd on a
-           <N x float> is element-wise vector fadd); pick float vs int by the
-           ELEMENT type, since type_is_float(Simd) is false. */
-        Type *op_t = (lt && lt->kind == TYPE_SIMD) ? lt->as.simd.elem : lt;
-        bool is_fp = op_t && type_is_float(op_t);
-        bool is_signed_int = op_t && type_is_signed(op_t);
-
-        switch (node->as.binary.op)
-        {
-        /* Signed integer arithmetic is emitted with `nsw` (no-signed-wrap):
-           signed overflow is undefined (C semantics), which lets LLVM's
-           IndVarSimplify widen i32 loop induction vars to i64 and LSR
-           strength-reduce affine array addressing into pointer-walking —
-           without nsw the i32 IV can't be widened, forcing a sext (movslq)
-           and explicit offset math (leal) on every indexed access. Measured
-           ~+25% on the packed sgemm micro-kernel. Unsigned keeps wrapping. */
-        case TOKEN_PLUS:
-            if (is_fp)
-                return cg_fp_contract(LLVMBuildFAdd(ctx->builder, left, right, "fadd"));
-            if (is_signed_int)
-                return LLVMBuildNSWAdd(ctx->builder, left, right, "add");
-            return LLVMBuildAdd(ctx->builder, left, right, "add");
-        case TOKEN_MINUS:
-            if (is_fp)
-                return cg_fp_contract(LLVMBuildFSub(ctx->builder, left, right, "fsub"));
-            if (is_signed_int)
-                return LLVMBuildNSWSub(ctx->builder, left, right, "sub");
-            return LLVMBuildSub(ctx->builder, left, right, "sub");
-        case TOKEN_STAR:
-            if (is_fp)
-                return cg_fp_contract(LLVMBuildFMul(ctx->builder, left, right, "fmul"));
-            if (is_signed_int)
-                return LLVMBuildNSWMul(ctx->builder, left, right, "mul");
-            return LLVMBuildMul(ctx->builder, left, right, "mul");
-        case TOKEN_SLASH:
-            if (is_fp)
-                return cg_fp_contract(LLVMBuildFDiv(ctx->builder, left, right, "fdiv"));
-            if (is_signed_int)
-                return LLVMBuildSDiv(ctx->builder, left, right, "sdiv");
-            return LLVMBuildUDiv(ctx->builder, left, right, "udiv");
-        case TOKEN_PERCENT:
-            if (is_signed_int)
-                return LLVMBuildSRem(ctx->builder, left, right, "srem");
-            return LLVMBuildURem(ctx->builder, left, right, "urem");
-
-        /* Bitwise */
-        case TOKEN_AMP:
-            return LLVMBuildAnd(ctx->builder, left, right, "and");
-        case TOKEN_PIPE:
-            return LLVMBuildOr(ctx->builder, left, right, "or");
-        case TOKEN_CARET:
-            return LLVMBuildXor(ctx->builder, left, right, "xor");
-        case TOKEN_LSHIFT:
-            return LLVMBuildShl(ctx->builder, left, right, "shl");
-        case TOKEN_RSHIFT:
-            if (is_signed_int)
-                return LLVMBuildAShr(ctx->builder, left, right, "ashr");
-            return LLVMBuildLShr(ctx->builder, left, right, "lshr");
-
-        /* Comparison */
-        case TOKEN_EQ:
-            if (is_fp)
-                return LLVMBuildFCmp(ctx->builder, LLVMRealOEQ, left, right, "feq");
-            return LLVMBuildICmp(ctx->builder, LLVMIntEQ, left, right, "eq");
-        case TOKEN_NEQ:
-            if (is_fp)
-                return LLVMBuildFCmp(ctx->builder, LLVMRealONE, left, right, "fne");
-            return LLVMBuildICmp(ctx->builder, LLVMIntNE, left, right, "ne");
-        case TOKEN_LT:
-            if (is_fp)
-                return LLVMBuildFCmp(ctx->builder, LLVMRealOLT, left, right, "flt");
-            if (is_signed_int)
-                return LLVMBuildICmp(ctx->builder, LLVMIntSLT, left, right, "slt");
-            return LLVMBuildICmp(ctx->builder, LLVMIntULT, left, right, "ult");
-        case TOKEN_GT:
-            if (is_fp)
-                return LLVMBuildFCmp(ctx->builder, LLVMRealOGT, left, right, "fgt");
-            if (is_signed_int)
-                return LLVMBuildICmp(ctx->builder, LLVMIntSGT, left, right, "sgt");
-            return LLVMBuildICmp(ctx->builder, LLVMIntUGT, left, right, "ugt");
-        case TOKEN_LEQ:
-            if (is_fp)
-                return LLVMBuildFCmp(ctx->builder, LLVMRealOLE, left, right, "fle");
-            if (is_signed_int)
-                return LLVMBuildICmp(ctx->builder, LLVMIntSLE, left, right, "sle");
-            return LLVMBuildICmp(ctx->builder, LLVMIntULE, left, right, "ule");
-        case TOKEN_GEQ:
-            if (is_fp)
-                return LLVMBuildFCmp(ctx->builder, LLVMRealOGE, left, right, "fge");
-            if (is_signed_int)
-                return LLVMBuildICmp(ctx->builder, LLVMIntSGE, left, right, "sge");
-            return LLVMBuildICmp(ctx->builder, LLVMIntUGE, left, right, "uge");
-
-        default:
-            cg_error(ctx, node->line, node->column, "unsupported binary operator");
-            return NULL;
-        }
-    }
+        return cg_expr_binary(ctx, node);
 
     case AST_FORMAT_STRING:
         return codegen_format_string(ctx, node);
