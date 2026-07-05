@@ -54,6 +54,43 @@ typedef struct CgScope {
     struct CgScope *parent;
 } CgScope;
 
+/* CgCompileMode — which artifact this CodegenContext is emitting.
+ *
+ * Probe result (S2 Phase 0, 2026-07-05): the two legacy bools `aot_entry` and
+ * `extern_builtins` were ONE dimension, not two orthogonal flags. Across all
+ * five context-creation sites (main.c cmd_compile / cmd_emit_ir / cmd_ir_asm,
+ * jit.c __builtins bootstrap / jit.c user module) only three combinations were
+ * ever realized, and (aot_entry && extern_builtins) was impossible:
+ *
+ *   (aot_entry, extern_builtins)  creator                       -> mode
+ *   (true,  false)                main.c compile/emit-ir/ir·asm -> CG_MODE_AOT
+ *   (false, true)                 jit.c user module (run/REPL)  -> CG_MODE_JIT_USER
+ *   (false, false)                jit.c "__builtins" bootstrap  -> CG_MODE_JIT_BUILTINS
+ *
+ * Real semantics of the two retired flags, preserved by the predicates below:
+ *   - aot_entry ("this module is the final AOT artifact whose main() is the
+ *     process entry point"): C-signature int main(argc,argv) + __ls_set_args
+ *     forwarding (bug #22, 3 sites), __ls_flush_out injection before every ret
+ *     (stdout-flake fix), internalize+GlobalDCE (A5). == cg_mode_is_aot().
+ *   - extern_builtins ("builtin/runtime helper BODIES live elsewhere — the JIT
+ *     __builtins module / AbsoluteSymbols — so declare, don't define"): skip
+ *     inline helper bodies unless memcheck needs a tracked local copy; also
+ *     gates OFF A2 lifetime markers (JIT slots span snippet boundaries).
+ *     == cg_mode_builtins_extern().
+ *
+ * memcheck_enabled / profile_enabled are genuinely orthogonal (both combine
+ * with AOT and JIT) and stay as independent bools.
+ *
+ * CG_MODE_JIT_BUILTINS is deliberately the zero value: the jit.c bootstrap
+ * context is memset(0)-initialized, and a zeroed context must keep today's
+ * default semantics (both legacy flags false). */
+typedef enum {
+    CG_MODE_JIT_BUILTINS = 0, /* JIT bootstrap "__builtins" module: defines the
+                                 builtin bodies every later module resolves against */
+    CG_MODE_JIT_USER,         /* JIT / REPL user module: builtins declared extern */
+    CG_MODE_AOT,              /* standalone AOT artifact (compile / emit-ir / ir·asm) */
+} CgCompileMode;
+
 /* Main code generation context */
 typedef struct {
     LLVMContextRef context;
@@ -83,11 +120,12 @@ typedef struct {
     int enum_type_cap;
 
     bool had_error;
-    bool extern_builtins;   /* JIT mode: declare builtins without bodies (defined elsewhere) */
-    bool aot_entry;         /* AOT compile: entry main() gets C sig int main(argc,argv) +
-                               forwards to __ls_set_args so proc.args() works (bug #22) */
-    bool memcheck_enabled;  /* --memcheck: route all malloc/free through ls_mc_* tracker */
-    bool profile_enabled;   /* --profile: inject ls_prof_enter/leave for function profiling */
+    CgCompileMode mode;     /* which artifact this context emits (see CgCompileMode) */
+    bool memcheck_enabled;  /* --memcheck: route all malloc/free through ls_mc_* tracker.
+                               ORTHOGONAL to mode: real in both AOT (`compile --memcheck`,
+                               the aot_mc_* tests) and JIT (`run --memcheck`). */
+    bool profile_enabled;   /* --profile: inject ls_prof_enter/leave for function profiling.
+                               Orthogonal to mode, same as memcheck_enabled. */
 
     /* The AST node currently being lowered. Set on entry to codegen_expr and
        restored on exit. Helpers (clone/drop emitters, vec/map mallocs that
@@ -184,6 +222,18 @@ typedef struct {
     int di_file_count;
     int di_file_cap;
 } CodegenContext;
+
+/* Mode predicates — see the CgCompileMode probe notes above. Use these, not
+   raw ctx->mode comparisons, so grep finds every mode-dependent site. */
+static inline bool cg_mode_is_aot(const CodegenContext *ctx) {
+    return ctx->mode == CG_MODE_AOT;
+}
+/* True when builtin/runtime helper bodies are defined elsewhere (JIT user
+   module). Exactly the retired `extern_builtins` flag; note the JIT
+   __builtins bootstrap module returns false here (it DEFINES the bodies). */
+static inline bool cg_mode_builtins_extern(const CodegenContext *ctx) {
+    return ctx->mode == CG_MODE_JIT_USER;
+}
 
 /* Initialize the codegen context (creates LLVM module, target, etc.) */
 void codegen_init(CodegenContext *ctx, const char *module_name);

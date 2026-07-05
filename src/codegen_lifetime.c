@@ -12,7 +12,9 @@
  * SCOPE (v1, deliberately conservative — a wrong lifetime interval is a
  * miscompile, so this only marks slots whose end placement is provably safe):
  *   - AOT only. JIT / REPL incremental modules keep slots live across snippet
- *     boundaries, so the whole file gates on `!ctx->extern_builtins`.
+ *     boundaries, so the whole file gates on `!cg_mode_builtins_extern(ctx)`
+ *     (the JIT __builtins bootstrap module also passes this gate, but it only
+ *     contains a trivial synthetic program — the intent is AOT-only).
  *   - Only AGGREGATE-typed locals (LLVM struct / array kind): Str, Vec, Map,
  *     user structs, enums ({i8 disc,[N x i8]}), fixed arrays — the stack heavy
  *     hitters. Scalars (int/float/bool/ptr) are skipped: tiny, and this filter
@@ -45,7 +47,7 @@ static int lifetime_env_disabled = -1;
 
 static bool cg_lifetime_enabled(CodegenContext *ctx)
 {
-    if (ctx == NULL || ctx->extern_builtins)
+    if (ctx == NULL || cg_mode_builtins_extern(ctx))
         return false;                 /* AOT-only; JIT/REPL slots span snippets */
     if (lifetime_env_disabled < 0)
         lifetime_env_disabled = getenv("LS_NO_LIFETIME") ? 1 : 0;

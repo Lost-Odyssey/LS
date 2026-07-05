@@ -280,10 +280,10 @@ LLVMValueRef cg_get_perf_now(CodegenContext *ctx) {
     LLVMTypeRef fn_ty = LLVMFunctionType(i64_t, NULL, 0, 0);
     fn = LLVMAddFunction(ctx->module, "ls_os_perf_now", fn_ty);
 
-    /* In JIT user-module mode (extern_builtins == true), the symbol is resolved
+    /* In JIT user-module mode (cg_mode_builtins_extern), the symbol is resolved
        via AbsoluteSymbols — leave as extern declaration.
-       In AOT mode (extern_builtins == false), emit inline body. */
-    if (ctx->extern_builtins) return fn;
+       In AOT / builtins-bootstrap mode, emit inline body. */
+    if (cg_mode_builtins_extern(ctx)) return fn;
 
     /* Emit body: calls QPC (Windows) or clock_gettime (POSIX) */
     LLVMBasicBlockRef saved_bb = LLVMGetInsertBlock(ctx->builder);
@@ -1135,17 +1135,17 @@ static void declare_builtins(CodegenContext *ctx)
    Replaces all occurrences of 'old' in 's' with 'new', returns malloc'd buffer. */
 static void emit_str_replace_helper(CodegenContext *ctx)
 {
-    /* In JIT extern_builtins mode, the helper is already defined in __builtins module;
+    /* In JIT user-module mode (cg_mode_builtins_extern), the helper is already defined in __builtins module;
        only declare it (no body) so it resolves via symbol search.
        Exception: when memcheck is enabled, emit locally so malloc calls are tracked
        by ls_mc_alloc instead of the untracked real malloc in the builtins module. */
-    if (ctx->extern_builtins && !ctx->memcheck_enabled)
+    if (cg_mode_builtins_extern(ctx) && !ctx->memcheck_enabled)
         return;
 
     LLVMValueRef fn = LLVMGetNamedFunction(ctx->module, "__ls_str_replace");
     if (fn == NULL || LLVMCountBasicBlocks(fn) > 0)
         return;
-    if (ctx->extern_builtins && ctx->memcheck_enabled)
+    if (cg_mode_builtins_extern(ctx) && ctx->memcheck_enabled)
         LLVMSetLinkage(fn, LLVMInternalLinkage);
 
     LLVMTypeRef i8_t = LLVMInt8TypeInContext(ctx->context);
@@ -1664,7 +1664,7 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                 /* bug #22: AOT entry main gets C sig int main(argc,argv). Must match
                    the signature codegen_fn_decl builds, or the body reuses this
                    forward decl and argv never reaches __ls_set_args. */
-                bool fwd_main_entry = (fwd_main && ctx->aot_entry &&
+                bool fwd_main_entry = (fwd_main && cg_mode_is_aot(ctx) &&
                                        ctx->current_emit_module == NULL);
                 if (fwd_main_void || fwd_main_entry)
                 {
@@ -2121,7 +2121,7 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             LLVMTypeRef main_ft;
             /* bug #22: AOT synthetic main also gets C sig int main(argc,argv) so
                proc.args() works in top-level (mainless) programs too. */
-            if (ctx->aot_entry)
+            if (cg_mode_is_aot(ctx))
             {
                 LLVMTypeRef pt = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
                 LLVMTypeRef ps[] = { i32_t, pt };
@@ -2188,8 +2188,8 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                     LLVMVoidTypeInContext(ctx->context), NULL, 0, 0);
                 /* bug #22: forward argc/argv to __ls_set_args before any setup
                    runs, so proc.args() works in AOT. main has the C signature
-                   (argc, argv) only when ctx->aot_entry gave it params. */
-                if (ctx->aot_entry && LLVMCountParams(main_fn) >= 2)
+                   (argc, argv) only when CG_MODE_AOT gave it params. */
+                if (cg_mode_is_aot(ctx) && LLVMCountParams(main_fn) >= 2)
                 {
                     LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
                     LLVMTypeRef pt = LLVMPointerType(LLVMInt8TypeInContext(ctx->context), 0);
@@ -2252,7 +2252,7 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
        CRT as the prints) calls fflush(NULL) so output is written while this CRT is
        live. AOT-only: JIT resolves runtime symbols via a fixed AbsoluteSymbols list
        and ls.exe uses a single /MD CRT that flushes correctly, so JIT never flaked. */
-    if (ctx->aot_entry)
+    if (cg_mode_is_aot(ctx))
     {
         LLVMValueRef main_fn = LLVMGetNamedFunction(ctx->module, "main");
         if (main_fn && LLVMCountBasicBlocks(main_fn) > 0)
@@ -2318,7 +2318,7 @@ static bool cg_fn_must_keep(CodegenContext *ctx, LLVMValueRef f)
 
 /* Give every non-entry definition internal linkage before the pass pipeline
    runs. AOT-only: LLJIT resolves REPL/JIT cross-module calls by symbol name
-   (DynamicLibrarySearchGenerator), so this never runs without ctx->aot_entry.
+   (DynamicLibrarySearchGenerator), so this never runs outside CG_MODE_AOT.
    LS_NO_INTERNALIZE=1 disables it (rollback / A-B switch).
 
    Conservative FFI gate (v1): a module that loads shared libraries gets no
@@ -2327,7 +2327,7 @@ static bool cg_fn_must_keep(CodegenContext *ctx, LLVMValueRef f)
    "function address escapes through FFI" analysis from v1. */
 static void cg_internalize_for_aot(CodegenContext *ctx)
 {
-    if (!ctx->aot_entry) return;
+    if (!cg_mode_is_aot(ctx)) return;
     const char *off = getenv("LS_NO_INTERNALIZE");
     if (off && off[0] != '\0' && off[0] != '0') return;
     if (LLVMGetNamedFunction(ctx->module, "__ls_ffi_init") != NULL) return;

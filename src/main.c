@@ -219,7 +219,7 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
     codegen_init(&ctx, path);
     ctx.memcheck_enabled = memcheck;
     ctx.profile_enabled = profile;
-    ctx.aot_entry = true;  /* AOT: forward argc/argv to __ls_set_args (bug #22) */
+    ctx.mode = CG_MODE_AOT;  /* AOT: forward argc/argv to __ls_set_args (bug #22) */
     /* CLI -O level / --native override codegen_init's env-derived default;
        absent any flag, the env default (LS_OPT / LS_NATIVE) is kept. */
     if (opt_set) ctx.opt.level = opt_level;
@@ -329,7 +329,7 @@ static int cmd_emit_ir(const char *path, bool opt_set, LsOptLevel opt_level, boo
 
     CodegenContext ctx;
     codegen_init(&ctx, path);
-    ctx.aot_entry = true;  /* emit-ir is an AOT path: forward argc/argv (bug #22) */
+    ctx.mode = CG_MODE_AOT;  /* emit-ir is an AOT path: forward argc/argv (bug #22) */
     if (gm2.count > 0) {
         ctx.pending_gm_count = gm2.count;
         size_t sz = (size_t)gm2.count * sizeof(ctx.pending_generic_methods[0]);
@@ -468,7 +468,7 @@ static int cmd_ir_asm(const char *fn_query, const char *path, bool want_asm,
 
     CodegenContext ctx;
     codegen_init(&ctx, path);
-    ctx.aot_entry = true;
+    ctx.mode = CG_MODE_AOT;
     if (gm.count > 0) {
         ctx.pending_gm_count = gm.count;
         ctx.pending_generic_methods =

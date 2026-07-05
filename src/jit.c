@@ -430,7 +430,7 @@ int jit_init(JitEngine *engine) {
         cg.context = ctx;
         cg.module = LLVMModuleCreateWithNameInContext("__builtins", ctx);
         cg.builder = LLVMCreateBuilderInContext(ctx);
-        cg.extern_builtins = false; /* define print WITH body */
+        cg.mode = CG_MODE_JIT_BUILTINS; /* define print WITH body */
 
         const char *dl = LLVMOrcLLJITGetDataLayoutStr(engine->jit);
         LLVMSetDataLayout(cg.module, dl);
@@ -686,7 +686,7 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
     cg.context = ctx;
     cg.module = LLVMModuleCreateWithNameInContext(name, ctx);
     cg.builder = LLVMCreateBuilderInContext(ctx);
-    cg.extern_builtins = true; /* builtins already defined in __builtins module */
+    cg.mode = CG_MODE_JIT_USER; /* builtins already defined in __builtins module */
     cg.memcheck_enabled = engine->memcheck_enabled;
     cg.profile_enabled = engine->profile_enabled;
 

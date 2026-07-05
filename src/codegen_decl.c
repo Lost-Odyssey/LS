@@ -508,9 +508,9 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
        int main(int argc, char **argv) so we can forward argc/argv to
        __ls_set_args (done in the injection pass below), making proc.args()
        work in compiled executables. JIT sets args in main.c, so it is excluded
-       via ctx->aot_entry. Module-emitted mains are never the entry point. */
+       via ctx->mode (CG_MODE_AOT). Module-emitted mains are never the entry point. */
     bool is_main_entry = (strcmp(name, "main") == 0 && user_n == 0 &&
-                          ctx->aot_entry && ctx->current_emit_module == NULL);
+                          cg_mode_is_aot(ctx) && ctx->current_emit_module == NULL);
     if (is_main_void || is_main_entry)
     {
         LLVMTypeRef i32_t = LLVMInt32TypeInContext(ctx->context);
