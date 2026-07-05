@@ -1050,7 +1050,16 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                        ones here, at THIS statement's boundary. Per-iteration matters
                        in a loop: the block-temp slot is reused, so deferring to the
                        post-loop flush would release only the last iteration's env
-                       and leak the rest. */
+                       and leak the rest.
+                       Stage 10 re-derivation (single-ledger world): KEEP. This is
+                       the ONLY statement-boundary Block release for a POD ident
+                       assign — this AST_ASSIGN path never calls cg_flush_temps
+                       (struct/enum temps are deliberately deferred, see above).
+                       Unification WIDENED its coverage to closure literals
+                       (`n = n + (|| 5)()`), which is a fix, not a regression: the
+                       old env-table entry for that shape waited for whatever flush
+                       came next, and an AST_IF count-restore could discard it
+                       without a release (leak) if the assign closed a branch. */
                     for (int ti = ctx->temp_drop_count - 1; ti >= assign_drop_floor; ti--)
                         if (ctx->temp_drop_types[ti]->kind == TYPE_BLOCK)
                         {
