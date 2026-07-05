@@ -42,6 +42,19 @@ static int cg_drop_sentinel_on(void)
     return on;
 }
 
+/* Twin of cg_env_poison_on (codegen_stmt.c): gates the dead-payload memset
+   below to debug/memcheck flavors only, so the Release non-memcheck fast
+   path (emit-ir without --memcheck) stays byte-identical. */
+static bool cg_enum_poison_on(CodegenContext *ctx)
+{
+#if CG_DEBUG
+    (void)ctx;
+    return true;
+#else
+    return ctx->memcheck_enabled;
+#endif
+}
+
 CgScope *cg_scope_new(CgScope *parent)
 {
     CgScope *s = (CgScope *)malloc_safe(sizeof(CgScope));
@@ -2108,6 +2121,34 @@ void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type)
                                                     enum_ptr, 0, "dead.tag.p");
         LLVMBuildStore(ctx->builder,
                        LLVMConstInt(i8, (unsigned long long)vc, 0), disc_ptr);
+
+        /* Debug/memcheck flavor: poison the payload so any read-through of
+           a dead value (a compiler bug — no legal path reads a dead
+           payload; legal re-drops exit via the __drop switch default) trips
+           first-scene instead of silently aliasing freed heap. Gate mirrors
+           cg_env_poison_on (codegen_stmt.c): the Release non-memcheck fast
+           path stays byte-identical. Uses the same libc-memset-call
+           convention as the enum ctor's payload zeroing above (this file
+           has no LLVMBuildMemSet precedent anywhere). */
+        if (cg_enum_poison_on(ctx))
+        {
+            LLVMValueRef pay_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm,
+                enum_ptr, 1, "dead.pay.p");
+            LLVMTypeRef pay_ty = LLVMStructGetTypeAtIndex(enum_llvm, 1);
+            LLVMTargetDataRef td = LLVMGetModuleDataLayout(ctx->module);
+            unsigned long long pay_sz = LLVMABISizeOfType(td, pay_ty);
+            LLVMValueRef memset_fn = LLVMGetNamedFunction(ctx->module, "memset");
+            LLVMTypeRef  memset_ty = memset_fn ? LLVMGlobalGetValueType(memset_fn) : NULL;
+            if (memset_fn && pay_sz > 0)
+            {
+                LLVMValueRef ms_args[3] = {
+                    pay_ptr,
+                    LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0xDD, 0),
+                    LLVMConstInt(LLVMInt64TypeInContext(ctx->context), pay_sz, 0)
+                };
+                LLVMBuildCall2(ctx->builder, memset_ty, memset_fn, ms_args, 3, "");
+            }
+        }
     }
 }
 
