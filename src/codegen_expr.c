@@ -4048,6 +4048,83 @@ static LLVMValueRef cg_expr_at_bench(CodegenContext *ctx, AstNode *node)
     return mean_ns;
 }
 
+static LLVMValueRef cg_expr_block(CodegenContext *ctx, AstNode *node)
+{
+    /* Block as expression: value is last expression */
+    push_scope(ctx);
+    CgScope *block_parent = ctx->current_scope->parent;
+    LLVMValueRef last = NULL;
+    AstNode *tail_expr = NULL;
+    for (int i = 0; i < node->as.block.stmt_count; i++)
+    {
+        AstNode *s = node->as.block.stmts[i];
+        if (i == node->as.block.stmt_count - 1 && s->kind == AST_EXPR_STMT)
+        {
+            tail_expr = s->as.expr_stmt.expr;
+            last = codegen_expr(ctx, tail_expr);
+        }
+        else
+        {
+            codegen_stmt(ctx, s);
+        }
+    }
+    /* A tail IDENT naming a has_drop local of THIS block would be dropped
+       by the cleanup below while its loaded value escapes with `last` —
+       the yielded value would alias freed heap (double-free at the
+       consumer, memcheck-confirmed via a match arm `=> { Str b = ..; b }`).
+       Transfer ownership out instead: skip the scope drop and hand the
+       slot to the statement-level temp table — a value-consuming match
+       arm transfers it into the result (cg_match_arm_encapsulate), a
+       discarding consumer's statement-end flush drops it. An OUTER local
+       resolves outside this block's scopes and stays untouched (its
+       consumer clones, e.g. cg_match_arm_own_tail). */
+    if (last && tail_expr && tail_expr->kind == AST_IDENT)
+    {
+        for (CgScope *sc = ctx->current_scope;
+             sc != NULL && sc != block_parent; sc = sc->parent)
+        {
+            CgSymbol *ts = NULL;
+            for (int si = sc->count - 1; si >= 0; si--)
+            {
+                if (sc->symbols[si].name &&
+                    strcmp(sc->symbols[si].name,
+                           tail_expr->as.ident.name) == 0)
+                {
+                    ts = &sc->symbols[si];
+                    break;
+                }
+            }
+            if (ts == NULL)
+                continue;
+            if (ts->no_drop_reason == CG_OWNED && !ts->is_mut_borrow && ts->value &&
+                ts->type &&
+                ((ts->type->kind == TYPE_STRUCT &&
+                  ts->type->as.strukt.has_drop) ||
+                 (ts->type->kind == TYPE_ENUM &&
+                  ts->type->as.enom.has_drop) ||
+                 /* Block local: the slot owns a heap closure env — same
+                    transfer, or the scope cleanup frees the env the
+                    yielded fat pointer still aliases (double-free). */
+                 ts->type->kind == TYPE_BLOCK))
+            {
+                ts->no_drop_reason = CG_MOVED_OUT; /* skip drop: moved out */
+                /* The slot is read again by the temp-table drop AFTER the
+                   block ends — an end marker here would be premature. */
+                ts->lifetime_marked = false;
+                /* Bare cg_push_temp_drop, NOT cg_spill_owned_rvalue: the
+                   local's slot already exists — this is a registration-only
+                   ownership transfer, there is nothing to spill. */
+                cg_push_temp_drop(ctx, ts->value, ts->type);
+            }
+            break; /* innermost (shadowing) symbol decides */
+        }
+    }
+    /* Only clean up variables declared in THIS block, not outer scopes */
+    emit_cleanup_to(ctx, block_parent, NULL);
+    pop_scope(ctx);
+    return last;
+}
+
 LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -4403,81 +4480,7 @@ LLVMValueRef codegen_expr(CodegenContext *ctx, AstNode *node)
     }
 
     case AST_BLOCK:
-    {
-        /* Block as expression: value is last expression */
-        push_scope(ctx);
-        CgScope *block_parent = ctx->current_scope->parent;
-        LLVMValueRef last = NULL;
-        AstNode *tail_expr = NULL;
-        for (int i = 0; i < node->as.block.stmt_count; i++)
-        {
-            AstNode *s = node->as.block.stmts[i];
-            if (i == node->as.block.stmt_count - 1 && s->kind == AST_EXPR_STMT)
-            {
-                tail_expr = s->as.expr_stmt.expr;
-                last = codegen_expr(ctx, tail_expr);
-            }
-            else
-            {
-                codegen_stmt(ctx, s);
-            }
-        }
-        /* A tail IDENT naming a has_drop local of THIS block would be dropped
-           by the cleanup below while its loaded value escapes with `last` —
-           the yielded value would alias freed heap (double-free at the
-           consumer, memcheck-confirmed via a match arm `=> { Str b = ..; b }`).
-           Transfer ownership out instead: skip the scope drop and hand the
-           slot to the statement-level temp table — a value-consuming match
-           arm transfers it into the result (cg_match_arm_encapsulate), a
-           discarding consumer's statement-end flush drops it. An OUTER local
-           resolves outside this block's scopes and stays untouched (its
-           consumer clones, e.g. cg_match_arm_own_tail). */
-        if (last && tail_expr && tail_expr->kind == AST_IDENT)
-        {
-            for (CgScope *sc = ctx->current_scope;
-                 sc != NULL && sc != block_parent; sc = sc->parent)
-            {
-                CgSymbol *ts = NULL;
-                for (int si = sc->count - 1; si >= 0; si--)
-                {
-                    if (sc->symbols[si].name &&
-                        strcmp(sc->symbols[si].name,
-                               tail_expr->as.ident.name) == 0)
-                    {
-                        ts = &sc->symbols[si];
-                        break;
-                    }
-                }
-                if (ts == NULL)
-                    continue;
-                if (ts->no_drop_reason == CG_OWNED && !ts->is_mut_borrow && ts->value &&
-                    ts->type &&
-                    ((ts->type->kind == TYPE_STRUCT &&
-                      ts->type->as.strukt.has_drop) ||
-                     (ts->type->kind == TYPE_ENUM &&
-                      ts->type->as.enom.has_drop) ||
-                     /* Block local: the slot owns a heap closure env — same
-                        transfer, or the scope cleanup frees the env the
-                        yielded fat pointer still aliases (double-free). */
-                     ts->type->kind == TYPE_BLOCK))
-                {
-                    ts->no_drop_reason = CG_MOVED_OUT; /* skip drop: moved out */
-                    /* The slot is read again by the temp-table drop AFTER the
-                       block ends — an end marker here would be premature. */
-                    ts->lifetime_marked = false;
-                    /* Bare cg_push_temp_drop, NOT cg_spill_owned_rvalue: the
-                       local's slot already exists — this is a registration-only
-                       ownership transfer, there is nothing to spill. */
-                    cg_push_temp_drop(ctx, ts->value, ts->type);
-                }
-                break; /* innermost (shadowing) symbol decides */
-            }
-        }
-        /* Only clean up variables declared in THIS block, not outer scopes */
-        emit_cleanup_to(ctx, block_parent, NULL);
-        pop_scope(ctx);
-        return last;
-    }
+        return cg_expr_block(ctx, node);
 
     case AST_FFI_CALL:
         return codegen_ffi_call(ctx, node);
