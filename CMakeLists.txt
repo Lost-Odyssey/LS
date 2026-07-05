@@ -1351,6 +1351,21 @@ set_tests_properties(test_block_protocol_lint PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Stage 12b (audit M-7): value-producing scalar match without a `_` arm warns
+# (never errors) — unmatched subjects silently yield a zeroed result. Pins
+# 2 firing shapes (int/char) + 4 silent shapes + unaffected runtime.
+add_test(
+    NAME test_match_scalar_exhaust_warn
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_match_scalar_exhaust_warn.cmake
+)
+set_tests_properties(test_match_scalar_exhaust_warn PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Owned Block rvalue lifetime (P3 block-refcount) + Map(Block) rehash (O2). A
 # factory call / force-unwrap of a container-get yields an OWNED closure env
 # tracked as a statement temp: discarded => released, bound => owner releases.

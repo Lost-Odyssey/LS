@@ -6766,6 +6766,9 @@ Type *check_expr(Checker *c, AstNode *node)
            Walk the (possibly nested) AST_MATCH_OR_PATTERN tree to type-check
            every leaf pattern against the subject type. */
         Type *arm_type = NULL;
+        bool scalar_has_catchall = false;      /* M-7 (12b): any `_` arm */
+        bool scalar_saw_true = false;          /* bool subject: `true` literal arm */
+        bool scalar_saw_false = false;         /* bool subject: `false` literal arm */
         for (int i = 0; i < node->as.match.arm_count; i++)
         {
             MatchArm *arm = &node->as.match.arms[i];
@@ -6789,9 +6792,15 @@ Type *check_expr(Checker *c, AstNode *node)
                          strcmp(cur->as.ident.name, "_") == 0)
                 {
                     /* Wildcard — no type check needed */
+                    scalar_has_catchall = true;
                 }
                 else
                 {
+                    if (cur->kind == AST_BOOL_LIT)
+                    {
+                        if (cur->as.bool_lit.value) scalar_saw_true = true;
+                        else                        scalar_saw_false = true;
+                    }
                     Type *pat_type = check_expr(c, cur);
                     if (pat_type && !type_equals(pat_type, subject) &&
                         type_numeric_common(pat_type, subject) == NULL)
@@ -6819,6 +6828,24 @@ Type *check_expr(Checker *c, AstNode *node)
                               type_name(arm_type), type_name(body_type));
             }
         }
+        /* M-7 (stage 12b): a VALUE-producing scalar match with no catch-all
+           silently yields a ZEROED result for an unmatched subject — codegen's
+           result_alloca zero-init is a drop-safety net (L-013), not a semantic
+           default (`Str s = match i { 1 => "a" }` gives an empty Str for
+           i != 1). Enum subjects get a hard exhaustiveness ERROR above; scalar
+           domains are unenumerable (except bool), so require a `_` arm.
+           Warning-first per plan (upgrading to an error is a separate,
+           user-gated decision — avoid breaking existing code). A bool subject
+           covering both literals is exhaustive. Void-yielding matches are
+           pure control flow: an unmatched subject just does nothing. */
+        if (arm_type != NULL && arm_type->kind != TYPE_VOID &&
+            !scalar_has_catchall &&
+            !(subject->kind == TYPE_BOOL && scalar_saw_true && scalar_saw_false))
+            checker_warning(c, node->line, node->column,
+                            "value-producing match on '%s' has no '_' arm: an "
+                            "unmatched subject silently yields a zeroed '%s'; "
+                            "add a wildcard arm",
+                            type_name(subject), type_name(arm_type));
         result = arm_type;
         break;
     }

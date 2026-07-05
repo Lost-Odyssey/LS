@@ -1,0 +1,38 @@
+/* M-7 / stage 12b: value-producing scalar match without a `_` arm gets a
+   checker WARNING (never an error) — an unmatched subject silently yields
+   a zeroed result (codegen's result_alloca zero-init is drop-safety, not a
+   semantic default). Shapes:
+     fire   W1: int subject, Str-yielding, no wildcard
+     fire   W2: char subject, Str-yielding, no wildcard
+     silent S1: wildcard arm present
+     silent S2: bool subject with both literals covered (exhaustive)
+     silent S3: void-yielding statement match (pure control flow)
+     silent S4: enum subject (has its own hard exhaustiveness ERROR)
+   Runtime subjects all take a matched arm — output is pinned. */
+import std.core.str
+
+def main() {
+    int i = 1
+
+    /* W1: fires */
+    Str a = match i { 1 => "one" 2 => "two" }
+
+    /* W2: fires */
+    Str c = match 'x' { 'x' => "ex" }
+
+    /* S1: silent — wildcard */
+    int k = match i { 1 => 10 _ => 0 }
+
+    /* S2: silent — bool fully covered */
+    bool flag = true
+    int v = match flag { true => 1 false => 2 }
+
+    /* S3: silent — void arms, statement position */
+    match i { 1 => { @print("ctl") } }
+
+    /* S4: silent here — enum exhaustiveness is a separate hard error */
+    Option(int) o = Some(7)
+    int w = match o { Some(x) => x None => -1 }
+
+    @print(f"EXH PASS {a} {c} {k} {v} {w}")
+}
