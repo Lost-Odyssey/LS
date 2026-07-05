@@ -26,8 +26,9 @@ def main() {
     Value a = make_txt()
     @print("PASS 1")
 
-    // B: var_decl from IDENT — must deep-clone (Bug #13 fix)
-    Value b = a
+    // B: var_decl from IDENT is a MOVE (L-019); @dup keeps an explicit
+    //    deep copy — a and b independent (the original Bug #13 shape)
+    Value b = @dup(a)
     @print("PASS 2")
     // a and b are fully independent → both drop cleanly
 
@@ -50,10 +51,10 @@ def main() {
         _ => {}
     }
 
-    // F: chain of copies — all independent
+    // F: chain of explicit copies (@dup; bare binding moves, L-019) — all independent
     Value f1 = Pair(owned("p"), owned("q"))
-    Value f2 = f1
-    Value f3 = f2
+    Value f2 = @dup(f1)
+    Value f3 = @dup(f2)
     @print("PASS 6")
     // f1, f2, f3 each own their own Strs
 

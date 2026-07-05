@@ -1,0 +1,35 @@
+/* L-019 (OWN-6): has_drop enum bindings MOVE, like every other has_drop
+   type. Positive corpus — expected output (one per line):
+     payload
+     7
+     payload
+     inner
+     MOVE PASS
+   All shapes JIT+AOT+memcheck clean. The companion reject sample
+   (enum_move_reject.lls) pins the use-after-move error. */
+import std.core.str
+
+enum Box { Full(Str) Empty }
+
+def heap(Str b) -> Str { Str s = ""; s.push_str(&b); return s }
+
+def main() {
+    /* bind-from-ident = move; source consumed exactly once */
+    Box a = Full(heap("payload"))
+    Box b = a
+    match b { Full(s) => { @print(s) } Empty => { @print("empty") } }
+
+    /* @dup keeps an explicit deep copy; both live and independent */
+    Box c = Full(heap("payload"))
+    Box d = @dup(c)
+    match c { Full(s) => { @print(s.len()) } Empty => { @print(0) } }
+    match d { Full(s) => { @print(s) } Empty => { @print("empty") } }
+
+    /* reassignment also moves; old dst value dropped, source dead */
+    Box e = Full(heap("old"))
+    Box f = Full(heap("inner"))
+    e = f
+    match e { Full(s) => { @print(s) } Empty => { @print("empty") } }
+
+    @print("MOVE PASS")
+}

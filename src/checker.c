@@ -7066,25 +7066,14 @@ Type *check_expr(Checker *c, AstNode *node)
                 success_t = inner->as.enom.variants[i].payload_types[0];
         }
 
-        /* Move-elision (Q4): force-unwrapping consumes the operand's payload.
-           For an owned-payload enum (has_drop, e.g. Option(string)/Result(_,str)/
-           Option(Vec)/...) mark the source IDENT moved so (a) re-use is rejected
-           and (b) codegen invalidates the source enum's scope-drop (no
-           double-free). type_is_movable/checker_try_mark_moved don't cover enums
-           (their move is tracked via moved_flag elsewhere), so mark inline here,
-           mirroring those guards. POD Option(int)/borrows/rvalues are left live. */
-        if (inner->as.enom.has_drop &&
-            node->as.force_unwrap.expr->kind == AST_IDENT)
-        {
-            Symbol *osym = scope_resolve(
-                c->current_scope, node->as.force_unwrap.expr->as.ident.name);
-            if (osym && !osym->is_borrow && !osym->is_mut_borrow &&
-                !osym->is_moved && !osym->is_maybe_moved)
-            {
-                osym->is_moved = true;
-                node->as.force_unwrap.expr->moved_out = true;
-            }
-        }
+        /* Move-elision (Q4): force-unwrapping consumes the operand's payload —
+           mark the source IDENT moved so (a) re-use is rejected and (b) codegen
+           invalidates the source enum's scope-drop (no double-free).
+           L-019 (2026-07-05): type_is_movable now covers has_drop enums, so the
+           former inline marking patch collapses into the generic move site
+           (which also rejects moving a pinned borrow source). POD Option(int) /
+           borrows / rvalues are left live by its own guards. */
+        checker_try_mark_moved(c, node->as.force_unwrap.expr);
 
         result = success_t;
         break;

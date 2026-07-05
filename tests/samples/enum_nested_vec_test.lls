@@ -38,9 +38,9 @@ def main() {
     @print("PASS 3: index read done")
     // elem is a deep clone; outer still owns its copy
 
-    // D: var_decl clone of nested enum (Bug #13 fix)
+    // D: explicit deep copy of nested enum (@dup; bare binding moves, L-019)
     JVal src = make_arr()
-    JVal dst = src
+    JVal dst = @dup(src)
     @print("PASS 4: var_decl clone done")
     // src and dst independent — both JArr payloads own separate vecs
 

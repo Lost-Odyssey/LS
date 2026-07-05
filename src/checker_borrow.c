@@ -32,6 +32,11 @@ bool type_is_movable(Type *t)
     switch (t->kind)
     {
     case TYPE_STRUCT: return t->as.strukt.has_drop;
+    case TYPE_ENUM:   return t->as.enom.has_drop;   /* L-019 (OWN-6, 2026-07-05):
+        enum bindings move like every other has_drop type. Previously excluded —
+        `Enum b = a` silently DEEP-CLONED and the source stayed live, the only
+        clone-on-bind type in the language; keep a copy with @dup(a). POD enums
+        (no heap payload) stay freely copyable. */
     case TYPE_BLOCK:  return true;  /* F.2: Block owns its env heap */
     default:          return false;
     }

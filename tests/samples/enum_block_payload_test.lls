@@ -48,7 +48,7 @@ def owned_subject() -> int {
 // (3) enum clone: h and h2 must drop independent payload envs
 def enum_clone() -> int {
     Holder h = mk_holder()
-    Holder h2 = h
+    Holder h2 = @dup(h)   // bare binding moves (L-019); @dup keeps both live
     int a = match h { Wrap(f) => f() Empty => 0 }
     int b = match h2 { Wrap(f) => f() Empty => 0 }
     return a + b

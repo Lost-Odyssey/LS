@@ -1,0 +1,9 @@
+/* L-019 negative: using a has_drop enum after its binding moved it is a
+   checker move error (same rule as Str/Vec/Map/has_drop struct). */
+import std.core.str
+enum Box { Full(Str) Empty }
+def main() {
+    Box a = Full("x")
+    Box b = a
+    match a { Full(s) => { @print(s) } Empty => {} }
+}
