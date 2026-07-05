@@ -101,6 +101,11 @@ typedef enum {
     INTRIN_SIMD_BITCAST,
     INTRIN_SIMD_UNKNOWN,    /* __simd_ prefixed, unknown member */
 
+    /* ---- module-qualified rows (NOT probed at the bare-ident position:
+       builtin_intrinsic_is_global returns false — the module-call site in
+       codegen_expr.c dispatches them after its own guards). ---- */
+    INTRIN_BYTECOPY,        /* std.sys.c.__ls_bytecopy -> @llvm.memcpy */
+
     INTRIN_KIND_COUNT
 } IntrinKind;
 
@@ -119,5 +124,10 @@ bool builtin_intrinsic_is_global(IntrinKind kind);
    (matching the old inline chains — callers treat both identically). */
 LLVMValueRef builtin_intrinsic_emit_call(CodegenContext *ctx, const char *name,
                                          AstNode *node);
+
+/* LS_NO_MEMCPY_PRIM toggle (cached): true when std.sys.c.__ls_bytecopy should
+   be lowered inline to @llvm.memcpy. When false the module-call site falls
+   back to the plain extern call (A/B + escape hatch), unchanged behavior. */
+bool builtin_intrinsic_bytecopy_enabled(void);
 
 #endif /* LS_BUILTINS_INTRINSIC_CG_H */

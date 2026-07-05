@@ -110,12 +110,17 @@ IntrinKind builtin_intrinsic_lookup(const char *name)
         return INTRIN_SIMD_UNKNOWN;
     }
 
+    /* module-qualified: only ever dispatched from the module-call site
+       (std.sys.c guard lives there); never consumed at the bare-ident probe. */
+    if (strcmp(name, "__ls_bytecopy") == 0)
+        return INTRIN_BYTECOPY;
+
     return INTRIN_NONE;
 }
 
 bool builtin_intrinsic_is_global(IntrinKind kind)
 {
-    return kind != INTRIN_NONE;
+    return kind != INTRIN_NONE && kind != INTRIN_BYTECOPY;
 }
 
 /* ============================ sync family =============================== */
@@ -694,6 +699,51 @@ static LLVMValueRef intrin_simd_emit(CodegenContext *ctx, const char *sname,
     }
 }
 
+/* ============================ bytecopy row ============================== */
+/* Moved verbatim from codegen_expr.c (S2 P1 4/4). */
+
+/* __ls_bytecopy prim switch — cached like the other LS_NO_* toggles. */
+bool builtin_intrinsic_bytecopy_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0)
+    {
+        const char *e = getenv("LS_NO_MEMCPY_PRIM");
+        cached = (e != NULL && e[0] != '\0' && strcmp(e, "0") != 0) ? 0 : 1;
+    }
+    return cached == 1;
+}
+
+/* Lower `c.__ls_bytecopy(dst, doff, src, soff, n)` to
+       memcpy(dst + doff, src + soff, n)   as @llvm.memcpy.p0.p0.i64.
+   Offsets/len are LS `int` (i32) — sign-extend to i64. GEPs are plain
+   (non-inbounds) i8 element steps so a nil base + 0 offset is not poison;
+   llvm.memcpy len==0 is a defined no-op, matching the C helper's guard.
+   Returns the memcpy call value (callers treat the expr as void). */
+static LLVMValueRef intrin_bytecopy_emit(CodegenContext *ctx, AstNode *node)
+{
+    LLVMValueRef a[5];
+    for (int i = 0; i < 5; i++)
+    {
+        a[i] = codegen_expr(ctx, node->as.call.args[i]);
+        if (a[i] == NULL)
+            return NULL;
+    }
+    LLVMTypeRef i8t  = LLVMInt8TypeInContext(ctx->context);
+    LLVMTypeRef i64t = LLVMInt64TypeInContext(ctx->context);
+    LLVMValueRef idx[3] = { a[1], a[3], a[4] };  /* doff, soff, n */
+    for (int i = 0; i < 3; i++)
+    {
+        if (idx[i] != NULL &&
+            LLVMGetTypeKind(LLVMTypeOf(idx[i])) == LLVMIntegerTypeKind &&
+            LLVMGetIntTypeWidth(LLVMTypeOf(idx[i])) < 64)
+            idx[i] = LLVMBuildSExt(ctx->builder, idx[i], i64t, "bc.i64");
+    }
+    LLVMValueRef dst = LLVMBuildGEP2(ctx->builder, i8t, a[0], &idx[0], 1, "bc.dst");
+    LLVMValueRef src = LLVMBuildGEP2(ctx->builder, i8t, a[2], &idx[1], 1, "bc.src");
+    return LLVMBuildMemCpy(ctx->builder, dst, 1, src, 1, idx[2]);
+}
+
 /* ============================== dispatch ================================ */
 
 LLVMValueRef builtin_intrinsic_emit_call(CodegenContext *ctx, const char *name,
@@ -731,6 +781,8 @@ LLVMValueRef builtin_intrinsic_emit_call(CodegenContext *ctx, const char *name,
     case INTRIN_SIMD_BITCAST:
     case INTRIN_SIMD_UNKNOWN:
         return intrin_simd_emit(ctx, name, kind, node);
+    case INTRIN_BYTECOPY:
+        return intrin_bytecopy_emit(ctx, node);
     default:
         return intrin_sync_emit(ctx, name, kind, node);
     }
