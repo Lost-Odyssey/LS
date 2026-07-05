@@ -1232,6 +1232,22 @@ set_tests_properties(test_enum_own_regress PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# Dead-tag sentinel contract (docs/plan_enum_drop_sentinel.md): after an
+# enum drop the slot's tag is set to variant_count (a value no live enum
+# carries) instead of zeroing the whole slot. Legal re-drop paths land in
+# the synthesized __drop's switch default and stay silent.
+add_test(
+    NAME test_enum_drop_sentinel
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_drop_sentinel.cmake
+)
+set_tests_properties(test_enum_drop_sentinel PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # Ownership regression found by memcheck (2026-07-04): `match struct.field` where
 # the field holds a has_drop enum (Option(Str) / user enum with Str payload). The
 # AST_FIELD read cloned only has_drop structs, so the enum field read aliased the

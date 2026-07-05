@@ -30,6 +30,18 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type);
 static void emit_enum_drop_cond(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type, LLVMValueRef moved_flag);
 static LLVMBasicBlockRef emit_struct_drop_separate(CodegenContext *ctx, LLVMValueRef drop_ptr, Type *struct_type, LLVMValueRef moved_flag);
 
+/* Dead-tag sentinel switch (docs/plan_enum_drop_sentinel.md).
+   Default ON: after a drop, write tag = variant_count (1 byte) instead of
+   zeroing the whole slot. LS_NO_DROP_SENTINEL=1 restores the legacy
+   whole-slot zeroinitializer (A/B parity + escape hatch). */
+static int cg_drop_sentinel_on(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = (getenv("LS_NO_DROP_SENTINEL") == NULL) ? 1 : 0;
+    return on;
+}
+
 CgScope *cg_scope_new(CgScope *parent)
 {
     CgScope *s = (CgScope *)malloc_safe(sizeof(CgScope));
@@ -1949,7 +1961,14 @@ void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
 
     LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, self_ptr, 0, "disc.p");
     LLVMValueRef disc = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "disc");
-    cg_attach_tag_range(ctx, disc, enum_type->as.enom.variant_count);
+    /* Dead-capable load: after a drop the slot may carry the sentinel tag
+       (== variant_count), so promise [0, vc+1) here — one wider than the
+       live-value sites (match/try/unwrap keep [0, vc)). vc==255 → 256 →
+       cg_attach_tag_range skips (no spare i8 value; sentinel emission is
+       also skipped for that domain). Width follows the sentinel switch so
+       LS_NO_DROP_SENTINEL=1 stays byte-identical to the legacy baseline. */
+    cg_attach_tag_range(ctx, disc, enum_type->as.enom.variant_count
+                                   + (cg_drop_sentinel_on() ? 1 : 0));
     LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, self_ptr, 1, "payload.p");
 
     LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(ctx->context, drop_fn, "drop.end");
@@ -2060,15 +2079,36 @@ void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type)
     if (drop_fn == NULL) return;
     LLVMTypeRef fn_type = LLVMGlobalGetValueType(drop_fn);
     LLVMBuildCall2(ctx->builder, fn_type, drop_fn, &enum_ptr, 1, "");
-    /* Idempotency: zero the slot after dropping, so a redundant drop of the SAME
-       storage is a safe no-op (the discriminant becomes variant 0 with a zeroed
-       payload → its drop frees nothing). Mirrors string free zeroing cap.
-       This is what makes an OWNED rvalue match subject safe when both an arm-
-       internal temp-drop flush AND the merge-block drop run on the same path
-       (B-MAP-OPT-001: `match f() { Some(m) => for e in m {...} }`). The dropped
-       value is logically dead, so overwriting it is always sound. */
+    /* Idempotency: mark the slot DEAD after dropping, so a redundant drop
+       of the SAME storage is a safe no-op. Two LEGAL re-drop paths depend
+       on this (L-012 / B-MAP-OPT-001 — arm-internal temp flush + merge
+       drop, see gotchas guide §7.2), so re-drop must stay SILENT in every
+       build flavor — never turn this into a trap (stage 12c verdict).
+       v2 (sentinel): write tag = variant_count — a discriminant no live
+       value carries. The synthesized __drop routes it to the switch
+       default (plain return) without touching the payload. Cheaper than
+       the legacy whole-slot zeroinitializer (1 byte vs sizeof(enum)) and
+       makes "dead" distinguishable from "legit variant 0" (M-8: a dead
+       value reaching a CG_DEBUG match default now trips the corrupt-tag
+       diagnostic instead of silently reading as variant 0).
+       Legacy whole-slot zeroing is kept for:
+       - LS_NO_DROP_SENTINEL=1 (byte-identical fallback), and
+       - variant_count > 255 (i8 tag has no spare value; that domain is a
+         pre-existing latent overflow, tracked separately). */
     LLVMTypeRef enum_llvm = type_to_llvm(ctx, enum_type);
-    LLVMBuildStore(ctx->builder, LLVMConstNull(enum_llvm), enum_ptr);
+    int vc = enum_type->as.enom.variant_count;
+    if (!cg_drop_sentinel_on() || vc > 255)
+    {
+        LLVMBuildStore(ctx->builder, LLVMConstNull(enum_llvm), enum_ptr);
+    }
+    else
+    {
+        LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
+        LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm,
+                                                    enum_ptr, 0, "dead.tag.p");
+        LLVMBuildStore(ctx->builder,
+                       LLVMConstInt(i8, (unsigned long long)vc, 0), disc_ptr);
+    }
 }
 
 /* F.5: Conditional enum drop — skip if moved_flag == 1 (by-move captured).
@@ -2190,7 +2230,9 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
     /* disc = tmp->field[0] */
     LLVMValueRef disc_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 0, "ec.discp");
     LLVMValueRef disc     = LLVMBuildLoad2(ctx->builder, i8, disc_ptr, "ec.disc");
-    cg_attach_tag_range(ctx, disc, enum_type->as.enom.variant_count);
+    /* Dead-capable load: see emit_auto_enum_drop_fn's matching comment. */
+    cg_attach_tag_range(ctx, disc, enum_type->as.enom.variant_count
+                                   + (cg_drop_sentinel_on() ? 1 : 0));
 
     /* payload_ptr = &tmp->field[1] */
     LLVMValueRef payload_ptr = LLVMBuildStructGEP2(ctx->builder, enum_llvm, tmp, 1, "ec.payp");
