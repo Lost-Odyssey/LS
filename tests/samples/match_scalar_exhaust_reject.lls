@@ -1,0 +1,11 @@
+/* M-7 / L-020 negative: both value-producing scalar matches below lack a
+   `_` arm and must each produce a checker error (int and char subjects). */
+import std.core.str
+
+def main() {
+    int i = 1
+    Str a = match i { 1 => "one" 2 => "two" }
+    Str c = match 'x' { 'x' => "ex" }
+    @print(a)
+    @print(c)
+}

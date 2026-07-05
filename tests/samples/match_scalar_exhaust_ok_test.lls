@@ -1,0 +1,30 @@
+/* M-7 / L-020: value-producing scalar match without a `_` arm is a checker
+   ERROR (upgraded from the 12b warning). This is the POSITIVE corpus — every
+   shape here is exempt and must compile silently:
+     S1: wildcard arm present
+     S2: bool subject with both literals covered (exhaustive)
+     S3: void-yielding statement match (pure control flow)
+     S4: enum subject (has its own variant exhaustiveness error)
+   The companion reject corpus is match_scalar_exhaust_reject.lls. */
+import std.core.str
+
+def main() {
+    int i = 1
+
+    /* S1: wildcard */
+    Str a = match i { 1 => "one" _ => "other" }
+    int k = match i { 1 => 10 _ => 0 }
+
+    /* S2: bool fully covered */
+    bool flag = true
+    int v = match flag { true => 1 false => 2 }
+
+    /* S3: void arms, statement position */
+    match i { 1 => { @print("ctl") } }
+
+    /* S4: enum subject */
+    Option(int) o = Some(7)
+    int w = match o { Some(x) => x None => -1 }
+
+    @print(f"EXH PASS {a} {k} {v} {w}")
+}

@@ -1351,18 +1351,19 @@ set_tests_properties(test_block_protocol_lint PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
-# Stage 12b (audit M-7): value-producing scalar match without a `_` arm warns
-# (never errors) — unmatched subjects silently yield a zeroed result. Pins
-# 2 firing shapes (int/char) + 4 silent shapes + unaffected runtime.
+# Stage 12b (audit M-7), upgraded to an ERROR by L-020: a value-producing
+# scalar match without a `_` arm is rejected — an unmatched subject would
+# silently yield a zeroed result. Pins 2 reject shapes (int/char) + 4 exempt
+# shapes + pinned runtime of the exempt program.
 add_test(
-    NAME test_match_scalar_exhaust_warn
+    NAME test_match_scalar_exhaust
     COMMAND ${CMAKE_COMMAND}
         -DLS_EXE=$<TARGET_FILE:ls>
         -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
         -DWORK_DIR=${CMAKE_BINARY_DIR}
-        -P ${CMAKE_SOURCE_DIR}/tests/test_match_scalar_exhaust_warn.cmake
+        -P ${CMAKE_SOURCE_DIR}/tests/test_match_scalar_exhaust.cmake
 )
-set_tests_properties(test_match_scalar_exhaust_warn PROPERTIES
+set_tests_properties(test_match_scalar_exhaust PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
