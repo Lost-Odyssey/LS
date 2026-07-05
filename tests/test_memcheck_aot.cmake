@@ -13,10 +13,16 @@ if(NOT LS_EXE OR NOT SAMPLE OR NOT WORK_DIR)
     message(FATAL_ERROR "test_memcheck_aot.cmake requires LS_EXE, SAMPLE, WORK_DIR")
 endif()
 
+# Derive the output name from the sample so tests sharing this script
+# (test_memcheck_aot / test_mem_m4_5_aot / test_mem_overhaul_aot) never race
+# on the same .o/exe under parallel ctest. A shared hardcoded name caused
+# concurrent `ls compile` runs to truncate each other's object file mid-link
+# (Linux ld: "file truncated"; Windows: LNK1104).
+get_filename_component(SAMPLE_STEM "${SAMPLE}" NAME_WE)
 if(WIN32 OR CMAKE_HOST_WIN32)
-    set(OUT_EXE "${WORK_DIR}/test_memcheck_aot_phase_a.exe")
+    set(OUT_EXE "${WORK_DIR}/aot_mc_${SAMPLE_STEM}.exe")
 else()
-    set(OUT_EXE "${WORK_DIR}/test_memcheck_aot_phase_a")
+    set(OUT_EXE "${WORK_DIR}/aot_mc_${SAMPLE_STEM}")
 endif()
 file(REMOVE "${OUT_EXE}")
 
