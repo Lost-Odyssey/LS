@@ -2393,10 +2393,13 @@ static Type *try_infer_method_generic_from_closure(Checker *c,
     if (concrete) {
         /* Record the inferred type-arg name so codegen mangles the call as
            `Type.method(U)` (matching the instantiated symbol), since the call
-           node carries no explicit type_args. */
-        const char *un = type_name(inferred_u);
-        if (un)
-            call->as.call.resolved_type_args = chk_strdup(un);
+           node carries no explicit type_args. Guard on a non-NULL rendering to
+           preserve the original "skip stash if name is NULL" behavior (the
+           helper would otherwise emit "?"). */
+        if (type_name(inferred_u)) {
+            Type *one[1] = { inferred_u };
+            checker_stash_resolved_type_args(c, call, one, 1);
+        }
     }
     return concrete;
 }
