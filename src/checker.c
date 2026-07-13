@@ -996,6 +996,30 @@ int find_template_idx(Checker *c, const char *base)
     return -1;
 }
 
+/* S4: single authority for the comma-joined concrete type-arg names stashed on a
+   generic call node so codegen mangles the call to the instantiated symbol (e.g.
+   `identity(int)` not `identity(T)` when called with an abstract type param inside
+   a generic body — codegen has no alias context). Idempotent: no-op if the node
+   already carries a stash. Shared by the free-fn / method-level / closure-infer
+   generic call sites; these three drifted apart once (2026-06-30) and produced
+   abstract-`T` mangling bugs, so the format lives in exactly one place.
+   `args[i] == NULL` renders as "?" (matches the method-level path's guard). */
+static void checker_stash_resolved_type_args(Checker *c, AstNode *call,
+                                             Type **args, int n)
+{
+    (void)c;
+    if (call == NULL || call->kind != AST_CALL) return;
+    if (call->as.call.resolved_type_args != NULL) return;
+    char taj[512];
+    int tp = 0;
+    for (int ti = 0; ti < n && tp < (int)sizeof(taj) - 1; ti++) {
+        if (ti > 0) tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, ",");
+        tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, "%s",
+                       args[ti] ? type_name(args[ti]) : "?");
+    }
+    call->as.call.resolved_type_args = chk_strdup(taj);
+}
+
 /* Instantiate a registered template with concrete type args.  Returns the
    resulting TYPE_ENUM (cached on second call). */
 Type *instantiate_template(Checker *c, int template_idx,
@@ -4865,16 +4889,7 @@ Type *check_expr(Checker *c, AstNode *node)
                no alias context, so re-mangling from the raw TypeNode would emit the
                abstract `make(T)` instead of the instantiated `make(int)`. The
                clone is checked fresh each instantiation, so this node starts NULL. */
-            if (node->as.call.resolved_type_args == NULL) {
-                char taj[512];
-                int tp = 0;
-                for (int ti = 0; ti < tp_count && tp < (int)sizeof(taj) - 1; ti++) {
-                    if (ti > 0) tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, ",");
-                    tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, "%s",
-                                   type_name(type_args[ti]));
-                }
-                node->as.call.resolved_type_args = chk_strdup(taj);
-            }
+            checker_stash_resolved_type_args(c, node, type_args, tp_count);
 
             /* Check trait bounds (if any) */
             {
