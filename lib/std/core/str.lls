@@ -21,6 +21,43 @@
 //   * __from_static(ptr, len)  P1: string literal -> static Str (cap == 0).
 //   * __from_parts             P2: f-string builder appends into an owned Str.
 //   * __clone / __drop         the generic has_drop deep-copy / destructor hooks.
+//
+// ---------------------------------------------------------------------------
+// FILE NAVIGATION (S5 arch-cleanup, 2026-07-13). Single module BY DESIGN:
+// the S5 probe showed cross-module inherent `methods Str` blocks are not
+// viable today -- (a) inherent methods are visible only when their defining
+// module is imported, so prelude-only `import std.core.str` users would not
+// see methods moved to a sibling module; (b) the definition is mangled with
+// the methods-block module prefix while call sites use the struct owner's
+// prefix (std_core_str__Str.*), so JIT/AOT both fail to link. Trait-impl
+// blocks (`methods Str: Interface`) do not have this limit (cf. show/value).
+// Until the compiler unifies inherent-method mangling, keep everything here,
+// grouped into the sections below:
+//
+//   methods Str
+//     1. capacity ................ reserve
+//     2. queries ................. len / cap / empty? / as_ptr / c_str /
+//                                  byte_at / byte_at!
+//     3. build (byte layer) ...... push_byte / push_str
+//     4. construction protocols .. __from_static / __from_parts
+//     5. equality / comparison ... eq? / compare
+//     6. search .................. find / contains? / starts_with? /
+//                                  ends_with? / rfind / count
+//     7. slice / transform ....... substr / copy / upper / lower / trim /
+//                                  concat / repeat
+//     8. replace / pad ........... replace / pad_left / pad_right
+//     9. collections ............. bytes / split / lines
+//    10. zero-copy views ......... as_slice / subslice / split_view /
+//                                  slice_str
+//    11. parsing ................. to_int / to_i64 / to_float / to_bool
+//   methods Str: Clone / Destroy / Equal / Hash / Add / Order
+//   struct StrSlice + methods StrSlice (+ Equal / Hash / Order)
+//
+// ORDERING CONSTRAINT: within a `methods` block a body resolves sibling
+// calls only to methods declared EARLIER in the block, so the section order
+// above is load-bearing (e.g. copy -> substr, replace -> copy/push_byte,
+// to_bool -> eq?). Keep new methods below everything they call.
+// ---------------------------------------------------------------------------
 
 import std.sys.c as c
 import std.core.vec
@@ -151,7 +188,7 @@ methods Str {
         return Str { data: z, len: 0, cap: 0 }
     }
 
-    // ---- equality (byte-wise) ----
+    // ---- equality / comparison (byte-wise) ----
 
     def eq?(&self, &Str other) -> bool {
         if self.len != other.len { return false }
@@ -159,6 +196,24 @@ methods Str {
             if self.data[i] != other.data[i] { return false }
         }
         return true
+    }
+
+    // Lexicographic byte comparison: -1 if self < other, 1 if >, 0 if equal.
+    // Backs the Order `<` impl (separate `methods Str: Order` block below).
+    def compare(&self, &Str other) -> int {
+        int a = self.len
+        int b = other.len
+        int n = a
+        if b < n { n = b }
+        for (int i = 0; i < n; i = i + 1) {
+            int x = self.data[i]
+            int y = other.data[i]
+            if x < y { return -1 }
+            if x > y { return 1 }
+        }
+        if a < b { return -1 }
+        if a > b { return 1 }
+        return 0
     }
 
     // ---- search (byte layer; needle borrowed) ----
@@ -192,6 +247,38 @@ methods Str {
         return true
     }
 
+    // Index of the LAST occurrence of `needle`, or -1. Empty needle -> len.
+    def rfind(&self, &Str needle) -> int {
+        int n = self.len
+        int m = needle.len
+        if m == 0 { return n }
+        if m > n { return -1 }
+        for (int i = n - m; i >= 0; i = i - 1) {
+            bool hit = true
+            for (int j = 0; j < m; j = j + 1) {
+                if self.data[i + j] != needle.data[j] { hit = false  break }
+            }
+            if hit { return i }
+        }
+        return -1
+    }
+
+    // Number of non-overlapping occurrences of `needle`.
+    def count(&self, &Str needle) -> int {
+        int m = needle.len
+        if m == 0 { return 0 }
+        int n = self.len
+        int total = 0
+        int i = 0
+        while true {
+            int p = c.__ls_str_find(self.data, n, needle.data, m, i)
+            if p < 0 { break }
+            total = total + 1
+            i = p + m
+        }
+        return total
+    }
+
     // ---- slice / transform (owned Str results) ----
 
     // Substring of `len` bytes starting at `start`. Lenient clamping (matches the
@@ -210,6 +297,16 @@ methods Str {
         c.__ls_bytecopy(out.data, 0, self.data, s, l)
         out.len = l
         return out
+    }
+
+    // Explicit deep copy (mirrors the builtin string's .copy()). Static (cap 0)
+    // sources stay shared-static, owned sources get an independent heap buffer.
+    // Useful where an explicit independent value is wanted regardless of the
+    // call-site's clone/move policy (e.g. returning a borrowed match binder).
+    // NOTE: defined after substr — impl method bodies resolve sibling calls
+    // only to methods declared earlier in the block.
+    def copy(&self) -> Str {
+        return self.substr(0, self.len)
     }
 
     // ASCII upper/lower (byte layer; non-ASCII bytes pass through unchanged —
@@ -285,16 +382,6 @@ methods Str {
         return out
     }
 
-    // Explicit deep copy (mirrors the builtin string's .copy()). Static (cap 0)
-    // sources stay shared-static, owned sources get an independent heap buffer.
-    // Useful where an explicit independent value is wanted regardless of the
-    // call-site's clone/move policy (e.g. returning a borrowed match binder).
-    // NOTE: defined after substr — impl method bodies resolve sibling calls
-    // only to methods declared earlier in the block.
-    def copy(&self) -> Str {
-        return self.substr(0, self.len)
-    }
-
     // `Show` for Str: human-readable form is the text itself (an owned copy, like
     // a struct field's `f"{self.s}"` renders raw text with no quotes). Inherent —
     // Str's Show impl (sink-based `show(&self, &!Sink)`) lives in std.core.show as
@@ -302,57 +389,6 @@ methods Str {
     // str.ls importing show/sink back would be a circular import. The B-3 imported-
     // struct dispatch emits it as std_core_str__Str.show, so generic `Box(T)` with
     // T=Str (lowered to `self.f.show(&!out)`) still resolves the right symbol.
-
-    // ---- more search (byte layer) ----
-
-    // Index of the LAST occurrence of `needle`, or -1. Empty needle -> len.
-    def rfind(&self, &Str needle) -> int {
-        int n = self.len
-        int m = needle.len
-        if m == 0 { return n }
-        if m > n { return -1 }
-        for (int i = n - m; i >= 0; i = i - 1) {
-            bool hit = true
-            for (int j = 0; j < m; j = j + 1) {
-                if self.data[i + j] != needle.data[j] { hit = false  break }
-            }
-            if hit { return i }
-        }
-        return -1
-    }
-
-    // Number of non-overlapping occurrences of `needle`.
-    def count(&self, &Str needle) -> int {
-        int m = needle.len
-        if m == 0 { return 0 }
-        int n = self.len
-        int total = 0
-        int i = 0
-        while true {
-            int p = c.__ls_str_find(self.data, n, needle.data, m, i)
-            if p < 0 { break }
-            total = total + 1
-            i = p + m
-        }
-        return total
-    }
-
-    // Lexicographic byte comparison: -1 if self < other, 1 if >, 0 if equal.
-    def compare(&self, &Str other) -> int {
-        int a = self.len
-        int b = other.len
-        int n = a
-        if b < n { n = b }
-        for (int i = 0; i < n; i = i + 1) {
-            int x = self.data[i]
-            int y = other.data[i]
-            if x < y { return -1 }
-            if x > y { return 1 }
-        }
-        if a < b { return -1 }
-        if a > b { return 1 }
-        return 0
-    }
 
     // ---- replace / pad (owned Str results) ----
 
@@ -454,6 +490,31 @@ methods Str {
         return out
     }
 
+    // Split into lines on '\n', stripping a preceding '\r' (CRLF). A trailing
+    // newline does NOT yield a final empty element.
+    def lines(&self) -> Vec(Str) {
+        Vec(Str) out = {}
+        int n = self.len
+        if n == 0 { return out }
+        int start = 0
+        int i = 0
+        while i < n {
+            int ch = self.data[i]
+            if ch == 10 {
+                int cut = i
+                if cut > start {
+                    int prev = self.data[cut - 1]
+                    if prev == 13 { cut = cut - 1 }
+                }
+                out.push(self.substr(start, cut - start))
+                start = i + 1
+            }
+            i = i + 1
+        }
+        if start < n { out.push(self.substr(start, n - start)) }
+        return out
+    }
+
     // ---- zero-copy views (StrSlice; see the StrSlice struct's safety note) ----
 
     // A fat view over this Str's whole buffer (zero-copy, no malloc). Valid only
@@ -512,31 +573,6 @@ methods Str {
         out.reserve(s.len)
         c.__ls_bytecopy(out.data, 0, s.ptr, 0, s.len)
         out.len = s.len
-        return out
-    }
-
-    // Split into lines on '\n', stripping a preceding '\r' (CRLF). A trailing
-    // newline does NOT yield a final empty element.
-    def lines(&self) -> Vec(Str) {
-        Vec(Str) out = {}
-        int n = self.len
-        if n == 0 { return out }
-        int start = 0
-        int i = 0
-        while i < n {
-            int ch = self.data[i]
-            if ch == 10 {
-                int cut = i
-                if cut > start {
-                    int prev = self.data[cut - 1]
-                    if prev == 13 { cut = cut - 1 }
-                }
-                out.push(self.substr(start, cut - start))
-                start = i + 1
-            }
-            i = i + 1
-        }
-        if start < n { out.push(self.substr(start, n - start)) }
         return out
     }
 
@@ -690,8 +726,8 @@ methods Str {
         return Err("invalid bool")
     }
 
-    // ---- ownership hooks (unified has_drop path) ----
-
+    // Ownership hooks (unified has_drop path) live in the trait-impl blocks
+    // below: `methods Str: Clone` (__clone) and `methods Str: Destroy` (__drop).
 }
 
 methods Str: Clone {
