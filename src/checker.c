@@ -5798,18 +5798,14 @@ Type *check_expr(Checker *c, AstNode *node)
                        alias context and would otherwise re-mangle the raw `T`.
                        Mirrors the closure-inference and free-function paths. */
                     if (node->as.call.resolved_type_args == NULL) {
-                        char taj[512];
-                        int tp = 0;
-                        for (int ti = 0; ti < node->as.call.type_arg_count &&
-                                         tp < (int)sizeof(taj) - 1; ti++) {
-                            Type *rt = resolve_type_node(c, node->as.call.type_args[ti],
-                                                         node->line, node->column);
-                            if (ti > 0)
-                                tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, ",");
-                            tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, "%s",
-                                           rt ? type_name(rt) : "?");
-                        }
-                        node->as.call.resolved_type_args = chk_strdup(taj);
+                        int tac = node->as.call.type_arg_count;
+                        Type **rargs = (Type **)malloc_safe((size_t)(tac > 0 ? tac : 1)
+                                                            * sizeof(Type *));
+                        for (int ti = 0; ti < tac; ti++)
+                            rargs[ti] = resolve_type_node(c, node->as.call.type_args[ti],
+                                                          node->line, node->column);
+                        checker_stash_resolved_type_args(c, node, rargs, tac);
+                        free(rargs);
                     }
                     /* Body already checked+queued by try_instantiate; skip lazy path */
                     goto after_method_check;
