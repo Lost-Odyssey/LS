@@ -35,6 +35,7 @@ Type *find_type_alias(Checker *c, const char *name);
 static bool generic_method_is_eager(const char *name);
 static bool is_builtin_function(const char *name);
 static const char *intrinsic_retired_spelling(const char *name);
+static void instantiate_impl_method_types(Checker *c, Type *struct_type, const char *mangled_name, AstNode *impl_node, char **tp_names, Type **type_args, int tp_count);
 static bool is_self_placeholder(const Type *t);
 static Type *lookup_impl_type_arg(char **tp_names, Type **type_args, int tp_count, const char *name);
 static int method_is_static(Checker *c, const char *struct_name, const char *method_name);
@@ -1204,7 +1205,7 @@ Type *find_method(Checker *c, const char *struct_name, const char *method_name)
 /* L-002: find a method on `struct_name` whose origin matches `origin`
    (NULL = inherent; else interface name). Returns its type or NULL. Used by the
    interface-qualified call `Iface.method(recv)` to select the right overload. */
-Type *find_method_origin(Checker *c, const char *struct_name,
+static Type *find_method_origin(Checker *c, const char *struct_name,
                          const char *method_name, const char *origin)
 {
     for (int i = 0; i < c->impl_count; i++)
@@ -1230,7 +1231,7 @@ Type *find_method_origin(Checker *c, const char *struct_name,
 /* L-002: count inherent (origin NULL) and interface (origin != NULL) providers of
    `method_name` on `struct_name`. Optionally returns the first two interface names
    (for the ambiguity diagnostic). */
-void method_providers(Checker *c, const char *struct_name, const char *method_name,
+static void method_providers(Checker *c, const char *struct_name, const char *method_name,
                       int *inherent_count, int *iface_count,
                       const char **ia, const char **ib)
 {
@@ -1257,7 +1258,7 @@ void method_providers(Checker *c, const char *struct_name, const char *method_na
 
 /* L-002: true if `name` is a known interface (user-declared trait or a builtin
    operator trait). Used to recognize `Iface.method(recv)` qualified calls. */
-bool checker_is_known_interface(Checker *c, const char *name)
+static bool checker_is_known_interface(Checker *c, const char *name)
 {
     for (int i = 0; i < c->trait_count; i++)
         if (strcmp(c->trait_registry[i].name, name) == 0)
@@ -2339,7 +2340,7 @@ static void generic_method_symbol(char *buf, size_t sz, const char *mangled_name
    with the concrete type arguments and register the method signature. Ordinary
    method bodies are checked lazily at call sites; compiler-reserved hooks that
    codegen calls by name are still checked and queued eagerly. */
-void instantiate_impl_method_types(
+static void instantiate_impl_method_types(
     Checker *c, Type *struct_type, const char *mangled_name,
     AstNode *impl_node,
     char **tp_names, Type **type_args, int tp_count)

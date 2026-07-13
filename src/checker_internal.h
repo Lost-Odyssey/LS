@@ -1,11 +1,23 @@
-/* checker_internal.h — internal forward declarations shared across the
+/* checker_internal.h — the genuine cross-TU surface shared across the
    checker translation units (docs/plan_checker_split.md).
 
-   Step 1: every previously-static checker helper has external linkage and
-   a prototype here, so any checker TU can call any helper with no implicit-
-   declaration hazard. Physical splitting into checker_borrow.c / checker_lower.c
-   / checker_decl.c is then pure cut-paste. Single-TU prototypes are trimmed
-   back to static at the end of the split.
+   These are exactly the checker helpers that are *called from a TU other than
+   the one that defines them* (or referenced by a unit test) — nothing more.
+   Every helper used only within its own TU is `static` there and does NOT
+   appear here (W11 static-recall, plan_arch_cleanup.md §四 A4). If a helper is
+   ever needed from a second TU, move its definition's `static` off and add its
+   prototype below under the group owned by its defining TU.
+
+   Defining TUs of the prototypes below:
+     - checker.c        — type/method/scope registries, error sinks, check_expr,
+                          check_stmt, forward_pass, intrinsic_lookup (the bulk).
+     - checker_decl.c   — declaration checkers (struct/enum/impl/trait/extern),
+                          fn templates, imported-trait propagation.
+     - checker_lower.c  — lowering/desugar (index protocol, opt-combinators,
+                          bit patterns, for-in desugar, operator-overload traits).
+     - checker_borrow.c — move/borrow analysis, capture scan, move snapshots.
+     - checker_elide.c  — A1 clone-elision last-use pass.
+   Each prototype's owning TU is noted inline in the block below.
 
    The public Checker struct / checker API lives in checker.h (included below). */
 #ifndef LS_CHECKER_INTERNAL_H
@@ -99,7 +111,12 @@ typedef enum {
     OPTC_UNWRAP_OR_ELSE         /* None/Err → closure result; → T (no type arg) */
 } OptCombinator;
 
-/* ---- Internal checker helper prototypes (auto-consolidated, Step 1) ---- */
+/* ---- Cross-TU checker helper prototypes ----
+   Grouped by defining TU; inline "[def: <tu>]" markers flag where the group
+   crossings sit. Every prototype here is called from at least one *other*
+   checker TU (or a unit test); single-TU helpers are static and absent. */
+
+/* [def: checker.c] registries, errors, resolution, check_expr/check_stmt. */
 void checker_error(Checker *c, int line, int col, const char *fmt, ...);
 void checker_warning(Checker *c, int line, int col, const char *fmt, ...);
 Type *find_type_alias(Checker *c, const char *name);
@@ -119,22 +136,23 @@ Type *instantiate_template(Checker *c, int template_idx, Type **type_args, int t
 const char *impl_key_of_type(const Type *t);
 int find_or_create_impl(Checker *c, const char *struct_name);
 bool register_method(Checker *c, int impl_idx, const char *name, Type *type, bool is_static, int self_borrow_kind, const char *origin_iface, AstNode *decl_node, int line, int col);
-bool checker_is_known_interface(Checker *c, const char *name);
 char *chk_strdup(const char *s);
+/* [def: checker_lower.c] index-protocol desugar. */
 AstNode *make_index_protocol_call(int line, int column, AstNode *obj, AstNode *idx, AstNode *val, const char *method);
 AstNode *make_multi_index_call(int line, int column, AstNode *obj, AstNode **indices, int n, AstNode *val, const char *method);
 void rewrite_index_to_call(AstNode *node, AstNode *obj, AstNode *idx, const char *method);
+/* [def: checker.c] method lookup. */
 Type *find_method(Checker *c, const char *struct_name, const char *method_name);
-Type *find_method_origin(Checker *c, const char *struct_name, const char *method_name, const char *origin);
-void method_providers(Checker *c, const char *struct_name, const char *method_name, int *inherent_count, int *iface_count, const char **ia, const char **ib);
 Type *find_method_ensured(Checker *c, Type *st, const char *mname);
+/* [def: checker_lower.c] tag user list/pairs literals with expected type. */
 bool checker_tag_user_from_list_literal(Checker *c, Type *expected, AstNode *lit, const char *what);
 bool checker_tag_user_from_pairs_literal(Checker *c, Type *expected, AstNode *lit, const char *what);
-void instantiate_impl_method_types( Checker *c, Type *struct_type, const char *mangled_name, AstNode *impl_node, char **tp_names, Type **type_args, int tp_count);
+/* [def: checker.c] type resolution, assignability, scope stack. */
 Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col);
 bool type_assignable(const Type *dst, const Type *src);
 void chk_push_scope(Checker *c);
 void chk_pop_scope(Checker *c);
+/* [def: checker_borrow.c] move/borrow analysis, capture scan, move snapshots. */
 bool type_is_movable(Type *t);
 void checker_try_mark_moved(Checker *c, AstNode *arg);
 bool checker_reject_mut_borrow_copy_source(Checker *c, AstNode *src, const char *what);
@@ -151,6 +169,8 @@ void move_elevate_moves_to_maybe(const MoveSnapshot *before);
 void move_preseed_maybe_from_pass1(const MoveSnapshot *before, const MoveSnapshot *after_pass1);
 void cap_push_bound(CaptureScan *s, const char *name);
 void capture_walk(CaptureScan *s, AstNode *node);
+/* [def: checker_lower.c] std.c prim match, module-call rewrite, opt-combinator,
+   bit-pattern lowering, for-in desugar. (check_expr below is [def: checker.c].) */
 int match_stdc_prim(Checker *c, AstNode *callee);
 bool rewrite_canonical_module_call(Checker *c, AstNode *callee);
 int disambig_variant_by_hint(Checker *c, AstNode *node, const char *vname, Type **out_enum, int *out_idx);
@@ -162,6 +182,9 @@ Type *check_expr(Checker *c, AstNode *node);
 AstNode *build_foreach_desugar(AstNode *node, bool has_iter, bool src_is_ident);
 AstNode *build_foreach_borrow_desugar(AstNode *node);
 void check_stmt(Checker *c, AstNode *node);
+/* [def: checker_decl.c] declaration checkers (struct/enum/impl/trait/extern),
+   fn templates, imported-trait propagation. (checker_reject_borrow_* below are
+   [def: checker_borrow.c], grouped here by call proximity.) */
 void register_fn_template(Checker *c, AstNode *node);
 int find_fn_template(Checker *c, const char *name);
 void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type **params);
@@ -175,12 +198,14 @@ void check_extern_fn(Checker *c, AstNode *node);
 void check_extern_struct_decl(Checker *c, AstNode *node);
 void check_extern_block(Checker *c, AstNode *node);
 void check_load_lib(Checker *c, AstNode *node);
+/* [def: checker_lower.c] operator-overload trait helpers. */
 bool is_builtin_operator_trait(const char *name);
 const char *operator_trait_for_method(const char *mname);
 const char *operator_symbol_for_method(const char *mname);
 bool is_optional_operator_method(const char *mname);
 void register_builtin_operator_traits(Checker *c);
 bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *right, Type **out_result);
+/* [def: checker_decl.c] trait satisfaction + trait/impl-trait decl checkers. */
 bool checker_type_satisfies_trait(Checker *c, Type *type, const char *trait_name);
 void check_trait_decl(Checker *c, AstNode *node);
 void check_impl_trait_decl(Checker *c, AstNode *node);
