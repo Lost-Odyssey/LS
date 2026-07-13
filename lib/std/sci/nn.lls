@@ -25,6 +25,25 @@ import std.core.math as math
 import std.sci.simd as smd
 import std.sync.thread as thread
 
+// The micro-kernel family below (uk_12x32 / uk_12x16 / uk_6x16 / uk_1x16 and the
+// _packed / _f16 variants, plus the register-blocked inner loops of conv*_direct)
+// is DELIBERATELY hand-unrolled: each MR×NR tile names MR×(NR/16) distinct
+// Simd(f32,16) accumulators that stay register-resident across the whole K
+// reduction — that residency IS the point of the kernel.
+//
+// Parameterizing the row/col counts to dedupe the family was evaluated and
+// REJECTED (S6, 2026-07-13; docs/plan_arch_cleanup.md §五 S6). LS has no
+// integer-range statement unroller: `comptime for` iterates fields(T)/variants(T)
+// only (checker.c:8262/8293), and comptime-const `for i in 0..N` produces host
+// VALUES, not code. The only parameterizable form — `array(Simd(f32,16), MR)`
+// indexed by a runtime loop var — measured a catastrophic regression: LLVM cannot
+// SROA-promote a dynamically-indexed Simd array, so accumulators fall to the stack
+// and the K-loop becomes ONE memory-round-trip FMA per row (probe: 12 register FMAs
+// → 2 stack FMAs; not ±2%, an order of magnitude). A constant-indexed Simd array
+// DOES promote (12 FMAs, byte-equivalent to the named form) but still requires
+// every unrolled line written by hand — so it dedupes nothing. Keep the explicit
+// unroll; it is the only form that holds the tile in vector registers.
+//
 // 12×32 micro-kernel (C2, the BLIS-family AVX-512 server SGEMM register tile):
 // 12 rows × 32 cols = 24 zmm accumulators. Per k-step: two 16-wide B-loads (the
 // 32-col panel) + 12 A-broadcasts, each broadcast feeding 2 FMAs → 24 FMAs from
