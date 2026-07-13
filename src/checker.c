@@ -3985,753 +3985,13 @@ static void wrap_arg_in_to_str(AstNode **slot)
     *slot = call;
 }
 
-Type *check_expr(Checker *c, AstNode *node)
+/* S3b: extracted verbatim from the check_expr AST_CALL case. The do/while(0)
+   wrapper lets the original switch-level `break;` statements fall through to
+   `return result;` unchanged (this case contains no loops that use break). */
+static Type *check_expr_call(Checker *c, AstNode *node)
 {
-    if (node == NULL)
-        return NULL;
-
     Type *result = NULL;
-
-    switch (node->kind)
-    {
-    case AST_INT_LIT:
-        if (node->as.int_lit.is_char) {
-            result = type_char();
-        } else {
-            /* An int literal that does not fit in i32 is typed i64, otherwise
-               codegen (which emits int literals as i32) would truncate it.
-               e.g. `i64 a = 9000000000`. */
-            long long v = node->as.int_lit.value;
-            result = (v > 2147483647LL || v < -2147483648LL)
-                         ? type_i64() : type_int();
-        }
-        break;
-
-    case AST_FLOAT_LIT:
-        result = type_f64();
-        break;
-
-    case AST_STRING_LIT:
-        /* P5-4 S-2: a string literal IS a (static) Str — the builtin string
-           type is gone. Codegen emits a static Str struct value. */
-        {
-            Type *strt = str_target_of_expected(c->expected_type);
-            if (strt == NULL) strt = checker_str_type(c);
-            if (strt == NULL)
-            {
-                checker_error(c, node->line, node->column,
-                              "string literal requires the Str type from std.core.str "
-                              "(add `import std.core.str`)");
-                result = NULL;
-                break;
-            }
-            result = strt;
-        }
-        break;
-
-    case AST_FORMAT_STRING:
-    {
-        /* The outer f-string's expected type (e.g. Str) must NOT leak into the
-           interpolated exprs — an inner literal would otherwise coerce to Str and
-           fail the printable check below. Clear it for the loop, consult it after. */
-        Type *fstr_expected = c->expected_type;
-        c->expected_type = NULL;
-        /* Type-check each interpolated expression */
-        for (int i = 0; i < node->as.format_string.expr_count; i++)
-        {
-            Type *et = check_expr(c, node->as.format_string.exprs[i]);
-            if (et == NULL)
-                continue;
-            /* Stage D: a Show struct/enum interpolates via Show — rewrite to
-               to_str(expr) (Str), then fall through to the printable check (Str
-               passes). Mirrors print()'s C-2 rewrite. */
-            if (type_is_show_aggregate(c, et))
-            {
-                wrap_arg_in_to_str(&node->as.format_string.exprs[i]);
-                et = check_expr(c, node->as.format_string.exprs[i]);
-                if (et == NULL)
-                    continue;
-            }
-            /* Ensure the expression is a printable type. The pure-LS `Str` is
-               printable too (interpolated via "%.*s" by codegen). */
-            if (!type_is_numeric(et) && et->kind != TYPE_BOOL && et->kind != TYPE_POINTER && et->kind != TYPE_OBJECT && !type_is_str_struct(et))
-            {
-                checker_error(c, node->as.format_string.exprs[i]->line,
-                              node->as.format_string.exprs[i]->column,
-                              "cannot interpolate type '%s' in format string",
-                              type_name(et));
-            }
-        }
-        c->expected_type = fstr_expected;
-        /* P5-4 S-2: an f-string IS an OWNED Str rvalue (the formatted heap
-           buffer wrapped as Str, cap>0), routed through the unified has_drop
-           temp/drop path. In a read-only `&Str` position the owned rvalue is
-           auto-borrowed via the generic struct-arg spill. */
-        {
-            Type *strt = str_target_of_expected(fstr_expected);
-            if (strt == NULL) strt = checker_str_type(c);
-            if (strt == NULL)
-            {
-                checker_error(c, node->line, node->column,
-                              "f-string requires the Str type from std.core.str "
-                              "(add `import std.core.str`)");
-                result = NULL;
-                break;
-            }
-            result = strt;
-        }
-        break;
-    }
-
-    case AST_MAP_LIT:
-    {
-        /* If resolved_type was already set (by check_stmt VAR_DECL special-case),
-           just return it — the pairs were already checked against declared K,V. */
-        if (node->resolved_type)
-        {
-            result = node->resolved_type;
-            break;
-        }
-
-        int count = node->as.map_lit.pair_count;
-        if (count == 0)
-        {
-            /* `{}` only infers its type in a typed declaration / field / arg
-               position. In an assignment (`v = {}`) there is no type to infer
-               here — point at the two real options instead of the bare error. */
-            checker_error(c, node->line, node->column,
-                          "empty `{}` has no inferable type here; use it in a typed "
-                          "declaration (e.g. `Vec(T) v = {}` / `Map(K,V) m = {}`), "
-                          "or to empty an existing container call `v.clear()` "
-                          "instead of `v = {}`");
-            result = NULL;
-            break;
-        }
-        checker_error(c, node->line, node->column,
-                      "key-value literal requires an expected type with __from_pairs");
-        result = NULL;
-        break;
-    }
-
-    case AST_ARRAY_LIT:
-    {
-        /* If resolved_type was already set (by check_stmt VAR_DECL special-case
-           for vec(T) v = [..]), just return it — elements were already checked. */
-        if (node->resolved_type)
-        {
-            result = node->resolved_type;
-            break;
-        }
-
-        /* Infer element type from first element, check all others match */
-        int count = node->as.array_lit.count;
-        if (count == 0)
-        {
-            checker_error(c, node->line, node->column,
-                          "empty array literal (cannot infer element type)");
-            result = NULL;
-            break;
-        }
-        Type *elem_type = check_expr(c, node->as.array_lit.elements[0]);
-        if (elem_type == NULL)
-        {
-            result = NULL;
-            break;
-        }
-        for (int i = 1; i < count; i++)
-        {
-            Type *et = check_expr(c, node->as.array_lit.elements[i]);
-            if (et == NULL)
-                continue;
-            if (!type_equals(elem_type, et))
-            {
-                checker_error(c, node->as.array_lit.elements[i]->line,
-                              node->as.array_lit.elements[i]->column,
-                              "array element type mismatch: expected '%s', got '%s'",
-                              type_name(elem_type), type_name(et));
-            }
-        }
-        result = type_array(elem_type, count);
-        break;
-    }
-
-    case AST_BOOL_LIT:
-        result = type_bool();
-        break;
-
-    case AST_NIL_LIT:
-        result = type_nil();
-        break;
-
-    case AST_IDENT:
-    {
-        /* If the identifier is a builtin function, don't report "undefined variable" */
-        if (is_builtin_function(node->as.ident.name))
-        {
-            result = NULL; /* Signal to caller to check for builtin */
-            break;
-        }
-        Symbol *sym = scope_resolve(c->current_scope, node->as.ident.name);
-        if (sym == NULL)
-        {
-            /* Ambient builtin module: a generic method body (e.g. std.tensor's
-               exp/sigmoid/tanh using `math.exp`) is re-checked at the CONSUMER
-               site, where an `import math` alias is not in scope — it would
-               otherwise fail with "undefined variable 'math'". A builtin module
-               name (math/perf/...) that is NOT shadowed by a local symbol and
-               has no overriding user .ls file resolves on demand here, mirroring
-               the ambient std.sys.c.* canonical path (match_stdc_prim). A user
-               variable of the same name is found by scope_resolve above, so it
-               always wins. */
-            if (builtin_module_exists(node->as.ident.name) &&
-                !module_user_file_exists(node->as.ident.name, c->source_path))
-            {
-                Type *mt = builtin_module_make_type_merged(c, node->as.ident.name);
-                if (mt)
-                {
-                    node->resolved_type = mt;
-                    result = mt;
-                    break;
-                }
-            }
-            /* Try variant-ctor recognition for no-payload variants (e.g. `Red`, `None`) */
-            Type *enum_type = NULL;
-            int variant_idx = -1;
-            int matches = find_variant(c, node->as.ident.name, &enum_type, &variant_idx);
-            if (matches == 1 && enum_type->as.enom.variants[variant_idx].payload_count == 0)
-            {
-                node->resolved_type = enum_type;
-                result = enum_type;
-                break;
-            }
-            if (matches > 1)
-            {
-                /* Disambiguate by a type hint when available (the node's own prior
-                   resolution, or the expected type — e.g. a typed LHS or a
-                   combinator's pushed result type). */
-                Type *eet = NULL; int evi = -1;
-                if (disambig_variant_by_hint(c, node, node->as.ident.name, &eet, &evi) &&
-                    eet->as.enom.variants[evi].payload_count == 0)
-                {
-                    node->resolved_type = eet;
-                    result = eet;
-                    break;
-                }
-                checker_error(c, node->line, node->column,
-                              "ambiguous variant name '%s' (matches multiple enums; "
-                              "explicit construction or type annotation required)",
-                              node->as.ident.name);
-                result = NULL;
-                break;
-            }
-            if (matches == 1)
-            {
-                checker_error(c, node->line, node->column,
-                              "variant '%s' expects %d payload argument(s); use '%s(...)' to construct",
-                              node->as.ident.name,
-                              enum_type->as.enom.variants[variant_idx].payload_count,
-                              node->as.ident.name);
-                result = NULL;
-                break;
-            }
-            /* #3 hint: a bare dotted import (`import std.text.csv`) binds only
-               the full path, not the short segment. If `name` is the last
-               segment of an imported module's path, the user almost certainly
-               meant a namespaced call (`csv.parse`) — point them at the alias
-               form instead of a bare "undefined variable". */
-            const char *modpath = NULL;
-            {
-                size_t nl = strlen(node->as.ident.name);
-                for (Scope *sc = c->current_scope; sc && !modpath; sc = sc->parent)
-                {
-                    for (int si = 0; si < sc->count; si++)
-                    {
-                        Type *st = sc->symbols[si].type;
-                        const char *sn = sc->symbols[si].name;
-                        if (st && st->kind == TYPE_MODULE && sn)
-                        {
-                            size_t snl = strlen(sn);
-                            if (snl > nl + 1 && sn[snl - nl - 1] == '.' &&
-                                strcmp(sn + snl - nl, node->as.ident.name) == 0)
-                            {
-                                modpath = sn;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if (modpath)
-                checker_error(c, node->line, node->column,
-                              "undefined variable '%s'; for module '%s' add an alias: "
-                              "`import %s as %s` (a plain dotted import binds only the "
-                              "full path)", node->as.ident.name, modpath, modpath,
-                              node->as.ident.name);
-            else
-            {
-                char helpbuf[256];
-                DiagScopeIter it = { c->current_scope, 0 };
-                const char *help = diag_help_suggestion(
-                    helpbuf, sizeof(helpbuf), node->as.ident.name,
-                    diag_scope_iter_next, &it);
-                checker_error_help(c, node->line, node->column,
-                                   (int)strlen(node->as.ident.name), help,
-                                   "undefined variable '%s'", node->as.ident.name);
-            }
-            result = NULL;
-        }
-        else if (sym->is_comptime_const)
-        {
-            /* docs/plan_comptime_consteval.md: fold the reference into a literal in
-               place — codegen never sees the name, only the constant value (zero
-               runtime storage / zero codegen). The IDENT and the target literal
-               share the union, so free the ident payload before overwriting. */
-            Type *ct = sym->type;
-            free(node->as.ident.name);
-            if (node->as.ident.type_args) {
-                for (int ti = 0; ti < node->as.ident.type_arg_count; ti++)
-                    type_node_free(node->as.ident.type_args[ti]);
-                free(node->as.ident.type_args);
-            }
-            if (sym->ct_is_float) {
-                node->kind = AST_FLOAT_LIT;
-                node->as.float_lit.value = sym->ct_f;
-            } else if (ct->kind == TYPE_BOOL) {
-                node->kind = AST_BOOL_LIT;
-                node->as.bool_lit.value = (sym->ct_i != 0);
-            } else {
-                node->kind = AST_INT_LIT;
-                node->as.int_lit.value   = sym->ct_i;
-                node->as.int_lit.is_char = (ct->kind == TYPE_CHAR);
-            }
-            node->resolved_type = ct;
-            result = ct;
-        }
-        else
-        {
-            /* Check for use of moved / maybe-moved variable (Phase A/B).
-               MAYBE_MOVED = death: a variable possibly moved on some path is
-               considered unusable even on paths where it would technically be live. */
-            if (sym->is_moved)
-            {
-                checker_move_error(c, node->line, node->column,
-                                   "use of moved variable '%s'", node->as.ident.name);
-            }
-            else if (sym->is_maybe_moved)
-            {
-                checker_move_error(c, node->line, node->column,
-                                   "use of maybe-moved variable '%s' (moved on some control-flow path)",
-                                   node->as.ident.name);
-            }
-            result = sym->type;
-        }
-        break;
-    }
-
-    case AST_MUT_BORROW:
-    {
-        /* &!x — explicit writable borrow. Operand is either an IDENT of an
-           owned, non-moved, non-borrow struct, or a field access `base.field`
-           (writable borrow of a struct field — arg-only, non-escaping). */
-        AstNode *op = node->as.mut_borrow.operand;
-        if (op == NULL || (op->kind != AST_IDENT && op->kind != AST_FIELD))
-        {
-            checker_error(c, node->line, node->column,
-                          "&! requires a variable name or field access "
-                          "(got a non-lvalue expression)");
-            result = NULL;
-            break;
-        }
-        if (op->kind == AST_FIELD)
-        {
-            /* &!base.field — writable borrow of a field. Sound contained
-               subset: the field outlives the call and `&!` is arg-only
-               (borrow extension guards), so it cannot escape. The field may be
-               a struct (Vec/Map/Str/...) or a POD scalar (int/f64/...) — both
-               are valid &!T payloads for a Block(&!T) (e.g. SpinGuard(int)).
-               The access root must be mutable (not a read-only borrow). */
-            Type *ft = check_expr(c, op);
-            if (ft == NULL) { result = NULL; break; }
-            AstNode *root = op;
-            while (root->kind == AST_FIELD)
-                root = root->as.field_access.object;
-            if (root->kind == AST_IDENT)
-            {
-                Symbol *rs = scope_resolve(c->current_scope,
-                                           root->as.ident.name);
-                if (rs != NULL && rs->is_borrow && !rs->is_mut_borrow)
-                {
-                    checker_error(c, node->line, node->column,
-                                  "&!: cannot take writable borrow through "
-                                  "read-only borrow '%s'", root->as.ident.name);
-                    result = NULL;
-                    break;
-                }
-            }
-            op->resolved_type = ft;
-            result = type_mut_reference(ft);
-            break;
-        }
-        Symbol *sym = scope_resolve(c->current_scope, op->as.ident.name);
-        if (sym == NULL)
-        {
-            checker_error(c, node->line, node->column,
-                          "&!: undefined variable '%s'", op->as.ident.name);
-            result = NULL;
-            break;
-        }
-        if (sym->type == NULL || sym->type->kind != TYPE_STRUCT)
-        {
-            checker_error(c, node->line, node->column,
-                              "&!: only &!struct is supported, got &!%s",
-                              sym->type ? type_name(sym->type) : "?");
-            result = NULL;
-            break;
-        }
-        /* Phase B: drop struct mutable borrow now allowed. */
-        if (sym->is_borrow)
-        {
-            checker_error(c, node->line, node->column,
-                          "&!: cannot take writable borrow of read-only borrow '%s'",
-                          op->as.ident.name);
-            result = NULL;
-            break;
-        }
-        if (sym->is_moved || sym->is_maybe_moved)
-        {
-            checker_error(c, node->line, node->column,
-                          "&!: variable '%s' has been moved", op->as.ident.name);
-            result = NULL;
-            break;
-        }
-        /* Write the resolved ident type for downstream use, then return &!T. */
-        op->resolved_type = sym->type;
-        result = type_mut_reference(sym->type);
-        break;
-    }
-
-    case AST_UNARY:
-    {
-        Type *operand = check_expr(c, node->as.unary.operand);
-        if (operand == NULL)
-        {
-            result = NULL;
-            break;
-        }
-
-        switch (node->as.unary.op)
-        {
-        case TOKEN_MINUS:
-            if (!type_is_numeric(operand))
-            {
-                checker_error(c, node->line, node->column,
-                              "unary '-' requires numeric type, got '%s'", type_name(operand));
-                result = NULL;
-            }
-            else
-            {
-                result = operand;
-            }
-            break;
-        case TOKEN_BANG:
-            if (operand->kind != TYPE_BOOL)
-            {
-                checker_error(c, node->line, node->column,
-                              "unary '!' requires bool, got '%s'", type_name(operand));
-                result = NULL;
-            }
-            else
-            {
-                result = type_bool();
-            }
-            break;
-        case TOKEN_TILDE:
-            if (!type_is_integer(operand))
-            {
-                checker_error(c, node->line, node->column,
-                              "unary '~' requires integer type, got '%s'", type_name(operand));
-                result = NULL;
-            }
-            else
-            {
-                result = operand;
-            }
-            break;
-        case TOKEN_AMP:
-            /* &x -> *T */
-            result = type_pointer(operand);
-            break;
-        case TOKEN_STAR:
-            /* *ptr -> dereference */
-            if (operand->kind != TYPE_POINTER)
-            {
-                checker_error(c, node->line, node->column,
-                              "cannot dereference non-pointer type '%s'", type_name(operand));
-                result = NULL;
-            }
-            else
-            {
-                result = operand->as.pointer_to;
-            }
-            break;
-        default:
-            checker_error(c, node->line, node->column, "unknown unary operator");
-            result = NULL;
-            break;
-        }
-        break;
-    }
-
-    case AST_BINARY:
-    {
-        /* Memoize: a binary node is type-checked exactly once during the normal
-           tree walk. The only re-entry is operator-overload lowering, which REUSES
-           the already-checked operands as the lowered call's object/arg (see
-           try_operator_overload). Returning the cached type here makes that re-entry
-           O(1); without it, re-checking would re-lower and recurse into the left
-           subtree — O(2^n) over a `a + b + c + ...` chain. Generic-body re-checks are
-           unaffected (those run on freshly cloned, unresolved nodes). */
-        if (node->resolved_type != NULL)
-        {
-            result = node->resolved_type;
-            break;
-        }
-        Type *left = check_expr(c, node->as.binary.left);
-        Type *right = check_expr(c, node->as.binary.right);
-        if (left == NULL || right == NULL)
-        {
-            result = NULL;
-            break;
-        }
-
-        /* Operator overloading: if the left operand is a struct/enum, try to
-           lower `a OP b` to a user-defined operator-method call. Must run BEFORE
-           the builtin op switch so that struct `==` does not fall into the
-           builtin type_equals path (which would emit invalid IR). */
-        {
-            Type *ov_result = NULL;
-            if (try_operator_overload(c, node, left, right, &ov_result))
-            {
-                result = ov_result;
-                break;
-            }
-        }
-
-        /* SIMD elementwise arithmetic: Simd(T,N) OP Simd(T,N) -> Simd(T,N), for
-           + - * /. Intercepted before the scalar op switch (type_is_numeric is
-           false for Simd, so the scalar path would reject it). */
-        if (left->kind == TYPE_SIMD || right->kind == TYPE_SIMD)
-        {
-            TokenType sop = node->as.binary.op;
-            bool arith = (sop == TOKEN_PLUS || sop == TOKEN_MINUS ||
-                          sop == TOKEN_STAR || sop == TOKEN_SLASH);
-            if (!arith)
-            {
-                checker_error(c, node->line, node->column,
-                    "Simd vectors support only + - * /, got '%s' and '%s'",
-                    type_name(left), type_name(right));
-                result = NULL;
-            }
-            else if (!type_equals(left, right))
-            {
-                checker_error(c, node->line, node->column,
-                    "Simd arithmetic requires matching vector types, got '%s' and '%s'",
-                    type_name(left), type_name(right));
-                result = NULL;
-            }
-            else if (left->kind == TYPE_SIMD && left->as.simd.elem->kind == TYPE_BF16)
-            {
-                /* bf16 has no native vector arithmetic on x86 (it would silently
-                   promote to f32). Per design, reject and steer to f32 accumulation
-                   (load/convert via __simd_cast(f32, v)). */
-                checker_error(c, node->line, node->column,
-                    "bf16 vectors are storage/convert only — no native arithmetic; "
-                    "convert to Simd(f32, N) (e.g. __simd_cast(f32, v)) to compute");
-                result = NULL;
-            }
-            else
-            {
-                result = type_clone(left);
-            }
-            break;
-        }
-
-        switch (node->as.binary.op)
-        {
-        /* Arithmetic: +, -, *, /, % */
-        case TOKEN_PLUS:
-            /* fall through to numeric check */
-        case TOKEN_MINUS:
-        case TOKEN_STAR:
-        case TOKEN_SLASH:
-            if (!type_is_numeric(left) || !type_is_numeric(right))
-            {
-                checker_error(c, node->line, node->column,
-                              "arithmetic operator requires numeric types, got '%s' and '%s'",
-                              type_name(left), type_name(right));
-                result = NULL;
-            }
-            else
-            {
-                Type *common = type_numeric_common(left, right);
-                if (common == NULL)
-                {
-                    checker_error(c, node->line, node->column,
-                                  "type mismatch in arithmetic: '%s' vs '%s' (no implicit widening; use 'as')",
-                                  type_name(left), type_name(right));
-                    result = NULL;
-                }
-                else
-                {
-                    result = common;
-                }
-            }
-            break;
-
-        case TOKEN_PERCENT:
-            if (!type_is_integer(left) || !type_is_integer(right))
-            {
-                checker_error(c, node->line, node->column,
-                              "'%%' requires integer types, got '%s' and '%s'",
-                              type_name(left), type_name(right));
-                result = NULL;
-            }
-            else
-            {
-                Type *common = type_numeric_common(left, right);
-                if (common == NULL)
-                {
-                    checker_error(c, node->line, node->column,
-                                  "type mismatch in '%%': '%s' vs '%s' (no implicit widening; use 'as')",
-                                  type_name(left), type_name(right));
-                    result = NULL;
-                }
-                else
-                {
-                    result = common;
-                }
-            }
-            break;
-
-        /* Bitwise: &, |, ^, <<, >> */
-        case TOKEN_AMP:
-        case TOKEN_PIPE:
-        case TOKEN_CARET:
-            if (!type_is_integer(left) || !type_is_integer(right))
-            {
-                checker_error(c, node->line, node->column,
-                              "bitwise operator requires integer types, got '%s' and '%s'",
-                              type_name(left), type_name(right));
-                result = NULL;
-            }
-            else
-            {
-                Type *common = type_numeric_common(left, right);
-                if (common == NULL)
-                {
-                    checker_error(c, node->line, node->column,
-                                  "type mismatch in bitwise op: '%s' vs '%s' (no implicit widening; use 'as')",
-                                  type_name(left), type_name(right));
-                    result = NULL;
-                }
-                else
-                {
-                    result = common;
-                }
-            }
-            break;
-
-        case TOKEN_LSHIFT:
-        case TOKEN_RSHIFT:
-            if (!type_is_integer(left) || !type_is_integer(right))
-            {
-                checker_error(c, node->line, node->column,
-                              "shift operator requires integer types, got '%s' and '%s'",
-                              type_name(left), type_name(right));
-                result = NULL;
-            }
-            else
-            {
-                result = left;
-            }
-            break;
-
-        /* Comparison: ==, !=, <, >, <=, >= */
-        case TOKEN_EQ:
-        case TOKEN_NEQ:
-            if (type_equals(left, right))
-            {
-                result = type_bool();
-            }
-            else if (type_is_pointer_like(left) && type_is_pointer_like(right))
-            {
-                /* Allow: *T == nil, object == nil, *T == object, etc. */
-                result = type_bool();
-            }
-            else if (type_numeric_common(left, right) != NULL)
-            {
-                /* Allow mixed numeric/char comparisons: 'A' == 65, char vs int, etc. */
-                result = type_bool();
-            }
-            else
-            {
-                checker_error(c, node->line, node->column,
-                              "cannot compare '%s' and '%s' for equality",
-                              type_name(left), type_name(right));
-                result = NULL;
-            }
-            break;
-
-        case TOKEN_LT:
-        case TOKEN_GT:
-        case TOKEN_LEQ:
-        case TOKEN_GEQ:
-            if (!type_is_numeric(left) || !type_is_numeric(right))
-            {
-                checker_error(c, node->line, node->column,
-                              "comparison requires numeric or string types, got '%s' and '%s'",
-                              type_name(left), type_name(right));
-                result = NULL;
-            }
-            else if (type_numeric_common(left, right) == NULL)
-            {
-                checker_error(c, node->line, node->column,
-                              "type mismatch in comparison: '%s' vs '%s' (no implicit widening; use 'as')",
-                              type_name(left), type_name(right));
-                result = NULL;
-            }
-            else
-            {
-                result = type_bool();
-            }
-            break;
-
-        /* Logical: &&, || */
-        case TOKEN_AND:
-        case TOKEN_OR:
-            if (left->kind != TYPE_BOOL || right->kind != TYPE_BOOL)
-            {
-                checker_error(c, node->line, node->column,
-                              "logical operator requires bool, got '%s' and '%s'",
-                              type_name(left), type_name(right));
-                result = NULL;
-            }
-            else
-            {
-                result = type_bool();
-            }
-            break;
-
-        default:
-            checker_error(c, node->line, node->column, "unknown binary operator");
-            result = NULL;
-            break;
-        }
-        break;
-    }
-
-    case AST_CALL:
-    {
+    do {
         /* Slice builtin `s.len()` — the borrowed view's element count. Intercept
            before struct/method dispatch (slices are not structs). */
         if (node->as.call.callee && node->as.call.callee->kind == AST_FIELD &&
@@ -6133,7 +5393,758 @@ Type *check_expr(Checker *c, AstNode *node)
 
         result = args_ok ? callee_type->as.function.return_type : NULL;
         break;
+    } while (0);
+    return result;
+}
+
+Type *check_expr(Checker *c, AstNode *node)
+{
+    if (node == NULL)
+        return NULL;
+
+    Type *result = NULL;
+
+    switch (node->kind)
+    {
+    case AST_INT_LIT:
+        if (node->as.int_lit.is_char) {
+            result = type_char();
+        } else {
+            /* An int literal that does not fit in i32 is typed i64, otherwise
+               codegen (which emits int literals as i32) would truncate it.
+               e.g. `i64 a = 9000000000`. */
+            long long v = node->as.int_lit.value;
+            result = (v > 2147483647LL || v < -2147483648LL)
+                         ? type_i64() : type_int();
+        }
+        break;
+
+    case AST_FLOAT_LIT:
+        result = type_f64();
+        break;
+
+    case AST_STRING_LIT:
+        /* P5-4 S-2: a string literal IS a (static) Str — the builtin string
+           type is gone. Codegen emits a static Str struct value. */
+        {
+            Type *strt = str_target_of_expected(c->expected_type);
+            if (strt == NULL) strt = checker_str_type(c);
+            if (strt == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "string literal requires the Str type from std.core.str "
+                              "(add `import std.core.str`)");
+                result = NULL;
+                break;
+            }
+            result = strt;
+        }
+        break;
+
+    case AST_FORMAT_STRING:
+    {
+        /* The outer f-string's expected type (e.g. Str) must NOT leak into the
+           interpolated exprs — an inner literal would otherwise coerce to Str and
+           fail the printable check below. Clear it for the loop, consult it after. */
+        Type *fstr_expected = c->expected_type;
+        c->expected_type = NULL;
+        /* Type-check each interpolated expression */
+        for (int i = 0; i < node->as.format_string.expr_count; i++)
+        {
+            Type *et = check_expr(c, node->as.format_string.exprs[i]);
+            if (et == NULL)
+                continue;
+            /* Stage D: a Show struct/enum interpolates via Show — rewrite to
+               to_str(expr) (Str), then fall through to the printable check (Str
+               passes). Mirrors print()'s C-2 rewrite. */
+            if (type_is_show_aggregate(c, et))
+            {
+                wrap_arg_in_to_str(&node->as.format_string.exprs[i]);
+                et = check_expr(c, node->as.format_string.exprs[i]);
+                if (et == NULL)
+                    continue;
+            }
+            /* Ensure the expression is a printable type. The pure-LS `Str` is
+               printable too (interpolated via "%.*s" by codegen). */
+            if (!type_is_numeric(et) && et->kind != TYPE_BOOL && et->kind != TYPE_POINTER && et->kind != TYPE_OBJECT && !type_is_str_struct(et))
+            {
+                checker_error(c, node->as.format_string.exprs[i]->line,
+                              node->as.format_string.exprs[i]->column,
+                              "cannot interpolate type '%s' in format string",
+                              type_name(et));
+            }
+        }
+        c->expected_type = fstr_expected;
+        /* P5-4 S-2: an f-string IS an OWNED Str rvalue (the formatted heap
+           buffer wrapped as Str, cap>0), routed through the unified has_drop
+           temp/drop path. In a read-only `&Str` position the owned rvalue is
+           auto-borrowed via the generic struct-arg spill. */
+        {
+            Type *strt = str_target_of_expected(fstr_expected);
+            if (strt == NULL) strt = checker_str_type(c);
+            if (strt == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "f-string requires the Str type from std.core.str "
+                              "(add `import std.core.str`)");
+                result = NULL;
+                break;
+            }
+            result = strt;
+        }
+        break;
     }
+
+    case AST_MAP_LIT:
+    {
+        /* If resolved_type was already set (by check_stmt VAR_DECL special-case),
+           just return it — the pairs were already checked against declared K,V. */
+        if (node->resolved_type)
+        {
+            result = node->resolved_type;
+            break;
+        }
+
+        int count = node->as.map_lit.pair_count;
+        if (count == 0)
+        {
+            /* `{}` only infers its type in a typed declaration / field / arg
+               position. In an assignment (`v = {}`) there is no type to infer
+               here — point at the two real options instead of the bare error. */
+            checker_error(c, node->line, node->column,
+                          "empty `{}` has no inferable type here; use it in a typed "
+                          "declaration (e.g. `Vec(T) v = {}` / `Map(K,V) m = {}`), "
+                          "or to empty an existing container call `v.clear()` "
+                          "instead of `v = {}`");
+            result = NULL;
+            break;
+        }
+        checker_error(c, node->line, node->column,
+                      "key-value literal requires an expected type with __from_pairs");
+        result = NULL;
+        break;
+    }
+
+    case AST_ARRAY_LIT:
+    {
+        /* If resolved_type was already set (by check_stmt VAR_DECL special-case
+           for vec(T) v = [..]), just return it — elements were already checked. */
+        if (node->resolved_type)
+        {
+            result = node->resolved_type;
+            break;
+        }
+
+        /* Infer element type from first element, check all others match */
+        int count = node->as.array_lit.count;
+        if (count == 0)
+        {
+            checker_error(c, node->line, node->column,
+                          "empty array literal (cannot infer element type)");
+            result = NULL;
+            break;
+        }
+        Type *elem_type = check_expr(c, node->as.array_lit.elements[0]);
+        if (elem_type == NULL)
+        {
+            result = NULL;
+            break;
+        }
+        for (int i = 1; i < count; i++)
+        {
+            Type *et = check_expr(c, node->as.array_lit.elements[i]);
+            if (et == NULL)
+                continue;
+            if (!type_equals(elem_type, et))
+            {
+                checker_error(c, node->as.array_lit.elements[i]->line,
+                              node->as.array_lit.elements[i]->column,
+                              "array element type mismatch: expected '%s', got '%s'",
+                              type_name(elem_type), type_name(et));
+            }
+        }
+        result = type_array(elem_type, count);
+        break;
+    }
+
+    case AST_BOOL_LIT:
+        result = type_bool();
+        break;
+
+    case AST_NIL_LIT:
+        result = type_nil();
+        break;
+
+    case AST_IDENT:
+    {
+        /* If the identifier is a builtin function, don't report "undefined variable" */
+        if (is_builtin_function(node->as.ident.name))
+        {
+            result = NULL; /* Signal to caller to check for builtin */
+            break;
+        }
+        Symbol *sym = scope_resolve(c->current_scope, node->as.ident.name);
+        if (sym == NULL)
+        {
+            /* Ambient builtin module: a generic method body (e.g. std.tensor's
+               exp/sigmoid/tanh using `math.exp`) is re-checked at the CONSUMER
+               site, where an `import math` alias is not in scope — it would
+               otherwise fail with "undefined variable 'math'". A builtin module
+               name (math/perf/...) that is NOT shadowed by a local symbol and
+               has no overriding user .ls file resolves on demand here, mirroring
+               the ambient std.sys.c.* canonical path (match_stdc_prim). A user
+               variable of the same name is found by scope_resolve above, so it
+               always wins. */
+            if (builtin_module_exists(node->as.ident.name) &&
+                !module_user_file_exists(node->as.ident.name, c->source_path))
+            {
+                Type *mt = builtin_module_make_type_merged(c, node->as.ident.name);
+                if (mt)
+                {
+                    node->resolved_type = mt;
+                    result = mt;
+                    break;
+                }
+            }
+            /* Try variant-ctor recognition for no-payload variants (e.g. `Red`, `None`) */
+            Type *enum_type = NULL;
+            int variant_idx = -1;
+            int matches = find_variant(c, node->as.ident.name, &enum_type, &variant_idx);
+            if (matches == 1 && enum_type->as.enom.variants[variant_idx].payload_count == 0)
+            {
+                node->resolved_type = enum_type;
+                result = enum_type;
+                break;
+            }
+            if (matches > 1)
+            {
+                /* Disambiguate by a type hint when available (the node's own prior
+                   resolution, or the expected type — e.g. a typed LHS or a
+                   combinator's pushed result type). */
+                Type *eet = NULL; int evi = -1;
+                if (disambig_variant_by_hint(c, node, node->as.ident.name, &eet, &evi) &&
+                    eet->as.enom.variants[evi].payload_count == 0)
+                {
+                    node->resolved_type = eet;
+                    result = eet;
+                    break;
+                }
+                checker_error(c, node->line, node->column,
+                              "ambiguous variant name '%s' (matches multiple enums; "
+                              "explicit construction or type annotation required)",
+                              node->as.ident.name);
+                result = NULL;
+                break;
+            }
+            if (matches == 1)
+            {
+                checker_error(c, node->line, node->column,
+                              "variant '%s' expects %d payload argument(s); use '%s(...)' to construct",
+                              node->as.ident.name,
+                              enum_type->as.enom.variants[variant_idx].payload_count,
+                              node->as.ident.name);
+                result = NULL;
+                break;
+            }
+            /* #3 hint: a bare dotted import (`import std.text.csv`) binds only
+               the full path, not the short segment. If `name` is the last
+               segment of an imported module's path, the user almost certainly
+               meant a namespaced call (`csv.parse`) — point them at the alias
+               form instead of a bare "undefined variable". */
+            const char *modpath = NULL;
+            {
+                size_t nl = strlen(node->as.ident.name);
+                for (Scope *sc = c->current_scope; sc && !modpath; sc = sc->parent)
+                {
+                    for (int si = 0; si < sc->count; si++)
+                    {
+                        Type *st = sc->symbols[si].type;
+                        const char *sn = sc->symbols[si].name;
+                        if (st && st->kind == TYPE_MODULE && sn)
+                        {
+                            size_t snl = strlen(sn);
+                            if (snl > nl + 1 && sn[snl - nl - 1] == '.' &&
+                                strcmp(sn + snl - nl, node->as.ident.name) == 0)
+                            {
+                                modpath = sn;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (modpath)
+                checker_error(c, node->line, node->column,
+                              "undefined variable '%s'; for module '%s' add an alias: "
+                              "`import %s as %s` (a plain dotted import binds only the "
+                              "full path)", node->as.ident.name, modpath, modpath,
+                              node->as.ident.name);
+            else
+            {
+                char helpbuf[256];
+                DiagScopeIter it = { c->current_scope, 0 };
+                const char *help = diag_help_suggestion(
+                    helpbuf, sizeof(helpbuf), node->as.ident.name,
+                    diag_scope_iter_next, &it);
+                checker_error_help(c, node->line, node->column,
+                                   (int)strlen(node->as.ident.name), help,
+                                   "undefined variable '%s'", node->as.ident.name);
+            }
+            result = NULL;
+        }
+        else if (sym->is_comptime_const)
+        {
+            /* docs/plan_comptime_consteval.md: fold the reference into a literal in
+               place — codegen never sees the name, only the constant value (zero
+               runtime storage / zero codegen). The IDENT and the target literal
+               share the union, so free the ident payload before overwriting. */
+            Type *ct = sym->type;
+            free(node->as.ident.name);
+            if (node->as.ident.type_args) {
+                for (int ti = 0; ti < node->as.ident.type_arg_count; ti++)
+                    type_node_free(node->as.ident.type_args[ti]);
+                free(node->as.ident.type_args);
+            }
+            if (sym->ct_is_float) {
+                node->kind = AST_FLOAT_LIT;
+                node->as.float_lit.value = sym->ct_f;
+            } else if (ct->kind == TYPE_BOOL) {
+                node->kind = AST_BOOL_LIT;
+                node->as.bool_lit.value = (sym->ct_i != 0);
+            } else {
+                node->kind = AST_INT_LIT;
+                node->as.int_lit.value   = sym->ct_i;
+                node->as.int_lit.is_char = (ct->kind == TYPE_CHAR);
+            }
+            node->resolved_type = ct;
+            result = ct;
+        }
+        else
+        {
+            /* Check for use of moved / maybe-moved variable (Phase A/B).
+               MAYBE_MOVED = death: a variable possibly moved on some path is
+               considered unusable even on paths where it would technically be live. */
+            if (sym->is_moved)
+            {
+                checker_move_error(c, node->line, node->column,
+                                   "use of moved variable '%s'", node->as.ident.name);
+            }
+            else if (sym->is_maybe_moved)
+            {
+                checker_move_error(c, node->line, node->column,
+                                   "use of maybe-moved variable '%s' (moved on some control-flow path)",
+                                   node->as.ident.name);
+            }
+            result = sym->type;
+        }
+        break;
+    }
+
+    case AST_MUT_BORROW:
+    {
+        /* &!x — explicit writable borrow. Operand is either an IDENT of an
+           owned, non-moved, non-borrow struct, or a field access `base.field`
+           (writable borrow of a struct field — arg-only, non-escaping). */
+        AstNode *op = node->as.mut_borrow.operand;
+        if (op == NULL || (op->kind != AST_IDENT && op->kind != AST_FIELD))
+        {
+            checker_error(c, node->line, node->column,
+                          "&! requires a variable name or field access "
+                          "(got a non-lvalue expression)");
+            result = NULL;
+            break;
+        }
+        if (op->kind == AST_FIELD)
+        {
+            /* &!base.field — writable borrow of a field. Sound contained
+               subset: the field outlives the call and `&!` is arg-only
+               (borrow extension guards), so it cannot escape. The field may be
+               a struct (Vec/Map/Str/...) or a POD scalar (int/f64/...) — both
+               are valid &!T payloads for a Block(&!T) (e.g. SpinGuard(int)).
+               The access root must be mutable (not a read-only borrow). */
+            Type *ft = check_expr(c, op);
+            if (ft == NULL) { result = NULL; break; }
+            AstNode *root = op;
+            while (root->kind == AST_FIELD)
+                root = root->as.field_access.object;
+            if (root->kind == AST_IDENT)
+            {
+                Symbol *rs = scope_resolve(c->current_scope,
+                                           root->as.ident.name);
+                if (rs != NULL && rs->is_borrow && !rs->is_mut_borrow)
+                {
+                    checker_error(c, node->line, node->column,
+                                  "&!: cannot take writable borrow through "
+                                  "read-only borrow '%s'", root->as.ident.name);
+                    result = NULL;
+                    break;
+                }
+            }
+            op->resolved_type = ft;
+            result = type_mut_reference(ft);
+            break;
+        }
+        Symbol *sym = scope_resolve(c->current_scope, op->as.ident.name);
+        if (sym == NULL)
+        {
+            checker_error(c, node->line, node->column,
+                          "&!: undefined variable '%s'", op->as.ident.name);
+            result = NULL;
+            break;
+        }
+        if (sym->type == NULL || sym->type->kind != TYPE_STRUCT)
+        {
+            checker_error(c, node->line, node->column,
+                              "&!: only &!struct is supported, got &!%s",
+                              sym->type ? type_name(sym->type) : "?");
+            result = NULL;
+            break;
+        }
+        /* Phase B: drop struct mutable borrow now allowed. */
+        if (sym->is_borrow)
+        {
+            checker_error(c, node->line, node->column,
+                          "&!: cannot take writable borrow of read-only borrow '%s'",
+                          op->as.ident.name);
+            result = NULL;
+            break;
+        }
+        if (sym->is_moved || sym->is_maybe_moved)
+        {
+            checker_error(c, node->line, node->column,
+                          "&!: variable '%s' has been moved", op->as.ident.name);
+            result = NULL;
+            break;
+        }
+        /* Write the resolved ident type for downstream use, then return &!T. */
+        op->resolved_type = sym->type;
+        result = type_mut_reference(sym->type);
+        break;
+    }
+
+    case AST_UNARY:
+    {
+        Type *operand = check_expr(c, node->as.unary.operand);
+        if (operand == NULL)
+        {
+            result = NULL;
+            break;
+        }
+
+        switch (node->as.unary.op)
+        {
+        case TOKEN_MINUS:
+            if (!type_is_numeric(operand))
+            {
+                checker_error(c, node->line, node->column,
+                              "unary '-' requires numeric type, got '%s'", type_name(operand));
+                result = NULL;
+            }
+            else
+            {
+                result = operand;
+            }
+            break;
+        case TOKEN_BANG:
+            if (operand->kind != TYPE_BOOL)
+            {
+                checker_error(c, node->line, node->column,
+                              "unary '!' requires bool, got '%s'", type_name(operand));
+                result = NULL;
+            }
+            else
+            {
+                result = type_bool();
+            }
+            break;
+        case TOKEN_TILDE:
+            if (!type_is_integer(operand))
+            {
+                checker_error(c, node->line, node->column,
+                              "unary '~' requires integer type, got '%s'", type_name(operand));
+                result = NULL;
+            }
+            else
+            {
+                result = operand;
+            }
+            break;
+        case TOKEN_AMP:
+            /* &x -> *T */
+            result = type_pointer(operand);
+            break;
+        case TOKEN_STAR:
+            /* *ptr -> dereference */
+            if (operand->kind != TYPE_POINTER)
+            {
+                checker_error(c, node->line, node->column,
+                              "cannot dereference non-pointer type '%s'", type_name(operand));
+                result = NULL;
+            }
+            else
+            {
+                result = operand->as.pointer_to;
+            }
+            break;
+        default:
+            checker_error(c, node->line, node->column, "unknown unary operator");
+            result = NULL;
+            break;
+        }
+        break;
+    }
+
+    case AST_BINARY:
+    {
+        /* Memoize: a binary node is type-checked exactly once during the normal
+           tree walk. The only re-entry is operator-overload lowering, which REUSES
+           the already-checked operands as the lowered call's object/arg (see
+           try_operator_overload). Returning the cached type here makes that re-entry
+           O(1); without it, re-checking would re-lower and recurse into the left
+           subtree — O(2^n) over a `a + b + c + ...` chain. Generic-body re-checks are
+           unaffected (those run on freshly cloned, unresolved nodes). */
+        if (node->resolved_type != NULL)
+        {
+            result = node->resolved_type;
+            break;
+        }
+        Type *left = check_expr(c, node->as.binary.left);
+        Type *right = check_expr(c, node->as.binary.right);
+        if (left == NULL || right == NULL)
+        {
+            result = NULL;
+            break;
+        }
+
+        /* Operator overloading: if the left operand is a struct/enum, try to
+           lower `a OP b` to a user-defined operator-method call. Must run BEFORE
+           the builtin op switch so that struct `==` does not fall into the
+           builtin type_equals path (which would emit invalid IR). */
+        {
+            Type *ov_result = NULL;
+            if (try_operator_overload(c, node, left, right, &ov_result))
+            {
+                result = ov_result;
+                break;
+            }
+        }
+
+        /* SIMD elementwise arithmetic: Simd(T,N) OP Simd(T,N) -> Simd(T,N), for
+           + - * /. Intercepted before the scalar op switch (type_is_numeric is
+           false for Simd, so the scalar path would reject it). */
+        if (left->kind == TYPE_SIMD || right->kind == TYPE_SIMD)
+        {
+            TokenType sop = node->as.binary.op;
+            bool arith = (sop == TOKEN_PLUS || sop == TOKEN_MINUS ||
+                          sop == TOKEN_STAR || sop == TOKEN_SLASH);
+            if (!arith)
+            {
+                checker_error(c, node->line, node->column,
+                    "Simd vectors support only + - * /, got '%s' and '%s'",
+                    type_name(left), type_name(right));
+                result = NULL;
+            }
+            else if (!type_equals(left, right))
+            {
+                checker_error(c, node->line, node->column,
+                    "Simd arithmetic requires matching vector types, got '%s' and '%s'",
+                    type_name(left), type_name(right));
+                result = NULL;
+            }
+            else if (left->kind == TYPE_SIMD && left->as.simd.elem->kind == TYPE_BF16)
+            {
+                /* bf16 has no native vector arithmetic on x86 (it would silently
+                   promote to f32). Per design, reject and steer to f32 accumulation
+                   (load/convert via __simd_cast(f32, v)). */
+                checker_error(c, node->line, node->column,
+                    "bf16 vectors are storage/convert only — no native arithmetic; "
+                    "convert to Simd(f32, N) (e.g. __simd_cast(f32, v)) to compute");
+                result = NULL;
+            }
+            else
+            {
+                result = type_clone(left);
+            }
+            break;
+        }
+
+        switch (node->as.binary.op)
+        {
+        /* Arithmetic: +, -, *, /, % */
+        case TOKEN_PLUS:
+            /* fall through to numeric check */
+        case TOKEN_MINUS:
+        case TOKEN_STAR:
+        case TOKEN_SLASH:
+            if (!type_is_numeric(left) || !type_is_numeric(right))
+            {
+                checker_error(c, node->line, node->column,
+                              "arithmetic operator requires numeric types, got '%s' and '%s'",
+                              type_name(left), type_name(right));
+                result = NULL;
+            }
+            else
+            {
+                Type *common = type_numeric_common(left, right);
+                if (common == NULL)
+                {
+                    checker_error(c, node->line, node->column,
+                                  "type mismatch in arithmetic: '%s' vs '%s' (no implicit widening; use 'as')",
+                                  type_name(left), type_name(right));
+                    result = NULL;
+                }
+                else
+                {
+                    result = common;
+                }
+            }
+            break;
+
+        case TOKEN_PERCENT:
+            if (!type_is_integer(left) || !type_is_integer(right))
+            {
+                checker_error(c, node->line, node->column,
+                              "'%%' requires integer types, got '%s' and '%s'",
+                              type_name(left), type_name(right));
+                result = NULL;
+            }
+            else
+            {
+                Type *common = type_numeric_common(left, right);
+                if (common == NULL)
+                {
+                    checker_error(c, node->line, node->column,
+                                  "type mismatch in '%%': '%s' vs '%s' (no implicit widening; use 'as')",
+                                  type_name(left), type_name(right));
+                    result = NULL;
+                }
+                else
+                {
+                    result = common;
+                }
+            }
+            break;
+
+        /* Bitwise: &, |, ^, <<, >> */
+        case TOKEN_AMP:
+        case TOKEN_PIPE:
+        case TOKEN_CARET:
+            if (!type_is_integer(left) || !type_is_integer(right))
+            {
+                checker_error(c, node->line, node->column,
+                              "bitwise operator requires integer types, got '%s' and '%s'",
+                              type_name(left), type_name(right));
+                result = NULL;
+            }
+            else
+            {
+                Type *common = type_numeric_common(left, right);
+                if (common == NULL)
+                {
+                    checker_error(c, node->line, node->column,
+                                  "type mismatch in bitwise op: '%s' vs '%s' (no implicit widening; use 'as')",
+                                  type_name(left), type_name(right));
+                    result = NULL;
+                }
+                else
+                {
+                    result = common;
+                }
+            }
+            break;
+
+        case TOKEN_LSHIFT:
+        case TOKEN_RSHIFT:
+            if (!type_is_integer(left) || !type_is_integer(right))
+            {
+                checker_error(c, node->line, node->column,
+                              "shift operator requires integer types, got '%s' and '%s'",
+                              type_name(left), type_name(right));
+                result = NULL;
+            }
+            else
+            {
+                result = left;
+            }
+            break;
+
+        /* Comparison: ==, !=, <, >, <=, >= */
+        case TOKEN_EQ:
+        case TOKEN_NEQ:
+            if (type_equals(left, right))
+            {
+                result = type_bool();
+            }
+            else if (type_is_pointer_like(left) && type_is_pointer_like(right))
+            {
+                /* Allow: *T == nil, object == nil, *T == object, etc. */
+                result = type_bool();
+            }
+            else if (type_numeric_common(left, right) != NULL)
+            {
+                /* Allow mixed numeric/char comparisons: 'A' == 65, char vs int, etc. */
+                result = type_bool();
+            }
+            else
+            {
+                checker_error(c, node->line, node->column,
+                              "cannot compare '%s' and '%s' for equality",
+                              type_name(left), type_name(right));
+                result = NULL;
+            }
+            break;
+
+        case TOKEN_LT:
+        case TOKEN_GT:
+        case TOKEN_LEQ:
+        case TOKEN_GEQ:
+            if (!type_is_numeric(left) || !type_is_numeric(right))
+            {
+                checker_error(c, node->line, node->column,
+                              "comparison requires numeric or string types, got '%s' and '%s'",
+                              type_name(left), type_name(right));
+                result = NULL;
+            }
+            else if (type_numeric_common(left, right) == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "type mismatch in comparison: '%s' vs '%s' (no implicit widening; use 'as')",
+                              type_name(left), type_name(right));
+                result = NULL;
+            }
+            else
+            {
+                result = type_bool();
+            }
+            break;
+
+        /* Logical: &&, || */
+        case TOKEN_AND:
+        case TOKEN_OR:
+            if (left->kind != TYPE_BOOL || right->kind != TYPE_BOOL)
+            {
+                checker_error(c, node->line, node->column,
+                              "logical operator requires bool, got '%s' and '%s'",
+                              type_name(left), type_name(right));
+                result = NULL;
+            }
+            else
+            {
+                result = type_bool();
+            }
+            break;
+
+        default:
+            checker_error(c, node->line, node->column, "unknown binary operator");
+            result = NULL;
+            break;
+        }
+        break;
+    }
+
+    case AST_CALL:
+        result = check_expr_call(c, node);
+        break;
 
     case AST_INDEX:
     {
