@@ -8423,6 +8423,151 @@ static void comptime_expand_block(Checker *c, AstNode *block)
 
 /* ---- Statement checking ---- */
 
+/* S3b: extracted from the check_stmt dispatcher switch. Each function is the
+   verbatim case body wrapped in `do { ... } while (0)` so the original
+   switch-level `break;` statements flow to the end unchanged (no loops inside
+   these cases use `break`/`continue`, so the wrapper is behavior-preserving). */
+static void check_stmt_return(Checker *c, AstNode *node)
+{
+    do {
+        if (c->current_fn_return == NULL)
+        {
+            /* Inference mode (map() return type): capture type instead of erroring. */
+            if (c->closure_infer_return_slot && node->as.return_stmt.value)
+            {
+                bool saved_in_return = c->in_return_expr;
+                c->in_return_expr = true;
+                Type *val = check_expr(c, node->as.return_stmt.value);
+                c->in_return_expr = saved_in_return;
+                if (*c->closure_infer_return_slot == NULL)
+                    *c->closure_infer_return_slot = val;
+                break;
+            }
+            checker_error(c, node->line, node->column, "return outside of function");
+            break;
+        }
+        if (node->as.return_stmt.value)
+        {
+            /* Mark as being in return expression - prevents move semantics on the returned var */
+            bool saved_in_return = c->in_return_expr;
+            c->in_return_expr = true;
+
+            /* Plumb expected_type so bare variant ctors (e.g. `Err("msg")`) in
+               `return` can disambiguate against the function's declared return
+               type when several Result/Option instantiations are in scope. */
+            Type *saved_expected = c->expected_type;
+            c->expected_type = c->current_fn_return;
+            Type *val = check_expr(c, node->as.return_stmt.value);
+            c->expected_type = saved_expected;
+            if (c->current_fn_return->kind == TYPE_SLICE)
+            {
+                /* Slice return under single-input elision: the returned view must
+                   be a slice of matching element type, rooted at the one borrow
+                   input (`self.field[a..b]` → self). A view of a local/temporary
+                   would dangle. */
+                Type *want = c->current_fn_return;
+                if (val != NULL && (val->kind != TYPE_SLICE ||
+                    !type_equals(val->as.array.elem, want->as.array.elem)))
+                {
+                    checker_error(c, node->line, node->column,
+                                  "return type mismatch: expected '%s', got '%s'",
+                                  type_name(want), type_name(val));
+                }
+                Symbol *root = node->as.return_stmt.value
+                    ? checker_place_root_symbol(c, node->as.return_stmt.value) : NULL;
+                if (root == NULL || !(root->is_borrow || root->is_mut_borrow))
+                {
+                    checker_error(c, node->line, node->column,
+                        "a returned slice must derive from the `&self` / borrow "
+                        "parameter (e.g. `self.field[a..b]`); cannot return a view "
+                        "of a local or temporary — it would dangle");
+                }
+            }
+            else if (c->current_fn_return->kind == TYPE_REFERENCE)
+            {
+                /* Phase 2 (borrow extension): the function returns a borrow (&T
+                   / &!T). The returned expression must be a PLACE rooted at the
+                   single borrow input (`self` / a borrow parameter) whose pointee
+                   matches — escape analysis: a borrow of a LOCAL or temporary
+                   would dangle once the function returns. The generic
+                   type_assignable path is skipped here: `&!T ← T` is not a normal
+                   auto-borrow, but returning the place of a `&!self` IS sound. */
+                Type *pointee = c->current_fn_return->as.pointer_to;
+                Type *vp = (val && val->kind == TYPE_REFERENCE)
+                               ? val->as.pointer_to : val;
+                if (vp != NULL && pointee != NULL && !type_equals(vp, pointee))
+                {
+                    checker_error(c, node->line, node->column,
+                                  "return type mismatch: expected '%s', got '%s'",
+                                  type_name(c->current_fn_return), type_name(val));
+                }
+                /* v1 scope: borrow returns are AGGREGATE-only (struct/enum, pointer
+                   ABI + field-access auto-deref). A POD-scalar borrow return
+                   (`-> &int`) has no wired value-context auto-deref (`x == 7` would
+                   see `&int`), so reject it clearly. Screened HERE (body check) not
+                   at signature registration so an uncalled generic `get_ref(&self)
+                   ->&T` on a POD instance (e.g. Vec(int)) does not poison the whole
+                   instantiation — only an actual scalar instantiation errors.
+                   Reading a POD element needs no borrow: return by value / `get!`.
+                   (docs/plan_borrow_extension.md "下一步") */
+                if (pointee != NULL && pointee->kind != TYPE_STRUCT &&
+                    pointee->kind != TYPE_ENUM)
+                {
+                    checker_error(c, node->line, node->column,
+                        "cannot return a borrow of a POD scalar (&%s%s): borrow "
+                        "returns are supported for struct/enum elements only — a POD "
+                        "value needs no borrow, return it by value (or use `get!`)",
+                        c->current_fn_return->is_mut ? "!" : "", type_name(pointee));
+                }
+                Symbol *root = node->as.return_stmt.value
+                    ? checker_place_root_symbol(c, node->as.return_stmt.value) : NULL;
+                if (root == NULL || !(root->is_borrow || root->is_mut_borrow))
+                {
+                    checker_error(c, node->line, node->column,
+                        "a returned borrow must derive from the `&self` / borrow "
+                        "parameter (a place like `self` or `self.field`); cannot "
+                        "return a borrow of a local or temporary — it would dangle");
+                }
+                else if (c->current_fn_return->is_mut && root->is_borrow)
+                {
+                    /* Returning &!T but the input is only a read-only borrow. */
+                    checker_error(c, node->line, node->column,
+                        "cannot return a writable borrow `&!` derived from the "
+                        "read-only borrow '%s'", root->name);
+                }
+            }
+            else if (val != NULL && !type_assignable(c->current_fn_return, val))
+            {
+                checker_error(c, node->line, node->column,
+                              "return type mismatch: expected '%s', got '%s'",
+                              type_name(c->current_fn_return), type_name(val));
+            }
+
+            /* Mark returned identifier as is_returning (skip destructor) */
+            if (node->as.return_stmt.value->kind == AST_IDENT)
+            {
+                Symbol *sym = scope_resolve(c->current_scope,
+                                            node->as.return_stmt.value->as.ident.name);
+                if (sym != NULL)
+                {
+                    sym->is_returning = true;
+                }
+            }
+
+            c->in_return_expr = saved_in_return;
+        }
+        else
+        {
+            if (c->current_fn_return->kind != TYPE_VOID)
+            {
+                checker_error(c, node->line, node->column,
+                              "return without value in function returning '%s'",
+                              type_name(c->current_fn_return));
+            }
+        }
+    } while (0);
+}
+
 void check_stmt(Checker *c, AstNode *node)
 {
     if (node == NULL)
@@ -8816,144 +8961,8 @@ void check_stmt(Checker *c, AstNode *node)
     }
 
     case AST_RETURN:
-    {
-        if (c->current_fn_return == NULL)
-        {
-            /* Inference mode (map() return type): capture type instead of erroring. */
-            if (c->closure_infer_return_slot && node->as.return_stmt.value)
-            {
-                bool saved_in_return = c->in_return_expr;
-                c->in_return_expr = true;
-                Type *val = check_expr(c, node->as.return_stmt.value);
-                c->in_return_expr = saved_in_return;
-                if (*c->closure_infer_return_slot == NULL)
-                    *c->closure_infer_return_slot = val;
-                break;
-            }
-            checker_error(c, node->line, node->column, "return outside of function");
-            break;
-        }
-        if (node->as.return_stmt.value)
-        {
-            /* Mark as being in return expression - prevents move semantics on the returned var */
-            bool saved_in_return = c->in_return_expr;
-            c->in_return_expr = true;
-
-            /* Plumb expected_type so bare variant ctors (e.g. `Err("msg")`) in
-               `return` can disambiguate against the function's declared return
-               type when several Result/Option instantiations are in scope. */
-            Type *saved_expected = c->expected_type;
-            c->expected_type = c->current_fn_return;
-            Type *val = check_expr(c, node->as.return_stmt.value);
-            c->expected_type = saved_expected;
-            if (c->current_fn_return->kind == TYPE_SLICE)
-            {
-                /* Slice return under single-input elision: the returned view must
-                   be a slice of matching element type, rooted at the one borrow
-                   input (`self.field[a..b]` → self). A view of a local/temporary
-                   would dangle. */
-                Type *want = c->current_fn_return;
-                if (val != NULL && (val->kind != TYPE_SLICE ||
-                    !type_equals(val->as.array.elem, want->as.array.elem)))
-                {
-                    checker_error(c, node->line, node->column,
-                                  "return type mismatch: expected '%s', got '%s'",
-                                  type_name(want), type_name(val));
-                }
-                Symbol *root = node->as.return_stmt.value
-                    ? checker_place_root_symbol(c, node->as.return_stmt.value) : NULL;
-                if (root == NULL || !(root->is_borrow || root->is_mut_borrow))
-                {
-                    checker_error(c, node->line, node->column,
-                        "a returned slice must derive from the `&self` / borrow "
-                        "parameter (e.g. `self.field[a..b]`); cannot return a view "
-                        "of a local or temporary — it would dangle");
-                }
-            }
-            else if (c->current_fn_return->kind == TYPE_REFERENCE)
-            {
-                /* Phase 2 (borrow extension): the function returns a borrow (&T
-                   / &!T). The returned expression must be a PLACE rooted at the
-                   single borrow input (`self` / a borrow parameter) whose pointee
-                   matches — escape analysis: a borrow of a LOCAL or temporary
-                   would dangle once the function returns. The generic
-                   type_assignable path is skipped here: `&!T ← T` is not a normal
-                   auto-borrow, but returning the place of a `&!self` IS sound. */
-                Type *pointee = c->current_fn_return->as.pointer_to;
-                Type *vp = (val && val->kind == TYPE_REFERENCE)
-                               ? val->as.pointer_to : val;
-                if (vp != NULL && pointee != NULL && !type_equals(vp, pointee))
-                {
-                    checker_error(c, node->line, node->column,
-                                  "return type mismatch: expected '%s', got '%s'",
-                                  type_name(c->current_fn_return), type_name(val));
-                }
-                /* v1 scope: borrow returns are AGGREGATE-only (struct/enum, pointer
-                   ABI + field-access auto-deref). A POD-scalar borrow return
-                   (`-> &int`) has no wired value-context auto-deref (`x == 7` would
-                   see `&int`), so reject it clearly. Screened HERE (body check) not
-                   at signature registration so an uncalled generic `get_ref(&self)
-                   ->&T` on a POD instance (e.g. Vec(int)) does not poison the whole
-                   instantiation — only an actual scalar instantiation errors.
-                   Reading a POD element needs no borrow: return by value / `get!`.
-                   (docs/plan_borrow_extension.md "下一步") */
-                if (pointee != NULL && pointee->kind != TYPE_STRUCT &&
-                    pointee->kind != TYPE_ENUM)
-                {
-                    checker_error(c, node->line, node->column,
-                        "cannot return a borrow of a POD scalar (&%s%s): borrow "
-                        "returns are supported for struct/enum elements only — a POD "
-                        "value needs no borrow, return it by value (or use `get!`)",
-                        c->current_fn_return->is_mut ? "!" : "", type_name(pointee));
-                }
-                Symbol *root = node->as.return_stmt.value
-                    ? checker_place_root_symbol(c, node->as.return_stmt.value) : NULL;
-                if (root == NULL || !(root->is_borrow || root->is_mut_borrow))
-                {
-                    checker_error(c, node->line, node->column,
-                        "a returned borrow must derive from the `&self` / borrow "
-                        "parameter (a place like `self` or `self.field`); cannot "
-                        "return a borrow of a local or temporary — it would dangle");
-                }
-                else if (c->current_fn_return->is_mut && root->is_borrow)
-                {
-                    /* Returning &!T but the input is only a read-only borrow. */
-                    checker_error(c, node->line, node->column,
-                        "cannot return a writable borrow `&!` derived from the "
-                        "read-only borrow '%s'", root->name);
-                }
-            }
-            else if (val != NULL && !type_assignable(c->current_fn_return, val))
-            {
-                checker_error(c, node->line, node->column,
-                              "return type mismatch: expected '%s', got '%s'",
-                              type_name(c->current_fn_return), type_name(val));
-            }
-
-            /* Mark returned identifier as is_returning (skip destructor) */
-            if (node->as.return_stmt.value->kind == AST_IDENT)
-            {
-                Symbol *sym = scope_resolve(c->current_scope,
-                                            node->as.return_stmt.value->as.ident.name);
-                if (sym != NULL)
-                {
-                    sym->is_returning = true;
-                }
-            }
-
-            c->in_return_expr = saved_in_return;
-        }
-        else
-        {
-            if (c->current_fn_return->kind != TYPE_VOID)
-            {
-                checker_error(c, node->line, node->column,
-                              "return without value in function returning '%s'",
-                              type_name(c->current_fn_return));
-            }
-        }
+        check_stmt_return(c, node);
         break;
-    }
 
     case AST_IF:
     {
