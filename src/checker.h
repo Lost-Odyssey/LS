@@ -20,6 +20,17 @@ typedef struct TypeTabEntry {
     Type *type;
 } TypeTabEntry;
 
+/* S1: open-addressing hash index over impl_registry (struct_name -> impl_idx).
+   Runs parallel to the impl_registry array (kept for ordered traversal and the
+   unchanged per-impl method scan, where origin_iface disambiguation lives). The
+   key is the borrowed struct_name; the index only accelerates locating the one
+   impl slot for a receiver — it never touches the method/origin dimension.
+   LS_NO_IMPLTAB=1 bypasses it (legacy linear scan). */
+typedef struct ImplTabEntry {
+    const char *name;   /* struct_name / impl_key, borrowed */
+    int idx;            /* index into impl_registry */
+} ImplTabEntry;
+
 typedef struct Checker {
     Scope *current_scope;       /* Current symbol scope */
     Type *current_fn_return;    /* Expected return type of current function */
@@ -128,6 +139,12 @@ typedef struct Checker {
     } *impl_registry;
     int impl_count;
     int impl_cap;
+
+    /* S1: hash index over impl_registry (struct_name -> impl_idx). Parallel to
+       the array; see ImplTabEntry. LS_NO_IMPLTAB=1 bypasses it. */
+    ImplTabEntry *impl_tab;
+    int impl_tab_cap;
+    int impl_tab_count;
 
     /* Trait registry — trait declarations with method signatures.
        Registered in forward_pass from AST_TRAIT_DECL nodes. */

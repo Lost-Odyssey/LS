@@ -55,6 +55,7 @@ static Type *try_instantiate_method_level_generic(Checker *c, const char *impl_k
 static const char *type_impl_name(Type *t);
 static bool type_is_str_struct(const Type *t);
 static void comptime_expand_block(Checker *c, AstNode *block);
+static int find_impl_idx(Checker *c, const char *struct_name);
 
 /* ---- Stdlib gate ----
    Internal builtins (named with `__` prefix by convention) are only callable
@@ -215,10 +216,8 @@ static const char *diag_method_iter_next(void *ctx)
     if (!it->impl_found) {
         if (it->impl_key == NULL)
             return NULL;
-        while (it->ii < c->impl_count &&
-               strcmp(c->impl_registry[it->ii].struct_name, it->impl_key) != 0)
-            it->ii++;
-        if (it->ii >= c->impl_count)
+        it->ii = find_impl_idx(c, it->impl_key);
+        if (it->ii < 0)
             return NULL;
         it->impl_found = true;
     }
@@ -447,6 +446,113 @@ static Type *type_tab_find(TypeTabEntry *tab, int cap, const char *name)
         if (strcmp(tab[i].name, name) == 0) return tab[i].type;
         i = (i + 1) & mask;
     }
+}
+
+/* --- S1: impl_registry hash index (struct_name -> impl_idx) --------------- */
+/* Mirrors the type-tab scheme above. Only the outer "locate the impl slot for
+   this receiver" step is hashed; the per-impl method scan (and all origin_iface
+   disambiguation) stays linear and byte-identical to the legacy path. */
+
+/* LS_NO_IMPLTAB=1 → skip the hash index, fall back to the linear array scan
+   (safety valve, mirrors LS_NO_TYPETAB). */
+static bool impl_tab_disabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) cached = getenv("LS_NO_IMPLTAB") ? 1 : 0;
+    return cached != 0;
+}
+
+/* LS_IMPLTAB_VERIFY=1 → cross-check every hashed lookup against a fresh linear
+   scan and abort on any mismatch (construction-time parity oracle). */
+static bool impl_tab_verify(void)
+{
+    static int cached = -1;
+    if (cached < 0) cached = getenv("LS_IMPLTAB_VERIFY") ? 1 : 0;
+    return cached != 0;
+}
+
+static void impl_tab_grow(ImplTabEntry **tab, int *cap)
+{
+    int oldcap = *cap;
+    ImplTabEntry *old = *tab;
+    int newcap = oldcap < 16 ? 16 : oldcap * 2;
+    ImplTabEntry *nt = malloc_safe((size_t)newcap * sizeof(ImplTabEntry));
+    memset(nt, 0, (size_t)newcap * sizeof(ImplTabEntry));
+    unsigned long long mask = (unsigned long long)newcap - 1;
+    for (int i = 0; i < oldcap; i++) {
+        if (old[i].name == NULL) continue;
+        unsigned long long j = type_name_hash(old[i].name) & mask;
+        while (nt[j].name != NULL) j = (j + 1) & mask;
+        nt[j] = old[i];
+    }
+    free(old);
+    *tab = nt;
+    *cap = newcap;
+}
+
+/* Insert struct_name->idx. Keeps the FIRST entry on a duplicate name (matching
+   find_or_create_impl, which reuses the earliest slot for a repeated name). */
+static void impl_tab_insert(Checker *c, const char *name, int idx)
+{
+    if (impl_tab_disabled()) return;
+    if (c->impl_tab_cap == 0 || (c->impl_tab_count + 1) * 10 >= c->impl_tab_cap * 7)
+        impl_tab_grow(&c->impl_tab, &c->impl_tab_cap);
+    unsigned long long mask = (unsigned long long)c->impl_tab_cap - 1;
+    unsigned long long i = type_name_hash(name) & mask;
+    for (;;) {
+        if (c->impl_tab[i].name == NULL) {
+            c->impl_tab[i].name = name;
+            c->impl_tab[i].idx = idx;
+            c->impl_tab_count++;
+            return;
+        }
+        if (strcmp(c->impl_tab[i].name, name) == 0) return;  /* keep first */
+        i = (i + 1) & mask;
+    }
+}
+
+/* Linear scan for the impl slot keyed by struct_name; -1 if absent. This is the
+   legacy behaviour, reused by the LS_NO_IMPLTAB fallback and the verify oracle. */
+static int impl_idx_linear(Checker *c, const char *struct_name)
+{
+    for (int i = 0; i < c->impl_count; i++)
+        if (strcmp(c->impl_registry[i].struct_name, struct_name) == 0)
+            return i;
+    return -1;
+}
+
+/* Locate the impl_registry index for a receiver's struct_name, or -1. Hashed by
+   default; linear under LS_NO_IMPLTAB. Under LS_IMPLTAB_VERIFY, both run and any
+   divergence aborts. */
+static int find_impl_idx(Checker *c, const char *struct_name)
+{
+    if (impl_tab_disabled())
+        return impl_idx_linear(c, struct_name);
+
+    int found = -1;
+    if (c->impl_tab_cap != 0) {
+        unsigned long long mask = (unsigned long long)c->impl_tab_cap - 1;
+        unsigned long long i = type_name_hash(struct_name) & mask;
+        for (;;) {
+            if (c->impl_tab[i].name == NULL) break;
+            if (strcmp(c->impl_tab[i].name, struct_name) == 0) {
+                found = c->impl_tab[i].idx;
+                break;
+            }
+            i = (i + 1) & mask;
+        }
+    }
+
+    if (impl_tab_verify()) {
+        int lin = impl_idx_linear(c, struct_name);
+        if (lin != found) {
+            fprintf(stderr,
+                "[impltab] parity mismatch for '%s': hash=%d linear=%d\n",
+                struct_name, found, lin);
+            abort();
+        }
+    }
+    return found;
 }
 
 void register_struct_type(Checker *c, const char *name, Type *type)
@@ -1038,11 +1144,9 @@ const char *impl_key_of_type(const Type *t)
 
 int find_or_create_impl(Checker *c, const char *struct_name)
 {
-    for (int i = 0; i < c->impl_count; i++)
-    {
-        if (strcmp(c->impl_registry[i].struct_name, struct_name) == 0)
-            return i;
-    }
+    int existing = find_impl_idx(c, struct_name);
+    if (existing >= 0)
+        return existing;
     if (c->impl_count >= c->impl_cap)
     {
         c->impl_cap = GROW_CAPACITY(c->impl_cap);
@@ -1054,6 +1158,7 @@ int find_or_create_impl(Checker *c, const char *struct_name)
     c->impl_registry[idx].methods = NULL;
     c->impl_registry[idx].method_count = 0;
     c->impl_registry[idx].method_cap = 0;
+    impl_tab_insert(c, struct_name, idx);
     return idx;
 }
 
@@ -1146,22 +1251,18 @@ bool register_method(Checker *c, int impl_idx, const char *name,
 static int method_self_borrow_kind(Checker *c, const char *struct_name,
                                    const char *method_name)
 {
-    for (int i = 0; i < c->impl_count; i++)
+    int i = find_impl_idx(c, struct_name);
+    if (i < 0) return 0;
+    int fallback = 0; bool found = false;
+    for (int j = 0; j < c->impl_registry[i].method_count; j++)
     {
-        if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
+        if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
             continue;
-        int fallback = 0; bool found = false;
-        for (int j = 0; j < c->impl_registry[i].method_count; j++)
-        {
-            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
-                continue;
-            if (c->impl_registry[i].methods[j].origin_iface == NULL)  /* inherent */
-                return c->impl_registry[i].methods[j].self_borrow_kind;
-            if (!found) { fallback = c->impl_registry[i].methods[j].self_borrow_kind; found = true; }
-        }
-        return fallback;
+        if (c->impl_registry[i].methods[j].origin_iface == NULL)  /* inherent */
+            return c->impl_registry[i].methods[j].self_borrow_kind;
+        if (!found) { fallback = c->impl_registry[i].methods[j].self_borrow_kind; found = true; }
     }
-    return 0;
+    return fallback;
 }
 
 /* Local strdup (checker-owned). */
@@ -1183,23 +1284,19 @@ Type *find_method(Checker *c, const char *struct_name, const char *method_name)
        priority" for bare dispatch. Otherwise return the first (interface) match
        (a bare call that is genuinely ambiguous is rejected earlier at the call
        site; non-contended names have exactly one entry → unchanged). */
-    for (int i = 0; i < c->impl_count; i++)
+    int i = find_impl_idx(c, struct_name);
+    if (i < 0) return NULL;
+    Type *fallback = NULL;
+    for (int j = 0; j < c->impl_registry[i].method_count; j++)
     {
-        if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
+        if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
             continue;
-        Type *fallback = NULL;
-        for (int j = 0; j < c->impl_registry[i].method_count; j++)
-        {
-            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
-                continue;
-            if (c->impl_registry[i].methods[j].origin_iface == NULL)
-                return c->impl_registry[i].methods[j].type;  /* inherent wins */
-            if (fallback == NULL)
-                fallback = c->impl_registry[i].methods[j].type;
-        }
-        return fallback;
+        if (c->impl_registry[i].methods[j].origin_iface == NULL)
+            return c->impl_registry[i].methods[j].type;  /* inherent wins */
+        if (fallback == NULL)
+            fallback = c->impl_registry[i].methods[j].type;
     }
-    return NULL;
+    return fallback;
 }
 
 /* L-002: find a method on `struct_name` whose origin matches `origin`
@@ -1208,22 +1305,18 @@ Type *find_method(Checker *c, const char *struct_name, const char *method_name)
 static Type *find_method_origin(Checker *c, const char *struct_name,
                          const char *method_name, const char *origin)
 {
-    for (int i = 0; i < c->impl_count; i++)
+    int i = find_impl_idx(c, struct_name);
+    if (i < 0) return NULL;
+    for (int j = 0; j < c->impl_registry[i].method_count; j++)
     {
-        if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
+        if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
             continue;
-        for (int j = 0; j < c->impl_registry[i].method_count; j++)
-        {
-            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
-                continue;
-            const char *o = c->impl_registry[i].methods[j].origin_iface;
-            if (origin == NULL) {
-                if (o == NULL) return c->impl_registry[i].methods[j].type;
-            } else if (o != NULL && strcmp(o, origin) == 0) {
-                return c->impl_registry[i].methods[j].type;
-            }
+        const char *o = c->impl_registry[i].methods[j].origin_iface;
+        if (origin == NULL) {
+            if (o == NULL) return c->impl_registry[i].methods[j].type;
+        } else if (o != NULL && strcmp(o, origin) == 0) {
+            return c->impl_registry[i].methods[j].type;
         }
-        return NULL;
     }
     return NULL;
 }
@@ -1236,10 +1329,9 @@ static void method_providers(Checker *c, const char *struct_name, const char *me
                       const char **ia, const char **ib)
 {
     int inh = 0, ifc = 0; const char *a = NULL, *b = NULL;
-    for (int i = 0; i < c->impl_count; i++)
+    int i = find_impl_idx(c, struct_name);
+    if (i >= 0)
     {
-        if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
-            continue;
         for (int j = 0; j < c->impl_registry[i].method_count; j++)
         {
             if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
@@ -1248,7 +1340,6 @@ static void method_providers(Checker *c, const char *struct_name, const char *me
             if (o == NULL) inh++;
             else { ifc++; if (!a) a = o; else if (!b) b = o; }
         }
-        break;
     }
     if (inherent_count) *inherent_count = inh;
     if (iface_count)    *iface_count = ifc;
@@ -1271,22 +1362,18 @@ static bool checker_is_known_interface(Checker *c, const char *name)
 /* Check if a registered method is static. Returns -1 if not found, 0 if instance, 1 if static */
 static int method_is_static(Checker *c, const char *struct_name, const char *method_name)
 {
-    for (int i = 0; i < c->impl_count; i++)
+    int i = find_impl_idx(c, struct_name);
+    if (i < 0) return -1;
+    int fallback = -1;
+    for (int j = 0; j < c->impl_registry[i].method_count; j++)
     {
-        if (strcmp(c->impl_registry[i].struct_name, struct_name) != 0)
+        if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
             continue;
-        int fallback = -1;
-        for (int j = 0; j < c->impl_registry[i].method_count; j++)
-        {
-            if (strcmp(c->impl_registry[i].methods[j].name, method_name) != 0)
-                continue;
-            if (c->impl_registry[i].methods[j].origin_iface == NULL)  /* inherent */
-                return c->impl_registry[i].methods[j].is_static ? 1 : 0;
-            if (fallback < 0) fallback = c->impl_registry[i].methods[j].is_static ? 1 : 0;
-        }
-        return fallback;
+        if (c->impl_registry[i].methods[j].origin_iface == NULL)  /* inherent */
+            return c->impl_registry[i].methods[j].is_static ? 1 : 0;
+        if (fallback < 0) fallback = c->impl_registry[i].methods[j].is_static ? 1 : 0;
     }
-    return -1;
+    return fallback;
 }
 
 /* ---- G1: Generic struct instantiation ---- */
@@ -2554,10 +2641,11 @@ static void ensure_generic_struct_impls_local(Checker *c, Type *st)
         st->as.strukt.name == NULL || st->as.strukt.generic_base == NULL)
         return;
     const char *name = st->as.strukt.name;
-    for (int i = 0; i < c->impl_count; i++)
-        if (strcmp(c->impl_registry[i].struct_name, name) == 0 &&
-            c->impl_registry[i].method_count > 0)
+    {
+        int i = find_impl_idx(c, name);
+        if (i >= 0 && c->impl_registry[i].method_count > 0)
             return; /* already registered locally */
+    }
     /* Prefer the impl template stamped on the type (works even when this
        consumer checker never imported the defining module). Fall back to a
        local template lookup. */
@@ -10181,6 +10269,7 @@ static void checker_teardown(Checker *c, CheckerGenericMethods *out_gm)
         free(c->impl_registry[i].methods);
     }
     free(c->impl_registry);
+    free(c->impl_tab);
     /* Trait registry cleanup */
     for (int i = 0; i < c->trait_count; i++)
     {
@@ -10252,11 +10341,7 @@ static const char *method_display_name(const char *mname)
 
 static void inspect_print_methods(Checker *c, const char *key)
 {
-    int idx = -1;
-    for (int i = 0; i < c->impl_count; i++) {
-        if (c->impl_registry[i].struct_name &&
-            strcmp(c->impl_registry[i].struct_name, key) == 0) { idx = i; break; }
-    }
+    int idx = find_impl_idx(c, key);
     if (idx < 0 || c->impl_registry[idx].method_count == 0) {
         printf("  methods: (none)\n");
         return;
