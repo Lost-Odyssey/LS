@@ -5397,186 +5397,13 @@ static Type *check_expr_call(Checker *c, AstNode *node)
     return result;
 }
 
-Type *check_expr(Checker *c, AstNode *node)
+/* S3b: check_expr big cases extracted as static helpers. Each is the verbatim
+   case body wrapped in do/while(0) so switch-level `break;` flows to
+   `return result;` unchanged (no case below uses break for an inner loop). */
+static Type *check_expr_ident(Checker *c, AstNode *node)
 {
-    if (node == NULL)
-        return NULL;
-
     Type *result = NULL;
-
-    switch (node->kind)
-    {
-    case AST_INT_LIT:
-        if (node->as.int_lit.is_char) {
-            result = type_char();
-        } else {
-            /* An int literal that does not fit in i32 is typed i64, otherwise
-               codegen (which emits int literals as i32) would truncate it.
-               e.g. `i64 a = 9000000000`. */
-            long long v = node->as.int_lit.value;
-            result = (v > 2147483647LL || v < -2147483648LL)
-                         ? type_i64() : type_int();
-        }
-        break;
-
-    case AST_FLOAT_LIT:
-        result = type_f64();
-        break;
-
-    case AST_STRING_LIT:
-        /* P5-4 S-2: a string literal IS a (static) Str — the builtin string
-           type is gone. Codegen emits a static Str struct value. */
-        {
-            Type *strt = str_target_of_expected(c->expected_type);
-            if (strt == NULL) strt = checker_str_type(c);
-            if (strt == NULL)
-            {
-                checker_error(c, node->line, node->column,
-                              "string literal requires the Str type from std.core.str "
-                              "(add `import std.core.str`)");
-                result = NULL;
-                break;
-            }
-            result = strt;
-        }
-        break;
-
-    case AST_FORMAT_STRING:
-    {
-        /* The outer f-string's expected type (e.g. Str) must NOT leak into the
-           interpolated exprs — an inner literal would otherwise coerce to Str and
-           fail the printable check below. Clear it for the loop, consult it after. */
-        Type *fstr_expected = c->expected_type;
-        c->expected_type = NULL;
-        /* Type-check each interpolated expression */
-        for (int i = 0; i < node->as.format_string.expr_count; i++)
-        {
-            Type *et = check_expr(c, node->as.format_string.exprs[i]);
-            if (et == NULL)
-                continue;
-            /* Stage D: a Show struct/enum interpolates via Show — rewrite to
-               to_str(expr) (Str), then fall through to the printable check (Str
-               passes). Mirrors print()'s C-2 rewrite. */
-            if (type_is_show_aggregate(c, et))
-            {
-                wrap_arg_in_to_str(&node->as.format_string.exprs[i]);
-                et = check_expr(c, node->as.format_string.exprs[i]);
-                if (et == NULL)
-                    continue;
-            }
-            /* Ensure the expression is a printable type. The pure-LS `Str` is
-               printable too (interpolated via "%.*s" by codegen). */
-            if (!type_is_numeric(et) && et->kind != TYPE_BOOL && et->kind != TYPE_POINTER && et->kind != TYPE_OBJECT && !type_is_str_struct(et))
-            {
-                checker_error(c, node->as.format_string.exprs[i]->line,
-                              node->as.format_string.exprs[i]->column,
-                              "cannot interpolate type '%s' in format string",
-                              type_name(et));
-            }
-        }
-        c->expected_type = fstr_expected;
-        /* P5-4 S-2: an f-string IS an OWNED Str rvalue (the formatted heap
-           buffer wrapped as Str, cap>0), routed through the unified has_drop
-           temp/drop path. In a read-only `&Str` position the owned rvalue is
-           auto-borrowed via the generic struct-arg spill. */
-        {
-            Type *strt = str_target_of_expected(fstr_expected);
-            if (strt == NULL) strt = checker_str_type(c);
-            if (strt == NULL)
-            {
-                checker_error(c, node->line, node->column,
-                              "f-string requires the Str type from std.core.str "
-                              "(add `import std.core.str`)");
-                result = NULL;
-                break;
-            }
-            result = strt;
-        }
-        break;
-    }
-
-    case AST_MAP_LIT:
-    {
-        /* If resolved_type was already set (by check_stmt VAR_DECL special-case),
-           just return it — the pairs were already checked against declared K,V. */
-        if (node->resolved_type)
-        {
-            result = node->resolved_type;
-            break;
-        }
-
-        int count = node->as.map_lit.pair_count;
-        if (count == 0)
-        {
-            /* `{}` only infers its type in a typed declaration / field / arg
-               position. In an assignment (`v = {}`) there is no type to infer
-               here — point at the two real options instead of the bare error. */
-            checker_error(c, node->line, node->column,
-                          "empty `{}` has no inferable type here; use it in a typed "
-                          "declaration (e.g. `Vec(T) v = {}` / `Map(K,V) m = {}`), "
-                          "or to empty an existing container call `v.clear()` "
-                          "instead of `v = {}`");
-            result = NULL;
-            break;
-        }
-        checker_error(c, node->line, node->column,
-                      "key-value literal requires an expected type with __from_pairs");
-        result = NULL;
-        break;
-    }
-
-    case AST_ARRAY_LIT:
-    {
-        /* If resolved_type was already set (by check_stmt VAR_DECL special-case
-           for vec(T) v = [..]), just return it — elements were already checked. */
-        if (node->resolved_type)
-        {
-            result = node->resolved_type;
-            break;
-        }
-
-        /* Infer element type from first element, check all others match */
-        int count = node->as.array_lit.count;
-        if (count == 0)
-        {
-            checker_error(c, node->line, node->column,
-                          "empty array literal (cannot infer element type)");
-            result = NULL;
-            break;
-        }
-        Type *elem_type = check_expr(c, node->as.array_lit.elements[0]);
-        if (elem_type == NULL)
-        {
-            result = NULL;
-            break;
-        }
-        for (int i = 1; i < count; i++)
-        {
-            Type *et = check_expr(c, node->as.array_lit.elements[i]);
-            if (et == NULL)
-                continue;
-            if (!type_equals(elem_type, et))
-            {
-                checker_error(c, node->as.array_lit.elements[i]->line,
-                              node->as.array_lit.elements[i]->column,
-                              "array element type mismatch: expected '%s', got '%s'",
-                              type_name(elem_type), type_name(et));
-            }
-        }
-        result = type_array(elem_type, count);
-        break;
-    }
-
-    case AST_BOOL_LIT:
-        result = type_bool();
-        break;
-
-    case AST_NIL_LIT:
-        result = type_nil();
-        break;
-
-    case AST_IDENT:
-    {
+    do {
         /* If the identifier is a builtin function, don't report "undefined variable" */
         if (is_builtin_function(node->as.ident.name))
         {
@@ -5738,10 +5565,14 @@ Type *check_expr(Checker *c, AstNode *node)
             result = sym->type;
         }
         break;
-    }
+    } while (0);
+    return result;
+}
 
-    case AST_MUT_BORROW:
-    {
+static Type *check_expr_mut_borrow(Checker *c, AstNode *node)
+{
+    Type *result = NULL;
+    do {
         /* &!x — explicit writable borrow. Operand is either an IDENT of an
            owned, non-moved, non-borrow struct, or a field access `base.field`
            (writable borrow of a struct field — arg-only, non-escaping). */
@@ -5820,82 +5651,14 @@ Type *check_expr(Checker *c, AstNode *node)
         op->resolved_type = sym->type;
         result = type_mut_reference(sym->type);
         break;
-    }
+    } while (0);
+    return result;
+}
 
-    case AST_UNARY:
-    {
-        Type *operand = check_expr(c, node->as.unary.operand);
-        if (operand == NULL)
-        {
-            result = NULL;
-            break;
-        }
-
-        switch (node->as.unary.op)
-        {
-        case TOKEN_MINUS:
-            if (!type_is_numeric(operand))
-            {
-                checker_error(c, node->line, node->column,
-                              "unary '-' requires numeric type, got '%s'", type_name(operand));
-                result = NULL;
-            }
-            else
-            {
-                result = operand;
-            }
-            break;
-        case TOKEN_BANG:
-            if (operand->kind != TYPE_BOOL)
-            {
-                checker_error(c, node->line, node->column,
-                              "unary '!' requires bool, got '%s'", type_name(operand));
-                result = NULL;
-            }
-            else
-            {
-                result = type_bool();
-            }
-            break;
-        case TOKEN_TILDE:
-            if (!type_is_integer(operand))
-            {
-                checker_error(c, node->line, node->column,
-                              "unary '~' requires integer type, got '%s'", type_name(operand));
-                result = NULL;
-            }
-            else
-            {
-                result = operand;
-            }
-            break;
-        case TOKEN_AMP:
-            /* &x -> *T */
-            result = type_pointer(operand);
-            break;
-        case TOKEN_STAR:
-            /* *ptr -> dereference */
-            if (operand->kind != TYPE_POINTER)
-            {
-                checker_error(c, node->line, node->column,
-                              "cannot dereference non-pointer type '%s'", type_name(operand));
-                result = NULL;
-            }
-            else
-            {
-                result = operand->as.pointer_to;
-            }
-            break;
-        default:
-            checker_error(c, node->line, node->column, "unknown unary operator");
-            result = NULL;
-            break;
-        }
-        break;
-    }
-
-    case AST_BINARY:
-    {
+static Type *check_expr_binary(Checker *c, AstNode *node)
+{
+    Type *result = NULL;
+    do {
         /* Memoize: a binary node is type-checked exactly once during the normal
            tree walk. The only re-entry is operator-overload lowering, which REUSES
            the already-checked operands as the lowered call's object/arg (see
@@ -6140,14 +5903,14 @@ Type *check_expr(Checker *c, AstNode *node)
             break;
         }
         break;
-    }
+    } while (0);
+    return result;
+}
 
-    case AST_CALL:
-        result = check_expr_call(c, node);
-        break;
-
-    case AST_INDEX:
-    {
+static Type *check_expr_index(Checker *c, AstNode *node)
+{
+    Type *result = NULL;
+    do {
         /* Multi-subscript t[i, j, ...] -> the arity-specific reserved protocol
            method __index{N} (a generalization of v[i] -> __index). Resolved by
            subscript count, known at parse time; each __index{N} is a fixed-arity
@@ -6321,10 +6084,14 @@ Type *check_expr(Checker *c, AstNode *node)
             result = NULL;
         }
         break;
-    }
+    } while (0);
+    return result;
+}
 
-    case AST_FIELD:
-    {
+static Type *check_expr_field(Checker *c, AstNode *node)
+{
+    Type *result = NULL;
+    do {
         Type *obj = check_expr(c, node->as.field_access.object);
         if (obj == NULL)
         {
@@ -6470,10 +6237,14 @@ Type *check_expr(Checker *c, AstNode *node)
             result = NULL;
         }
         break;
-    }
+    } while (0);
+    return result;
+}
 
-    case AST_CLOSURE:
-    {
+static Type *check_expr_closure(Checker *c, AstNode *node)
+{
+    Type *result = NULL;
+    do {
         int n = node->as.closure.param_count;
         /* Ruby-style literals (`|x| body`, `|| body`) carry is_ruby_form=true
            and inherit their param/return types from the call-site's
@@ -6624,10 +6395,14 @@ Type *check_expr(Checker *c, AstNode *node)
             result = type_function(params, n, ret, false);
         }
         break;
-    }
+    } while (0);
+    return result;
+}
 
-    case AST_MATCH:
-    {
+static Type *check_expr_match(Checker *c, AstNode *node)
+{
+    Type *result = NULL;
+    do {
         /* The subject's type is intrinsic to the subject expression and must not
            be coerced by the match's own expected result type — otherwise a bare
            ctor subject (e.g. lowered `Some(3).map(Str)(...)`) would be checked
@@ -6963,7 +6738,531 @@ Type *check_expr(Checker *c, AstNode *node)
                           type_name(subject), type_name(arm_type));
         result = arm_type;
         break;
+    } while (0);
+    return result;
+}
+
+static Type *check_expr_new_expr(Checker *c, AstNode *node)
+{
+    Type *result = NULL;
+    do {
+        /* Look up the struct type. B-4: module-qualified literal `mod.Type{...}`
+           resolves through the imported module's export table. */
+        Type *st = NULL;
+        /* Anonymous struct literal `{ field: val, ... }` (no type prefix): the
+           parser left struct_name NULL. Infer the struct type from the expected
+           type (LHS of a var-decl / return / arg slot). */
+        if (node->as.new_expr.struct_name == NULL)
+        {
+            if (c->expected_type == NULL || c->expected_type->kind != TYPE_STRUCT)
+            {
+                checker_error(c, node->line, node->column,
+                              "cannot infer struct type for `{...}` literal here "
+                              "(no expected struct type in this context)");
+                result = NULL;
+                break;
+            }
+            st = c->expected_type;
+            /* adopt the inferred name so downstream field lookup / codegen work */
+            size_t snl = strlen(st->as.strukt.name);
+            char *sdup = (char *)malloc_safe(snl + 1);
+            memcpy(sdup, st->as.strukt.name, snl + 1);
+            node->as.new_expr.struct_name = sdup;
+        }
+        else if (node->as.new_expr.module != NULL)
+        {
+            Symbol *modsym = scope_resolve(c->current_scope, node->as.new_expr.module);
+            if (modsym == NULL || modsym->type == NULL ||
+                modsym->type->kind != TYPE_MODULE)
+            {
+                checker_error(c, node->line, node->column,
+                              "unknown module '%s' in '%s.%s{...}'",
+                              node->as.new_expr.module, node->as.new_expr.module,
+                              node->as.new_expr.struct_name);
+                result = NULL;
+                break;
+            }
+            Type *ex = type_module_find_export(modsym->type, node->as.new_expr.struct_name);
+            if (ex == NULL || ex->kind != TYPE_STRUCT)
+            {
+                checker_error(c, node->line, node->column,
+                              "module '%s' has no struct '%s'",
+                              node->as.new_expr.module, node->as.new_expr.struct_name);
+                result = NULL;
+                break;
+            }
+            st = ex;
+        }
+        else
+        {
+            st = find_struct_type(c, node->as.new_expr.struct_name);
+            /* comptime v2 — generic construction: `T{}` / `T{x:..}` where the
+               "struct name" is a type parameter aliased to a concrete struct
+               during instantiation (e.g. `def mk(T)() -> T { return T{} }`).
+               Resolve it through the type-alias table, same as resolve_type_node
+               does for a bare named type. Unlocks write-once construction
+               (generic from_value / builder / transform / zero-init). */
+            if (!st && node->as.new_expr.type_arg_count == 0)
+            {
+                Type *alias = find_type_alias(c, node->as.new_expr.struct_name);
+                if (alias && alias->kind == TYPE_STRUCT)
+                    st = alias;
+            }
+        }
+
+        /* G1: If the parser provided explicit type_args (e.g. Pair(int,string){...}),
+           resolve each arg and instantiate the generic struct template. */
+        if (!st && node->as.new_expr.type_arg_count > 0)
+        {
+            int tac = node->as.new_expr.type_arg_count;
+            Type **resolved_args = malloc(sizeof(Type *) * tac);
+            bool args_ok = true;
+            for (int i = 0; i < tac; i++) {
+                resolved_args[i] = resolve_type_node(c, node->as.new_expr.type_args[i],
+                    node->line, node->column);
+                if (!resolved_args[i]) args_ok = false;
+            }
+            if (args_ok) {
+                st = checker_instantiate_struct(c,
+                    node->as.new_expr.struct_name,
+                    resolved_args, tac,
+                    node->line, node->column);
+            }
+            free(resolved_args);
+        }
+
+        /* G1: struct_name is the base name ("Pair"), but the instantiated type
+           is registered under its mangled name ("Pair(int,string)").  Fall back
+           to expected_type if the base name matches a generic template. */
+        if (!st && c->expected_type && c->expected_type->kind == TYPE_STRUCT)
+        {
+            const char *sname = node->as.new_expr.struct_name;
+            size_t slen = strlen(sname);
+            const char *mangled = c->expected_type->as.strukt.name;
+            /* Check: mangled starts with "sname(" */
+            if (strncmp(mangled, sname, slen) == 0 && mangled[slen] == '(')
+            {
+                st = c->expected_type;
+            }
+        }
+
+        if (!st)
+        {
+            checker_error(c, node->line, node->column,
+                          "unknown struct type '%s'", node->as.new_expr.struct_name);
+            result = NULL;
+            break;
+        }
+        /* Type-check each field initializer */
+        int ninits = node->as.new_expr.field_init_count;
+        for (int i = 0; i < ninits; i++)
+        {
+            const char *fname = node->as.new_expr.field_inits[i].name;
+            /* Check for duplicates */
+            for (int j = 0; j < i; j++)
+            {
+                if (strcmp(node->as.new_expr.field_inits[j].name, fname) == 0)
+                {
+                    checker_error(c, node->line, node->column,
+                                  "duplicate field initializer '%s'", fname);
+                    goto new_expr_done;
+                }
+            }
+            /* Find field in struct */
+            int field_idx = -1;
+            for (int j = 0; j < st->as.strukt.field_count; j++)
+            {
+                if (strcmp(st->as.strukt.fields[j].name, fname) == 0)
+                {
+                    field_idx = j;
+                    break;
+                }
+            }
+            if (field_idx < 0)
+            {
+                checker_error(c, node->line, node->column,
+                              "struct '%s' has no field '%s'",
+                              node->as.new_expr.struct_name, fname);
+                goto new_expr_done;
+            }
+            /* priv field: a struct literal may set it only inside the owning
+               struct's own impl (so external `Guard{value: aliased}` cannot
+               bypass the guard). `{}` zero-init has no field inits → unaffected. */
+            if (st->as.strukt.fields[field_idx].is_private)
+            {
+                Type *cur = c->current_impl_struct_type;
+                const char *want = st->as.strukt.generic_base
+                    ? st->as.strukt.generic_base : st->as.strukt.name;
+                const char *have = (cur && cur->kind == TYPE_STRUCT)
+                    ? (cur->as.strukt.generic_base
+                       ? cur->as.strukt.generic_base : cur->as.strukt.name)
+                    : NULL;
+                if (have == NULL || want == NULL || strcmp(have, want) != 0)
+                {
+                    checker_error(c, node->line, node->column,
+                        "field '%s' of struct '%s' is private "
+                        "(cannot be set in a struct literal outside its methods)",
+                        fname, want ? want : "<anon>");
+                    goto new_expr_done;
+                }
+            }
+            /* Type-check the value; set expected_type so closure literals can
+               infer their param/return types from the field's Block type. */
+            Type *field_expected = st->as.strukt.fields[field_idx].type;
+            checker_tag_user_from_list_literal(c, field_expected,
+                node->as.new_expr.field_inits[i].value, "field list-literal");
+            Type *saved_expected2 = c->expected_type;
+            if (field_expected && (field_expected->kind == TYPE_BLOCK ||
+                                   field_expected->kind == TYPE_STRUCT))
+                c->expected_type = field_expected;
+            Type *vt = check_expr(c, node->as.new_expr.field_inits[i].value);
+            c->expected_type = saved_expected2;
+            if (vt && !type_equals(vt, field_expected))
+            {
+                checker_error(c, node->as.new_expr.field_inits[i].value->line,
+                              node->as.new_expr.field_inits[i].value->column,
+                              "field '%s': expected '%s', got '%s'",
+                              fname,
+                              type_name(field_expected),
+                              type_name(vt));
+            }
+            /* F.3: Block field value ownership transfers into the struct.
+               Mark source identifier as moved so it cannot be used again. */
+            if (vt && vt->kind == TYPE_BLOCK)
+                checker_try_mark_moved(c, node->as.new_expr.field_inits[i].value);
+        }
+        /* Struct field defaults (v1): an omitted field with a declared default
+           takes that default; an omitted field WITHOUT a default keeps LS's
+           existing zero-initialization (struct literals never required all
+           fields). Here we only type-check the defaults that exist. */
+        for (int j = 0; j < st->as.strukt.field_count; j++)
+        {
+            bool provided = false;
+            for (int i = 0; i < ninits; i++)
+            {
+                if (strcmp(node->as.new_expr.field_inits[i].name,
+                           st->as.strukt.fields[j].name) == 0)
+                {
+                    provided = true;
+                    break;
+                }
+            }
+            if (provided)
+                continue;
+            AstNode *deflt = (AstNode *)st->as.strukt.fields[j].default_expr;
+            if (deflt == NULL)
+                continue; /* omitted, no default -> zero-init (existing semantics) */
+            Type *fexp = st->as.strukt.fields[j].type;
+            const char *jfn = st->as.strukt.fields[j].name;
+            if (fexp && fexp->kind == TYPE_STRUCT &&
+                     deflt->kind == AST_ARRAY_LIT &&
+                     deflt->resolved_type == NULL)
+            {
+                checker_tag_user_from_list_literal(c, fexp, deflt,
+                                                   "default list-literal");
+            }
+            Type *saved_def_exp = c->expected_type;
+            if (fexp && (fexp->kind == TYPE_STRUCT || fexp->kind == TYPE_BLOCK))
+                c->expected_type = fexp;
+            Type *dt = check_expr(c, deflt);
+            c->expected_type = saved_def_exp;
+            if (dt && fexp && !type_equals(dt, fexp))
+            {
+                checker_error(c, node->line, node->column,
+                              "default for field '%s': expected '%s', got '%s'",
+                              jfn, type_name(fexp), type_name(dt));
+            }
+        }
+    new_expr_done:
+        /* on_stack = struct value literal  S1{...} → resolves to TYPE_STRUCT
+           !on_stack = new S1{...} (heap) → resolves to *TYPE_STRUCT */
+        result = node->as.new_expr.on_stack ? st : type_pointer(st);
+        break;
+    } while (0);
+    return result;
+}
+
+Type *check_expr(Checker *c, AstNode *node)
+{
+    if (node == NULL)
+        return NULL;
+
+    Type *result = NULL;
+
+    switch (node->kind)
+    {
+    case AST_INT_LIT:
+        if (node->as.int_lit.is_char) {
+            result = type_char();
+        } else {
+            /* An int literal that does not fit in i32 is typed i64, otherwise
+               codegen (which emits int literals as i32) would truncate it.
+               e.g. `i64 a = 9000000000`. */
+            long long v = node->as.int_lit.value;
+            result = (v > 2147483647LL || v < -2147483648LL)
+                         ? type_i64() : type_int();
+        }
+        break;
+
+    case AST_FLOAT_LIT:
+        result = type_f64();
+        break;
+
+    case AST_STRING_LIT:
+        /* P5-4 S-2: a string literal IS a (static) Str — the builtin string
+           type is gone. Codegen emits a static Str struct value. */
+        {
+            Type *strt = str_target_of_expected(c->expected_type);
+            if (strt == NULL) strt = checker_str_type(c);
+            if (strt == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "string literal requires the Str type from std.core.str "
+                              "(add `import std.core.str`)");
+                result = NULL;
+                break;
+            }
+            result = strt;
+        }
+        break;
+
+    case AST_FORMAT_STRING:
+    {
+        /* The outer f-string's expected type (e.g. Str) must NOT leak into the
+           interpolated exprs — an inner literal would otherwise coerce to Str and
+           fail the printable check below. Clear it for the loop, consult it after. */
+        Type *fstr_expected = c->expected_type;
+        c->expected_type = NULL;
+        /* Type-check each interpolated expression */
+        for (int i = 0; i < node->as.format_string.expr_count; i++)
+        {
+            Type *et = check_expr(c, node->as.format_string.exprs[i]);
+            if (et == NULL)
+                continue;
+            /* Stage D: a Show struct/enum interpolates via Show — rewrite to
+               to_str(expr) (Str), then fall through to the printable check (Str
+               passes). Mirrors print()'s C-2 rewrite. */
+            if (type_is_show_aggregate(c, et))
+            {
+                wrap_arg_in_to_str(&node->as.format_string.exprs[i]);
+                et = check_expr(c, node->as.format_string.exprs[i]);
+                if (et == NULL)
+                    continue;
+            }
+            /* Ensure the expression is a printable type. The pure-LS `Str` is
+               printable too (interpolated via "%.*s" by codegen). */
+            if (!type_is_numeric(et) && et->kind != TYPE_BOOL && et->kind != TYPE_POINTER && et->kind != TYPE_OBJECT && !type_is_str_struct(et))
+            {
+                checker_error(c, node->as.format_string.exprs[i]->line,
+                              node->as.format_string.exprs[i]->column,
+                              "cannot interpolate type '%s' in format string",
+                              type_name(et));
+            }
+        }
+        c->expected_type = fstr_expected;
+        /* P5-4 S-2: an f-string IS an OWNED Str rvalue (the formatted heap
+           buffer wrapped as Str, cap>0), routed through the unified has_drop
+           temp/drop path. In a read-only `&Str` position the owned rvalue is
+           auto-borrowed via the generic struct-arg spill. */
+        {
+            Type *strt = str_target_of_expected(fstr_expected);
+            if (strt == NULL) strt = checker_str_type(c);
+            if (strt == NULL)
+            {
+                checker_error(c, node->line, node->column,
+                              "f-string requires the Str type from std.core.str "
+                              "(add `import std.core.str`)");
+                result = NULL;
+                break;
+            }
+            result = strt;
+        }
+        break;
     }
+
+    case AST_MAP_LIT:
+    {
+        /* If resolved_type was already set (by check_stmt VAR_DECL special-case),
+           just return it — the pairs were already checked against declared K,V. */
+        if (node->resolved_type)
+        {
+            result = node->resolved_type;
+            break;
+        }
+
+        int count = node->as.map_lit.pair_count;
+        if (count == 0)
+        {
+            /* `{}` only infers its type in a typed declaration / field / arg
+               position. In an assignment (`v = {}`) there is no type to infer
+               here — point at the two real options instead of the bare error. */
+            checker_error(c, node->line, node->column,
+                          "empty `{}` has no inferable type here; use it in a typed "
+                          "declaration (e.g. `Vec(T) v = {}` / `Map(K,V) m = {}`), "
+                          "or to empty an existing container call `v.clear()` "
+                          "instead of `v = {}`");
+            result = NULL;
+            break;
+        }
+        checker_error(c, node->line, node->column,
+                      "key-value literal requires an expected type with __from_pairs");
+        result = NULL;
+        break;
+    }
+
+    case AST_ARRAY_LIT:
+    {
+        /* If resolved_type was already set (by check_stmt VAR_DECL special-case
+           for vec(T) v = [..]), just return it — elements were already checked. */
+        if (node->resolved_type)
+        {
+            result = node->resolved_type;
+            break;
+        }
+
+        /* Infer element type from first element, check all others match */
+        int count = node->as.array_lit.count;
+        if (count == 0)
+        {
+            checker_error(c, node->line, node->column,
+                          "empty array literal (cannot infer element type)");
+            result = NULL;
+            break;
+        }
+        Type *elem_type = check_expr(c, node->as.array_lit.elements[0]);
+        if (elem_type == NULL)
+        {
+            result = NULL;
+            break;
+        }
+        for (int i = 1; i < count; i++)
+        {
+            Type *et = check_expr(c, node->as.array_lit.elements[i]);
+            if (et == NULL)
+                continue;
+            if (!type_equals(elem_type, et))
+            {
+                checker_error(c, node->as.array_lit.elements[i]->line,
+                              node->as.array_lit.elements[i]->column,
+                              "array element type mismatch: expected '%s', got '%s'",
+                              type_name(elem_type), type_name(et));
+            }
+        }
+        result = type_array(elem_type, count);
+        break;
+    }
+
+    case AST_BOOL_LIT:
+        result = type_bool();
+        break;
+
+    case AST_NIL_LIT:
+        result = type_nil();
+        break;
+
+    case AST_IDENT:
+        result = check_expr_ident(c, node);
+        break;
+
+    case AST_MUT_BORROW:
+        result = check_expr_mut_borrow(c, node);
+        break;
+
+    case AST_UNARY:
+    {
+        Type *operand = check_expr(c, node->as.unary.operand);
+        if (operand == NULL)
+        {
+            result = NULL;
+            break;
+        }
+
+        switch (node->as.unary.op)
+        {
+        case TOKEN_MINUS:
+            if (!type_is_numeric(operand))
+            {
+                checker_error(c, node->line, node->column,
+                              "unary '-' requires numeric type, got '%s'", type_name(operand));
+                result = NULL;
+            }
+            else
+            {
+                result = operand;
+            }
+            break;
+        case TOKEN_BANG:
+            if (operand->kind != TYPE_BOOL)
+            {
+                checker_error(c, node->line, node->column,
+                              "unary '!' requires bool, got '%s'", type_name(operand));
+                result = NULL;
+            }
+            else
+            {
+                result = type_bool();
+            }
+            break;
+        case TOKEN_TILDE:
+            if (!type_is_integer(operand))
+            {
+                checker_error(c, node->line, node->column,
+                              "unary '~' requires integer type, got '%s'", type_name(operand));
+                result = NULL;
+            }
+            else
+            {
+                result = operand;
+            }
+            break;
+        case TOKEN_AMP:
+            /* &x -> *T */
+            result = type_pointer(operand);
+            break;
+        case TOKEN_STAR:
+            /* *ptr -> dereference */
+            if (operand->kind != TYPE_POINTER)
+            {
+                checker_error(c, node->line, node->column,
+                              "cannot dereference non-pointer type '%s'", type_name(operand));
+                result = NULL;
+            }
+            else
+            {
+                result = operand->as.pointer_to;
+            }
+            break;
+        default:
+            checker_error(c, node->line, node->column, "unknown unary operator");
+            result = NULL;
+            break;
+        }
+        break;
+    }
+
+    case AST_BINARY:
+        result = check_expr_binary(c, node);
+        break;
+
+    case AST_CALL:
+        result = check_expr_call(c, node);
+        break;
+
+    case AST_INDEX:
+        result = check_expr_index(c, node);
+        break;
+
+    case AST_FIELD:
+        result = check_expr_field(c, node);
+        break;
+
+    case AST_CLOSURE:
+        result = check_expr_closure(c, node);
+        break;
+
+    case AST_MATCH:
+        result = check_expr_match(c, node);
+        break;
 
     case AST_CAST:
     {
@@ -7237,240 +7536,8 @@ Type *check_expr(Checker *c, AstNode *node)
     }
 
     case AST_NEW_EXPR:
-    {
-        /* Look up the struct type. B-4: module-qualified literal `mod.Type{...}`
-           resolves through the imported module's export table. */
-        Type *st = NULL;
-        /* Anonymous struct literal `{ field: val, ... }` (no type prefix): the
-           parser left struct_name NULL. Infer the struct type from the expected
-           type (LHS of a var-decl / return / arg slot). */
-        if (node->as.new_expr.struct_name == NULL)
-        {
-            if (c->expected_type == NULL || c->expected_type->kind != TYPE_STRUCT)
-            {
-                checker_error(c, node->line, node->column,
-                              "cannot infer struct type for `{...}` literal here "
-                              "(no expected struct type in this context)");
-                result = NULL;
-                break;
-            }
-            st = c->expected_type;
-            /* adopt the inferred name so downstream field lookup / codegen work */
-            size_t snl = strlen(st->as.strukt.name);
-            char *sdup = (char *)malloc_safe(snl + 1);
-            memcpy(sdup, st->as.strukt.name, snl + 1);
-            node->as.new_expr.struct_name = sdup;
-        }
-        else if (node->as.new_expr.module != NULL)
-        {
-            Symbol *modsym = scope_resolve(c->current_scope, node->as.new_expr.module);
-            if (modsym == NULL || modsym->type == NULL ||
-                modsym->type->kind != TYPE_MODULE)
-            {
-                checker_error(c, node->line, node->column,
-                              "unknown module '%s' in '%s.%s{...}'",
-                              node->as.new_expr.module, node->as.new_expr.module,
-                              node->as.new_expr.struct_name);
-                result = NULL;
-                break;
-            }
-            Type *ex = type_module_find_export(modsym->type, node->as.new_expr.struct_name);
-            if (ex == NULL || ex->kind != TYPE_STRUCT)
-            {
-                checker_error(c, node->line, node->column,
-                              "module '%s' has no struct '%s'",
-                              node->as.new_expr.module, node->as.new_expr.struct_name);
-                result = NULL;
-                break;
-            }
-            st = ex;
-        }
-        else
-        {
-            st = find_struct_type(c, node->as.new_expr.struct_name);
-            /* comptime v2 — generic construction: `T{}` / `T{x:..}` where the
-               "struct name" is a type parameter aliased to a concrete struct
-               during instantiation (e.g. `def mk(T)() -> T { return T{} }`).
-               Resolve it through the type-alias table, same as resolve_type_node
-               does for a bare named type. Unlocks write-once construction
-               (generic from_value / builder / transform / zero-init). */
-            if (!st && node->as.new_expr.type_arg_count == 0)
-            {
-                Type *alias = find_type_alias(c, node->as.new_expr.struct_name);
-                if (alias && alias->kind == TYPE_STRUCT)
-                    st = alias;
-            }
-        }
-
-        /* G1: If the parser provided explicit type_args (e.g. Pair(int,string){...}),
-           resolve each arg and instantiate the generic struct template. */
-        if (!st && node->as.new_expr.type_arg_count > 0)
-        {
-            int tac = node->as.new_expr.type_arg_count;
-            Type **resolved_args = malloc(sizeof(Type *) * tac);
-            bool args_ok = true;
-            for (int i = 0; i < tac; i++) {
-                resolved_args[i] = resolve_type_node(c, node->as.new_expr.type_args[i],
-                    node->line, node->column);
-                if (!resolved_args[i]) args_ok = false;
-            }
-            if (args_ok) {
-                st = checker_instantiate_struct(c,
-                    node->as.new_expr.struct_name,
-                    resolved_args, tac,
-                    node->line, node->column);
-            }
-            free(resolved_args);
-        }
-
-        /* G1: struct_name is the base name ("Pair"), but the instantiated type
-           is registered under its mangled name ("Pair(int,string)").  Fall back
-           to expected_type if the base name matches a generic template. */
-        if (!st && c->expected_type && c->expected_type->kind == TYPE_STRUCT)
-        {
-            const char *sname = node->as.new_expr.struct_name;
-            size_t slen = strlen(sname);
-            const char *mangled = c->expected_type->as.strukt.name;
-            /* Check: mangled starts with "sname(" */
-            if (strncmp(mangled, sname, slen) == 0 && mangled[slen] == '(')
-            {
-                st = c->expected_type;
-            }
-        }
-
-        if (!st)
-        {
-            checker_error(c, node->line, node->column,
-                          "unknown struct type '%s'", node->as.new_expr.struct_name);
-            result = NULL;
-            break;
-        }
-        /* Type-check each field initializer */
-        int ninits = node->as.new_expr.field_init_count;
-        for (int i = 0; i < ninits; i++)
-        {
-            const char *fname = node->as.new_expr.field_inits[i].name;
-            /* Check for duplicates */
-            for (int j = 0; j < i; j++)
-            {
-                if (strcmp(node->as.new_expr.field_inits[j].name, fname) == 0)
-                {
-                    checker_error(c, node->line, node->column,
-                                  "duplicate field initializer '%s'", fname);
-                    goto new_expr_done;
-                }
-            }
-            /* Find field in struct */
-            int field_idx = -1;
-            for (int j = 0; j < st->as.strukt.field_count; j++)
-            {
-                if (strcmp(st->as.strukt.fields[j].name, fname) == 0)
-                {
-                    field_idx = j;
-                    break;
-                }
-            }
-            if (field_idx < 0)
-            {
-                checker_error(c, node->line, node->column,
-                              "struct '%s' has no field '%s'",
-                              node->as.new_expr.struct_name, fname);
-                goto new_expr_done;
-            }
-            /* priv field: a struct literal may set it only inside the owning
-               struct's own impl (so external `Guard{value: aliased}` cannot
-               bypass the guard). `{}` zero-init has no field inits → unaffected. */
-            if (st->as.strukt.fields[field_idx].is_private)
-            {
-                Type *cur = c->current_impl_struct_type;
-                const char *want = st->as.strukt.generic_base
-                    ? st->as.strukt.generic_base : st->as.strukt.name;
-                const char *have = (cur && cur->kind == TYPE_STRUCT)
-                    ? (cur->as.strukt.generic_base
-                       ? cur->as.strukt.generic_base : cur->as.strukt.name)
-                    : NULL;
-                if (have == NULL || want == NULL || strcmp(have, want) != 0)
-                {
-                    checker_error(c, node->line, node->column,
-                        "field '%s' of struct '%s' is private "
-                        "(cannot be set in a struct literal outside its methods)",
-                        fname, want ? want : "<anon>");
-                    goto new_expr_done;
-                }
-            }
-            /* Type-check the value; set expected_type so closure literals can
-               infer their param/return types from the field's Block type. */
-            Type *field_expected = st->as.strukt.fields[field_idx].type;
-            checker_tag_user_from_list_literal(c, field_expected,
-                node->as.new_expr.field_inits[i].value, "field list-literal");
-            Type *saved_expected2 = c->expected_type;
-            if (field_expected && (field_expected->kind == TYPE_BLOCK ||
-                                   field_expected->kind == TYPE_STRUCT))
-                c->expected_type = field_expected;
-            Type *vt = check_expr(c, node->as.new_expr.field_inits[i].value);
-            c->expected_type = saved_expected2;
-            if (vt && !type_equals(vt, field_expected))
-            {
-                checker_error(c, node->as.new_expr.field_inits[i].value->line,
-                              node->as.new_expr.field_inits[i].value->column,
-                              "field '%s': expected '%s', got '%s'",
-                              fname,
-                              type_name(field_expected),
-                              type_name(vt));
-            }
-            /* F.3: Block field value ownership transfers into the struct.
-               Mark source identifier as moved so it cannot be used again. */
-            if (vt && vt->kind == TYPE_BLOCK)
-                checker_try_mark_moved(c, node->as.new_expr.field_inits[i].value);
-        }
-        /* Struct field defaults (v1): an omitted field with a declared default
-           takes that default; an omitted field WITHOUT a default keeps LS's
-           existing zero-initialization (struct literals never required all
-           fields). Here we only type-check the defaults that exist. */
-        for (int j = 0; j < st->as.strukt.field_count; j++)
-        {
-            bool provided = false;
-            for (int i = 0; i < ninits; i++)
-            {
-                if (strcmp(node->as.new_expr.field_inits[i].name,
-                           st->as.strukt.fields[j].name) == 0)
-                {
-                    provided = true;
-                    break;
-                }
-            }
-            if (provided)
-                continue;
-            AstNode *deflt = (AstNode *)st->as.strukt.fields[j].default_expr;
-            if (deflt == NULL)
-                continue; /* omitted, no default -> zero-init (existing semantics) */
-            Type *fexp = st->as.strukt.fields[j].type;
-            const char *jfn = st->as.strukt.fields[j].name;
-            if (fexp && fexp->kind == TYPE_STRUCT &&
-                     deflt->kind == AST_ARRAY_LIT &&
-                     deflt->resolved_type == NULL)
-            {
-                checker_tag_user_from_list_literal(c, fexp, deflt,
-                                                   "default list-literal");
-            }
-            Type *saved_def_exp = c->expected_type;
-            if (fexp && (fexp->kind == TYPE_STRUCT || fexp->kind == TYPE_BLOCK))
-                c->expected_type = fexp;
-            Type *dt = check_expr(c, deflt);
-            c->expected_type = saved_def_exp;
-            if (dt && fexp && !type_equals(dt, fexp))
-            {
-                checker_error(c, node->line, node->column,
-                              "default for field '%s': expected '%s', got '%s'",
-                              jfn, type_name(fexp), type_name(dt));
-            }
-        }
-    new_expr_done:
-        /* on_stack = struct value literal  S1{...} → resolves to TYPE_STRUCT
-           !on_stack = new S1{...} (heap) → resolves to *TYPE_STRUCT */
-        result = node->as.new_expr.on_stack ? st : type_pointer(st);
+        result = check_expr_new_expr(c, node);
         break;
-    }
 
     /* Statements that can appear as expressions in match arms */
     case AST_BLOCK:
