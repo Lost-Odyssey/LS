@@ -3693,6 +3693,20 @@ set_tests_properties(test_l0091_modgen PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- L-022 half 1: cross-module inherent methods (JIT + AOT + memcheck) ----
+add_test(
+    NAME test_l022_crossmod
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_l022_crossmod.cmake
+)
+set_tests_properties(test_l022_crossmod PROPERTIES
+    DEPENDS "test_l0091_modgen"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- match OR-pattern (bugs/18 fix) ----
 add_test(
     NAME test_match_or_pattern
