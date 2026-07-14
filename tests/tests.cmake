@@ -112,6 +112,7 @@ add_executable(test_codegen
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_intrinsic_cg.c
     src/builtins_perf.c
     src/builtins_perf_cg.c
     runtime/memcheck.c
@@ -146,6 +147,7 @@ add_executable(test_jit
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_intrinsic_cg.c
     src/builtins_perf.c
     src/builtins_perf_cg.c
     runtime/memcheck.c
@@ -184,6 +186,7 @@ add_executable(test_ffi
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_intrinsic_cg.c
     src/builtins_perf.c
     src/builtins_perf_cg.c
     runtime/memcheck.c
@@ -222,6 +225,7 @@ add_executable(test_module
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_intrinsic_cg.c
     src/builtins_perf.c
     src/builtins_perf_cg.c
     runtime/memcheck.c
@@ -261,6 +265,7 @@ add_executable(test_memory
     src/module.c
     src/builtins_math.c
     src/builtins_math_cg.c
+    src/builtins_intrinsic_cg.c
     src/builtins_perf.c
     src/builtins_perf_cg.c
     runtime/memcheck.c

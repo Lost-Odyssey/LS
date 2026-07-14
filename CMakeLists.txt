@@ -75,15 +75,6 @@ else()
     else()
         add_compile_options(-O2)
     endif()
-    # checker.c is the largest TU (~11.5k lines); its check_expr_call alone is
-    # ~1.4k lines with a very branchy AST_CALL dispatch. GCC 14's -O2 alias /
-    # value-numbering passes are superlinear in basic-block count and exhaust
-    # the CI runner's memory on it (compile emits only warnings, then the OOM
-    # killer takes cc1 — no diagnostic). Drop this one TU to -O1: the source
-    # property is applied last on the command line so its -O1 wins over the
-    # directory-level -O2. Zero effect on generated-program correctness; only
-    # the type checker's own speed changes marginally. MSVC path is untouched.
-    set_source_files_properties(src/checker.c PROPERTIES COMPILE_OPTIONS "-O1")
 endif()
 
 # Platform-specific OS backend (defines ls_os_* symbols used by std.* modules)

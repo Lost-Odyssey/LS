@@ -49,7 +49,7 @@ static int jit_eval(const char *source) {
     cg.context  = ctx;
     cg.module   = LLVMModuleCreateWithNameInContext("mem_test", ctx);
     cg.builder  = LLVMCreateBuilderInContext(ctx);
-    cg.extern_builtins = true;
+    cg.mode = CG_MODE_JIT_USER;
 
     const char *dl = LLVMOrcLLJITGetDataLayoutStr(engine.jit);
     LLVMSetDataLayout(cg.module, dl);
