@@ -9878,6 +9878,19 @@ void forward_pass(Checker *c, AstNode *program)
                        ambiguous first-registered one). */
                     const char *impl_key = impl_name;
                     Type *impl_st = type_module_find_export(mod_type, impl_name);
+                    /* L-022 phase 3: the `methods Type` block's type may be
+                       IMPORTED into this module rather than declared here (e.g.
+                       std.core.str_search's `methods Str` where Str lives in
+                       std.core.str_core). Then the module export table misses,
+                       and the bare-name fallback would key the methods under
+                       "Str" while the call site dispatches on Str's real
+                       llvm_name (std_core_str_core__Str) -> lost method. Recover
+                       the owning-module llvm_name via the global type registry
+                       so registration and dispatch agree. */
+                    if (impl_st == NULL)
+                        impl_st = find_struct_type(c, impl_name);
+                    if (impl_st == NULL)
+                        impl_st = find_enum_type(c, impl_name);
                     if (impl_st)
                     {
                         const char *k = impl_key_of_type(impl_st);

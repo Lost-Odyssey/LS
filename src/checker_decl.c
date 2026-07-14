@@ -1797,6 +1797,14 @@ void propagate_inherited_methods(Checker *c, const char *import_path,
             const char *impl_name = d->as.impl_decl.name;
             const char *impl_key = impl_name;
             Type *impl_st = type_module_find_export(mod_type, impl_name);
+            /* L-022 phase 3: recover the owning-module llvm_name when the
+               `methods Type` block's type is IMPORTED into this module rather
+               than declared here (facade cone with the type in a sibling core
+               module). See the twin comment in checker.c's direct-import loop. */
+            if (impl_st == NULL)
+                impl_st = find_struct_type(c, impl_name);
+            if (impl_st == NULL)
+                impl_st = find_enum_type(c, impl_name);
             if (impl_st)
             {
                 const char *k = impl_key_of_type(impl_st);
