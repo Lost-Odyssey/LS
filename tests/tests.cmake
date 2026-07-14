@@ -3707,6 +3707,20 @@ set_tests_properties(test_l022_crossmod PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- L-022 half 2: facade transitive inherent-method visibility ----
+add_test(
+    NAME test_l022_facade
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_l022_facade.cmake
+)
+set_tests_properties(test_l022_facade PROPERTIES
+    DEPENDS "test_l022_crossmod"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- match OR-pattern (bugs/18 fix) ----
 add_test(
     NAME test_match_or_pattern
