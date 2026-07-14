@@ -1,0 +1,11 @@
+/* Same bare name `Node` as mod_a but a DIFFERENT layout (3 f64). Option(Node)
+   here must be a distinct instantiation from mod_a's Option(Node). */
+module mod_b
+
+struct Node { f64 x; f64 y; f64 z }
+
+def find() -> Option(Node) {
+    return Some(Node { x: 1.5, y: 2.5, z: 3.5 })
+}
+
+def sum(Node n) -> f64 { return n.x + n.y + n.z }

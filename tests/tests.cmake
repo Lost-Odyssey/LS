@@ -3945,6 +3945,21 @@ set_tests_properties(test_modtype_memcheck PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- F6b-enum: generic ENUM instances keyed by module-prefixed type-arg names ----
+# (mod_a.Node vs mod_b.Node into Option(T) used to collide on "Option(Node)")
+add_test(
+    NAME test_modtype_generic_enum
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_modtype_generic_enum.cmake
+)
+set_tests_properties(test_modtype_generic_enum PROPERTIES
+    DEPENDS "test_modtype_memcheck"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- BF-045: owned string param into returned struct field / return must clone ----
 add_test(
     NAME test_bf045_string_param
