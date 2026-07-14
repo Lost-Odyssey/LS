@@ -1,0 +1,14 @@
+/* Boundary literals that must KEEP parsing after the overflow rejection:
+   i64 max, full-64-bit hex (bits stored verbatim -> -1), f64 denormal
+   underflow (ERANGE with tiny value — must NOT be treated as overflow),
+   and a large-but-finite f64. */
+def main() -> int {
+    i64 m = 9223372036854775807
+    i64 n = 0xFFFFFFFFFFFFFFFF
+    f64 t = 5e-324
+    f64 h = 1e308
+    if t >= 0.0 && h > 9.9e307 {
+        @print(f"LIT OK {m} {n}")
+    }
+    return 0
+}

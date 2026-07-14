@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>
 
 /* ---- Helpers ---- */
 
@@ -65,6 +66,26 @@ static void error_at_current(Parser *p, const char *msg) {
 
 static void error_at_previous(Parser *p, const char *msg) {
     error_at(p, &p->previous, msg);
+}
+
+/* Report an error at `previous` WITHOUT entering panic mode. For value-level
+   errors on a syntactically valid token (e.g. an out-of-range numeric
+   literal): parsing continues normally afterwards, so there is no cascade to
+   suppress — and setting panic_mode here would swallow every later error
+   because no synchronize() ever runs when the statement parses fine. Still
+   suppressed while already panicking from a real syntax error. */
+static void error_at_previous_no_panic(Parser *p, const char *msg) {
+    if (p->panic_mode) return;
+    p->had_error = true;
+    if (p->error_count >= LS_MAX_PARSE_ERRORS) {
+        p->error_count++;
+        return;
+    }
+    p->error_count++;
+    diag_emitf(DIAG_PARSE_ERROR, p->source_path, p->previous.line,
+               p->previous.column,
+               p->previous.length > 0 ? p->previous.length : 1, NULL,
+               "%s", msg);
 }
 
 /* Advance scanner: previous = current, current = next token */
@@ -300,21 +321,37 @@ static AstNode *parse_block(Parser *p) {
 
 static AstNode *prefix_int_lit(Parser *p) {
     Token tok = p->previous;
-    long long val;
-    char buf[64];
-    int len = tok.length < 63 ? tok.length : 63;
-    memcpy(buf, tok.start, (size_t)len);
-    buf[len] = '\0';
-    /* Use strtoull (not strtoll): an int literal is always a non-negative
-       magnitude (a leading '-' is a separate unary-minus token), so unsigned
-       parsing covers the full u64 range without saturating bit63-set values
-       like 0xAABBCCDDEE112233. The bits are stored verbatim into long long. */
-    if (len > 2 && buf[0] == '0' && (buf[1] == 'x' || buf[1] == 'X')) {
-        val = (long long)strtoull(buf + 2, NULL, 16);
-    } else if (len > 2 && buf[0] == '0' && (buf[1] == 'b' || buf[1] == 'B')) {
-        val = (long long)strtoull(buf + 2, NULL, 2);
+    long long val = 0;
+    char buf[256];
+    if (tok.length >= (int)sizeof(buf)) {
+        /* Refuse rather than truncate: a silently shortened token parses to a
+           wrong constant (e.g. a 70-digit binary literal cut to 61 digits
+           fits u64 and never trips ERANGE below). */
+        error_at_previous_no_panic(p, "numeric literal too long");
     } else {
-        val = (long long)strtoull(buf, NULL, 10);
+        memcpy(buf, tok.start, (size_t)tok.length);
+        buf[tok.length] = '\0';
+        /* Use strtoull (not strtoll): an int literal is always a non-negative
+           magnitude (a leading '-' is a separate unary-minus token), so unsigned
+           parsing covers the full u64 range without saturating bit63-set values
+           like 0xAABBCCDDEE112233. The bits are stored verbatim into long long. */
+        unsigned long long uv;
+        errno = 0;
+        if (tok.length > 2 && buf[0] == '0' && (buf[1] == 'x' || buf[1] == 'X')) {
+            uv = strtoull(buf + 2, NULL, 16);
+        } else if (tok.length > 2 && buf[0] == '0' && (buf[1] == 'b' || buf[1] == 'B')) {
+            uv = strtoull(buf + 2, NULL, 2);
+        } else {
+            uv = strtoull(buf, NULL, 10);
+        }
+        if (errno == ERANGE) {
+            /* strtoull saturates to ULLONG_MAX on overflow — a silently
+               miscompiled constant. Reject instead. */
+            error_at_previous_no_panic(p,
+                "integer literal out of range (does not fit in 64 bits)");
+            uv = 0;
+        }
+        val = (long long)uv;
     }
     AstNode *n = new_node(AST_INT_LIT, tok.line, tok.column);
     n->as.int_lit.value = val;
@@ -323,11 +360,23 @@ static AstNode *prefix_int_lit(Parser *p) {
 
 static AstNode *prefix_float_lit(Parser *p) {
     Token tok = p->previous;
-    char buf[64];
-    int len = tok.length < 63 ? tok.length : 63;
-    memcpy(buf, tok.start, (size_t)len);
-    buf[len] = '\0';
-    double val = strtod(buf, NULL);
+    double val = 0.0;
+    char buf[256];
+    if (tok.length >= (int)sizeof(buf)) {
+        error_at_previous_no_panic(p, "numeric literal too long");
+    } else {
+        memcpy(buf, tok.start, (size_t)tok.length);
+        buf[tok.length] = '\0';
+        errno = 0;
+        val = strtod(buf, NULL);
+        /* ERANGE covers both overflow (±HUGE_VAL) and underflow (denormal or
+           zero result). Only overflow is an error — denormal literals like
+           5e-324 are legal and must keep parsing. */
+        if (errno == ERANGE && (val >= HUGE_VAL || val <= -HUGE_VAL)) {
+            error_at_previous_no_panic(p, "float literal magnitude too large for f64");
+            val = 0.0;
+        }
+    }
     AstNode *n = new_node(AST_FLOAT_LIT, tok.line, tok.column);
     n->as.float_lit.value = val;
     return n;
