@@ -1,0 +1,274 @@
+// std/core/str_search.lls — search, transform, replace/pad, and collection
+// methods on `Str`. Split out of str.lls in L-022 phase 3 (2026-07-14); the
+// Str type + its foundational methods live in std.core.str_core, which this
+// module imports so every `self.substr(..)` / `self.push_byte(..)` /
+// `self.copy()` resolves cross-module through the impl registry.
+//
+// These are all pure read/transform helpers returning owned Str / Vec results;
+// none mutate self. `find` delegates to the runtime memchr+memcmp scan.
+
+import std.sys.c as c
+import std.core.vec
+import std.core.str_core
+
+methods Str {
+    // ---- search (byte layer; needle borrowed) ----
+
+    // Index of the first occurrence of `needle`, or -1. Empty needle -> 0.
+    // Delegates to the runtime memchr+memcmp scan (SIMD-accelerated in the CRT)
+    // over raw ptr+len — no NUL needed, so the read-only &self borrow is safe.
+    def find(&self, &Str needle) -> int {
+        return c.__ls_str_find(self.data, self.len, needle.data, needle.len, 0)
+    }
+
+    def contains?(&self, &Str needle) -> bool { return self.find(needle) >= 0 }
+
+    def starts_with?(&self, &Str prefix) -> bool {
+        int m = prefix.len
+        if m > self.len { return false }
+        for (int j = 0; j < m; j = j + 1) {
+            if self.data[j] != prefix.data[j] { return false }
+        }
+        return true
+    }
+
+    def ends_with?(&self, &Str suffix) -> bool {
+        int m = suffix.len
+        int n = self.len
+        if m > n { return false }
+        int off = n - m
+        for (int j = 0; j < m; j = j + 1) {
+            if self.data[off + j] != suffix.data[j] { return false }
+        }
+        return true
+    }
+
+    // Index of the LAST occurrence of `needle`, or -1. Empty needle -> len.
+    def rfind(&self, &Str needle) -> int {
+        int n = self.len
+        int m = needle.len
+        if m == 0 { return n }
+        if m > n { return -1 }
+        for (int i = n - m; i >= 0; i = i - 1) {
+            bool hit = true
+            for (int j = 0; j < m; j = j + 1) {
+                if self.data[i + j] != needle.data[j] { hit = false  break }
+            }
+            if hit { return i }
+        }
+        return -1
+    }
+
+    // Number of non-overlapping occurrences of `needle`.
+    def count(&self, &Str needle) -> int {
+        int m = needle.len
+        if m == 0 { return 0 }
+        int n = self.len
+        int total = 0
+        int i = 0
+        while true {
+            int p = c.__ls_str_find(self.data, n, needle.data, m, i)
+            if p < 0 { break }
+            total = total + 1
+            i = p + m
+        }
+        return total
+    }
+
+    // ---- transform (owned Str results) ----
+    // ASCII upper/lower (byte layer; non-ASCII bytes pass through unchanged —
+    // Unicode case folding is out of scope, §6.5).
+    def upper(&self) -> Str {
+        int n = self.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(n)
+        for (int i = 0; i < n; i = i + 1) {
+            int b = self.data[i]
+            if b >= 97 && b <= 122 { b = b - 32 }
+            out.data[i] = b as u8
+        }
+        out.len = n
+        return out
+    }
+
+    def lower(&self) -> Str {
+        int n = self.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(n)
+        for (int i = 0; i < n; i = i + 1) {
+            int b = self.data[i]
+            if b >= 65 && b <= 90 { b = b + 32 }
+            out.data[i] = b as u8
+        }
+        out.len = n
+        return out
+    }
+
+    // Trim leading/trailing ASCII whitespace (space, tab, LF, CR).
+    def trim(&self) -> Str {
+        int n = self.len
+        int s = 0
+        while s < n {
+            int b = self.data[s]
+            if b == 32 || b == 9 || b == 10 || b == 13 { s = s + 1 } else { break }
+        }
+        int e = n
+        while e > s {
+            int b = self.data[e - 1]
+            if b == 32 || b == 9 || b == 10 || b == 13 { e = e - 1 } else { break }
+        }
+        return self.substr(s, e - s)
+    }
+
+    // Concatenate self ++ other into a fresh owned Str.
+    def concat(&self, &Str other) -> Str {
+        int a = self.len
+        int b = other.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(a + b)
+        c.__ls_bytecopy(out.data, 0, self.data, 0, a)
+        c.__ls_bytecopy(out.data, a, other.data, 0, b)
+        out.len = a + b
+        return out
+    }
+
+    // Repeat self `times` times (times <= 0 -> empty).
+    def repeat(&self, int times) -> Str {
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        if times <= 0 { return out }
+        int n = self.len
+        out.reserve(n * times)
+        for (int t = 0; t < times; t = t + 1) {
+            c.__ls_bytecopy(out.data, t * n, self.data, 0, n)
+        }
+        out.len = n * times
+        return out
+    }
+    // ---- replace / pad (owned Str results) ----
+
+    // Replace every non-overlapping occurrence of `old` with `rep`. Empty `old`
+    // copies self unchanged.
+    def replace(&self, &Str old, &Str rep) -> Str {
+        int m = old.len
+        int n = self.len
+        // Empty `old`: copy self unchanged.
+        if m == 0 { return self.copy() }
+        // Single-byte equal-length fast-path (cf. Rust's 1:1 byte replace): clone
+        // self, then memchr-scan and overwrite each match IN PLACE — no rebuild,
+        // no per-byte push. Result has the same length as self.
+        if m == 1 && rep.len == 1 {
+            Str out = self.copy()
+            int rb = rep.data[0]
+            int i = 0
+            while true {
+                int p = c.__ls_str_find(out.data, n, old.data, 1, i)
+                if p < 0 { break }
+                out.data[p] = rb as u8
+                i = p + 1
+            }
+            return out
+        }
+        // General path: locate each match with the runtime scan, append the
+        // run before it, then `rep`.
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        int i = 0
+        while i < n {
+            int p = c.__ls_str_find(self.data, n, old.data, m, i)
+            if p < 0 {
+                for (int k = i; k < n; k = k + 1) { out.push_byte(self.data[k]) }
+                break
+            }
+            for (int k = i; k < p; k = k + 1) { out.push_byte(self.data[k]) }
+            for (int j = 0; j < rep.len; j = j + 1) { out.push_byte(rep.data[j]) }
+            i = p + m
+        }
+        return out
+    }
+
+    // Left/right pad with `fill` byte until at least `width` bytes wide.
+    def pad_left(&self, int width, int fill) -> Str {
+        int n = self.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        if width > n {
+            int pad = width - n
+            for (int i = 0; i < pad; i = i + 1) { out.push_byte(fill) }
+        }
+        for (int i = 0; i < n; i = i + 1) { out.push_byte(self.data[i]) }
+        return out
+    }
+
+    def pad_right(&self, int width, int fill) -> Str {
+        int n = self.len
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        for (int i = 0; i < n; i = i + 1) { out.push_byte(self.data[i]) }
+        if width > n {
+            int pad = width - n
+            for (int i = 0; i < pad; i = i + 1) { out.push_byte(fill) }
+        }
+        return out
+    }
+    // ---- collections (byte/substring layer; return Vec) ----
+
+    // Every byte as an int (0..255). §6.3: byte layer — the name `chars()` is
+    // reserved for a future codepoint-layer iterator (Unicode).
+    def bytes(&self) -> Vec(int) {
+        Vec(int) out = {}
+        for (int i = 0; i < self.len; i = i + 1) { out.push(self.data[i]) }
+        return out
+    }
+
+    // Split on every non-overlapping `sep`. Empty sep yields one element (the
+    // whole string). A trailing sep yields a trailing empty element.
+    def split(&self, &Str sep) -> Vec(Str) {
+        Vec(Str) out = {}
+        int sn = sep.len
+        int n = self.len
+        if sn == 0 {
+            out.push(self.substr(0, n))
+            return out
+        }
+        int start = 0
+        int i = 0
+        while true {
+            int p = c.__ls_str_find(self.data, n, sep.data, sn, i)
+            if p < 0 { break }
+            out.push(self.substr(start, p - start))
+            i = p + sn
+            start = i
+        }
+        out.push(self.substr(start, n - start))
+        return out
+    }
+
+    // Split into lines on '\n', stripping a preceding '\r' (CRLF). A trailing
+    // newline does NOT yield a final empty element.
+    def lines(&self) -> Vec(Str) {
+        Vec(Str) out = {}
+        int n = self.len
+        if n == 0 { return out }
+        int start = 0
+        int i = 0
+        while i < n {
+            int ch = self.data[i]
+            if ch == 10 {
+                int cut = i
+                if cut > start {
+                    int prev = self.data[cut - 1]
+                    if prev == 13 { cut = cut - 1 }
+                }
+                out.push(self.substr(start, cut - start))
+                start = i + 1
+            }
+            i = i + 1
+        }
+        if start < n { out.push(self.substr(start, n - start)) }
+        return out
+    }
+}

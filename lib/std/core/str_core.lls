@@ -1,0 +1,483 @@
+// std/core/str_core.lls — the owning UTF-8 string type `Str` and its zero-copy
+// view `StrSlice`, plus the foundational methods every other str submodule
+// builds on (capacity / queries / byte build / construction protocols /
+// equality / comparison / substr / copy / slice views) and the lifecycle
+// trait impls (Clone / Destroy / Equal / Hash / Add / Order).
+//
+// L-022 phase 3 (2026-07-14): str.lls was one big module BY NECESSITY until the
+// compiler could link cross-module inherent `methods Str` blocks. With L-022
+// fixed (Phase 1 mangling + Phase 2 propagation + Phase 3 imported-type key
+// recovery), the string API is split by domain across an ACYCLIC three-layer
+// DAG so no file exceeds a screenful of a single concern:
+//
+//   std.core.str_core   (this leaf) : Str + StrSlice defs, hooks, core methods
+//   std.core.str_search             : import str_core; search + transform +
+//                                     replace/pad + collections methods
+//   std.core.str_num                : import str_core; numeric parsing methods
+//   std.core.str        (facade)    : import str_core + str_search + str_num
+//
+// The facade keeps `import std.core.str` (the prelude injects it) working with
+// zero consumer changes: Phase 2 propagates the submodules' inherent methods
+// through the facade, so `"x".find(..)` / `.to_int()` resolve as before.
+//
+// Str's owning module is now str_core, so its mangled type prefix is
+// std_core_str_core__Str (was std_core_str__Str). Every call site follows the
+// struct's llvm_name (B-2), so this migration is transparent across JIT/AOT.
+//
+// Storage (§6.1): UTF-8 bytes; `len`/`cap` are BYTE counts. Layout `{ *u8, int,
+// int }` — no cached char count (char length is computed O(n) later).
+//
+// cap three-state (§4), routed through the unified has_drop ownership path:
+//   * cap == 0   static (.rodata literal): __drop skips free, __clone shares.
+//   * cap >  0   owns a heap buffer: scope-drop frees it, __clone deep-copies.
+//   * moved      handled by the unified has_drop moved_flag.
+//
+// ORDERING CONSTRAINT: within one `methods` block a body resolves sibling calls
+// only to methods declared EARLIER; across modules a call resolves once the
+// callee's module is imported. The import DAG above covers every cross-module
+// call (search/transform/parse -> str_core's reserve/substr/push_byte/eq?/copy).
+
+import std.sys.c as c
+import std.core.vec
+import std.core.hash as _hash
+import std.core.reflect_core
+
+// @derive(ReflectRaw): Str sits below the str/vec layer, so it cannot derive the
+// friendly Reflect (that would import str -> itself). It derives the raw substrate
+// instead; std.core.reflect grafts a friendly reflect() = from_raw(reflect_raw()).
+// NOTE (L-022 phase 3): ReflectRaw scans methods declared in THIS module only, so
+// Str's reflected method list reports str_core's methods; the search/transform/
+// parse methods now live in sibling modules and are not enumerated by reflect.
+@derive(ReflectRaw)
+struct Str { *u8 data; int len; int cap }
+
+// A zero-copy fat view into a Str's bytes: a raw pointer + length (POD, no ~
+// destructor, copied by value). The LS analog of Rust's &str — self-contained,
+// readable, storable in Vec(StrSlice), and usable as a Map key (via Hash/Equal)
+// with NO materialization. Produced by `Str.as_slice` / `subslice` / `split_view`;
+// materialize to an owned Str with `StrSlice.to_str` (or `Str.slice_str`).
+//
+// ⚠ UNSAFE BY CONTRACT (compiler-unchecked — LS has no lifetimes): `ptr` is a raw
+// pointer INTO some source's buffer. It DANGLES if that source is destroyed, is
+// mutated so its buffer reallocs (push_str / + / reserve), or was a temporary.
+// Safe when the source outlives the view and is not mutated meanwhile (the
+// parser / lexer pattern), or when slicing a string literal (.rodata — never
+// freed or moved). To keep a view past its source's life, materialize it:
+// `slice.to_str()`. See docs/plan_strslice_view.md.
+struct StrSlice { *u8 ptr; int len }
+
+methods Str {
+    // ---- capacity ----
+    def reserve(&!self, int need) {
+        if need <= self.cap { return }
+        int n = self.cap
+        if n < 8 { n = 8 }
+        while n < need { n = n * 2 }
+        if self.cap <= 0 {
+            // cap <= 0 means the buffer is NOT ours to realloc:
+            //   cap == 0  STATIC (.rodata / shared) or empty (data == nil);
+            //   cap <  0  ARENA-backed (std.mem.arena sentinel, data points into a
+            //             region block — see Region.str). cap was never negative
+            //             before the arena sentinel, so `<= 0` is a strict
+            //             generalization of the old `== 0` (zero regression).
+            // Either way: malloc a fresh buffer and copy the existing bytes
+            // (copy-on-grow), promoting to an OWNED Str. This makes a static OR
+            // arena Str safely mutable — mutation auto-promotes off the shared /
+            // region memory instead of realloc'ing a pointer we don't own.
+            *u8 nd = c.malloc(n) as *u8
+            c.__ls_bytecopy(nd, 0, self.data, 0, self.len)
+            self.data = nd
+            self.cap = n
+            return
+        }
+        self.data = c.realloc(self.data as *u8, n) as *u8
+        self.cap = n
+    }
+
+    // ---- queries ----
+
+    // Byte length, O(1) (§6.3: `.len()` is ALWAYS the byte count, never chars).
+    def len(&self) -> int { return self.len }
+    def cap(&self) -> int { return self.cap }
+    def empty?(&self) -> bool { return self.len == 0 }
+    def as_ptr(&self) -> object { return self.data as object }
+
+    // FFI marshalling (P5-0, docs/plan_p5_remove_builtin_string.md §4):
+    // NUL-terminated view of the buffer for C `char*` consumers.
+    //   * cap == 0 && len > 0 — static/shared C string (a compiler-emitted
+    //     literal via LLVMBuildGlobalStringPtr, or a bridge view of a static
+    //     builtin string): already NUL-terminated, returned as-is (zero cost).
+    //   * otherwise (owned buffer, empty literal, or zero-init nil data) —
+    //     reserve one spare byte and write data[len] = 0 (len unchanged;
+    //     reserve handles nil data by mallocing a fresh buffer).
+    // NOTE: bytes after an embedded 0 are invisible to C (C-string semantics).
+    def c_str(&!self) -> *u8 {
+        if self.cap == 0 && self.len > 0 { return self.data }
+        self.reserve(self.len + 1)
+        self.data[self.len] = 0 as u8
+        return self.data
+    }
+
+    // Byte at index i (§6.3 byte layer). Bounds-checked: out-of-range aborts
+    // (matches Vec.get / the safe default). `byte_at!` is the `!`-style
+    // unchecked escape hatch (LS convention: `!` = unsafe, cf. Vec.get!/set!).
+    def byte_at(&self, int i) -> int {
+        if i < 0 || i >= self.len {
+            @print("Str byte index out of bounds")
+            c.abort()
+        }
+        return self.data[i]
+    }
+    def byte_at!(&self, int i) -> int { return self.data[i] }
+    // ---- build (byte layer) ----
+
+    // Append a single byte. Used by the constructors below; once the literal /
+    // f-string lowerings land (P1/P2) the compiler builds Str through these.
+    def push_byte(&!self, int b) {
+        self.reserve(self.len + 1)
+        self.data[self.len] = b as u8
+        self.len = self.len + 1
+    }
+
+    // Append every byte of another Str (owned-concat building block; f-string
+    // append chain in P2 routes through here / __from_parts).
+    def push_str(&!self, &Str other) {
+        int n = other.len
+        self.reserve(self.len + n)
+        c.__ls_bytecopy(self.data, self.len, other.data, 0, n)
+        self.len = self.len + n
+    }
+    // ---- reserved construction protocols (compiler hooks, later phases) ----
+
+    // P1: a string literal lowers to `Str { data: <.rodata ptr>, len, cap: 0 }`.
+    // Static => cap 0 => __drop skips free, __clone shallow-copies. Bytes are
+    // assumed already-valid UTF-8 (no validation; §6.4).
+    static def __from_static(*u8 ptr, int len) -> Str {
+        return Str { data: ptr, len: len, cap: 0 }
+    }
+
+    // P2: f-string builds an OWNED Str by appending parts. v1 seed = empty owned
+    // buffer; callers append via push_str / push_byte. Kept as the named protocol
+    // so the f-string lowering has a stable entry point.
+    static def __from_parts() -> Str {
+        *u8 z = nil
+        return Str { data: z, len: 0, cap: 0 }
+    }
+    // ---- equality / comparison (byte-wise) ----
+
+    def eq?(&self, &Str other) -> bool {
+        if self.len != other.len { return false }
+        for (int i = 0; i < self.len; i = i + 1) {
+            if self.data[i] != other.data[i] { return false }
+        }
+        return true
+    }
+
+    // Lexicographic byte comparison: -1 if self < other, 1 if >, 0 if equal.
+    // Backs the Order `<` impl (separate `methods Str: Order` block below).
+    def compare(&self, &Str other) -> int {
+        int a = self.len
+        int b = other.len
+        int n = a
+        if b < n { n = b }
+        for (int i = 0; i < n; i = i + 1) {
+            int x = self.data[i]
+            int y = other.data[i]
+            if x < y { return -1 }
+            if x > y { return 1 }
+        }
+        if a < b { return -1 }
+        if a > b { return 1 }
+        return 0
+    }
+    // ---- slice / substr (owned Str building blocks) ----
+
+    // Substring of `len` bytes starting at `start`. Lenient clamping (matches the
+    // old builtin): out-of-range start/len are clipped, never abort.
+    def substr(&self, int start, int len) -> Str {
+        int n = self.len
+        int s = start
+        if s < 0 { s = 0 }
+        if s > n { s = n }
+        int l = len
+        if l < 0 { l = 0 }
+        if s + l > n { l = n - s }
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(l)
+        c.__ls_bytecopy(out.data, 0, self.data, s, l)
+        out.len = l
+        return out
+    }
+
+    // Explicit deep copy (mirrors the builtin string's .copy()). Static (cap 0)
+    // sources stay shared-static, owned sources get an independent heap buffer.
+    // Useful where an explicit independent value is wanted regardless of the
+    // call-site's clone/move policy (e.g. returning a borrowed match binder).
+    // NOTE: defined after substr — impl method bodies resolve sibling calls
+    // only to methods declared earlier in the block.
+    def copy(&self) -> Str {
+        return self.substr(0, self.len)
+    }
+    // ---- zero-copy views (StrSlice; see the StrSlice struct's safety note) ----
+
+    // A fat view over this Str's whole buffer (zero-copy, no malloc). Valid only
+    // while this Str outlives the view and is not mutated (StrSlice contract).
+    def as_slice(&self) -> StrSlice {
+        return StrSlice { ptr: self.data, len: self.len }
+    }
+
+    // A fat view over bytes [start, start+len) (zero-copy). Lenient clamping
+    // (matches substr): out-of-range start/len are clipped, never abort. Uses the
+    // __ls_ptr_at pointer-offset primitive (LS has no pointer arithmetic).
+    def subslice(&self, int start, int len) -> StrSlice {
+        int n = self.len
+        int s = start
+        if s < 0 { s = 0 }
+        if s > n { s = n }
+        int l = len
+        if l < 0 { l = 0 }
+        if s + l > n { l = n - s }
+        return StrSlice { ptr: c.__ls_ptr_at(self.data, s as i64), len: l }
+    }
+
+    // Zero-copy split: return fat views (StrSlice) instead of owned Str parts, so
+    // a split of K pieces does NOT do K heap allocations — only the Vec(StrSlice)
+    // buffer grows, AND each view is directly readable (no slice_str needed).
+    // Same boundary semantics as `split` (empty sep -> whole string; trailing sep
+    // -> trailing empty view). Views are valid only while self outlives them and
+    // self is not mutated (StrSlice contract).
+    def split_view(&self, &Str sep) -> Vec(StrSlice) {
+        Vec(StrSlice) out = {}
+        int sn = sep.len
+        int n = self.len
+        if sn == 0 {
+            out.push(StrSlice { ptr: self.data, len: n })
+            return out
+        }
+        int start = 0
+        int i = 0
+        while true {
+            int p = c.__ls_str_find(self.data, n, sep.data, sn, i)
+            if p < 0 { break }
+            out.push(StrSlice { ptr: c.__ls_ptr_at(self.data, start as i64), len: p - start })
+            i = p + sn
+            start = i
+        }
+        out.push(StrSlice { ptr: c.__ls_ptr_at(self.data, start as i64), len: n - start })
+        return out
+    }
+
+    // Materialize a fat view into an owned Str (the deferred copy). The view is
+    // self-contained now, so `self` is ignored — kept for API compatibility;
+    // prefer `s.to_str()`. Empty view -> empty Str.
+    def slice_str(&self, StrSlice s) -> Str {
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(s.len)
+        c.__ls_bytecopy(out.data, 0, s.ptr, 0, s.len)
+        out.len = s.len
+        return out
+    }
+}
+
+methods Str: Clone {
+    // Deep-copy hook: called when a Str is cloned (by-value param, nested element
+    // read, etc.). cap > 0 => independent heap copy; cap == 0 (static) => shallow
+    // pointer copy (the .rodata bytes are shared, never freed).
+    def clone(&self) -> Str {
+        if self.cap == 0 {
+            return Str { data: self.data, len: self.len, cap: 0 }
+        }
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(self.len)
+        c.__ls_bytecopy(out.data, 0, self.data, 0, self.len)
+        out.len = self.len
+        return out
+    }
+}
+
+methods Str: Destroy {
+    // Destructor: free the buffer only when we own it (cap > 0). Static strings
+    // (cap == 0) point at .rodata and must not be freed.
+    def ~(&!self) {
+        if self.cap > 0 { c.free(self.data as *u8) }
+    }
+}
+
+// Operator `==` (trait Equal; `!=` derives). Needed e.g. for Str as a Map key
+// (`where K: Hash + Equal`). Operator method names are only legal inside
+// `impl Trait for Type` blocks, hence the separate block.
+methods Str: Equal {
+    def ==(&self, &Str rhs) -> bool {
+        if self.len != rhs.len { return false }
+        for (int i = 0; i < self.len; i = i + 1) {
+            if self.data[i] != rhs.data[i] { return false }
+        }
+        return true
+    }
+}
+
+// Byte-wise FxHash (same algorithm as std.core.hash's builtin-string impl, which
+// P5 deletes). Lives here — not in std/hash.ls — so the method symbol carries
+// this module's type prefix (std_str__Str.hash); see the note in std/hash.ls.
+methods Str: Hash {
+    def hash(&self) -> u64 {
+        // One C call (runtime/builtins.c) over the raw buffer instead of a
+        // per-byte LS fx_mix loop — same FxHash values, but the Map(Str,_) hot
+        // path no longer pays 2.5M+ LS call frames. See alloc_analysis.md.
+        return c.__ls_fxhash_bytes(self.data, self.len)
+    }
+}
+
+// Operator `+` (trait Add): byte-wise concatenation producing a new owned Str.
+// Makes `a + b + "lit"` work for Str (literals coerce to &Str at the rhs),
+// which keeps the +-heavy std modules (strconv/plotfmt/plot/plottl) mechanical
+// to migrate. Bodies are inlined byte loops — no borrow-of-borrow forwarding.
+methods Str: Add {
+    def +(&self, &Str rhs) -> Str {
+        Str out = ""
+        out.reserve(self.len + rhs.len)
+        c.__ls_bytecopy(out.data, 0, self.data, 0, self.len)
+        c.__ls_bytecopy(out.data, self.len, rhs.data, 0, rhs.len)
+        out.len = self.len + rhs.len
+        return out
+    }
+}
+
+// Operator `<` (trait Order; `>`, `<=`, `>=` derive from `<` / `==`). Lexicographic
+// byte order — delegates to `compare` (defined earlier in the main impl block).
+// Lets `"a" < "b"` and `min_ord(Str)(...)` / `Vec(Str).sort()` work once P5-2
+// flips the literal default to Str.
+methods Str: Order {
+    def <(&self, &Str rhs) -> bool {
+        return self.compare(rhs) < 0
+    }
+}
+
+
+// ============================================================================
+// StrSlice — zero-copy fat view methods. Every read goes straight through
+// ptr+len with NO allocation and NO copy (the parser / lexer hot path). The
+// view does not own or extend anything: see the StrSlice struct's safety note
+// (it must not outlive its source, and the source must not be mutated while the
+// view is live). Materialize with `to_str` to get an independent owned Str.
+methods StrSlice {
+    // ---- queries ----
+    def len(&self) -> int { return self.len }
+    def empty?(&self) -> bool { return self.len == 0 }
+
+    // ---- byte access (three-tier, like Str.byte_at; `!` = unchecked) ----
+    def at!(&self, int i) -> int { return self.ptr[i] }
+    def at(&self, int i) -> int {
+        if i < 0 || i >= self.len {
+            @print("StrSlice byte index out of bounds")
+            c.abort()
+        }
+        return self.ptr[i]
+    }
+
+    // ---- comparison (zero-copy) ----
+    def eq(&self, &StrSlice other) -> bool {
+        if self.len != other.len { return false }
+        for (int i = 0; i < self.len; i = i + 1) {
+            if self.ptr[i] != other.ptr[i] { return false }
+        }
+        return true
+    }
+    // Compare against an owned Str / literal — e.g. `tok.eq_str("let")`.
+    def eq_str(&self, &Str other) -> bool {
+        if self.len != other.len { return false }
+        for (int i = 0; i < self.len; i = i + 1) {
+            if self.ptr[i] != other.data[i] { return false }
+        }
+        return true
+    }
+    // Lexicographic byte comparison (-1 / 0 / 1); backs the Order `<` impl.
+    def compare(&self, &StrSlice other) -> int {
+        int a = self.len
+        int b = other.len
+        int n = a
+        if b < n { n = b }
+        for (int i = 0; i < n; i = i + 1) {
+            int x = self.ptr[i]
+            int y = other.ptr[i]
+            if x < y { return -1 }
+            if x > y { return 1 }
+        }
+        if a < b { return -1 }
+        if a > b { return 1 }
+        return 0
+    }
+
+    // ---- search (runtime memchr+memcmp over ptr+len; needle is an owned Str) ----
+    def find(&self, &Str needle) -> int {
+        return c.__ls_str_find(self.ptr, self.len, needle.data, needle.len, 0)
+    }
+    def contains?(&self, &Str needle) -> bool { return self.find(needle) >= 0 }
+
+    def starts_with?(&self, &Str prefix) -> bool {
+        int m = prefix.len
+        if m > self.len { return false }
+        for (int j = 0; j < m; j = j + 1) {
+            if self.ptr[j] != prefix.data[j] { return false }
+        }
+        return true
+    }
+    def ends_with?(&self, &Str suffix) -> bool {
+        int m = suffix.len
+        int n = self.len
+        if m > n { return false }
+        int off = n - m
+        for (int j = 0; j < m; j = j + 1) {
+            if self.ptr[off + j] != suffix.data[j] { return false }
+        }
+        return true
+    }
+
+    // ---- sub-view (zero-copy; clamps like subslice) ----
+    def sub(&self, int start, int len) -> StrSlice {
+        int n = self.len
+        int s = start
+        if s < 0 { s = 0 }
+        if s > n { s = n }
+        int l = len
+        if l < 0 { l = 0 }
+        if s + l > n { l = n - s }
+        return StrSlice { ptr: c.__ls_ptr_at(self.ptr, s as i64), len: l }
+    }
+
+    // ---- materialize: independent owned Str (the deferred copy, safe to keep) --
+    def to_str(&self) -> Str {
+        *u8 z = nil
+        Str out = Str { data: z, len: 0, cap: 0 }
+        out.reserve(self.len)
+        c.__ls_bytecopy(out.data, 0, self.ptr, 0, self.len)
+        out.len = self.len
+        return out
+    }
+}
+
+// Operator `==` (Equal) + FxHash (Hash) → StrSlice is a first-class Map key with
+// NO materialization. hash() is the SAME FxHash as Str.hash, so a StrSlice key
+// and an equal Str hash identically. (Map key contract: the source buffer must
+// outlive the Map, else the stored key views dangle.)
+methods StrSlice: Equal {
+    def ==(&self, &StrSlice rhs) -> bool {
+        if self.len != rhs.len { return false }
+        for (int i = 0; i < self.len; i = i + 1) {
+            if self.ptr[i] != rhs.ptr[i] { return false }
+        }
+        return true
+    }
+}
+
+methods StrSlice: Hash {
+    def hash(&self) -> u64 { return c.__ls_fxhash_bytes(self.ptr, self.len) }
+}
+
+// Operator `<` (Order; `>`, `<=`, `>=` derive) — lexicographic, via `compare`.
+methods StrSlice: Order {
+    def <(&self, &StrSlice rhs) -> bool { return self.compare(rhs) < 0 }
+}

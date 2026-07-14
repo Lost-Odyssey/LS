@@ -91,7 +91,7 @@ if(NOT c_rc EQUAL 0 OR NOT "${c_out}" MATCHES "REFLECT CONTAINERS DONE")
     message(FATAL_ERROR "reflect_containers JIT FAILED (rc=${c_rc})\n${c_out}\n${c_err}")
 endif()
 foreach(needle "bare:Bare" "Vec" "data: \\*T" "vec-has-push" "vec-has-tilde"
-               "Str" "data: \\*u8" "str-has-split"
+               "Str" "data: \\*u8" "str-has-substr"
                "Map" "keys: \\*K")
     if(NOT "${c_out}" MATCHES "${needle}")
         message(FATAL_ERROR "reflect_containers missing '${needle}'\n${c_out}")

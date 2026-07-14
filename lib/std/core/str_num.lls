@@ -1,0 +1,162 @@
+// std/core/str_num.lls — numeric parsing methods on `Str`
+// (to_int / to_i64 / to_float / to_bool). Split out of str.lls in L-022
+// phase 3 (2026-07-14). The Str type + `eq?` (used by to_bool) live in
+// std.core.str_core, imported here so the cross-module method calls resolve.
+//
+// Each returns Result(T, Str) with a diagnostic Str Err payload. Lenient
+// parity with the old builtin string (no overflow checks; hex prefix support).
+
+import std.sys.c as c
+import std.core.str_core
+
+methods Str {
+    // ---- parsing (Result(T, Str); Err payload is a diagnostic Str) ----
+
+    // Parse a signed decimal integer. Lenient: no overflow check (matches the
+    // old builtin). Err on empty / sign-only / non-digit.
+    def to_int(&self) -> Result(int, Str) {
+        int n = self.len
+        if n == 0 { return Err("empty string") }
+        int i = 0
+        bool neg = false
+        int first = self.data[0]
+        if first == 45 { neg = true  i = 1 }
+        else if first == 43 { i = 1 }
+        if i >= n { return Err("no digits") }
+        // hex prefix (0x / 0X), parity with the old builtin
+        if i + 1 < n && self.data[i] == 48 && (self.data[i + 1] == 120 || self.data[i + 1] == 88) {
+            i = i + 2
+            if i >= n { return Err("no hex digits") }
+            int hv = 0
+            while i < n {
+                int hd = self.data[i]
+                int dig = 0
+                if hd >= 48 && hd <= 57 { dig = hd - 48 }
+                else if hd >= 97 && hd <= 102 { dig = hd - 97 + 10 }
+                else if hd >= 65 && hd <= 70 { dig = hd - 65 + 10 }
+                else { return Err("invalid hex digit") }
+                hv = hv * 16 + dig
+                i = i + 1
+            }
+            if neg { hv = 0 - hv }
+            return Ok(hv)
+        }
+        int val = 0
+        while i < n {
+            int d = self.data[i]
+            if d < 48 || d > 57 { return Err("invalid digit") }
+            val = val * 10 + (d - 48)
+            i = i + 1
+        }
+        if neg { val = 0 - val }
+        return Ok(val)
+    }
+
+    def to_i64(&self) -> Result(i64, Str) {
+        int n = self.len
+        if n == 0 { return Err("empty string") }
+        int i = 0
+        bool neg = false
+        int first = self.data[0]
+        if first == 45 { neg = true  i = 1 }
+        else if first == 43 { i = 1 }
+        if i >= n { return Err("no digits") }
+        // hex prefix (0x / 0X), parity with the old builtin
+        if i + 1 < n && self.data[i] == 48 && (self.data[i + 1] == 120 || self.data[i + 1] == 88) {
+            i = i + 2
+            if i >= n { return Err("no hex digits") }
+            i64 hv = 0
+            while i < n {
+                int hd = self.data[i]
+                int dig = 0
+                if hd >= 48 && hd <= 57 { dig = hd - 48 }
+                else if hd >= 97 && hd <= 102 { dig = hd - 97 + 10 }
+                else if hd >= 65 && hd <= 70 { dig = hd - 65 + 10 }
+                else { return Err("invalid hex digit") }
+                hv = hv * 16 + (dig as i64)
+                i = i + 1
+            }
+            if neg { hv = 0 - hv }
+            return Ok(hv)
+        }
+        i64 val = 0
+        while i < n {
+            int d = self.data[i]
+            if d < 48 || d > 57 { return Err("invalid digit") }
+            val = val * 10 + ((d - 48) as i64)
+            i = i + 1
+        }
+        if neg { val = 0 - val }
+        return Ok(val)
+    }
+
+    // Parse a decimal float: sign, integer part, optional '.fraction', optional
+    // 'e'/'E' exponent (parity with the old builtin — JSON needs `1e6`).
+    def to_float(&self) -> Result(f64, Str) {
+        int n = self.len
+        if n == 0 { return Err("empty string") }
+        int i = 0
+        bool neg = false
+        int first = self.data[0]
+        if first == 45 { neg = true  i = 1 }
+        else if first == 43 { i = 1 }
+        f64 val = 0.0
+        bool any = false
+        while i < n {
+            int d = self.data[i]
+            if d == 46 { break }
+            if d == 101 || d == 69 { break }      // 'e' | 'E'
+            if d < 48 || d > 57 { return Err("invalid digit") }
+            val = val * 10.0 + ((d - 48) as f64)
+            any = true
+            i = i + 1
+        }
+        if i < n && self.data[i] == 46 {
+            i = i + 1
+            f64 scale = 0.1
+            while i < n {
+                int d = self.data[i]
+                if d == 101 || d == 69 { break }  // 'e' | 'E'
+                if d < 48 || d > 57 { return Err("invalid digit") }
+                val = val + ((d - 48) as f64) * scale
+                scale = scale * 0.1
+                any = true
+                i = i + 1
+            }
+        }
+        if !any { return Err("no digits") }
+        if i < n {
+            int ec = self.data[i]
+            if ec != 101 && ec != 69 { return Err("invalid digit") }
+            i = i + 1
+            bool eneg = false
+            if i < n {
+                int sc = self.data[i]
+                if sc == 45 { eneg = true  i = i + 1 }
+                else if sc == 43 { i = i + 1 }
+            }
+            if i >= n { return Err("no digits") }
+            int ev = 0
+            while i < n {
+                int d = self.data[i]
+                if d < 48 || d > 57 { return Err("invalid digit") }
+                ev = ev * 10 + (d - 48)
+                i = i + 1
+            }
+            f64 p10 = 1.0
+            for (int t = 0; t < ev; t = t + 1) { p10 = p10 * 10.0 }
+            if eneg { val = val / p10 } else { val = val * p10 }
+        }
+        if neg { val = 0.0 - val }
+        return Ok(val)
+    }
+
+    // Parse "true"/"false". Err otherwise.
+    def to_bool(&self) -> Result(bool, Str) {
+        Str t = "true"
+        Str f = "false"
+        if self.eq?(t) { return Ok(true) }
+        if self.eq?(f) { return Ok(false) }
+        return Err("invalid bool")
+    }
+}

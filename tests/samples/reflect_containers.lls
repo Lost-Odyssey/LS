@@ -32,11 +32,16 @@ def main() {
     TypeInfo s = Str.reflect()
     @print(s.name)
     for fi in s.fields { @print("  " + fi.name + ": " + fi.type_name) }
-    bool s_split = false
+    // L-022 phase 3: @derive(ReflectRaw) enumerates methods declared in Str's
+    // OWN module (std.core.str_core) — the type's home. `substr` is a core
+    // method that stays there; the search/parse methods (find/split/to_int) now
+    // live in sibling modules (std.core.str_search / str_num) and so are NOT
+    // reported by Str.reflect() (module-local method scan, by design).
+    bool s_substr = false
     for m in s.funcs {
-        if m.signature.contains?("def split(") { s_split = true }
+        if m.signature.contains?("def substr(") { s_substr = true }
     }
-    if s_split { @print("str-has-split") }
+    if s_substr { @print("str-has-substr") }
 
     TypeInfo mp = Map(Str, int).reflect()
     @print(mp.name)
