@@ -1,0 +1,10 @@
+/* Generic-enum instance identity across modules: mod_a.Node is a 1-int struct. */
+module mod_a
+
+struct Node { int a }
+
+def find() -> Option(Node) {
+    return Some(Node { a: 42 })
+}
+
+def show(Node n) -> int { return n.a }

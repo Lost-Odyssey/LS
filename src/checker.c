@@ -279,6 +279,26 @@ static bool is_self_placeholder(const Type *t) {
 
 /* type_equals variant that treats g_self_placeholder_type as equal to `concrete`.
    Handles TYPE_REFERENCE wrapping (e.g. &Self == &Vec2). */
+/* F6b: the name a concrete type arg contributes to a generic instance key
+   ("Vec(...)", "Option(...)"). Module-defined struct/enum args use their
+   module-prefixed `llvm_name` (e.g. "ma__Node") instead of the bare name —
+   two modules each defining `Node` would otherwise both mangle to
+   "Option(Node)" and collide (the second instantiation cache-hits the first,
+   conflating distinct layouts). Primitives/non-module types keep their bare
+   `type_name`. Single authority shared by the struct- and enum-template
+   instantiation paths AND the textual Self substitution in
+   type_equals_with_self (which compares instance names, so it must render
+   `Self` exactly the way the instance key was built); mirrors
+   impl_key_of_type's llvm_name ?? name. */
+static const char *generic_arg_mangled_name(const Type *at)
+{
+    if (at && at->kind == TYPE_STRUCT && at->as.strukt.llvm_name)
+        return at->as.strukt.llvm_name;
+    if (at && at->kind == TYPE_ENUM && at->as.enom.llvm_name)
+        return at->as.enom.llvm_name;
+    return type_name(at);
+}
+
 bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const Type *concrete)
 {
     if (trait_t == NULL || impl_t == NULL) return trait_t == impl_t;
@@ -303,8 +323,12 @@ bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const Type *
         snprintf(inbuf, sizeof inbuf, "%s", type_name(impl_t));
         if (strcmp(tnbuf, inbuf) == 0) return true;
         if (strstr(tnbuf, "Self") != NULL) {
+            /* Render the concrete type the same way instance keys are built
+               (module llvm_name preferred) — the impl side's instance name
+               embeds it, so a bare-name substitution would falsely mismatch
+               for module-defined Self types. */
             char cnbuf[256];
-            snprintf(cnbuf, sizeof cnbuf, "%s", type_name(concrete));
+            snprintf(cnbuf, sizeof cnbuf, "%s", generic_arg_mangled_name(concrete));
             char outbuf[512]; int op = 0; bool fits = true;
             int cl = (int)strlen(cnbuf);
             #define LS_IDENT_CH(ch) (((ch) >= 'A' && (ch) <= 'Z') || \
@@ -1037,13 +1061,17 @@ Type *instantiate_template(Checker *c, int template_idx,
         return NULL;
     }
 
-    /* Build mangled name */
+    /* Build mangled name. Type args keyed via generic_arg_mangled_name (module
+       llvm_name preferred) — keeping bare `type_name` here made two modules'
+       same-named `Node` collide on one "Option(Node)" instance, so the second
+       module's payload was read through the first's layout (silent garbage). */
     char buf[256];
     int pos = snprintf(buf, sizeof(buf), "%s(", c->enum_templates[template_idx].base_name);
     for (int i = 0; i < type_arg_count && pos < (int)sizeof(buf) - 2; i++)
     {
         if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s", type_name(type_args[i]));
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s",
+                        generic_arg_mangled_name(type_args[i]));
     }
     snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
 
@@ -1580,25 +1608,15 @@ Type *checker_instantiate_struct(Checker *c,
         }
     }
 
-    /* Build mangled name: "Pair(int,string)".
-       F6b: for struct/enum element types that come from a module, use the
-       module-prefixed `llvm_name` (e.g. "ma__Node") instead of the bare name
-       ("Node"). Two modules each defining `Node` would otherwise both mangle to
-       "Vec(Node)" and collide (the second instantiation cache-hits the first,
-       conflating distinct element types). Primitives/non-module types keep their
-       bare `type_name`. This mirrors impl_key_of_type's llvm_name?? name. */
+    /* Build mangled name: "Pair(int,string)". Type args keyed via
+       generic_arg_mangled_name (F6b, module llvm_name preferred) — see its
+       header comment for the collision rationale. */
     char buf[512];
     int pos = snprintf(buf, sizeof(buf), "%s(", base_name);
     for (int i = 0; i < type_arg_count && pos < (int)sizeof(buf) - 2; i++) {
         if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        const char *an = NULL;
-        Type *at = type_args[i];
-        if (at && at->kind == TYPE_STRUCT && at->as.strukt.llvm_name)
-            an = at->as.strukt.llvm_name;
-        else if (at && at->kind == TYPE_ENUM && at->as.enom.llvm_name)
-            an = at->as.enom.llvm_name;
-        if (an == NULL) an = type_name(at);
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s", an);
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s",
+                        generic_arg_mangled_name(type_args[i]));
     }
     snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
 

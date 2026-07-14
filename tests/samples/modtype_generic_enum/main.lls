@@ -1,0 +1,26 @@
+/* Regression: generic ENUM instantiation must key type args by module-prefixed
+   llvm_name (like the struct path) — two modules' same-named `Node` fed to
+   Option(T) used to collide on the bare key "Option(Node)", so mod_b's payload
+   was read through mod_a's Node layout (silent garbage values). */
+module main
+
+import mod_a as A
+import mod_b as B
+
+def main() -> int {
+    int av = 0
+    match A.find() {
+        Some(n) => { av = A.show(n) }
+        None => { }
+    }
+    f64 bs = 0.0
+    match B.find() {
+        Some(n) => { bs = B.sum(n) }
+        None => { }
+    }
+    @print(f"a={av} sum={bs}")
+    if av == 42 && bs > 7.49 && bs < 7.51 {
+        @print("MODTYPE_GENERIC_ENUM PASS")
+    }
+    return 0
+}
