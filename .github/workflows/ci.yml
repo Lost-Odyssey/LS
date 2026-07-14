@@ -73,7 +73,12 @@ jobs:
         run: |
           ccache --max-size=500M
           ccache --zero-stats
-          cmake --build build -j "$(nproc)"
+          # TEMP DIAGNOSTIC (revert after): serial + verbose so a failing edge
+          # stops ninja immediately with its FAILED: block + full command +
+          # error output at the very tail of the log (the parallel -j build
+          # interleaves and buries it). Revert to `-j "$(nproc)"` once the
+          # Linux build breakage is identified and fixed.
+          cmake --build build -j 1 --verbose
           ccache --show-stats
 
       - name: Test
