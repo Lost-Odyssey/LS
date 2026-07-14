@@ -1,0 +1,9 @@
+module l022_facade
+
+/* Facade module: re-exports the type + its methods by importing both the core
+   (Widget + base) and the extension (doubled). A consumer that imports ONLY
+   this facade must transitively see BOTH base() and doubled() on Widget.
+   Note core is reachable two ways here: directly, and again via ext -> core.
+   Propagation must be idempotent (no duplicate-method error on base()). */
+import l022_core
+import l022_ext

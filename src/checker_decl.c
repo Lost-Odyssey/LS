@@ -1718,6 +1718,124 @@ void propagate_imported_traits(Checker *c, const char *import_path,
     }
 }
 
+/* L-022 half 2: recursively register the struct/enum TYPES and their inherent
+   (non-trait) methods of an imported module AND its transitive imports. Mirrors
+   propagate_imported_traits, but for inherent `methods Type { ... }` blocks so a
+   consumer that imports only a FACADE module (which just re-imports its
+   submodules) still sees the types + methods those submodules define. Without
+   this, `import facade` where the concrete type lives in facade's dependency
+   cone leaves the type unnameable and its methods undispatchable at the call
+   site. The direct-import loop (checker.c:9762-9906) handles depth 1; this
+   handles the transitive tail. `visited`/`vcount` guard diamonds/cycles.
+
+   Idempotency: register_method reports a "conflicting method" error for a
+   same-name, same-origin (inherent == origin NULL) duplicate — it is NOT a
+   silent no-op. A facade that reaches `core` both directly and via `ext -> core`
+   would double-register core's methods, so every registration here is guarded by
+   a find_method existence pre-check. Struct/enum type registration is likewise
+   guarded (find_struct_type / find_enum_type; identical pointer = same module
+   loaded twice = OK). */
+void propagate_inherited_methods(Checker *c, const char *import_path,
+                                        const char **visited, int *vcount)
+{
+    if (import_path == NULL || c->registry == NULL) return;
+    for (int i = 0; i < *vcount; i++)
+        if (visited[i] && strcmp(visited[i], import_path) == 0) return;
+    if (*vcount < 64) visited[(*vcount)++] = import_path;
+
+    /* Builtin modules expose their inherent methods through their own paths. */
+    if (builtin_module_exists(import_path) &&
+        !module_user_file_exists(import_path, c->source_path))
+        return;
+
+    ModuleInfo *mod = module_load(c->registry, import_path, c->source_path);
+    if (mod == NULL || mod->ast == NULL) return;
+    AstNode *mod_ast = mod->ast;
+
+    /* Export table (keyed by mod->name, the canonical spelling) for B-4.1 impl
+       keying — matches the direct-import loop's mod_type. */
+    Type *mod_type = type_module_new(mod->name);
+    for (int j = 0; j < mod_ast->as.program.decl_count; j++)
+    {
+        AstNode *d = mod_ast->as.program.decls[j];
+        if (d->kind == AST_STRUCT_DECL && d->resolved_type)
+            type_module_add_export(mod_type, d->as.struct_decl.name, d->resolved_type);
+        else if (d->kind == AST_ENUM_DECL && d->resolved_type)
+            type_module_add_export(mod_type, d->as.enum_decl.name, d->resolved_type);
+    }
+
+    for (int j = 0; j < mod_ast->as.program.decl_count; j++)
+    {
+        AstNode *d = mod_ast->as.program.decls[j];
+        /* Register the concrete struct/enum types so the consumer can name them
+           (mirrors checker.c:9762-9785 / :9821-9843, minus generic templates). */
+        if (d->kind == AST_STRUCT_DECL && d->resolved_type &&
+            d->as.struct_decl.type_param_count == 0)
+        {
+            const char *sname = d->as.struct_decl.name;
+            Type *existing = find_struct_type(c, sname);
+            if (existing && existing != d->resolved_type)
+                checker_mark_ambiguous_type(c, sname);
+            else if (!existing)
+                checker_register_struct(c, sname, d->resolved_type);
+        }
+        else if (d->kind == AST_ENUM_DECL && d->resolved_type)
+        {
+            const char *ename = d->as.enum_decl.name;
+            Type *existing_e = find_enum_type(c, ename);
+            if (existing_e && existing_e != d->resolved_type)
+                checker_mark_ambiguous_type(c, ename);
+            else if (!existing_e)
+                checker_register_enum(c, ename, d->resolved_type);
+        }
+        /* Register inherent (non-generic) impl methods, keyed by B-4.1 llvm_name
+           (mirrors checker.c:9865-9905), with an existence pre-check for
+           idempotency across diamond import paths. */
+        else if (d->kind == AST_IMPL_DECL &&
+                 d->as.impl_decl.type_param_count == 0)
+        {
+            const char *impl_name = d->as.impl_decl.name;
+            const char *impl_key = impl_name;
+            Type *impl_st = type_module_find_export(mod_type, impl_name);
+            if (impl_st)
+            {
+                const char *k = impl_key_of_type(impl_st);
+                if (k) impl_key = k;
+            }
+            int impl_idx = find_or_create_impl(c, impl_key);
+            for (int mi = 0; mi < d->as.impl_decl.method_count; mi++)
+            {
+                AstNode *method = d->as.impl_decl.methods[mi];
+                if (method == NULL || method->kind != AST_FN_DECL)
+                    continue;
+                if (method->resolved_type == NULL)
+                    continue;
+                const char *mname = method->as.fn_decl.name;
+                /* Idempotency guard: skip if this inherent method already exists
+                   (reached via a shorter/direct path or another diamond edge). */
+                if (find_method(c, impl_key, mname) != NULL)
+                    continue;
+                register_method(c, impl_idx, mname,
+                                method->resolved_type,
+                                method->as.fn_decl.is_static,
+                                method->as.fn_decl.self_borrow_kind,
+                                NULL, method,  /* imported inherent impl */
+                                method->line, method->column);
+                /* NOTE: unlike the direct-import loop (checker.c:9902), we do NOT
+                   scope_define the method as a bare free function here. Doing so
+                   transitively would pollute the consumer scope with every
+                   reachable module's method names (e.g. reflect_core's static
+                   `make`/`empty`) and shadow the user's own free functions.
+                   Instance/static dispatch `recv.m()` / `Type.m()` resolves via
+                   the impl_registry above; bare `m()` calls on a transitively-
+                   reached type are intentionally not supported through a facade. */
+            }
+        }
+        else if (d->kind == AST_IMPORT_DECL)
+            propagate_inherited_methods(c, d->as.import_decl.path, visited, vcount);
+    }
+}
+
 void check_decl(Checker *c, AstNode *node)
 {
     if (node == NULL)

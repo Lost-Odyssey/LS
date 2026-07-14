@@ -1,0 +1,13 @@
+module main
+
+/* Consumer imports ONLY the facade. base() lives in l022_core and doubled() in
+   l022_ext, both reachable transitively through the facade. */
+import l022_facade
+
+def main() -> int {
+    Widget w = Widget { n: 21 }
+    int a = w.base()       // transitively via facade -> core
+    int b = w.doubled()    // transitively via facade -> ext (L-022 half 2)
+    @print(f"L022F {a} {b}")   // expect: L022F 21 42
+    return 0
+}

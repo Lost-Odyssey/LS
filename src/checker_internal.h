@@ -211,6 +211,8 @@ void check_trait_decl(Checker *c, AstNode *node);
 void check_impl_trait_decl(Checker *c, AstNode *node);
 void register_one_imported_trait_decl(Checker *c, AstNode *d, Type *mod_type);
 void propagate_imported_traits(Checker *c, const char *import_path, const char **visited, int *vcount);
+void propagate_inherited_methods(Checker *c, const char *import_path, const char **visited, int *vcount);
+void checker_mark_ambiguous_type(Checker *c, const char *name);
 void check_decl(Checker *c, AstNode *node);
 void forward_pass(Checker *c, AstNode *program);
 

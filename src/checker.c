@@ -20,7 +20,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
 static bool check_method_where_bounds(Checker *c, AstNode *method, const char *qualified_name, char **tp_names, Type **type_args, int tp_count);
 static void check_pass(Checker *c, AstNode *program);
 static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
-static void checker_mark_ambiguous_type(Checker *c, const char *name);
+void checker_mark_ambiguous_type(Checker *c, const char *name);
 static void checker_propagate_has_drop_fixpoint(Checker *c);
 static Type *checker_str_type(Checker *c);
 static bool checker_type_is_ambiguous(Checker *c, const char *name);
@@ -347,7 +347,7 @@ char *checker_module_type_llvmname(Checker *c, const char *bare_name)
 }
 
 /* B-4: mark a bare type name as ambiguous (exported by 2+ imported modules). */
-static void checker_mark_ambiguous_type(Checker *c, const char *name)
+void checker_mark_ambiguous_type(Checker *c, const char *name)
 {
     for (int i = 0; i < c->ambiguous_type_count; i++)
         if (strcmp(c->ambiguous_types[i], name) == 0) return; /* already marked */
@@ -9894,6 +9894,16 @@ void forward_pass(Checker *c, AstNode *program)
                         bool m_static = method->as.fn_decl.is_static;
                         int  m_sbk    = method->as.fn_decl.self_borrow_kind;
                         const char *mname = method->as.fn_decl.name;
+                        /* L-022 half 2 idempotency: propagate_inherited_methods
+                           may already have registered this exact inherent method
+                           via a transitive/facade path. Registering it again
+                           would trip register_method's same-origin duplicate
+                           error, so skip if it already exists. For every
+                           pre-L-022 program nothing was pre-registered here, so
+                           this pre-check never fires and behaviour/IR is
+                           unchanged. */
+                        if (find_method(c, impl_key, mname) != NULL)
+                            continue;
                         register_method(c, impl_idx, mname,
                                         method->resolved_type,
                                         m_static, m_sbk,
@@ -9922,6 +9932,14 @@ void forward_pass(Checker *c, AstNode *program)
                     int vcount = 0;
                     propagate_imported_traits(c, d->as.import_decl.path,
                                               visited, &vcount);
+                    /* L-022 half 2: also propagate transitively-reachable
+                       inherent methods + their concrete types, so a consumer
+                       importing only a facade module sees the types/methods
+                       defined in that facade's dependency cone. */
+                    const char *mvisited[64];
+                    int mvcount = 0;
+                    propagate_inherited_methods(c, d->as.import_decl.path,
+                                                mvisited, &mvcount);
                 }
             }
 

@@ -1,0 +1,11 @@
+module l022_ext
+
+import l022_core
+
+/* Extension module: an inherent `methods Widget` block living in a DIFFERENT
+   module than the one that declares Widget (L-022). Half 1 already makes the
+   emitted symbol follow Widget's owning-module llvm_name; Half 2 (this phase)
+   makes it VISIBLE to a consumer that only imports the facade. */
+methods Widget {
+    def doubled(&self) -> int { return self.n * 2 }
+}

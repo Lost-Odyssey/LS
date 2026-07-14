@@ -1,0 +1,11 @@
+module l022_core
+
+/* Core module: declares the struct + a core inherent method in the SAME module.
+   Has NO import of any sibling submodule (leaf of the dependency DAG). */
+struct Widget {
+    int n
+}
+
+methods Widget {
+    def base(&self) -> int { return self.n }
+}
