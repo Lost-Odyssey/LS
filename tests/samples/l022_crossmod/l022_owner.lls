@@ -1,0 +1,11 @@
+module l022_owner
+
+/* Owner module: declares the struct and one inherent method in the SAME
+   module (the normal, always-worked case). */
+struct Widget {
+    int n
+}
+
+methods Widget {
+    def base(&self) -> int { return self.n }
+}

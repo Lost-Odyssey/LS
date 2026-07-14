@@ -1,0 +1,12 @@
+module l022_methods
+
+import l022_owner
+
+/* L-022: an inherent `methods Widget` block living in a DIFFERENT module than
+   the one that declares Widget. Pre-fix, the emitted symbol was prefixed with
+   this module (l022_methods__Widget.doubled) while the call site dispatched
+   through Widget's owning-module llvm_name (l022_owner__Widget.doubled) —
+   link failure. */
+methods Widget {
+    def doubled(&self) -> int { return self.n * 2 }
+}

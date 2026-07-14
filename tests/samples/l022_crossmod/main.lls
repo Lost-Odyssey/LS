@@ -1,0 +1,12 @@
+module main
+
+import l022_owner
+import l022_methods
+
+def main() -> int {
+    Widget w = Widget { n: 21 }
+    int a = w.base()       // owning-module method
+    int b = w.doubled()    // cross-module inherent method (L-022)
+    @print(f"L022 {a} {b}")   // expect: L022 21 42
+    return 0
+}

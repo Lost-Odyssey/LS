@@ -1167,28 +1167,68 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
         strcmp(bare_name, "i32") == 0    || strcmp(bare_name, "u8") == 0 ||
         strcmp(bare_name, "u16") == 0    || strcmp(bare_name, "u32") == 0 ||
         strcmp(bare_name, "u64") == 0    || strcmp(bare_name, "f32") == 0;
-    /* B-3: when emitting inside a module, prefix the struct/enum LLVM name so
-       that qualified method names become "<mod>__Struct.method" rather than
-       "Struct.method" (consistent with codegen_struct_decl's B-2 prefixing). */
+    /* B-3 / L-022: prefix the struct/enum LLVM name so that qualified method
+       names become "<mod>__Struct.method" rather than "Struct.method"
+       (consistent with codegen_struct_decl's B-2 prefixing).
+
+       Method DISPATCH always resolves through the TYPE's real llvm_name
+       (struct_llvm_name / enum_llvm_name_of at the call site, codegen_expr.c
+       ~:1854), so the emitted symbol must use the SAME name. The type's real
+       llvm_name follows the module that DECLARES the type. That module may
+       differ from `current_emit_module`, the module hosting THIS `methods`
+       block: an inherent `methods Widget` block can live in a different module
+       than `struct Widget` (L-022).
+
+       Resolution order (disambiguation-safe — two modules may declare a struct
+       with the SAME bare name, e.g. mod_a.Widget vs mod_b.Widget, so a plain
+       bare-name lookup is ambiguous):
+         1. If emitting inside a module, first look for a struct/enum whose
+            registered llvm_name == "<current_emit_module>__<bare>" (the type
+            owned by THIS module). Found => same-module impl; use it. This
+            preserves the pre-L-022 behavior byte-for-byte and disambiguates
+            same-named types.
+         2. Otherwise (L-022 cross-module methods block, or main-file user impl
+            with current_emit_module == NULL), adopt the type's llvm_name by a
+            bare-name lookup wherever it is declared (struct registry first,
+            then enum registry). Mirrors codegen_impl_trait_decl ~:1366.
+         3. Conservative fallback: type not in either registry — keep the old
+            emit-module prefix. */
     char prefixed_name_buf[512];
     const char *struct_name = bare_name;
-    if (!is_builtin_impl &&
-        ctx->current_emit_module != NULL && ctx->current_emit_module[0] != '\0')
+    if (!is_builtin_impl)
     {
-        cg_module_fn_symbol(prefixed_name_buf, sizeof(prefixed_name_buf),
-                            ctx->current_emit_module, bare_name);
-        struct_name = prefixed_name_buf;
-    }
-    /* B-3 (docs/bugs_deferred_p5_4.md §B-3): a USER `impl ImportedStruct` (e.g.
-       `impl Str` in the main file) is emitted with current_emit_module == NULL,
-       so the branch above doesn't fire and struct_name stays bare ("Str"). But
-       method DISPATCH resolves through the struct's prefixed llvm_name
-       ("std_str__Str") — see the call-site resolution near line 5017. Mirror that
-       here: when struct_name is still bare, look the struct/enum up by bare name
-       and adopt its llvm_name so emitted symbol == dispatched symbol. */
-    if (!is_builtin_impl && struct_name == bare_name)
-    {
-        for (int si = 0; si < ctx->struct_type_count; si++)
+        bool adopted = false;
+
+        /* Step 1: same-module impl — match the type owned by current_emit_module. */
+        if (ctx->current_emit_module != NULL && ctx->current_emit_module[0] != '\0')
+        {
+            cg_module_fn_symbol(prefixed_name_buf, sizeof(prefixed_name_buf),
+                                ctx->current_emit_module, bare_name);
+            for (int si = 0; si < ctx->struct_type_count && !adopted; si++)
+            {
+                Type *slt = ctx->struct_types[si].ls_type;
+                if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.llvm_name &&
+                    strcmp(slt->as.strukt.llvm_name, prefixed_name_buf) == 0)
+                {
+                    struct_name = slt->as.strukt.llvm_name;
+                    adopted = true;
+                }
+            }
+            for (int ei = 0; ei < ctx->enum_type_count && !adopted; ei++)
+            {
+                Type *elt = ctx->enum_types[ei].ls_type;
+                if (elt && elt->kind == TYPE_ENUM &&
+                    strcmp(enum_llvm_name_of(elt), prefixed_name_buf) == 0)
+                {
+                    struct_name = enum_llvm_name_of(elt);
+                    adopted = true;
+                }
+            }
+        }
+
+        /* Step 2: cross-module methods block (or main-file user impl) — adopt
+           the type's llvm_name by bare name, wherever it is declared. */
+        for (int si = 0; si < ctx->struct_type_count && !adopted; si++)
         {
             Type *slt = ctx->struct_types[si].ls_type;
             if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.name &&
@@ -1196,8 +1236,26 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
                 slt->as.strukt.llvm_name != NULL)
             {
                 struct_name = slt->as.strukt.llvm_name;
-                break;
+                adopted = true;
             }
+        }
+        for (int ei = 0; ei < ctx->enum_type_count && !adopted; ei++)
+        {
+            Type *elt = ctx->enum_types[ei].ls_type;
+            if (elt && elt->kind == TYPE_ENUM && elt->as.enom.name &&
+                strcmp(elt->as.enom.name, bare_name) == 0)
+            {
+                struct_name = enum_llvm_name_of(elt);
+                adopted = true;
+            }
+        }
+
+        /* Step 3: type not in either registry — keep the old emit-module prefix. */
+        if (!adopted &&
+            ctx->current_emit_module != NULL && ctx->current_emit_module[0] != '\0')
+        {
+            /* prefixed_name_buf already holds "<current_emit_module>__<bare>". */
+            struct_name = prefixed_name_buf;
         }
     }
     bool is_enum_impl = (find_enum_llvm(ctx, struct_name) != NULL);
