@@ -1,0 +1,24 @@
+/* Regression: ast_clone_deep used to fall through a silent `default:` shallow
+   copy for AST_AT_TIME / AST_AT_BENCH — a generic method body containing
+   @time/@bench was cloned per instantiation with the child expr ALIASED
+   between template and clone, crashing the compiler (heap corruption, all
+   output lost). Two instantiations force two clones. */
+struct Box(T) { T v }
+
+methods Box(T) {
+    def get(&self) -> T {
+        int x = @time (1 + 2)
+        f64 m = @bench(2) (3 + 4)
+        if x == 3 && m >= 0.0 {
+            return self.v
+        }
+        return self.v
+    }
+}
+
+def main() -> int {
+    Box(int) b = Box(int) { v: 7 }
+    Box(f64) c = Box(f64) { v: 2.5 }
+    @print(f"GEN CLONE {b.get()} {c.get()}")
+    return 0
+}

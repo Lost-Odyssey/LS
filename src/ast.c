@@ -1085,10 +1085,51 @@ AstNode *ast_clone_deep(const AstNode *src) {
         }
         break;
     }
-    default:
-        /* For any unhandled node types, the shallow copy is kept.
-           This should not happen in method bodies. */
+    case AST_AT_TIME:
+        n->as.at_time.expr = ast_clone_deep(src->as.at_time.expr);
         break;
+    case AST_AT_BENCH:
+        n->as.at_bench.expr = ast_clone_deep(src->as.at_bench.expr);
+        break;
+    case AST_LOAD_LIB:
+        n->as.load_lib.var_name = ast_strdup(src->as.load_lib.var_name);
+        n->as.load_lib.lib_path = ast_strdup(src->as.load_lib.lib_path);
+        break;
+    case AST_FFI_CALL:
+        n->as.ffi_call.lib_expr = ast_clone_deep(src->as.ffi_call.lib_expr);
+        n->as.ffi_call.fn_name  = ast_strdup(src->as.ffi_call.fn_name);
+        if (src->as.ffi_call.arg_count > 0) {
+            n->as.ffi_call.args = (AstNode **)malloc_safe(
+                (size_t)src->as.ffi_call.arg_count * sizeof(AstNode *));
+            for (int i = 0; i < src->as.ffi_call.arg_count; i++)
+                n->as.ffi_call.args[i] = ast_clone_deep(src->as.ffi_call.args[i]);
+        } else {
+            n->as.ffi_call.args = NULL;
+        }
+        break;
+    /* Declaration/top-level kinds can never appear inside the subtrees this
+       function is called on (method bodies, param defaults, comptime blocks,
+       operator lowering). Fail fast instead of silently shallow-copying: an
+       aliased owned pointer here is a heap-corruption double free at ast_free
+       time (exactly how the missing AT_TIME case above crashed — 0xC0000374).
+       NO default: — every new AstNodeType must add a case here or ast_free's
+       twin, and -Wswitch flags the omission at compile time. */
+    case AST_PROGRAM:
+    case AST_MODULE_DECL:
+    case AST_IMPORT_DECL:
+    case AST_STRUCT_DECL:
+    case AST_ENUM_DECL:
+    case AST_TRAIT_DECL:
+    case AST_IMPL_DECL:
+    case AST_IMPL_TRAIT_DECL:
+    case AST_TYPE_ALIAS_DECL:
+    case AST_EXTERN_BLOCK:
+    case AST_EXTERN_FN:
+    case AST_EXTERN_STRUCT_DECL:
+        fprintf(stderr,
+                "internal error: ast_clone_deep on declaration node %s\n",
+                ast_kind_name(src->kind));
+        exit(1);
     }
     return n;
 }
