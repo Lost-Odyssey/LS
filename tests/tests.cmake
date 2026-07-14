@@ -3960,6 +3960,32 @@ set_tests_properties(test_modtype_generic_enum PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- numeric literal overflow rejected at parse time (boundary values keep working) ----
+add_test(
+    NAME test_literal_overflow
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_literal_overflow.cmake
+)
+set_tests_properties(test_literal_overflow PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- ast_clone_deep exhaustiveness: @time/@bench in generic method bodies ----
+add_test(
+    NAME test_generic_clone_attime
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_generic_clone_attime.cmake
+)
+set_tests_properties(test_generic_clone_attime PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- BF-045: owned string param into returned struct field / return must clone ----
 add_test(
     NAME test_bf045_string_param
