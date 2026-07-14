@@ -212,7 +212,7 @@ are built-in types, not a module.</p>
 <tr><td class="grp" colspan="2">Memory</td></tr>
 <tr><td class="m"><a href="#arena">arena</a></td><td>Bump allocators: typed <code>Arena(T)</code> pool + heterogeneous <code>Region</code> (string interning)</td></tr>
 <tr><td class="grp" colspan="2">Strings &amp; Text</td></tr>
-<tr><td class="m"><a href="#str">str</a></td><td>The <code>Str</code> string type (only string in LS)</td></tr>
+<tr><td class="m"><a href="#str">str</a></td><td>The <code>Str</code> string type (only string in LS) — a facade over <code>str_core</code>/<code>str_search</code>/<code>str_num</code></td></tr>
 <tr><td class="m"><a href="#strconv">strconv</a></td><td>Number ↔ string formatting &amp; bases</td></tr>
 <tr><td class="m"><a href="#hash">hash</a></td><td><code>Hash</code> interface + FxHash primitive</td></tr>
 <tr><td class="m"><a href="#show">show</a></td><td><code>Show</code> interface (render into <code>Sink</code>) + <code>to_str(x)</code>; <code>@derive(Show)</code> target</td></tr>
@@ -901,6 +901,21 @@ a.reset()                            <span class="c">// O(1) reuse</span></pre><
 <h2>str — Str<span class="imp">import std.core.str</span></h2>
 <p class="purpose">The string type. <code>Str</code> is the only string in LS; literals like
 <code>"hi"</code> are <code>Str</code> and the prelude imports this module automatically.</p>
+
+<div class="note"><b>Module layout.</b> <code>std.core.str</code> is a <b>facade</b>: it re-exports three
+domain submodules so <code>import std.core.str</code> (and the prelude) exposes the whole API
+with a single import. You never import the submodules directly; they exist only to keep the
+implementation readable:
+<ul class="compact">
+  <li><code>std.core.str_core</code> — the <code>Str</code>/<code>StrSlice</code> definitions,
+      lifecycle traits (<code>Clone</code>/<code>Destroy</code>/<code>Equal</code>/<code>Hash</code>/<code>Add</code>/<code>Order</code>),
+      and the foundational methods (capacity, queries, byte build, construction, <code>eq?</code>/<code>compare</code>,
+      <code>substr</code>/<code>copy</code>, zero-copy slice views) plus all <code>StrSlice</code> methods.</li>
+  <li><code>std.core.str_search</code> — search, transform, replace/pad, and collection methods
+      (<code>find</code>/<code>rfind</code>/<code>count</code>/<code>upper</code>/<code>trim</code>/<code>replace</code>/<code>split</code>/<code>lines</code>/…).</li>
+  <li><code>std.core.str_num</code> — numeric parsing (<code>to_int</code>/<code>to_i64</code>/<code>to_float</code>/<code>to_bool</code>).</li>
+</ul>
+All methods below dispatch on <code>Str</code> regardless of which submodule defines them.</div>
 
 <div class="types"><pre>struct Str { *u8 data; int len; int cap }       // UTF-8 bytes; cap==0 static, cap&gt;0 owned (has destructor)
 struct StrSlice { *u8 ptr; int len }            // zero-copy borrowed view into a Str's bytes (POD)

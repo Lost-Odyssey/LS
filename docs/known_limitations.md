@@ -634,39 +634,39 @@ STATUS_HEAP_CORRUPTION 硬崩溃，见 plan §7）。合法 re-drop（L-012 / �
 B-MAP-OPT-001 两条协议路径）在所有档位仍按契约静默——这部分 M-8 盲区
 **没有变化**，是刻意保留，不是遗漏。
 
-## L-022 · 跨模块 inherent `methods` 块符号 mangling 不对称（挡住 struct 按模块拆分）
+## L-022 · 跨模块 inherent `methods` 块（✅ 已解决 2026-07-14）
 
-**现状**（S5 str.lls 拆分探针发现，2026-07-13，架构清理计划 docs/plan_arch_cleanup.md §五 S5）
+**曾经的现状**（S5 str.lls 拆分探针发现，2026-07-13）
 一个 struct 的**固有方法**（inherent `methods Type { ... }`，非 trait-impl）
-若定义在与 struct 声明**不同的模块**里，符号命名两侧不对称、链接必然失败：
+若定义在与 struct 声明**不同的模块**里，符号命名两侧不对称、链接必然失败，
+且即使修好 mangling，只 import 属主模块（或 prelude `import std.core.str`）的
+消费者也看不见移走的方法。这挡住了"把核心 struct 的方法按领域拆到多个模块"
+的重构；S5（str.lls）当时降级为文件内分区。
 
-- **调用点**按 struct 属主模块前缀发符号（B-3 `llvm_name`）：
-  `std_core_str__Str.probe_len`；
-- **定义侧**（`codegen_impl_decl`）按 methods 块所在模块的
-  `current_emit_module` 前缀发符号：`std_core_strprobe__Str.probe_len`。
+**修复**（三阶段，均已合 main）
+1. **Phase 1 — codegen mangling 对称化**（`fix(codegen)` 92d1093）：
+   `codegen_impl_decl` 固有方法发符号时改用 struct 的 `llvm_name` 前缀
+   （struct 属主模块），不再用 methods 块所在的 `current_emit_module`。
+   解锁"消费方**显式 import** 方法所在模块"的场景。
+2. **Phase 2 — checker 可见性传播**（`feat(checker)` 2714758）：新增
+   `propagate_inherited_methods`（镜像 `propagate_imported_traits`），沿
+   import 链递归把传递依赖的固有方法注册进消费方 impl_registry，
+   带 visited 去重 + 存在性预检幂等。facade 模块一句 import 即透传子模块方法。
+3. **Phase 3 — imported-type impl-key 恢复**（`fix(checker)` d726a2a）：当
+   `methods Type` 块的类型是被 import 进本模块（而非本地声明）时，模块导出表
+   会 miss，直接/传播两条注册路径原会退化为**裸类型名** key，与调用点用的
+   `llvm_name` key 不符 → 方法丢失。修复＝export-table miss 时经全局
+   `find_struct_type` / `find_enum_type` 恢复属主模块 `llvm_name` 作 key。
 
-两名不等 → JIT `Symbols not found` / AOT `LNK1120`。且**即使修好 mangling**，
-固有方法只在其定义模块被加载时注册，prelude / `import std.core.str` 的现存
-消费者（不 import 新模块）仍看不见移走的方法（checker 报 `has no field or
-method`），除非 str.lls 反向 import 新模块形成循环依赖。
+**兑现**（`refactor(stdlib)` 1f8d786）：str.lls 从单模块升级为无环三层 facade
+——`std.core.str_core`（Str/StrSlice 定义 + 钩子 + 基础方法）＋
+`std.core.str_search`（search/transform/replace/collections）＋
+`std.core.str_num`（数值解析），`std.core.str` 变纯 facade re-export 三者，
+`import std.core.str` 零消费方改动。ctest 359/359，str 重度样本 memcheck 0/0/0。
 
-**对比：trait-impl 形态不受影响**
-`methods Type: Interface { ... }` 跨模块是好的（std 的 show / reflect / value
-生产者跨模块在用）——因为 interface 方法走 origin-based 派发与符号命名，
-不用 struct 属主前缀。坑仅限**固有块**。
-
-**影响**
-任何"把一个核心 struct 的方法按领域拆到多个模块"的重构都被此挡住。
-S5（str.lls 895 行拆 search/num 子模块）因此**降级为文件内分区重排 +
-导航头注释**（单模块留守，见 str.lls 头部 FILE NAVIGATION 注释；ctest
-357/357）。Vec/Map/Set 等其它大容器同理，暂不可按模块拆方法。
-
-**改进路径**
-1. `codegen_impl_decl` 固有方法发符号时改用 struct 的 `llvm_name` 前缀
-   （struct 属主模块），而非 `current_emit_module` —— 消除定义/调用两侧
-   不对称。这是**必要非充分**：还需解决可见性（方法注册须能被只 import
-   属主模块的消费者看见，或引入 re-export / `pub use` 机制）。
-2. 二者齐备后，S5 可从降级方案升级为真模块拆分。属独立排期，非紧急
-   （文件内分区已解决导航诉求，零功能缺口）。
+**已知有界后果**（非 bug）：`@derive(ReflectRaw)` 只枚举**类型属主模块内**声明的
+方法（derive 在 import 处理前展开，看不到 import 来的方法），故 `Str.reflect()`
+现只报 str_core 的方法，search/parse 方法不在其列。这是模块局部方法扫描的
+设计性结果，已在 reflect_containers 测试注释说明。
 
 <!-- 后续新增限制条目请沿用 L-NNN · 标题 格式 -->
