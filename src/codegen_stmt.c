@@ -932,23 +932,8 @@ static void cg_stmt_assign(CodegenContext *ctx, AstNode *node)
         return;
 }
 
-void codegen_stmt(CodegenContext *ctx, AstNode *node)
+static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
 {
-    if (node == NULL)
-        return;
-
-    /* D1 (-g): statement-level line info — one location per statement,
-       sticky across the expressions it lowers (docs/plan_debug_info.md §3.2). */
-    cg_di_stmt_loc(ctx, node);
-
-#if CG_DEBUG_LV2
-    printf(">>>>> codegen_stmt, node->kind:%u\n", node->kind);
-#endif
-
-    switch (node->kind)
-    {
-    case AST_VAR_DECL:
-    {
         Type *var_type = node->resolved_type;
         if (var_type == NULL)
             return;
@@ -1281,8 +1266,27 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
             if (vsym) vsym->lifetime_marked = var_lifetime_marked;
             if (vsym && block_alias_init) vsym->no_drop_reason = CG_ALIAS;
         }
+        return;
+}
+
+void codegen_stmt(CodegenContext *ctx, AstNode *node)
+{
+    if (node == NULL)
+        return;
+
+    /* D1 (-g): statement-level line info — one location per statement,
+       sticky across the expressions it lowers (docs/plan_debug_info.md §3.2). */
+    cg_di_stmt_loc(ctx, node);
+
+#if CG_DEBUG_LV2
+    printf(">>>>> codegen_stmt, node->kind:%u\n", node->kind);
+#endif
+
+    switch (node->kind)
+    {
+    case AST_VAR_DECL:
+        cg_stmt_var_decl(ctx, node);
         break;
-    }
 
     case AST_ASSIGN:
         cg_stmt_assign(ctx, node);
