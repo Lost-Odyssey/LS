@@ -2134,15 +2134,22 @@ static Type *try_instantiate_method_level_generic(Checker *c,
         }
     }
 
-    /* Step 4: build mangled call name: "RawVec(int).map(string)" */
-    char mangled[512];
-    int pos = snprintf(mangled, sizeof(mangled), "%s.%s(", impl_key, method_name);
-    for (int ti = 0; ti < mtp_count && pos < (int)sizeof(mangled) - 2; ti++) {
-        if (ti > 0) pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ",");
-        pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, "%s",
-            type_name(mtp_type_args[ti]));
+    /* Step 4: build mangled call name: "RawVec(int).map(string)". Bare
+       `type_name` for the method-level type args (not mangle_type_arg_name)
+       — preserves this site's pre-existing behavior; the receiver part
+       (impl_key) is already module-prefix-aware via impl_key_of_type.
+       MangleBuf (Task 2.2) replaces the old fixed 512-byte buffer. */
+    MangleBuf mb; mangle_buf_init(&mb);
+    mangle_buf_append(&mb, impl_key);
+    mangle_buf_append(&mb, ".");
+    mangle_buf_append(&mb, method_name);
+    mangle_buf_append(&mb, "(");
+    for (int ti = 0; ti < mtp_count; ti++) {
+        if (ti > 0) mangle_buf_append(&mb, ",");
+        mangle_buf_append(&mb, type_name(mtp_type_args[ti]));
     }
-    snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ")");
+    mangle_buf_append(&mb, ")");
+    char *mangled = mangle_buf_take(&mb);
 
     /* Step 5: set up type aliases for combined params and build concrete signature */
     int saved_alias_count = c->type_alias_count;
@@ -2163,7 +2170,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
                 impl_key);
             c->type_alias_count = saved_alias_count;
             free(params); free(all_tp_names); free(all_tp_types);
-            free(mtp_type_args);
+            free(mtp_type_args); free(mangled);
             return NULL;
         }
         params[0] = type_pointer(self_type);
@@ -2204,7 +2211,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
                 wb->type_param_name, mangled);
             c->type_alias_count = saved_alias_count;
             free(params); free(all_tp_names); free(all_tp_types);
-            free(mtp_type_args);
+            free(mtp_type_args); free(mangled);
             return NULL;
         }
         for (int bi = 0; bi < wb->bounds.count; bi++) {
@@ -2215,7 +2222,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
                     type_name(bound_type), wb->bounds.trait_names[bi], mangled);
                 c->type_alias_count = saved_alias_count;
                 free(params); free(all_tp_names); free(all_tp_types);
-                free(mtp_type_args);
+                free(mtp_type_args); free(mangled);
                 return NULL;
             }
         }
@@ -2311,6 +2318,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
     free(all_tp_names);
     free(all_tp_types);
     free(mtp_type_args);
+    free(mangled); /* pending_generic_method_add took its own strdup() copy above */
     /* params ownership transferred to concrete_type via type_function() — do NOT free */
 
     return concrete_type;
