@@ -1034,24 +1034,30 @@ Type *instantiate_template(Checker *c, int template_idx,
     /* Build mangled name. Type args keyed via mangle_type_arg_name (module
        llvm_name preferred) — keeping bare `type_name` here made two modules'
        same-named `Node` collide on one "Option(Node)" instance, so the second
-       module's payload was read through the first's layout (silent garbage). */
-    char buf[256];
-    int pos = snprintf(buf, sizeof(buf), "%s(", c->enum_templates[template_idx].base_name);
-    for (int i = 0; i < type_arg_count && pos < (int)sizeof(buf) - 2; i++)
+       module's payload was read through the first's layout (silent garbage).
+       MangleBuf (Task 2.2) replaces the old fixed 256-byte buf — deep enough
+       nesting could previously truncate here (and possibly at a different
+       depth than the struct-template path below), producing mismatched
+       def/use symbols instead of a clean error. */
+    MangleBuf nb; mangle_buf_init(&nb);
+    mangle_buf_append(&nb, c->enum_templates[template_idx].base_name);
+    mangle_buf_append(&nb, "(");
+    for (int i = 0; i < type_arg_count; i++)
     {
-        if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s",
-                        mangle_type_arg_name(type_args[i]));
+        if (i > 0) mangle_buf_append(&nb, ",");
+        mangle_append_type_arg(&nb, type_args[i]);
     }
-    snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
+    mangle_buf_append(&nb, ")");
+    char *buf = mangle_buf_take(&nb);
 
     /* Cache hit? */
     Type *cached = find_enum_type(c, buf);
-    if (cached) return cached;
+    if (cached) { free(buf); return cached; }
 
     /* Instantiate */
     int vc = c->enum_templates[template_idx].variant_count;
     Type *et = type_enum(buf, vc);
+    free(buf); /* type_enum() copies the name into its arena */
     bool has_drop = false;
     for (int v = 0; v < vc; v++)
     {
