@@ -11,6 +11,10 @@
 # keep it in sync with the `ls_ir_snapshot(...)` registrations in
 # tests/tests.cmake.
 #
+# Windows-only facility: golden files embed the host's target datalayout /
+# triple (x86_64-pc-windows-msvc), so they are only generated and compared on
+# Windows (the snapshot tests are gated `if(WIN32)` in tests/tests.cmake).
+#
 # IMPORTANT: run this from bash (Git Bash on Windows), never from PowerShell.
 # PowerShell's `2>` redirection writes UTF-16 files; bash's grep/diff/cmake
 # string comparisons expect UTF-8/ASCII and would silently mismatch against

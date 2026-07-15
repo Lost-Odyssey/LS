@@ -4637,6 +4637,13 @@ function(ls_ir_snapshot)
     )
 endfunction()
 
+# Windows-only: the golden .ll files embed the generating host's
+# `target datalayout` / `target triple` lines (x86_64-pc-windows-msvc), so
+# emit-ir on Linux CI would produce a different header and turn every
+# snapshot red. This facility is a local zero-behavior-change refactoring
+# gate for the Windows/MSVC primary platform; Linux CI must not run it.
+if(WIN32)
 ls_ir_snapshot(NAME enum_basic_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/enum_basic_test.lls)
 ls_ir_snapshot(NAME closure_g SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/closure_g.lls)
 ls_ir_snapshot(NAME match_own_stress_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/match_own_stress_test.lls)
+endif()
