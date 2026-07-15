@@ -1,0 +1,13 @@
+/* Cross-module type arg for the deep-nesting mangle stress test (Task 2.2):
+   a struct defined in a non-root module, fed as a generic type argument from
+   main so its instance key must carry the module-prefixed llvm_name (F6b),
+   not the bare "Widget". */
+module mod_w
+
+import std.core.str
+
+struct Widget { int id; Str name }
+
+def make(int id, Str name) -> Option(Widget) {
+    return Some(Widget { id: id, name: name })
+}

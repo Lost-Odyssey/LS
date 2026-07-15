@@ -4596,6 +4596,23 @@ set_tests_properties(test_parse_depth PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- Task 2.2 (docs/plan_arch_round2_backlog.md Batch 2): deep generic
+# type-arg nesting + cross-module type argument through the growable
+# MangleBuf instance-name builder (src/mangle.c), replacing the old fixed
+# 256/512-byte snprintf buffers in instantiate_template /
+# checker_instantiate_struct / resolve_type_node's pre-check. ----
+add_test(
+    NAME test_mangle_deep_nest
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_mangle_deep_nest.cmake
+)
+set_tests_properties(test_mangle_deep_nest PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---------------------------------------------------------------------------
 # IR snapshot tests (Task 0.1, docs/plan_arch_cleanup_round2.md Batch 0) —
 # golden-file byte comparison of `lls emit-ir` output. This is the shared

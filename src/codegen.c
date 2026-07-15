@@ -8,6 +8,7 @@
 #include "builtins_perf.h"
 /* Phase E.4: builtins_io.h removed — io is now pure-LS stdlib/io.ls. */
 #include "common.h"
+#include "mangle.h"
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Target.h>
@@ -49,17 +50,9 @@ static int g_block_counter = 0;
 void cg_module_fn_symbol(char *out, size_t cap,
                                 const char *module_path, const char *fn)
 {
-    if (module_path == NULL || module_path[0] == '\0')
-    {
-        snprintf(out, cap, "%s", fn);
-        return;
-    }
-    size_t pos = 0;
-    for (const char *p = module_path; *p && pos + 1 < cap; p++)
-        out[pos++] = (*p == '.') ? '_' : *p;
-    /* separator "__" then fn */
-    if (pos + 2 < cap) { out[pos++] = '_'; out[pos++] = '_'; }
-    snprintf(out + pos, cap - pos, "%s", fn);
+    char *mangled = mangle_module_symbol(module_path, fn);
+    snprintf(out, cap, "%s", mangled);
+    free(mangled);
 }
 
 

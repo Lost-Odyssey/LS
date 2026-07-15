@@ -86,7 +86,14 @@ endif()
 
 # checker translation units (split per docs/plan_checker_split.md). Listed once
 # so every target referencing ${LS_CHECKER_SOURCES} picks up new TUs.
+#
+# src/mangle.c lives here (rather than its own list) because every test
+# target that pulls in ${LS_CHECKER_SOURCES} needs it (checker.c calls
+# mangle_module_symbol), and every target that pulls in
+# ${LS_CODEGEN_SOURCES} also pulls in ${LS_CHECKER_SOURCES} (grep
+# tests/tests.cmake before changing this — Task 2.1 / plan_arch_round2_backlog.md).
 set(LS_CHECKER_SOURCES
+    src/mangle.c
     src/checker.c
     src/checker_borrow.c
     src/checker_lower.c

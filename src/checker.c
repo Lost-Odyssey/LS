@@ -1,6 +1,7 @@
 /* checker.c — Type checker: walks AST, validates types, fills resolved_type */
 #include "checker.h"
 #include "checker_internal.h"
+#include "mangle.h"
 #include "diag.h"
 #include "parser.h"
 #include "module.h"
@@ -280,24 +281,12 @@ static bool is_self_placeholder(const Type *t) {
 /* type_equals variant that treats g_self_placeholder_type as equal to `concrete`.
    Handles TYPE_REFERENCE wrapping (e.g. &Self == &Vec2). */
 /* F6b: the name a concrete type arg contributes to a generic instance key
-   ("Vec(...)", "Option(...)"). Module-defined struct/enum args use their
-   module-prefixed `llvm_name` (e.g. "ma__Node") instead of the bare name —
-   two modules each defining `Node` would otherwise both mangle to
-   "Option(Node)" and collide (the second instantiation cache-hits the first,
-   conflating distinct layouts). Primitives/non-module types keep their bare
-   `type_name`. Single authority shared by the struct- and enum-template
-   instantiation paths AND the textual Self substitution in
-   type_equals_with_self (which compares instance names, so it must render
-   `Self` exactly the way the instance key was built); mirrors
-   impl_key_of_type's llvm_name ?? name. */
-static const char *generic_arg_mangled_name(const Type *at)
-{
-    if (at && at->kind == TYPE_STRUCT && at->as.strukt.llvm_name)
-        return at->as.strukt.llvm_name;
-    if (at && at->kind == TYPE_ENUM && at->as.enom.llvm_name)
-        return at->as.enom.llvm_name;
-    return type_name(at);
-}
+   ("Vec(...)", "Option(...)") — moved to mangle_type_arg_name (src/mangle.c,
+   Task 2.2) so the struct/enum instantiation paths (checker.c) and this
+   textual Self substitution share one implementation instead of a
+   checker-local static copy; see mangle.h's header comment for the full
+   rationale (module llvm_name preferred, collision history, and why it must
+   stay in lockstep with impl_key_of_type without being merged into it). */
 
 bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const Type *concrete)
 {
@@ -328,7 +317,7 @@ bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const Type *
                embeds it, so a bare-name substitution would falsely mismatch
                for module-defined Self types. */
             char cnbuf[256];
-            snprintf(cnbuf, sizeof cnbuf, "%s", generic_arg_mangled_name(concrete));
+            snprintf(cnbuf, sizeof cnbuf, "%s", mangle_type_arg_name(concrete));
             char outbuf[512]; int op = 0; bool fits = true;
             int cl = (int)strlen(cnbuf);
             #define LS_IDENT_CH(ch) (((ch) >= 'A' && (ch) <= 'Z') || \
@@ -359,15 +348,11 @@ char *checker_module_type_llvmname(Checker *c, const char *bare_name)
 {
     if (c->module_name == NULL || c->module_name[0] == '\0')
         return NULL;
-    char buf[640];
-    int pp = 0;
-    for (const char *mp = c->module_name; *mp && pp < 600; mp++)
-        buf[pp++] = (*mp == '.') ? '_' : *mp;
-    buf[pp++] = '_'; buf[pp++] = '_';
-    snprintf(buf + pp, sizeof(buf) - (size_t)pp, "%s", bare_name);
-    char *result = (char *)malloc_safe(strlen(buf) + 1);
-    memcpy(result, buf, strlen(buf) + 1);
-    return result;
+    /* mangle_module_symbol's NULL/empty-module case returns a strdup of
+       bare_name, not NULL — that path is intentionally not taken here
+       (guarded above) because callers store this in Type.strukt/enom.llvm_name
+       and rely on NULL meaning "no module prefix, use the bare name". */
+    return mangle_module_symbol(c->module_name, bare_name);
 }
 
 /* B-4: mark a bare type name as ambiguous (exported by 2+ imported modules). */
@@ -1015,14 +1000,18 @@ static void checker_stash_resolved_type_args(Checker *c, AstNode *call,
     (void)c;
     if (call == NULL || call->kind != AST_CALL) return;
     if (call->as.call.resolved_type_args != NULL) return;
-    char taj[512];
-    int tp = 0;
-    for (int ti = 0; ti < n && tp < (int)sizeof(taj) - 1; ti++) {
-        if (ti > 0) tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, ",");
-        tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, "%s",
-                       args[ti] ? type_name(args[ti]) : "?");
+    /* Bare `type_name` (not mangle_type_arg_name) and no wrapping "Base(...)"
+       — just a comma-joined arg list, a different format from the instance-
+       name sites above (preserved, not unified; see resolve_type_node's
+       pre-check comment). MangleBuf replaces the old fixed 512-byte taj. */
+    MangleBuf tb; mangle_buf_init(&tb);
+    for (int ti = 0; ti < n; ti++) {
+        if (ti > 0) mangle_buf_append(&tb, ",");
+        mangle_buf_append(&tb, args[ti] ? type_name(args[ti]) : "?");
     }
+    char *taj = mangle_buf_take(&tb);
     call->as.call.resolved_type_args = chk_strdup(taj);
+    free(taj);
 }
 
 /* Instantiate a registered template with concrete type args.  Returns the
@@ -1042,27 +1031,33 @@ Type *instantiate_template(Checker *c, int template_idx,
         return NULL;
     }
 
-    /* Build mangled name. Type args keyed via generic_arg_mangled_name (module
+    /* Build mangled name. Type args keyed via mangle_type_arg_name (module
        llvm_name preferred) — keeping bare `type_name` here made two modules'
        same-named `Node` collide on one "Option(Node)" instance, so the second
-       module's payload was read through the first's layout (silent garbage). */
-    char buf[256];
-    int pos = snprintf(buf, sizeof(buf), "%s(", c->enum_templates[template_idx].base_name);
-    for (int i = 0; i < type_arg_count && pos < (int)sizeof(buf) - 2; i++)
+       module's payload was read through the first's layout (silent garbage).
+       MangleBuf (Task 2.2) replaces the old fixed 256-byte buf — deep enough
+       nesting could previously truncate here (and possibly at a different
+       depth than the struct-template path below), producing mismatched
+       def/use symbols instead of a clean error. */
+    MangleBuf nb; mangle_buf_init(&nb);
+    mangle_buf_append(&nb, c->enum_templates[template_idx].base_name);
+    mangle_buf_append(&nb, "(");
+    for (int i = 0; i < type_arg_count; i++)
     {
-        if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s",
-                        generic_arg_mangled_name(type_args[i]));
+        if (i > 0) mangle_buf_append(&nb, ",");
+        mangle_append_type_arg(&nb, type_args[i]);
     }
-    snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
+    mangle_buf_append(&nb, ")");
+    char *buf = mangle_buf_take(&nb);
 
     /* Cache hit? */
     Type *cached = find_enum_type(c, buf);
-    if (cached) return cached;
+    if (cached) { free(buf); return cached; }
 
     /* Instantiate */
     int vc = c->enum_templates[template_idx].variant_count;
     Type *et = type_enum(buf, vc);
+    free(buf); /* type_enum() copies the name into its arena */
     bool has_drop = false;
     for (int v = 0; v < vc; v++)
     {
@@ -1590,30 +1585,36 @@ Type *checker_instantiate_struct(Checker *c,
     }
 
     /* Build mangled name: "Pair(int,string)". Type args keyed via
-       generic_arg_mangled_name (F6b, module llvm_name preferred) — see its
-       header comment for the collision rationale. */
-    char buf[512];
-    int pos = snprintf(buf, sizeof(buf), "%s(", base_name);
-    for (int i = 0; i < type_arg_count && pos < (int)sizeof(buf) - 2; i++) {
-        if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s",
-                        generic_arg_mangled_name(type_args[i]));
+       mangle_type_arg_name (F6b, module llvm_name preferred) — see its
+       header comment for the collision rationale. MangleBuf (Task 2.2)
+       replaces the old fixed 512-byte buf — deep enough nesting could
+       previously truncate here (possibly at a different depth than the
+       enum-template path above), producing mismatched def/use symbols
+       instead of a clean error. */
+    MangleBuf nb; mangle_buf_init(&nb);
+    mangle_buf_append(&nb, base_name);
+    mangle_buf_append(&nb, "(");
+    for (int i = 0; i < type_arg_count; i++) {
+        if (i > 0) mangle_buf_append(&nb, ",");
+        mangle_append_type_arg(&nb, type_args[i]);
     }
-    snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
+    mangle_buf_append(&nb, ")");
+    char *buf = mangle_buf_take(&nb);
 
     /* Cache hit? */
     Type *cached = find_struct_type(c, buf);
-    if (cached) return cached;
+    if (cached) { free(buf); return cached; }
 
     /* Instantiate: create new TYPE_STRUCT with concrete field types */
     AstNode *decl = c->struct_templates[tmpl_idx].decl_node;
     int fc = decl->as.struct_decl.field_count;
     char **tp_names = c->struct_templates[tmpl_idx].type_params;
 
-    /* Allocate mangled name (owned by the Type) */
-    size_t namelen = strlen(buf);
-    char *mangled = (char *)malloc_safe(namelen + 1);
-    memcpy(mangled, buf, namelen + 1);
+    /* Mangled name (owned by the Type): buf is already a malloc'd, right-
+       sized allocation courtesy of MangleBuf, so hand it off directly
+       instead of the old malloc_safe+memcpy duplicate that existed only
+       because the fixed stack buffer couldn't be owned by anything. */
+    char *mangled = buf;
 
     /* Pre-register empty shell to handle self-recursive generics */
     Type *st = type_struct(mangled, fc);
@@ -2133,15 +2134,22 @@ static Type *try_instantiate_method_level_generic(Checker *c,
         }
     }
 
-    /* Step 4: build mangled call name: "RawVec(int).map(string)" */
-    char mangled[512];
-    int pos = snprintf(mangled, sizeof(mangled), "%s.%s(", impl_key, method_name);
-    for (int ti = 0; ti < mtp_count && pos < (int)sizeof(mangled) - 2; ti++) {
-        if (ti > 0) pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ",");
-        pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, "%s",
-            type_name(mtp_type_args[ti]));
+    /* Step 4: build mangled call name: "RawVec(int).map(string)". Bare
+       `type_name` for the method-level type args (not mangle_type_arg_name)
+       — preserves this site's pre-existing behavior; the receiver part
+       (impl_key) is already module-prefix-aware via impl_key_of_type.
+       MangleBuf (Task 2.2) replaces the old fixed 512-byte buffer. */
+    MangleBuf mb; mangle_buf_init(&mb);
+    mangle_buf_append(&mb, impl_key);
+    mangle_buf_append(&mb, ".");
+    mangle_buf_append(&mb, method_name);
+    mangle_buf_append(&mb, "(");
+    for (int ti = 0; ti < mtp_count; ti++) {
+        if (ti > 0) mangle_buf_append(&mb, ",");
+        mangle_buf_append(&mb, type_name(mtp_type_args[ti]));
     }
-    snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ")");
+    mangle_buf_append(&mb, ")");
+    char *mangled = mangle_buf_take(&mb);
 
     /* Step 5: set up type aliases for combined params and build concrete signature */
     int saved_alias_count = c->type_alias_count;
@@ -2162,7 +2170,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
                 impl_key);
             c->type_alias_count = saved_alias_count;
             free(params); free(all_tp_names); free(all_tp_types);
-            free(mtp_type_args);
+            free(mtp_type_args); free(mangled);
             return NULL;
         }
         params[0] = type_pointer(self_type);
@@ -2203,7 +2211,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
                 wb->type_param_name, mangled);
             c->type_alias_count = saved_alias_count;
             free(params); free(all_tp_names); free(all_tp_types);
-            free(mtp_type_args);
+            free(mtp_type_args); free(mangled);
             return NULL;
         }
         for (int bi = 0; bi < wb->bounds.count; bi++) {
@@ -2214,7 +2222,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
                     type_name(bound_type), wb->bounds.trait_names[bi], mangled);
                 c->type_alias_count = saved_alias_count;
                 free(params); free(all_tp_names); free(all_tp_types);
-                free(mtp_type_args);
+                free(mtp_type_args); free(mangled);
                 return NULL;
             }
         }
@@ -2310,6 +2318,7 @@ static Type *try_instantiate_method_level_generic(Checker *c,
     free(all_tp_names);
     free(all_tp_types);
     free(mtp_type_args);
+    free(mangled); /* pending_generic_method_add took its own strdup() copy above */
     /* params ownership transferred to concrete_type via type_function() — do NOT free */
 
     return concrete_type;
@@ -2953,30 +2962,43 @@ Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
 
         /* Generic-style instantiation: build mangled name "Name(arg1,arg2)"
            and look up an enum instance. Step 8 will add Option/Result template
-           instantiation here when the lookup misses. */
+           instantiation here when the lookup misses.
+           ⭐ Deliberately bare `type_name` here, NOT mangle_type_arg_name —
+           this is only a pre-check against already-instantiated types keyed
+           by whatever name their instantiation site used; the real
+           instantiation calls below (instantiate_template /
+           checker_instantiate_struct) build the module-prefix-aware key
+           themselves on a miss. Keep this difference (see mangle.h's
+           mangle_type_arg_name comment / Task 2.2 brief) — unifying the
+           *construction* (fixed buf -> MangleBuf) must not unify the
+           *semantics*. MangleBuf still replaces the fixed 256-byte buf to
+           remove this site's independent truncation risk. */
         const char *base = tn->as.named.name;
-        char buf[256];
-        int pos = snprintf(buf, sizeof(buf), "%s(", base);
-        for (int i = 0; i < tn->as.named.arg_count && pos < (int)sizeof(buf) - 2; i++)
+        MangleBuf nb; mangle_buf_init(&nb);
+        mangle_buf_append(&nb, base);
+        mangle_buf_append(&nb, "(");
+        for (int i = 0; i < tn->as.named.arg_count; i++)
         {
             Type *at = resolve_type_node(c, tn->as.named.args[i], line, col);
-            if (at == NULL) return NULL;
-            if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s", type_name(at));
+            if (at == NULL) { mangle_buf_free(&nb); return NULL; }
+            if (i > 0) mangle_buf_append(&nb, ",");
+            mangle_buf_append(&nb, type_name(at));
         }
-        snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
+        mangle_buf_append(&nb, ")");
+        char *buf = mangle_buf_take(&nb);
 
         /* Cache hit for already-instantiated type? */
         Type *st_cached = find_struct_type(c, buf);
-        if (st_cached) return st_cached;
+        if (st_cached) { free(buf); return st_cached; }
         Type *et = find_enum_type(c, buf);
-        if (et) return et;
+        if (et) { free(buf); return et; }
 
         /* B-4-for-generics: a bare generic name owned by 2+ imported modules is
            ambiguous — refuse to silently pick one. (Single-owner names are never
            marked, so the common case is unaffected.) */
         if (checker_type_is_ambiguous(c, base))
         {
+            free(buf);
             checker_error(c, line, col,
                 "generic type '%s' is defined in multiple imported modules; "
                 "qualify it as `mod.%s(...)` (note: using more than one "
@@ -2998,13 +3020,13 @@ Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
             for (int i = 0; i < n; i++)
             {
                 ta[i] = resolve_type_node(c, tn->as.named.args[i], line, col);
-                if (ta[i] == NULL) { free(ta); return NULL; }
+                if (ta[i] == NULL) { free(ta); free(buf); return NULL; }
                 if (checker_reject_borrow_type_arg(c, ta[i], base, line, col))
-                    { free(ta); return NULL; }
+                    { free(ta); free(buf); return NULL; }
             }
             Type *inst = checker_instantiate_struct(c, base, ta, n, line, col);
             free(ta);
-            if (inst) return inst;
+            if (inst) { free(buf); return inst; }
         }
 
         /* Try enum template instantiation (Option/Result, etc.). */
@@ -3019,17 +3041,19 @@ Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
                 for (int i = 0; i < n; i++)
                 {
                     ta[i] = resolve_type_node(c, tn->as.named.args[i], line, col);
-                    if (ta[i] == NULL) { free(ta); return NULL; }
+                    if (ta[i] == NULL) { free(ta); free(buf); return NULL; }
                     if (checker_reject_borrow_type_arg(c, ta[i], base, line, col))
-                        { free(ta); return NULL; }
+                        { free(ta); free(buf); return NULL; }
                 }
             }
             Type *inst = instantiate_template(c, tidx, ta, n, line, col);
             free(ta);
+            free(buf);
             return inst;
         }
 
         checker_error(c, line, col, "unknown generic type '%s'", buf);
+        free(buf);
         return NULL;
     }
     }
@@ -4179,15 +4203,22 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                 }
             }
 
-            /* Build mangled name: "identity(int)" */
-            char mangled[512];
-            int pos = snprintf(mangled, sizeof(mangled), "%s(", fn_name);
-            for (int ti = 0; ti < tp_count && pos < (int)sizeof(mangled) - 2; ti++) {
-                if (ti > 0) pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ",");
-                pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, "%s",
-                    type_name(type_args[ti]));
+            /* Build mangled name: "identity(int)". Bare `type_name` (not
+               mangle_type_arg_name) — this site's pre-existing behavior,
+               preserved (see resolve_type_node's pre-check comment); the
+               module prefix is applied later via mangle_module_symbol on
+               the codegen symbol, while this checker-internal cache key
+               stays unprefixed. MangleBuf (Task 2.2) replaces the old
+               fixed 512-byte buffer. */
+            MangleBuf fb; mangle_buf_init(&fb);
+            mangle_buf_append(&fb, fn_name);
+            mangle_buf_append(&fb, "(");
+            for (int ti = 0; ti < tp_count; ti++) {
+                if (ti > 0) mangle_buf_append(&fb, ",");
+                mangle_buf_append(&fb, type_name(type_args[ti]));
             }
-            snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ")");
+            mangle_buf_append(&fb, ")");
+            char *mangled = mangle_buf_take(&fb);
 
             /* Check if already instantiated (look up in scope) */
             Symbol *existing = scope_resolve(c->current_scope, mangled);
@@ -4202,6 +4233,7 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                     checker_error(c, node->line, node->column,
                         "'%s' expects %d argument(s), got %d", mangled, expected, argc);
                     free(type_args);
+                    free(mangled);
                     result = NULL;
                     break;
                 }
@@ -4226,6 +4258,7 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                 }
                 result = fn_t->as.function.return_type;
                 free(type_args);
+                free(mangled);
                 break;
             }
 
@@ -4316,18 +4349,7 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                and current_emit_module) so two modules' same-named generics get
                distinct LLVM symbols. The checker-internal cache key `mangled`
                stays unprefixed (each module has its own checker/scope). */
-            char prefixed[640];
-            if (c->module_name && c->module_name[0]) {
-                int pp = 0;
-                for (const char *mp = c->module_name; *mp && pp < 600; mp++)
-                    prefixed[pp++] = (*mp == '.') ? '_' : *mp;
-                prefixed[pp++] = '_'; prefixed[pp++] = '_';
-                snprintf(prefixed + pp, sizeof(prefixed) - (size_t)pp, "%s", mangled);
-            } else {
-                snprintf(prefixed, sizeof(prefixed), "%s", mangled);
-            }
-            char *owned_mangled = (char *)malloc_safe(strlen(prefixed) + 1);
-            memcpy(owned_mangled, prefixed, strlen(prefixed) + 1);
+            char *owned_mangled = mangle_module_symbol(c->module_name, mangled);
 
             if (c->pending_gm_count >= c->pending_gm_cap) {
                 c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
@@ -4366,6 +4388,7 @@ static Type *check_expr_call(Checker *c, AstNode *node)
             }
             result = ret;
             free(type_args);
+            free(mangled); /* scope_define and mangle_module_symbol both copied */
             break;
         }
 
