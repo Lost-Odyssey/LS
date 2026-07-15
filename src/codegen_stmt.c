@@ -1269,31 +1269,8 @@ static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
         return;
 }
 
-void codegen_stmt(CodegenContext *ctx, AstNode *node)
+static void cg_stmt_return(CodegenContext *ctx, AstNode *node)
 {
-    if (node == NULL)
-        return;
-
-    /* D1 (-g): statement-level line info — one location per statement,
-       sticky across the expressions it lowers (docs/plan_debug_info.md §3.2). */
-    cg_di_stmt_loc(ctx, node);
-
-#if CG_DEBUG_LV2
-    printf(">>>>> codegen_stmt, node->kind:%u\n", node->kind);
-#endif
-
-    switch (node->kind)
-    {
-    case AST_VAR_DECL:
-        cg_stmt_var_decl(ctx, node);
-        break;
-
-    case AST_ASSIGN:
-        cg_stmt_assign(ctx, node);
-        break;
-
-    case AST_RETURN:
-    {
         /* Before returning:
            1. If returning a string/struct variable by name, find its alloca.
            2. Emit all scope cleanups, skipping the returned variable's alloca.
@@ -1376,7 +1353,7 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
             cg_emit_mc_leave(ctx);
             cg_emit_prof_leave(ctx);
             LLVMBuildRet(ctx->builder, ptr);
-            break;
+            return;
         }
 
         /* Does the enclosing function return void? `return EXPR` where the
@@ -1484,8 +1461,35 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                     LLVMBuildRetVoid(ctx->builder);
             }
         }
+        return;
+}
+
+void codegen_stmt(CodegenContext *ctx, AstNode *node)
+{
+    if (node == NULL)
+        return;
+
+    /* D1 (-g): statement-level line info — one location per statement,
+       sticky across the expressions it lowers (docs/plan_debug_info.md §3.2). */
+    cg_di_stmt_loc(ctx, node);
+
+#if CG_DEBUG_LV2
+    printf(">>>>> codegen_stmt, node->kind:%u\n", node->kind);
+#endif
+
+    switch (node->kind)
+    {
+    case AST_VAR_DECL:
+        cg_stmt_var_decl(ctx, node);
         break;
-    }
+
+    case AST_ASSIGN:
+        cg_stmt_assign(ctx, node);
+        break;
+
+    case AST_RETURN:
+        cg_stmt_return(ctx, node);
+        break;
 
     case AST_IF:
     {
