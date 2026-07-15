@@ -2390,3 +2390,15 @@ char *codegen_get_ir(CodegenContext *ctx)
 {
     return LLVMPrintModuleToString(ctx->module);
 }
+
+/* Shared LS_NO_BORROW_ATTRS escape hatch (see codegen_internal.h). Was two
+   independent uncached getenv reads (codegen_decl.c cg_attach_borrow_attrs,
+   codegen_noalias.c ls_noalias_recover); unified here since neither TU owns
+   the flag more than the other. Sibling of cg_fp_contract's caching idiom. */
+bool cg_no_borrow_attrs(void)
+{
+    static int off = -1;
+    if (off < 0)
+        off = (getenv("LS_NO_BORROW_ATTRS") != NULL) ? 1 : 0;
+    return off == 1;
+}
