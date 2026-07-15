@@ -1000,14 +1000,18 @@ static void checker_stash_resolved_type_args(Checker *c, AstNode *call,
     (void)c;
     if (call == NULL || call->kind != AST_CALL) return;
     if (call->as.call.resolved_type_args != NULL) return;
-    char taj[512];
-    int tp = 0;
-    for (int ti = 0; ti < n && tp < (int)sizeof(taj) - 1; ti++) {
-        if (ti > 0) tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, ",");
-        tp += snprintf(taj + tp, sizeof(taj) - (size_t)tp, "%s",
-                       args[ti] ? type_name(args[ti]) : "?");
+    /* Bare `type_name` (not mangle_type_arg_name) and no wrapping "Base(...)"
+       — just a comma-joined arg list, a different format from the instance-
+       name sites above (preserved, not unified; see resolve_type_node's
+       pre-check comment). MangleBuf replaces the old fixed 512-byte taj. */
+    MangleBuf tb; mangle_buf_init(&tb);
+    for (int ti = 0; ti < n; ti++) {
+        if (ti > 0) mangle_buf_append(&tb, ",");
+        mangle_buf_append(&tb, args[ti] ? type_name(args[ti]) : "?");
     }
+    char *taj = mangle_buf_take(&tb);
     call->as.call.resolved_type_args = chk_strdup(taj);
+    free(taj);
 }
 
 /* Instantiate a registered template with concrete type args.  Returns the
