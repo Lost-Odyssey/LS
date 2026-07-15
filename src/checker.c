@@ -1,6 +1,7 @@
 /* checker.c — Type checker: walks AST, validates types, fills resolved_type */
 #include "checker.h"
 #include "checker_internal.h"
+#include "mangle.h"
 #include "diag.h"
 #include "parser.h"
 #include "module.h"
@@ -359,15 +360,11 @@ char *checker_module_type_llvmname(Checker *c, const char *bare_name)
 {
     if (c->module_name == NULL || c->module_name[0] == '\0')
         return NULL;
-    char buf[640];
-    int pp = 0;
-    for (const char *mp = c->module_name; *mp && pp < 600; mp++)
-        buf[pp++] = (*mp == '.') ? '_' : *mp;
-    buf[pp++] = '_'; buf[pp++] = '_';
-    snprintf(buf + pp, sizeof(buf) - (size_t)pp, "%s", bare_name);
-    char *result = (char *)malloc_safe(strlen(buf) + 1);
-    memcpy(result, buf, strlen(buf) + 1);
-    return result;
+    /* mangle_module_symbol's NULL/empty-module case returns a strdup of
+       bare_name, not NULL — that path is intentionally not taken here
+       (guarded above) because callers store this in Type.strukt/enom.llvm_name
+       and rely on NULL meaning "no module prefix, use the bare name". */
+    return mangle_module_symbol(c->module_name, bare_name);
 }
 
 /* B-4: mark a bare type name as ambiguous (exported by 2+ imported modules). */
