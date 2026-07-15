@@ -1768,6 +1768,55 @@ static void cg_stmt_for_c(CodegenContext *ctx, AstNode *node)
         return;
 }
 
+static void cg_stmt_while(CodegenContext *ctx, AstNode *node)
+{
+        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "while.cond");
+        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "while.body");
+        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "while.end");
+
+        LLVMBasicBlockRef saved_break = ctx->break_bb;
+        LLVMBasicBlockRef saved_continue = ctx->continue_bb;
+        CgScope *saved_loop_scope = ctx->loop_scope;
+        int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
+        ctx->break_bb = end_bb;
+        ctx->continue_bb = cond_bb;
+        ctx->loop_scope = ctx->current_scope;
+        /* Floor for break/continue statement-level temp flush: temps live now
+           predate the loop body (e.g. an enclosing match's protected subject);
+           break/continue must release only temps created inside the loop. */
+        ctx->loop_temp_drop_floor = ctx->temp_drop_count;
+
+        LLVMBuildBr(ctx->builder, cond_bb);
+
+        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
+        {
+            LLVMValueRef cond = codegen_expr(ctx, node->as.while_stmt.cond);
+            /* Free temporary strings from the condition before branching.
+               They are re-created (and re-freed) on every loop iteration. */
+            cg_flush_temps(ctx);
+            if (cond)
+                LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
+        }
+
+        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+        codegen_stmt(ctx, node->as.while_stmt.body);
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+        {
+            LLVMBuildBr(ctx->builder, cond_bb);
+        }
+
+        ctx->break_bb = saved_break;
+        ctx->continue_bb = saved_continue;
+        ctx->loop_scope = saved_loop_scope;
+        ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
+
+        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+        return;
+}
+
 void codegen_stmt(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -1861,53 +1910,8 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
     }
 
     case AST_WHILE:
-    {
-        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "while.cond");
-        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "while.body");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "while.end");
-
-        LLVMBasicBlockRef saved_break = ctx->break_bb;
-        LLVMBasicBlockRef saved_continue = ctx->continue_bb;
-        CgScope *saved_loop_scope = ctx->loop_scope;
-        int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
-        ctx->break_bb = end_bb;
-        ctx->continue_bb = cond_bb;
-        ctx->loop_scope = ctx->current_scope;
-        /* Floor for break/continue statement-level temp flush: temps live now
-           predate the loop body (e.g. an enclosing match's protected subject);
-           break/continue must release only temps created inside the loop. */
-        ctx->loop_temp_drop_floor = ctx->temp_drop_count;
-
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        {
-            LLVMValueRef cond = codegen_expr(ctx, node->as.while_stmt.cond);
-            /* Free temporary strings from the condition before branching.
-               They are re-created (and re-freed) on every loop iteration. */
-            cg_flush_temps(ctx);
-            if (cond)
-                LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
-        }
-
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        codegen_stmt(ctx, node->as.while_stmt.body);
-        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-        {
-            LLVMBuildBr(ctx->builder, cond_bb);
-        }
-
-        ctx->break_bb = saved_break;
-        ctx->continue_bb = saved_continue;
-        ctx->loop_scope = saved_loop_scope;
-        ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
-
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+        cg_stmt_while(ctx, node);
         break;
-    }
 
     case AST_FOR:
         cg_stmt_for(ctx, node);
