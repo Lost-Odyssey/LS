@@ -4203,15 +4203,22 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                 }
             }
 
-            /* Build mangled name: "identity(int)" */
-            char mangled[512];
-            int pos = snprintf(mangled, sizeof(mangled), "%s(", fn_name);
-            for (int ti = 0; ti < tp_count && pos < (int)sizeof(mangled) - 2; ti++) {
-                if (ti > 0) pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ",");
-                pos += snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, "%s",
-                    type_name(type_args[ti]));
+            /* Build mangled name: "identity(int)". Bare `type_name` (not
+               mangle_type_arg_name) — this site's pre-existing behavior,
+               preserved (see resolve_type_node's pre-check comment); the
+               module prefix is applied later via mangle_module_symbol on
+               the codegen symbol, while this checker-internal cache key
+               stays unprefixed. MangleBuf (Task 2.2) replaces the old
+               fixed 512-byte buffer. */
+            MangleBuf fb; mangle_buf_init(&fb);
+            mangle_buf_append(&fb, fn_name);
+            mangle_buf_append(&fb, "(");
+            for (int ti = 0; ti < tp_count; ti++) {
+                if (ti > 0) mangle_buf_append(&fb, ",");
+                mangle_buf_append(&fb, type_name(type_args[ti]));
             }
-            snprintf(mangled + pos, sizeof(mangled) - (size_t)pos, ")");
+            mangle_buf_append(&fb, ")");
+            char *mangled = mangle_buf_take(&fb);
 
             /* Check if already instantiated (look up in scope) */
             Symbol *existing = scope_resolve(c->current_scope, mangled);
@@ -4226,6 +4233,7 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                     checker_error(c, node->line, node->column,
                         "'%s' expects %d argument(s), got %d", mangled, expected, argc);
                     free(type_args);
+                    free(mangled);
                     result = NULL;
                     break;
                 }
@@ -4250,6 +4258,7 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                 }
                 result = fn_t->as.function.return_type;
                 free(type_args);
+                free(mangled);
                 break;
             }
 
@@ -4379,6 +4388,7 @@ static Type *check_expr_call(Checker *c, AstNode *node)
             }
             result = ret;
             free(type_args);
+            free(mangled); /* scope_define and mangle_module_symbol both copied */
             break;
         }
 
