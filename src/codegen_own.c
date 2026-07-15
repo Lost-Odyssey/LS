@@ -512,6 +512,18 @@ bool cg_own_audit_enabled(void)
     return cached == 1;
 }
 
+/* LS_DEBUG_TEMPS print-only trace (any non-NULL value enables — distinct
+   from the LS_DEBUG_TEMPS=abort *value* comparison inside
+   cg_own_audit_enabled above, which is cached independently there and must
+   keep comparing the actual string). Sibling of cg_drop_sentinel_on. */
+static bool cg_debug_temps_on(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = (getenv("LS_DEBUG_TEMPS") != NULL) ? 1 : 0;
+    return on == 1;
+}
+
 void cg_own_audit_fail(CodegenContext *ctx, const char *site, const char *fmt, ...)
 {
     fprintf(stderr, "[own-audit] %s: temp-ledger invariant violated in '%s': ",
@@ -539,7 +551,7 @@ void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type)
     bool is_drop_struct = (type->kind == TYPE_STRUCT && type->as.strukt.has_drop);
     bool is_drop_enum   = (type->kind == TYPE_ENUM   && type->as.enom.has_drop);
     bool is_block       = (type->kind == TYPE_BLOCK); /* closure: owns its heap env */
-    if (getenv("LS_DEBUG_TEMPS"))
+    if (cg_debug_temps_on())
         fprintf(stderr, "[tmp] push fn=%s type=%s drop=%d n=%d\n",
                 ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
                 type->kind == TYPE_STRUCT ? (type->as.strukt.name ? type->as.strukt.name : "?")
@@ -621,7 +633,7 @@ LLVMValueRef cg_spill_owned_rvalue(CodegenContext *ctx, LLVMValueRef val,
     LLVMValueRef slot = zeroed ? cg_entry_alloca_zeroed(ctx, llvm_ty, why)
                                : cg_entry_alloca(ctx, llvm_ty, why);
     LLVMBuildStore(ctx->builder, val, slot);
-    if (getenv("LS_DEBUG_TEMPS"))
+    if (cg_debug_temps_on())
         fprintf(stderr, "[tmp] spill why=%s fn=%s zeroed=%d\n",
                 why ? why : "?",
                 ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
@@ -683,7 +695,7 @@ bool cg_claim_block_temp_above(CodegenContext *ctx, int floor)
 static void cg_flush_temp_drops(CodegenContext *ctx)
 {
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(ctx->builder);
-    if (getenv("LS_DEBUG_TEMPS") && ctx->temp_drop_count > 0)
+    if (cg_debug_temps_on() && ctx->temp_drop_count > 0)
         fprintf(stderr, "[tmp] flush fn=%s n=%d term=%d\n",
                 ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
                 ctx->temp_drop_count,

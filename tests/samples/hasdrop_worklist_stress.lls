@@ -1,8 +1,7 @@
 // C1 §3.5 has_drop worklist stress: a deep propagation chain plus nested
-// generic containers. Legacy needs several full-registry rounds to settle
-// (Leaf owns Str -> D -> C -> B -> A); the worklist flips each once. Run under
-// LS_HASDROP_VERIFY=1 the two algorithms must agree per type; under --memcheck
-// every has_drop type must be destructed (0 leaks) — i.e. has_drop was set.
+// generic containers (Leaf owns Str -> D -> C -> B -> A); the worklist flips
+// each type at most once. Under --memcheck every has_drop type must be
+// destructed (0 leaks) — i.e. has_drop was set.
 import std.core.vec
 import std.core.map
 struct Leaf { Str s }

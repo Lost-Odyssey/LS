@@ -54,6 +54,12 @@
 
 #include <llvm-c/Core.h>
 
+/* Declared in codegen_internal.h (defined in codegen.c); forward-declared
+   here rather than pulling that header's CodegenContext/Type machinery into
+   this deliberately decoupled, LLVMModuleRef-only pass (precedent: jit.c,
+   main.c do the same for other cross-TU runtime helpers). */
+extern bool cg_no_borrow_attrs(void);
+
 #define CAND_ATTR "ls-noalias-cand"
 #define CAND_ATTR_LEN (sizeof(CAND_ATTR) - 1)
 
@@ -215,7 +221,7 @@ static int na_collect_markers(LLVMValueRef fn, bool *marked, unsigned nparams)
 void ls_noalias_recover(LLVMModuleRef module)
 {
     bool disabled = (getenv("LS_NO_NOALIAS") != NULL) ||
-                    (getenv("LS_NO_BORROW_ATTRS") != NULL);
+                    cg_no_borrow_attrs();
 
     /* Index the defined functions. */
     int n = 0;

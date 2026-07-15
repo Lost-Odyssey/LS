@@ -251,4 +251,11 @@ void cg_mark_noreturn_cold(CodegenContext *ctx, LLVMValueRef fn);
    drop switch bounds compares. LS_NO_ENUM_RANGE=1 disables. */
 void cg_attach_tag_range(CodegenContext *ctx, LLVMValueRef load, int variant_count);
 
+/* Escape hatch shared by cg_attach_borrow_attrs (codegen_decl.c) and
+   ls_noalias_recover (codegen_noalias.c): LS_NO_BORROW_ATTRS=1 suppresses
+   the LLVM borrow-derived parameter attributes (nonnull/dereferenceable/
+   align/readonly/nocapture) at the source, which in turn starves A4 noalias
+   recovery of markers to promote. Cached per process (single getenv read). */
+bool cg_no_borrow_attrs(void);
+
 #endif /* LS_CODEGEN_INTERNAL_H */

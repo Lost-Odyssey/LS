@@ -486,15 +486,6 @@ static bool impl_tab_disabled(void)
     return cached != 0;
 }
 
-/* LS_IMPLTAB_VERIFY=1 → cross-check every hashed lookup against a fresh linear
-   scan and abort on any mismatch (construction-time parity oracle). */
-static bool impl_tab_verify(void)
-{
-    static int cached = -1;
-    if (cached < 0) cached = getenv("LS_IMPLTAB_VERIFY") ? 1 : 0;
-    return cached != 0;
-}
-
 static void impl_tab_grow(ImplTabEntry **tab, int *cap)
 {
     int oldcap = *cap;
@@ -536,7 +527,7 @@ static void impl_tab_insert(Checker *c, const char *name, int idx)
 }
 
 /* Linear scan for the impl slot keyed by struct_name; -1 if absent. This is the
-   legacy behaviour, reused by the LS_NO_IMPLTAB fallback and the verify oracle. */
+   legacy behaviour, reused by the LS_NO_IMPLTAB fallback. */
 static int impl_idx_linear(Checker *c, const char *struct_name)
 {
     for (int i = 0; i < c->impl_count; i++)
@@ -546,8 +537,7 @@ static int impl_idx_linear(Checker *c, const char *struct_name)
 }
 
 /* Locate the impl_registry index for a receiver's struct_name, or -1. Hashed by
-   default; linear under LS_NO_IMPLTAB. Under LS_IMPLTAB_VERIFY, both run and any
-   divergence aborts. */
+   default; linear under LS_NO_IMPLTAB. */
 static int find_impl_idx(Checker *c, const char *struct_name)
 {
     if (impl_tab_disabled())
@@ -567,15 +557,6 @@ static int find_impl_idx(Checker *c, const char *struct_name)
         }
     }
 
-    if (impl_tab_verify()) {
-        int lin = impl_idx_linear(c, struct_name);
-        if (lin != found) {
-            fprintf(stderr,
-                "[impltab] parity mismatch for '%s': hash=%d linear=%d\n",
-                struct_name, found, lin);
-            abort();
-        }
-    }
     return found;
 }
 
@@ -6451,7 +6432,7 @@ static Type *check_expr_match(Checker *c, AstNode *node)
         if (subject->kind == TYPE_ENUM)
         {
             int vc = subject->as.enom.variant_count;
-            bool *covered = (bool *)calloc((size_t)vc, sizeof(bool));
+            bool *covered = (bool *)calloc_safe((size_t)vc, sizeof(bool));
             bool catchall = false;
             Type *arm_type = NULL;
 
@@ -6833,7 +6814,7 @@ static Type *check_expr_new_expr(Checker *c, AstNode *node)
         if (!st && node->as.new_expr.type_arg_count > 0)
         {
             int tac = node->as.new_expr.type_arg_count;
-            Type **resolved_args = malloc(sizeof(Type *) * tac);
+            Type **resolved_args = malloc_safe(sizeof(Type *) * tac);
             bool args_ok = true;
             for (int i = 0; i < tac; i++) {
                 resolved_args[i] = resolve_type_node(c, node->as.new_expr.type_args[i],
@@ -10133,11 +10114,12 @@ static void register_builtins(Checker *c)
    does — type_owns_heap_for_enum() looks exactly one level deep (Vec/Map/Str
    ARE has_drop structs, so a `Vec(T)` field is already a direct struct field).
    Propagation therefore flows strictly along "type T is a direct field of
-   container U" edges. The legacy driver rescans the entire registry each round
-   until nothing flips (O(rounds×types×fields)); the worklist flips each type at
-   most once and re-examines only the containers that name a just-flipped type.
-   Both are retained: LS_HASDROP_VERIFY=1 runs them from an identical seed and
-   asserts per-type parity (plan §3.5 + §5 risk row). */
+   container U" edges. The worklist flips each type at most once and
+   re-examines only the containers that name a just-flipped type
+   (O(types+edges), vs. the O(rounds×types×fields) full-registry rescan of the
+   retired reference driver — see git history for the legacy implementation
+   and its LS_HASDROP_VERIFY parity oracle, both migration-time scaffolding,
+   plan §3.5 + §5 risk row). */
 
 /* Read has_drop for a struct/enum (false for anything else / NULL). */
 static bool hasdrop_is_set(const Type *t)
@@ -10176,26 +10158,6 @@ static bool hasdrop_eval(Type *t)
         return false;
     }
     return false;
-}
-
-/* Reference oracle: rescan the whole registry until stable. */
-static void checker_propagate_has_drop_legacy(Checker *c)
-{
-    bool changed = true;
-    int guard = 0;
-    while (changed && guard++ < 4096) {
-        changed = false;
-        for (int i = 0; i < c->struct_type_count; i++) {
-            Type *st = c->struct_types[i].type;
-            if (st && st->kind == TYPE_STRUCT && !st->as.strukt.has_drop && hasdrop_eval(st))
-                changed = true;
-        }
-        for (int i = 0; i < c->enum_type_count; i++) {
-            Type *et = c->enum_types[i].type;
-            if (et && et->kind == TYPE_ENUM && !et->as.enom.has_drop && hasdrop_eval(et))
-                changed = true;
-        }
-    }
 }
 
 /* Worklist: seed every type once, then re-examine a container only when one of
@@ -10318,52 +10280,7 @@ static void checker_propagate_has_drop_worklist(Checker *c)
 
 static void checker_propagate_has_drop_fixpoint(Checker *c)
 {
-    if (!getenv("LS_HASDROP_VERIFY")) {
-        checker_propagate_has_drop_worklist(c);
-        return;
-    }
-
-    /* Parity harness: run both from the identical seed, assert per-type match. */
-    int ns = c->struct_type_count, ne = c->enum_type_count;
-    bool *seedS = malloc_safe((size_t)(ns ? ns : 1) * sizeof(bool));
-    bool *seedE = malloc_safe((size_t)(ne ? ne : 1) * sizeof(bool));
-    bool *wl_S  = malloc_safe((size_t)(ns ? ns : 1) * sizeof(bool));
-    bool *wl_E  = malloc_safe((size_t)(ne ? ne : 1) * sizeof(bool));
-    for (int i = 0; i < ns; i++)
-        seedS[i] = hasdrop_is_set(c->struct_types[i].type);
-    for (int i = 0; i < ne; i++)
-        seedE[i] = hasdrop_is_set(c->enum_types[i].type);
-
     checker_propagate_has_drop_worklist(c);
-    for (int i = 0; i < ns; i++)
-        wl_S[i] = hasdrop_is_set(c->struct_types[i].type);
-    for (int i = 0; i < ne; i++)
-        wl_E[i] = hasdrop_is_set(c->enum_types[i].type);
-
-    /* Restore seed, run legacy oracle. */
-    for (int i = 0; i < ns; i++) {
-        Type *st = c->struct_types[i].type;
-        if (st && st->kind == TYPE_STRUCT) st->as.strukt.has_drop = seedS[i];
-    }
-    for (int i = 0; i < ne; i++) {
-        Type *et = c->enum_types[i].type;
-        if (et && et->kind == TYPE_ENUM) et->as.enom.has_drop = seedE[i];
-    }
-    checker_propagate_has_drop_legacy(c);
-
-    for (int i = 0; i < ns; i++)
-        if (hasdrop_is_set(c->struct_types[i].type) != wl_S[i]) {
-            fprintf(stderr, "[hasdrop-verify] MISMATCH struct '%s': worklist=%d legacy=%d\n",
-                    c->struct_types[i].name, wl_S[i], !wl_S[i]);
-            abort();
-        }
-    for (int i = 0; i < ne; i++)
-        if (hasdrop_is_set(c->enum_types[i].type) != wl_E[i]) {
-            fprintf(stderr, "[hasdrop-verify] MISMATCH enum '%s': worklist=%d legacy=%d\n",
-                    c->enum_types[i].name, wl_E[i], !wl_E[i]);
-            abort();
-        }
-    free(seedS); free(seedE); free(wl_S); free(wl_E);
 }
 
 /* ---- Public entry point ---- */

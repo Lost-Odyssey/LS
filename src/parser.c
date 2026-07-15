@@ -1958,90 +1958,83 @@ static AstNode *infix_cast(Parser *p, AstNode *left) {
 
 /* ---- ParseRule Table ---- */
 
-static ParseRule rules[TOKEN_ERROR + 1];
-static bool rules_initialized = false;
-
-static void init_parse_rules(void) {
-    if (rules_initialized) return;
-    rules_initialized = true;
-
-    /* Default: all NULL, PREC_NONE */
-    memset(rules, 0, sizeof(rules));
-
+/* Compile-time constant table. Every entry not listed here is
+   zero-initialized (NULL prefix, NULL infix, PREC_NONE), matching the
+   previous runtime-filled table's memset(rules, 0, sizeof(rules)) default. */
+static const ParseRule rules[TOKEN_ERROR + 1] = {
     /* Literals */
-    rules[TOKEN_INT_LIT]    = (ParseRule){ prefix_int_lit,   NULL,              PREC_NONE };
-    rules[TOKEN_FLOAT_LIT]  = (ParseRule){ prefix_float_lit, NULL,              PREC_NONE };
-    rules[TOKEN_STRING_LIT] = (ParseRule){ prefix_string_lit,NULL,              PREC_NONE };
-    rules[TOKEN_FSTRING_START]= (ParseRule){ prefix_fstring,   NULL,              PREC_NONE };
-    rules[TOKEN_CHAR_LIT]   = (ParseRule){ prefix_char_lit,  NULL,              PREC_NONE };
-    rules[TOKEN_TRUE]       = (ParseRule){ prefix_true,      NULL,              PREC_NONE };
-    rules[TOKEN_FALSE]      = (ParseRule){ prefix_false,     NULL,              PREC_NONE };
-    rules[TOKEN_NIL]        = (ParseRule){ prefix_nil,       NULL,              PREC_NONE };
+    [TOKEN_INT_LIT]    = { prefix_int_lit,   NULL,              PREC_NONE },
+    [TOKEN_FLOAT_LIT]  = { prefix_float_lit, NULL,              PREC_NONE },
+    [TOKEN_STRING_LIT] = { prefix_string_lit,NULL,              PREC_NONE },
+    [TOKEN_FSTRING_START]= { prefix_fstring,   NULL,              PREC_NONE },
+    [TOKEN_CHAR_LIT]   = { prefix_char_lit,  NULL,              PREC_NONE },
+    [TOKEN_TRUE]       = { prefix_true,      NULL,              PREC_NONE },
+    [TOKEN_FALSE]      = { prefix_false,     NULL,              PREC_NONE },
+    [TOKEN_NIL]        = { prefix_nil,       NULL,              PREC_NONE },
 
     /* Identifier, self, and underscore */
-    rules[TOKEN_IDENTIFIER] = (ParseRule){ prefix_ident,     NULL,              PREC_NONE };
-    rules[TOKEN_SELF]       = (ParseRule){ prefix_ident,     NULL,              PREC_NONE };
-    rules[TOKEN_UNDERSCORE] = (ParseRule){ prefix_underscore,NULL,              PREC_NONE };
+    [TOKEN_IDENTIFIER] = { prefix_ident,     NULL,              PREC_NONE },
+    [TOKEN_SELF]       = { prefix_ident,     NULL,              PREC_NONE },
+    [TOKEN_UNDERSCORE] = { prefix_underscore,NULL,              PREC_NONE },
 
     /* Grouping */
-    rules[TOKEN_LPAREN]     = (ParseRule){ prefix_grouping,  infix_call,        PREC_CALL };
-    rules[TOKEN_LBRACKET]   = (ParseRule){ prefix_array_lit,  infix_index,       PREC_CALL };
-    rules[TOKEN_LBRACE]     = (ParseRule){ prefix_map_lit,    NULL,              PREC_NONE };
-    rules[TOKEN_DOT]        = (ParseRule){ NULL,             infix_field,       PREC_CALL };
-    rules[TOKEN_AS]         = (ParseRule){ NULL,             infix_cast,        PREC_CALL };
+    [TOKEN_LPAREN]     = { prefix_grouping,  infix_call,        PREC_CALL },
+    [TOKEN_LBRACKET]   = { prefix_array_lit,  infix_index,       PREC_CALL },
+    [TOKEN_LBRACE]     = { prefix_map_lit,    NULL,              PREC_NONE },
+    [TOKEN_DOT]        = { NULL,             infix_field,       PREC_CALL },
+    [TOKEN_AS]         = { NULL,             infix_cast,        PREC_CALL },
 
     /* Arithmetic */
-    rules[TOKEN_PLUS]       = (ParseRule){ NULL,             infix_binary_real, PREC_TERM };
-    rules[TOKEN_MINUS]      = (ParseRule){ prefix_unary,     infix_binary_real, PREC_TERM };
-    rules[TOKEN_STAR]       = (ParseRule){ prefix_deref,     infix_binary_real, PREC_FACTOR };
-    rules[TOKEN_SLASH]      = (ParseRule){ NULL,             infix_binary_real, PREC_FACTOR };
-    rules[TOKEN_PERCENT]    = (ParseRule){ NULL,             infix_binary_real, PREC_FACTOR };
+    [TOKEN_PLUS]       = { NULL,             infix_binary_real, PREC_TERM },
+    [TOKEN_MINUS]      = { prefix_unary,     infix_binary_real, PREC_TERM },
+    [TOKEN_STAR]       = { prefix_deref,     infix_binary_real, PREC_FACTOR },
+    [TOKEN_SLASH]      = { NULL,             infix_binary_real, PREC_FACTOR },
+    [TOKEN_PERCENT]    = { NULL,             infix_binary_real, PREC_FACTOR },
 
     /* Unary-only */
-    rules[TOKEN_BANG]       = (ParseRule){ prefix_unary,     infix_force_unwrap, PREC_CALL };
-    rules[TOKEN_TILDE]      = (ParseRule){ prefix_unary,     NULL,              PREC_NONE };
-    rules[TOKEN_AMP]        = (ParseRule){ prefix_addr,      infix_binary_real, PREC_BITAND };
+    [TOKEN_BANG]       = { prefix_unary,     infix_force_unwrap, PREC_CALL },
+    [TOKEN_TILDE]      = { prefix_unary,     NULL,              PREC_NONE },
+    [TOKEN_AMP]        = { prefix_addr,      infix_binary_real, PREC_BITAND },
 
     /* Bitwise */
-    rules[TOKEN_PIPE]       = (ParseRule){ prefix_ruby_closure, infix_binary_real, PREC_BITOR };
-    rules[TOKEN_CARET]      = (ParseRule){ NULL,             infix_binary_real, PREC_BITXOR };
-    rules[TOKEN_LSHIFT]     = (ParseRule){ NULL,             infix_binary_real, PREC_SHIFT };
-    rules[TOKEN_RSHIFT]     = (ParseRule){ NULL,             infix_binary_real, PREC_SHIFT };
+    [TOKEN_PIPE]       = { prefix_ruby_closure, infix_binary_real, PREC_BITOR },
+    [TOKEN_CARET]      = { NULL,             infix_binary_real, PREC_BITXOR },
+    [TOKEN_LSHIFT]     = { NULL,             infix_binary_real, PREC_SHIFT },
+    [TOKEN_RSHIFT]     = { NULL,             infix_binary_real, PREC_SHIFT },
 
     /* Logical */
-    rules[TOKEN_AND]        = (ParseRule){ NULL,             infix_binary_real, PREC_AND };
-    rules[TOKEN_OR]         = (ParseRule){ prefix_no_arg_closure, infix_binary_real, PREC_OR };
+    [TOKEN_AND]        = { NULL,             infix_binary_real, PREC_AND },
+    [TOKEN_OR]         = { prefix_no_arg_closure, infix_binary_real, PREC_OR },
 
     /* Comparison */
-    rules[TOKEN_DOTDOT]     = (ParseRule){ prefix_range,     infix_range,       PREC_COMPARISON };
-    rules[TOKEN_EQ]         = (ParseRule){ NULL,             infix_binary_real, PREC_EQUALITY };
-    rules[TOKEN_NEQ]        = (ParseRule){ NULL,             infix_binary_real, PREC_EQUALITY };
-    rules[TOKEN_LT]         = (ParseRule){ NULL,             infix_binary_real, PREC_COMPARISON };
-    rules[TOKEN_GT]         = (ParseRule){ NULL,             infix_binary_real, PREC_COMPARISON };
-    rules[TOKEN_LEQ]        = (ParseRule){ NULL,             infix_binary_real, PREC_COMPARISON };
-    rules[TOKEN_GEQ]        = (ParseRule){ NULL,             infix_binary_real, PREC_COMPARISON };
+    [TOKEN_DOTDOT]     = { prefix_range,     infix_range,       PREC_COMPARISON },
+    [TOKEN_EQ]         = { NULL,             infix_binary_real, PREC_EQUALITY },
+    [TOKEN_NEQ]        = { NULL,             infix_binary_real, PREC_EQUALITY },
+    [TOKEN_LT]         = { NULL,             infix_binary_real, PREC_COMPARISON },
+    [TOKEN_GT]         = { NULL,             infix_binary_real, PREC_COMPARISON },
+    [TOKEN_LEQ]        = { NULL,             infix_binary_real, PREC_COMPARISON },
+    [TOKEN_GEQ]        = { NULL,             infix_binary_real, PREC_COMPARISON },
 
     /* Assignment (right-assoc) */
-    rules[TOKEN_ASSIGN]       = (ParseRule){ NULL, infix_assign, PREC_ASSIGNMENT };
-    rules[TOKEN_PLUS_ASSIGN]  = (ParseRule){ NULL, infix_assign, PREC_ASSIGNMENT };
-    rules[TOKEN_MINUS_ASSIGN] = (ParseRule){ NULL, infix_assign, PREC_ASSIGNMENT };
-    rules[TOKEN_STAR_ASSIGN]  = (ParseRule){ NULL, infix_assign, PREC_ASSIGNMENT };
-    rules[TOKEN_SLASH_ASSIGN] = (ParseRule){ NULL, infix_assign, PREC_ASSIGNMENT };
+    [TOKEN_ASSIGN]       = { NULL, infix_assign, PREC_ASSIGNMENT },
+    [TOKEN_PLUS_ASSIGN]  = { NULL, infix_assign, PREC_ASSIGNMENT },
+    [TOKEN_MINUS_ASSIGN] = { NULL, infix_assign, PREC_ASSIGNMENT },
+    [TOKEN_STAR_ASSIGN]  = { NULL, infix_assign, PREC_ASSIGNMENT },
+    [TOKEN_SLASH_ASSIGN] = { NULL, infix_assign, PREC_ASSIGNMENT },
 
     /* Keywords as prefix */
-    rules[TOKEN_FN]         = (ParseRule){ prefix_closure,   NULL,              PREC_NONE };
-    rules[TOKEN_MATCH]      = (ParseRule){ prefix_match,     NULL,              PREC_NONE };
-    rules[TOKEN_COLON]      = (ParseRule){ prefix_symbol,    NULL,              PREC_NONE };
-    rules[TOKEN_NEW]        = (ParseRule){ prefix_new_expr,  NULL,              PREC_NONE };
-    rules[TOKEN_TRY]        = (ParseRule){ prefix_try,       NULL,              PREC_NONE };
-    rules[TOKEN_AT_TIME]    = (ParseRule){ prefix_at_time,   NULL,              PREC_NONE };
-    rules[TOKEN_AT_BENCH]   = (ParseRule){ prefix_at_bench,  NULL,              PREC_NONE };
-    rules[TOKEN_AT_PRINT]   = (ParseRule){ prefix_at_print,  NULL,              PREC_NONE };
-    rules[TOKEN_AT_INTRINSIC] = (ParseRule){ prefix_at_intrinsic, NULL,          PREC_NONE };
-}
+    [TOKEN_FN]         = { prefix_closure,   NULL,              PREC_NONE },
+    [TOKEN_MATCH]      = { prefix_match,     NULL,              PREC_NONE },
+    [TOKEN_COLON]      = { prefix_symbol,    NULL,              PREC_NONE },
+    [TOKEN_NEW]        = { prefix_new_expr,  NULL,              PREC_NONE },
+    [TOKEN_TRY]        = { prefix_try,       NULL,              PREC_NONE },
+    [TOKEN_AT_TIME]    = { prefix_at_time,   NULL,              PREC_NONE },
+    [TOKEN_AT_BENCH]   = { prefix_at_bench,  NULL,              PREC_NONE },
+    [TOKEN_AT_PRINT]   = { prefix_at_print,  NULL,              PREC_NONE },
+    [TOKEN_AT_INTRINSIC] = { prefix_at_intrinsic, NULL,          PREC_NONE },
+};
 
 static const ParseRule *get_rule(TokenType type) {
-    init_parse_rules();
     if ((int)type < 0 || (int)type > (int)TOKEN_ERROR) return &rules[TOKEN_ERROR];
     return &rules[type];
 }
@@ -2049,7 +2042,6 @@ static const ParseRule *get_rule(TokenType type) {
 /* ---- Core expression parser ---- */
 
 static AstNode *parse_expr_prec_inner(Parser *p, Precedence min_prec) {
-    init_parse_rules();
     /* Capture and clear the statement-boundary flag: only this top-level call
        may split a trailing `*Ident Ident` into a pointer declaration. Nested
        sub-expressions (initializers, args, parens) must read it as multiplication. */
@@ -4638,8 +4630,6 @@ static AstNode *parse_statement(Parser *p) {
 
 /* Parse source text -> AST_PROGRAM node */
 AstNode *parse(const char *source, const char *source_path) {
-    init_parse_rules();
-
     Parser p;
     memset(&p, 0, sizeof(p));
     scanner_init(&p.scanner, source);

@@ -34,8 +34,8 @@
 # |                                |                                 | TEST_NAME-derived name -> no
 # |                                |                                 | overlap; no action
 # | drivers using set(ENV{...})    | LS_HOME, LS_MEMCHECK_STRICT,    | process-local: env is set in
-# | (memcheck_jit, e3_glue, sim,   | LS_NO_*, LS_HASDROP_VERIFY,     | the per-test `cmake -P` child,
-# | opt_parity, lifetime, ...)     | LS_FORCE_NOALIAS, ...           | never at ctest level (no
+# | (memcheck_jit, e3_glue, sim,   | LS_NO_*, LS_FORCE_NOALIAS,      | the per-test `cmake -P` child,
+# | opt_parity, lifetime, ...)     | ...                             | never at ctest level (no
 # |                                |                                 | ENVIRONMENT test property in
 # |                                |                                 | the suite); no action
 # | runtime-writing samples (csv   | csv_rt_tmp.csv, fs_test_tmp/,   | one writer test per file, all
@@ -3216,9 +3216,9 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_destroy.cmake
 )
 
-# C1 §3.5 has_drop fixpoint worklist：LS_HASDROP_VERIFY=1 让 worklist 与 legacy
-# 全表扫 oracle 从同一 seed 双跑、逐类型对比不一致即 abort；+ memcheck 保证
-# 漏翻 has_drop（漏析构）会以泄漏暴露。深层传播链 + 嵌套泛型容器。
+# C1 §3.5 has_drop fixpoint worklist：深层传播链 + 嵌套泛型容器，memcheck 保证
+# 漏翻 has_drop（漏析构）会以泄漏暴露。（legacy 全表扫 oracle +
+# LS_HASDROP_VERIFY parity harness 已退役，worklist 现为唯一实现，见 git 历史。）
 add_test(
     NAME test_hasdrop_worklist
     COMMAND ${CMAKE_COMMAND}

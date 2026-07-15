@@ -423,7 +423,7 @@ static void cg_attach_borrow_attrs(CodegenContext *ctx, LLVMValueRef fn,
                                    unsigned llvm_idx, Type *pointee,
                                    bool is_mut, bool nocapture_ok)
 {
-    if (getenv("LS_NO_BORROW_ATTRS") != NULL) return; /* escape hatch */
+    if (cg_no_borrow_attrs()) return; /* escape hatch */
     if (pointee == NULL) return;
     unsigned attr_idx = llvm_idx + 1;
 
