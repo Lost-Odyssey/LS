@@ -49,7 +49,22 @@ const char *enum_llvm_name_of(const Type *t)
 /* Append the canonical mangled name of a TypeNode to buf at *pos, matching the
    checker's type_name(resolve(tn)) so generic-call symbol lookups agree. Handles
    primitives, named generics WITH their args (Complex(f64), Vec(Complex(f64))),
-   and pointers — the cases that appear as generic type arguments. */
+   and pointers — the cases that appear as generic type arguments.
+
+   Task 2.2 (docs/plan_arch_round2_backlog.md Batch 2): this is the codegen-side
+   counterpart of checker.c's instance-name builders, which were unified onto a
+   growable buffer (MangleBuf, src/mangle.h — mangle_append_type_arg /
+   mangle_type_arg_name). This function is DELIBERATELY NOT merged into that
+   authority: it walks the pre-resolution AST (TypeNode), not a resolved Type*,
+   so it has no access to a struct/enum's module-prefixed llvm_name and no alias-
+   resolution context — unifying the two would mean either giving this function
+   a Type-resolution dependency it doesn't otherwise need, or weakening
+   mangle_append_type_arg's Type*-only contract. The two must still produce
+   byte-identical text for the same logical type argument (that's the whole
+   point of "matching the checker's type_name(resolve(tn))" above) — if you
+   change what either one emits, check the other. Still uses a fixed caller-
+   supplied buffer (unlike the checker-side sites); callers are responsible for
+   sizing `cap` generously (existing call sites use 512/640-byte buffers). */
 void cg_append_type_node_name(TypeNode *tn, char *buf, int *pos, int cap)
 {
     if (tn == NULL) { *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "?"); return; }
