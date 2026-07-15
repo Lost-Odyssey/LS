@@ -1,0 +1,44 @@
+/* Task 2.2 stress test: deep generic type-arg nesting
+   (Vec(Map(Str,Vec(Pair(int,int))))) plus a cross-module type argument
+   (Option(mod_w.Widget)) — exercises the growable MangleBuf instance-name
+   builder (mangle.c) instead of the old fixed 256/512-byte snprintf buffers
+   used by instantiate_template / checker_instantiate_struct /
+   resolve_type_node's pre-check. JIT + AOT. */
+module main
+
+import std.core.vec
+import std.core.map
+import std.core.str
+import mod_w as W
+
+struct Pair(K, V) { K first; V second }
+
+def main() -> int {
+    Vec(Map(Str, Vec(Pair(int, int)))) deep = {}
+    Map(Str, Vec(Pair(int, int))) inner = {}
+    Vec(Pair(int, int)) pairs = {}
+    pairs.push(Pair(int, int) { first: 1, second: 2 })
+    pairs.push(Pair(int, int) { first: 3, second: 4 })
+    inner.set("k", pairs)
+    deep.push(inner)
+
+    int total = 0
+    Vec(Pair(int, int)) got = deep.get(0)!.get("k")!
+    for i in 0..got.len() {
+        Pair(int, int) p = got.get(i)!
+        total = total + p.first + p.second
+    }
+
+    Option(W.Widget) ow = W.make(7, "seven")
+    int wid = 0
+    match ow {
+        Some(w) => { wid = w.id }
+        None => { }
+    }
+
+    @print(f"total={total} wid={wid}")
+    if total == 10 && wid == 7 {
+        @print("MANGLE_DEEP_NEST PASS")
+    }
+    return 0
+}
