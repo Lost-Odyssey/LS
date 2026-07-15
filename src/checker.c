@@ -6451,7 +6451,7 @@ static Type *check_expr_match(Checker *c, AstNode *node)
         if (subject->kind == TYPE_ENUM)
         {
             int vc = subject->as.enom.variant_count;
-            bool *covered = (bool *)calloc((size_t)vc, sizeof(bool));
+            bool *covered = (bool *)calloc_safe((size_t)vc, sizeof(bool));
             bool catchall = false;
             Type *arm_type = NULL;
 
@@ -6833,7 +6833,7 @@ static Type *check_expr_new_expr(Checker *c, AstNode *node)
         if (!st && node->as.new_expr.type_arg_count > 0)
         {
             int tac = node->as.new_expr.type_arg_count;
-            Type **resolved_args = malloc(sizeof(Type *) * tac);
+            Type **resolved_args = malloc_safe(sizeof(Type *) * tac);
             bool args_ok = true;
             for (int i = 0; i < tac; i++) {
                 resolved_args[i] = resolve_type_node(c, node->as.new_expr.type_args[i],

@@ -73,6 +73,7 @@
    that forward to the site-capturing trackers with identical OOM semantics). */
 #define realloc_safe(ptr, size) ls_lc_xrealloc((ptr), (size), __FILE__, __LINE__)
 #define malloc_safe(size)       ls_lc_xmalloc((size), __FILE__, __LINE__)
+#define calloc_safe(n, size)    ls_lc_xcalloc((n), (size), __FILE__, __LINE__)
 #else
 static inline void *realloc_safe(void *ptr, size_t size) {
     void *result = realloc(ptr, size);
@@ -86,6 +87,15 @@ static inline void *realloc_safe(void *ptr, size_t size) {
 static inline void *malloc_safe(size_t size) {
     void *result = malloc(size);
     if (result == NULL && size != 0) {
+        fprintf(stderr, "fatal: out of memory\n");
+        exit(1);
+    }
+    return result;
+}
+
+static inline void *calloc_safe(size_t n, size_t size) {
+    void *result = calloc(n, size);
+    if (result == NULL && n != 0 && size != 0) {
         fprintf(stderr, "fatal: out of memory\n");
         exit(1);
     }

@@ -27,10 +27,12 @@ void *ls_lc_realloc(void *p, size_t size, const char *file, int line);
 char *ls_lc_strdup(const char *s, const char *file, int line);
 void  ls_lc_free(void *p);
 
-/* malloc_safe / realloc_safe replacements: same OOM-exit semantics, but
-   tracked with the caller's site (common.h macro-redirects the wrappers). */
+/* malloc_safe / realloc_safe / calloc_safe replacements: same OOM-exit
+   semantics, but tracked with the caller's site (common.h macro-redirects
+   the wrappers). */
 void *ls_lc_xmalloc(size_t size, const char *file, int line);
 void *ls_lc_xrealloc(void *p, size_t size, const char *file, int line);
+void *ls_lc_xcalloc(size_t n, size_t size, const char *file, int line);
 
 #endif /* LS_LEAKCHECK */
 #endif /* LS_LEAKCHECK_H */

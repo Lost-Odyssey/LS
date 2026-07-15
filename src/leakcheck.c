@@ -132,6 +132,13 @@ void *ls_lc_xrealloc(void *old, size_t size, const char *file, int line) {
     return p;
 }
 
+void *ls_lc_xcalloc(size_t n, size_t size, const char *file, int line) {
+    void *p = calloc(n, size);
+    if (p == NULL && n != 0 && size != 0) { fprintf(stderr, "fatal: out of memory\n"); exit(1); }
+    if (p) lc_insert(p, n * size, file, line);
+    return p;
+}
+
 /* ---- exit report: aggregate live blocks by (file,line) ---- */
 typedef struct { const char *file; int line; size_t count; size_t bytes; } LcSite;
 
