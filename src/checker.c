@@ -4313,18 +4313,7 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                and current_emit_module) so two modules' same-named generics get
                distinct LLVM symbols. The checker-internal cache key `mangled`
                stays unprefixed (each module has its own checker/scope). */
-            char prefixed[640];
-            if (c->module_name && c->module_name[0]) {
-                int pp = 0;
-                for (const char *mp = c->module_name; *mp && pp < 600; mp++)
-                    prefixed[pp++] = (*mp == '.') ? '_' : *mp;
-                prefixed[pp++] = '_'; prefixed[pp++] = '_';
-                snprintf(prefixed + pp, sizeof(prefixed) - (size_t)pp, "%s", mangled);
-            } else {
-                snprintf(prefixed, sizeof(prefixed), "%s", mangled);
-            }
-            char *owned_mangled = (char *)malloc_safe(strlen(prefixed) + 1);
-            memcpy(owned_mangled, prefixed, strlen(prefixed) + 1);
+            char *owned_mangled = mangle_module_symbol(c->module_name, mangled);
 
             if (c->pending_gm_count >= c->pending_gm_cap) {
                 c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
