@@ -1348,7 +1348,7 @@ static void usage(void) {
         "  inspect <Type> <file>      Print a type's fields + methods (reflection)\n"
         "  ir  <fn> <file> [-O|-On] [--native]   Print one function's LLVM IR\n"
         "  asm <fn> <file> [-O|-On] [--native]   Print one function's assembly\n"
-        "  emit-ir <file>             Emit LLVM IR to stdout\n"
+        "  emit-ir <file>             Emit LLVM IR to stderr\n"
         "  compile <file> [-o out]    Compile to executable\n"
         "       [-O0|-O1|-O2|-O3|-Os|-Oz]  optimization level (default -O2)\n"
         "       [--native]            target the host CPU (unlocks AVX etc.; non-portable)\n"
