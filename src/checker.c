@@ -281,24 +281,12 @@ static bool is_self_placeholder(const Type *t) {
 /* type_equals variant that treats g_self_placeholder_type as equal to `concrete`.
    Handles TYPE_REFERENCE wrapping (e.g. &Self == &Vec2). */
 /* F6b: the name a concrete type arg contributes to a generic instance key
-   ("Vec(...)", "Option(...)"). Module-defined struct/enum args use their
-   module-prefixed `llvm_name` (e.g. "ma__Node") instead of the bare name —
-   two modules each defining `Node` would otherwise both mangle to
-   "Option(Node)" and collide (the second instantiation cache-hits the first,
-   conflating distinct layouts). Primitives/non-module types keep their bare
-   `type_name`. Single authority shared by the struct- and enum-template
-   instantiation paths AND the textual Self substitution in
-   type_equals_with_self (which compares instance names, so it must render
-   `Self` exactly the way the instance key was built); mirrors
-   impl_key_of_type's llvm_name ?? name. */
-static const char *generic_arg_mangled_name(const Type *at)
-{
-    if (at && at->kind == TYPE_STRUCT && at->as.strukt.llvm_name)
-        return at->as.strukt.llvm_name;
-    if (at && at->kind == TYPE_ENUM && at->as.enom.llvm_name)
-        return at->as.enom.llvm_name;
-    return type_name(at);
-}
+   ("Vec(...)", "Option(...)") — moved to mangle_type_arg_name (src/mangle.c,
+   Task 2.2) so the struct/enum instantiation paths (checker.c) and this
+   textual Self substitution share one implementation instead of a
+   checker-local static copy; see mangle.h's header comment for the full
+   rationale (module llvm_name preferred, collision history, and why it must
+   stay in lockstep with impl_key_of_type without being merged into it). */
 
 bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const Type *concrete)
 {
@@ -329,7 +317,7 @@ bool type_equals_with_self(const Type *trait_t, const Type *impl_t, const Type *
                embeds it, so a bare-name substitution would falsely mismatch
                for module-defined Self types. */
             char cnbuf[256];
-            snprintf(cnbuf, sizeof cnbuf, "%s", generic_arg_mangled_name(concrete));
+            snprintf(cnbuf, sizeof cnbuf, "%s", mangle_type_arg_name(concrete));
             char outbuf[512]; int op = 0; bool fits = true;
             int cl = (int)strlen(cnbuf);
             #define LS_IDENT_CH(ch) (((ch) >= 'A' && (ch) <= 'Z') || \
@@ -1039,7 +1027,7 @@ Type *instantiate_template(Checker *c, int template_idx,
         return NULL;
     }
 
-    /* Build mangled name. Type args keyed via generic_arg_mangled_name (module
+    /* Build mangled name. Type args keyed via mangle_type_arg_name (module
        llvm_name preferred) — keeping bare `type_name` here made two modules'
        same-named `Node` collide on one "Option(Node)" instance, so the second
        module's payload was read through the first's layout (silent garbage). */
@@ -1049,7 +1037,7 @@ Type *instantiate_template(Checker *c, int template_idx,
     {
         if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
         pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s",
-                        generic_arg_mangled_name(type_args[i]));
+                        mangle_type_arg_name(type_args[i]));
     }
     snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
 
@@ -1587,14 +1575,14 @@ Type *checker_instantiate_struct(Checker *c,
     }
 
     /* Build mangled name: "Pair(int,string)". Type args keyed via
-       generic_arg_mangled_name (F6b, module llvm_name preferred) — see its
+       mangle_type_arg_name (F6b, module llvm_name preferred) — see its
        header comment for the collision rationale. */
     char buf[512];
     int pos = snprintf(buf, sizeof(buf), "%s(", base_name);
     for (int i = 0; i < type_arg_count && pos < (int)sizeof(buf) - 2; i++) {
         if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
         pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s",
-                        generic_arg_mangled_name(type_args[i]));
+                        mangle_type_arg_name(type_args[i]));
     }
     snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
 
