@@ -4595,3 +4595,55 @@ add_test(
 set_tests_properties(test_parse_depth PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# ---------------------------------------------------------------------------
+# IR snapshot tests (Task 0.1, docs/plan_arch_cleanup_round2.md Batch 0) —
+# golden-file byte comparison of `lls emit-ir` output. This is the shared
+# verification gate for "zero behavior change" refactors: emit-ir byte/
+# substring comparisons used to be hand-rolled per-feature (see
+# test_lifetime_markers.cmake, test_enum_drop_sentinel.cmake,
+# test_memcpy_prim.cmake, test_debug_info.cmake) — this collapses that into
+# one comparator (tests/ir_snapshot.cmake) + one convenience registration
+# function, following the golden-file precedent already established by
+# tests/mca_oracle/ (regen_golden.sh + kernels/*.golden).
+#
+# Golden files live in tests/ir_golden/<name>.ll (committed) and are
+# regenerated — ONLY when an IR change is intentional — via
+# tests/regen_ir_golden.sh (bash/Git Bash only; see that script's header for
+# why PowerShell `2>` redirection must never be used to produce them).
+#
+# Scope: pins only the default (unoptimized) `emit-ir` dump. JIT and
+# optimization-level (-O1/-O2/...) codegen paths are out of scope.
+function(ls_ir_snapshot)
+    cmake_parse_arguments(ARG "" "NAME;SAMPLE" "" ${ARGN})
+    if(NOT ARG_NAME)
+        message(FATAL_ERROR "ls_ir_snapshot(): NAME is required")
+    endif()
+    if(NOT ARG_SAMPLE)
+        message(FATAL_ERROR "ls_ir_snapshot(): SAMPLE is required")
+    endif()
+    add_test(
+        NAME test_ir_snapshot_${ARG_NAME}
+        COMMAND ${CMAKE_COMMAND}
+            -DLS_EXE=$<TARGET_FILE:ls>
+            -DSAMPLE=${ARG_SAMPLE}
+            -DGOLDEN=${CMAKE_SOURCE_DIR}/tests/ir_golden/${ARG_NAME}.ll
+            -DNAME=${ARG_NAME}
+            -DWORK_DIR=${CMAKE_BINARY_DIR}
+            -P ${CMAKE_SOURCE_DIR}/tests/ir_snapshot.cmake
+    )
+    set_tests_properties(test_ir_snapshot_${ARG_NAME} PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+endfunction()
+
+# Windows-only: the golden .ll files embed the generating host's
+# `target datalayout` / `target triple` lines (x86_64-pc-windows-msvc), so
+# emit-ir on Linux CI would produce a different header and turn every
+# snapshot red. This facility is a local zero-behavior-change refactoring
+# gate for the Windows/MSVC primary platform; Linux CI must not run it.
+if(WIN32)
+ls_ir_snapshot(NAME enum_basic_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/enum_basic_test.lls)
+ls_ir_snapshot(NAME closure_g SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/closure_g.lls)
+ls_ir_snapshot(NAME match_own_stress_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/match_own_stress_test.lls)
+endif()
