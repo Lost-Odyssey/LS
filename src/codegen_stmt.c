@@ -485,360 +485,8 @@ LLVMValueRef codegen_fn_to_block(CodegenContext *ctx, AstNode *node)
     return result;
 }
 
-void codegen_stmt(CodegenContext *ctx, AstNode *node)
+static void cg_stmt_assign(CodegenContext *ctx, AstNode *node)
 {
-    if (node == NULL)
-        return;
-
-    /* D1 (-g): statement-level line info — one location per statement,
-       sticky across the expressions it lowers (docs/plan_debug_info.md §3.2). */
-    cg_di_stmt_loc(ctx, node);
-
-#if CG_DEBUG_LV2
-    printf(">>>>> codegen_stmt, node->kind:%u\n", node->kind);
-#endif
-
-    switch (node->kind)
-    {
-    case AST_VAR_DECL:
-    {
-        Type *var_type = node->resolved_type;
-        if (var_type == NULL)
-            return;
-
-        /* Phase 1 (borrow extension): a named local borrow `&T r = &x` aliases
-           the referent's storage pointer (no alloca, no copy) — exactly like a
-           borrow parameter. Register the symbol with that pointer + CG_BORROWED
-           so scope cleanup leaves the referent's ownership untouched. The
-           checker (check_local_borrow_decl) already validated the source. */
-        if (var_type->kind == TYPE_REFERENCE)
-        {
-            Type *pointee = var_type->as.pointer_to;
-            AstNode *init = node->as.var_decl.init;
-            LLVMValueRef ptr = NULL;
-            /* Phase 2: borrow-returning call init `&T r = obj.get()` — the call
-               evaluates to the borrow pointer directly. */
-            if (init && init->kind == AST_CALL &&
-                init->resolved_type && init->resolved_type->kind == TYPE_REFERENCE)
-            {
-                ptr = codegen_expr(ctx, init);
-            }
-            else
-            {
-                AstNode *src_ident = NULL;
-                if (init && init->kind == AST_UNARY && init->as.unary.op == TOKEN_AMP)
-                    src_ident = init->as.unary.operand;     /* &x */
-                else if (init && init->kind == AST_MUT_BORROW)
-                    src_ident = init->as.mut_borrow.operand; /* &!x */
-                else if (init && init->kind == AST_IDENT)
-                    src_ident = init;                        /* re-borrow r1 */
-                if (src_ident == NULL)
-                    return;
-                ptr = codegen_lvalue_ptr(ctx, src_ident);
-            }
-            if (ptr == NULL)
-                return;
-            CgSymbol *bsym = cg_scope_define(ctx->current_scope,
-                                             node->as.var_decl.name, ptr,
-                                             pointee, NULL);
-            if (bsym)
-            {
-                bsym->no_drop_reason = CG_BORROWED;  /* skip scope cleanup (referent owns) */
-                if (var_type->is_mut) bsym->is_mut_borrow = true;
-            }
-            return;
-        }
-
-        LLVMTypeRef llvm_type = type_to_llvm(ctx, var_type);
-
-        /* Alloca at function entry */
-        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
-        LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx->context);
-        LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
-        if (first_inst)
-            LLVMPositionBuilderBefore(tmp, first_inst);
-        else
-            LLVMPositionBuilderAtEnd(tmp, entry);
-        LLVMValueRef alloca = LLVMBuildAlloca(tmp, llvm_type, node->as.var_decl.name);
-        LLVMDisposeBuilder(tmp);
-
-        /* A2: mark this slot's lexical live range so StackColoring can reuse the
-           frame slot once the scope exits. Emitted at the var_decl position (not
-           the hoisted entry alloca) for the tightest range, BEFORE any zero-init
-           store below. Only aggregate AOT locals qualify; the returned flag is
-           stamped onto the CgSymbol so scope cleanup emits the paired end. */
-        bool var_lifetime_marked = cg_emit_lifetime_start(ctx, alloca, llvm_type);
-
-        /* F5: a Block local initialized from a RAW ptr/array index read
-           (`V v = self.vals[idx]` inside a pure-LS container method) holds an
-           ALIAS of an env the container owns — the alias-through read protocol
-           never clones those. Mark the symbol borrowed (set below) so scope
-           cleanup skips it and downstream ownership boundaries (enum ctor
-           payload store) know to deep-clone. */
-        bool block_alias_init = false;
-
-        /* Allocate moved_flag for struct-with-drop and has_drop enum types.
-           F.5: enum with heap payload also needs move tracking so closure
-           by-move capture can prevent double-free via scope cleanup. */
-        LLVMValueRef moved_flag = NULL;
-        if ((var_type->kind == TYPE_STRUCT && var_type->as.strukt.has_drop) ||
-            (var_type->kind == TYPE_ENUM   && var_type->as.enom.has_drop))
-        {
-            LLVMTypeRef i1_type = LLVMInt1TypeInContext(ctx->context);
-            moved_flag = cg_entry_alloca(ctx, i1_type, "var.moved");
-            LLVMBuildStore(ctx->builder, LLVMConstInt(i1_type, 0, 0), moved_flag);
-        }
-
-        /* Zero-initialize arrays that contain strings or droppable structs.
-           Without this, unassigned array elements have garbage cap/data values,
-           causing emit_cleanup_to to call free() on invalid pointers at scope exit. */
-        if (var_type->kind == TYPE_ARRAY && var_type->as.array.elem)
-        {
-            Type *elem = var_type->as.array.elem;
-            bool needs_zero_init =
-                (elem->kind == TYPE_STRUCT && elem->as.strukt.has_drop);
-            if (needs_zero_init)
-            {
-                LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
-            }
-        }
-        /* Zero-initialize structs-with-drop so that any string/nested-struct fields
-           start with cap=0/data=NULL. Without this, an uninitialized struct pushed into
-           a vec would have garbage cap values → free() on garbage pointer on scope exit. */
-        if (var_type->kind == TYPE_STRUCT && var_type->as.strukt.has_drop)
-        {
-            LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
-        }
-        /* Zero-initialize has-drop enum variables (disc=0, payload=zeroed).
-           Without this, an uninitialized enum has garbage discriminant + payload,
-           causing emit_auto_enum_drop_fn to access a wild pointer on scope exit. */
-        if (var_type->kind == TYPE_ENUM && var_type->as.enom.has_drop)
-        {
-            LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
-        }
-        if (node->as.var_decl.init)
-        {
-            /* Track temp slots created during init expression evaluation */
-
-            /* Collection-literal init for a user container (the `__from_list`
-               protocol, checked above): zero-init the struct, then call its
-               reserved `__from_list(&!self, E)` method for each element. Matches
-               the builtin `vec(T) v = [..]`. */
-            if (var_type->kind == TYPE_STRUCT &&
-                     node->as.var_decl.init->kind == AST_ARRAY_LIT)
-            {
-                AstNode *lit = node->as.var_decl.init;
-                LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
-                char fl_name[256];
-                snprintf(fl_name, sizeof(fl_name), "%s.__from_list",
-                         struct_llvm_name(var_type));
-                LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
-                if (fl_fn == NULL)
-                {
-                    /* F6 (sibling of VR-LIM-016/F1): a local `Vec(T) v = [..]`
-                       inside an IMPORTED-module function is emitted before the
-                       G1.5 pending-generic pass, so Vec(T).__from_list may not
-                       exist yet. Silently skipping the loop left the Vec
-                       zero-initialized (len=0, data=null → reads/crashes in the
-                       consumer). Forward-declare from the pending queue; the body
-                       lands in G1.5. Mirrors emit_user_from_list_value (F1). */
-                    fl_fn = cg_declare_pending_generic_method(ctx, fl_name);
-                }
-                if (fl_fn)
-                {
-                    LLVMTypeRef fl_ft = LLVMGlobalGetValueType(fl_fn);
-                    for (int i = 0; i < lit->as.array_lit.count; i++)
-                    {
-                        LLVMValueRef ev = codegen_expr(ctx, lit->as.array_lit.elements[i]);
-                        if (ev == NULL) continue;
-                        LLVMValueRef fl_args[2] = { alloca, ev };
-                        LLVMBuildCall2(ctx->builder, fl_ft, fl_fn, fl_args, 2, "");
-                    }
-                }
-            }
-            /* M-LIT: key-value literal init for a user container (the
-               `__from_pairs` protocol, checked above): zero-init the struct, then
-               call `__from_pairs(&!self, K, V)` per pair, moving each key/value in
-               (owned-param ABI, mirror __from_list). e.g. `Map(K,V) m = {k: v}`. */
-            else if (var_type->kind == TYPE_STRUCT &&
-                     node->as.var_decl.init->kind == AST_MAP_LIT &&
-                     node->as.var_decl.init->as.map_lit.pair_count > 0)
-            {
-                AstNode *ml = node->as.var_decl.init;
-                LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
-                char fp_name[256];
-                snprintf(fp_name, sizeof(fp_name), "%s.__from_pairs",
-                         struct_llvm_name(var_type));
-                LLVMValueRef fp_fn = LLVMGetNamedFunction(ctx->module, fp_name);
-                if (fp_fn == NULL)
-                    fp_fn = cg_declare_pending_generic_method(ctx, fp_name);
-                if (fp_fn)
-                {
-                    LLVMTypeRef fp_ft = LLVMGlobalGetValueType(fp_fn);
-                    for (int i = 0; i < ml->as.map_lit.pair_count; i++)
-                    {
-                        LLVMValueRef kv = codegen_expr(ctx, ml->as.map_lit.keys[i]);
-                        if (kv == NULL) continue;
-                        LLVMValueRef vv = codegen_expr(ctx, ml->as.map_lit.vals[i]);
-                        if (vv == NULL) continue;
-                        LLVMValueRef fp_args[3] = { alloca, kv, vv };
-                        LLVMBuildCall2(ctx->builder, fp_ft, fp_fn, fp_args, 3, "");
-                    }
-                }
-            }
-            /* Special handling for array literal initialization */
-            else if (var_type->kind == TYPE_ARRAY &&
-                     node->as.var_decl.init->kind == AST_ARRAY_LIT)
-            {
-                AstNode *lit = node->as.var_decl.init;
-                int count = lit->as.array_lit.count;
-                LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
-                LLVMValueRef zero = LLVMConstInt(i64_type, 0, 0);
-
-                /* Try constant array first */
-                LLVMValueRef const_arr = codegen_expr(ctx, lit);
-                if (const_arr)
-                {
-                    LLVMBuildStore(ctx->builder, const_arr, alloca);
-                }
-                else
-                {
-                    /* Element-by-element store */
-                    for (int i = 0; i < count; i++)
-                    {
-                        LLVMValueRef elem_val = codegen_expr(ctx, lit->as.array_lit.elements[i]);
-                        if (elem_val == NULL)
-                            continue;
-                        LLVMValueRef idx = LLVMConstInt(i64_type, (uint64_t)i, 0);
-                        LLVMValueRef indices[2] = {zero, idx};
-                        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, llvm_type,
-                                                         alloca, indices, 2, "arr.init");
-                        LLVMBuildStore(ctx->builder, elem_val, gep);
-                    }
-                }
-            }
-            else
-            {
-                int blk_drop_floor = ctx->temp_drop_count;
-                LLVMValueRef init = codegen_expr(ctx, node->as.var_decl.init);
-                if (init)
-                {
-                    /* Implicit numeric widening: var_decl init expr's type may
-                       differ from var_type (e.g. f64 x = 5_int). The checker
-                       allowed this iff type_widens_to(init_t, var_type). */
-                    Type *init_t = node->as.var_decl.init->resolved_type;
-                    if (init_t && type_is_numeric(init_t) &&
-                        type_is_numeric(var_type) && !type_equals(init_t, var_type))
-                    {
-                        init = cg_widen(ctx, init, init_t, var_type);
-                    }
-                    if (var_type->kind == TYPE_STRUCT &&
-                             var_type->as.strukt.has_drop &&
-                             ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
-                    {
-                        if (ast_unwrap_move(node->as.var_decl.init)->moved_out &&
-                            cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
-                        {
-                            /* Move-elision (Q4): ownership transferred and source
-                               was a real owned variable — moved + invalidated, no
-                               clone. Borrow sources return false → fall to clone. */
-                        }
-                        else
-                        {
-                            /* Source is another named struct variable — deep-clone so both
-                               this variable and the source have independently owned string
-                               fields and can be freed without double-free. */
-                            LLVMTypeRef llvm_st = type_to_llvm(ctx, var_type);
-                            init = emit_struct_clone_val(ctx, init, llvm_st, var_type);
-                        }
-                    }
-                    else if (var_type->kind == TYPE_ENUM &&
-                             var_type->as.enom.has_drop &&
-                             ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
-                    {
-                        if (ast_unwrap_move(node->as.var_decl.init)->moved_out &&
-                            cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
-                        {
-                            /* Move-elision (Q4): ownership transferred and source
-                               was a real owned variable — moved + invalidated, no
-                               clone. Borrow sources return false → fall to clone. */
-                        }
-                        else
-                        {
-                            /* Source is another named has-drop enum variable — deep-clone so
-                               both this variable and the source have independently owned heap
-                               payloads and can be freed without double-free.
-                               e.g. JsonValue b = a  →  b gets its own deep copy of a. */
-                            init = emit_enum_clone_val(ctx, init, var_type);
-                        }
-                    }
-                    else if (var_type->kind == TYPE_BLOCK)
-                    {
-                        AstNode *blk_init = ast_unwrap_move(node->as.var_decl.init);
-                        if (blk_init && blk_init->kind == AST_IDENT)
-                        {
-                            /* F.2: Block variable initialized from another Block
-                               variable. Move semantics (P1): zero source's env_ptr
-                               so its scope cleanup skips (this var now owns the
-                               env). Switching to a shared retain is coupled with
-                               checker move-relaxation + discarded-rvalue release —
-                               done together in the reference-semantics phase. */
-                            CgSymbol *src = cg_scope_resolve(ctx->current_scope,
-                                                              blk_init->as.ident.name);
-                            if (src && src->no_drop_reason == CG_OWNED)
-                                cg_null_block_env(ctx, src->value);
-                        }
-                        else if (cg_block_source_is_aliased(blk_init))
-                        {
-                            /* Container read (vec[i]/struct.field/map.get): deep
-                               clone the env (P1 behaviour). Switching this to a
-                               shared retain is coupled with releasing discarded
-                               container-read rvalues — deferred to P3. */
-                            init = cg_emit_block_env_clone(ctx, init);
-                        }
-                        else if (blk_init && blk_init->kind == AST_INDEX)
-                        {
-                            /* Raw ptr/array index read: bind as a borrow (P1) —
-                               no retain, no scope release. Its owner (the
-                               container) releases it. Retain-sharing here is
-                               coupled with P3 (discarded-rvalue release). */
-                            block_alias_init = true;
-                        }
-                        else
-                        {
-                            /* Fresh OWNED Block rvalue — factory call / force-unwrap
-                               (P3) or closure literal (stage 10, unified into the
-                               same temp_drop ledger): the var takes the single
-                               reference it was born with — claim the temp so the
-                               statement-end flush doesn't release the env the var
-                               now owns. No retain, no-op for an untracked rvalue.
-                               (Pre-unification this popped the literal's entry from
-                               a separate env table FIRST, which mis-claimed the
-                               literal ARG's env instead of the factory result for
-                               `Block b = make_pair(|| ..)`; topmost-Block claim
-                               picks the result — registered last — correctly.) */
-                            cg_claim_block_temp_above(ctx, blk_drop_floor);
-                        }
-                    }
-
-                    LLVMBuildStore(ctx->builder, init, alloca);
-                }
-
-                cg_flush_temps(ctx);
-            }
-        }
-
-        {
-            CgSymbol *vsym = cg_scope_define(ctx->current_scope, node->as.var_decl.name,
-                                             alloca, var_type, moved_flag);
-            if (vsym) vsym->lifetime_marked = var_lifetime_marked;
-            if (vsym && block_alias_init) vsym->no_drop_reason = CG_ALIAS;
-        }
-        break;
-    }
-
-    case AST_ASSIGN:
-    {
 
         /* Track temp string slots created during value evaluation. Also snapshot
            the has_drop temp COUNT: the string-count-based mark cannot tell a
@@ -1281,8 +929,364 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
                 LLVMBuildStore(ctx->builder, val, ptr);
             }
         }
+        return;
+}
+
+void codegen_stmt(CodegenContext *ctx, AstNode *node)
+{
+    if (node == NULL)
+        return;
+
+    /* D1 (-g): statement-level line info — one location per statement,
+       sticky across the expressions it lowers (docs/plan_debug_info.md §3.2). */
+    cg_di_stmt_loc(ctx, node);
+
+#if CG_DEBUG_LV2
+    printf(">>>>> codegen_stmt, node->kind:%u\n", node->kind);
+#endif
+
+    switch (node->kind)
+    {
+    case AST_VAR_DECL:
+    {
+        Type *var_type = node->resolved_type;
+        if (var_type == NULL)
+            return;
+
+        /* Phase 1 (borrow extension): a named local borrow `&T r = &x` aliases
+           the referent's storage pointer (no alloca, no copy) — exactly like a
+           borrow parameter. Register the symbol with that pointer + CG_BORROWED
+           so scope cleanup leaves the referent's ownership untouched. The
+           checker (check_local_borrow_decl) already validated the source. */
+        if (var_type->kind == TYPE_REFERENCE)
+        {
+            Type *pointee = var_type->as.pointer_to;
+            AstNode *init = node->as.var_decl.init;
+            LLVMValueRef ptr = NULL;
+            /* Phase 2: borrow-returning call init `&T r = obj.get()` — the call
+               evaluates to the borrow pointer directly. */
+            if (init && init->kind == AST_CALL &&
+                init->resolved_type && init->resolved_type->kind == TYPE_REFERENCE)
+            {
+                ptr = codegen_expr(ctx, init);
+            }
+            else
+            {
+                AstNode *src_ident = NULL;
+                if (init && init->kind == AST_UNARY && init->as.unary.op == TOKEN_AMP)
+                    src_ident = init->as.unary.operand;     /* &x */
+                else if (init && init->kind == AST_MUT_BORROW)
+                    src_ident = init->as.mut_borrow.operand; /* &!x */
+                else if (init && init->kind == AST_IDENT)
+                    src_ident = init;                        /* re-borrow r1 */
+                if (src_ident == NULL)
+                    return;
+                ptr = codegen_lvalue_ptr(ctx, src_ident);
+            }
+            if (ptr == NULL)
+                return;
+            CgSymbol *bsym = cg_scope_define(ctx->current_scope,
+                                             node->as.var_decl.name, ptr,
+                                             pointee, NULL);
+            if (bsym)
+            {
+                bsym->no_drop_reason = CG_BORROWED;  /* skip scope cleanup (referent owns) */
+                if (var_type->is_mut) bsym->is_mut_borrow = true;
+            }
+            return;
+        }
+
+        LLVMTypeRef llvm_type = type_to_llvm(ctx, var_type);
+
+        /* Alloca at function entry */
+        LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
+        LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx->context);
+        LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
+        if (first_inst)
+            LLVMPositionBuilderBefore(tmp, first_inst);
+        else
+            LLVMPositionBuilderAtEnd(tmp, entry);
+        LLVMValueRef alloca = LLVMBuildAlloca(tmp, llvm_type, node->as.var_decl.name);
+        LLVMDisposeBuilder(tmp);
+
+        /* A2: mark this slot's lexical live range so StackColoring can reuse the
+           frame slot once the scope exits. Emitted at the var_decl position (not
+           the hoisted entry alloca) for the tightest range, BEFORE any zero-init
+           store below. Only aggregate AOT locals qualify; the returned flag is
+           stamped onto the CgSymbol so scope cleanup emits the paired end. */
+        bool var_lifetime_marked = cg_emit_lifetime_start(ctx, alloca, llvm_type);
+
+        /* F5: a Block local initialized from a RAW ptr/array index read
+           (`V v = self.vals[idx]` inside a pure-LS container method) holds an
+           ALIAS of an env the container owns — the alias-through read protocol
+           never clones those. Mark the symbol borrowed (set below) so scope
+           cleanup skips it and downstream ownership boundaries (enum ctor
+           payload store) know to deep-clone. */
+        bool block_alias_init = false;
+
+        /* Allocate moved_flag for struct-with-drop and has_drop enum types.
+           F.5: enum with heap payload also needs move tracking so closure
+           by-move capture can prevent double-free via scope cleanup. */
+        LLVMValueRef moved_flag = NULL;
+        if ((var_type->kind == TYPE_STRUCT && var_type->as.strukt.has_drop) ||
+            (var_type->kind == TYPE_ENUM   && var_type->as.enom.has_drop))
+        {
+            LLVMTypeRef i1_type = LLVMInt1TypeInContext(ctx->context);
+            moved_flag = cg_entry_alloca(ctx, i1_type, "var.moved");
+            LLVMBuildStore(ctx->builder, LLVMConstInt(i1_type, 0, 0), moved_flag);
+        }
+
+        /* Zero-initialize arrays that contain strings or droppable structs.
+           Without this, unassigned array elements have garbage cap/data values,
+           causing emit_cleanup_to to call free() on invalid pointers at scope exit. */
+        if (var_type->kind == TYPE_ARRAY && var_type->as.array.elem)
+        {
+            Type *elem = var_type->as.array.elem;
+            bool needs_zero_init =
+                (elem->kind == TYPE_STRUCT && elem->as.strukt.has_drop);
+            if (needs_zero_init)
+            {
+                LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+            }
+        }
+        /* Zero-initialize structs-with-drop so that any string/nested-struct fields
+           start with cap=0/data=NULL. Without this, an uninitialized struct pushed into
+           a vec would have garbage cap values → free() on garbage pointer on scope exit. */
+        if (var_type->kind == TYPE_STRUCT && var_type->as.strukt.has_drop)
+        {
+            LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+        }
+        /* Zero-initialize has-drop enum variables (disc=0, payload=zeroed).
+           Without this, an uninitialized enum has garbage discriminant + payload,
+           causing emit_auto_enum_drop_fn to access a wild pointer on scope exit. */
+        if (var_type->kind == TYPE_ENUM && var_type->as.enom.has_drop)
+        {
+            LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+        }
+        if (node->as.var_decl.init)
+        {
+            /* Track temp slots created during init expression evaluation */
+
+            /* Collection-literal init for a user container (the `__from_list`
+               protocol, checked above): zero-init the struct, then call its
+               reserved `__from_list(&!self, E)` method for each element. Matches
+               the builtin `vec(T) v = [..]`. */
+            if (var_type->kind == TYPE_STRUCT &&
+                     node->as.var_decl.init->kind == AST_ARRAY_LIT)
+            {
+                AstNode *lit = node->as.var_decl.init;
+                LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+                char fl_name[256];
+                snprintf(fl_name, sizeof(fl_name), "%s.__from_list",
+                         struct_llvm_name(var_type));
+                LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
+                if (fl_fn == NULL)
+                {
+                    /* F6 (sibling of VR-LIM-016/F1): a local `Vec(T) v = [..]`
+                       inside an IMPORTED-module function is emitted before the
+                       G1.5 pending-generic pass, so Vec(T).__from_list may not
+                       exist yet. Silently skipping the loop left the Vec
+                       zero-initialized (len=0, data=null → reads/crashes in the
+                       consumer). Forward-declare from the pending queue; the body
+                       lands in G1.5. Mirrors emit_user_from_list_value (F1). */
+                    fl_fn = cg_declare_pending_generic_method(ctx, fl_name);
+                }
+                if (fl_fn)
+                {
+                    LLVMTypeRef fl_ft = LLVMGlobalGetValueType(fl_fn);
+                    for (int i = 0; i < lit->as.array_lit.count; i++)
+                    {
+                        LLVMValueRef ev = codegen_expr(ctx, lit->as.array_lit.elements[i]);
+                        if (ev == NULL) continue;
+                        LLVMValueRef fl_args[2] = { alloca, ev };
+                        LLVMBuildCall2(ctx->builder, fl_ft, fl_fn, fl_args, 2, "");
+                    }
+                }
+            }
+            /* M-LIT: key-value literal init for a user container (the
+               `__from_pairs` protocol, checked above): zero-init the struct, then
+               call `__from_pairs(&!self, K, V)` per pair, moving each key/value in
+               (owned-param ABI, mirror __from_list). e.g. `Map(K,V) m = {k: v}`. */
+            else if (var_type->kind == TYPE_STRUCT &&
+                     node->as.var_decl.init->kind == AST_MAP_LIT &&
+                     node->as.var_decl.init->as.map_lit.pair_count > 0)
+            {
+                AstNode *ml = node->as.var_decl.init;
+                LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+                char fp_name[256];
+                snprintf(fp_name, sizeof(fp_name), "%s.__from_pairs",
+                         struct_llvm_name(var_type));
+                LLVMValueRef fp_fn = LLVMGetNamedFunction(ctx->module, fp_name);
+                if (fp_fn == NULL)
+                    fp_fn = cg_declare_pending_generic_method(ctx, fp_name);
+                if (fp_fn)
+                {
+                    LLVMTypeRef fp_ft = LLVMGlobalGetValueType(fp_fn);
+                    for (int i = 0; i < ml->as.map_lit.pair_count; i++)
+                    {
+                        LLVMValueRef kv = codegen_expr(ctx, ml->as.map_lit.keys[i]);
+                        if (kv == NULL) continue;
+                        LLVMValueRef vv = codegen_expr(ctx, ml->as.map_lit.vals[i]);
+                        if (vv == NULL) continue;
+                        LLVMValueRef fp_args[3] = { alloca, kv, vv };
+                        LLVMBuildCall2(ctx->builder, fp_ft, fp_fn, fp_args, 3, "");
+                    }
+                }
+            }
+            /* Special handling for array literal initialization */
+            else if (var_type->kind == TYPE_ARRAY &&
+                     node->as.var_decl.init->kind == AST_ARRAY_LIT)
+            {
+                AstNode *lit = node->as.var_decl.init;
+                int count = lit->as.array_lit.count;
+                LLVMTypeRef i64_type = LLVMInt64TypeInContext(ctx->context);
+                LLVMValueRef zero = LLVMConstInt(i64_type, 0, 0);
+
+                /* Try constant array first */
+                LLVMValueRef const_arr = codegen_expr(ctx, lit);
+                if (const_arr)
+                {
+                    LLVMBuildStore(ctx->builder, const_arr, alloca);
+                }
+                else
+                {
+                    /* Element-by-element store */
+                    for (int i = 0; i < count; i++)
+                    {
+                        LLVMValueRef elem_val = codegen_expr(ctx, lit->as.array_lit.elements[i]);
+                        if (elem_val == NULL)
+                            continue;
+                        LLVMValueRef idx = LLVMConstInt(i64_type, (uint64_t)i, 0);
+                        LLVMValueRef indices[2] = {zero, idx};
+                        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, llvm_type,
+                                                         alloca, indices, 2, "arr.init");
+                        LLVMBuildStore(ctx->builder, elem_val, gep);
+                    }
+                }
+            }
+            else
+            {
+                int blk_drop_floor = ctx->temp_drop_count;
+                LLVMValueRef init = codegen_expr(ctx, node->as.var_decl.init);
+                if (init)
+                {
+                    /* Implicit numeric widening: var_decl init expr's type may
+                       differ from var_type (e.g. f64 x = 5_int). The checker
+                       allowed this iff type_widens_to(init_t, var_type). */
+                    Type *init_t = node->as.var_decl.init->resolved_type;
+                    if (init_t && type_is_numeric(init_t) &&
+                        type_is_numeric(var_type) && !type_equals(init_t, var_type))
+                    {
+                        init = cg_widen(ctx, init, init_t, var_type);
+                    }
+                    if (var_type->kind == TYPE_STRUCT &&
+                             var_type->as.strukt.has_drop &&
+                             ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
+                    {
+                        if (ast_unwrap_move(node->as.var_decl.init)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
+                        {
+                            /* Move-elision (Q4): ownership transferred and source
+                               was a real owned variable — moved + invalidated, no
+                               clone. Borrow sources return false → fall to clone. */
+                        }
+                        else
+                        {
+                            /* Source is another named struct variable — deep-clone so both
+                               this variable and the source have independently owned string
+                               fields and can be freed without double-free. */
+                            LLVMTypeRef llvm_st = type_to_llvm(ctx, var_type);
+                            init = emit_struct_clone_val(ctx, init, llvm_st, var_type);
+                        }
+                    }
+                    else if (var_type->kind == TYPE_ENUM &&
+                             var_type->as.enom.has_drop &&
+                             ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
+                    {
+                        if (ast_unwrap_move(node->as.var_decl.init)->moved_out &&
+                            cg_invalidate_moved_source(ctx, node->as.var_decl.init, var_type))
+                        {
+                            /* Move-elision (Q4): ownership transferred and source
+                               was a real owned variable — moved + invalidated, no
+                               clone. Borrow sources return false → fall to clone. */
+                        }
+                        else
+                        {
+                            /* Source is another named has-drop enum variable — deep-clone so
+                               both this variable and the source have independently owned heap
+                               payloads and can be freed without double-free.
+                               e.g. JsonValue b = a  →  b gets its own deep copy of a. */
+                            init = emit_enum_clone_val(ctx, init, var_type);
+                        }
+                    }
+                    else if (var_type->kind == TYPE_BLOCK)
+                    {
+                        AstNode *blk_init = ast_unwrap_move(node->as.var_decl.init);
+                        if (blk_init && blk_init->kind == AST_IDENT)
+                        {
+                            /* F.2: Block variable initialized from another Block
+                               variable. Move semantics (P1): zero source's env_ptr
+                               so its scope cleanup skips (this var now owns the
+                               env). Switching to a shared retain is coupled with
+                               checker move-relaxation + discarded-rvalue release —
+                               done together in the reference-semantics phase. */
+                            CgSymbol *src = cg_scope_resolve(ctx->current_scope,
+                                                              blk_init->as.ident.name);
+                            if (src && src->no_drop_reason == CG_OWNED)
+                                cg_null_block_env(ctx, src->value);
+                        }
+                        else if (cg_block_source_is_aliased(blk_init))
+                        {
+                            /* Container read (vec[i]/struct.field/map.get): deep
+                               clone the env (P1 behaviour). Switching this to a
+                               shared retain is coupled with releasing discarded
+                               container-read rvalues — deferred to P3. */
+                            init = cg_emit_block_env_clone(ctx, init);
+                        }
+                        else if (blk_init && blk_init->kind == AST_INDEX)
+                        {
+                            /* Raw ptr/array index read: bind as a borrow (P1) —
+                               no retain, no scope release. Its owner (the
+                               container) releases it. Retain-sharing here is
+                               coupled with P3 (discarded-rvalue release). */
+                            block_alias_init = true;
+                        }
+                        else
+                        {
+                            /* Fresh OWNED Block rvalue — factory call / force-unwrap
+                               (P3) or closure literal (stage 10, unified into the
+                               same temp_drop ledger): the var takes the single
+                               reference it was born with — claim the temp so the
+                               statement-end flush doesn't release the env the var
+                               now owns. No retain, no-op for an untracked rvalue.
+                               (Pre-unification this popped the literal's entry from
+                               a separate env table FIRST, which mis-claimed the
+                               literal ARG's env instead of the factory result for
+                               `Block b = make_pair(|| ..)`; topmost-Block claim
+                               picks the result — registered last — correctly.) */
+                            cg_claim_block_temp_above(ctx, blk_drop_floor);
+                        }
+                    }
+
+                    LLVMBuildStore(ctx->builder, init, alloca);
+                }
+
+                cg_flush_temps(ctx);
+            }
+        }
+
+        {
+            CgSymbol *vsym = cg_scope_define(ctx->current_scope, node->as.var_decl.name,
+                                             alloca, var_type, moved_flag);
+            if (vsym) vsym->lifetime_marked = var_lifetime_marked;
+            if (vsym && block_alias_init) vsym->no_drop_reason = CG_ALIAS;
+        }
         break;
     }
+
+    case AST_ASSIGN:
+        cg_stmt_assign(ctx, node);
+        break;
 
     case AST_RETURN:
     {
