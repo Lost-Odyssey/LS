@@ -1687,6 +1687,87 @@ static void cg_stmt_for(CodegenContext *ctx, AstNode *node)
         return;
 }
 
+static void cg_stmt_for_c(CodegenContext *ctx, AstNode *node)
+{
+        /* C-style for: for (init; cond; update) { body }
+           Structure: init → cond_bb → body_bb → update_bb → cond_bb
+                                    ↘ end_bb                         */
+        push_scope(ctx);
+
+        /* Emit init clause (if any) */
+        if (node->as.for_c_stmt.init)
+        {
+            codegen_stmt(ctx, node->as.for_c_stmt.init);
+        }
+
+        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "for.cond");
+        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "for.body");
+        LLVMBasicBlockRef update_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "for.update");
+        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "for.end");
+
+        /* Save and set break/continue targets */
+        LLVMBasicBlockRef saved_break = ctx->break_bb;
+        LLVMBasicBlockRef saved_continue = ctx->continue_bb;
+        CgScope *saved_loop_scope = ctx->loop_scope;
+        int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
+        ctx->break_bb = end_bb;
+        ctx->continue_bb = update_bb; /* continue jumps to update, not cond */
+        ctx->loop_scope = ctx->current_scope;
+        ctx->loop_temp_drop_floor = ctx->temp_drop_count;
+
+        /* Branch to condition check */
+        LLVMBuildBr(ctx->builder, cond_bb);
+
+        /* Condition block */
+        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
+        if (node->as.for_c_stmt.cond)
+        {
+            LLVMValueRef cond = codegen_expr(ctx, node->as.for_c_stmt.cond);
+            /* Free temporary strings produced by the condition expression. */
+            cg_flush_temps(ctx);
+            if (cond)
+                LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
+        }
+        else
+        {
+            /* No condition → infinite loop (like for(;;)) */
+            LLVMBuildBr(ctx->builder, body_bb);
+        }
+
+        /* Body block */
+        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+        codegen_stmt(ctx, node->as.for_c_stmt.body);
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+        {
+            LLVMBuildBr(ctx->builder, update_bb);
+        }
+
+        /* Update block */
+        LLVMPositionBuilderAtEnd(ctx->builder, update_bb);
+        if (node->as.for_c_stmt.update)
+        {
+            codegen_stmt(ctx, node->as.for_c_stmt.update);
+        }
+        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
+        {
+            LLVMBuildBr(ctx->builder, cond_bb);
+        }
+
+        /* Restore break/continue/loop_scope */
+        ctx->break_bb = saved_break;
+        ctx->continue_bb = saved_continue;
+        ctx->loop_scope = saved_loop_scope;
+        ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
+
+        pop_scope(ctx);
+        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+        return;
+}
+
 void codegen_stmt(CodegenContext *ctx, AstNode *node)
 {
     if (node == NULL)
@@ -1833,85 +1914,8 @@ void codegen_stmt(CodegenContext *ctx, AstNode *node)
         break;
 
     case AST_FOR_C:
-    {
-        /* C-style for: for (init; cond; update) { body }
-           Structure: init → cond_bb → body_bb → update_bb → cond_bb
-                                    ↘ end_bb                         */
-        push_scope(ctx);
-
-        /* Emit init clause (if any) */
-        if (node->as.for_c_stmt.init)
-        {
-            codegen_stmt(ctx, node->as.for_c_stmt.init);
-        }
-
-        LLVMBasicBlockRef cond_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "for.cond");
-        LLVMBasicBlockRef body_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "for.body");
-        LLVMBasicBlockRef update_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "for.update");
-        LLVMBasicBlockRef end_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "for.end");
-
-        /* Save and set break/continue targets */
-        LLVMBasicBlockRef saved_break = ctx->break_bb;
-        LLVMBasicBlockRef saved_continue = ctx->continue_bb;
-        CgScope *saved_loop_scope = ctx->loop_scope;
-        int saved_loop_temp_drop_floor = ctx->loop_temp_drop_floor;
-        ctx->break_bb = end_bb;
-        ctx->continue_bb = update_bb; /* continue jumps to update, not cond */
-        ctx->loop_scope = ctx->current_scope;
-        ctx->loop_temp_drop_floor = ctx->temp_drop_count;
-
-        /* Branch to condition check */
-        LLVMBuildBr(ctx->builder, cond_bb);
-
-        /* Condition block */
-        LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-        if (node->as.for_c_stmt.cond)
-        {
-            LLVMValueRef cond = codegen_expr(ctx, node->as.for_c_stmt.cond);
-            /* Free temporary strings produced by the condition expression. */
-            cg_flush_temps(ctx);
-            if (cond)
-                LLVMBuildCondBr(ctx->builder, cond, body_bb, end_bb);
-        }
-        else
-        {
-            /* No condition → infinite loop (like for(;;)) */
-            LLVMBuildBr(ctx->builder, body_bb);
-        }
-
-        /* Body block */
-        LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
-        codegen_stmt(ctx, node->as.for_c_stmt.body);
-        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-        {
-            LLVMBuildBr(ctx->builder, update_bb);
-        }
-
-        /* Update block */
-        LLVMPositionBuilderAtEnd(ctx->builder, update_bb);
-        if (node->as.for_c_stmt.update)
-        {
-            codegen_stmt(ctx, node->as.for_c_stmt.update);
-        }
-        if (LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(ctx->builder)) == NULL)
-        {
-            LLVMBuildBr(ctx->builder, cond_bb);
-        }
-
-        /* Restore break/continue/loop_scope */
-        ctx->break_bb = saved_break;
-        ctx->continue_bb = saved_continue;
-        ctx->loop_scope = saved_loop_scope;
-        ctx->loop_temp_drop_floor = saved_loop_temp_drop_floor;
-
-        pop_scope(ctx);
-        LLVMPositionBuilderAtEnd(ctx->builder, end_bb);
+        cg_stmt_for_c(ctx, node);
         break;
-    }
 
     case AST_BLOCK:
     {
