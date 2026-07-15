@@ -2962,30 +2962,43 @@ Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
 
         /* Generic-style instantiation: build mangled name "Name(arg1,arg2)"
            and look up an enum instance. Step 8 will add Option/Result template
-           instantiation here when the lookup misses. */
+           instantiation here when the lookup misses.
+           ⭐ Deliberately bare `type_name` here, NOT mangle_type_arg_name —
+           this is only a pre-check against already-instantiated types keyed
+           by whatever name their instantiation site used; the real
+           instantiation calls below (instantiate_template /
+           checker_instantiate_struct) build the module-prefix-aware key
+           themselves on a miss. Keep this difference (see mangle.h's
+           mangle_type_arg_name comment / Task 2.2 brief) — unifying the
+           *construction* (fixed buf -> MangleBuf) must not unify the
+           *semantics*. MangleBuf still replaces the fixed 256-byte buf to
+           remove this site's independent truncation risk. */
         const char *base = tn->as.named.name;
-        char buf[256];
-        int pos = snprintf(buf, sizeof(buf), "%s(", base);
-        for (int i = 0; i < tn->as.named.arg_count && pos < (int)sizeof(buf) - 2; i++)
+        MangleBuf nb; mangle_buf_init(&nb);
+        mangle_buf_append(&nb, base);
+        mangle_buf_append(&nb, "(");
+        for (int i = 0; i < tn->as.named.arg_count; i++)
         {
             Type *at = resolve_type_node(c, tn->as.named.args[i], line, col);
-            if (at == NULL) return NULL;
-            if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-            pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s", type_name(at));
+            if (at == NULL) { mangle_buf_free(&nb); return NULL; }
+            if (i > 0) mangle_buf_append(&nb, ",");
+            mangle_buf_append(&nb, type_name(at));
         }
-        snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
+        mangle_buf_append(&nb, ")");
+        char *buf = mangle_buf_take(&nb);
 
         /* Cache hit for already-instantiated type? */
         Type *st_cached = find_struct_type(c, buf);
-        if (st_cached) return st_cached;
+        if (st_cached) { free(buf); return st_cached; }
         Type *et = find_enum_type(c, buf);
-        if (et) return et;
+        if (et) { free(buf); return et; }
 
         /* B-4-for-generics: a bare generic name owned by 2+ imported modules is
            ambiguous — refuse to silently pick one. (Single-owner names are never
            marked, so the common case is unaffected.) */
         if (checker_type_is_ambiguous(c, base))
         {
+            free(buf);
             checker_error(c, line, col,
                 "generic type '%s' is defined in multiple imported modules; "
                 "qualify it as `mod.%s(...)` (note: using more than one "
@@ -3007,13 +3020,13 @@ Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
             for (int i = 0; i < n; i++)
             {
                 ta[i] = resolve_type_node(c, tn->as.named.args[i], line, col);
-                if (ta[i] == NULL) { free(ta); return NULL; }
+                if (ta[i] == NULL) { free(ta); free(buf); return NULL; }
                 if (checker_reject_borrow_type_arg(c, ta[i], base, line, col))
-                    { free(ta); return NULL; }
+                    { free(ta); free(buf); return NULL; }
             }
             Type *inst = checker_instantiate_struct(c, base, ta, n, line, col);
             free(ta);
-            if (inst) return inst;
+            if (inst) { free(buf); return inst; }
         }
 
         /* Try enum template instantiation (Option/Result, etc.). */
@@ -3028,17 +3041,19 @@ Type *resolve_type_node(Checker *c, TypeNode *tn, int line, int col)
                 for (int i = 0; i < n; i++)
                 {
                     ta[i] = resolve_type_node(c, tn->as.named.args[i], line, col);
-                    if (ta[i] == NULL) { free(ta); return NULL; }
+                    if (ta[i] == NULL) { free(ta); free(buf); return NULL; }
                     if (checker_reject_borrow_type_arg(c, ta[i], base, line, col))
-                        { free(ta); return NULL; }
+                        { free(ta); free(buf); return NULL; }
                 }
             }
             Type *inst = instantiate_template(c, tidx, ta, n, line, col);
             free(ta);
+            free(buf);
             return inst;
         }
 
         checker_error(c, line, col, "unknown generic type '%s'", buf);
+        free(buf);
         return NULL;
     }
     }
