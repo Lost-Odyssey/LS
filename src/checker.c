@@ -1586,29 +1586,35 @@ Type *checker_instantiate_struct(Checker *c,
 
     /* Build mangled name: "Pair(int,string)". Type args keyed via
        mangle_type_arg_name (F6b, module llvm_name preferred) — see its
-       header comment for the collision rationale. */
-    char buf[512];
-    int pos = snprintf(buf, sizeof(buf), "%s(", base_name);
-    for (int i = 0; i < type_arg_count && pos < (int)sizeof(buf) - 2; i++) {
-        if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "%s",
-                        mangle_type_arg_name(type_args[i]));
+       header comment for the collision rationale. MangleBuf (Task 2.2)
+       replaces the old fixed 512-byte buf — deep enough nesting could
+       previously truncate here (possibly at a different depth than the
+       enum-template path above), producing mismatched def/use symbols
+       instead of a clean error. */
+    MangleBuf nb; mangle_buf_init(&nb);
+    mangle_buf_append(&nb, base_name);
+    mangle_buf_append(&nb, "(");
+    for (int i = 0; i < type_arg_count; i++) {
+        if (i > 0) mangle_buf_append(&nb, ",");
+        mangle_append_type_arg(&nb, type_args[i]);
     }
-    snprintf(buf + pos, sizeof(buf) - (size_t)pos, ")");
+    mangle_buf_append(&nb, ")");
+    char *buf = mangle_buf_take(&nb);
 
     /* Cache hit? */
     Type *cached = find_struct_type(c, buf);
-    if (cached) return cached;
+    if (cached) { free(buf); return cached; }
 
     /* Instantiate: create new TYPE_STRUCT with concrete field types */
     AstNode *decl = c->struct_templates[tmpl_idx].decl_node;
     int fc = decl->as.struct_decl.field_count;
     char **tp_names = c->struct_templates[tmpl_idx].type_params;
 
-    /* Allocate mangled name (owned by the Type) */
-    size_t namelen = strlen(buf);
-    char *mangled = (char *)malloc_safe(namelen + 1);
-    memcpy(mangled, buf, namelen + 1);
+    /* Mangled name (owned by the Type): buf is already a malloc'd, right-
+       sized allocation courtesy of MangleBuf, so hand it off directly
+       instead of the old malloc_safe+memcpy duplicate that existed only
+       because the fixed stack buffer couldn't be owned by anything. */
+    char *mangled = buf;
 
     /* Pre-register empty shell to handle self-recursive generics */
     Type *st = type_struct(mangled, fc);
