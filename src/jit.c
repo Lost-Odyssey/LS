@@ -28,6 +28,13 @@
 #pragma warning(disable: 4210)
 #endif
 
+/* Capacity of the runtime-symbol map registered with the JIT below (see
+   REG() / jit_init). Sized with headroom above the current symbol count so
+   new REG() calls don't require a manual bump in the common case; the
+   REG() macro asserts this bound at registration time so an eventual
+   overflow fails loudly instead of corrupting memory. */
+#define JIT_MAX_RUNTIME_SYMS 192
+
 /* ls_os_perf_now and all ls_os_* symbols are defined in runtime/os_win32.c
    or runtime/os_posix.c, which are compiled into ls.exe via CMakeLists.txt.
    Forward-declare here so jit_init can register them as AbsoluteSymbols. */
@@ -257,162 +264,171 @@ int jit_init(JitEngine *engine) {
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
         (void)sp;
 
-/* helper macro — one line per symbol */
-#define REG(i, sym) do { \
-    pairs[i].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, #sym); \
-    pairs[i].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&sym; \
-    pairs[i].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported; \
-    pairs[i].Sym.Flags.TargetFlags = 0; \
+/* helper macro — one line per symbol; appends to pairs[] via running counter
+   reg_n (bounds-checked against JIT_MAX_RUNTIME_SYMS so a missed capacity
+   bump fails loudly instead of silently corrupting/overflowing the array). */
+#define REG(sym) do { \
+    if (reg_n >= JIT_MAX_RUNTIME_SYMS) { \
+        fprintf(stderr, "internal error: JIT runtime symbol table overflow " \
+                "(>%d); bump JIT_MAX_RUNTIME_SYMS in src/jit.c\n", JIT_MAX_RUNTIME_SYMS); \
+        exit(1); \
+    } \
+    pairs[reg_n].Name = LLVMOrcLLJITMangleAndIntern(engine->jit, #sym); \
+    pairs[reg_n].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)&sym; \
+    pairs[reg_n].Sym.Flags.GenericFlags = LLVMJITSymbolGenericFlagsExported; \
+    pairs[reg_n].Sym.Flags.TargetFlags = 0; \
+    reg_n++; \
 } while(0)
 
-        LLVMOrcCSymbolMapPair pairs[129];
-        /* 0-5: memcheck */
-        REG( 0, ls_mc_alloc);
-        REG( 1, ls_mc_free);
-        REG( 2, ls_mc_report);
-        REG( 3, ls_mc_realloc);
-        REG( 4, ls_mc_enter);
-        REG( 5, ls_mc_leave);
-        /* 6-8: profiler */
-        REG( 6, ls_prof_enter);
-        REG( 7, ls_prof_leave);
-        REG( 8, ls_prof_report);
-        /* 9-11: perf */
-        REG( 9, ls_os_perf_now);
-        REG(10, ls_os_perf_rdtsc);
-        REG(11, ls_os_perf_rdtscp);
-        /* 12-18: process execution */
-        REG(12, ls_os_exec_run);
-        REG(13, ls_os_exec_take_stdout);
-        REG(14, ls_os_exec_stdout_len);
-        REG(15, ls_os_exec_take_stderr);
-        REG(16, ls_os_exec_stderr_len);
-        REG(17, ls_os_exec_get_code);
-        REG(18, ls_os_exec_get_ok);
-        /* 19-23: popen/pid */
-        REG(19, ls_os_popen);
-        REG(20, ls_os_pread);
-        REG(21, ls_os_pclose);
-        REG(22, ls_os_pid);
-        REG(23, ls_os_wait_exit_code);
-        /* 24-26: file positioning */
-        REG(24, ls_os_fseek64);
-        REG(25, ls_os_ftell64);
-        REG(26, ls_os_unlink);
-        /* 27-32: environment */
-        REG(27, ls_os_getenv);
-        REG(28, ls_os_setenv);
-        REG(29, ls_os_unsetenv);
-        REG(30, ls_os_env_prepare);
-        REG(31, ls_os_env_count);
-        REG(32, ls_os_env_entry);
-        /* 33-35: directory listing */
-        REG(33, ls_os_listdir_prepare);
-        REG(34, ls_os_listdir_count);
-        REG(35, ls_os_listdir_entry);
-        /* 36-45: filesystem / path */
-        REG(36, ls_os_last_error);
-        REG(37, ls_os_path_exists);
-        REG(38, ls_os_path_is_dir);
-        REG(39, ls_os_path_is_file);
-        REG(40, ls_os_mkdir);
-        REG(41, ls_os_mkdir_all);
-        REG(42, ls_os_rmdir);
-        REG(43, ls_os_rename_path);
-        REG(44, ls_os_getcwd);
-        REG(45, ls_os_chdir);
-        /* 46-63: calendar time + sleep */
-        REG(46, ls_os_time_now_unix_ns);
-        REG(47, ls_os_time_now_unix_ms);
-        REG(48, ls_os_time_from_unix_local);
-        REG(49, ls_os_time_from_unix_utc);
-        REG(50, ls_os_time_get_year);
-        REG(51, ls_os_time_get_month);
-        REG(52, ls_os_time_get_day);
-        REG(53, ls_os_time_get_hour);
-        REG(54, ls_os_time_get_minute);
-        REG(55, ls_os_time_get_second);
-        REG(56, ls_os_time_get_weekday);
-        REG(57, ls_os_time_get_yday);
-        REG(58, ls_os_time_get_utcoff);
-        REG(59, ls_os_time_to_unix);
-        REG(60, ls_os_time_format);
-        REG(61, ls_os_time_parse);
-        REG(62, ls_os_sleep_ms);
-        REG(63, ls_os_sleep_us);
-        REG(64, __ls_get_argc);
-        REG(65, __ls_get_argv);
-        REG(66, __ls_proc_exit);
-        REG(67, __ls_readline_exec);
-        REG(68, __ls_readline_ok);
-        REG(69, __ls_readline_len);
-        REG(70, __ls_readline_take);
-        /* 71-72: strconv float helpers */
-        REG(71, __ls_float_fixed_exec);
-        REG(72, __ls_float_fixed_ptr);
-        REG(73, __ls_fstr_format);
-        REG(74, __ls_str_skip_ws);
-        REG(75, __ls_str_scan_plain);
-        REG(76, __ls_str_scan_digits);
-        /* 77-86: regex engine */
-        REG(77, __ls_regex_compile);
-        REG(78, __ls_regex_free);
-        REG(79, __ls_regex_last_error);
-        REG(80, __ls_regex_exec);
-        REG(81, __ls_regex_cap_start);
-        REG(82, __ls_regex_cap_len);
-        REG(83, __ls_regex_group_count);
-        REG(84, __ls_regex_named_count);
-        REG(85, __ls_regex_named_name);
-        REG(86, __ls_regex_named_index);
-        REG(87, __ls_readline_ptr);
-        REG(88, ls_os_exec_stdout_ptr);
-        REG(89, ls_os_exec_stderr_ptr);
-        REG(90, __ls_str_find);
-        REG(91, __ls_bytecopy);
-        REG(92, __ls_fxhash_bytes);
-        REG(93, ls_thread_spawn);
-        REG(94, ls_thread_join);
-        REG(95, ls_mutex_init);
-        REG(96, ls_mutex_lock);
-        REG(97, ls_mutex_trylock);
-        REG(98, ls_mutex_unlock);
-        REG(99, ls_mutex_destroy);
-        REG(100, ls_cpu_relax);
-        REG(101, ls_cpu_yield);
-        REG(102, __ls_cpu_count);
-        /* 103-109: byte-buffer integer loads (std.bytes) */
-        REG(103, __ls_load_u8);
-        REG(104, __ls_load_be_u16);
-        REG(105, __ls_load_be_u32);
-        REG(106, __ls_load_be_u64);
-        REG(107, __ls_load_le_u16);
-        REG(108, __ls_load_le_u32);
-        REG(109, __ls_load_le_u64);
-        /* 110-115: reader-writer locks (std.sync RwLock) */
-        REG(110, ls_rwlock_init);
-        REG(111, ls_rwlock_rdlock);
-        REG(112, ls_rwlock_wrlock);
-        REG(113, ls_rwlock_rdunlock);
-        REG(114, ls_rwlock_wrunlock);
-        REG(115, ls_rwlock_destroy);
-        REG(116, ls_cond_init);
-        REG(117, ls_cond_wait);
-        REG(118, ls_cond_signal);
-        REG(119, ls_cond_broadcast);
-        REG(120, ls_cond_destroy);
-        REG(121, __ls_ptr_at);
-        /* 122-126: std.core.sink — stream handles + print() redirect */
-        REG(122, __ls_stdout);
-        REG(123, __ls_stderr);
-        REG(124, __ls_sink_stream);
-        REG(125, __ls_sink_set);
-        REG(126, __ls_printf);
-        REG(127, __ls_cache_kb);
-        REG(128, __ls_cpu_has_avx512);
+        LLVMOrcCSymbolMapPair pairs[JIT_MAX_RUNTIME_SYMS];
+        int reg_n = 0;
+        /* memcheck */
+        REG(ls_mc_alloc);
+        REG(ls_mc_free);
+        REG(ls_mc_report);
+        REG(ls_mc_realloc);
+        REG(ls_mc_enter);
+        REG(ls_mc_leave);
+        /* profiler */
+        REG(ls_prof_enter);
+        REG(ls_prof_leave);
+        REG(ls_prof_report);
+        /* perf */
+        REG(ls_os_perf_now);
+        REG(ls_os_perf_rdtsc);
+        REG(ls_os_perf_rdtscp);
+        /* process execution */
+        REG(ls_os_exec_run);
+        REG(ls_os_exec_take_stdout);
+        REG(ls_os_exec_stdout_len);
+        REG(ls_os_exec_take_stderr);
+        REG(ls_os_exec_stderr_len);
+        REG(ls_os_exec_get_code);
+        REG(ls_os_exec_get_ok);
+        /* popen/pid */
+        REG(ls_os_popen);
+        REG(ls_os_pread);
+        REG(ls_os_pclose);
+        REG(ls_os_pid);
+        REG(ls_os_wait_exit_code);
+        /* file positioning */
+        REG(ls_os_fseek64);
+        REG(ls_os_ftell64);
+        REG(ls_os_unlink);
+        /* environment */
+        REG(ls_os_getenv);
+        REG(ls_os_setenv);
+        REG(ls_os_unsetenv);
+        REG(ls_os_env_prepare);
+        REG(ls_os_env_count);
+        REG(ls_os_env_entry);
+        /* directory listing */
+        REG(ls_os_listdir_prepare);
+        REG(ls_os_listdir_count);
+        REG(ls_os_listdir_entry);
+        /* filesystem / path */
+        REG(ls_os_last_error);
+        REG(ls_os_path_exists);
+        REG(ls_os_path_is_dir);
+        REG(ls_os_path_is_file);
+        REG(ls_os_mkdir);
+        REG(ls_os_mkdir_all);
+        REG(ls_os_rmdir);
+        REG(ls_os_rename_path);
+        REG(ls_os_getcwd);
+        REG(ls_os_chdir);
+        /* calendar time + sleep */
+        REG(ls_os_time_now_unix_ns);
+        REG(ls_os_time_now_unix_ms);
+        REG(ls_os_time_from_unix_local);
+        REG(ls_os_time_from_unix_utc);
+        REG(ls_os_time_get_year);
+        REG(ls_os_time_get_month);
+        REG(ls_os_time_get_day);
+        REG(ls_os_time_get_hour);
+        REG(ls_os_time_get_minute);
+        REG(ls_os_time_get_second);
+        REG(ls_os_time_get_weekday);
+        REG(ls_os_time_get_yday);
+        REG(ls_os_time_get_utcoff);
+        REG(ls_os_time_to_unix);
+        REG(ls_os_time_format);
+        REG(ls_os_time_parse);
+        REG(ls_os_sleep_ms);
+        REG(ls_os_sleep_us);
+        REG(__ls_get_argc);
+        REG(__ls_get_argv);
+        REG(__ls_proc_exit);
+        REG(__ls_readline_exec);
+        REG(__ls_readline_ok);
+        REG(__ls_readline_len);
+        REG(__ls_readline_take);
+        /* strconv float helpers */
+        REG(__ls_float_fixed_exec);
+        REG(__ls_float_fixed_ptr);
+        REG(__ls_fstr_format);
+        REG(__ls_str_skip_ws);
+        REG(__ls_str_scan_plain);
+        REG(__ls_str_scan_digits);
+        /* regex engine */
+        REG(__ls_regex_compile);
+        REG(__ls_regex_free);
+        REG(__ls_regex_last_error);
+        REG(__ls_regex_exec);
+        REG(__ls_regex_cap_start);
+        REG(__ls_regex_cap_len);
+        REG(__ls_regex_group_count);
+        REG(__ls_regex_named_count);
+        REG(__ls_regex_named_name);
+        REG(__ls_regex_named_index);
+        REG(__ls_readline_ptr);
+        REG(ls_os_exec_stdout_ptr);
+        REG(ls_os_exec_stderr_ptr);
+        REG(__ls_str_find);
+        REG(__ls_bytecopy);
+        REG(__ls_fxhash_bytes);
+        REG(ls_thread_spawn);
+        REG(ls_thread_join);
+        REG(ls_mutex_init);
+        REG(ls_mutex_lock);
+        REG(ls_mutex_trylock);
+        REG(ls_mutex_unlock);
+        REG(ls_mutex_destroy);
+        REG(ls_cpu_relax);
+        REG(ls_cpu_yield);
+        REG(__ls_cpu_count);
+        /* byte-buffer integer loads (std.bytes) */
+        REG(__ls_load_u8);
+        REG(__ls_load_be_u16);
+        REG(__ls_load_be_u32);
+        REG(__ls_load_be_u64);
+        REG(__ls_load_le_u16);
+        REG(__ls_load_le_u32);
+        REG(__ls_load_le_u64);
+        /* reader-writer locks (std.sync RwLock) */
+        REG(ls_rwlock_init);
+        REG(ls_rwlock_rdlock);
+        REG(ls_rwlock_wrlock);
+        REG(ls_rwlock_rdunlock);
+        REG(ls_rwlock_wrunlock);
+        REG(ls_rwlock_destroy);
+        REG(ls_cond_init);
+        REG(ls_cond_wait);
+        REG(ls_cond_signal);
+        REG(ls_cond_broadcast);
+        REG(ls_cond_destroy);
+        REG(__ls_ptr_at);
+        /* std.core.sink — stream handles + print() redirect */
+        REG(__ls_stdout);
+        REG(__ls_stderr);
+        REG(__ls_sink_stream);
+        REG(__ls_sink_set);
+        REG(__ls_printf);
+        REG(__ls_cache_kb);
+        REG(__ls_cpu_has_avx512);
 #undef REG
 
-        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, 129);
+        LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(pairs, reg_n);
         LLVMErrorRef e2 = LLVMOrcJITDylibDefine(engine->main_dylib, mu);
         if (handle_error(e2)) {
             /* Non-fatal; stdlib JIT calls won't resolve but other runs will. */
