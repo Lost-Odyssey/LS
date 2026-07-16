@@ -31,6 +31,7 @@ static bool check_call_instance_method(Checker *c, AstNode *node,
                                         const char *method_name,
                                         Type **out_callee_type);
 static bool check_call_generic_free_fn(Checker *c, AstNode *node, Type **out_result);
+static Type *check_call_arguments(Checker *c, AstNode *node, Type *callee_type, int self_offset);
 static bool check_method_where_bounds(Checker *c, AstNode *method, const char *qualified_name, char **tp_names, Type **type_args, int tp_count);
 static void check_pass(Checker *c, AstNode *program);
 static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
@@ -4873,6 +4874,244 @@ static bool check_call_generic_free_fn(Checker *c, AstNode *node, Type **out_res
     return true;
 }
 
+/* Shared call-site validation tail, run once callee_type has been resolved
+   by any of the call forms above (instance/static method, generic free
+   function, variant ctor, or a plain callee expression): non-function-type
+   rejection, arity checking (vararg / param-defaults min_required), per-arg
+   type checking (with the §13 `&x` auto-borrow shell strip and the
+   from-list-literal tag), vararg arg resolution (with the C-2 Show-struct
+   print rewrite), trailing param-default expansion, and the Phase 5.5 Step 4
+   writable-borrow aliasing check. self_offset is 1 for an instance method
+   call (implicit self occupies params[0]) and 0 otherwise — mirrors the
+   original inline `is_method_call ? 1 : 0`. Returns the call's result type,
+   or NULL on any checked error (matching the original 'result = ...; break;'
+   at the end of check_expr_call's do-while — the caller here does exactly
+   that with this function's return value). */
+static Type *check_call_arguments(Checker *c, AstNode *node, Type *callee_type, int self_offset)
+{
+    /* Phase B: Block-typed callees use the same param/return layout as
+       TYPE_FUNCTION (the only difference is ABI — codegen lowers as an
+       indirect call through a fat pointer). The arity / arg-type checks
+       below treat both kinds identically. */
+    if (callee_type->kind != TYPE_FUNCTION &&
+        callee_type->kind != TYPE_BLOCK)
+    {
+        checker_error(c, node->line, node->column,
+                      "cannot call non-function type '%s'", type_name(callee_type));
+        return NULL;
+    }
+
+    int expected = callee_type->as.function.param_count;
+    int actual = node->as.call.arg_count;
+
+    /* For instance method calls, the first param is the implicit self pointer.
+       The user provides (expected - 1) arguments. */
+    int user_expected = expected - self_offset;
+    int param_offset = self_offset;
+
+    /* Special case: print() requires at least 1 argument */
+    if (callee_type->as.function.is_vararg && user_expected == 0 && actual == 0 && node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "@print") == 0)
+    {
+        checker_error(c, node->line, node->column,
+                      "@print() requires at least 1 argument");
+        return NULL;
+    }
+
+    if (callee_type->as.function.is_vararg)
+    {
+        if (actual < user_expected)
+        {
+            checker_error(c, node->line, node->column,
+                          "too few arguments: expected at least %d, got %d", user_expected, actual);
+            return NULL;
+        }
+    }
+    else
+    {
+        /* Param defaults (档1): trailing params with a default may be omitted.
+           min_required = count of user params without a default. */
+        int min_required = user_expected;
+        if (callee_type->as.function.param_defaults)
+        {
+            min_required = 0;
+            for (int i = param_offset; i < expected; i++)
+                if (callee_type->as.function.param_defaults[i] == NULL)
+                    min_required++;
+        }
+        if (actual < min_required || actual > user_expected)
+        {
+            if (min_required == user_expected)
+                checker_error(c, node->line, node->column,
+                              "wrong number of arguments: expected %d, got %d",
+                              user_expected, actual);
+            else
+                checker_error(c, node->line, node->column,
+                              "wrong number of arguments: expected %d..%d, got %d",
+                              min_required, user_expected, actual);
+            return NULL;
+        }
+    }
+
+    /* Check argument types for non-vararg params (skip self param for instance methods) */
+    bool args_ok = true;
+
+    /* LS uses clone semantics: struct/string arguments are deep-copied on every call.
+       No move tracking needed — the caller retains ownership of its variables. */
+    for (int i = 0; i < user_expected && i < actual; i++)
+    {
+        /* Phase B closure: propagate the declared param type as expected_type
+           so a Ruby-style closure literal (`|x| body`) at this position can
+           infer its untyped params from the callee's `Block(...)` signature. */
+        Type *param_type = callee_type->as.function.params[i + param_offset];
+        /* §13: explicit `&x` / `&obj.field` argument to a read-only `&T`
+           parameter — strip the address-of shell so the call takes the
+           proven auto-borrow path (identical to passing the lvalue bare).
+           Without this, `&x` types as a raw `*T` and mismatches the `&T`
+           formal. A field operand (`&self.value`) is the read-only twin of
+           the `&!self.value` field borrow (AST_MUT_BORROW) — it lends a
+           read-only `&T` of the field, zero-copy. Writable borrows stay
+           explicit `&!x` (AST_MUT_BORROW — untouched here). */
+        {
+            AstNode *argn = node->as.call.args[i];
+            if (param_type && param_type->kind == TYPE_REFERENCE &&
+                !param_type->is_mut &&
+                argn->kind == AST_UNARY && argn->as.unary.op == TOKEN_AMP &&
+                (argn->as.unary.operand->kind == AST_IDENT ||
+                 argn->as.unary.operand->kind == AST_FIELD ||
+                 argn->as.unary.operand->kind == AST_INDEX))
+            {
+                /* shell intentionally leaked, same as the index-protocol rewrite */
+                node->as.call.args[i] = argn->as.unary.operand;
+            }
+        }
+        /* Array-literal argument to a user-container param (Vec etc. with
+           __from_list): tag it so codegen emits the from_list value, just
+           like the var-decl / struct-field positions. Lets `f(["a","b"])`
+           work where f takes Vec(Str), not only `Vec(Str) v=[..]; f(v)`.
+           Self-guarded: no-op unless param is a from_list struct and the
+           arg is an array literal. */
+        checker_tag_user_from_list_literal(c, param_type,
+            node->as.call.args[i], "argument list-literal");
+        Type *saved_exp = c->expected_type;
+        c->expected_type = param_type;
+        Type *arg_type = check_expr(c, node->as.call.args[i]);
+        c->expected_type = saved_exp;
+        if (arg_type == NULL)
+        {
+            args_ok = false;
+            continue;
+        }
+        if (!type_assignable(param_type, arg_type))
+        {
+            checker_error(c, node->as.call.args[i]->line, node->as.call.args[i]->column,
+                          "argument %d: expected '%s', got '%s'",
+                          i + 1,
+                          type_name(param_type),
+                          type_name(arg_type));
+            args_ok = false;
+        }
+    }
+    /* Check vararg args (just resolve types, no checking) */
+    bool is_print_call = node->as.call.callee->kind == AST_IDENT &&
+                         strcmp(node->as.call.callee->as.ident.name, "@print") == 0;
+    for (int i = user_expected; i < actual; i++)
+    {
+        Type *at = check_expr(c, node->as.call.args[i]);
+        /* C-2: print(x) for a Show struct/enum renders via Show — rewrite the
+           arg to to_str(x) (Str), which print prints as raw text. */
+        if (is_print_call && type_is_show_aggregate(c, at))
+        {
+            wrap_arg_in_to_str(&node->as.call.args[i]);
+            check_expr(c, node->as.call.args[i]);
+        }
+    }
+
+    /* Param defaults (档1): append cloned default exprs for omitted trailing
+       params so codegen sees a complete arg list (no codegen changes).
+       Idempotent: after appending, arg_count == user_expected. */
+    if (args_ok && callee_type->as.function.param_defaults && actual < user_expected)
+    {
+        node->as.call.args = (AstNode **)realloc_safe(
+            node->as.call.args, (size_t)user_expected * sizeof(AstNode *));
+        for (int i = actual; i < user_expected; i++)
+        {
+            AstNode *pd = (AstNode *)callee_type->as.function.param_defaults[i + param_offset];
+            AstNode *clone = ast_clone_deep(pd);
+            Type *pt = callee_type->as.function.params[i + param_offset];
+            Type *se = c->expected_type;
+            if (pt && (pt->kind == TYPE_STRUCT || pt->kind == TYPE_BLOCK))
+                c->expected_type = pt;
+            check_expr(c, clone);
+            c->expected_type = se;
+            node->as.call.args[i] = clone;
+        }
+        node->as.call.arg_count = user_expected;
+        actual = user_expected;
+    }
+
+    /* Phase 5.5 Step 4 — call-site aliasing check for writable borrows.
+       Forbid passing the same variable in any of these conflicting combinations
+       at a single call:
+         f(&!x, &!x)   — two writable aliases
+         f(&!x, x)     — writable + read-only auto-borrow (x -> &string param)
+         f(&!x, &x)    — same, with explicit & (rare)
+       Only check pairs where at least one side is a writable borrow. */
+    if (args_ok)
+    {
+        int n = user_expected < actual ? user_expected : actual;
+        for (int i = 0; i < n; i++)
+        {
+            AstNode *ai = node->as.call.args[i];
+            if (ai == NULL || ai->kind != AST_MUT_BORROW) continue;
+            AstNode *op_i = ai->as.mut_borrow.operand;
+            if (op_i == NULL || op_i->kind != AST_IDENT) continue;
+            const char *name_i = op_i->as.ident.name;
+
+            for (int j = i + 1; j < n; j++)
+            {
+                AstNode *aj = node->as.call.args[j];
+                if (aj == NULL) continue;
+
+                const char *name_j = NULL;
+                const char *j_kind = NULL;
+                if (aj->kind == AST_MUT_BORROW &&
+                    aj->as.mut_borrow.operand &&
+                    aj->as.mut_borrow.operand->kind == AST_IDENT)
+                {
+                    name_j = aj->as.mut_borrow.operand->as.ident.name;
+                    j_kind = "another writable borrow";
+                }
+                else if (aj->kind == AST_IDENT)
+                {
+                    /* Only flag when the other arg binds to a parameter that
+                       shares state (&T/&!T, or string-by-value which clones
+                       at runtime — BUT cloning happens AFTER the writable
+                       borrow is already holding the pointer; ordering of
+                       eval is left-to-right so later by-value clone would
+                       see a possibly-mutated snapshot, which is confusing.
+                       Conservatively flag TYPE_REFERENCE on the other side. */
+                    Type *pj = callee_type->as.function.params[j + param_offset];
+                    if (pj && pj->kind == TYPE_REFERENCE)
+                    {
+                        name_j = aj->as.ident.name;
+                        j_kind = "read-only borrow";
+                    }
+                }
+                if (name_j && strcmp(name_i, name_j) == 0)
+                {
+                    checker_error(c, aj->line, aj->column,
+                                  "variable '%s' is already passed as writable borrow "
+                                  "at argument %d; cannot also pass as %s here",
+                                  name_i, i + 1, j_kind);
+                    args_ok = false;
+                }
+            }
+        }
+    }
+
+    return args_ok ? callee_type->as.function.return_type : NULL;
+}
+
 static Type *check_expr_call(Checker *c, AstNode *node)
 {
     Type *result = NULL;
@@ -5331,231 +5570,10 @@ static Type *check_expr_call(Checker *c, AstNode *node)
             break;
         }
 
-        /* Phase B: Block-typed callees use the same param/return layout as
-           TYPE_FUNCTION (the only difference is ABI — codegen lowers as an
-           indirect call through a fat pointer). The arity / arg-type checks
-           below treat both kinds identically. */
-        if (callee_type->kind != TYPE_FUNCTION &&
-            callee_type->kind != TYPE_BLOCK)
-        {
-            checker_error(c, node->line, node->column,
-                          "cannot call non-function type '%s'", type_name(callee_type));
-            result = NULL;
-            break;
-        }
-
-        int expected = callee_type->as.function.param_count;
-        int actual = node->as.call.arg_count;
-
-        /* For instance method calls, the first param is the implicit self pointer.
-           The user provides (expected - 1) arguments. */
-        int user_expected = is_method_call ? expected - 1 : expected;
-        int param_offset = is_method_call ? 1 : 0;
-
-        /* Special case: print() requires at least 1 argument */
-        if (callee_type->as.function.is_vararg && user_expected == 0 && actual == 0 && node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "@print") == 0)
-        {
-            checker_error(c, node->line, node->column,
-                          "@print() requires at least 1 argument");
-            result = NULL;
-            break;
-        }
-
-        if (callee_type->as.function.is_vararg)
-        {
-            if (actual < user_expected)
-            {
-                checker_error(c, node->line, node->column,
-                              "too few arguments: expected at least %d, got %d", user_expected, actual);
-                result = NULL;
-                break;
-            }
-        }
-        else
-        {
-            /* Param defaults (档1): trailing params with a default may be omitted.
-               min_required = count of user params without a default. */
-            int min_required = user_expected;
-            if (callee_type->as.function.param_defaults)
-            {
-                min_required = 0;
-                for (int i = param_offset; i < expected; i++)
-                    if (callee_type->as.function.param_defaults[i] == NULL)
-                        min_required++;
-            }
-            if (actual < min_required || actual > user_expected)
-            {
-                if (min_required == user_expected)
-                    checker_error(c, node->line, node->column,
-                                  "wrong number of arguments: expected %d, got %d",
-                                  user_expected, actual);
-                else
-                    checker_error(c, node->line, node->column,
-                                  "wrong number of arguments: expected %d..%d, got %d",
-                                  min_required, user_expected, actual);
-                result = NULL;
-                break;
-            }
-        }
-
-        /* Check argument types for non-vararg params (skip self param for instance methods) */
-        bool args_ok = true;
-
-        /* LS uses clone semantics: struct/string arguments are deep-copied on every call.
-           No move tracking needed — the caller retains ownership of its variables. */
-        for (int i = 0; i < user_expected && i < actual; i++)
-        {
-            /* Phase B closure: propagate the declared param type as expected_type
-               so a Ruby-style closure literal (`|x| body`) at this position can
-               infer its untyped params from the callee's `Block(...)` signature. */
-            Type *param_type = callee_type->as.function.params[i + param_offset];
-            /* §13: explicit `&x` / `&obj.field` argument to a read-only `&T`
-               parameter — strip the address-of shell so the call takes the
-               proven auto-borrow path (identical to passing the lvalue bare).
-               Without this, `&x` types as a raw `*T` and mismatches the `&T`
-               formal. A field operand (`&self.value`) is the read-only twin of
-               the `&!self.value` field borrow (AST_MUT_BORROW) — it lends a
-               read-only `&T` of the field, zero-copy. Writable borrows stay
-               explicit `&!x` (AST_MUT_BORROW — untouched here). */
-            {
-                AstNode *argn = node->as.call.args[i];
-                if (param_type && param_type->kind == TYPE_REFERENCE &&
-                    !param_type->is_mut &&
-                    argn->kind == AST_UNARY && argn->as.unary.op == TOKEN_AMP &&
-                    (argn->as.unary.operand->kind == AST_IDENT ||
-                     argn->as.unary.operand->kind == AST_FIELD ||
-                     argn->as.unary.operand->kind == AST_INDEX))
-                {
-                    /* shell intentionally leaked, same as the index-protocol rewrite */
-                    node->as.call.args[i] = argn->as.unary.operand;
-                }
-            }
-            /* Array-literal argument to a user-container param (Vec etc. with
-               __from_list): tag it so codegen emits the from_list value, just
-               like the var-decl / struct-field positions. Lets `f(["a","b"])`
-               work where f takes Vec(Str), not only `Vec(Str) v=[..]; f(v)`.
-               Self-guarded: no-op unless param is a from_list struct and the
-               arg is an array literal. */
-            checker_tag_user_from_list_literal(c, param_type,
-                node->as.call.args[i], "argument list-literal");
-            Type *saved_exp = c->expected_type;
-            c->expected_type = param_type;
-            Type *arg_type = check_expr(c, node->as.call.args[i]);
-            c->expected_type = saved_exp;
-            if (arg_type == NULL)
-            {
-                args_ok = false;
-                continue;
-            }
-            if (!type_assignable(param_type, arg_type))
-            {
-                checker_error(c, node->as.call.args[i]->line, node->as.call.args[i]->column,
-                              "argument %d: expected '%s', got '%s'",
-                              i + 1,
-                              type_name(param_type),
-                              type_name(arg_type));
-                args_ok = false;
-            }
-        }
-        /* Check vararg args (just resolve types, no checking) */
-        bool is_print_call = node->as.call.callee->kind == AST_IDENT &&
-                             strcmp(node->as.call.callee->as.ident.name, "@print") == 0;
-        for (int i = user_expected; i < actual; i++)
-        {
-            Type *at = check_expr(c, node->as.call.args[i]);
-            /* C-2: print(x) for a Show struct/enum renders via Show — rewrite the
-               arg to to_str(x) (Str), which print prints as raw text. */
-            if (is_print_call && type_is_show_aggregate(c, at))
-            {
-                wrap_arg_in_to_str(&node->as.call.args[i]);
-                check_expr(c, node->as.call.args[i]);
-            }
-        }
-
-        /* Param defaults (档1): append cloned default exprs for omitted trailing
-           params so codegen sees a complete arg list (no codegen changes).
-           Idempotent: after appending, arg_count == user_expected. */
-        if (args_ok && callee_type->as.function.param_defaults && actual < user_expected)
-        {
-            node->as.call.args = (AstNode **)realloc_safe(
-                node->as.call.args, (size_t)user_expected * sizeof(AstNode *));
-            for (int i = actual; i < user_expected; i++)
-            {
-                AstNode *pd = (AstNode *)callee_type->as.function.param_defaults[i + param_offset];
-                AstNode *clone = ast_clone_deep(pd);
-                Type *pt = callee_type->as.function.params[i + param_offset];
-                Type *se = c->expected_type;
-                if (pt && (pt->kind == TYPE_STRUCT || pt->kind == TYPE_BLOCK))
-                    c->expected_type = pt;
-                check_expr(c, clone);
-                c->expected_type = se;
-                node->as.call.args[i] = clone;
-            }
-            node->as.call.arg_count = user_expected;
-            actual = user_expected;
-        }
-
-        /* Phase 5.5 Step 4 — call-site aliasing check for writable borrows.
-           Forbid passing the same variable in any of these conflicting combinations
-           at a single call:
-             f(&!x, &!x)   — two writable aliases
-             f(&!x, x)     — writable + read-only auto-borrow (x -> &string param)
-             f(&!x, &x)    — same, with explicit & (rare)
-           Only check pairs where at least one side is a writable borrow. */
-        if (args_ok)
-        {
-            int n = user_expected < actual ? user_expected : actual;
-            for (int i = 0; i < n; i++)
-            {
-                AstNode *ai = node->as.call.args[i];
-                if (ai == NULL || ai->kind != AST_MUT_BORROW) continue;
-                AstNode *op_i = ai->as.mut_borrow.operand;
-                if (op_i == NULL || op_i->kind != AST_IDENT) continue;
-                const char *name_i = op_i->as.ident.name;
-
-                for (int j = i + 1; j < n; j++)
-                {
-                    AstNode *aj = node->as.call.args[j];
-                    if (aj == NULL) continue;
-
-                    const char *name_j = NULL;
-                    const char *j_kind = NULL;
-                    if (aj->kind == AST_MUT_BORROW &&
-                        aj->as.mut_borrow.operand &&
-                        aj->as.mut_borrow.operand->kind == AST_IDENT)
-                    {
-                        name_j = aj->as.mut_borrow.operand->as.ident.name;
-                        j_kind = "another writable borrow";
-                    }
-                    else if (aj->kind == AST_IDENT)
-                    {
-                        /* Only flag when the other arg binds to a parameter that
-                           shares state (&T/&!T, or string-by-value which clones
-                           at runtime — BUT cloning happens AFTER the writable
-                           borrow is already holding the pointer; ordering of
-                           eval is left-to-right so later by-value clone would
-                           see a possibly-mutated snapshot, which is confusing.
-                           Conservatively flag TYPE_REFERENCE on the other side. */
-                        Type *pj = callee_type->as.function.params[j + param_offset];
-                        if (pj && pj->kind == TYPE_REFERENCE)
-                        {
-                            name_j = aj->as.ident.name;
-                            j_kind = "read-only borrow";
-                        }
-                    }
-                    if (name_j && strcmp(name_i, name_j) == 0)
-                    {
-                        checker_error(c, aj->line, aj->column,
-                                      "variable '%s' is already passed as writable borrow "
-                                      "at argument %d; cannot also pass as %s here",
-                                      name_i, i + 1, j_kind);
-                        args_ok = false;
-                    }
-                }
-            }
-        }
-
-        result = args_ok ? callee_type->as.function.return_type : NULL;
+        /* Shared call-site validation tail (arity, per-arg types, varargs,
+           param defaults, writable-borrow aliasing) — see
+           check_call_arguments. */
+        result = check_call_arguments(c, node, callee_type, is_method_call ? 1 : 0);
         break;
     } while (0);
     return result;
