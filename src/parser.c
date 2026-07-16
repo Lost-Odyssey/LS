@@ -1,5 +1,11 @@
-/* parser.c — Pratt parser: token stream -> AST */
-#include "parser.h"
+/* parser.c — Pratt parser: token stream -> AST. Core TU: token-stream
+   primitives, error reporting, AST/TypeNode allocation, the three
+   depth-guarded recursive entry points, and the top-level parse() entry
+   point. The Pratt expression parser, type parser, declaration parsers and
+   statement parsers live in parser_expr.c/parser_type.c/parser_decl.c/
+   parser_stmt.c respectively (see parser_internal.h for the roster and the
+   cross-TU surface). */
+#include "parser_internal.h"
 #include "common.h"
 #include "diag.h"
 #include <stdio.h>
@@ -11,7 +17,7 @@
 /* ---- Helpers ---- */
 
 /* str_dup_n: portable strndup replacement */
-static char *str_dup_n(const char *s, int len) {
+char *str_dup_n(const char *s, int len) {
     char *r = (char *)malloc_safe((size_t)len + 1);
     memcpy(r, s, (size_t)len);
     r[len] = '\0';
@@ -19,7 +25,7 @@ static char *str_dup_n(const char *s, int len) {
 }
 
 /* Allocate a new AstNode with zero-init */
-static AstNode *new_node(AstNodeType kind, int line, int col) {
+AstNode *new_node(AstNodeType kind, int line, int col) {
     AstNode *n = (AstNode *)malloc_safe(sizeof(AstNode));
     memset(n, 0, sizeof(AstNode));
     n->kind = kind;
@@ -29,7 +35,7 @@ static AstNode *new_node(AstNodeType kind, int line, int col) {
 }
 
 /* Allocate a new TypeNode with zero-init */
-static TypeNode *new_type_node(TypeNodeKind kind, int line, int col) {
+TypeNode *new_type_node(TypeNodeKind kind, int line, int col) {
     TypeNode *t = (TypeNode *)malloc_safe(sizeof(TypeNode));
     memset(t, 0, sizeof(TypeNode));
     t->kind = kind;
@@ -60,11 +66,11 @@ static void error_at(Parser *p, Token *tok, const char *msg) {
                tok->length > 0 ? tok->length : 1, NULL, "%s", msg);
 }
 
-static void error_at_current(Parser *p, const char *msg) {
+void error_at_current(Parser *p, const char *msg) {
     error_at(p, &p->current, msg);
 }
 
-static void error_at_previous(Parser *p, const char *msg) {
+void error_at_previous(Parser *p, const char *msg) {
     error_at(p, &p->previous, msg);
 }
 
@@ -74,7 +80,7 @@ static void error_at_previous(Parser *p, const char *msg) {
    suppress — and setting panic_mode here would swallow every later error
    because no synchronize() ever runs when the statement parses fine. Still
    suppressed while already panicking from a real syntax error. */
-static void error_at_previous_no_panic(Parser *p, const char *msg) {
+void error_at_previous_no_panic(Parser *p, const char *msg) {
     if (p->panic_mode) return;
     p->had_error = true;
     if (p->error_count >= LS_MAX_PARSE_ERRORS) {
@@ -89,7 +95,7 @@ static void error_at_previous_no_panic(Parser *p, const char *msg) {
 }
 
 /* Advance scanner: previous = current, current = next token */
-static void advance(Parser *p) {
+void advance(Parser *p) {
     p->previous = p->current;
     for (;;) {
         p->current = scanner_next(&p->scanner);
@@ -103,7 +109,7 @@ static void advance(Parser *p) {
 }
 
 /* Consume current if it matches type, else error */
-static bool consume(Parser *p, TokenType type, const char *msg) {
+bool consume(Parser *p, TokenType type, const char *msg) {
     if (p->current.type == type) {
         advance(p);
         return true;
@@ -113,26 +119,26 @@ static bool consume(Parser *p, TokenType type, const char *msg) {
 }
 
 /* Check current token type without consuming */
-static bool check(Parser *p, TokenType type) {
+bool check(Parser *p, TokenType type) {
     return p->current.type == type;
 }
 
 /* Consume if matches, return true if matched */
-static bool match_tok(Parser *p, TokenType type) {
+bool match_tok(Parser *p, TokenType type) {
     if (!check(p, type)) return false;
     advance(p);
     return true;
 }
 
 /* Skip any semicolons (optional statement terminator) */
-static void skip_semicolons(Parser *p) {
+void skip_semicolons(Parser *p) {
     while (p->current.type == TOKEN_SEMICOLON) {
         advance(p);
     }
 }
 
 /* Synchronize after error: advance to next statement boundary */
-static void synchronize(Parser *p) {
+void synchronize(Parser *p) {
     p->panic_mode = false;
     while (p->current.type != TOKEN_EOF) {
         if (p->previous.type == TOKEN_SEMICOLON) return;
@@ -168,7 +174,7 @@ static void synchronize(Parser *p) {
    loops: `struct P return`, `methods C if`). If synchronize made no progress
    and we are not sitting on a body terminator, skip one token so the enclosing
    loop always advances toward `}` / EOF. */
-static void recover_in_body(Parser *p) {
+void recover_in_body(Parser *p) {
     const char *before = p->current.start;
     synchronize(p);
     if (p->current.start == before &&
@@ -181,7 +187,7 @@ static void recover_in_body(Parser *p) {
 /* ---- String Literal Processing ---- */
 
 /* Process escape sequences in a string token (strips quotes) */
-static char *process_string_token(const char *start, int length) {
+char *process_string_token(const char *start, int length) {
     /* length includes surrounding quotes */
     /* result buffer: at most (length - 2) chars + NUL */
     int max_len = length - 2;
@@ -225,40 +231,12 @@ static char *process_string_token(const char *start, int length) {
     return result;
 }
 
-/* ---- Forward declarations ---- */
-
-typedef AstNode *(*PrefixFn)(Parser *p);
-typedef AstNode *(*InfixFn)(Parser *p, AstNode *left);
-
-typedef enum {
-    PREC_NONE = 0,
-    PREC_ASSIGNMENT,  /* = += -= *= /= (right-assoc) */
-    PREC_OR,          /* || */
-    PREC_AND,         /* && */
-    PREC_EQUALITY,    /* == != */
-    PREC_COMPARISON,  /* < > <= >= */
-    PREC_BITOR,       /* | */
-    PREC_BITXOR,      /* ^ */
-    PREC_BITAND,      /* & */
-    PREC_SHIFT,       /* << >> */
-    PREC_TERM,        /* + - */
-    PREC_FACTOR,      /* * / % */
-    PREC_UNARY,       /* ! - ~ * & (prefix) */
-    PREC_CALL,        /* . () [] as */
-    PREC_PRIMARY,
-} Precedence;
-
-typedef struct {
-    PrefixFn prefix;
-    InfixFn  infix;
-    Precedence precedence;
-} ParseRule;
-
-static AstNode *parse_expr_prec(Parser *p, Precedence min_prec);
-static AstNode *parse_statement(Parser *p);
-static AstNode *parse_block(Parser *p);
-static TypeNode *parse_type(Parser *p);
-static bool is_type_keyword(TokenType t);
+/* ---- Forward declarations ----
+   Precedence lives in parser_internal.h now (needed by every TU that calls
+   parse_expr_prec). parse_expr_prec/parse_statement/parse_block/parse_type/
+   is_type_keyword are declared there too (non-static, cross-TU) — no local
+   forward decl needed. PrefixFn/InfixFn/ParseRule are parser_expr.c-only
+   and are declared there, next to the rules[] table that uses them. */
 
 /* ---- Recursion depth guard --------------------------------------------
    Hard cap on nested expression/type/block recursion so pathological
@@ -274,9 +252,9 @@ static bool is_type_keyword(TokenType t);
    on it never returning NULL. */
 #define LS_MAX_PARSE_DEPTH 256
 
-static AstNode *parse_expr_prec_inner(Parser *p, Precedence min_prec);
-static AstNode *parse_block_inner(Parser *p);
-static TypeNode *parse_type_inner(Parser *p);
+/* parse_expr_prec_inner [def: parser_expr.c] / parse_block_inner
+   [def: parser_stmt.c] / parse_type_inner [def: parser_type.c] are declared
+   in parser_internal.h. */
 
 static bool parse_depth_enter(Parser *p) {
     if (p->depth >= LS_MAX_PARSE_DEPTH) {
@@ -287,21 +265,21 @@ static bool parse_depth_enter(Parser *p) {
     return true;
 }
 
-static AstNode *parse_expr_prec(Parser *p, Precedence min_prec) {
+AstNode *parse_expr_prec(Parser *p, Precedence min_prec) {
     if (!parse_depth_enter(p)) return NULL;
     AstNode *r = parse_expr_prec_inner(p, min_prec);
     p->depth--;
     return r;
 }
 
-static TypeNode *parse_type(Parser *p) {
+TypeNode *parse_type(Parser *p) {
     if (!parse_depth_enter(p)) return NULL;
     TypeNode *r = parse_type_inner(p);
     p->depth--;
     return r;
 }
 
-static AstNode *parse_block(Parser *p) {
+AstNode *parse_block(Parser *p) {
     if (!parse_depth_enter(p)) {
         /* Consume tokens up to a sync point so the enclosing statement
            loop cannot spin on the same '{' forever, then yield an empty
@@ -1305,6 +1283,18 @@ static AstNode *prefix_symbol(Parser *p) {
 
 /* ---- Infix parse functions ---- */
 
+/* PrefixFn/InfixFn/ParseRule: local to the Pratt rule table below (and the
+   `prefix_*`/`infix_*` handlers above it) — not part of the cross-TU
+   surface, so they live here rather than in parser_internal.h. */
+typedef AstNode *(*PrefixFn)(Parser *p);
+typedef AstNode *(*InfixFn)(Parser *p, AstNode *left);
+
+typedef struct {
+    PrefixFn prefix;
+    InfixFn  infix;
+    Precedence precedence;
+} ParseRule;
+
 static const ParseRule *get_rule(TokenType type);
 
 static AstNode *infix_binary_real(Parser *p, AstNode *left) {
@@ -2041,7 +2031,7 @@ static const ParseRule *get_rule(TokenType type) {
 
 /* ---- Core expression parser ---- */
 
-static AstNode *parse_expr_prec_inner(Parser *p, Precedence min_prec) {
+AstNode *parse_expr_prec_inner(Parser *p, Precedence min_prec) {
     /* Capture and clear the statement-boundary flag: only this top-level call
        may split a trailing `*Ident Ident` into a pointer declaration. Nested
        sub-expressions (initializers, args, parens) must read it as multiplication. */
@@ -2138,7 +2128,7 @@ static AstNode *parse_expr_prec_inner(Parser *p, Precedence min_prec) {
 
 /* ---- Type Parser ---- */
 
-static bool is_type_keyword(TokenType t) {
+bool is_type_keyword(TokenType t) {
     switch (t) {
     case TOKEN_TYPE_INT: case TOKEN_TYPE_I8:  case TOKEN_TYPE_I16:
     case TOKEN_TYPE_I32: case TOKEN_TYPE_I64: case TOKEN_TYPE_U8:
@@ -2156,7 +2146,7 @@ static bool is_type_keyword(TokenType t) {
     }
 }
 
-static TypeNode *parse_type_inner(Parser *p) {
+TypeNode *parse_type_inner(Parser *p) {
     int line = p->current.line;
     int col  = p->current.column;
 
@@ -2439,7 +2429,7 @@ static TypeNode *parse_type_inner(Parser *p) {
 /* ---- starts_var_decl heuristic ---- */
 
 /* Returns true if the current token stream looks like a variable declaration */
-static bool starts_var_decl(Parser *p) {
+bool starts_var_decl(Parser *p) {
     TokenType cur = p->current.type;
 
     /* Direct built-in type keyword */
@@ -2647,7 +2637,7 @@ static bool starts_var_decl(Parser *p) {
 
 /* ---- Statement parsers ---- */
 
-static AstNode *parse_var_decl(Parser *p) {
+AstNode *parse_var_decl(Parser *p) {
     int line = p->current.line;
     int col  = p->current.column;
     TypeNode *var_type = parse_type(p);
@@ -2940,7 +2930,7 @@ static WhereBound *parse_where_bounds(Parser *p, int *out_count) {
    an operator token is accepted as the method name and canonicalized to its
    $op_* internal name. Elsewhere only TOKEN_IDENTIFIER is a valid name, so
    top-level `fn +` and symbol names in plain `impl`/`trait` bodies are rejected. */
-static AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
+AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
     /* 'fn' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3177,7 +3167,7 @@ static bool is_literal_default(const AstNode *e) {
     }
 }
 
-static AstNode *parse_struct_decl(Parser *p) {
+AstNode *parse_struct_decl(Parser *p) {
     /* 'struct' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3354,7 +3344,7 @@ static AstNode *parse_struct_decl(Parser *p) {
  *     V3(Type name, ...);  // named payload (LS-style)
  * }
  * Variant separators (',' / ';' / nothing) are all accepted. */
-static AstNode *parse_enum_decl(Parser *p) {
+AstNode *parse_enum_decl(Parser *p) {
     /* 'enum' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3439,7 +3429,7 @@ static AstNode *parse_enum_decl(Parser *p) {
 /* ---- parse_trait_decl ---- */
 /* Parse: trait Name { fn sig(); fn sig(); ... }
    'trait' already consumed. */
-static AstNode *parse_trait_decl(Parser *p) {
+AstNode *parse_trait_decl(Parser *p) {
     int line = p->previous.line;
     int col  = p->previous.column;
 
@@ -3517,7 +3507,7 @@ static void parse_receiver_type_params(Parser *p, char ***params,
     consume(p, TOKEN_RPAREN, "expected ')' after methods receiver type params");
 }
 
-static AstNode *parse_impl_decl(Parser *p) {
+AstNode *parse_impl_decl(Parser *p) {
     /* 'impl' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3731,7 +3721,7 @@ static AstNode *parse_impl_decl(Parser *p) {
 /* type Name = T — type alias (Phase A closure prerequisite). The target
    type is parsed without the return-type guard, so `type X = Block(...) -> Y`
    is the canonical site where Block appears. */
-static AstNode *parse_type_alias_decl(Parser *p) {
+AstNode *parse_type_alias_decl(Parser *p) {
     /* 'type' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3757,7 +3747,7 @@ static AstNode *parse_type_alias_decl(Parser *p) {
     return n;
 }
 
-static AstNode *parse_module_decl(Parser *p) {
+AstNode *parse_module_decl(Parser *p) {
     /* 'module' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3780,7 +3770,7 @@ static bool is_import_path_segment(TokenType t) {
            t == TOKEN_ARRAY;
 }
 
-static AstNode *parse_import_decl(Parser *p) {
+AstNode *parse_import_decl(Parser *p) {
     /* 'import' already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3831,7 +3821,7 @@ static AstNode *parse_import_decl(Parser *p) {
     return n;
 }
 
-static AstNode *parse_load_lib(Parser *p) {
+AstNode *parse_load_lib(Parser *p) {
     /* 'lib' (TOKEN_TYPE_LIB) already consumed */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3920,7 +3910,7 @@ static AstNode *parse_extern_fn_body(Parser *p, int line, int col) {
 }
 
 /* Parse: extern fn Name(...) [-> T] ['from' lib]  — 'extern' already consumed */
-static AstNode *parse_extern_fn(Parser *p) {
+AstNode *parse_extern_fn(Parser *p) {
     int line = p->previous.line;
     int col  = p->previous.column;
     consume(p, TOKEN_FN, "expected 'def' after 'extern'");
@@ -3929,7 +3919,7 @@ static AstNode *parse_extern_fn(Parser *p) {
 
 /* Parse: extern struct Name { field_type field_name ... }
    'extern' already consumed; current token is 'struct'. */
-static AstNode *parse_extern_struct(Parser *p) {
+AstNode *parse_extern_struct(Parser *p) {
     advance(p); /* consume 'struct' */
     int line = p->previous.line;
     int col  = p->previous.column;
@@ -3986,7 +3976,7 @@ static AstNode *parse_extern_struct(Parser *p) {
 }
 
 /* Parse: extern { struct/fn decls... }  — 'extern' already consumed */
-static AstNode *parse_extern_block(Parser *p) {
+AstNode *parse_extern_block(Parser *p) {
     int line = p->previous.line;
     int col  = p->previous.column;
 
@@ -4240,7 +4230,7 @@ static AstNode *parse_return_stmt(Parser *p) {
     return n;
 }
 
-static AstNode *parse_block_inner(Parser *p) {
+AstNode *parse_block_inner(Parser *p) {
     int line = p->current.line;
     int col  = p->current.column;
 
@@ -4484,7 +4474,7 @@ static AstNode *parse_comptime_stmt(Parser *p) {
     }
 }
 
-static AstNode *parse_statement(Parser *p) {
+AstNode *parse_statement(Parser *p) {
     skip_semicolons(p);
     int line = p->current.line;
     int col  = p->current.column;
