@@ -18,6 +18,20 @@ static void bind_generic_defining_module_imports(Checker *c, const char *module_
 static Type *build_module_type_with_exports(Checker *c, const char *path);
 static bool check_and_queue_generic_method(Checker *c, Type *struct_type, const char *mangled_name, AstNode *method, Type *mtype, char **tp_names, Type **type_args, int tp_count, int line, int col);
 static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node);
+static bool check_call_variant_ctor(Checker *c, AstNode *node, Type **out_result);
+static bool check_call_static_method(Checker *c, AstNode *node, AstNode **inout_obj_node,
+                                      const char *method_name,
+                                      bool *out_is_static_call,
+                                      const char **out_method_struct);
+static bool check_call_interface_qualified(Checker *c, AstNode *node, AstNode **inout_obj_node,
+                                            const char *method_name);
+static bool check_call_instance_method(Checker *c, AstNode *node,
+                                        bool is_method_call, bool is_static_call,
+                                        const char *method_struct,
+                                        const char *method_name,
+                                        Type **out_callee_type);
+static bool check_call_generic_free_fn(Checker *c, AstNode *node, Type **out_result);
+static Type *check_call_arguments(Checker *c, AstNode *node, Type *callee_type, int self_offset);
 static bool check_method_where_bounds(Checker *c, AstNode *method, const char *qualified_name, char **tp_names, Type **type_args, int tp_count);
 static void check_pass(Checker *c, AstNode *program);
 static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
@@ -4008,6 +4022,1093 @@ static void wrap_arg_in_to_str(AstNode **slot)
     *slot = call;
 }
 
+/* S4: check_expr_call call-form dispatch extracted as static helpers (verbatim
+   moves — see docs task 3.3). Each returns true when it fully handled the call
+   (result stashed in *out_result, possibly NULL on error) so the caller should
+   `break` out of the outer do/while immediately; false means "not this call
+   form", so check_expr_call should keep falling through to the next check. */
+
+/* Variant ctor short-circuit: callee is an IDENT matching a registered enum
+   variant. Handles `RGB(1,2,3)`, `Some(x)`, etc. */
+static bool check_call_variant_ctor(Checker *c, AstNode *node, Type **out_result)
+{
+    if (node->as.call.callee->kind != AST_IDENT)
+        return false;
+
+    Type *enum_type = NULL;
+    int variant_idx = -1;
+    int matches = find_variant(c,
+        node->as.call.callee->as.ident.name, &enum_type, &variant_idx);
+    if (matches == 1)
+    {
+        *out_result = check_variant_ctor(c, node, enum_type, variant_idx,
+                                    node->as.call.args, node->as.call.arg_count);
+        return true;
+    }
+    if (matches > 1)
+    {
+        /* Disambiguate a payload variant ctor (e.g. `Some(x)`/`Ok(x)`/
+           `Err(e)`) by a type hint (prior resolution, then expected). */
+        Type *eet = NULL; int evi = -1;
+        if (disambig_variant_by_hint(c, node,
+                node->as.call.callee->as.ident.name, &eet, &evi))
+        {
+            *out_result = check_variant_ctor(c, node, eet, evi,
+                                        node->as.call.args,
+                                        node->as.call.arg_count);
+            return true;
+        }
+        checker_error(c, node->line, node->column,
+                      "ambiguous variant name '%s' (matches multiple enums)",
+                      node->as.call.callee->as.ident.name);
+        *out_result = NULL;
+        return true;
+    }
+    return false;
+}
+
+/* Static-by-typename call detection: `StructName.method(args)` /
+   `EnumName.method(args)` / a type-alias parameter `T.zero()` / a builtin
+   primitive `int.from_value(v)`, plus the two AST rewrites that feed a
+   parameterized generic instance written directly as the receiver
+   (`Box(Str).reflect()` / `Box(int).reflect()`) into the same dispatch.
+   *inout_obj_node may be rewritten in place (kept in sync with
+   node->as.call.callee->as.field_access.object, mirroring the original
+   inline code). Returns true on a terminal error (caller must treat this
+   as `result = NULL; break;`); on false, *out_is_static_call /
+   *out_method_struct reflect whatever was detected (possibly nothing). */
+static bool check_call_static_method(Checker *c, AstNode *node, AstNode **inout_obj_node,
+                                      const char *method_name,
+                                      bool *out_is_static_call,
+                                      const char **out_method_struct)
+{
+    AstNode *obj_node = *inout_obj_node;
+    bool is_static_call = false;
+    const char *method_struct = NULL;
+
+    /* ③ case B: `Box(Str).reflect()` with a USER-TYPE arg parses as a call
+       `Box(Str)` (Str is an IDENT, ambiguous with a value at parse time) —
+       object is AST_CALL(callee=IDENT, args=[type-name idents]). Disambiguate
+       HERE with type info: if the callee names a GENERIC STRUCT TEMPLATE (you
+       can't "call" a struct, so this can only be an instantiation) and every
+       arg is a bare type name, REWRITE the object into an AST_IDENT carrying
+       type args — then the case-A branch below instantiates + dispatches it.
+       A real `make_box(cfg).render()` call-chain is untouched (make_box is not
+       a generic struct template → find_struct_template_idx returns -1). */
+    if (obj_node->kind == AST_CALL &&
+        obj_node->as.call.callee &&
+        obj_node->as.call.callee->kind == AST_IDENT &&
+        obj_node->as.call.arg_count > 0 &&
+        obj_node->as.call.type_arg_count == 0 &&
+        find_struct_template_idx(c, obj_node->as.call.callee->as.ident.name) >= 0)
+    {
+        bool all_type_idents = true;
+        for (int ai = 0; ai < obj_node->as.call.arg_count; ai++)
+            if (obj_node->as.call.args[ai] == NULL ||
+                obj_node->as.call.args[ai]->kind != AST_IDENT)
+                { all_type_idents = false; break; }
+        if (all_type_idents)
+        {
+            const char *gname = obj_node->as.call.callee->as.ident.name;
+            int ac = obj_node->as.call.arg_count;
+            AstNode *idn = ast_new(AST_IDENT, obj_node->line, obj_node->column);
+            size_t gl = strlen(gname) + 1;
+            idn->as.ident.name = (char *)malloc_safe(gl);
+            memcpy(idn->as.ident.name, gname, gl);
+            idn->as.ident.type_args =
+                (TypeNode **)malloc_safe((size_t)ac * sizeof(TypeNode *));
+            idn->as.ident.type_arg_count = ac;
+            for (int ai = 0; ai < ac; ai++)
+            {
+                const char *an = obj_node->as.call.args[ai]->as.ident.name;
+                TypeNode *atn = (TypeNode *)malloc_safe(sizeof(TypeNode));
+                memset(atn, 0, sizeof(TypeNode));
+                atn->kind = TYPE_NODE_NAMED;
+                size_t al = strlen(an) + 1;
+                atn->as.named.name = (char *)malloc_safe(al);
+                memcpy(atn->as.named.name, an, al);
+                idn->as.ident.type_args[ai] = atn;
+            }
+            ast_free(obj_node);
+            node->as.call.callee->as.field_access.object = idn;
+            obj_node = idn;
+        }
+    }
+
+    /* ③: static call on a parameterized generic instance written directly,
+       `Box(int).reflect()` / `Box(int).from_value(v)`. The parser produced an
+       AST_IDENT carrying type args (for type-keyword args). Instantiate
+       name(type_args) into the concrete struct/enum type and dispatch the
+       static method on it, mirroring the `type BI = Box(int); BI.reflect()`
+       alias path (which find_type_alias resolves below). Stamp resolved_type
+       so codegen derives the instance's symbol. */
+    if (obj_node->kind == AST_IDENT && obj_node->as.ident.type_arg_count > 0)
+    {
+        TypeNode tn;
+        memset(&tn, 0, sizeof(tn));
+        tn.kind = TYPE_NODE_NAMED;
+        tn.as.named.name = (char *)obj_node->as.ident.name;
+        tn.as.named.args = obj_node->as.ident.type_args;
+        tn.as.named.arg_count = obj_node->as.ident.type_arg_count;
+        Type *inst = resolve_type_node(c, &tn, node->line, node->column);
+        if (inst && (inst->kind == TYPE_STRUCT || inst->kind == TYPE_ENUM))
+        {
+            const char *inst_key = impl_key_of_type(inst);
+            if (inst_key)
+            {
+                int si = method_is_static(c, inst_key, method_name);
+                if (si < 0 && inst->kind == TYPE_STRUCT &&
+                    inst->as.strukt.generic_base)
+                {
+                    ensure_generic_struct_impls_local(c, inst);
+                    si = method_is_static(c, inst_key, method_name);
+                }
+                if (si >= 0)
+                {
+                    method_struct = inst_key;
+                    is_static_call = true;
+                    obj_node->resolved_type = inst; /* codegen symbol source */
+                    if (si == 0)
+                    {
+                        checker_error(c, node->line, node->column,
+                            "cannot call instance method '%s' on type '%s'; use an instance",
+                            method_name, inst_key);
+                        *inout_obj_node = obj_node;
+                        *out_is_static_call = is_static_call;
+                        *out_method_struct = method_struct;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Check if obj is a struct type name (static call: Point.origin()) */
+    if (obj_node->kind == AST_IDENT && !is_static_call)
+    {
+        Type *st = find_struct_type(c, obj_node->as.ident.name);
+        if (st && st->kind == TYPE_STRUCT)
+        {
+            const char *st_key = impl_key_of_type(st);  /* B-4.1 */
+            int si = method_is_static(c, st_key, method_name);
+            if (si >= 0)
+            {
+                method_struct = st_key;
+                is_static_call = true;
+                if (si == 0)
+                {
+                    /* Calling instance method via type name — error */
+                    checker_error(c, node->line, node->column,
+                                  "cannot call instance method '%s' on type '%s'; use an instance",
+                                  method_name, method_struct);
+                    *inout_obj_node = obj_node;
+                    *out_is_static_call = is_static_call;
+                    *out_method_struct = method_struct;
+                    return true;
+                }
+            }
+            }
+        }
+        /* Check if obj is an enum type name (static call: JsonValue.parse()) */
+        if (obj_node->kind == AST_IDENT && !is_static_call)
+        {
+            Type *et = find_enum_type(c, obj_node->as.ident.name);
+            if (et && et->kind == TYPE_ENUM)
+            {
+                const char *et_key = impl_key_of_type(et);  /* B-4.1 */
+                int si = method_is_static(c, et_key, method_name);
+                if (si >= 0)
+                {
+                    method_struct = et_key;
+                    is_static_call = true;
+                    if (si == 0)
+                    {
+                        checker_error(c, node->line, node->column,
+                                      "cannot call instance method '%s' on type '%s'; use an instance",
+                                      method_name, method_struct);
+                        *inout_obj_node = obj_node;
+                        *out_is_static_call = is_static_call;
+                        *out_method_struct = method_struct;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        /* Static call via a generic type parameter: `T.zero()` where T is a
+           type alias bound during monomorphization (T → Complex(f64) / int).
+           find_struct_type/find_enum_type miss on the bare param name; resolve
+           it through the type-alias table, then dispatch the static method on
+           the concrete type. Stamp obj_node->resolved_type so codegen derives
+           the right symbol (Struct.llvm_name.method / int.method). */
+        if (obj_node->kind == AST_IDENT && !is_static_call)
+        {
+            Type *al = find_type_alias(c, obj_node->as.ident.name);
+            if (al)
+            {
+                const char *al_key = (al->kind == TYPE_STRUCT || al->kind == TYPE_ENUM)
+                                         ? impl_key_of_type(al)
+                                         : type_impl_name(al);
+                if (al_key)
+                {
+                    int si = method_is_static(c, al_key, method_name);
+                    if (si < 0 && al->kind == TYPE_STRUCT && al->as.strukt.generic_base)
+                    {
+                        ensure_generic_struct_impls_local(c, al);
+                        si = method_is_static(c, al_key, method_name);
+                    }
+                    if (si >= 0)
+                    {
+                        method_struct = al_key;
+                        is_static_call = true;
+                        obj_node->resolved_type = al; /* codegen symbol source */
+                        if (si == 0)
+                        {
+                            checker_error(c, node->line, node->column,
+                                          "cannot call instance method '%s' on type parameter; use an instance",
+                                          method_name);
+                            *inout_obj_node = obj_node;
+                            *out_is_static_call = is_static_call;
+                            *out_method_struct = method_struct;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Static call on a literal primitive type name: `int.from_value(v)`
+           / `bool.show()`. Arises from the comptime `f.type` handle lowering
+           to the field's concrete type name (and is a reasonable spelling on
+           its own). find_struct_type / find_enum_type / find_type_alias all
+           miss a bare primitive keyword-name; resolve it via the builtin-type
+           table (same key as the T-alias-to-primitive path: type_impl_name). */
+        if (obj_node->kind == AST_IDENT && !is_static_call)
+        {
+            Type *bt = resolve_builtin_type_by_name(obj_node->as.ident.name);
+            if (bt)
+            {
+                const char *bt_key = type_impl_name(bt);
+                if (bt_key)
+                {
+                    int si = method_is_static(c, bt_key, method_name);
+                    if (si >= 0)
+                    {
+                        method_struct = bt_key;
+                        is_static_call = true;
+                        obj_node->resolved_type = bt; /* codegen symbol source */
+                        if (si == 0)
+                        {
+                            checker_error(c, node->line, node->column,
+                                          "cannot call instance method '%s' on type '%s'; use an instance",
+                                          method_name, bt_key);
+                            *inout_obj_node = obj_node;
+                            *out_is_static_call = is_static_call;
+                            *out_method_struct = method_struct;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+    *inout_obj_node = obj_node;
+    *out_is_static_call = is_static_call;
+    *out_method_struct = method_struct;
+    return false;
+}
+
+/* L-002: interface-qualified call `Iface.method(recv, args...)`. The leading
+   IDENT names a known interface, not a value/type. The receiver is args[0];
+   REWRITE into an ordinary instance call so all the existing
+   receiver-resolution / borrow-gating / arg-checking below applies:
+       Iface.m(recv, a1, ...)  ==>  recv.m(a1, ...)
+   and stamp node.qualified_iface so the resolution step picks the interface
+   overload (and codegen mangles the symbol when contended). (Zero parser
+   changes — the token shape `Ident.Ident(args)` is identical to a static
+   call; we recognize the interface name here.) *inout_obj_node is rewritten
+   in place when the interface-qualified form is detected (kept in sync with
+   node->as.call.callee->as.field_access.object, mirroring the original
+   inline code). Returns true on a terminal error (caller must treat this as
+   `result = NULL; break;`). */
+static bool check_call_interface_qualified(Checker *c, AstNode *node, AstNode **inout_obj_node,
+                                            const char *method_name)
+{
+    AstNode *obj_node = *inout_obj_node;
+
+    if (obj_node->kind == AST_IDENT &&
+        checker_is_known_interface(c, obj_node->as.ident.name))
+    {
+        if (node->as.call.arg_count < 1)
+        {
+            checker_error(c, node->line, node->column,
+                "interface-qualified call '%s.%s' requires a receiver "
+                "argument, e.g. '%s.%s(recv)'",
+                obj_node->as.ident.name, method_name,
+                obj_node->as.ident.name, method_name);
+            return true;
+        }
+        /* Stamp the interface name (owned). The resolution step frees it
+           again if the method turns out not to be contended (plain `T.m`). */
+        free(node->as.call.qualified_iface);
+        node->as.call.qualified_iface = chk_strdup(obj_node->as.ident.name);
+        /* recv = args[0]. Strip an explicit borrow shell `&x` / `&!x`: the
+           instance-method machinery auto-borrows the receiver (takes its
+           address for self), so a borrow wrapper would make self a
+           pointer-to-pointer. Mirrors fn_call_strip_amp_shell. */
+        AstNode *recv = node->as.call.args[0];
+        if (recv->kind == AST_MUT_BORROW && recv->as.mut_borrow.operand)
+        {
+            AstNode *inner = recv->as.mut_borrow.operand;
+            recv->as.mut_borrow.operand = NULL;
+            ast_free(recv);
+            recv = inner;
+        }
+        else if (recv->kind == AST_UNARY && recv->as.unary.op == TOKEN_AMP &&
+                 recv->as.unary.operand &&
+                 (recv->as.unary.operand->kind == AST_IDENT ||
+                  recv->as.unary.operand->kind == AST_FIELD ||
+                  recv->as.unary.operand->kind == AST_INDEX))
+        {
+            AstNode *inner = recv->as.unary.operand;
+            recv->as.unary.operand = NULL;
+            ast_free(recv);
+            recv = inner;
+        }
+        /* install recv as the field object, shift the remaining args left. */
+        for (int ai = 1; ai < node->as.call.arg_count; ai++)
+            node->as.call.args[ai - 1] = node->as.call.args[ai];
+        node->as.call.arg_count--;
+        node->as.call.callee->as.field_access.object = recv;
+        ast_free(obj_node);   /* detached interface IDENT */
+        obj_node = recv;
+    }
+
+    *inout_obj_node = obj_node;
+    return false;
+}
+
+/* Resolve callee type for a dispatched instance/static method call
+   (is_method_call || is_static_call already established by the caller —
+   see the struct/enum method-detection block above this in check_expr_call).
+   Handles the L-002 interface-qualified overload selection, the bare-call
+   ambiguity check, plain find_method resolution, method-level generic
+   instantiation (explicit type args or closure-arg inference), and the
+   explicit __drop() rejection. *out_callee_type receives the resolved
+   function type. Returns true on a terminal error (caller must treat this
+   as `result = NULL; break;`). */
+static bool check_call_instance_method(Checker *c, AstNode *node,
+                                        bool is_method_call, bool is_static_call,
+                                        const char *method_struct,
+                                        const char *method_name,
+                                        Type **out_callee_type)
+{
+    Type *callee_type = NULL;
+
+    /* L-002: interface-qualified call `Iface.m(recv)` (rewritten above to
+       `recv.m(...)` with qualified_iface stamped). Select the interface
+       overload by origin rather than the inherent-preferring find_method,
+       and keep qualified_iface set ONLY if the method is contended (so
+       codegen mangles to `T.<Iface>.m`; a single-provider interface keeps
+       the plain `T.m`). */
+    if (node->as.call.qualified_iface && is_method_call)
+    {
+        const char *qi = node->as.call.qualified_iface;
+        callee_type = find_method_origin(c, method_struct, method_name, qi);
+        if (callee_type == NULL)
+        {
+            checker_error(c, node->line, node->column,
+                "interface '%s' has no method '%s' for type '%s'",
+                qi, method_name, method_struct);
+            return true;
+        }
+        node->as.call.callee->resolved_type = callee_type;
+        int inh = 0, ifc = 0;
+        method_providers(c, method_struct, method_name, &inh, &ifc, NULL, NULL);
+        if (inh + ifc < 2)
+        {
+            free(node->as.call.qualified_iface);  /* not contended → plain T.m */
+            node->as.call.qualified_iface = NULL;
+        }
+        /* L-002 v2: for a generic instance, force-instantiate THIS overload's
+           body, keyed by the iface-aware lazy symbol (`T.<Iface>.m` when
+           contended, else `T.m`). No-op for non-generic types (no lazy entry).
+           Without this the qualified path would skip instantiation → JIT
+           "Symbols not found". */
+        {
+            char qsym[512];
+            if (node->as.call.qualified_iface)
+                snprintf(qsym, sizeof(qsym), "%s.%s.%s", method_struct,
+                         node->as.call.qualified_iface, method_name);
+            else
+                snprintf(qsym, sizeof(qsym), "%s.%s", method_struct, method_name);
+            ensure_generic_method_instantiated_sym(c, method_struct, qsym,
+                                                   node->line, node->column);
+        }
+        goto after_method_check;
+    }
+
+    /* L-002: bare instance dispatch `obj.m()` where `m` is ambiguous —
+       no inherent provider and >=2 interfaces provide it. The user must
+       disambiguate with a qualified call `Iface.m(recv)`. (Inherent
+       priority resolves the "inherent + interface" overlap silently;
+       only the "all-interface, >=2" case is irresolvable here.) */
+    if (is_method_call && !is_static_call)
+    {
+        int inh = 0, ifc = 0; const char *ia = NULL, *ib = NULL;
+        method_providers(c, method_struct, method_name, &inh, &ifc, &ia, &ib);
+        if (inh == 0 && ifc >= 2)
+        {
+            checker_error(c, node->line, node->column,
+                "ambiguous method '%s' on type '%s': provided by interfaces "
+                "'%s' and '%s'; disambiguate with a qualified call, "
+                "e.g. '%s.%s(recv)'",
+                method_name, method_struct, ia, ib, ia, method_name);
+            return true;
+        }
+    }
+
+    callee_type = find_method(c, method_struct, method_name);
+    if (callee_type == NULL)
+    {
+        char helpbuf[256];
+        DiagMethodIter it = { c, NULL, method_struct, 0, 0, 0, false };
+        const char *help = diag_help_suggestion(
+            helpbuf, sizeof(helpbuf), method_name,
+            diag_method_iter_next, &it);
+        checker_error_help(c, node->line, node->column, 1, help,
+                           "type '%s' has no method '%s'",
+                           method_struct, method_name);
+        return true;
+    }
+
+    /* Method-level generic: if the call site provides type args, try
+       to build the concrete signature on-the-fly.  The placeholder
+       returned by find_method has type_void() — the real type is built
+       and body-checked here. */
+    if (node->as.call.type_arg_count > 0) {
+        Type *concrete = try_instantiate_method_level_generic(
+            c, method_struct, method_name,
+            node->as.call.type_args, node->as.call.type_arg_count,
+            NULL, node->line, node->column);
+        if (concrete) {
+            callee_type = concrete;
+            node->as.call.callee->resolved_type = callee_type;
+            /* Stash the resolved (concrete) method-level type-arg names so
+               codegen mangles the call as `Type.method(int)` not
+               `Type.method(T)` when called with an abstract type param
+               inside a generic body. The alias (T→int) is active here, so
+               resolve_type_node yields the concrete type; codegen has no
+               alias context and would otherwise re-mangle the raw `T`.
+               Mirrors the closure-inference and free-function paths. */
+            if (node->as.call.resolved_type_args == NULL) {
+                int tac = node->as.call.type_arg_count;
+                Type **rargs = (Type **)malloc_safe((size_t)(tac > 0 ? tac : 1)
+                                                    * sizeof(Type *));
+                for (int ti = 0; ti < tac; ti++)
+                    rargs[ti] = resolve_type_node(c, node->as.call.type_args[ti],
+                                                  node->line, node->column);
+                checker_stash_resolved_type_args(c, node, rargs, tac);
+                free(rargs);
+            }
+            /* Body already checked+queued by try_instantiate; skip lazy path */
+            goto after_method_check;
+        }
+    } else {
+        /* No explicit type args: try to infer a single method-level
+           type param from a closure arg's return type, so
+           `v.map(|x| x+1)` works like `v.map(int)(|x| x+1)`. */
+        Type *concrete = try_infer_method_generic_from_closure(
+            c, method_struct, method_name, node,
+            node->line, node->column);
+        if (concrete) {
+            callee_type = concrete;
+            node->as.call.callee->resolved_type = callee_type;
+            goto after_method_check;
+        }
+    }
+
+    if (!ensure_generic_method_instantiated(c, method_struct, method_name,
+                                             node->line, node->column))
+    {
+        return true;
+    }
+    /* Set resolved_type on the callee node so codegen can find it */
+    node->as.call.callee->resolved_type = callee_type;
+
+    after_method_check: ;
+
+    /* A-2 (docs/bugs_deferred_p5_4.md §2): explicit `.__drop()` calls in
+       source are rejected. The compiler manages destruction automatically
+       (RAII at scope exit); an explicit call is always a double-free
+       footgun, and for a compiler-generated member __drop the symbol may
+       not even be emitted (JIT "Symbols not found"). Block it cleanly at
+       the checker rather than crashing/double-freeing at runtime. */
+    if (strcmp(method_name, "__drop") == 0 && is_method_call)
+    {
+        checker_error(c, node->line, node->column,
+                      "cannot call __drop() explicitly; the compiler "
+                      "destroys values automatically at scope exit "
+                      "(an explicit call would double-free)");
+        return true;
+    }
+
+    *out_callee_type = callee_type;
+    return false;
+}
+
+/* G2: generic free-function call.
+     - explicit type args:  identity(int)(42)
+     - inferred type args:  to_csv(p)   (Gap 1) — when the call omits the
+       `(T)` list, unify each type param against the value-argument types.
+   Enter whenever the callee names a known fn-template, OR type args were
+   given explicitly (so a stray `foo(int)(...)` on a non-template name
+   still reports "not a generic function"). Returns false (leaving
+   *out_result untouched) when the call doesn't match this form at all —
+   caller falls through to the next dispatch form. Returns true once
+   matched (success or terminal error alike; *out_result is the checked
+   type, or NULL on error) — caller does `result = *out_result; break;`. */
+static bool check_call_generic_free_fn(Checker *c, AstNode *node, Type **out_result)
+{
+    if (!(node->as.call.callee->kind == AST_IDENT &&
+          (node->as.call.type_arg_count > 0 ||
+           find_fn_template(c, node->as.call.callee->as.ident.name) >= 0)))
+        return false;
+
+    const char *fn_name = node->as.call.callee->as.ident.name;
+    int tmpl_idx = find_fn_template(c, fn_name);
+    if (tmpl_idx < 0) {
+        checker_error(c, node->line, node->column,
+            "'%s' is not a generic function", fn_name);
+        *out_result = NULL;
+        return true;
+    }
+    int tp_count = c->fn_templates[tmpl_idx].type_param_count;
+    bool inferring = (node->as.call.type_arg_count == 0);
+    if (!inferring && node->as.call.type_arg_count != tp_count) {
+        checker_error(c, node->line, node->column,
+            "'%s' expects %d type argument(s), got %d",
+            fn_name, tp_count, node->as.call.type_arg_count);
+        *out_result = NULL;
+        return true;
+    }
+
+    AstNode *tmpl_decl0 = c->fn_templates[tmpl_idx].decl_node;
+    char **tp_names0 = c->fn_templates[tmpl_idx].type_params;
+
+    /* Resolve type arguments — explicit (resolve TypeNodes) or inferred
+       (Gap 1: unify each type param against the corresponding value arg). */
+    Type **type_args = (Type **)malloc_safe((size_t)tp_count * sizeof(Type *));
+    bool type_args_ok = true;
+    if (inferring) {
+        int pc0 = tmpl_decl0->as.fn_decl.param_count;
+        int argc0 = node->as.call.arg_count;
+        for (int ti = 0; ti < tp_count; ti++) type_args[ti] = NULL;
+        for (int ti = 0; ti < tp_count && type_args_ok; ti++) {
+            const char *tname = tp_names0[ti];
+            for (int pi = 0; pi < pc0 && pi < argc0; pi++) {
+                bool is_ref = false;
+                if (!fn_param_directly_names_tp(
+                        tmpl_decl0->as.fn_decl.param_types[pi], tname, &is_ref))
+                    continue;
+                /* Gap 2 pre-strip: explicit `&x` against a read-only `&T`
+                   param — drop the address-of shell so the probe reads the
+                   lvalue's value type (mirrors §13). */
+                if (is_ref) {
+                    AstNode *argn = node->as.call.args[pi];
+                    if (argn->kind == AST_UNARY &&
+                        argn->as.unary.op == TOKEN_AMP &&
+                        argn->as.unary.operand &&
+                        (argn->as.unary.operand->kind == AST_IDENT ||
+                         argn->as.unary.operand->kind == AST_FIELD ||
+                         argn->as.unary.operand->kind == AST_INDEX))
+                        node->as.call.args[pi] = argn->as.unary.operand;
+                }
+                Type *at = check_expr(c, node->as.call.args[pi]);
+                if (at) type_args[ti] = fn_infer_peel_borrow(at);
+                break;
+            }
+            if (!type_args[ti]) {
+                checker_error(c, node->line, node->column,
+                    "cannot infer type parameter '%s' of generic function "
+                    "'%s' from the arguments; pass it explicitly as "
+                    "%s(<type>)(...)", tname, fn_name, fn_name);
+                type_args_ok = false;
+            }
+        }
+    } else {
+        for (int ti = 0; ti < tp_count; ti++) {
+            type_args[ti] = resolve_type_node(c, node->as.call.type_args[ti],
+                node->line, node->column);
+            if (!type_args[ti]) { type_args_ok = false; break; }
+        }
+    }
+    if (!type_args_ok) { free(type_args); *out_result = NULL; return true; }
+
+    /* Stash the resolved (concrete) type-arg names so codegen mangles the
+       call to the instantiated symbol (mirrors the method-generic
+       `resolved_type_args` mechanism). Inferred calls carry no `type_args`
+       at all and MUST use this. Explicit calls also need it whenever the
+       type args were resolved through aliases — e.g. `make(T)(..)` inside a
+       generic body, where the alias T→int is checker-transient: codegen has
+       no alias context, so re-mangling from the raw TypeNode would emit the
+       abstract `make(T)` instead of the instantiated `make(int)`. The
+       clone is checked fresh each instantiation, so this node starts NULL. */
+    checker_stash_resolved_type_args(c, node, type_args, tp_count);
+
+    /* Check trait bounds (if any) */
+    {
+        AstNode *tmpl = c->fn_templates[tmpl_idx].decl_node;
+        TypeParamBound *bounds = tmpl->as.fn_decl.type_param_bounds;
+        if (bounds) {
+            bool bounds_ok = true;
+            for (int ti = 0; ti < tp_count && bounds_ok; ti++) {
+                for (int bi = 0; bi < bounds[ti].count; bi++) {
+                    if (!checker_type_satisfies_trait(c, type_args[ti],
+                                                      bounds[ti].trait_names[bi])) {
+                        checker_error(c, node->line, node->column,
+                            "type '%s' does not satisfy interface '%s' "
+                            "(required by type parameter '%s' of '%s')",
+                            type_name(type_args[ti]),
+                            bounds[ti].trait_names[bi],
+                            c->fn_templates[tmpl_idx].type_params[ti],
+                            fn_name);
+                        bounds_ok = false;
+                        break;
+                    }
+                }
+            }
+            if (!bounds_ok) { free(type_args); *out_result = NULL; return true; }
+        }
+    }
+
+    /* Build mangled name: "identity(int)". Bare `type_name` (not
+       mangle_type_arg_name) — this site's pre-existing behavior,
+       preserved (see resolve_type_node's pre-check comment); the
+       module prefix is applied later via mangle_module_symbol on
+       the codegen symbol, while this checker-internal cache key
+       stays unprefixed. MangleBuf (Task 2.2) replaces the old
+       fixed 512-byte buffer. */
+    MangleBuf fb; mangle_buf_init(&fb);
+    mangle_buf_append(&fb, fn_name);
+    mangle_buf_append(&fb, "(");
+    for (int ti = 0; ti < tp_count; ti++) {
+        if (ti > 0) mangle_buf_append(&fb, ",");
+        mangle_buf_append(&fb, type_name(type_args[ti]));
+    }
+    mangle_buf_append(&fb, ")");
+    char *mangled = mangle_buf_take(&fb);
+
+    /* Check if already instantiated (look up in scope) */
+    Symbol *existing = scope_resolve(c->current_scope, mangled);
+    if (existing) {
+        /* Already instantiated — use existing type */
+        node->as.call.callee->resolved_type = existing->type;
+        /* Type-check arguments */
+        Type *fn_t = existing->type;
+        int argc = node->as.call.arg_count;
+        int expected = fn_t->as.function.param_count;
+        if (argc != expected) {
+            checker_error(c, node->line, node->column,
+                "'%s' expects %d argument(s), got %d", mangled, expected, argc);
+            free(type_args);
+            free(mangled);
+            *out_result = NULL;
+            return true;
+        }
+        for (int ai = 0; ai < argc; ai++) {
+            Type *pt = fn_t->as.function.params[ai];
+            /* Gap 2: auto-borrow + explicit `&x` for read-only `&T` params,
+               matching the normal call path (type_assignable covers the
+               `&T ← T` auto-borrow and widening). */
+            fn_call_strip_amp_shell(node, ai, pt);
+            checker_tag_user_from_list_literal(c, pt,
+                node->as.call.args[ai], "argument list-literal");
+            Type *saved_exp = c->expected_type;
+            c->expected_type = pt;
+            Type *at = check_expr(c, node->as.call.args[ai]);
+            c->expected_type = saved_exp;
+            if (at && pt && !type_assignable(pt, at)) {
+                checker_error(c, node->as.call.args[ai]->line,
+                    node->as.call.args[ai]->column,
+                    "argument %d: expected '%s', got '%s'",
+                    ai + 1, type_name(pt), type_name(at));
+            }
+        }
+        *out_result = fn_t->as.function.return_type;
+        free(type_args);
+        free(mangled);
+        return true;
+    }
+
+    /* Not yet instantiated — clone, substitute, type-check, push to pending */
+    AstNode *tmpl_decl = c->fn_templates[tmpl_idx].decl_node;
+    char **tp_names = c->fn_templates[tmpl_idx].type_params;
+
+    /* Temporarily register type aliases (T→int, U→string, ...) */
+    int saved_alias_count = c->type_alias_count;
+    for (int ti = 0; ti < tp_count; ti++)
+        register_type_alias(c, tp_names[ti], type_args[ti]);
+
+    /* Resolve concrete param types and return type */
+    int pc = tmpl_decl->as.fn_decl.param_count;
+    Type **params = (Type **)malloc_safe((size_t)pc * sizeof(Type *));
+    for (int pi = 0; pi < pc; pi++) {
+        params[pi] = resolve_type_node(c, tmpl_decl->as.fn_decl.param_types[pi],
+            node->line, node->column);
+        if (!params[pi]) params[pi] = type_int(); /* fallback */
+    }
+    Type *ret = tmpl_decl->as.fn_decl.return_type
+        ? resolve_type_node(c, tmpl_decl->as.fn_decl.return_type,
+            node->line, node->column)
+        : type_void();
+    checker_reject_borrow_return(c, ret, NULL, node->line, node->column);  /* Phase 0/2: generic, defer */
+    Type *fn_type = type_function(params, pc, ret, false);
+
+    /* Register in scope so subsequent calls reuse */
+    scope_define(c->current_scope, mangled, fn_type);
+
+    /* Clone the fn body and type-check it */
+    AstNode *cloned = ast_clone_deep(tmpl_decl);
+    cloned->resolved_type = fn_type;
+    cloned->as.fn_decl.type_param_count = 0; /* concrete now */
+    cloned->as.fn_decl.type_param_bounds = NULL; /* don't double-free template bounds */
+
+    chk_push_scope(c);
+    for (int pi = 0; pi < pc; pi++) {
+        /* Mirror the non-generic / method-generic body-param registration:
+           unwrap a `&T` / `&!T` param to its pointee for the body-local
+           symbol and flag the borrow. Without this the symbol carries the
+           bare reference type, so field access resolves the object IDENT to
+           `&Struct` and codegen takes the is_ref_value path (load + GEP on a
+           struct value) instead of GEP-ing the borrow pointer directly —
+           the Gap-2 codegen miscompile for generic free-function `&T`. */
+        Type *sym_type = params[pi];
+        bool is_borrow = false, is_mut_borrow = false;
+        if (sym_type && sym_type->kind == TYPE_REFERENCE) {
+            if (sym_type->is_mut) is_mut_borrow = true;
+            else                  is_borrow = true;
+            sym_type = sym_type->as.pointer_to;
+        }
+        Symbol *psym = scope_define(c->current_scope,
+            cloned->as.fn_decl.param_names[pi], sym_type);
+        if (psym) {
+            psym->is_borrow = is_borrow;
+            psym->is_mut_borrow = is_mut_borrow;
+            /* F.2: an explicit Block param is a shallow-copy borrow; a bare
+               type-param `T` that monomorphizes to Block is owned (moved). */
+            if (sym_type && sym_type->kind == TYPE_BLOCK) {
+                bool is_tparam = false;
+                TypeNode *ptn = cloned->as.fn_decl.param_types
+                                ? cloned->as.fn_decl.param_types[pi] : NULL;
+                if (ptn && ptn->kind == TYPE_NODE_NAMED &&
+                    ptn->as.named.arg_count == 0) {
+                    for (int t = 0; t < tp_count; t++)
+                        if (strcmp(ptn->as.named.name, tp_names[t]) == 0) {
+                            is_tparam = true; break;
+                        }
+                }
+                if (!is_tparam) psym->is_borrow = true;
+            }
+        }
+    }
+    Type *saved_ret = c->current_fn_return;
+    c->current_fn_return = ret;
+    check_stmt(c, cloned->as.fn_decl.body);
+    checker_elide_last_use(c, cloned); /* A1 clone-elision */
+    c->current_fn_return = saved_ret;
+    chk_pop_scope(c);
+
+    /* Restore type aliases */
+    c->type_alias_count = saved_alias_count;
+
+    /* Push to pending generic methods queue (reusing the same mechanism).
+       A2: when this instantiation belongs to an imported module, prefix
+       the symbol with "<modpath>__" (matching codegen's cg_module_fn_symbol
+       and current_emit_module) so two modules' same-named generics get
+       distinct LLVM symbols. The checker-internal cache key `mangled`
+       stays unprefixed (each module has its own checker/scope). */
+    char *owned_mangled = mangle_module_symbol(c->module_name, mangled);
+
+    if (c->pending_gm_count >= c->pending_gm_cap) {
+        c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
+        c->pending_generic_methods = realloc_safe(c->pending_generic_methods,
+            (size_t)c->pending_gm_cap * sizeof(c->pending_generic_methods[0]));
+    }
+    int gm_idx = c->pending_gm_count++;
+    c->pending_generic_methods[gm_idx].cloned_fn = cloned;
+    c->pending_generic_methods[gm_idx].mangled_name = owned_mangled;
+    c->pending_generic_methods[gm_idx].struct_type = NULL; /* not a method */
+
+    /* Set callee resolved_type and check call arguments */
+    node->as.call.callee->resolved_type = fn_type;
+    int argc = node->as.call.arg_count;
+    if (argc != pc) {
+        checker_error(c, node->line, node->column,
+            "'%s' expects %d argument(s), got %d", mangled, pc, argc);
+    }
+    for (int ai = 0; ai < argc && ai < pc; ai++) {
+        Type *pt = params[ai];
+        /* Gap 2: auto-borrow + explicit `&x` for read-only `&T` params,
+           matching the normal call path. */
+        fn_call_strip_amp_shell(node, ai, pt);
+        checker_tag_user_from_list_literal(c, pt,
+            node->as.call.args[ai], "argument list-literal");
+        Type *saved_exp = c->expected_type;
+        c->expected_type = pt;
+        Type *at = check_expr(c, node->as.call.args[ai]);
+        c->expected_type = saved_exp;
+        if (at && pt && !type_assignable(pt, at)) {
+            checker_error(c, node->as.call.args[ai]->line,
+                node->as.call.args[ai]->column,
+                "argument %d: expected '%s', got '%s'",
+                ai + 1, type_name(pt), type_name(at));
+        }
+    }
+    *out_result = ret;
+    free(type_args);
+    free(mangled); /* scope_define and mangle_module_symbol both copied */
+    return true;
+}
+
+/* Shared call-site validation tail, run once callee_type has been resolved
+   by any of the call forms above (instance/static method, generic free
+   function, variant ctor, or a plain callee expression): non-function-type
+   rejection, arity checking (vararg / param-defaults min_required), per-arg
+   type checking (with the §13 `&x` auto-borrow shell strip and the
+   from-list-literal tag), vararg arg resolution (with the C-2 Show-struct
+   print rewrite), trailing param-default expansion, and the Phase 5.5 Step 4
+   writable-borrow aliasing check. self_offset is 1 for an instance method
+   call (implicit self occupies params[0]) and 0 otherwise — mirrors the
+   original inline `is_method_call ? 1 : 0`. Returns the call's result type,
+   or NULL on any checked error (matching the original 'result = ...; break;'
+   at the end of check_expr_call's do-while — the caller here does exactly
+   that with this function's return value). */
+static Type *check_call_arguments(Checker *c, AstNode *node, Type *callee_type, int self_offset)
+{
+    /* Phase B: Block-typed callees use the same param/return layout as
+       TYPE_FUNCTION (the only difference is ABI — codegen lowers as an
+       indirect call through a fat pointer). The arity / arg-type checks
+       below treat both kinds identically. */
+    if (callee_type->kind != TYPE_FUNCTION &&
+        callee_type->kind != TYPE_BLOCK)
+    {
+        checker_error(c, node->line, node->column,
+                      "cannot call non-function type '%s'", type_name(callee_type));
+        return NULL;
+    }
+
+    int expected = callee_type->as.function.param_count;
+    int actual = node->as.call.arg_count;
+
+    /* For instance method calls, the first param is the implicit self pointer.
+       The user provides (expected - 1) arguments. */
+    int user_expected = expected - self_offset;
+    int param_offset = self_offset;
+
+    /* Special case: print() requires at least 1 argument */
+    if (callee_type->as.function.is_vararg && user_expected == 0 && actual == 0 && node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "@print") == 0)
+    {
+        checker_error(c, node->line, node->column,
+                      "@print() requires at least 1 argument");
+        return NULL;
+    }
+
+    if (callee_type->as.function.is_vararg)
+    {
+        if (actual < user_expected)
+        {
+            checker_error(c, node->line, node->column,
+                          "too few arguments: expected at least %d, got %d", user_expected, actual);
+            return NULL;
+        }
+    }
+    else
+    {
+        /* Param defaults (档1): trailing params with a default may be omitted.
+           min_required = count of user params without a default. */
+        int min_required = user_expected;
+        if (callee_type->as.function.param_defaults)
+        {
+            min_required = 0;
+            for (int i = param_offset; i < expected; i++)
+                if (callee_type->as.function.param_defaults[i] == NULL)
+                    min_required++;
+        }
+        if (actual < min_required || actual > user_expected)
+        {
+            if (min_required == user_expected)
+                checker_error(c, node->line, node->column,
+                              "wrong number of arguments: expected %d, got %d",
+                              user_expected, actual);
+            else
+                checker_error(c, node->line, node->column,
+                              "wrong number of arguments: expected %d..%d, got %d",
+                              min_required, user_expected, actual);
+            return NULL;
+        }
+    }
+
+    /* Check argument types for non-vararg params (skip self param for instance methods) */
+    bool args_ok = true;
+
+    /* LS uses clone semantics: struct/string arguments are deep-copied on every call.
+       No move tracking needed — the caller retains ownership of its variables. */
+    for (int i = 0; i < user_expected && i < actual; i++)
+    {
+        /* Phase B closure: propagate the declared param type as expected_type
+           so a Ruby-style closure literal (`|x| body`) at this position can
+           infer its untyped params from the callee's `Block(...)` signature. */
+        Type *param_type = callee_type->as.function.params[i + param_offset];
+        /* §13: explicit `&x` / `&obj.field` argument to a read-only `&T`
+           parameter — strip the address-of shell so the call takes the
+           proven auto-borrow path (identical to passing the lvalue bare).
+           Without this, `&x` types as a raw `*T` and mismatches the `&T`
+           formal. A field operand (`&self.value`) is the read-only twin of
+           the `&!self.value` field borrow (AST_MUT_BORROW) — it lends a
+           read-only `&T` of the field, zero-copy. Writable borrows stay
+           explicit `&!x` (AST_MUT_BORROW — untouched here). */
+        {
+            AstNode *argn = node->as.call.args[i];
+            if (param_type && param_type->kind == TYPE_REFERENCE &&
+                !param_type->is_mut &&
+                argn->kind == AST_UNARY && argn->as.unary.op == TOKEN_AMP &&
+                (argn->as.unary.operand->kind == AST_IDENT ||
+                 argn->as.unary.operand->kind == AST_FIELD ||
+                 argn->as.unary.operand->kind == AST_INDEX))
+            {
+                /* shell intentionally leaked, same as the index-protocol rewrite */
+                node->as.call.args[i] = argn->as.unary.operand;
+            }
+        }
+        /* Array-literal argument to a user-container param (Vec etc. with
+           __from_list): tag it so codegen emits the from_list value, just
+           like the var-decl / struct-field positions. Lets `f(["a","b"])`
+           work where f takes Vec(Str), not only `Vec(Str) v=[..]; f(v)`.
+           Self-guarded: no-op unless param is a from_list struct and the
+           arg is an array literal. */
+        checker_tag_user_from_list_literal(c, param_type,
+            node->as.call.args[i], "argument list-literal");
+        Type *saved_exp = c->expected_type;
+        c->expected_type = param_type;
+        Type *arg_type = check_expr(c, node->as.call.args[i]);
+        c->expected_type = saved_exp;
+        if (arg_type == NULL)
+        {
+            args_ok = false;
+            continue;
+        }
+        if (!type_assignable(param_type, arg_type))
+        {
+            checker_error(c, node->as.call.args[i]->line, node->as.call.args[i]->column,
+                          "argument %d: expected '%s', got '%s'",
+                          i + 1,
+                          type_name(param_type),
+                          type_name(arg_type));
+            args_ok = false;
+        }
+    }
+    /* Check vararg args (just resolve types, no checking) */
+    bool is_print_call = node->as.call.callee->kind == AST_IDENT &&
+                         strcmp(node->as.call.callee->as.ident.name, "@print") == 0;
+    for (int i = user_expected; i < actual; i++)
+    {
+        Type *at = check_expr(c, node->as.call.args[i]);
+        /* C-2: print(x) for a Show struct/enum renders via Show — rewrite the
+           arg to to_str(x) (Str), which print prints as raw text. */
+        if (is_print_call && type_is_show_aggregate(c, at))
+        {
+            wrap_arg_in_to_str(&node->as.call.args[i]);
+            check_expr(c, node->as.call.args[i]);
+        }
+    }
+
+    /* Param defaults (档1): append cloned default exprs for omitted trailing
+       params so codegen sees a complete arg list (no codegen changes).
+       Idempotent: after appending, arg_count == user_expected. */
+    if (args_ok && callee_type->as.function.param_defaults && actual < user_expected)
+    {
+        node->as.call.args = (AstNode **)realloc_safe(
+            node->as.call.args, (size_t)user_expected * sizeof(AstNode *));
+        for (int i = actual; i < user_expected; i++)
+        {
+            AstNode *pd = (AstNode *)callee_type->as.function.param_defaults[i + param_offset];
+            AstNode *clone = ast_clone_deep(pd);
+            Type *pt = callee_type->as.function.params[i + param_offset];
+            Type *se = c->expected_type;
+            if (pt && (pt->kind == TYPE_STRUCT || pt->kind == TYPE_BLOCK))
+                c->expected_type = pt;
+            check_expr(c, clone);
+            c->expected_type = se;
+            node->as.call.args[i] = clone;
+        }
+        node->as.call.arg_count = user_expected;
+        actual = user_expected;
+    }
+
+    /* Phase 5.5 Step 4 — call-site aliasing check for writable borrows.
+       Forbid passing the same variable in any of these conflicting combinations
+       at a single call:
+         f(&!x, &!x)   — two writable aliases
+         f(&!x, x)     — writable + read-only auto-borrow (x -> &string param)
+         f(&!x, &x)    — same, with explicit & (rare)
+       Only check pairs where at least one side is a writable borrow. */
+    if (args_ok)
+    {
+        int n = user_expected < actual ? user_expected : actual;
+        for (int i = 0; i < n; i++)
+        {
+            AstNode *ai = node->as.call.args[i];
+            if (ai == NULL || ai->kind != AST_MUT_BORROW) continue;
+            AstNode *op_i = ai->as.mut_borrow.operand;
+            if (op_i == NULL || op_i->kind != AST_IDENT) continue;
+            const char *name_i = op_i->as.ident.name;
+
+            for (int j = i + 1; j < n; j++)
+            {
+                AstNode *aj = node->as.call.args[j];
+                if (aj == NULL) continue;
+
+                const char *name_j = NULL;
+                const char *j_kind = NULL;
+                if (aj->kind == AST_MUT_BORROW &&
+                    aj->as.mut_borrow.operand &&
+                    aj->as.mut_borrow.operand->kind == AST_IDENT)
+                {
+                    name_j = aj->as.mut_borrow.operand->as.ident.name;
+                    j_kind = "another writable borrow";
+                }
+                else if (aj->kind == AST_IDENT)
+                {
+                    /* Only flag when the other arg binds to a parameter that
+                       shares state (&T/&!T, or string-by-value which clones
+                       at runtime — BUT cloning happens AFTER the writable
+                       borrow is already holding the pointer; ordering of
+                       eval is left-to-right so later by-value clone would
+                       see a possibly-mutated snapshot, which is confusing.
+                       Conservatively flag TYPE_REFERENCE on the other side. */
+                    Type *pj = callee_type->as.function.params[j + param_offset];
+                    if (pj && pj->kind == TYPE_REFERENCE)
+                    {
+                        name_j = aj->as.ident.name;
+                        j_kind = "read-only borrow";
+                    }
+                }
+                if (name_j && strcmp(name_i, name_j) == 0)
+                {
+                    checker_error(c, aj->line, aj->column,
+                                  "variable '%s' is already passed as writable borrow "
+                                  "at argument %d; cannot also pass as %s here",
+                                  name_i, i + 1, j_kind);
+                    args_ok = false;
+                }
+            }
+        }
+    }
+
+    return args_ok ? callee_type->as.function.return_type : NULL;
+}
+
 /* S3b: extracted verbatim from the check_expr AST_CALL case. The do/while(0)
    wrapper lets the original switch-level `break;` statements fall through to
    `return result;` unchanged (this case contains no loops that use break). */
@@ -4085,311 +5186,14 @@ static Type *check_expr_call(Checker *c, AstNode *node)
            fall through to normal handling (which now sees an alias-shaped callee). */
         rewrite_canonical_module_call(c, node->as.call.callee);
 
-        /* G2: generic free-function call.
-             - explicit type args:  identity(int)(42)
-             - inferred type args:  to_csv(p)   (Gap 1) — when the call omits the
-               `(T)` list, unify each type param against the value-argument types.
-           Enter whenever the callee names a known fn-template, OR type args were
-           given explicitly (so a stray `foo(int)(...)` on a non-template name
-           still reports "not a generic function"). */
-        if (node->as.call.callee->kind == AST_IDENT &&
-            (node->as.call.type_arg_count > 0 ||
-             find_fn_template(c, node->as.call.callee->as.ident.name) >= 0))
+        /* G2: generic free-function call — see check_call_generic_free_fn. */
         {
-            const char *fn_name = node->as.call.callee->as.ident.name;
-            int tmpl_idx = find_fn_template(c, fn_name);
-            if (tmpl_idx < 0) {
-                checker_error(c, node->line, node->column,
-                    "'%s' is not a generic function", fn_name);
-                result = NULL;
-                break;
-            }
-            int tp_count = c->fn_templates[tmpl_idx].type_param_count;
-            bool inferring = (node->as.call.type_arg_count == 0);
-            if (!inferring && node->as.call.type_arg_count != tp_count) {
-                checker_error(c, node->line, node->column,
-                    "'%s' expects %d type argument(s), got %d",
-                    fn_name, tp_count, node->as.call.type_arg_count);
-                result = NULL;
-                break;
-            }
-
-            AstNode *tmpl_decl0 = c->fn_templates[tmpl_idx].decl_node;
-            char **tp_names0 = c->fn_templates[tmpl_idx].type_params;
-
-            /* Resolve type arguments — explicit (resolve TypeNodes) or inferred
-               (Gap 1: unify each type param against the corresponding value arg). */
-            Type **type_args = (Type **)malloc_safe((size_t)tp_count * sizeof(Type *));
-            bool type_args_ok = true;
-            if (inferring) {
-                int pc0 = tmpl_decl0->as.fn_decl.param_count;
-                int argc0 = node->as.call.arg_count;
-                for (int ti = 0; ti < tp_count; ti++) type_args[ti] = NULL;
-                for (int ti = 0; ti < tp_count && type_args_ok; ti++) {
-                    const char *tname = tp_names0[ti];
-                    for (int pi = 0; pi < pc0 && pi < argc0; pi++) {
-                        bool is_ref = false;
-                        if (!fn_param_directly_names_tp(
-                                tmpl_decl0->as.fn_decl.param_types[pi], tname, &is_ref))
-                            continue;
-                        /* Gap 2 pre-strip: explicit `&x` against a read-only `&T`
-                           param — drop the address-of shell so the probe reads the
-                           lvalue's value type (mirrors §13). */
-                        if (is_ref) {
-                            AstNode *argn = node->as.call.args[pi];
-                            if (argn->kind == AST_UNARY &&
-                                argn->as.unary.op == TOKEN_AMP &&
-                                argn->as.unary.operand &&
-                                (argn->as.unary.operand->kind == AST_IDENT ||
-                                 argn->as.unary.operand->kind == AST_FIELD ||
-                                 argn->as.unary.operand->kind == AST_INDEX))
-                                node->as.call.args[pi] = argn->as.unary.operand;
-                        }
-                        Type *at = check_expr(c, node->as.call.args[pi]);
-                        if (at) type_args[ti] = fn_infer_peel_borrow(at);
-                        break;
-                    }
-                    if (!type_args[ti]) {
-                        checker_error(c, node->line, node->column,
-                            "cannot infer type parameter '%s' of generic function "
-                            "'%s' from the arguments; pass it explicitly as "
-                            "%s(<type>)(...)", tname, fn_name, fn_name);
-                        type_args_ok = false;
-                    }
-                }
-            } else {
-                for (int ti = 0; ti < tp_count; ti++) {
-                    type_args[ti] = resolve_type_node(c, node->as.call.type_args[ti],
-                        node->line, node->column);
-                    if (!type_args[ti]) { type_args_ok = false; break; }
-                }
-            }
-            if (!type_args_ok) { free(type_args); result = NULL; break; }
-
-            /* Stash the resolved (concrete) type-arg names so codegen mangles the
-               call to the instantiated symbol (mirrors the method-generic
-               `resolved_type_args` mechanism). Inferred calls carry no `type_args`
-               at all and MUST use this. Explicit calls also need it whenever the
-               type args were resolved through aliases — e.g. `make(T)(..)` inside a
-               generic body, where the alias T→int is checker-transient: codegen has
-               no alias context, so re-mangling from the raw TypeNode would emit the
-               abstract `make(T)` instead of the instantiated `make(int)`. The
-               clone is checked fresh each instantiation, so this node starts NULL. */
-            checker_stash_resolved_type_args(c, node, type_args, tp_count);
-
-            /* Check trait bounds (if any) */
+            Type *gf_result = NULL;
+            if (check_call_generic_free_fn(c, node, &gf_result))
             {
-                AstNode *tmpl = c->fn_templates[tmpl_idx].decl_node;
-                TypeParamBound *bounds = tmpl->as.fn_decl.type_param_bounds;
-                if (bounds) {
-                    bool bounds_ok = true;
-                    for (int ti = 0; ti < tp_count && bounds_ok; ti++) {
-                        for (int bi = 0; bi < bounds[ti].count; bi++) {
-                            if (!checker_type_satisfies_trait(c, type_args[ti],
-                                                              bounds[ti].trait_names[bi])) {
-                                checker_error(c, node->line, node->column,
-                                    "type '%s' does not satisfy interface '%s' "
-                                    "(required by type parameter '%s' of '%s')",
-                                    type_name(type_args[ti]),
-                                    bounds[ti].trait_names[bi],
-                                    c->fn_templates[tmpl_idx].type_params[ti],
-                                    fn_name);
-                                bounds_ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (!bounds_ok) { free(type_args); result = NULL; break; }
-                }
-            }
-
-            /* Build mangled name: "identity(int)". Bare `type_name` (not
-               mangle_type_arg_name) — this site's pre-existing behavior,
-               preserved (see resolve_type_node's pre-check comment); the
-               module prefix is applied later via mangle_module_symbol on
-               the codegen symbol, while this checker-internal cache key
-               stays unprefixed. MangleBuf (Task 2.2) replaces the old
-               fixed 512-byte buffer. */
-            MangleBuf fb; mangle_buf_init(&fb);
-            mangle_buf_append(&fb, fn_name);
-            mangle_buf_append(&fb, "(");
-            for (int ti = 0; ti < tp_count; ti++) {
-                if (ti > 0) mangle_buf_append(&fb, ",");
-                mangle_buf_append(&fb, type_name(type_args[ti]));
-            }
-            mangle_buf_append(&fb, ")");
-            char *mangled = mangle_buf_take(&fb);
-
-            /* Check if already instantiated (look up in scope) */
-            Symbol *existing = scope_resolve(c->current_scope, mangled);
-            if (existing) {
-                /* Already instantiated — use existing type */
-                node->as.call.callee->resolved_type = existing->type;
-                /* Type-check arguments */
-                Type *fn_t = existing->type;
-                int argc = node->as.call.arg_count;
-                int expected = fn_t->as.function.param_count;
-                if (argc != expected) {
-                    checker_error(c, node->line, node->column,
-                        "'%s' expects %d argument(s), got %d", mangled, expected, argc);
-                    free(type_args);
-                    free(mangled);
-                    result = NULL;
-                    break;
-                }
-                for (int ai = 0; ai < argc; ai++) {
-                    Type *pt = fn_t->as.function.params[ai];
-                    /* Gap 2: auto-borrow + explicit `&x` for read-only `&T` params,
-                       matching the normal call path (type_assignable covers the
-                       `&T ← T` auto-borrow and widening). */
-                    fn_call_strip_amp_shell(node, ai, pt);
-                    checker_tag_user_from_list_literal(c, pt,
-                        node->as.call.args[ai], "argument list-literal");
-                    Type *saved_exp = c->expected_type;
-                    c->expected_type = pt;
-                    Type *at = check_expr(c, node->as.call.args[ai]);
-                    c->expected_type = saved_exp;
-                    if (at && pt && !type_assignable(pt, at)) {
-                        checker_error(c, node->as.call.args[ai]->line,
-                            node->as.call.args[ai]->column,
-                            "argument %d: expected '%s', got '%s'",
-                            ai + 1, type_name(pt), type_name(at));
-                    }
-                }
-                result = fn_t->as.function.return_type;
-                free(type_args);
-                free(mangled);
+                result = gf_result;
                 break;
             }
-
-            /* Not yet instantiated — clone, substitute, type-check, push to pending */
-            AstNode *tmpl_decl = c->fn_templates[tmpl_idx].decl_node;
-            char **tp_names = c->fn_templates[tmpl_idx].type_params;
-
-            /* Temporarily register type aliases (T→int, U→string, ...) */
-            int saved_alias_count = c->type_alias_count;
-            for (int ti = 0; ti < tp_count; ti++)
-                register_type_alias(c, tp_names[ti], type_args[ti]);
-
-            /* Resolve concrete param types and return type */
-            int pc = tmpl_decl->as.fn_decl.param_count;
-            Type **params = (Type **)malloc_safe((size_t)pc * sizeof(Type *));
-            for (int pi = 0; pi < pc; pi++) {
-                params[pi] = resolve_type_node(c, tmpl_decl->as.fn_decl.param_types[pi],
-                    node->line, node->column);
-                if (!params[pi]) params[pi] = type_int(); /* fallback */
-            }
-            Type *ret = tmpl_decl->as.fn_decl.return_type
-                ? resolve_type_node(c, tmpl_decl->as.fn_decl.return_type,
-                    node->line, node->column)
-                : type_void();
-            checker_reject_borrow_return(c, ret, NULL, node->line, node->column);  /* Phase 0/2: generic, defer */
-            Type *fn_type = type_function(params, pc, ret, false);
-
-            /* Register in scope so subsequent calls reuse */
-            scope_define(c->current_scope, mangled, fn_type);
-
-            /* Clone the fn body and type-check it */
-            AstNode *cloned = ast_clone_deep(tmpl_decl);
-            cloned->resolved_type = fn_type;
-            cloned->as.fn_decl.type_param_count = 0; /* concrete now */
-            cloned->as.fn_decl.type_param_bounds = NULL; /* don't double-free template bounds */
-
-            chk_push_scope(c);
-            for (int pi = 0; pi < pc; pi++) {
-                /* Mirror the non-generic / method-generic body-param registration:
-                   unwrap a `&T` / `&!T` param to its pointee for the body-local
-                   symbol and flag the borrow. Without this the symbol carries the
-                   bare reference type, so field access resolves the object IDENT to
-                   `&Struct` and codegen takes the is_ref_value path (load + GEP on a
-                   struct value) instead of GEP-ing the borrow pointer directly —
-                   the Gap-2 codegen miscompile for generic free-function `&T`. */
-                Type *sym_type = params[pi];
-                bool is_borrow = false, is_mut_borrow = false;
-                if (sym_type && sym_type->kind == TYPE_REFERENCE) {
-                    if (sym_type->is_mut) is_mut_borrow = true;
-                    else                  is_borrow = true;
-                    sym_type = sym_type->as.pointer_to;
-                }
-                Symbol *psym = scope_define(c->current_scope,
-                    cloned->as.fn_decl.param_names[pi], sym_type);
-                if (psym) {
-                    psym->is_borrow = is_borrow;
-                    psym->is_mut_borrow = is_mut_borrow;
-                    /* F.2: an explicit Block param is a shallow-copy borrow; a bare
-                       type-param `T` that monomorphizes to Block is owned (moved). */
-                    if (sym_type && sym_type->kind == TYPE_BLOCK) {
-                        bool is_tparam = false;
-                        TypeNode *ptn = cloned->as.fn_decl.param_types
-                                        ? cloned->as.fn_decl.param_types[pi] : NULL;
-                        if (ptn && ptn->kind == TYPE_NODE_NAMED &&
-                            ptn->as.named.arg_count == 0) {
-                            for (int t = 0; t < tp_count; t++)
-                                if (strcmp(ptn->as.named.name, tp_names[t]) == 0) {
-                                    is_tparam = true; break;
-                                }
-                        }
-                        if (!is_tparam) psym->is_borrow = true;
-                    }
-                }
-            }
-            Type *saved_ret = c->current_fn_return;
-            c->current_fn_return = ret;
-            check_stmt(c, cloned->as.fn_decl.body);
-            checker_elide_last_use(c, cloned); /* A1 clone-elision */
-            c->current_fn_return = saved_ret;
-            chk_pop_scope(c);
-
-            /* Restore type aliases */
-            c->type_alias_count = saved_alias_count;
-
-            /* Push to pending generic methods queue (reusing the same mechanism).
-               A2: when this instantiation belongs to an imported module, prefix
-               the symbol with "<modpath>__" (matching codegen's cg_module_fn_symbol
-               and current_emit_module) so two modules' same-named generics get
-               distinct LLVM symbols. The checker-internal cache key `mangled`
-               stays unprefixed (each module has its own checker/scope). */
-            char *owned_mangled = mangle_module_symbol(c->module_name, mangled);
-
-            if (c->pending_gm_count >= c->pending_gm_cap) {
-                c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
-                c->pending_generic_methods = realloc_safe(c->pending_generic_methods,
-                    (size_t)c->pending_gm_cap * sizeof(c->pending_generic_methods[0]));
-            }
-            int gm_idx = c->pending_gm_count++;
-            c->pending_generic_methods[gm_idx].cloned_fn = cloned;
-            c->pending_generic_methods[gm_idx].mangled_name = owned_mangled;
-            c->pending_generic_methods[gm_idx].struct_type = NULL; /* not a method */
-
-            /* Set callee resolved_type and check call arguments */
-            node->as.call.callee->resolved_type = fn_type;
-            int argc = node->as.call.arg_count;
-            if (argc != pc) {
-                checker_error(c, node->line, node->column,
-                    "'%s' expects %d argument(s), got %d", mangled, pc, argc);
-            }
-            for (int ai = 0; ai < argc && ai < pc; ai++) {
-                Type *pt = params[ai];
-                /* Gap 2: auto-borrow + explicit `&x` for read-only `&T` params,
-                   matching the normal call path. */
-                fn_call_strip_amp_shell(node, ai, pt);
-                checker_tag_user_from_list_literal(c, pt,
-                    node->as.call.args[ai], "argument list-literal");
-                Type *saved_exp = c->expected_type;
-                c->expected_type = pt;
-                Type *at = check_expr(c, node->as.call.args[ai]);
-                c->expected_type = saved_exp;
-                if (at && pt && !type_assignable(pt, at)) {
-                    checker_error(c, node->as.call.args[ai]->line,
-                        node->as.call.args[ai]->column,
-                        "argument %d: expected '%s', got '%s'",
-                        ai + 1, type_name(pt), type_name(at));
-                }
-            }
-            result = ret;
-            free(type_args);
-            free(mangled); /* scope_define and mangle_module_symbol both copied */
-            break;
         }
 
         /* Polymorphic built-in math dispatch: math.abs/min/max accept either
@@ -4514,279 +5318,23 @@ static Type *check_expr_call(Checker *c, AstNode *node)
             AstNode *obj_node = node->as.call.callee->as.field_access.object;
             const char *method_name = node->as.call.callee->as.field_access.field;
 
-            /* L-002: interface-qualified call `Iface.method(recv, args...)`. The
-               leading IDENT names a known interface, not a value/type. The receiver
-               is args[0]; REWRITE into an ordinary instance call so all the existing
-               receiver-resolution / borrow-gating / arg-checking below applies:
-                   Iface.m(recv, a1, ...)  ==>  recv.m(a1, ...)
-               and stamp node.qualified_iface so the resolution step picks the
-               interface overload (and codegen mangles the symbol when contended).
-               (Zero parser changes — the token shape `Ident.Ident(args)` is identical
-               to a static call; we recognize the interface name here.) */
-            if (obj_node->kind == AST_IDENT &&
-                checker_is_known_interface(c, obj_node->as.ident.name))
+            /* L-002: interface-qualified call `Iface.method(recv, args...)`
+               rewrite — see check_call_interface_qualified. */
+            if (check_call_interface_qualified(c, node, &obj_node, method_name))
             {
-                if (node->as.call.arg_count < 1)
-                {
-                    checker_error(c, node->line, node->column,
-                        "interface-qualified call '%s.%s' requires a receiver "
-                        "argument, e.g. '%s.%s(recv)'",
-                        obj_node->as.ident.name, method_name,
-                        obj_node->as.ident.name, method_name);
-                    result = NULL;
-                    break;
-                }
-                /* Stamp the interface name (owned). The resolution step frees it
-                   again if the method turns out not to be contended (plain `T.m`). */
-                free(node->as.call.qualified_iface);
-                node->as.call.qualified_iface = chk_strdup(obj_node->as.ident.name);
-                /* recv = args[0]. Strip an explicit borrow shell `&x` / `&!x`: the
-                   instance-method machinery auto-borrows the receiver (takes its
-                   address for self), so a borrow wrapper would make self a
-                   pointer-to-pointer. Mirrors fn_call_strip_amp_shell. */
-                AstNode *recv = node->as.call.args[0];
-                if (recv->kind == AST_MUT_BORROW && recv->as.mut_borrow.operand)
-                {
-                    AstNode *inner = recv->as.mut_borrow.operand;
-                    recv->as.mut_borrow.operand = NULL;
-                    ast_free(recv);
-                    recv = inner;
-                }
-                else if (recv->kind == AST_UNARY && recv->as.unary.op == TOKEN_AMP &&
-                         recv->as.unary.operand &&
-                         (recv->as.unary.operand->kind == AST_IDENT ||
-                          recv->as.unary.operand->kind == AST_FIELD ||
-                          recv->as.unary.operand->kind == AST_INDEX))
-                {
-                    AstNode *inner = recv->as.unary.operand;
-                    recv->as.unary.operand = NULL;
-                    ast_free(recv);
-                    recv = inner;
-                }
-                /* install recv as the field object, shift the remaining args left. */
-                for (int ai = 1; ai < node->as.call.arg_count; ai++)
-                    node->as.call.args[ai - 1] = node->as.call.args[ai];
-                node->as.call.arg_count--;
-                node->as.call.callee->as.field_access.object = recv;
-                ast_free(obj_node);   /* detached interface IDENT */
-                obj_node = recv;
+                result = NULL;
+                break;
             }
 
-            /* ③ case B: `Box(Str).reflect()` with a USER-TYPE arg parses as a call
-               `Box(Str)` (Str is an IDENT, ambiguous with a value at parse time) —
-               object is AST_CALL(callee=IDENT, args=[type-name idents]). Disambiguate
-               HERE with type info: if the callee names a GENERIC STRUCT TEMPLATE (you
-               can't "call" a struct, so this can only be an instantiation) and every
-               arg is a bare type name, REWRITE the object into an AST_IDENT carrying
-               type args — then the case-A branch below instantiates + dispatches it.
-               A real `make_box(cfg).render()` call-chain is untouched (make_box is not
-               a generic struct template → find_struct_template_idx returns -1). */
-            if (obj_node->kind == AST_CALL &&
-                obj_node->as.call.callee &&
-                obj_node->as.call.callee->kind == AST_IDENT &&
-                obj_node->as.call.arg_count > 0 &&
-                obj_node->as.call.type_arg_count == 0 &&
-                find_struct_template_idx(c, obj_node->as.call.callee->as.ident.name) >= 0)
+            /* Static-by-typename detection (case B / case ③ rewrites + the four
+               `StructName.m()` / `EnumName.m()` / type-alias-param / builtin-
+               primitive checks) — see check_call_static_method. */
+            if (check_call_static_method(c, node, &obj_node, method_name,
+                                          &is_static_call, &method_struct))
             {
-                bool all_type_idents = true;
-                for (int ai = 0; ai < obj_node->as.call.arg_count; ai++)
-                    if (obj_node->as.call.args[ai] == NULL ||
-                        obj_node->as.call.args[ai]->kind != AST_IDENT)
-                        { all_type_idents = false; break; }
-                if (all_type_idents)
-                {
-                    const char *gname = obj_node->as.call.callee->as.ident.name;
-                    int ac = obj_node->as.call.arg_count;
-                    AstNode *idn = ast_new(AST_IDENT, obj_node->line, obj_node->column);
-                    size_t gl = strlen(gname) + 1;
-                    idn->as.ident.name = (char *)malloc_safe(gl);
-                    memcpy(idn->as.ident.name, gname, gl);
-                    idn->as.ident.type_args =
-                        (TypeNode **)malloc_safe((size_t)ac * sizeof(TypeNode *));
-                    idn->as.ident.type_arg_count = ac;
-                    for (int ai = 0; ai < ac; ai++)
-                    {
-                        const char *an = obj_node->as.call.args[ai]->as.ident.name;
-                        TypeNode *atn = (TypeNode *)malloc_safe(sizeof(TypeNode));
-                        memset(atn, 0, sizeof(TypeNode));
-                        atn->kind = TYPE_NODE_NAMED;
-                        size_t al = strlen(an) + 1;
-                        atn->as.named.name = (char *)malloc_safe(al);
-                        memcpy(atn->as.named.name, an, al);
-                        idn->as.ident.type_args[ai] = atn;
-                    }
-                    ast_free(obj_node);
-                    node->as.call.callee->as.field_access.object = idn;
-                    obj_node = idn;
-                }
+                result = NULL;
+                break;
             }
-
-            /* ③: static call on a parameterized generic instance written directly,
-               `Box(int).reflect()` / `Box(int).from_value(v)`. The parser produced an
-               AST_IDENT carrying type args (for type-keyword args). Instantiate
-               name(type_args) into the concrete struct/enum type and dispatch the
-               static method on it, mirroring the `type BI = Box(int); BI.reflect()`
-               alias path (which find_type_alias resolves below). Stamp resolved_type
-               so codegen derives the instance's symbol. */
-            if (obj_node->kind == AST_IDENT && obj_node->as.ident.type_arg_count > 0)
-            {
-                TypeNode tn;
-                memset(&tn, 0, sizeof(tn));
-                tn.kind = TYPE_NODE_NAMED;
-                tn.as.named.name = (char *)obj_node->as.ident.name;
-                tn.as.named.args = obj_node->as.ident.type_args;
-                tn.as.named.arg_count = obj_node->as.ident.type_arg_count;
-                Type *inst = resolve_type_node(c, &tn, node->line, node->column);
-                if (inst && (inst->kind == TYPE_STRUCT || inst->kind == TYPE_ENUM))
-                {
-                    const char *inst_key = impl_key_of_type(inst);
-                    if (inst_key)
-                    {
-                        int si = method_is_static(c, inst_key, method_name);
-                        if (si < 0 && inst->kind == TYPE_STRUCT &&
-                            inst->as.strukt.generic_base)
-                        {
-                            ensure_generic_struct_impls_local(c, inst);
-                            si = method_is_static(c, inst_key, method_name);
-                        }
-                        if (si >= 0)
-                        {
-                            method_struct = inst_key;
-                            is_static_call = true;
-                            obj_node->resolved_type = inst; /* codegen symbol source */
-                            if (si == 0)
-                            {
-                                checker_error(c, node->line, node->column,
-                                    "cannot call instance method '%s' on type '%s'; use an instance",
-                                    method_name, inst_key);
-                                result = NULL;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            /* Check if obj is a struct type name (static call: Point.origin()) */
-            if (obj_node->kind == AST_IDENT && !is_static_call)
-            {
-                Type *st = find_struct_type(c, obj_node->as.ident.name);
-                if (st && st->kind == TYPE_STRUCT)
-                {
-                    const char *st_key = impl_key_of_type(st);  /* B-4.1 */
-                    int si = method_is_static(c, st_key, method_name);
-                    if (si >= 0)
-                    {
-                        method_struct = st_key;
-                        is_static_call = true;
-                        if (si == 0)
-                        {
-                            /* Calling instance method via type name — error */
-                            checker_error(c, node->line, node->column,
-                                          "cannot call instance method '%s' on type '%s'; use an instance",
-                                          method_name, method_struct);
-                            result = NULL;
-                            break;
-                        }
-                    }
-                    }
-                }
-                /* Check if obj is an enum type name (static call: JsonValue.parse()) */
-                if (obj_node->kind == AST_IDENT && !is_static_call)
-                {
-                    Type *et = find_enum_type(c, obj_node->as.ident.name);
-                    if (et && et->kind == TYPE_ENUM)
-                    {
-                        const char *et_key = impl_key_of_type(et);  /* B-4.1 */
-                        int si = method_is_static(c, et_key, method_name);
-                        if (si >= 0)
-                        {
-                            method_struct = et_key;
-                            is_static_call = true;
-                            if (si == 0)
-                            {
-                                checker_error(c, node->line, node->column,
-                                              "cannot call instance method '%s' on type '%s'; use an instance",
-                                              method_name, method_struct);
-                                result = NULL;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                /* Static call via a generic type parameter: `T.zero()` where T is a
-                   type alias bound during monomorphization (T → Complex(f64) / int).
-                   find_struct_type/find_enum_type miss on the bare param name; resolve
-                   it through the type-alias table, then dispatch the static method on
-                   the concrete type. Stamp obj_node->resolved_type so codegen derives
-                   the right symbol (Struct.llvm_name.method / int.method). */
-                if (obj_node->kind == AST_IDENT && !is_static_call)
-                {
-                    Type *al = find_type_alias(c, obj_node->as.ident.name);
-                    if (al)
-                    {
-                        const char *al_key = (al->kind == TYPE_STRUCT || al->kind == TYPE_ENUM)
-                                                 ? impl_key_of_type(al)
-                                                 : type_impl_name(al);
-                        if (al_key)
-                        {
-                            int si = method_is_static(c, al_key, method_name);
-                            if (si < 0 && al->kind == TYPE_STRUCT && al->as.strukt.generic_base)
-                            {
-                                ensure_generic_struct_impls_local(c, al);
-                                si = method_is_static(c, al_key, method_name);
-                            }
-                            if (si >= 0)
-                            {
-                                method_struct = al_key;
-                                is_static_call = true;
-                                obj_node->resolved_type = al; /* codegen symbol source */
-                                if (si == 0)
-                                {
-                                    checker_error(c, node->line, node->column,
-                                                  "cannot call instance method '%s' on type parameter; use an instance",
-                                                  method_name);
-                                    result = NULL;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                /* Static call on a literal primitive type name: `int.from_value(v)`
-                   / `bool.show()`. Arises from the comptime `f.type` handle lowering
-                   to the field's concrete type name (and is a reasonable spelling on
-                   its own). find_struct_type / find_enum_type / find_type_alias all
-                   miss a bare primitive keyword-name; resolve it via the builtin-type
-                   table (same key as the T-alias-to-primitive path: type_impl_name). */
-                if (obj_node->kind == AST_IDENT && !is_static_call)
-                {
-                    Type *bt = resolve_builtin_type_by_name(obj_node->as.ident.name);
-                    if (bt)
-                    {
-                        const char *bt_key = type_impl_name(bt);
-                        if (bt_key)
-                        {
-                            int si = method_is_static(c, bt_key, method_name);
-                            if (si >= 0)
-                            {
-                                method_struct = bt_key;
-                                is_static_call = true;
-                                obj_node->resolved_type = bt; /* codegen symbol source */
-                                if (si == 0)
-                                {
-                                    checker_error(c, node->line, node->column,
-                                                  "cannot call instance method '%s' on type '%s'; use an instance",
-                                                  method_name, bt_key);
-                                    result = NULL;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
 
                 /* If not a struct-type static call, resolve the object expression */
             if (!is_static_call)
@@ -4983,155 +5531,12 @@ static Type *check_expr_call(Checker *c, AstNode *node)
         {
             const char *method_name = node->as.call.callee->as.field_access.field;
 
-            /* L-002: interface-qualified call `Iface.m(recv)` (rewritten above to
-               `recv.m(...)` with qualified_iface stamped). Select the interface
-               overload by origin rather than the inherent-preferring find_method,
-               and keep qualified_iface set ONLY if the method is contended (so
-               codegen mangles to `T.<Iface>.m`; a single-provider interface keeps
-               the plain `T.m`). */
-            if (node->as.call.qualified_iface && is_method_call)
+            /* Interface-overload selection / plain find_method / method-level
+               generic instantiation / explicit __drop() rejection — see
+               check_call_instance_method. */
+            if (check_call_instance_method(c, node, is_method_call, is_static_call,
+                                            method_struct, method_name, &callee_type))
             {
-                const char *qi = node->as.call.qualified_iface;
-                callee_type = find_method_origin(c, method_struct, method_name, qi);
-                if (callee_type == NULL)
-                {
-                    checker_error(c, node->line, node->column,
-                        "interface '%s' has no method '%s' for type '%s'",
-                        qi, method_name, method_struct);
-                    result = NULL;
-                    break;
-                }
-                node->as.call.callee->resolved_type = callee_type;
-                int inh = 0, ifc = 0;
-                method_providers(c, method_struct, method_name, &inh, &ifc, NULL, NULL);
-                if (inh + ifc < 2)
-                {
-                    free(node->as.call.qualified_iface);  /* not contended → plain T.m */
-                    node->as.call.qualified_iface = NULL;
-                }
-                /* L-002 v2: for a generic instance, force-instantiate THIS overload's
-                   body, keyed by the iface-aware lazy symbol (`T.<Iface>.m` when
-                   contended, else `T.m`). No-op for non-generic types (no lazy entry).
-                   Without this the qualified path would skip instantiation → JIT
-                   "Symbols not found". */
-                {
-                    char qsym[512];
-                    if (node->as.call.qualified_iface)
-                        snprintf(qsym, sizeof(qsym), "%s.%s.%s", method_struct,
-                                 node->as.call.qualified_iface, method_name);
-                    else
-                        snprintf(qsym, sizeof(qsym), "%s.%s", method_struct, method_name);
-                    ensure_generic_method_instantiated_sym(c, method_struct, qsym,
-                                                           node->line, node->column);
-                }
-                goto after_method_check;
-            }
-
-            /* L-002: bare instance dispatch `obj.m()` where `m` is ambiguous —
-               no inherent provider and >=2 interfaces provide it. The user must
-               disambiguate with a qualified call `Iface.m(recv)`. (Inherent
-               priority resolves the "inherent + interface" overlap silently;
-               only the "all-interface, >=2" case is irresolvable here.) */
-            if (is_method_call && !is_static_call)
-            {
-                int inh = 0, ifc = 0; const char *ia = NULL, *ib = NULL;
-                method_providers(c, method_struct, method_name, &inh, &ifc, &ia, &ib);
-                if (inh == 0 && ifc >= 2)
-                {
-                    checker_error(c, node->line, node->column,
-                        "ambiguous method '%s' on type '%s': provided by interfaces "
-                        "'%s' and '%s'; disambiguate with a qualified call, "
-                        "e.g. '%s.%s(recv)'",
-                        method_name, method_struct, ia, ib, ia, method_name);
-                    result = NULL;
-                    break;
-                }
-            }
-
-            callee_type = find_method(c, method_struct, method_name);
-            if (callee_type == NULL)
-            {
-                char helpbuf[256];
-                DiagMethodIter it = { c, NULL, method_struct, 0, 0, 0, false };
-                const char *help = diag_help_suggestion(
-                    helpbuf, sizeof(helpbuf), method_name,
-                    diag_method_iter_next, &it);
-                checker_error_help(c, node->line, node->column, 1, help,
-                                   "type '%s' has no method '%s'",
-                                   method_struct, method_name);
-                result = NULL;
-                break;
-            }
-
-            /* Method-level generic: if the call site provides type args, try
-               to build the concrete signature on-the-fly.  The placeholder
-               returned by find_method has type_void() — the real type is built
-               and body-checked here. */
-            if (node->as.call.type_arg_count > 0) {
-                Type *concrete = try_instantiate_method_level_generic(
-                    c, method_struct, method_name,
-                    node->as.call.type_args, node->as.call.type_arg_count,
-                    NULL, node->line, node->column);
-                if (concrete) {
-                    callee_type = concrete;
-                    node->as.call.callee->resolved_type = callee_type;
-                    /* Stash the resolved (concrete) method-level type-arg names so
-                       codegen mangles the call as `Type.method(int)` not
-                       `Type.method(T)` when called with an abstract type param
-                       inside a generic body. The alias (T→int) is active here, so
-                       resolve_type_node yields the concrete type; codegen has no
-                       alias context and would otherwise re-mangle the raw `T`.
-                       Mirrors the closure-inference and free-function paths. */
-                    if (node->as.call.resolved_type_args == NULL) {
-                        int tac = node->as.call.type_arg_count;
-                        Type **rargs = (Type **)malloc_safe((size_t)(tac > 0 ? tac : 1)
-                                                            * sizeof(Type *));
-                        for (int ti = 0; ti < tac; ti++)
-                            rargs[ti] = resolve_type_node(c, node->as.call.type_args[ti],
-                                                          node->line, node->column);
-                        checker_stash_resolved_type_args(c, node, rargs, tac);
-                        free(rargs);
-                    }
-                    /* Body already checked+queued by try_instantiate; skip lazy path */
-                    goto after_method_check;
-                }
-            } else {
-                /* No explicit type args: try to infer a single method-level
-                   type param from a closure arg's return type, so
-                   `v.map(|x| x+1)` works like `v.map(int)(|x| x+1)`. */
-                Type *concrete = try_infer_method_generic_from_closure(
-                    c, method_struct, method_name, node,
-                    node->line, node->column);
-                if (concrete) {
-                    callee_type = concrete;
-                    node->as.call.callee->resolved_type = callee_type;
-                    goto after_method_check;
-                }
-            }
-
-            if (!ensure_generic_method_instantiated(c, method_struct, method_name,
-                                                     node->line, node->column))
-            {
-                result = NULL;
-                break;
-            }
-            /* Set resolved_type on the callee node so codegen can find it */
-            node->as.call.callee->resolved_type = callee_type;
-
-            after_method_check: ;
-
-            /* A-2 (docs/bugs_deferred_p5_4.md §2): explicit `.__drop()` calls in
-               source are rejected. The compiler manages destruction automatically
-               (RAII at scope exit); an explicit call is always a double-free
-               footgun, and for a compiler-generated member __drop the symbol may
-               not even be emitted (JIT "Symbols not found"). Block it cleanly at
-               the checker rather than crashing/double-freeing at runtime. */
-            if (strcmp(method_name, "__drop") == 0 && is_method_call)
-            {
-                checker_error(c, node->line, node->column,
-                              "cannot call __drop() explicitly; the compiler "
-                              "destroys values automatically at scope exit "
-                              "(an explicit call would double-free)");
                 result = NULL;
                 break;
             }
@@ -5140,35 +5545,11 @@ static Type *check_expr_call(Checker *c, AstNode *node)
         {
             /* Variant ctor short-circuit: callee is an IDENT matching a registered
                enum variant.  Handles `RGB(1,2,3)`, `Some(x)`, etc. */
-            if (node->as.call.callee->kind == AST_IDENT)
             {
-                Type *enum_type = NULL;
-                int variant_idx = -1;
-                int matches = find_variant(c,
-                    node->as.call.callee->as.ident.name, &enum_type, &variant_idx);
-                if (matches == 1)
+                Type *vc_result = NULL;
+                if (check_call_variant_ctor(c, node, &vc_result))
                 {
-                    result = check_variant_ctor(c, node, enum_type, variant_idx,
-                                                node->as.call.args, node->as.call.arg_count);
-                    break;
-                }
-                if (matches > 1)
-                {
-                    /* Disambiguate a payload variant ctor (e.g. `Some(x)`/`Ok(x)`/
-                       `Err(e)`) by a type hint (prior resolution, then expected). */
-                    Type *eet = NULL; int evi = -1;
-                    if (disambig_variant_by_hint(c, node,
-                            node->as.call.callee->as.ident.name, &eet, &evi))
-                    {
-                        result = check_variant_ctor(c, node, eet, evi,
-                                                    node->as.call.args,
-                                                    node->as.call.arg_count);
-                        break;
-                    }
-                    checker_error(c, node->line, node->column,
-                                  "ambiguous variant name '%s' (matches multiple enums)",
-                                  node->as.call.callee->as.ident.name);
-                    result = NULL;
+                    result = vc_result;
                     break;
                 }
             }
@@ -5189,231 +5570,10 @@ static Type *check_expr_call(Checker *c, AstNode *node)
             break;
         }
 
-        /* Phase B: Block-typed callees use the same param/return layout as
-           TYPE_FUNCTION (the only difference is ABI — codegen lowers as an
-           indirect call through a fat pointer). The arity / arg-type checks
-           below treat both kinds identically. */
-        if (callee_type->kind != TYPE_FUNCTION &&
-            callee_type->kind != TYPE_BLOCK)
-        {
-            checker_error(c, node->line, node->column,
-                          "cannot call non-function type '%s'", type_name(callee_type));
-            result = NULL;
-            break;
-        }
-
-        int expected = callee_type->as.function.param_count;
-        int actual = node->as.call.arg_count;
-
-        /* For instance method calls, the first param is the implicit self pointer.
-           The user provides (expected - 1) arguments. */
-        int user_expected = is_method_call ? expected - 1 : expected;
-        int param_offset = is_method_call ? 1 : 0;
-
-        /* Special case: print() requires at least 1 argument */
-        if (callee_type->as.function.is_vararg && user_expected == 0 && actual == 0 && node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "@print") == 0)
-        {
-            checker_error(c, node->line, node->column,
-                          "@print() requires at least 1 argument");
-            result = NULL;
-            break;
-        }
-
-        if (callee_type->as.function.is_vararg)
-        {
-            if (actual < user_expected)
-            {
-                checker_error(c, node->line, node->column,
-                              "too few arguments: expected at least %d, got %d", user_expected, actual);
-                result = NULL;
-                break;
-            }
-        }
-        else
-        {
-            /* Param defaults (档1): trailing params with a default may be omitted.
-               min_required = count of user params without a default. */
-            int min_required = user_expected;
-            if (callee_type->as.function.param_defaults)
-            {
-                min_required = 0;
-                for (int i = param_offset; i < expected; i++)
-                    if (callee_type->as.function.param_defaults[i] == NULL)
-                        min_required++;
-            }
-            if (actual < min_required || actual > user_expected)
-            {
-                if (min_required == user_expected)
-                    checker_error(c, node->line, node->column,
-                                  "wrong number of arguments: expected %d, got %d",
-                                  user_expected, actual);
-                else
-                    checker_error(c, node->line, node->column,
-                                  "wrong number of arguments: expected %d..%d, got %d",
-                                  min_required, user_expected, actual);
-                result = NULL;
-                break;
-            }
-        }
-
-        /* Check argument types for non-vararg params (skip self param for instance methods) */
-        bool args_ok = true;
-
-        /* LS uses clone semantics: struct/string arguments are deep-copied on every call.
-           No move tracking needed — the caller retains ownership of its variables. */
-        for (int i = 0; i < user_expected && i < actual; i++)
-        {
-            /* Phase B closure: propagate the declared param type as expected_type
-               so a Ruby-style closure literal (`|x| body`) at this position can
-               infer its untyped params from the callee's `Block(...)` signature. */
-            Type *param_type = callee_type->as.function.params[i + param_offset];
-            /* §13: explicit `&x` / `&obj.field` argument to a read-only `&T`
-               parameter — strip the address-of shell so the call takes the
-               proven auto-borrow path (identical to passing the lvalue bare).
-               Without this, `&x` types as a raw `*T` and mismatches the `&T`
-               formal. A field operand (`&self.value`) is the read-only twin of
-               the `&!self.value` field borrow (AST_MUT_BORROW) — it lends a
-               read-only `&T` of the field, zero-copy. Writable borrows stay
-               explicit `&!x` (AST_MUT_BORROW — untouched here). */
-            {
-                AstNode *argn = node->as.call.args[i];
-                if (param_type && param_type->kind == TYPE_REFERENCE &&
-                    !param_type->is_mut &&
-                    argn->kind == AST_UNARY && argn->as.unary.op == TOKEN_AMP &&
-                    (argn->as.unary.operand->kind == AST_IDENT ||
-                     argn->as.unary.operand->kind == AST_FIELD ||
-                     argn->as.unary.operand->kind == AST_INDEX))
-                {
-                    /* shell intentionally leaked, same as the index-protocol rewrite */
-                    node->as.call.args[i] = argn->as.unary.operand;
-                }
-            }
-            /* Array-literal argument to a user-container param (Vec etc. with
-               __from_list): tag it so codegen emits the from_list value, just
-               like the var-decl / struct-field positions. Lets `f(["a","b"])`
-               work where f takes Vec(Str), not only `Vec(Str) v=[..]; f(v)`.
-               Self-guarded: no-op unless param is a from_list struct and the
-               arg is an array literal. */
-            checker_tag_user_from_list_literal(c, param_type,
-                node->as.call.args[i], "argument list-literal");
-            Type *saved_exp = c->expected_type;
-            c->expected_type = param_type;
-            Type *arg_type = check_expr(c, node->as.call.args[i]);
-            c->expected_type = saved_exp;
-            if (arg_type == NULL)
-            {
-                args_ok = false;
-                continue;
-            }
-            if (!type_assignable(param_type, arg_type))
-            {
-                checker_error(c, node->as.call.args[i]->line, node->as.call.args[i]->column,
-                              "argument %d: expected '%s', got '%s'",
-                              i + 1,
-                              type_name(param_type),
-                              type_name(arg_type));
-                args_ok = false;
-            }
-        }
-        /* Check vararg args (just resolve types, no checking) */
-        bool is_print_call = node->as.call.callee->kind == AST_IDENT &&
-                             strcmp(node->as.call.callee->as.ident.name, "@print") == 0;
-        for (int i = user_expected; i < actual; i++)
-        {
-            Type *at = check_expr(c, node->as.call.args[i]);
-            /* C-2: print(x) for a Show struct/enum renders via Show — rewrite the
-               arg to to_str(x) (Str), which print prints as raw text. */
-            if (is_print_call && type_is_show_aggregate(c, at))
-            {
-                wrap_arg_in_to_str(&node->as.call.args[i]);
-                check_expr(c, node->as.call.args[i]);
-            }
-        }
-
-        /* Param defaults (档1): append cloned default exprs for omitted trailing
-           params so codegen sees a complete arg list (no codegen changes).
-           Idempotent: after appending, arg_count == user_expected. */
-        if (args_ok && callee_type->as.function.param_defaults && actual < user_expected)
-        {
-            node->as.call.args = (AstNode **)realloc_safe(
-                node->as.call.args, (size_t)user_expected * sizeof(AstNode *));
-            for (int i = actual; i < user_expected; i++)
-            {
-                AstNode *pd = (AstNode *)callee_type->as.function.param_defaults[i + param_offset];
-                AstNode *clone = ast_clone_deep(pd);
-                Type *pt = callee_type->as.function.params[i + param_offset];
-                Type *se = c->expected_type;
-                if (pt && (pt->kind == TYPE_STRUCT || pt->kind == TYPE_BLOCK))
-                    c->expected_type = pt;
-                check_expr(c, clone);
-                c->expected_type = se;
-                node->as.call.args[i] = clone;
-            }
-            node->as.call.arg_count = user_expected;
-            actual = user_expected;
-        }
-
-        /* Phase 5.5 Step 4 — call-site aliasing check for writable borrows.
-           Forbid passing the same variable in any of these conflicting combinations
-           at a single call:
-             f(&!x, &!x)   — two writable aliases
-             f(&!x, x)     — writable + read-only auto-borrow (x -> &string param)
-             f(&!x, &x)    — same, with explicit & (rare)
-           Only check pairs where at least one side is a writable borrow. */
-        if (args_ok)
-        {
-            int n = user_expected < actual ? user_expected : actual;
-            for (int i = 0; i < n; i++)
-            {
-                AstNode *ai = node->as.call.args[i];
-                if (ai == NULL || ai->kind != AST_MUT_BORROW) continue;
-                AstNode *op_i = ai->as.mut_borrow.operand;
-                if (op_i == NULL || op_i->kind != AST_IDENT) continue;
-                const char *name_i = op_i->as.ident.name;
-
-                for (int j = i + 1; j < n; j++)
-                {
-                    AstNode *aj = node->as.call.args[j];
-                    if (aj == NULL) continue;
-
-                    const char *name_j = NULL;
-                    const char *j_kind = NULL;
-                    if (aj->kind == AST_MUT_BORROW &&
-                        aj->as.mut_borrow.operand &&
-                        aj->as.mut_borrow.operand->kind == AST_IDENT)
-                    {
-                        name_j = aj->as.mut_borrow.operand->as.ident.name;
-                        j_kind = "another writable borrow";
-                    }
-                    else if (aj->kind == AST_IDENT)
-                    {
-                        /* Only flag when the other arg binds to a parameter that
-                           shares state (&T/&!T, or string-by-value which clones
-                           at runtime — BUT cloning happens AFTER the writable
-                           borrow is already holding the pointer; ordering of
-                           eval is left-to-right so later by-value clone would
-                           see a possibly-mutated snapshot, which is confusing.
-                           Conservatively flag TYPE_REFERENCE on the other side. */
-                        Type *pj = callee_type->as.function.params[j + param_offset];
-                        if (pj && pj->kind == TYPE_REFERENCE)
-                        {
-                            name_j = aj->as.ident.name;
-                            j_kind = "read-only borrow";
-                        }
-                    }
-                    if (name_j && strcmp(name_i, name_j) == 0)
-                    {
-                        checker_error(c, aj->line, aj->column,
-                                      "variable '%s' is already passed as writable borrow "
-                                      "at argument %d; cannot also pass as %s here",
-                                      name_i, i + 1, j_kind);
-                        args_ok = false;
-                    }
-                }
-            }
-        }
-
-        result = args_ok ? callee_type->as.function.return_type : NULL;
+        /* Shared call-site validation tail (arity, per-arg types, varargs,
+           param defaults, writable-borrow aliasing) — see
+           check_call_arguments. */
+        result = check_call_arguments(c, node, callee_type, is_method_call ? 1 : 0);
         break;
     } while (0);
     return result;
