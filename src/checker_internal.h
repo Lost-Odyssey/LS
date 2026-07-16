@@ -17,6 +17,7 @@
                           bit patterns, for-in desugar, operator-overload traits).
      - checker_borrow.c — move/borrow analysis, capture scan, move snapshots.
      - checker_elide.c  — A1 clone-elision last-use pass.
+     - checker_comptime.c — compile-time constant evaluator (comptime for/const).
    Each prototype's owning TU is noted inline in the block below.
 
    The public Checker struct / checker API lives in checker.h (included below). */
@@ -47,6 +48,30 @@ typedef struct {
 } IntrinsicDef;
 
 const IntrinsicDef *intrinsic_lookup(const char *name);
+
+/* ---- Compile-time constant evaluator (checker_comptime.c) ----
+   docs/plan_comptime_consteval.md. check_expr/check_stmt's AST_BLOCK arms
+   call comptime_expand_block before checking a block's statements (Stage 3b:
+   unrolls `comptime for f in fields(T) { ... }` in place); check_stmt's
+   AST_COMPTIME_CONST arm drives the scalar/array interpreter (CtEval/
+   CtScalar/CtFlow) directly to evaluate a `comptime const` initializer. */
+typedef struct { bool is_float; long long i; double f; } CtScalar;
+#define CT_BUDGET_DEFAULT 10000000L
+typedef struct {
+    const char **names; CtScalar *vals; int count, cap;            /* scalar locals */
+    const char **anames; CtScalar **arrs; int *alens; bool *afloat; /* array locals (Step 4) */
+    int acount, acap;
+    const char *ret_array;  /* set by `return <arrayvar>` to signal an array result */
+    long budget;
+} CtEval;
+typedef enum { CT_NORMAL, CT_RETURNED, CT_FAIL } CtFlow;
+
+double cts_to_f(const CtScalar *v);
+bool ct_eval_scalar(Checker *c, AstNode *e, CtEval *ev, CtScalar *out);
+CtFlow ct_exec_block(Checker *c, AstNode *blk, CtEval *ev, CtScalar *ret);
+void ct_env_free(CtEval *ev);
+int ct_aenv_find(const CtEval *ev, const char *name);
+void comptime_expand_block(Checker *c, AstNode *block);
 
 /* ---- A1 clone-elision (checker_elide.c) ----
    Last-use analysis over a fully-checked fn body: tags provably-final

@@ -99,6 +99,7 @@ set(LS_CHECKER_SOURCES
     src/checker_lower.c
     src/checker_decl.c
     src/checker_elide.c
+    src/checker_comptime.c
 )
 
 # codegen translation units (split per docs/plan_codegen_split.md).
