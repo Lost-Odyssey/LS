@@ -61,6 +61,7 @@ typedef enum {
 char *str_dup_n(const char *s, int len);
 AstNode *new_node(AstNodeType kind, int line, int col);
 TypeNode *new_type_node(TypeNodeKind kind, int line, int col);
+void error_at(Parser *p, Token *tok, const char *msg);
 void error_at_current(Parser *p, const char *msg);
 void error_at_previous(Parser *p, const char *msg);
 void error_at_previous_no_panic(Parser *p, const char *msg);
