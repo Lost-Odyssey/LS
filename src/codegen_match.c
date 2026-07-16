@@ -29,6 +29,13 @@ static bool cg_pattern_has_bit_seq(const AstNode *pat);
 static int match_collect_int_vals(AstNode *pat, long long *out, int max);
 static bool match_pattern_all_int_const(AstNode *pat);
 static bool cg_match_subject_is_owned_rvalue(const AstNode *subject);
+static LLVMValueRef cg_match_lower_enum(CodegenContext *ctx, AstNode *node,
+                                         LLVMValueRef subject, Type *subj_type,
+                                         Type *result_type, LLVMTypeRef res_llvm,
+                                         LLVMBasicBlockRef merge_bb,
+                                         LLVMValueRef result_alloca,
+                                         bool subj_owned_temp, int audit_in_count,
+                                         int saved_drop_base);
 
 /* L-013: unwrap a match-arm body to its tail expression (the value the arm yields).
    For a block body `=> { ...; E }` the tail is the last statement's expression;
@@ -379,74 +386,23 @@ LLVMValueRef codegen_match_expr(CodegenContext *ctx, AstNode *node)
     return r;
 }
 
-/* Extracted from codegen_expr's switch (codegen.c split Step 4): the
-   AST_MATCH case body, verbatim. Behavior unchanged — ctx->current_node is
-   already set by codegen_expr before dispatch. */
-static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
+/* codegen_match_expr_impl split (Task 3.4): the enum-subject lowering
+   strategy (switch on discriminant + binder extraction), extracted verbatim.
+   The caller captures the shared entry-state (subject codegen, result_type/
+   res_llvm, merge_bb, result_alloca + its zero-init/A6 registration) and the
+   audit/floor snapshots this strategy alone consumes (subj_owned_temp,
+   audit_in_count, saved_drop_base) and threads them in as parameters — the
+   floor raise/restore around the arm loop (ctx->temp_drop_base) is
+   enum-path-only bookkeeping local to this strategy, so it travels with the
+   body rather than staying split across the call boundary. */
+static LLVMValueRef cg_match_lower_enum(CodegenContext *ctx, AstNode *node,
+                                         LLVMValueRef subject, Type *subj_type,
+                                         Type *result_type, LLVMTypeRef res_llvm,
+                                         LLVMBasicBlockRef merge_bb,
+                                         LLVMValueRef result_alloca,
+                                         bool subj_owned_temp, int audit_in_count,
+                                         int saved_drop_base)
 {
-        /* Compile match as cascading if-else.
-           Subject is only read (compared against patterns), so borrow vec[i] strings. */
-        LLVMValueRef subject = codegen_expr_or_borrow(ctx, node->as.match.subject);
-        if (subject == NULL)
-            return NULL;
-
-        Type *result_type = node->resolved_type;
-        LLVMTypeRef res_llvm = result_type ? type_to_llvm(ctx, result_type)
-                                           : LLVMInt32TypeInContext(ctx->context);
-
-        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(
-            ctx->context, ctx->current_fn, "match.end");
-
-        /* Protect the subject temp(s) from arm-internal statement flushes: raise
-           the flush floor to the current live-temp count after the subject is
-           pushed (set below), restore on the enum path's exits. Without this an
-           `@print`/`if`/`while` inside an arm resets temp_drop_count to 0,
-           collapsing below the arm's drop_floor — later borrow-arg temps then
-           reuse the freed low slots, and a not-taken branch leaves one
-           uninitialised, re-exposed by the arm encapsulate (invalid free). */
-        int saved_drop_base = ctx->temp_drop_base;
-
-        /* Alloca for result */
-        LLVMValueRef result_alloca = NULL;
-        if (result_type && result_type->kind != TYPE_VOID)
-        {
-            LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
-            LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx->context);
-            LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
-            if (first_inst)
-                LLVMPositionBuilderBefore(tmp, first_inst);
-            else
-                LLVMPositionBuilderAtEnd(tmp, entry);
-            result_alloca = LLVMBuildAlloca(tmp, res_llvm, "match.res");
-            /* L-013: zero-initialize so a path that reaches merge without storing
-               (e.g. a non-exhaustive integer match's default branch) leaves the
-               registered result temp with cap=0 / empty → its free/drop is skipped. */
-            LLVMBuildStore(tmp, LLVMConstNull(res_llvm), result_alloca);
-            LLVMDisposeBuilder(tmp);
-
-            /* A6 (own-audit): expose this slot to cg_push_temp_drop's guard;
-               the wrapper restores the depth on every exit path. */
-            if (ctx->own_audit_match_res_depth <
-                    (int)(sizeof ctx->own_audit_match_res / sizeof ctx->own_audit_match_res[0]))
-                ctx->own_audit_match_res[ctx->own_audit_match_res_depth++] = result_alloca;
-        }
-
-        Type *subj_type = node->as.match.subject->resolved_type;
-        bool is_fp = subj_type && type_is_float(subj_type);
-
-        /* L-012: owned rvalue-temp scrutinee → clone binders + drop subject.
-           Full form × read-path-clone contract table lives on the predicate. */
-        bool subj_owned_temp =
-            cg_match_subject_is_owned_rvalue(node->as.match.subject);
-        /* own-audit A1 (enum path): entry snapshot for the exit upper-bound
-           check. (An exact-occupancy formula was tried and reverted: an
-           early-return arm's scope-exit flush legitimately drains the subject
-           and outer entries, so only the growth direction is checkable.) */
-        int audit_in_count = ctx->temp_drop_count;
-
-        /* ---- Enum subject: switch on discriminant + binder extraction ---- */
-        if (subj_type && subj_type->kind == TYPE_ENUM)
-        {
             LLVMTypeRef enum_llvm = type_to_llvm(ctx, subj_type);
             LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx->context);
             LLVMTypeRef ptr_type = LLVMPointerTypeInContext(ctx->context, 0);
@@ -854,6 +810,80 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
             if (result_alloca)
                 return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
             return NULL;
+}
+
+/* Extracted from codegen_expr's switch (codegen.c split Step 4): the
+   AST_MATCH case body, verbatim. Behavior unchanged — ctx->current_node is
+   already set by codegen_expr before dispatch. */
+static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
+{
+        /* Compile match as cascading if-else.
+           Subject is only read (compared against patterns), so borrow vec[i] strings. */
+        LLVMValueRef subject = codegen_expr_or_borrow(ctx, node->as.match.subject);
+        if (subject == NULL)
+            return NULL;
+
+        Type *result_type = node->resolved_type;
+        LLVMTypeRef res_llvm = result_type ? type_to_llvm(ctx, result_type)
+                                           : LLVMInt32TypeInContext(ctx->context);
+
+        LLVMBasicBlockRef merge_bb = LLVMAppendBasicBlockInContext(
+            ctx->context, ctx->current_fn, "match.end");
+
+        /* Protect the subject temp(s) from arm-internal statement flushes: raise
+           the flush floor to the current live-temp count after the subject is
+           pushed (set below), restore on the enum path's exits. Without this an
+           `@print`/`if`/`while` inside an arm resets temp_drop_count to 0,
+           collapsing below the arm's drop_floor — later borrow-arg temps then
+           reuse the freed low slots, and a not-taken branch leaves one
+           uninitialised, re-exposed by the arm encapsulate (invalid free). */
+        int saved_drop_base = ctx->temp_drop_base;
+
+        /* Alloca for result */
+        LLVMValueRef result_alloca = NULL;
+        if (result_type && result_type->kind != TYPE_VOID)
+        {
+            LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(ctx->current_fn);
+            LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx->context);
+            LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
+            if (first_inst)
+                LLVMPositionBuilderBefore(tmp, first_inst);
+            else
+                LLVMPositionBuilderAtEnd(tmp, entry);
+            result_alloca = LLVMBuildAlloca(tmp, res_llvm, "match.res");
+            /* L-013: zero-initialize so a path that reaches merge without storing
+               (e.g. a non-exhaustive integer match's default branch) leaves the
+               registered result temp with cap=0 / empty → its free/drop is skipped. */
+            LLVMBuildStore(tmp, LLVMConstNull(res_llvm), result_alloca);
+            LLVMDisposeBuilder(tmp);
+
+            /* A6 (own-audit): expose this slot to cg_push_temp_drop's guard;
+               the wrapper restores the depth on every exit path. */
+            if (ctx->own_audit_match_res_depth <
+                    (int)(sizeof ctx->own_audit_match_res / sizeof ctx->own_audit_match_res[0]))
+                ctx->own_audit_match_res[ctx->own_audit_match_res_depth++] = result_alloca;
+        }
+
+        Type *subj_type = node->as.match.subject->resolved_type;
+        bool is_fp = subj_type && type_is_float(subj_type);
+
+        /* L-012: owned rvalue-temp scrutinee → clone binders + drop subject.
+           Full form × read-path-clone contract table lives on the predicate. */
+        bool subj_owned_temp =
+            cg_match_subject_is_owned_rvalue(node->as.match.subject);
+        /* own-audit A1 (enum path): entry snapshot for the exit upper-bound
+           check. (An exact-occupancy formula was tried and reverted: an
+           early-return arm's scope-exit flush legitimately drains the subject
+           and outer entries, so only the growth direction is checkable.) */
+        int audit_in_count = ctx->temp_drop_count;
+
+        /* ---- Enum subject: switch on discriminant + binder extraction ---- */
+        if (subj_type && subj_type->kind == TYPE_ENUM)
+        {
+            return cg_match_lower_enum(ctx, node, subject, subj_type, result_type,
+                                        res_llvm, merge_bb, result_alloca,
+                                        subj_owned_temp, audit_in_count,
+                                        saved_drop_base);
         }
 
         /* ---- Non-enum subject ----
