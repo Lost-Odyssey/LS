@@ -18,6 +18,7 @@ static void bind_generic_defining_module_imports(Checker *c, const char *module_
 static Type *build_module_type_with_exports(Checker *c, const char *path);
 static bool check_and_queue_generic_method(Checker *c, Type *struct_type, const char *mangled_name, AstNode *method, Type *mtype, char **tp_names, Type **type_args, int tp_count, int line, int col);
 static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node);
+static bool check_call_variant_ctor(Checker *c, AstNode *node, Type **out_result);
 static bool check_method_where_bounds(Checker *c, AstNode *method, const char *qualified_name, char **tp_names, Type **type_args, int tp_count);
 static void check_pass(Checker *c, AstNode *program);
 static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
@@ -4011,6 +4012,51 @@ static void wrap_arg_in_to_str(AstNode **slot)
 /* S3b: extracted verbatim from the check_expr AST_CALL case. The do/while(0)
    wrapper lets the original switch-level `break;` statements fall through to
    `return result;` unchanged (this case contains no loops that use break). */
+/* S4: check_expr_call call-form dispatch extracted as static helpers (verbatim
+   moves — see docs task 3.3). Each returns true when it fully handled the call
+   (result stashed in *out_result, possibly NULL on error) so the caller should
+   `break` out of the outer do/while immediately; false means "not this call
+   form", so check_expr_call should keep falling through to the next check. */
+
+/* Variant ctor short-circuit: callee is an IDENT matching a registered enum
+   variant. Handles `RGB(1,2,3)`, `Some(x)`, etc. */
+static bool check_call_variant_ctor(Checker *c, AstNode *node, Type **out_result)
+{
+    if (node->as.call.callee->kind != AST_IDENT)
+        return false;
+
+    Type *enum_type = NULL;
+    int variant_idx = -1;
+    int matches = find_variant(c,
+        node->as.call.callee->as.ident.name, &enum_type, &variant_idx);
+    if (matches == 1)
+    {
+        *out_result = check_variant_ctor(c, node, enum_type, variant_idx,
+                                    node->as.call.args, node->as.call.arg_count);
+        return true;
+    }
+    if (matches > 1)
+    {
+        /* Disambiguate a payload variant ctor (e.g. `Some(x)`/`Ok(x)`/
+           `Err(e)`) by a type hint (prior resolution, then expected). */
+        Type *eet = NULL; int evi = -1;
+        if (disambig_variant_by_hint(c, node,
+                node->as.call.callee->as.ident.name, &eet, &evi))
+        {
+            *out_result = check_variant_ctor(c, node, eet, evi,
+                                        node->as.call.args,
+                                        node->as.call.arg_count);
+            return true;
+        }
+        checker_error(c, node->line, node->column,
+                      "ambiguous variant name '%s' (matches multiple enums)",
+                      node->as.call.callee->as.ident.name);
+        *out_result = NULL;
+        return true;
+    }
+    return false;
+}
+
 static Type *check_expr_call(Checker *c, AstNode *node)
 {
     Type *result = NULL;
@@ -5140,35 +5186,11 @@ static Type *check_expr_call(Checker *c, AstNode *node)
         {
             /* Variant ctor short-circuit: callee is an IDENT matching a registered
                enum variant.  Handles `RGB(1,2,3)`, `Some(x)`, etc. */
-            if (node->as.call.callee->kind == AST_IDENT)
             {
-                Type *enum_type = NULL;
-                int variant_idx = -1;
-                int matches = find_variant(c,
-                    node->as.call.callee->as.ident.name, &enum_type, &variant_idx);
-                if (matches == 1)
+                Type *vc_result = NULL;
+                if (check_call_variant_ctor(c, node, &vc_result))
                 {
-                    result = check_variant_ctor(c, node, enum_type, variant_idx,
-                                                node->as.call.args, node->as.call.arg_count);
-                    break;
-                }
-                if (matches > 1)
-                {
-                    /* Disambiguate a payload variant ctor (e.g. `Some(x)`/`Ok(x)`/
-                       `Err(e)`) by a type hint (prior resolution, then expected). */
-                    Type *eet = NULL; int evi = -1;
-                    if (disambig_variant_by_hint(c, node,
-                            node->as.call.callee->as.ident.name, &eet, &evi))
-                    {
-                        result = check_variant_ctor(c, node, eet, evi,
-                                                    node->as.call.args,
-                                                    node->as.call.arg_count);
-                        break;
-                    }
-                    checker_error(c, node->line, node->column,
-                                  "ambiguous variant name '%s' (matches multiple enums)",
-                                  node->as.call.callee->as.ident.name);
-                    result = NULL;
+                    result = vc_result;
                     break;
                 }
             }
