@@ -30,6 +30,7 @@ static bool check_call_instance_method(Checker *c, AstNode *node,
                                         const char *method_struct,
                                         const char *method_name,
                                         Type **out_callee_type);
+static bool check_call_generic_free_fn(Checker *c, AstNode *node, Type **out_result);
 static bool check_method_where_bounds(Checker *c, AstNode *method, const char *qualified_name, char **tp_names, Type **type_args, int tp_count);
 static void check_pass(Checker *c, AstNode *program);
 static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
@@ -4558,6 +4559,320 @@ static bool check_call_instance_method(Checker *c, AstNode *node,
     return false;
 }
 
+/* G2: generic free-function call.
+     - explicit type args:  identity(int)(42)
+     - inferred type args:  to_csv(p)   (Gap 1) — when the call omits the
+       `(T)` list, unify each type param against the value-argument types.
+   Enter whenever the callee names a known fn-template, OR type args were
+   given explicitly (so a stray `foo(int)(...)` on a non-template name
+   still reports "not a generic function"). Returns false (leaving
+   *out_result untouched) when the call doesn't match this form at all —
+   caller falls through to the next dispatch form. Returns true once
+   matched (success or terminal error alike; *out_result is the checked
+   type, or NULL on error) — caller does `result = *out_result; break;`. */
+static bool check_call_generic_free_fn(Checker *c, AstNode *node, Type **out_result)
+{
+    if (!(node->as.call.callee->kind == AST_IDENT &&
+          (node->as.call.type_arg_count > 0 ||
+           find_fn_template(c, node->as.call.callee->as.ident.name) >= 0)))
+        return false;
+
+    const char *fn_name = node->as.call.callee->as.ident.name;
+    int tmpl_idx = find_fn_template(c, fn_name);
+    if (tmpl_idx < 0) {
+        checker_error(c, node->line, node->column,
+            "'%s' is not a generic function", fn_name);
+        *out_result = NULL;
+        return true;
+    }
+    int tp_count = c->fn_templates[tmpl_idx].type_param_count;
+    bool inferring = (node->as.call.type_arg_count == 0);
+    if (!inferring && node->as.call.type_arg_count != tp_count) {
+        checker_error(c, node->line, node->column,
+            "'%s' expects %d type argument(s), got %d",
+            fn_name, tp_count, node->as.call.type_arg_count);
+        *out_result = NULL;
+        return true;
+    }
+
+    AstNode *tmpl_decl0 = c->fn_templates[tmpl_idx].decl_node;
+    char **tp_names0 = c->fn_templates[tmpl_idx].type_params;
+
+    /* Resolve type arguments — explicit (resolve TypeNodes) or inferred
+       (Gap 1: unify each type param against the corresponding value arg). */
+    Type **type_args = (Type **)malloc_safe((size_t)tp_count * sizeof(Type *));
+    bool type_args_ok = true;
+    if (inferring) {
+        int pc0 = tmpl_decl0->as.fn_decl.param_count;
+        int argc0 = node->as.call.arg_count;
+        for (int ti = 0; ti < tp_count; ti++) type_args[ti] = NULL;
+        for (int ti = 0; ti < tp_count && type_args_ok; ti++) {
+            const char *tname = tp_names0[ti];
+            for (int pi = 0; pi < pc0 && pi < argc0; pi++) {
+                bool is_ref = false;
+                if (!fn_param_directly_names_tp(
+                        tmpl_decl0->as.fn_decl.param_types[pi], tname, &is_ref))
+                    continue;
+                /* Gap 2 pre-strip: explicit `&x` against a read-only `&T`
+                   param — drop the address-of shell so the probe reads the
+                   lvalue's value type (mirrors §13). */
+                if (is_ref) {
+                    AstNode *argn = node->as.call.args[pi];
+                    if (argn->kind == AST_UNARY &&
+                        argn->as.unary.op == TOKEN_AMP &&
+                        argn->as.unary.operand &&
+                        (argn->as.unary.operand->kind == AST_IDENT ||
+                         argn->as.unary.operand->kind == AST_FIELD ||
+                         argn->as.unary.operand->kind == AST_INDEX))
+                        node->as.call.args[pi] = argn->as.unary.operand;
+                }
+                Type *at = check_expr(c, node->as.call.args[pi]);
+                if (at) type_args[ti] = fn_infer_peel_borrow(at);
+                break;
+            }
+            if (!type_args[ti]) {
+                checker_error(c, node->line, node->column,
+                    "cannot infer type parameter '%s' of generic function "
+                    "'%s' from the arguments; pass it explicitly as "
+                    "%s(<type>)(...)", tname, fn_name, fn_name);
+                type_args_ok = false;
+            }
+        }
+    } else {
+        for (int ti = 0; ti < tp_count; ti++) {
+            type_args[ti] = resolve_type_node(c, node->as.call.type_args[ti],
+                node->line, node->column);
+            if (!type_args[ti]) { type_args_ok = false; break; }
+        }
+    }
+    if (!type_args_ok) { free(type_args); *out_result = NULL; return true; }
+
+    /* Stash the resolved (concrete) type-arg names so codegen mangles the
+       call to the instantiated symbol (mirrors the method-generic
+       `resolved_type_args` mechanism). Inferred calls carry no `type_args`
+       at all and MUST use this. Explicit calls also need it whenever the
+       type args were resolved through aliases — e.g. `make(T)(..)` inside a
+       generic body, where the alias T→int is checker-transient: codegen has
+       no alias context, so re-mangling from the raw TypeNode would emit the
+       abstract `make(T)` instead of the instantiated `make(int)`. The
+       clone is checked fresh each instantiation, so this node starts NULL. */
+    checker_stash_resolved_type_args(c, node, type_args, tp_count);
+
+    /* Check trait bounds (if any) */
+    {
+        AstNode *tmpl = c->fn_templates[tmpl_idx].decl_node;
+        TypeParamBound *bounds = tmpl->as.fn_decl.type_param_bounds;
+        if (bounds) {
+            bool bounds_ok = true;
+            for (int ti = 0; ti < tp_count && bounds_ok; ti++) {
+                for (int bi = 0; bi < bounds[ti].count; bi++) {
+                    if (!checker_type_satisfies_trait(c, type_args[ti],
+                                                      bounds[ti].trait_names[bi])) {
+                        checker_error(c, node->line, node->column,
+                            "type '%s' does not satisfy interface '%s' "
+                            "(required by type parameter '%s' of '%s')",
+                            type_name(type_args[ti]),
+                            bounds[ti].trait_names[bi],
+                            c->fn_templates[tmpl_idx].type_params[ti],
+                            fn_name);
+                        bounds_ok = false;
+                        break;
+                    }
+                }
+            }
+            if (!bounds_ok) { free(type_args); *out_result = NULL; return true; }
+        }
+    }
+
+    /* Build mangled name: "identity(int)". Bare `type_name` (not
+       mangle_type_arg_name) — this site's pre-existing behavior,
+       preserved (see resolve_type_node's pre-check comment); the
+       module prefix is applied later via mangle_module_symbol on
+       the codegen symbol, while this checker-internal cache key
+       stays unprefixed. MangleBuf (Task 2.2) replaces the old
+       fixed 512-byte buffer. */
+    MangleBuf fb; mangle_buf_init(&fb);
+    mangle_buf_append(&fb, fn_name);
+    mangle_buf_append(&fb, "(");
+    for (int ti = 0; ti < tp_count; ti++) {
+        if (ti > 0) mangle_buf_append(&fb, ",");
+        mangle_buf_append(&fb, type_name(type_args[ti]));
+    }
+    mangle_buf_append(&fb, ")");
+    char *mangled = mangle_buf_take(&fb);
+
+    /* Check if already instantiated (look up in scope) */
+    Symbol *existing = scope_resolve(c->current_scope, mangled);
+    if (existing) {
+        /* Already instantiated — use existing type */
+        node->as.call.callee->resolved_type = existing->type;
+        /* Type-check arguments */
+        Type *fn_t = existing->type;
+        int argc = node->as.call.arg_count;
+        int expected = fn_t->as.function.param_count;
+        if (argc != expected) {
+            checker_error(c, node->line, node->column,
+                "'%s' expects %d argument(s), got %d", mangled, expected, argc);
+            free(type_args);
+            free(mangled);
+            *out_result = NULL;
+            return true;
+        }
+        for (int ai = 0; ai < argc; ai++) {
+            Type *pt = fn_t->as.function.params[ai];
+            /* Gap 2: auto-borrow + explicit `&x` for read-only `&T` params,
+               matching the normal call path (type_assignable covers the
+               `&T ← T` auto-borrow and widening). */
+            fn_call_strip_amp_shell(node, ai, pt);
+            checker_tag_user_from_list_literal(c, pt,
+                node->as.call.args[ai], "argument list-literal");
+            Type *saved_exp = c->expected_type;
+            c->expected_type = pt;
+            Type *at = check_expr(c, node->as.call.args[ai]);
+            c->expected_type = saved_exp;
+            if (at && pt && !type_assignable(pt, at)) {
+                checker_error(c, node->as.call.args[ai]->line,
+                    node->as.call.args[ai]->column,
+                    "argument %d: expected '%s', got '%s'",
+                    ai + 1, type_name(pt), type_name(at));
+            }
+        }
+        *out_result = fn_t->as.function.return_type;
+        free(type_args);
+        free(mangled);
+        return true;
+    }
+
+    /* Not yet instantiated — clone, substitute, type-check, push to pending */
+    AstNode *tmpl_decl = c->fn_templates[tmpl_idx].decl_node;
+    char **tp_names = c->fn_templates[tmpl_idx].type_params;
+
+    /* Temporarily register type aliases (T→int, U→string, ...) */
+    int saved_alias_count = c->type_alias_count;
+    for (int ti = 0; ti < tp_count; ti++)
+        register_type_alias(c, tp_names[ti], type_args[ti]);
+
+    /* Resolve concrete param types and return type */
+    int pc = tmpl_decl->as.fn_decl.param_count;
+    Type **params = (Type **)malloc_safe((size_t)pc * sizeof(Type *));
+    for (int pi = 0; pi < pc; pi++) {
+        params[pi] = resolve_type_node(c, tmpl_decl->as.fn_decl.param_types[pi],
+            node->line, node->column);
+        if (!params[pi]) params[pi] = type_int(); /* fallback */
+    }
+    Type *ret = tmpl_decl->as.fn_decl.return_type
+        ? resolve_type_node(c, tmpl_decl->as.fn_decl.return_type,
+            node->line, node->column)
+        : type_void();
+    checker_reject_borrow_return(c, ret, NULL, node->line, node->column);  /* Phase 0/2: generic, defer */
+    Type *fn_type = type_function(params, pc, ret, false);
+
+    /* Register in scope so subsequent calls reuse */
+    scope_define(c->current_scope, mangled, fn_type);
+
+    /* Clone the fn body and type-check it */
+    AstNode *cloned = ast_clone_deep(tmpl_decl);
+    cloned->resolved_type = fn_type;
+    cloned->as.fn_decl.type_param_count = 0; /* concrete now */
+    cloned->as.fn_decl.type_param_bounds = NULL; /* don't double-free template bounds */
+
+    chk_push_scope(c);
+    for (int pi = 0; pi < pc; pi++) {
+        /* Mirror the non-generic / method-generic body-param registration:
+           unwrap a `&T` / `&!T` param to its pointee for the body-local
+           symbol and flag the borrow. Without this the symbol carries the
+           bare reference type, so field access resolves the object IDENT to
+           `&Struct` and codegen takes the is_ref_value path (load + GEP on a
+           struct value) instead of GEP-ing the borrow pointer directly —
+           the Gap-2 codegen miscompile for generic free-function `&T`. */
+        Type *sym_type = params[pi];
+        bool is_borrow = false, is_mut_borrow = false;
+        if (sym_type && sym_type->kind == TYPE_REFERENCE) {
+            if (sym_type->is_mut) is_mut_borrow = true;
+            else                  is_borrow = true;
+            sym_type = sym_type->as.pointer_to;
+        }
+        Symbol *psym = scope_define(c->current_scope,
+            cloned->as.fn_decl.param_names[pi], sym_type);
+        if (psym) {
+            psym->is_borrow = is_borrow;
+            psym->is_mut_borrow = is_mut_borrow;
+            /* F.2: an explicit Block param is a shallow-copy borrow; a bare
+               type-param `T` that monomorphizes to Block is owned (moved). */
+            if (sym_type && sym_type->kind == TYPE_BLOCK) {
+                bool is_tparam = false;
+                TypeNode *ptn = cloned->as.fn_decl.param_types
+                                ? cloned->as.fn_decl.param_types[pi] : NULL;
+                if (ptn && ptn->kind == TYPE_NODE_NAMED &&
+                    ptn->as.named.arg_count == 0) {
+                    for (int t = 0; t < tp_count; t++)
+                        if (strcmp(ptn->as.named.name, tp_names[t]) == 0) {
+                            is_tparam = true; break;
+                        }
+                }
+                if (!is_tparam) psym->is_borrow = true;
+            }
+        }
+    }
+    Type *saved_ret = c->current_fn_return;
+    c->current_fn_return = ret;
+    check_stmt(c, cloned->as.fn_decl.body);
+    checker_elide_last_use(c, cloned); /* A1 clone-elision */
+    c->current_fn_return = saved_ret;
+    chk_pop_scope(c);
+
+    /* Restore type aliases */
+    c->type_alias_count = saved_alias_count;
+
+    /* Push to pending generic methods queue (reusing the same mechanism).
+       A2: when this instantiation belongs to an imported module, prefix
+       the symbol with "<modpath>__" (matching codegen's cg_module_fn_symbol
+       and current_emit_module) so two modules' same-named generics get
+       distinct LLVM symbols. The checker-internal cache key `mangled`
+       stays unprefixed (each module has its own checker/scope). */
+    char *owned_mangled = mangle_module_symbol(c->module_name, mangled);
+
+    if (c->pending_gm_count >= c->pending_gm_cap) {
+        c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
+        c->pending_generic_methods = realloc_safe(c->pending_generic_methods,
+            (size_t)c->pending_gm_cap * sizeof(c->pending_generic_methods[0]));
+    }
+    int gm_idx = c->pending_gm_count++;
+    c->pending_generic_methods[gm_idx].cloned_fn = cloned;
+    c->pending_generic_methods[gm_idx].mangled_name = owned_mangled;
+    c->pending_generic_methods[gm_idx].struct_type = NULL; /* not a method */
+
+    /* Set callee resolved_type and check call arguments */
+    node->as.call.callee->resolved_type = fn_type;
+    int argc = node->as.call.arg_count;
+    if (argc != pc) {
+        checker_error(c, node->line, node->column,
+            "'%s' expects %d argument(s), got %d", mangled, pc, argc);
+    }
+    for (int ai = 0; ai < argc && ai < pc; ai++) {
+        Type *pt = params[ai];
+        /* Gap 2: auto-borrow + explicit `&x` for read-only `&T` params,
+           matching the normal call path. */
+        fn_call_strip_amp_shell(node, ai, pt);
+        checker_tag_user_from_list_literal(c, pt,
+            node->as.call.args[ai], "argument list-literal");
+        Type *saved_exp = c->expected_type;
+        c->expected_type = pt;
+        Type *at = check_expr(c, node->as.call.args[ai]);
+        c->expected_type = saved_exp;
+        if (at && pt && !type_assignable(pt, at)) {
+            checker_error(c, node->as.call.args[ai]->line,
+                node->as.call.args[ai]->column,
+                "argument %d: expected '%s', got '%s'",
+                ai + 1, type_name(pt), type_name(at));
+        }
+    }
+    *out_result = ret;
+    free(type_args);
+    free(mangled); /* scope_define and mangle_module_symbol both copied */
+    return true;
+}
+
 static Type *check_expr_call(Checker *c, AstNode *node)
 {
     Type *result = NULL;
@@ -4632,311 +4947,14 @@ static Type *check_expr_call(Checker *c, AstNode *node)
            fall through to normal handling (which now sees an alias-shaped callee). */
         rewrite_canonical_module_call(c, node->as.call.callee);
 
-        /* G2: generic free-function call.
-             - explicit type args:  identity(int)(42)
-             - inferred type args:  to_csv(p)   (Gap 1) — when the call omits the
-               `(T)` list, unify each type param against the value-argument types.
-           Enter whenever the callee names a known fn-template, OR type args were
-           given explicitly (so a stray `foo(int)(...)` on a non-template name
-           still reports "not a generic function"). */
-        if (node->as.call.callee->kind == AST_IDENT &&
-            (node->as.call.type_arg_count > 0 ||
-             find_fn_template(c, node->as.call.callee->as.ident.name) >= 0))
+        /* G2: generic free-function call — see check_call_generic_free_fn. */
         {
-            const char *fn_name = node->as.call.callee->as.ident.name;
-            int tmpl_idx = find_fn_template(c, fn_name);
-            if (tmpl_idx < 0) {
-                checker_error(c, node->line, node->column,
-                    "'%s' is not a generic function", fn_name);
-                result = NULL;
-                break;
-            }
-            int tp_count = c->fn_templates[tmpl_idx].type_param_count;
-            bool inferring = (node->as.call.type_arg_count == 0);
-            if (!inferring && node->as.call.type_arg_count != tp_count) {
-                checker_error(c, node->line, node->column,
-                    "'%s' expects %d type argument(s), got %d",
-                    fn_name, tp_count, node->as.call.type_arg_count);
-                result = NULL;
-                break;
-            }
-
-            AstNode *tmpl_decl0 = c->fn_templates[tmpl_idx].decl_node;
-            char **tp_names0 = c->fn_templates[tmpl_idx].type_params;
-
-            /* Resolve type arguments — explicit (resolve TypeNodes) or inferred
-               (Gap 1: unify each type param against the corresponding value arg). */
-            Type **type_args = (Type **)malloc_safe((size_t)tp_count * sizeof(Type *));
-            bool type_args_ok = true;
-            if (inferring) {
-                int pc0 = tmpl_decl0->as.fn_decl.param_count;
-                int argc0 = node->as.call.arg_count;
-                for (int ti = 0; ti < tp_count; ti++) type_args[ti] = NULL;
-                for (int ti = 0; ti < tp_count && type_args_ok; ti++) {
-                    const char *tname = tp_names0[ti];
-                    for (int pi = 0; pi < pc0 && pi < argc0; pi++) {
-                        bool is_ref = false;
-                        if (!fn_param_directly_names_tp(
-                                tmpl_decl0->as.fn_decl.param_types[pi], tname, &is_ref))
-                            continue;
-                        /* Gap 2 pre-strip: explicit `&x` against a read-only `&T`
-                           param — drop the address-of shell so the probe reads the
-                           lvalue's value type (mirrors §13). */
-                        if (is_ref) {
-                            AstNode *argn = node->as.call.args[pi];
-                            if (argn->kind == AST_UNARY &&
-                                argn->as.unary.op == TOKEN_AMP &&
-                                argn->as.unary.operand &&
-                                (argn->as.unary.operand->kind == AST_IDENT ||
-                                 argn->as.unary.operand->kind == AST_FIELD ||
-                                 argn->as.unary.operand->kind == AST_INDEX))
-                                node->as.call.args[pi] = argn->as.unary.operand;
-                        }
-                        Type *at = check_expr(c, node->as.call.args[pi]);
-                        if (at) type_args[ti] = fn_infer_peel_borrow(at);
-                        break;
-                    }
-                    if (!type_args[ti]) {
-                        checker_error(c, node->line, node->column,
-                            "cannot infer type parameter '%s' of generic function "
-                            "'%s' from the arguments; pass it explicitly as "
-                            "%s(<type>)(...)", tname, fn_name, fn_name);
-                        type_args_ok = false;
-                    }
-                }
-            } else {
-                for (int ti = 0; ti < tp_count; ti++) {
-                    type_args[ti] = resolve_type_node(c, node->as.call.type_args[ti],
-                        node->line, node->column);
-                    if (!type_args[ti]) { type_args_ok = false; break; }
-                }
-            }
-            if (!type_args_ok) { free(type_args); result = NULL; break; }
-
-            /* Stash the resolved (concrete) type-arg names so codegen mangles the
-               call to the instantiated symbol (mirrors the method-generic
-               `resolved_type_args` mechanism). Inferred calls carry no `type_args`
-               at all and MUST use this. Explicit calls also need it whenever the
-               type args were resolved through aliases — e.g. `make(T)(..)` inside a
-               generic body, where the alias T→int is checker-transient: codegen has
-               no alias context, so re-mangling from the raw TypeNode would emit the
-               abstract `make(T)` instead of the instantiated `make(int)`. The
-               clone is checked fresh each instantiation, so this node starts NULL. */
-            checker_stash_resolved_type_args(c, node, type_args, tp_count);
-
-            /* Check trait bounds (if any) */
+            Type *gf_result = NULL;
+            if (check_call_generic_free_fn(c, node, &gf_result))
             {
-                AstNode *tmpl = c->fn_templates[tmpl_idx].decl_node;
-                TypeParamBound *bounds = tmpl->as.fn_decl.type_param_bounds;
-                if (bounds) {
-                    bool bounds_ok = true;
-                    for (int ti = 0; ti < tp_count && bounds_ok; ti++) {
-                        for (int bi = 0; bi < bounds[ti].count; bi++) {
-                            if (!checker_type_satisfies_trait(c, type_args[ti],
-                                                              bounds[ti].trait_names[bi])) {
-                                checker_error(c, node->line, node->column,
-                                    "type '%s' does not satisfy interface '%s' "
-                                    "(required by type parameter '%s' of '%s')",
-                                    type_name(type_args[ti]),
-                                    bounds[ti].trait_names[bi],
-                                    c->fn_templates[tmpl_idx].type_params[ti],
-                                    fn_name);
-                                bounds_ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (!bounds_ok) { free(type_args); result = NULL; break; }
-                }
-            }
-
-            /* Build mangled name: "identity(int)". Bare `type_name` (not
-               mangle_type_arg_name) — this site's pre-existing behavior,
-               preserved (see resolve_type_node's pre-check comment); the
-               module prefix is applied later via mangle_module_symbol on
-               the codegen symbol, while this checker-internal cache key
-               stays unprefixed. MangleBuf (Task 2.2) replaces the old
-               fixed 512-byte buffer. */
-            MangleBuf fb; mangle_buf_init(&fb);
-            mangle_buf_append(&fb, fn_name);
-            mangle_buf_append(&fb, "(");
-            for (int ti = 0; ti < tp_count; ti++) {
-                if (ti > 0) mangle_buf_append(&fb, ",");
-                mangle_buf_append(&fb, type_name(type_args[ti]));
-            }
-            mangle_buf_append(&fb, ")");
-            char *mangled = mangle_buf_take(&fb);
-
-            /* Check if already instantiated (look up in scope) */
-            Symbol *existing = scope_resolve(c->current_scope, mangled);
-            if (existing) {
-                /* Already instantiated — use existing type */
-                node->as.call.callee->resolved_type = existing->type;
-                /* Type-check arguments */
-                Type *fn_t = existing->type;
-                int argc = node->as.call.arg_count;
-                int expected = fn_t->as.function.param_count;
-                if (argc != expected) {
-                    checker_error(c, node->line, node->column,
-                        "'%s' expects %d argument(s), got %d", mangled, expected, argc);
-                    free(type_args);
-                    free(mangled);
-                    result = NULL;
-                    break;
-                }
-                for (int ai = 0; ai < argc; ai++) {
-                    Type *pt = fn_t->as.function.params[ai];
-                    /* Gap 2: auto-borrow + explicit `&x` for read-only `&T` params,
-                       matching the normal call path (type_assignable covers the
-                       `&T ← T` auto-borrow and widening). */
-                    fn_call_strip_amp_shell(node, ai, pt);
-                    checker_tag_user_from_list_literal(c, pt,
-                        node->as.call.args[ai], "argument list-literal");
-                    Type *saved_exp = c->expected_type;
-                    c->expected_type = pt;
-                    Type *at = check_expr(c, node->as.call.args[ai]);
-                    c->expected_type = saved_exp;
-                    if (at && pt && !type_assignable(pt, at)) {
-                        checker_error(c, node->as.call.args[ai]->line,
-                            node->as.call.args[ai]->column,
-                            "argument %d: expected '%s', got '%s'",
-                            ai + 1, type_name(pt), type_name(at));
-                    }
-                }
-                result = fn_t->as.function.return_type;
-                free(type_args);
-                free(mangled);
+                result = gf_result;
                 break;
             }
-
-            /* Not yet instantiated — clone, substitute, type-check, push to pending */
-            AstNode *tmpl_decl = c->fn_templates[tmpl_idx].decl_node;
-            char **tp_names = c->fn_templates[tmpl_idx].type_params;
-
-            /* Temporarily register type aliases (T→int, U→string, ...) */
-            int saved_alias_count = c->type_alias_count;
-            for (int ti = 0; ti < tp_count; ti++)
-                register_type_alias(c, tp_names[ti], type_args[ti]);
-
-            /* Resolve concrete param types and return type */
-            int pc = tmpl_decl->as.fn_decl.param_count;
-            Type **params = (Type **)malloc_safe((size_t)pc * sizeof(Type *));
-            for (int pi = 0; pi < pc; pi++) {
-                params[pi] = resolve_type_node(c, tmpl_decl->as.fn_decl.param_types[pi],
-                    node->line, node->column);
-                if (!params[pi]) params[pi] = type_int(); /* fallback */
-            }
-            Type *ret = tmpl_decl->as.fn_decl.return_type
-                ? resolve_type_node(c, tmpl_decl->as.fn_decl.return_type,
-                    node->line, node->column)
-                : type_void();
-            checker_reject_borrow_return(c, ret, NULL, node->line, node->column);  /* Phase 0/2: generic, defer */
-            Type *fn_type = type_function(params, pc, ret, false);
-
-            /* Register in scope so subsequent calls reuse */
-            scope_define(c->current_scope, mangled, fn_type);
-
-            /* Clone the fn body and type-check it */
-            AstNode *cloned = ast_clone_deep(tmpl_decl);
-            cloned->resolved_type = fn_type;
-            cloned->as.fn_decl.type_param_count = 0; /* concrete now */
-            cloned->as.fn_decl.type_param_bounds = NULL; /* don't double-free template bounds */
-
-            chk_push_scope(c);
-            for (int pi = 0; pi < pc; pi++) {
-                /* Mirror the non-generic / method-generic body-param registration:
-                   unwrap a `&T` / `&!T` param to its pointee for the body-local
-                   symbol and flag the borrow. Without this the symbol carries the
-                   bare reference type, so field access resolves the object IDENT to
-                   `&Struct` and codegen takes the is_ref_value path (load + GEP on a
-                   struct value) instead of GEP-ing the borrow pointer directly —
-                   the Gap-2 codegen miscompile for generic free-function `&T`. */
-                Type *sym_type = params[pi];
-                bool is_borrow = false, is_mut_borrow = false;
-                if (sym_type && sym_type->kind == TYPE_REFERENCE) {
-                    if (sym_type->is_mut) is_mut_borrow = true;
-                    else                  is_borrow = true;
-                    sym_type = sym_type->as.pointer_to;
-                }
-                Symbol *psym = scope_define(c->current_scope,
-                    cloned->as.fn_decl.param_names[pi], sym_type);
-                if (psym) {
-                    psym->is_borrow = is_borrow;
-                    psym->is_mut_borrow = is_mut_borrow;
-                    /* F.2: an explicit Block param is a shallow-copy borrow; a bare
-                       type-param `T` that monomorphizes to Block is owned (moved). */
-                    if (sym_type && sym_type->kind == TYPE_BLOCK) {
-                        bool is_tparam = false;
-                        TypeNode *ptn = cloned->as.fn_decl.param_types
-                                        ? cloned->as.fn_decl.param_types[pi] : NULL;
-                        if (ptn && ptn->kind == TYPE_NODE_NAMED &&
-                            ptn->as.named.arg_count == 0) {
-                            for (int t = 0; t < tp_count; t++)
-                                if (strcmp(ptn->as.named.name, tp_names[t]) == 0) {
-                                    is_tparam = true; break;
-                                }
-                        }
-                        if (!is_tparam) psym->is_borrow = true;
-                    }
-                }
-            }
-            Type *saved_ret = c->current_fn_return;
-            c->current_fn_return = ret;
-            check_stmt(c, cloned->as.fn_decl.body);
-            checker_elide_last_use(c, cloned); /* A1 clone-elision */
-            c->current_fn_return = saved_ret;
-            chk_pop_scope(c);
-
-            /* Restore type aliases */
-            c->type_alias_count = saved_alias_count;
-
-            /* Push to pending generic methods queue (reusing the same mechanism).
-               A2: when this instantiation belongs to an imported module, prefix
-               the symbol with "<modpath>__" (matching codegen's cg_module_fn_symbol
-               and current_emit_module) so two modules' same-named generics get
-               distinct LLVM symbols. The checker-internal cache key `mangled`
-               stays unprefixed (each module has its own checker/scope). */
-            char *owned_mangled = mangle_module_symbol(c->module_name, mangled);
-
-            if (c->pending_gm_count >= c->pending_gm_cap) {
-                c->pending_gm_cap = c->pending_gm_cap < 8 ? 8 : c->pending_gm_cap * 2;
-                c->pending_generic_methods = realloc_safe(c->pending_generic_methods,
-                    (size_t)c->pending_gm_cap * sizeof(c->pending_generic_methods[0]));
-            }
-            int gm_idx = c->pending_gm_count++;
-            c->pending_generic_methods[gm_idx].cloned_fn = cloned;
-            c->pending_generic_methods[gm_idx].mangled_name = owned_mangled;
-            c->pending_generic_methods[gm_idx].struct_type = NULL; /* not a method */
-
-            /* Set callee resolved_type and check call arguments */
-            node->as.call.callee->resolved_type = fn_type;
-            int argc = node->as.call.arg_count;
-            if (argc != pc) {
-                checker_error(c, node->line, node->column,
-                    "'%s' expects %d argument(s), got %d", mangled, pc, argc);
-            }
-            for (int ai = 0; ai < argc && ai < pc; ai++) {
-                Type *pt = params[ai];
-                /* Gap 2: auto-borrow + explicit `&x` for read-only `&T` params,
-                   matching the normal call path. */
-                fn_call_strip_amp_shell(node, ai, pt);
-                checker_tag_user_from_list_literal(c, pt,
-                    node->as.call.args[ai], "argument list-literal");
-                Type *saved_exp = c->expected_type;
-                c->expected_type = pt;
-                Type *at = check_expr(c, node->as.call.args[ai]);
-                c->expected_type = saved_exp;
-                if (at && pt && !type_assignable(pt, at)) {
-                    checker_error(c, node->as.call.args[ai]->line,
-                        node->as.call.args[ai]->column,
-                        "argument %d: expected '%s', got '%s'",
-                        ai + 1, type_name(pt), type_name(at));
-                }
-            }
-            result = ret;
-            free(type_args);
-            free(mangled); /* scope_define and mangle_module_symbol both copied */
-            break;
         }
 
         /* Polymorphic built-in math dispatch: math.abs/min/max accept either
