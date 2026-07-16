@@ -84,6 +84,14 @@ else()
     set(LS_OS_SOURCE runtime/os_posix.c)
 endif()
 
+# parser translation units (split per Task 4.3,
+# docs/plan_arch_round2_backlog.md Batch 4). Listed once so every target
+# referencing ${LS_PARSER_SOURCES} picks up new TUs.
+set(LS_PARSER_SOURCES
+    src/parser.c
+    src/parser_expr.c
+)
+
 # checker translation units (split per docs/plan_checker_split.md). Listed once
 # so every target referencing ${LS_CHECKER_SOURCES} picks up new TUs.
 #
@@ -131,7 +139,7 @@ set(LS_SOURCES
     src/doc_assets.c
     src/emit_c.c
     src/ast.c
-    src/parser.c
+    ${LS_PARSER_SOURCES}
     src/diag.c
     src/types.c
     src/symtable.c
