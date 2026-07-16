@@ -23,6 +23,8 @@ static bool check_call_static_method(Checker *c, AstNode *node, AstNode **inout_
                                       const char *method_name,
                                       bool *out_is_static_call,
                                       const char **out_method_struct);
+static bool check_call_interface_qualified(Checker *c, AstNode *node, AstNode **inout_obj_node,
+                                            const char *method_name);
 static bool check_method_where_bounds(Checker *c, AstNode *method, const char *qualified_name, char **tp_names, Type **type_args, int tp_count);
 static void check_pass(Checker *c, AstNode *program);
 static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
@@ -4312,6 +4314,76 @@ static bool check_call_static_method(Checker *c, AstNode *node, AstNode **inout_
     return false;
 }
 
+/* L-002: interface-qualified call `Iface.method(recv, args...)`. The leading
+   IDENT names a known interface, not a value/type. The receiver is args[0];
+   REWRITE into an ordinary instance call so all the existing
+   receiver-resolution / borrow-gating / arg-checking below applies:
+       Iface.m(recv, a1, ...)  ==>  recv.m(a1, ...)
+   and stamp node.qualified_iface so the resolution step picks the interface
+   overload (and codegen mangles the symbol when contended). (Zero parser
+   changes — the token shape `Ident.Ident(args)` is identical to a static
+   call; we recognize the interface name here.) *inout_obj_node is rewritten
+   in place when the interface-qualified form is detected (kept in sync with
+   node->as.call.callee->as.field_access.object, mirroring the original
+   inline code). Returns true on a terminal error (caller must treat this as
+   `result = NULL; break;`). */
+static bool check_call_interface_qualified(Checker *c, AstNode *node, AstNode **inout_obj_node,
+                                            const char *method_name)
+{
+    AstNode *obj_node = *inout_obj_node;
+
+    if (obj_node->kind == AST_IDENT &&
+        checker_is_known_interface(c, obj_node->as.ident.name))
+    {
+        if (node->as.call.arg_count < 1)
+        {
+            checker_error(c, node->line, node->column,
+                "interface-qualified call '%s.%s' requires a receiver "
+                "argument, e.g. '%s.%s(recv)'",
+                obj_node->as.ident.name, method_name,
+                obj_node->as.ident.name, method_name);
+            return true;
+        }
+        /* Stamp the interface name (owned). The resolution step frees it
+           again if the method turns out not to be contended (plain `T.m`). */
+        free(node->as.call.qualified_iface);
+        node->as.call.qualified_iface = chk_strdup(obj_node->as.ident.name);
+        /* recv = args[0]. Strip an explicit borrow shell `&x` / `&!x`: the
+           instance-method machinery auto-borrows the receiver (takes its
+           address for self), so a borrow wrapper would make self a
+           pointer-to-pointer. Mirrors fn_call_strip_amp_shell. */
+        AstNode *recv = node->as.call.args[0];
+        if (recv->kind == AST_MUT_BORROW && recv->as.mut_borrow.operand)
+        {
+            AstNode *inner = recv->as.mut_borrow.operand;
+            recv->as.mut_borrow.operand = NULL;
+            ast_free(recv);
+            recv = inner;
+        }
+        else if (recv->kind == AST_UNARY && recv->as.unary.op == TOKEN_AMP &&
+                 recv->as.unary.operand &&
+                 (recv->as.unary.operand->kind == AST_IDENT ||
+                  recv->as.unary.operand->kind == AST_FIELD ||
+                  recv->as.unary.operand->kind == AST_INDEX))
+        {
+            AstNode *inner = recv->as.unary.operand;
+            recv->as.unary.operand = NULL;
+            ast_free(recv);
+            recv = inner;
+        }
+        /* install recv as the field object, shift the remaining args left. */
+        for (int ai = 1; ai < node->as.call.arg_count; ai++)
+            node->as.call.args[ai - 1] = node->as.call.args[ai];
+        node->as.call.arg_count--;
+        node->as.call.callee->as.field_access.object = recv;
+        ast_free(obj_node);   /* detached interface IDENT */
+        obj_node = recv;
+    }
+
+    *inout_obj_node = obj_node;
+    return false;
+}
+
 static Type *check_expr_call(Checker *c, AstNode *node)
 {
     Type *result = NULL;
@@ -4815,62 +4887,12 @@ static Type *check_expr_call(Checker *c, AstNode *node)
             AstNode *obj_node = node->as.call.callee->as.field_access.object;
             const char *method_name = node->as.call.callee->as.field_access.field;
 
-            /* L-002: interface-qualified call `Iface.method(recv, args...)`. The
-               leading IDENT names a known interface, not a value/type. The receiver
-               is args[0]; REWRITE into an ordinary instance call so all the existing
-               receiver-resolution / borrow-gating / arg-checking below applies:
-                   Iface.m(recv, a1, ...)  ==>  recv.m(a1, ...)
-               and stamp node.qualified_iface so the resolution step picks the
-               interface overload (and codegen mangles the symbol when contended).
-               (Zero parser changes — the token shape `Ident.Ident(args)` is identical
-               to a static call; we recognize the interface name here.) */
-            if (obj_node->kind == AST_IDENT &&
-                checker_is_known_interface(c, obj_node->as.ident.name))
+            /* L-002: interface-qualified call `Iface.method(recv, args...)`
+               rewrite — see check_call_interface_qualified. */
+            if (check_call_interface_qualified(c, node, &obj_node, method_name))
             {
-                if (node->as.call.arg_count < 1)
-                {
-                    checker_error(c, node->line, node->column,
-                        "interface-qualified call '%s.%s' requires a receiver "
-                        "argument, e.g. '%s.%s(recv)'",
-                        obj_node->as.ident.name, method_name,
-                        obj_node->as.ident.name, method_name);
-                    result = NULL;
-                    break;
-                }
-                /* Stamp the interface name (owned). The resolution step frees it
-                   again if the method turns out not to be contended (plain `T.m`). */
-                free(node->as.call.qualified_iface);
-                node->as.call.qualified_iface = chk_strdup(obj_node->as.ident.name);
-                /* recv = args[0]. Strip an explicit borrow shell `&x` / `&!x`: the
-                   instance-method machinery auto-borrows the receiver (takes its
-                   address for self), so a borrow wrapper would make self a
-                   pointer-to-pointer. Mirrors fn_call_strip_amp_shell. */
-                AstNode *recv = node->as.call.args[0];
-                if (recv->kind == AST_MUT_BORROW && recv->as.mut_borrow.operand)
-                {
-                    AstNode *inner = recv->as.mut_borrow.operand;
-                    recv->as.mut_borrow.operand = NULL;
-                    ast_free(recv);
-                    recv = inner;
-                }
-                else if (recv->kind == AST_UNARY && recv->as.unary.op == TOKEN_AMP &&
-                         recv->as.unary.operand &&
-                         (recv->as.unary.operand->kind == AST_IDENT ||
-                          recv->as.unary.operand->kind == AST_FIELD ||
-                          recv->as.unary.operand->kind == AST_INDEX))
-                {
-                    AstNode *inner = recv->as.unary.operand;
-                    recv->as.unary.operand = NULL;
-                    ast_free(recv);
-                    recv = inner;
-                }
-                /* install recv as the field object, shift the remaining args left. */
-                for (int ai = 1; ai < node->as.call.arg_count; ai++)
-                    node->as.call.args[ai - 1] = node->as.call.args[ai];
-                node->as.call.arg_count--;
-                node->as.call.callee->as.field_access.object = recv;
-                ast_free(obj_node);   /* detached interface IDENT */
-                obj_node = recv;
+                result = NULL;
+                break;
             }
 
             /* Static-by-typename detection (case B / case ③ rewrites + the four
