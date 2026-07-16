@@ -36,6 +36,14 @@ static LLVMValueRef cg_match_lower_enum(CodegenContext *ctx, AstNode *node,
                                          LLVMValueRef result_alloca,
                                          bool subj_owned_temp, int audit_in_count,
                                          int saved_drop_base);
+static void cg_match_lower_int_switch(CodegenContext *ctx, AstNode *node,
+                                       LLVMValueRef subject, Type *subj_type,
+                                       LLVMValueRef result_alloca, LLVMTypeRef res_llvm,
+                                       Type *result_type, LLVMBasicBlockRef merge_bb);
+static void cg_match_lower_chain(CodegenContext *ctx, AstNode *node,
+                                  LLVMValueRef subject, bool is_fp,
+                                  LLVMValueRef result_alloca, LLVMTypeRef res_llvm,
+                                  Type *result_type, LLVMBasicBlockRef merge_bb);
 
 /* L-013: unwrap a match-arm body to its tail expression (the value the arm yields).
    For a block body `=> { ...; E }` the tail is the last statement's expression;
@@ -1005,7 +1013,29 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
         }
 
         if (use_int_switch)
-        {
+            cg_match_lower_int_switch(ctx, node, subject, subj_type, result_alloca,
+                                       res_llvm, result_type, merge_bb);
+        else
+            cg_match_lower_chain(ctx, node, subject, is_fp, result_alloca,
+                                  res_llvm, result_type, merge_bb);
+
+        LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
+        if (result_alloca)
+            return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
+        return NULL;
+    }
+
+/* codegen_match_expr_impl split (Task 3.4): the two non-enum, non-bit-pattern
+   lowering strategies, extracted verbatim. Neither touches subject-spill /
+   temp-floor bookkeeping (only the enum strategy does — see
+   cg_match_lower_enum above); each just emits its own control flow and falls
+   through to the CALLER-owned merge_bb, whose positioning + result load stay
+   in codegen_match_expr_impl since both strategies share that exact tail. */
+static void cg_match_lower_int_switch(CodegenContext *ctx, AstNode *node,
+                                       LLVMValueRef subject, Type *subj_type,
+                                       LLVMValueRef result_alloca, LLVMTypeRef res_llvm,
+                                       Type *result_type, LLVMBasicBlockRef merge_bb)
+{
             /* ---- (A) LLVM switch instruction for integer subjects ---- */
             LLVMTypeRef subj_llvm = type_to_llvm(ctx, subj_type);
 
@@ -1073,9 +1103,13 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                 LLVMPositionBuilderAtEnd(ctx->builder, default_bb);
                 LLVMBuildBr(ctx->builder, merge_bb);
             }
-        }
-        else
-        {
+}
+
+static void cg_match_lower_chain(CodegenContext *ctx, AstNode *node,
+                                  LLVMValueRef subject, bool is_fp,
+                                  LLVMValueRef result_alloca, LLVMTypeRef res_llvm,
+                                  Type *result_type, LLVMBasicBlockRef merge_bb)
+{
             /* ---- (B) CondBr chain (string / float / non-const patterns) ---- */
             for (int i = 0; i < node->as.match.arm_count; i++)
             {
@@ -1164,13 +1198,7 @@ static LLVMValueRef codegen_match_expr_impl(CodegenContext *ctx, AstNode *node)
                         LLVMBuildBr(ctx->builder, merge_bb);
                 }
             }
-        }
-
-        LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-        if (result_alloca)
-            return LLVMBuildLoad2(ctx->builder, res_llvm, result_alloca, "match.val");
-        return NULL;
-    }
+}
 
 /* Extracted from codegen_expr's switch (codegen.c split Step 4): the
    AST_TRY case body, verbatim. Behavior unchanged — ctx->current_node is
