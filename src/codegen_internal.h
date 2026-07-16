@@ -5,8 +5,10 @@
    linkage and a prototype here, so any codegen TU can call any helper with
    no implicit-declaration hazard. Physical splitting of function bodies into
    codegen_own.c / codegen_match.c / codegen_expr.c / codegen_stmt.c /
-   codegen_decl.c is then pure cut-paste. Prototypes that end up used by only
-   one TU are trimmed back to static at the end of the split (plan §7).
+   codegen_decl.c / codegen_closure.c (plus the standalone passes
+   codegen_noalias.c / codegen_di.c / codegen_lifetime.c) is then pure
+   cut-paste. Prototypes that end up used by only one TU are trimmed back to
+   static at the end of the split (plan §7).
 
    The public CodegenContext / codegen_* API lives in codegen.h (included
    below); this header holds only compiler-internal helper prototypes. */

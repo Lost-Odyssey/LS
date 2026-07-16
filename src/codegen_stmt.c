@@ -1,5 +1,6 @@
 /* codegen_stmt.c
-   语句发射 + 闭包：codegen_stmt + 闭包字面量/调用/fn→Block + env clone/drop + 捕获谓词
+   语句发射 + 闭包运行时协作：codegen_stmt 分发器 + cg_stmt_* case helper +
+   闭包调用/fn→Block + env clone/drop（闭包字面量本体在 codegen_closure.c）
 
    Bodies mechanically relocated from codegen.c (docs/plan_codegen_split.md).
    No logic changes. All prototypes live in codegen_internal.h. */

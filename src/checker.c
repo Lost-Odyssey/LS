@@ -4022,9 +4022,6 @@ static void wrap_arg_in_to_str(AstNode **slot)
     *slot = call;
 }
 
-/* S3b: extracted verbatim from the check_expr AST_CALL case. The do/while(0)
-   wrapper lets the original switch-level `break;` statements fall through to
-   `return result;` unchanged (this case contains no loops that use break). */
 /* S4: check_expr_call call-form dispatch extracted as static helpers (verbatim
    moves — see docs task 3.3). Each returns true when it fully handled the call
    (result stashed in *out_result, possibly NULL on error) so the caller should
@@ -5112,6 +5109,9 @@ static Type *check_call_arguments(Checker *c, AstNode *node, Type *callee_type, 
     return args_ok ? callee_type->as.function.return_type : NULL;
 }
 
+/* S3b: extracted verbatim from the check_expr AST_CALL case. The do/while(0)
+   wrapper lets the original switch-level `break;` statements fall through to
+   `return result;` unchanged (this case contains no loops that use break). */
 static Type *check_expr_call(Checker *c, AstNode *node)
 {
     Type *result = NULL;
