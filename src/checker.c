@@ -1,11 +1,10 @@
 /* checker.c — Type checker: walks AST, validates types, fills resolved_type */
 #include "checker.h"
 #include "checker_internal.h"
+#include "builtins_math.h"
 #include "mangle.h"
 #include "diag.h"
-#include "parser.h"
 #include "module.h"
-#include "builtins_math.h"
 #include "builtins_perf.h"
 #include <stdio.h>
 #include <string.h>
