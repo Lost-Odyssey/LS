@@ -110,6 +110,7 @@ set(LS_CODEGEN_SOURCES
     src/codegen_match.c
     src/codegen_decl.c
     src/codegen_stmt.c
+    src/codegen_closure.c
     src/codegen_expr.c
     src/codegen_noalias.c
     src/codegen_di.c
