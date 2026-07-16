@@ -19,6 +19,10 @@ static Type *build_module_type_with_exports(Checker *c, const char *path);
 static bool check_and_queue_generic_method(Checker *c, Type *struct_type, const char *mangled_name, AstNode *method, Type *mtype, char **tp_names, Type **type_args, int tp_count, int line, int col);
 static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node);
 static bool check_call_variant_ctor(Checker *c, AstNode *node, Type **out_result);
+static bool check_call_static_method(Checker *c, AstNode *node, AstNode **inout_obj_node,
+                                      const char *method_name,
+                                      bool *out_is_static_call,
+                                      const char **out_method_struct);
 static bool check_method_where_bounds(Checker *c, AstNode *method, const char *qualified_name, char **tp_names, Type **type_args, int tp_count);
 static void check_pass(Checker *c, AstNode *program);
 static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
@@ -4057,6 +4061,257 @@ static bool check_call_variant_ctor(Checker *c, AstNode *node, Type **out_result
     return false;
 }
 
+/* Static-by-typename call detection: `StructName.method(args)` /
+   `EnumName.method(args)` / a type-alias parameter `T.zero()` / a builtin
+   primitive `int.from_value(v)`, plus the two AST rewrites that feed a
+   parameterized generic instance written directly as the receiver
+   (`Box(Str).reflect()` / `Box(int).reflect()`) into the same dispatch.
+   *inout_obj_node may be rewritten in place (kept in sync with
+   node->as.call.callee->as.field_access.object, mirroring the original
+   inline code). Returns true on a terminal error (caller must treat this
+   as `result = NULL; break;`); on false, *out_is_static_call /
+   *out_method_struct reflect whatever was detected (possibly nothing). */
+static bool check_call_static_method(Checker *c, AstNode *node, AstNode **inout_obj_node,
+                                      const char *method_name,
+                                      bool *out_is_static_call,
+                                      const char **out_method_struct)
+{
+    AstNode *obj_node = *inout_obj_node;
+    bool is_static_call = false;
+    const char *method_struct = NULL;
+
+    /* ③ case B: `Box(Str).reflect()` with a USER-TYPE arg parses as a call
+       `Box(Str)` (Str is an IDENT, ambiguous with a value at parse time) —
+       object is AST_CALL(callee=IDENT, args=[type-name idents]). Disambiguate
+       HERE with type info: if the callee names a GENERIC STRUCT TEMPLATE (you
+       can't "call" a struct, so this can only be an instantiation) and every
+       arg is a bare type name, REWRITE the object into an AST_IDENT carrying
+       type args — then the case-A branch below instantiates + dispatches it.
+       A real `make_box(cfg).render()` call-chain is untouched (make_box is not
+       a generic struct template → find_struct_template_idx returns -1). */
+    if (obj_node->kind == AST_CALL &&
+        obj_node->as.call.callee &&
+        obj_node->as.call.callee->kind == AST_IDENT &&
+        obj_node->as.call.arg_count > 0 &&
+        obj_node->as.call.type_arg_count == 0 &&
+        find_struct_template_idx(c, obj_node->as.call.callee->as.ident.name) >= 0)
+    {
+        bool all_type_idents = true;
+        for (int ai = 0; ai < obj_node->as.call.arg_count; ai++)
+            if (obj_node->as.call.args[ai] == NULL ||
+                obj_node->as.call.args[ai]->kind != AST_IDENT)
+                { all_type_idents = false; break; }
+        if (all_type_idents)
+        {
+            const char *gname = obj_node->as.call.callee->as.ident.name;
+            int ac = obj_node->as.call.arg_count;
+            AstNode *idn = ast_new(AST_IDENT, obj_node->line, obj_node->column);
+            size_t gl = strlen(gname) + 1;
+            idn->as.ident.name = (char *)malloc_safe(gl);
+            memcpy(idn->as.ident.name, gname, gl);
+            idn->as.ident.type_args =
+                (TypeNode **)malloc_safe((size_t)ac * sizeof(TypeNode *));
+            idn->as.ident.type_arg_count = ac;
+            for (int ai = 0; ai < ac; ai++)
+            {
+                const char *an = obj_node->as.call.args[ai]->as.ident.name;
+                TypeNode *atn = (TypeNode *)malloc_safe(sizeof(TypeNode));
+                memset(atn, 0, sizeof(TypeNode));
+                atn->kind = TYPE_NODE_NAMED;
+                size_t al = strlen(an) + 1;
+                atn->as.named.name = (char *)malloc_safe(al);
+                memcpy(atn->as.named.name, an, al);
+                idn->as.ident.type_args[ai] = atn;
+            }
+            ast_free(obj_node);
+            node->as.call.callee->as.field_access.object = idn;
+            obj_node = idn;
+        }
+    }
+
+    /* ③: static call on a parameterized generic instance written directly,
+       `Box(int).reflect()` / `Box(int).from_value(v)`. The parser produced an
+       AST_IDENT carrying type args (for type-keyword args). Instantiate
+       name(type_args) into the concrete struct/enum type and dispatch the
+       static method on it, mirroring the `type BI = Box(int); BI.reflect()`
+       alias path (which find_type_alias resolves below). Stamp resolved_type
+       so codegen derives the instance's symbol. */
+    if (obj_node->kind == AST_IDENT && obj_node->as.ident.type_arg_count > 0)
+    {
+        TypeNode tn;
+        memset(&tn, 0, sizeof(tn));
+        tn.kind = TYPE_NODE_NAMED;
+        tn.as.named.name = (char *)obj_node->as.ident.name;
+        tn.as.named.args = obj_node->as.ident.type_args;
+        tn.as.named.arg_count = obj_node->as.ident.type_arg_count;
+        Type *inst = resolve_type_node(c, &tn, node->line, node->column);
+        if (inst && (inst->kind == TYPE_STRUCT || inst->kind == TYPE_ENUM))
+        {
+            const char *inst_key = impl_key_of_type(inst);
+            if (inst_key)
+            {
+                int si = method_is_static(c, inst_key, method_name);
+                if (si < 0 && inst->kind == TYPE_STRUCT &&
+                    inst->as.strukt.generic_base)
+                {
+                    ensure_generic_struct_impls_local(c, inst);
+                    si = method_is_static(c, inst_key, method_name);
+                }
+                if (si >= 0)
+                {
+                    method_struct = inst_key;
+                    is_static_call = true;
+                    obj_node->resolved_type = inst; /* codegen symbol source */
+                    if (si == 0)
+                    {
+                        checker_error(c, node->line, node->column,
+                            "cannot call instance method '%s' on type '%s'; use an instance",
+                            method_name, inst_key);
+                        *inout_obj_node = obj_node;
+                        *out_is_static_call = is_static_call;
+                        *out_method_struct = method_struct;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Check if obj is a struct type name (static call: Point.origin()) */
+    if (obj_node->kind == AST_IDENT && !is_static_call)
+    {
+        Type *st = find_struct_type(c, obj_node->as.ident.name);
+        if (st && st->kind == TYPE_STRUCT)
+        {
+            const char *st_key = impl_key_of_type(st);  /* B-4.1 */
+            int si = method_is_static(c, st_key, method_name);
+            if (si >= 0)
+            {
+                method_struct = st_key;
+                is_static_call = true;
+                if (si == 0)
+                {
+                    /* Calling instance method via type name — error */
+                    checker_error(c, node->line, node->column,
+                                  "cannot call instance method '%s' on type '%s'; use an instance",
+                                  method_name, method_struct);
+                    *inout_obj_node = obj_node;
+                    *out_is_static_call = is_static_call;
+                    *out_method_struct = method_struct;
+                    return true;
+                }
+            }
+            }
+        }
+        /* Check if obj is an enum type name (static call: JsonValue.parse()) */
+        if (obj_node->kind == AST_IDENT && !is_static_call)
+        {
+            Type *et = find_enum_type(c, obj_node->as.ident.name);
+            if (et && et->kind == TYPE_ENUM)
+            {
+                const char *et_key = impl_key_of_type(et);  /* B-4.1 */
+                int si = method_is_static(c, et_key, method_name);
+                if (si >= 0)
+                {
+                    method_struct = et_key;
+                    is_static_call = true;
+                    if (si == 0)
+                    {
+                        checker_error(c, node->line, node->column,
+                                      "cannot call instance method '%s' on type '%s'; use an instance",
+                                      method_name, method_struct);
+                        *inout_obj_node = obj_node;
+                        *out_is_static_call = is_static_call;
+                        *out_method_struct = method_struct;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        /* Static call via a generic type parameter: `T.zero()` where T is a
+           type alias bound during monomorphization (T → Complex(f64) / int).
+           find_struct_type/find_enum_type miss on the bare param name; resolve
+           it through the type-alias table, then dispatch the static method on
+           the concrete type. Stamp obj_node->resolved_type so codegen derives
+           the right symbol (Struct.llvm_name.method / int.method). */
+        if (obj_node->kind == AST_IDENT && !is_static_call)
+        {
+            Type *al = find_type_alias(c, obj_node->as.ident.name);
+            if (al)
+            {
+                const char *al_key = (al->kind == TYPE_STRUCT || al->kind == TYPE_ENUM)
+                                         ? impl_key_of_type(al)
+                                         : type_impl_name(al);
+                if (al_key)
+                {
+                    int si = method_is_static(c, al_key, method_name);
+                    if (si < 0 && al->kind == TYPE_STRUCT && al->as.strukt.generic_base)
+                    {
+                        ensure_generic_struct_impls_local(c, al);
+                        si = method_is_static(c, al_key, method_name);
+                    }
+                    if (si >= 0)
+                    {
+                        method_struct = al_key;
+                        is_static_call = true;
+                        obj_node->resolved_type = al; /* codegen symbol source */
+                        if (si == 0)
+                        {
+                            checker_error(c, node->line, node->column,
+                                          "cannot call instance method '%s' on type parameter; use an instance",
+                                          method_name);
+                            *inout_obj_node = obj_node;
+                            *out_is_static_call = is_static_call;
+                            *out_method_struct = method_struct;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Static call on a literal primitive type name: `int.from_value(v)`
+           / `bool.show()`. Arises from the comptime `f.type` handle lowering
+           to the field's concrete type name (and is a reasonable spelling on
+           its own). find_struct_type / find_enum_type / find_type_alias all
+           miss a bare primitive keyword-name; resolve it via the builtin-type
+           table (same key as the T-alias-to-primitive path: type_impl_name). */
+        if (obj_node->kind == AST_IDENT && !is_static_call)
+        {
+            Type *bt = resolve_builtin_type_by_name(obj_node->as.ident.name);
+            if (bt)
+            {
+                const char *bt_key = type_impl_name(bt);
+                if (bt_key)
+                {
+                    int si = method_is_static(c, bt_key, method_name);
+                    if (si >= 0)
+                    {
+                        method_struct = bt_key;
+                        is_static_call = true;
+                        obj_node->resolved_type = bt; /* codegen symbol source */
+                        if (si == 0)
+                        {
+                            checker_error(c, node->line, node->column,
+                                          "cannot call instance method '%s' on type '%s'; use an instance",
+                                          method_name, bt_key);
+                            *inout_obj_node = obj_node;
+                            *out_is_static_call = is_static_call;
+                            *out_method_struct = method_struct;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+    *inout_obj_node = obj_node;
+    *out_is_static_call = is_static_call;
+    *out_method_struct = method_struct;
+    return false;
+}
+
 static Type *check_expr_call(Checker *c, AstNode *node)
 {
     Type *result = NULL;
@@ -4618,221 +4873,15 @@ static Type *check_expr_call(Checker *c, AstNode *node)
                 obj_node = recv;
             }
 
-            /* ③ case B: `Box(Str).reflect()` with a USER-TYPE arg parses as a call
-               `Box(Str)` (Str is an IDENT, ambiguous with a value at parse time) —
-               object is AST_CALL(callee=IDENT, args=[type-name idents]). Disambiguate
-               HERE with type info: if the callee names a GENERIC STRUCT TEMPLATE (you
-               can't "call" a struct, so this can only be an instantiation) and every
-               arg is a bare type name, REWRITE the object into an AST_IDENT carrying
-               type args — then the case-A branch below instantiates + dispatches it.
-               A real `make_box(cfg).render()` call-chain is untouched (make_box is not
-               a generic struct template → find_struct_template_idx returns -1). */
-            if (obj_node->kind == AST_CALL &&
-                obj_node->as.call.callee &&
-                obj_node->as.call.callee->kind == AST_IDENT &&
-                obj_node->as.call.arg_count > 0 &&
-                obj_node->as.call.type_arg_count == 0 &&
-                find_struct_template_idx(c, obj_node->as.call.callee->as.ident.name) >= 0)
+            /* Static-by-typename detection (case B / case ③ rewrites + the four
+               `StructName.m()` / `EnumName.m()` / type-alias-param / builtin-
+               primitive checks) — see check_call_static_method. */
+            if (check_call_static_method(c, node, &obj_node, method_name,
+                                          &is_static_call, &method_struct))
             {
-                bool all_type_idents = true;
-                for (int ai = 0; ai < obj_node->as.call.arg_count; ai++)
-                    if (obj_node->as.call.args[ai] == NULL ||
-                        obj_node->as.call.args[ai]->kind != AST_IDENT)
-                        { all_type_idents = false; break; }
-                if (all_type_idents)
-                {
-                    const char *gname = obj_node->as.call.callee->as.ident.name;
-                    int ac = obj_node->as.call.arg_count;
-                    AstNode *idn = ast_new(AST_IDENT, obj_node->line, obj_node->column);
-                    size_t gl = strlen(gname) + 1;
-                    idn->as.ident.name = (char *)malloc_safe(gl);
-                    memcpy(idn->as.ident.name, gname, gl);
-                    idn->as.ident.type_args =
-                        (TypeNode **)malloc_safe((size_t)ac * sizeof(TypeNode *));
-                    idn->as.ident.type_arg_count = ac;
-                    for (int ai = 0; ai < ac; ai++)
-                    {
-                        const char *an = obj_node->as.call.args[ai]->as.ident.name;
-                        TypeNode *atn = (TypeNode *)malloc_safe(sizeof(TypeNode));
-                        memset(atn, 0, sizeof(TypeNode));
-                        atn->kind = TYPE_NODE_NAMED;
-                        size_t al = strlen(an) + 1;
-                        atn->as.named.name = (char *)malloc_safe(al);
-                        memcpy(atn->as.named.name, an, al);
-                        idn->as.ident.type_args[ai] = atn;
-                    }
-                    ast_free(obj_node);
-                    node->as.call.callee->as.field_access.object = idn;
-                    obj_node = idn;
-                }
+                result = NULL;
+                break;
             }
-
-            /* ③: static call on a parameterized generic instance written directly,
-               `Box(int).reflect()` / `Box(int).from_value(v)`. The parser produced an
-               AST_IDENT carrying type args (for type-keyword args). Instantiate
-               name(type_args) into the concrete struct/enum type and dispatch the
-               static method on it, mirroring the `type BI = Box(int); BI.reflect()`
-               alias path (which find_type_alias resolves below). Stamp resolved_type
-               so codegen derives the instance's symbol. */
-            if (obj_node->kind == AST_IDENT && obj_node->as.ident.type_arg_count > 0)
-            {
-                TypeNode tn;
-                memset(&tn, 0, sizeof(tn));
-                tn.kind = TYPE_NODE_NAMED;
-                tn.as.named.name = (char *)obj_node->as.ident.name;
-                tn.as.named.args = obj_node->as.ident.type_args;
-                tn.as.named.arg_count = obj_node->as.ident.type_arg_count;
-                Type *inst = resolve_type_node(c, &tn, node->line, node->column);
-                if (inst && (inst->kind == TYPE_STRUCT || inst->kind == TYPE_ENUM))
-                {
-                    const char *inst_key = impl_key_of_type(inst);
-                    if (inst_key)
-                    {
-                        int si = method_is_static(c, inst_key, method_name);
-                        if (si < 0 && inst->kind == TYPE_STRUCT &&
-                            inst->as.strukt.generic_base)
-                        {
-                            ensure_generic_struct_impls_local(c, inst);
-                            si = method_is_static(c, inst_key, method_name);
-                        }
-                        if (si >= 0)
-                        {
-                            method_struct = inst_key;
-                            is_static_call = true;
-                            obj_node->resolved_type = inst; /* codegen symbol source */
-                            if (si == 0)
-                            {
-                                checker_error(c, node->line, node->column,
-                                    "cannot call instance method '%s' on type '%s'; use an instance",
-                                    method_name, inst_key);
-                                result = NULL;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            /* Check if obj is a struct type name (static call: Point.origin()) */
-            if (obj_node->kind == AST_IDENT && !is_static_call)
-            {
-                Type *st = find_struct_type(c, obj_node->as.ident.name);
-                if (st && st->kind == TYPE_STRUCT)
-                {
-                    const char *st_key = impl_key_of_type(st);  /* B-4.1 */
-                    int si = method_is_static(c, st_key, method_name);
-                    if (si >= 0)
-                    {
-                        method_struct = st_key;
-                        is_static_call = true;
-                        if (si == 0)
-                        {
-                            /* Calling instance method via type name — error */
-                            checker_error(c, node->line, node->column,
-                                          "cannot call instance method '%s' on type '%s'; use an instance",
-                                          method_name, method_struct);
-                            result = NULL;
-                            break;
-                        }
-                    }
-                    }
-                }
-                /* Check if obj is an enum type name (static call: JsonValue.parse()) */
-                if (obj_node->kind == AST_IDENT && !is_static_call)
-                {
-                    Type *et = find_enum_type(c, obj_node->as.ident.name);
-                    if (et && et->kind == TYPE_ENUM)
-                    {
-                        const char *et_key = impl_key_of_type(et);  /* B-4.1 */
-                        int si = method_is_static(c, et_key, method_name);
-                        if (si >= 0)
-                        {
-                            method_struct = et_key;
-                            is_static_call = true;
-                            if (si == 0)
-                            {
-                                checker_error(c, node->line, node->column,
-                                              "cannot call instance method '%s' on type '%s'; use an instance",
-                                              method_name, method_struct);
-                                result = NULL;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                /* Static call via a generic type parameter: `T.zero()` where T is a
-                   type alias bound during monomorphization (T → Complex(f64) / int).
-                   find_struct_type/find_enum_type miss on the bare param name; resolve
-                   it through the type-alias table, then dispatch the static method on
-                   the concrete type. Stamp obj_node->resolved_type so codegen derives
-                   the right symbol (Struct.llvm_name.method / int.method). */
-                if (obj_node->kind == AST_IDENT && !is_static_call)
-                {
-                    Type *al = find_type_alias(c, obj_node->as.ident.name);
-                    if (al)
-                    {
-                        const char *al_key = (al->kind == TYPE_STRUCT || al->kind == TYPE_ENUM)
-                                                 ? impl_key_of_type(al)
-                                                 : type_impl_name(al);
-                        if (al_key)
-                        {
-                            int si = method_is_static(c, al_key, method_name);
-                            if (si < 0 && al->kind == TYPE_STRUCT && al->as.strukt.generic_base)
-                            {
-                                ensure_generic_struct_impls_local(c, al);
-                                si = method_is_static(c, al_key, method_name);
-                            }
-                            if (si >= 0)
-                            {
-                                method_struct = al_key;
-                                is_static_call = true;
-                                obj_node->resolved_type = al; /* codegen symbol source */
-                                if (si == 0)
-                                {
-                                    checker_error(c, node->line, node->column,
-                                                  "cannot call instance method '%s' on type parameter; use an instance",
-                                                  method_name);
-                                    result = NULL;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                /* Static call on a literal primitive type name: `int.from_value(v)`
-                   / `bool.show()`. Arises from the comptime `f.type` handle lowering
-                   to the field's concrete type name (and is a reasonable spelling on
-                   its own). find_struct_type / find_enum_type / find_type_alias all
-                   miss a bare primitive keyword-name; resolve it via the builtin-type
-                   table (same key as the T-alias-to-primitive path: type_impl_name). */
-                if (obj_node->kind == AST_IDENT && !is_static_call)
-                {
-                    Type *bt = resolve_builtin_type_by_name(obj_node->as.ident.name);
-                    if (bt)
-                    {
-                        const char *bt_key = type_impl_name(bt);
-                        if (bt_key)
-                        {
-                            int si = method_is_static(c, bt_key, method_name);
-                            if (si >= 0)
-                            {
-                                method_struct = bt_key;
-                                is_static_call = true;
-                                obj_node->resolved_type = bt; /* codegen symbol source */
-                                if (si == 0)
-                                {
-                                    checker_error(c, node->line, node->column,
-                                                  "cannot call instance method '%s' on type '%s'; use an instance",
-                                                  method_name, bt_key);
-                                    result = NULL;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
 
                 /* If not a struct-type static call, resolve the object expression */
             if (!is_static_call)
