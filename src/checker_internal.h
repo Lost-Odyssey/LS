@@ -18,6 +18,7 @@
      - checker_borrow.c — move/borrow analysis, capture scan, move snapshots.
      - checker_elide.c  — A1 clone-elision last-use pass.
      - checker_comptime.c — compile-time constant evaluator (comptime for/const).
+     - checker_derive.c — @derive(...) source-text generator (expand_derives).
    Each prototype's owning TU is noted inline in the block below.
 
    The public Checker struct / checker API lives in checker.h (included below). */
@@ -72,6 +73,20 @@ CtFlow ct_exec_block(Checker *c, AstNode *blk, CtEval *ev, CtScalar *ret);
 void ct_env_free(CtEval *ev);
 int ct_aenv_find(const CtEval *ev, const char *name);
 void comptime_expand_block(Checker *c, AstNode *block);
+
+/* ---- @derive(...) source-text generator (checker_derive.c) ----
+   docs/plan_static_reflection.md Stage 1. checker_inspect_ex and
+   checker_check each call expand_derives(c, program) once, before
+   forward_pass, to expand every `@derive(Trait, ...)` struct/enum into a
+   synthesized `methods Type: Trait { ... }` impl (generated as LS source
+   text and re-parsed, then appended to the program's decl list). */
+void expand_derives(Checker *c, AstNode *program);
+
+/* method_display_name is defined in checker.c (used there by `ls inspect`'s
+   method listing) and shared with checker_derive.c's @derive(Reflect)/
+   @derive(ReflectRaw) emitters, which need the same ~/clone/operator-symbol
+   display mapping. */
+const char *method_display_name(const char *mname);
 
 /* ---- A1 clone-elision (checker_elide.c) ----
    Last-use analysis over a fully-checked fn body: tags provably-final
