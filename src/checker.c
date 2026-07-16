@@ -25,6 +25,11 @@ static bool check_call_static_method(Checker *c, AstNode *node, AstNode **inout_
                                       const char **out_method_struct);
 static bool check_call_interface_qualified(Checker *c, AstNode *node, AstNode **inout_obj_node,
                                             const char *method_name);
+static bool check_call_instance_method(Checker *c, AstNode *node,
+                                        bool is_method_call, bool is_static_call,
+                                        const char *method_struct,
+                                        const char *method_name,
+                                        Type **out_callee_type);
 static bool check_method_where_bounds(Checker *c, AstNode *method, const char *qualified_name, char **tp_names, Type **type_args, int tp_count);
 static void check_pass(Checker *c, AstNode *program);
 static Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
@@ -4384,6 +4389,175 @@ static bool check_call_interface_qualified(Checker *c, AstNode *node, AstNode **
     return false;
 }
 
+/* Resolve callee type for a dispatched instance/static method call
+   (is_method_call || is_static_call already established by the caller —
+   see the struct/enum method-detection block above this in check_expr_call).
+   Handles the L-002 interface-qualified overload selection, the bare-call
+   ambiguity check, plain find_method resolution, method-level generic
+   instantiation (explicit type args or closure-arg inference), and the
+   explicit __drop() rejection. *out_callee_type receives the resolved
+   function type. Returns true on a terminal error (caller must treat this
+   as `result = NULL; break;`). */
+static bool check_call_instance_method(Checker *c, AstNode *node,
+                                        bool is_method_call, bool is_static_call,
+                                        const char *method_struct,
+                                        const char *method_name,
+                                        Type **out_callee_type)
+{
+    Type *callee_type = NULL;
+
+    /* L-002: interface-qualified call `Iface.m(recv)` (rewritten above to
+       `recv.m(...)` with qualified_iface stamped). Select the interface
+       overload by origin rather than the inherent-preferring find_method,
+       and keep qualified_iface set ONLY if the method is contended (so
+       codegen mangles to `T.<Iface>.m`; a single-provider interface keeps
+       the plain `T.m`). */
+    if (node->as.call.qualified_iface && is_method_call)
+    {
+        const char *qi = node->as.call.qualified_iface;
+        callee_type = find_method_origin(c, method_struct, method_name, qi);
+        if (callee_type == NULL)
+        {
+            checker_error(c, node->line, node->column,
+                "interface '%s' has no method '%s' for type '%s'",
+                qi, method_name, method_struct);
+            return true;
+        }
+        node->as.call.callee->resolved_type = callee_type;
+        int inh = 0, ifc = 0;
+        method_providers(c, method_struct, method_name, &inh, &ifc, NULL, NULL);
+        if (inh + ifc < 2)
+        {
+            free(node->as.call.qualified_iface);  /* not contended → plain T.m */
+            node->as.call.qualified_iface = NULL;
+        }
+        /* L-002 v2: for a generic instance, force-instantiate THIS overload's
+           body, keyed by the iface-aware lazy symbol (`T.<Iface>.m` when
+           contended, else `T.m`). No-op for non-generic types (no lazy entry).
+           Without this the qualified path would skip instantiation → JIT
+           "Symbols not found". */
+        {
+            char qsym[512];
+            if (node->as.call.qualified_iface)
+                snprintf(qsym, sizeof(qsym), "%s.%s.%s", method_struct,
+                         node->as.call.qualified_iface, method_name);
+            else
+                snprintf(qsym, sizeof(qsym), "%s.%s", method_struct, method_name);
+            ensure_generic_method_instantiated_sym(c, method_struct, qsym,
+                                                   node->line, node->column);
+        }
+        goto after_method_check;
+    }
+
+    /* L-002: bare instance dispatch `obj.m()` where `m` is ambiguous —
+       no inherent provider and >=2 interfaces provide it. The user must
+       disambiguate with a qualified call `Iface.m(recv)`. (Inherent
+       priority resolves the "inherent + interface" overlap silently;
+       only the "all-interface, >=2" case is irresolvable here.) */
+    if (is_method_call && !is_static_call)
+    {
+        int inh = 0, ifc = 0; const char *ia = NULL, *ib = NULL;
+        method_providers(c, method_struct, method_name, &inh, &ifc, &ia, &ib);
+        if (inh == 0 && ifc >= 2)
+        {
+            checker_error(c, node->line, node->column,
+                "ambiguous method '%s' on type '%s': provided by interfaces "
+                "'%s' and '%s'; disambiguate with a qualified call, "
+                "e.g. '%s.%s(recv)'",
+                method_name, method_struct, ia, ib, ia, method_name);
+            return true;
+        }
+    }
+
+    callee_type = find_method(c, method_struct, method_name);
+    if (callee_type == NULL)
+    {
+        char helpbuf[256];
+        DiagMethodIter it = { c, NULL, method_struct, 0, 0, 0, false };
+        const char *help = diag_help_suggestion(
+            helpbuf, sizeof(helpbuf), method_name,
+            diag_method_iter_next, &it);
+        checker_error_help(c, node->line, node->column, 1, help,
+                           "type '%s' has no method '%s'",
+                           method_struct, method_name);
+        return true;
+    }
+
+    /* Method-level generic: if the call site provides type args, try
+       to build the concrete signature on-the-fly.  The placeholder
+       returned by find_method has type_void() — the real type is built
+       and body-checked here. */
+    if (node->as.call.type_arg_count > 0) {
+        Type *concrete = try_instantiate_method_level_generic(
+            c, method_struct, method_name,
+            node->as.call.type_args, node->as.call.type_arg_count,
+            NULL, node->line, node->column);
+        if (concrete) {
+            callee_type = concrete;
+            node->as.call.callee->resolved_type = callee_type;
+            /* Stash the resolved (concrete) method-level type-arg names so
+               codegen mangles the call as `Type.method(int)` not
+               `Type.method(T)` when called with an abstract type param
+               inside a generic body. The alias (T→int) is active here, so
+               resolve_type_node yields the concrete type; codegen has no
+               alias context and would otherwise re-mangle the raw `T`.
+               Mirrors the closure-inference and free-function paths. */
+            if (node->as.call.resolved_type_args == NULL) {
+                int tac = node->as.call.type_arg_count;
+                Type **rargs = (Type **)malloc_safe((size_t)(tac > 0 ? tac : 1)
+                                                    * sizeof(Type *));
+                for (int ti = 0; ti < tac; ti++)
+                    rargs[ti] = resolve_type_node(c, node->as.call.type_args[ti],
+                                                  node->line, node->column);
+                checker_stash_resolved_type_args(c, node, rargs, tac);
+                free(rargs);
+            }
+            /* Body already checked+queued by try_instantiate; skip lazy path */
+            goto after_method_check;
+        }
+    } else {
+        /* No explicit type args: try to infer a single method-level
+           type param from a closure arg's return type, so
+           `v.map(|x| x+1)` works like `v.map(int)(|x| x+1)`. */
+        Type *concrete = try_infer_method_generic_from_closure(
+            c, method_struct, method_name, node,
+            node->line, node->column);
+        if (concrete) {
+            callee_type = concrete;
+            node->as.call.callee->resolved_type = callee_type;
+            goto after_method_check;
+        }
+    }
+
+    if (!ensure_generic_method_instantiated(c, method_struct, method_name,
+                                             node->line, node->column))
+    {
+        return true;
+    }
+    /* Set resolved_type on the callee node so codegen can find it */
+    node->as.call.callee->resolved_type = callee_type;
+
+    after_method_check: ;
+
+    /* A-2 (docs/bugs_deferred_p5_4.md §2): explicit `.__drop()` calls in
+       source are rejected. The compiler manages destruction automatically
+       (RAII at scope exit); an explicit call is always a double-free
+       footgun, and for a compiler-generated member __drop the symbol may
+       not even be emitted (JIT "Symbols not found"). Block it cleanly at
+       the checker rather than crashing/double-freeing at runtime. */
+    if (strcmp(method_name, "__drop") == 0 && is_method_call)
+    {
+        checker_error(c, node->line, node->column,
+                      "cannot call __drop() explicitly; the compiler "
+                      "destroys values automatically at scope exit "
+                      "(an explicit call would double-free)");
+        return true;
+    }
+
+    *out_callee_type = callee_type;
+    return false;
+}
+
 static Type *check_expr_call(Checker *c, AstNode *node)
 {
     Type *result = NULL;
@@ -5100,155 +5274,12 @@ static Type *check_expr_call(Checker *c, AstNode *node)
         {
             const char *method_name = node->as.call.callee->as.field_access.field;
 
-            /* L-002: interface-qualified call `Iface.m(recv)` (rewritten above to
-               `recv.m(...)` with qualified_iface stamped). Select the interface
-               overload by origin rather than the inherent-preferring find_method,
-               and keep qualified_iface set ONLY if the method is contended (so
-               codegen mangles to `T.<Iface>.m`; a single-provider interface keeps
-               the plain `T.m`). */
-            if (node->as.call.qualified_iface && is_method_call)
+            /* Interface-overload selection / plain find_method / method-level
+               generic instantiation / explicit __drop() rejection — see
+               check_call_instance_method. */
+            if (check_call_instance_method(c, node, is_method_call, is_static_call,
+                                            method_struct, method_name, &callee_type))
             {
-                const char *qi = node->as.call.qualified_iface;
-                callee_type = find_method_origin(c, method_struct, method_name, qi);
-                if (callee_type == NULL)
-                {
-                    checker_error(c, node->line, node->column,
-                        "interface '%s' has no method '%s' for type '%s'",
-                        qi, method_name, method_struct);
-                    result = NULL;
-                    break;
-                }
-                node->as.call.callee->resolved_type = callee_type;
-                int inh = 0, ifc = 0;
-                method_providers(c, method_struct, method_name, &inh, &ifc, NULL, NULL);
-                if (inh + ifc < 2)
-                {
-                    free(node->as.call.qualified_iface);  /* not contended → plain T.m */
-                    node->as.call.qualified_iface = NULL;
-                }
-                /* L-002 v2: for a generic instance, force-instantiate THIS overload's
-                   body, keyed by the iface-aware lazy symbol (`T.<Iface>.m` when
-                   contended, else `T.m`). No-op for non-generic types (no lazy entry).
-                   Without this the qualified path would skip instantiation → JIT
-                   "Symbols not found". */
-                {
-                    char qsym[512];
-                    if (node->as.call.qualified_iface)
-                        snprintf(qsym, sizeof(qsym), "%s.%s.%s", method_struct,
-                                 node->as.call.qualified_iface, method_name);
-                    else
-                        snprintf(qsym, sizeof(qsym), "%s.%s", method_struct, method_name);
-                    ensure_generic_method_instantiated_sym(c, method_struct, qsym,
-                                                           node->line, node->column);
-                }
-                goto after_method_check;
-            }
-
-            /* L-002: bare instance dispatch `obj.m()` where `m` is ambiguous —
-               no inherent provider and >=2 interfaces provide it. The user must
-               disambiguate with a qualified call `Iface.m(recv)`. (Inherent
-               priority resolves the "inherent + interface" overlap silently;
-               only the "all-interface, >=2" case is irresolvable here.) */
-            if (is_method_call && !is_static_call)
-            {
-                int inh = 0, ifc = 0; const char *ia = NULL, *ib = NULL;
-                method_providers(c, method_struct, method_name, &inh, &ifc, &ia, &ib);
-                if (inh == 0 && ifc >= 2)
-                {
-                    checker_error(c, node->line, node->column,
-                        "ambiguous method '%s' on type '%s': provided by interfaces "
-                        "'%s' and '%s'; disambiguate with a qualified call, "
-                        "e.g. '%s.%s(recv)'",
-                        method_name, method_struct, ia, ib, ia, method_name);
-                    result = NULL;
-                    break;
-                }
-            }
-
-            callee_type = find_method(c, method_struct, method_name);
-            if (callee_type == NULL)
-            {
-                char helpbuf[256];
-                DiagMethodIter it = { c, NULL, method_struct, 0, 0, 0, false };
-                const char *help = diag_help_suggestion(
-                    helpbuf, sizeof(helpbuf), method_name,
-                    diag_method_iter_next, &it);
-                checker_error_help(c, node->line, node->column, 1, help,
-                                   "type '%s' has no method '%s'",
-                                   method_struct, method_name);
-                result = NULL;
-                break;
-            }
-
-            /* Method-level generic: if the call site provides type args, try
-               to build the concrete signature on-the-fly.  The placeholder
-               returned by find_method has type_void() — the real type is built
-               and body-checked here. */
-            if (node->as.call.type_arg_count > 0) {
-                Type *concrete = try_instantiate_method_level_generic(
-                    c, method_struct, method_name,
-                    node->as.call.type_args, node->as.call.type_arg_count,
-                    NULL, node->line, node->column);
-                if (concrete) {
-                    callee_type = concrete;
-                    node->as.call.callee->resolved_type = callee_type;
-                    /* Stash the resolved (concrete) method-level type-arg names so
-                       codegen mangles the call as `Type.method(int)` not
-                       `Type.method(T)` when called with an abstract type param
-                       inside a generic body. The alias (T→int) is active here, so
-                       resolve_type_node yields the concrete type; codegen has no
-                       alias context and would otherwise re-mangle the raw `T`.
-                       Mirrors the closure-inference and free-function paths. */
-                    if (node->as.call.resolved_type_args == NULL) {
-                        int tac = node->as.call.type_arg_count;
-                        Type **rargs = (Type **)malloc_safe((size_t)(tac > 0 ? tac : 1)
-                                                            * sizeof(Type *));
-                        for (int ti = 0; ti < tac; ti++)
-                            rargs[ti] = resolve_type_node(c, node->as.call.type_args[ti],
-                                                          node->line, node->column);
-                        checker_stash_resolved_type_args(c, node, rargs, tac);
-                        free(rargs);
-                    }
-                    /* Body already checked+queued by try_instantiate; skip lazy path */
-                    goto after_method_check;
-                }
-            } else {
-                /* No explicit type args: try to infer a single method-level
-                   type param from a closure arg's return type, so
-                   `v.map(|x| x+1)` works like `v.map(int)(|x| x+1)`. */
-                Type *concrete = try_infer_method_generic_from_closure(
-                    c, method_struct, method_name, node,
-                    node->line, node->column);
-                if (concrete) {
-                    callee_type = concrete;
-                    node->as.call.callee->resolved_type = callee_type;
-                    goto after_method_check;
-                }
-            }
-
-            if (!ensure_generic_method_instantiated(c, method_struct, method_name,
-                                                     node->line, node->column))
-            {
-                result = NULL;
-                break;
-            }
-            /* Set resolved_type on the callee node so codegen can find it */
-            node->as.call.callee->resolved_type = callee_type;
-
-            after_method_check: ;
-
-            /* A-2 (docs/bugs_deferred_p5_4.md §2): explicit `.__drop()` calls in
-               source are rejected. The compiler manages destruction automatically
-               (RAII at scope exit); an explicit call is always a double-free
-               footgun, and for a compiler-generated member __drop the symbol may
-               not even be emitted (JIT "Symbols not found"). Block it cleanly at
-               the checker rather than crashing/double-freeing at runtime. */
-            if (strcmp(method_name, "__drop") == 0 && is_method_call)
-            {
-                checker_error(c, node->line, node->column,
-                              "cannot call __drop() explicitly; the compiler "
-                              "destroys values automatically at scope exit "
-                              "(an explicit call would double-free)");
                 result = NULL;
                 break;
             }
