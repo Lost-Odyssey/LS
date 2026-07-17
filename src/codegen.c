@@ -1,5 +1,6 @@
 /* codegen.c — AST to LLVM IR code generation */
 #include "codegen.h"
+#include "checker.h"   /* CheckerGenericMethods full def (codegen.h only forward-declares it) */
 #include "codegen_internal.h"
 #include "module.h"
 #define LS_INCLUDE_CODEGEN 1

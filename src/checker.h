@@ -256,7 +256,7 @@ typedef struct Checker {
 
 /* G1.5: Output struct for pending generic method instantiations.
    Ownership of cloned_fn and mangled_name transfers to the caller. */
-typedef struct {
+typedef struct CheckerGenericMethods {
     struct {
         AstNode *cloned_fn;
         char    *mangled_name;
