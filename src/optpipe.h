@@ -64,4 +64,28 @@ LLVMTargetMachineRef ls_opt_create_target_machine(const char *triple,
 int ls_opt_run_passes(LLVMModuleRef module, LLVMTargetMachineRef tm,
                       const LsOptConfig *cfg);
 
+/* --- CLI codegen-flag convergence (Task 5.1) ---
+ *
+ * The `ir`/`asm`/`emit-ir`/`compile`/`run` subcommands each accept the same
+ * family of codegen flags (-O<n>, --native, --target=<cpu>|--target <cpu>,
+ * -g) but historically re-implemented the per-token parsing loop four times,
+ * and the copies had already drifted (e.g. only some recognized --target).
+ * CodegenFlags + parse_codegen_flags() are the single shared implementation;
+ * each subcommand's own argv loop calls parse_codegen_flags() once per
+ * position and, on a non-zero return, advances by that many slots. */
+typedef struct {
+    LsOptLevel opt_level;   /* meaningful only when opt_set is true */
+    bool opt_set;           /* true iff an explicit -O<n> token was seen */
+    bool native;            /* --native */
+    const char *target;     /* --target=<cpu> / --target <cpu>; NULL = unset */
+    bool debug_info;        /* -g */
+} CodegenFlags;
+
+/* Try to parse a codegen flag at argv[i]. On a match, updates *out and
+   returns the number of argv slots consumed (1, or 2 for the space-separated
+   "--target <cpu>" form). Returns 0 (leaving *out untouched) if argv[i] is
+   not a recognized codegen flag, so callers can fall through to their own
+   command-specific flags/positional handling. */
+int parse_codegen_flags(int argc, char **argv, int i, CodegenFlags *out);
+
 #endif /* LS_OPTPIPE_H */

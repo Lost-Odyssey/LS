@@ -2,13 +2,48 @@
    Resolves the runtime archives (ls_memcheck / ls_profiler / ls_os_backend)
    next to the lls executable, assembles the platform link command (clang on
    Windows, cc elsewhere), and runs it via system(). Pure code motion from
-   main.c — paths, flags and command layout are unchanged. */
+   main.c — paths, flags and command layout are unchanged.
+
+   Batch 5 (5.3) hardening on top of that code motion:
+   - LS_CLANG env var overrides clang discovery (highest priority), and a
+     missing clang now fails with a clear error listing every candidate
+     location instead of blindly falling through to a bare `clang` that may
+     not be on PATH.
+   - Every snprintf that builds the (fixed-size) link command line checks
+     its return value; truncation is a fatal error, not a silently-broken
+     command handed to system(). */
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 #include "link_driver.h"
 #include "module.h"   /* module_executable_dir: dir containing lls.exe (W4 dedupe) */
+
+/* vsnprintf into `buf` and treat truncation (or an encoding error) as fatal:
+   print a clear message and return false. A truncated link command line is
+   worse than a build error — it can drop a trailing argument (e.g. one of
+   the runtime archive paths) and produce a binary that mysteriously fails
+   to run, or link against the wrong thing. */
+static bool link_cmd_build(char *buf, size_t bufsz, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, bufsz, fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        fprintf(stderr, "error: internal error formatting the link command\n");
+        return false;
+    }
+    if ((size_t)n >= bufsz) {
+        fprintf(stderr,
+                "error: link command exceeds internal buffer (%d bytes needed, "
+                "%zu available); the output path or a runtime archive path is "
+                "too long\n",
+                n, bufsz);
+        return false;
+    }
+    return true;
+}
 
 int link_driver_link(const LinkConfig *cfg) {
     const char *exe_path = cfg->exe_path;
@@ -71,23 +106,62 @@ int link_driver_link(const LinkConfig *cfg) {
     char link_cmd[2560];
 #ifdef _WIN32
     {
-        /* Use clang as linker driver via cmd.exe /c for proper quoting */
-        const char *clang_paths[] = {
+        /* Use clang as linker driver via cmd.exe /c for proper quoting.
+           Candidate order (highest priority first): LS_CLANG env override,
+           then the two well-known LLVM install locations, then a bare
+           `clang` resolved via PATH. Unlike the pre-5.3 version, a miss on
+           every candidate is now a fatal, itemized error instead of a
+           silent fall-through to `clang` that may not exist on PATH. */
+        const char *ls_clang_env = getenv("LS_CLANG");
+        if (ls_clang_env && ls_clang_env[0] == '\0') ls_clang_env = NULL;
+
+        const char *fixed_paths[] = {
             "C:\\Program Files\\LLVM\\bin\\clang.exe",
             "C:\\llvm\\bin\\clang.exe",
-            NULL
         };
-        const char *clang = NULL;
-        for (int ci = 0; clang_paths[ci]; ci++) {
-            FILE *tf = fopen(clang_paths[ci], "rb");
-            if (tf) { fclose(tf); clang = clang_paths[ci]; break; }
+        const int n_fixed = (int)(sizeof(fixed_paths) / sizeof(fixed_paths[0]));
+
+        const char *clang = NULL;     /* resolved absolute path, if any */
+        bool clang_via_path = false;  /* resolved as bare `clang` on PATH */
+
+        if (ls_clang_env) {
+            FILE *tf = fopen(ls_clang_env, "rb");
+            if (tf) { fclose(tf); clang = ls_clang_env; }
         }
+        for (int ci = 0; !clang && ci < n_fixed; ci++) {
+            FILE *tf = fopen(fixed_paths[ci], "rb");
+            if (tf) { fclose(tf); clang = fixed_paths[ci]; }
+        }
+        if (!clang) {
+            /* `where` exits 0 iff it finds at least one match on PATH;
+               redirect both streams since we only care about the exit code. */
+            if (system("where clang >NUL 2>NUL") == 0) clang_via_path = true;
+        }
+
+        if (!clang && !clang_via_path) {
+            fprintf(stderr,
+                    "error: could not locate clang (needed to link the AOT "
+                    "executable). Tried:\n");
+            if (ls_clang_env)
+                fprintf(stderr, "  - LS_CLANG=%s (not found)\n", ls_clang_env);
+            else
+                fprintf(stderr, "  - LS_CLANG (not set)\n");
+            for (int ci = 0; ci < n_fixed; ci++)
+                fprintf(stderr, "  - %s (not found)\n", fixed_paths[ci]);
+            fprintf(stderr, "  - clang (not found on PATH)\n");
+            fprintf(stderr,
+                    "hint: set LS_CLANG=<path to clang.exe>, install LLVM to "
+                    "one of the paths above, or add clang to PATH.\n");
+            return 1;
+        }
+
         /* ls_memcheck.lib and ls_os_backend.lib are built with /MD (dynamic
            CRT), so the linker needs the dynamic CRT import libraries.
            -g (D1): clang -g makes lld-link collect the object's .debug$S
            CodeView into a PDB next to the exe. */
+        bool ok;
         if (clang) {
-            snprintf(link_cmd, sizeof(link_cmd),
+            ok = link_cmd_build(link_cmd, sizeof(link_cmd),
                      "cmd.exe /c \"\"%s\" %s -o \"%s\" \"%s\" %s %s %s"
                      " -llegacy_stdio_definitions -lucrt"
                      " -Xlinker /NODEFAULTLIB:libucrt.lib"
@@ -95,8 +169,8 @@ int link_driver_link(const LinkConfig *cfg) {
                      clang, cfg->debug_info ? "-g" : "",
                      exe_path, obj_path, mc_lib, prof_lib, os_lib);
         } else {
-            /* Fallback: assume clang is in PATH */
-            snprintf(link_cmd, sizeof(link_cmd),
+            /* clang_via_path: assume clang is in PATH (verified above) */
+            ok = link_cmd_build(link_cmd, sizeof(link_cmd),
                      "clang %s -o \"%s\" \"%s\" %s %s %s"
                      " -llegacy_stdio_definitions -lucrt"
                      " -Xlinker /NODEFAULTLIB:libucrt.lib"
@@ -104,6 +178,7 @@ int link_driver_link(const LinkConfig *cfg) {
                      cfg->debug_info ? "-g" : "",
                      exe_path, obj_path, mc_lib, prof_lib, os_lib);
         }
+        if (!ok) return 1;
     }
 #else
     /* -lpthread for os_posix.c's ls_thread_* (std.task). Harmless on modern
@@ -111,10 +186,11 @@ int link_driver_link(const LinkConfig *cfg) {
        -no-pie: codegen emits objects with LLVMRelocDefault (non-PIC); modern
        distros (Ubuntu >=17.10, etc.) default `cc` to -pie, which rejects the
        absolute relocations in those objects ("recompile with -fPIE"). */
-    snprintf(link_cmd, sizeof(link_cmd),
+    if (!link_cmd_build(link_cmd, sizeof(link_cmd),
              "cc %s -no-pie \"%s\" -o \"%s\" %s %s %s -lm -lpthread",
              cfg->debug_info ? "-g" : "",
-             obj_path, exe_path, mc_lib, prof_lib, os_lib);
+             obj_path, exe_path, mc_lib, prof_lib, os_lib))
+        return 1;
 #endif
 
     printf("Linking: %s\n", link_cmd);
