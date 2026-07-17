@@ -1306,7 +1306,7 @@ void codegen_take_generic_methods(CodegenContext *ctx, CheckerGenericMethods *gm
     if (gm->count > 0) {
         ctx->pending_gm_count = gm->count;
         size_t sz = (size_t)gm->count * sizeof(ctx->pending_generic_methods[0]);
-        ctx->pending_generic_methods = malloc(sz);
+        ctx->pending_generic_methods = malloc_safe(sz);
         for (int gi = 0; gi < gm->count; gi++) {
             ctx->pending_generic_methods[gi].cloned_fn    = gm->methods[gi].cloned_fn;
             ctx->pending_generic_methods[gi].mangled_name = gm->methods[gi].mangled_name;
