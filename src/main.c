@@ -454,7 +454,8 @@ static int inspect_print_asm_slice(const char *asm_text, const char *fnname) {
    assembly, optionally optimized (-O) and host-targeted (--native), for manual
    optimization. Mirrors the emit-ir pipeline, then filters to one function. */
 static int cmd_ir_asm(const char *fn_query, const char *path, bool want_asm,
-                      LsOptLevel opt_level, bool native) {
+                      LsOptLevel opt_level, bool native, const char *target_cpu,
+                      bool debug_info) {
     char *source = read_file(path);
     if (source == NULL) return 1;
     AstNode *ast = parse(source, path);
@@ -482,6 +483,8 @@ static int cmd_ir_asm(const char *fn_query, const char *path, bool want_asm,
     }
     ctx.opt.level = opt_level;
     if (native) ctx.opt.native = true;
+    if (target_cpu) ctx.opt.target_cpu = target_cpu;  /* --target / cross-target inspection */
+    ctx.debug_info = debug_info;  /* -g: line-table debug info (D1) */
 
     int rc = 1;
     if (codegen_compile(&ctx, ast, reg) == 0) {
@@ -1446,41 +1449,35 @@ int main(int argc, char *argv[]) {
         bool want_asm = (strcmp(cmd, "asm") == 0);
         const char *fn = NULL;
         const char *file = NULL;
-        bool native = false;
-        LsOptLevel opt_level = LS_OPT_O2;   /* default -O2: show real codegen */
+        CodegenFlags cf = {0};
+        cf.opt_level = LS_OPT_O2;   /* default -O2: show real codegen */
         for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "--native") == 0) native = true;
-            else if (ls_opt_parse_flag(argv[i], &opt_level)) { /* handled */ }
-            else if (fn == NULL) fn = argv[i];
+            int consumed = parse_codegen_flags(argc, argv, i, &cf);
+            if (consumed > 0) { i += consumed - 1; continue; }
+            if (fn == NULL) fn = argv[i];
             else if (file == NULL) file = argv[i];
         }
         if (fn == NULL || file == NULL) {
             fprintf(stderr, "error: '%s' requires <function> <file>\n", cmd);
             return 1;
         }
-        return cmd_ir_asm(fn, file, want_asm, opt_level, native);
+        return cmd_ir_asm(fn, file, want_asm, cf.opt_level, cf.native, cf.target, cf.debug_info);
     }
 
     if (strcmp(cmd, "emit-ir") == 0) {
         const char *file = NULL;
-        bool native = false;
-        bool opt_set = false;
-        bool debug_info = false;
-        const char *target_cpu = NULL;  /* --target=<cpu>: emit IR for a named CPU */
-        LsOptLevel opt_level = LS_OPT_O2;
+        CodegenFlags cf = {0};
+        cf.opt_level = LS_OPT_O2;
         for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "--native") == 0) native = true;
-            else if (strcmp(argv[i], "-g") == 0) debug_info = true;
-            else if (strncmp(argv[i], "--target=", 9) == 0) target_cpu = argv[i] + 9;
-            else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) target_cpu = argv[++i];
-            else if (ls_opt_parse_flag(argv[i], &opt_level)) opt_set = true;
-            else if (file == NULL) file = argv[i];
+            int consumed = parse_codegen_flags(argc, argv, i, &cf);
+            if (consumed > 0) { i += consumed - 1; continue; }
+            if (file == NULL) file = argv[i];
         }
         if (file == NULL) {
             fprintf(stderr, "error: 'emit-ir' requires a file path\n");
             return 1;
         }
-        return cmd_emit_ir(file, opt_set, opt_level, native, target_cpu, debug_info);
+        return cmd_emit_ir(file, cf.opt_set, cf.opt_level, cf.native, cf.target, cf.debug_info);
     }
 
     if (strcmp(cmd, "emit-c") == 0) {
@@ -1526,12 +1523,11 @@ int main(int argc, char *argv[]) {
         bool dump_ir = false;
         bool memcheck = false;
         bool profile = false;
-        bool native = false;
-        bool opt_set = false;
-        bool debug_info = false;
-        const char *target_cpu = NULL;  /* --target=<cpu>: cross-target AOT (e.g. graniterapids) */
-        LsOptLevel opt_level = LS_OPT_O2;
+        CodegenFlags cf = {0};
+        cf.opt_level = LS_OPT_O2;
         for (int i = 2; i < argc; i++) {
+            int consumed = parse_codegen_flags(argc, argv, i, &cf);
+            if (consumed > 0) { i += consumed - 1; continue; }
             if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
                 output = argv[++i];
             } else if (strcmp(argv[i], "--dump-ir") == 0) {
@@ -1540,16 +1536,6 @@ int main(int argc, char *argv[]) {
                 memcheck = true;
             } else if (strcmp(argv[i], "--profile") == 0) {
                 profile = true;
-            } else if (strcmp(argv[i], "--native") == 0) {
-                native = true;
-            } else if (strcmp(argv[i], "-g") == 0) {
-                debug_info = true;
-            } else if (strncmp(argv[i], "--target=", 9) == 0) {
-                target_cpu = argv[i] + 9;
-            } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
-                target_cpu = argv[++i];
-            } else if (ls_opt_parse_flag(argv[i], &opt_level)) {
-                opt_set = true;
             } else if (file == NULL) {
                 file = argv[i];
             }
@@ -1559,28 +1545,39 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         return cmd_compile(file, output, dump_ir, memcheck, profile,
-                           opt_set, opt_level, native, target_cpu, debug_info);
+                           cf.opt_set, cf.opt_level, cf.native, cf.target, cf.debug_info);
     }
 
     if (strcmp(cmd, "run") == 0) {
         bool memcheck = false;
         bool profile = false;
-        bool optimize = false;
-        LsOptLevel opt_level = LS_OPT_O2;
+        CodegenFlags cf = {0};
+        cf.opt_level = LS_OPT_O2;
         const char *file = NULL;
         int file_idx = -1;
         for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "--memcheck") == 0) memcheck = true;
-            else if (strcmp(argv[i], "--profile") == 0) profile = true;
-            else if (strcmp(argv[i], "--optimize") == 0) { optimize = true; opt_level = LS_OPT_O2; }
-            else if (ls_opt_parse_flag(argv[i], &opt_level)) { optimize = true; }
-            else if (strncmp(argv[i], "--target=", 9) == 0 || strcmp(argv[i], "--target") == 0) {
-                /* JIT always targets the host (cannot run foreign ISA); ignore. */
-                if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) i++;  /* skip value */
-                fprintf(stderr, "note: 'run' (JIT) always targets the host CPU; "
-                                "--target is ignored. Use 'compile --target=...' for AOT.\n");
+            if (strcmp(argv[i], "--memcheck") == 0) { memcheck = true; continue; }
+            if (strcmp(argv[i], "--profile") == 0) { profile = true; continue; }
+            if (strcmp(argv[i], "--optimize") == 0) { cf.opt_set = true; cf.opt_level = LS_OPT_O2; continue; }
+            int consumed = parse_codegen_flags(argc, argv, i, &cf);
+            if (consumed > 0) {
+                if (cf.target != NULL) {
+                    /* JIT always targets the host (cannot run foreign ISA); ignore. */
+                    fprintf(stderr, "note: 'run' (JIT) always targets the host CPU; "
+                                    "--target is ignored. Use 'compile --target=...' for AOT.\n");
+                    cf.target = NULL;
+                }
+                if (cf.debug_info) {
+                    /* JIT debug info (PDB registration) is not implemented yet
+                       (docs/plan_debug_info.md phase 2); ignore rather than
+                       silently mis-parse -g as the file path. */
+                    fprintf(stderr, "note: 'run' (JIT) does not support -g yet; ignored.\n");
+                    cf.debug_info = false;
+                }
+                i += consumed - 1;
+                continue;
             }
-            else if (file == NULL) { file = argv[i]; file_idx = i; }
+            if (file == NULL) { file = argv[i]; file_idx = i; }
         }
         if (file == NULL) {
             fprintf(stderr, "error: 'run' requires a file path\n");
@@ -1596,7 +1593,7 @@ int main(int argc, char *argv[]) {
         }
         if (memcheck) return jit_run_file_memcheck(file);
         if (profile) return jit_run_file_profile(file);
-        if (optimize) return jit_run_file_optlevel(file, opt_level);
+        if (cf.opt_set) return jit_run_file_optlevel(file, cf.opt_level);
         return jit_run_file(file);
     }
 

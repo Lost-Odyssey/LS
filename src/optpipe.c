@@ -69,6 +69,16 @@ bool ls_opt_parse_flag(const char *arg, LsOptLevel *out) {
     return false;
 }
 
+int parse_codegen_flags(int argc, char **argv, int i, CodegenFlags *out) {
+    const char *arg = argv[i];
+    if (strcmp(arg, "--native") == 0) { out->native = true; return 1; }
+    if (strcmp(arg, "-g") == 0) { out->debug_info = true; return 1; }
+    if (strncmp(arg, "--target=", 9) == 0) { out->target = arg + 9; return 1; }
+    if (strcmp(arg, "--target") == 0 && i + 1 < argc) { out->target = argv[i + 1]; return 2; }
+    if (ls_opt_parse_flag(arg, &out->opt_level)) { out->opt_set = true; return 1; }
+    return 0;
+}
+
 const char *ls_opt_pass_string(LsOptLevel level) {
     switch (level) {
         case LS_OPT_O0: return NULL;
