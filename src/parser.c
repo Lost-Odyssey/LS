@@ -182,6 +182,44 @@ void recover_in_body(Parser *p) {
     }
 }
 
+/* Shared driver for the "loop until '}' or EOF, parsing one AstNode member
+   per iteration into a growable array" shape that recurs across struct/enum/
+   interface/methods/block body parsers (Task 4.4,
+   docs/plan_arch_round2_backlog.md Batch 4). Converges ONLY the sites whose
+   per-member logic reduces to a single `member_fn` call returning either a
+   fully-built AstNode* to append, or NULL to trigger `recover_in_body`+retry
+   — i.e. sites shaped exactly like:
+       while (!check(close) && !check(EOF)) {
+           AstNode *m = <parse one member, using ctx for any per-site state>;
+           if (m == NULL) { recover_in_body(p); continue; }
+           <grow array>; items[count++] = m;
+       }
+   Sites with extra control flow between "member parsed" and "member
+   appended" (e.g. parser_stmt.c's parse_block_inner, which can reject and
+   discard a successfully-parsed nested declaration without recovering) do
+   NOT fit this contract and are left as hand-written loops on purpose. */
+void parse_body_items(Parser *p, TokenType close,
+                       AstNode *(*member_fn)(Parser *p, void *ctx), void *ctx,
+                       AstNode ***out_items, int *out_count) {
+    AstNode **items = NULL;
+    int count = 0;
+    int cap = 0;
+    while (!check(p, close) && !check(p, TOKEN_EOF)) {
+        AstNode *item = member_fn(p, ctx);
+        if (item == NULL) {
+            recover_in_body(p);
+            continue;
+        }
+        if (count >= cap) {
+            cap = GROW_CAPACITY(cap);
+            items = GROW_ARRAY(AstNode *, items, cap);
+        }
+        items[count++] = item;
+    }
+    *out_items = items;
+    *out_count = count;
+}
+
 /* ---- String Literal Processing ---- */
 
 /* Process escape sequences in a string token (strips quotes) */

@@ -74,6 +74,13 @@ void synchronize(Parser *p);
 void recover_in_body(Parser *p);
 char *process_string_token(const char *start, int length);
 
+/* ---- [def: parser.c] shared body-loop driver (Task 4.4) — see the doc
+   comment at its definition for the exact contract and which sites do/don't
+   fit it. */
+void parse_body_items(Parser *p, TokenType close,
+                       AstNode *(*member_fn)(Parser *p, void *ctx), void *ctx,
+                       AstNode ***out_items, int *out_count);
+
 /* ---- [def: parser.c] depth-guarded recursive entry points. Each wraps a
    same-named `*_inner` defined in another TU (see that TU's group below);
    the wrapper itself stays in parser.c so all three share one

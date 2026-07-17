@@ -1086,6 +1086,17 @@ static AstNode *infix_assign(Parser *p, AstNode *left) {
     return n;
 }
 
+/* One statement in a trailing-closure body (`f(args) { |x| stmt; stmt; }`),
+   for the parse_body_items driver below. Unlike parse_block_inner, this body
+   has no nested-top-level-decl rejection — kept as-is, not unified with it. */
+static AstNode *parse_one_trailing_closure_stmt(Parser *p, void *ctx) {
+    (void)ctx;
+    AstNode *s = parse_statement(p);
+    if (s == NULL) return NULL;
+    skip_semicolons(p);
+    return s;
+}
+
 /* Function call: left(args...) */
 static AstNode *infix_call(Parser *p, AstNode *left) {
     Token call_tok = p->previous; /* the '(' */
@@ -1277,18 +1288,9 @@ static AstNode *infix_call(Parser *p, AstNode *left) {
             /* Body: read statements until '}'. */
             AstNode **stmts = NULL;
             int stmt_count = 0;
-            int stmt_cap = 0;
             skip_semicolons(p);
-            while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
-                AstNode *s = parse_statement(p);
-                if (s == NULL) { recover_in_body(p); continue; }
-                if (stmt_count >= stmt_cap) {
-                    stmt_cap = GROW_CAPACITY(stmt_cap);
-                    stmts = GROW_ARRAY(AstNode *, stmts, stmt_cap);
-                }
-                stmts[stmt_count++] = s;
-                skip_semicolons(p);
-            }
+            parse_body_items(p, TOKEN_RBRACE, parse_one_trailing_closure_stmt,
+                              NULL, &stmts, &stmt_count);
             consume(p, TOKEN_RBRACE, "expected '}' after trailing closure body");
 
             /* Implicit return for single-expression trailing-closure bodies:

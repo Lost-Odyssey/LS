@@ -1009,6 +1009,27 @@ AstNode *parse_enum_decl(Parser *p) {
 }
 
 /* ---- parse_trait_decl ---- */
+
+/* One interface-body member: `[static] fn sig(...) [-> T];`. Returns NULL
+   (member parse failed) to signal the parse_body_items driver to recover. */
+static AstNode *parse_one_trait_sig(Parser *p, void *ctx) {
+    (void)ctx;
+    bool sig_static = false;
+    if (match_tok(p, TOKEN_STATIC)) {
+        sig_static = true;
+    }
+    if (!match_tok(p, TOKEN_FN)) {
+        error_at_current(p, "expected 'def' in interface body");
+        return NULL;
+    }
+    AstNode *sig = parse_fn_signature(p);
+    if (sig == NULL) return NULL;
+    sig->as.fn_decl.is_static = sig_static;
+    /* optional semicolon / newline separator */
+    match_tok(p, TOKEN_SEMICOLON);
+    return sig;
+}
+
 /* Parse: trait Name { fn sig(); fn sig(); ... }
    'trait' already consumed. */
 AstNode *parse_trait_decl(Parser *p) {
@@ -1026,32 +1047,8 @@ AstNode *parse_trait_decl(Parser *p) {
 
     AstNode **sigs = NULL;
     int sig_count = 0;
-    int sig_cap = 0;
-
-    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
-        bool sig_static = false;
-        if (match_tok(p, TOKEN_STATIC)) {
-            sig_static = true;
-        }
-        if (!match_tok(p, TOKEN_FN)) {
-            error_at_current(p, "expected 'def' in interface body");
-            recover_in_body(p);
-            continue;
-        }
-        AstNode *sig = parse_fn_signature(p);
-        if (sig == NULL) {
-            recover_in_body(p);
-            continue;
-        }
-        sig->as.fn_decl.is_static = sig_static;
-        if (sig_count >= sig_cap) {
-            sig_cap = GROW_CAPACITY(sig_cap);
-            sigs = GROW_ARRAY(AstNode *, sigs, sig_cap);
-        }
-        sigs[sig_count++] = sig;
-        /* optional semicolon / newline separator */
-        match_tok(p, TOKEN_SEMICOLON);
-    }
+    parse_body_items(p, TOKEN_RBRACE, parse_one_trait_sig, NULL,
+                      &sigs, &sig_count);
     consume(p, TOKEN_RBRACE, "expected '}' after interface body");
 
     AstNode *n = new_node(AST_TRAIT_DECL, line, col);
@@ -1087,6 +1084,33 @@ static void parse_receiver_type_params(Parser *p, char ***params,
         } while (match_tok(p, TOKEN_COMMA));
     }
     consume(p, TOKEN_RPAREN, "expected ')' after methods receiver type params");
+}
+
+/* One `methods` (impl) body member: `[static] fn name(...) { ... }`. Shared
+   by the three near-identical methods-block loops below (trait-impl `for`
+   form / merged `Type: Interface` form / plain `methods Type { ... }` form)
+   via the parse_body_items driver. */
+typedef struct {
+    char *owner_name;         /* stamped onto fn_decl.impl_struct_name */
+    bool allow_operator_name; /* trait-impl forms allow `fn +`/`fn ==`/... */
+    const char *missing_fn_msg;
+} ImplMethodCtx;
+
+static AstNode *parse_one_impl_method(Parser *p, void *ctx_) {
+    ImplMethodCtx *ctx = (ImplMethodCtx *)ctx_;
+    bool is_static = false;
+    if (match_tok(p, TOKEN_STATIC)) {
+        is_static = true;
+    }
+    if (!match_tok(p, TOKEN_FN)) {
+        error_at_current(p, ctx->missing_fn_msg);
+        return NULL;
+    }
+    AstNode *method = parse_fn_decl(p, ctx->allow_operator_name);
+    if (method == NULL) return NULL;
+    method->as.fn_decl.is_static = is_static;
+    method->as.fn_decl.impl_struct_name = ctx->owner_name;
+    return method;
 }
 
 AstNode *parse_impl_decl(Parser *p) {
@@ -1142,32 +1166,11 @@ AstNode *parse_impl_decl(Parser *p) {
 
             AstNode **methods = NULL;
             int method_count = 0;
-            int method_cap = 0;
-
-            while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
-                bool is_static = false;
-                if (match_tok(p, TOKEN_STATIC)) {
-                    is_static = true;
-                }
-                if (!match_tok(p, TOKEN_FN)) {
-                    error_at_current(p, "expected 'def' in interface methods block");
-                    recover_in_body(p);
-                    continue;
-                }
-                /* trait-impl methods may use operator symbol names (fn +, fn ==, ...) */
-                AstNode *method = parse_fn_decl(p, /*allow_operator_name=*/true);
-                if (method == NULL) {
-                    recover_in_body(p);
-                    continue;
-                }
-                method->as.fn_decl.is_static = is_static;
-                method->as.fn_decl.impl_struct_name = struct_name;
-                if (method_count >= method_cap) {
-                    method_cap = GROW_CAPACITY(method_cap);
-                    methods = GROW_ARRAY(AstNode *, methods, method_cap);
-                }
-                methods[method_count++] = method;
-            }
+            /* trait-impl methods may use operator symbol names (fn +, fn ==, ...) */
+            ImplMethodCtx mctx = { struct_name, /*allow_operator_name=*/true,
+                                    "expected 'def' in interface methods block" };
+            parse_body_items(p, TOKEN_RBRACE, parse_one_impl_method, &mctx,
+                              &methods, &method_count);
             consume(p, TOKEN_RBRACE, "expected '}' after interface methods block");
 
             AstNode *n = new_node(AST_IMPL_TRAIT_DECL, line, col);
@@ -1227,26 +1230,12 @@ AstNode *parse_impl_decl(Parser *p) {
 
         AstNode **mt_methods = NULL;
         int mt_method_count = 0;
-        int mt_method_cap = 0;
-        while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
-            bool mt_is_static = false;
-            if (match_tok(p, TOKEN_STATIC)) mt_is_static = true;
-            if (!match_tok(p, TOKEN_FN)) {
-                error_at_current(p, "expected 'def' in methods block");
-                recover_in_body(p);
-                continue;
-            }
-            /* interface methods may use operator symbol names (fn +, fn ==, ...) */
-            AstNode *method = parse_fn_decl(p, /*allow_operator_name=*/true);
-            if (method == NULL) { recover_in_body(p); continue; }
-            method->as.fn_decl.is_static = mt_is_static;
-            method->as.fn_decl.impl_struct_name = name;  /* shared, mirrors legacy branch */
-            if (mt_method_count >= mt_method_cap) {
-                mt_method_cap = GROW_CAPACITY(mt_method_cap);
-                mt_methods = GROW_ARRAY(AstNode *, mt_methods, mt_method_cap);
-            }
-            mt_methods[mt_method_count++] = method;
-        }
+        /* interface methods may use operator symbol names (fn +, fn ==, ...);
+           impl_struct_name = name (shared, mirrors the legacy `for` branch) */
+        ImplMethodCtx mt_ctx = { name, /*allow_operator_name=*/true,
+                                  "expected 'def' in methods block" };
+        parse_body_items(p, TOKEN_RBRACE, parse_one_impl_method, &mt_ctx,
+                          &mt_methods, &mt_method_count);
         consume(p, TOKEN_RBRACE, "expected '}' after methods block");
 
         AstNode *n = new_node(AST_IMPL_TRAIT_DECL, line, col);
@@ -1263,32 +1252,11 @@ AstNode *parse_impl_decl(Parser *p) {
 
     AstNode **methods = NULL;
     int method_count = 0;
-    int method_cap = 0;
-
-    while (!check(p, TOKEN_RBRACE) && !check(p, TOKEN_EOF)) {
-        bool is_static = false;
-        if (match_tok(p, TOKEN_STATIC)) {
-            is_static = true;
-        }
-        if (!match_tok(p, TOKEN_FN)) {
-            error_at_current(p, "expected 'def' in methods block");
-            recover_in_body(p);
-            continue;
-        }
-        /* plain impl methods: operator symbol names not allowed here */
-        AstNode *method = parse_fn_decl(p, /*allow_operator_name=*/false);
-        if (method == NULL) {
-            recover_in_body(p);
-            continue;
-        }
-        method->as.fn_decl.is_static = is_static;
-        method->as.fn_decl.impl_struct_name = name;
-        if (method_count >= method_cap) {
-            method_cap = GROW_CAPACITY(method_cap);
-            methods = GROW_ARRAY(AstNode *, methods, method_cap);
-        }
-        methods[method_count++] = method;
-    }
+    /* plain impl methods: operator symbol names not allowed here */
+    ImplMethodCtx ctx = { name, /*allow_operator_name=*/false,
+                           "expected 'def' in methods block" };
+    parse_body_items(p, TOKEN_RBRACE, parse_one_impl_method, &ctx,
+                      &methods, &method_count);
     consume(p, TOKEN_RBRACE, "expected '}' after methods block");
 
     AstNode *n = new_node(AST_IMPL_DECL, line, col);
