@@ -1366,6 +1366,273 @@ static void usage(void) {
     );
 }
 
+/* --- Subcommand handlers, dispatched by name via g_commands[] below.
+ *
+ * Every handler takes the full original (argc, argv) — argv[1] is the
+ * command name, argv[2..] are its own arguments — exactly as the old
+ * if/strcmp chain passed them, so each handler's internal validation and
+ * error text are unchanged verbatim from before this split. */
+
+static int handle_fmt(int argc, char *argv[]) {
+    return cmd_fmt(argc, argv);
+}
+
+static int handle_test(int argc, char *argv[]) {
+    return test_driver_run(argc, argv);
+}
+
+static int handle_doc(int argc, char *argv[]) {
+    return cmd_doc(argc, argv);
+}
+
+static int handle_tokens(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "error: 'tokens' requires a file path\n");
+        return 1;
+    }
+    return cmd_tokens(argv[2]);
+}
+
+static int handle_parse(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "error: 'parse' requires a file path\n");
+        return 1;
+    }
+    return cmd_parse(argv[2]);
+}
+
+static int handle_check(int argc, char *argv[]) {
+    bool json = false;
+    const char *file = NULL;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--json") == 0)
+            json = true;
+        else
+            file = argv[i];
+    }
+    if (file == NULL) {
+        fprintf(stderr, "error: 'check' requires a file path\n");
+        return 1;
+    }
+    return cmd_check(file, json);
+}
+
+static int handle_symbol(int argc, char *argv[]) {
+    if (argc < 5) {
+        fprintf(stderr, "error: 'symbol' requires <file> <line> <col>\n");
+        return 1;
+    }
+    return cmd_symbol(argv[2], atoi(argv[3]), atoi(argv[4]));
+}
+
+static int handle_complete(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "error: 'complete' requires a file path\n");
+        return 1;
+    }
+    return cmd_complete(argv[2]);
+}
+
+static int handle_inspect(int argc, char *argv[]) {
+    if (argc < 4) {
+        fprintf(stderr, "error: 'inspect' requires <TypeName> <file>\n");
+        return 1;
+    }
+    return cmd_inspect(argv[2], argv[3]);
+}
+
+static int handle_ir_asm(int argc, char *argv[]) {
+    const char *cmd = argv[1];
+    bool want_asm = (strcmp(cmd, "asm") == 0);
+    const char *fn = NULL;
+    const char *file = NULL;
+    CodegenFlags cf = {0};
+    cf.opt_level = LS_OPT_O2;   /* default -O2: show real codegen */
+    for (int i = 2; i < argc; i++) {
+        int consumed = parse_codegen_flags(argc, argv, i, &cf);
+        if (consumed > 0) { i += consumed - 1; continue; }
+        if (fn == NULL) fn = argv[i];
+        else if (file == NULL) file = argv[i];
+    }
+    if (fn == NULL || file == NULL) {
+        fprintf(stderr, "error: '%s' requires <function> <file>\n", cmd);
+        return 1;
+    }
+    return cmd_ir_asm(fn, file, want_asm, cf.opt_level, cf.native, cf.target, cf.debug_info);
+}
+
+static int handle_emit_ir(int argc, char *argv[]) {
+    const char *file = NULL;
+    CodegenFlags cf = {0};
+    cf.opt_level = LS_OPT_O2;
+    for (int i = 2; i < argc; i++) {
+        int consumed = parse_codegen_flags(argc, argv, i, &cf);
+        if (consumed > 0) { i += consumed - 1; continue; }
+        if (file == NULL) file = argv[i];
+    }
+    if (file == NULL) {
+        fprintf(stderr, "error: 'emit-ir' requires a file path\n");
+        return 1;
+    }
+    return cmd_emit_ir(file, cf.opt_set, cf.opt_level, cf.native, cf.target, cf.debug_info);
+}
+
+static int handle_emit_c(int argc, char *argv[]) {
+    const char *file = NULL;
+    const char *output = NULL;
+    EmitCOpts opts = {0};
+    char *only_buf = NULL;               /* owns the split --only names */
+    const char *only_names[256];
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) output = argv[++i];
+        else if (strcmp(argv[i], "--skip-unsupported") == 0) opts.skip_unsupported = true;
+        else if (strncmp(argv[i], "--only=", 7) == 0 || strcmp(argv[i], "--only") == 0) {
+            const char *list = (argv[i][6] == '=') ? argv[i] + 7
+                             : (i + 1 < argc ? argv[++i] : "");
+            only_buf = strdup(list);      /* split on commas in place */
+            int c = 0;
+            char *tok = strtok(only_buf, ",");
+            while (tok && c < 256) { only_names[c++] = tok; tok = strtok(NULL, ","); }
+            opts.only = only_names;
+            opts.only_count = c;
+        }
+        else if (file == NULL) file = argv[i];
+    }
+    if (file == NULL) {
+        fprintf(stderr, "error: 'emit-c' requires a file path (usage: ls emit-c "
+                        "<file.ls> -o <out.c> [--only f1,f2] [--skip-unsupported])\n");
+        free(only_buf);
+        return 1;
+    }
+    if (output == NULL) {
+        fprintf(stderr, "error: 'emit-c' requires -o <out.c>\n");
+        free(only_buf);
+        return 1;
+    }
+    int rc = cmd_emit_c(file, output, &opts);
+    free(only_buf);
+    return rc;
+}
+
+static int handle_compile(int argc, char *argv[]) {
+    const char *output = NULL;
+    const char *file = NULL;
+    bool dump_ir = false;
+    bool memcheck = false;
+    bool profile = false;
+    CodegenFlags cf = {0};
+    cf.opt_level = LS_OPT_O2;
+    for (int i = 2; i < argc; i++) {
+        int consumed = parse_codegen_flags(argc, argv, i, &cf);
+        if (consumed > 0) { i += consumed - 1; continue; }
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            output = argv[++i];
+        } else if (strcmp(argv[i], "--dump-ir") == 0) {
+            dump_ir = true;
+        } else if (strcmp(argv[i], "--memcheck") == 0) {
+            memcheck = true;
+        } else if (strcmp(argv[i], "--profile") == 0) {
+            profile = true;
+        } else if (file == NULL) {
+            file = argv[i];
+        }
+    }
+    if (file == NULL) {
+        fprintf(stderr, "error: 'compile' requires a file path\n");
+        return 1;
+    }
+    return cmd_compile(file, output, dump_ir, memcheck, profile,
+                       cf.opt_set, cf.opt_level, cf.native, cf.target, cf.debug_info);
+}
+
+static int handle_run(int argc, char *argv[]) {
+    bool memcheck = false;
+    bool profile = false;
+    CodegenFlags cf = {0};
+    cf.opt_level = LS_OPT_O2;
+    const char *file = NULL;
+    int file_idx = -1;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--memcheck") == 0) { memcheck = true; continue; }
+        if (strcmp(argv[i], "--profile") == 0) { profile = true; continue; }
+        if (strcmp(argv[i], "--optimize") == 0) { cf.opt_set = true; cf.opt_level = LS_OPT_O2; continue; }
+        int consumed = parse_codegen_flags(argc, argv, i, &cf);
+        if (consumed > 0) {
+            if (cf.target != NULL) {
+                /* JIT always targets the host (cannot run foreign ISA); ignore. */
+                fprintf(stderr, "note: 'run' (JIT) always targets the host CPU; "
+                                "--target is ignored. Use 'compile --target=...' for AOT.\n");
+                cf.target = NULL;
+            }
+            if (cf.debug_info) {
+                /* JIT debug info (PDB registration) is not implemented yet
+                   (docs/plan_debug_info.md phase 2); ignore rather than
+                   silently mis-parse -g as the file path. */
+                fprintf(stderr, "note: 'run' (JIT) does not support -g yet; ignored.\n");
+                cf.debug_info = false;
+            }
+            i += consumed - 1;
+            continue;
+        }
+        if (file == NULL) { file = argv[i]; file_idx = i; }
+    }
+    if (file == NULL) {
+        fprintf(stderr, "error: 'run' requires a file path\n");
+        return 1;
+    }
+    {
+        /* argv[file_idx] is the script name; pass it as g_argv[0] so that
+           proc.program() returns the script name and proc.args() returns
+           the remaining arguments (i=1 .. n-1), matching POSIX convention. */
+        int script_argc = argc - file_idx;
+        char **script_argv = &argv[file_idx];
+        __ls_set_args(script_argc, script_argv);
+    }
+    if (memcheck) return jit_run_file_memcheck(file);
+    if (profile) return jit_run_file_profile(file);
+    if (cf.opt_set) return jit_run_file_optlevel(file, cf.opt_level);
+    return jit_run_file(file);
+}
+
+static int handle_repl(int argc, char *argv[]) {
+    (void)argc; (void)argv;
+    return jit_repl();
+}
+
+/* Dispatch table replacing the old if/strcmp chain. `min_args` documents
+   each command's structural minimum argc (informational — every handler
+   already performs its own, more specific argc/positional validation with
+   its original error text, so min_args is not used as a gate here to avoid
+   any risk of message drift). */
+typedef int (*CommandHandler)(int argc, char *argv[]);
+
+typedef struct {
+    const char *name;
+    int min_args;
+    CommandHandler handler;
+    const char *usage;
+} CommandEntry;
+
+static const CommandEntry g_commands[] = {
+    { "fmt",      3, handle_fmt,      "fmt <files...> [--check|--stdout] [--width N]" },
+    { "test",     2, handle_test,     "test <files...> [--filter p] [--memcheck]" },
+    { "doc",      3, handle_doc,      "doc <files...> [-o out.html] [--css f] [--template f] [--title s]" },
+    { "tokens",   3, handle_tokens,   "tokens <file>" },
+    { "parse",    3, handle_parse,    "parse <file>" },
+    { "check",    3, handle_check,    "check <file> [--json]" },
+    { "symbol",   5, handle_symbol,   "symbol <file> <line> <col>" },
+    { "complete", 3, handle_complete, "complete <file>" },
+    { "inspect",  4, handle_inspect,  "inspect <TypeName> <file>" },
+    { "ir",       4, handle_ir_asm,   "ir <fn> <file> [-O|-On] [--native] [--target=<cpu>] [-g]" },
+    { "asm",      4, handle_ir_asm,   "asm <fn> <file> [-O|-On] [--native] [--target=<cpu>] [-g]" },
+    { "emit-ir",  3, handle_emit_ir,  "emit-ir <file> [-O|-On] [--native] [--target=<cpu>] [-g]" },
+    { "emit-c",   4, handle_emit_c,   "emit-c <file> -o <out.c> [--only f1,f2] [--skip-unsupported]" },
+    { "compile",  3, handle_compile,  "compile <file> [-o out] [-O|-On] [--native] [--target=<cpu>] [-g]" },
+    { "run",      3, handle_run,      "run <file> [-O|-On] [--memcheck] [--profile]" },
+    { "repl",     2, handle_repl,     "repl" },
+};
+#define LS_COMMAND_COUNT (sizeof(g_commands) / sizeof(g_commands[0]))
+
 int main(int argc, char *argv[]) {
 #ifdef LS_LEAKCHECK
     ls_lc_init();   /* compiler self heap-leak tracking; reports at exit */
@@ -1377,228 +1644,10 @@ int main(int argc, char *argv[]) {
 
     const char *cmd = argv[1];
 
-    if (strcmp(cmd, "fmt") == 0) {
-        return cmd_fmt(argc, argv);
-    }
-
-    if (strcmp(cmd, "test") == 0) {
-        return test_driver_run(argc, argv);
-    }
-
-    if (strcmp(cmd, "doc") == 0) {
-        return cmd_doc(argc, argv);
-    }
-
-    if (strcmp(cmd, "tokens") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "error: 'tokens' requires a file path\n");
-            return 1;
+    for (size_t ci = 0; ci < LS_COMMAND_COUNT; ci++) {
+        if (strcmp(g_commands[ci].name, cmd) == 0) {
+            return g_commands[ci].handler(argc, argv);
         }
-        return cmd_tokens(argv[2]);
-    }
-
-    if (strcmp(cmd, "parse") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "error: 'parse' requires a file path\n");
-            return 1;
-        }
-        return cmd_parse(argv[2]);
-    }
-
-    if (strcmp(cmd, "check") == 0) {
-        bool json = false;
-        const char *file = NULL;
-        for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "--json") == 0)
-                json = true;
-            else
-                file = argv[i];
-        }
-        if (file == NULL) {
-            fprintf(stderr, "error: 'check' requires a file path\n");
-            return 1;
-        }
-        return cmd_check(file, json);
-    }
-
-    if (strcmp(cmd, "symbol") == 0) {
-        if (argc < 5) {
-            fprintf(stderr, "error: 'symbol' requires <file> <line> <col>\n");
-            return 1;
-        }
-        return cmd_symbol(argv[2], atoi(argv[3]), atoi(argv[4]));
-    }
-
-    if (strcmp(cmd, "complete") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "error: 'complete' requires a file path\n");
-            return 1;
-        }
-        return cmd_complete(argv[2]);
-    }
-
-    if (strcmp(cmd, "inspect") == 0) {
-        if (argc < 4) {
-            fprintf(stderr, "error: 'inspect' requires <TypeName> <file>\n");
-            return 1;
-        }
-        return cmd_inspect(argv[2], argv[3]);
-    }
-
-    if (strcmp(cmd, "ir") == 0 || strcmp(cmd, "asm") == 0) {
-        bool want_asm = (strcmp(cmd, "asm") == 0);
-        const char *fn = NULL;
-        const char *file = NULL;
-        CodegenFlags cf = {0};
-        cf.opt_level = LS_OPT_O2;   /* default -O2: show real codegen */
-        for (int i = 2; i < argc; i++) {
-            int consumed = parse_codegen_flags(argc, argv, i, &cf);
-            if (consumed > 0) { i += consumed - 1; continue; }
-            if (fn == NULL) fn = argv[i];
-            else if (file == NULL) file = argv[i];
-        }
-        if (fn == NULL || file == NULL) {
-            fprintf(stderr, "error: '%s' requires <function> <file>\n", cmd);
-            return 1;
-        }
-        return cmd_ir_asm(fn, file, want_asm, cf.opt_level, cf.native, cf.target, cf.debug_info);
-    }
-
-    if (strcmp(cmd, "emit-ir") == 0) {
-        const char *file = NULL;
-        CodegenFlags cf = {0};
-        cf.opt_level = LS_OPT_O2;
-        for (int i = 2; i < argc; i++) {
-            int consumed = parse_codegen_flags(argc, argv, i, &cf);
-            if (consumed > 0) { i += consumed - 1; continue; }
-            if (file == NULL) file = argv[i];
-        }
-        if (file == NULL) {
-            fprintf(stderr, "error: 'emit-ir' requires a file path\n");
-            return 1;
-        }
-        return cmd_emit_ir(file, cf.opt_set, cf.opt_level, cf.native, cf.target, cf.debug_info);
-    }
-
-    if (strcmp(cmd, "emit-c") == 0) {
-        const char *file = NULL;
-        const char *output = NULL;
-        EmitCOpts opts = {0};
-        char *only_buf = NULL;               /* owns the split --only names */
-        const char *only_names[256];
-        for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) output = argv[++i];
-            else if (strcmp(argv[i], "--skip-unsupported") == 0) opts.skip_unsupported = true;
-            else if (strncmp(argv[i], "--only=", 7) == 0 || strcmp(argv[i], "--only") == 0) {
-                const char *list = (argv[i][6] == '=') ? argv[i] + 7
-                                 : (i + 1 < argc ? argv[++i] : "");
-                only_buf = strdup(list);      /* split on commas in place */
-                int c = 0;
-                char *tok = strtok(only_buf, ",");
-                while (tok && c < 256) { only_names[c++] = tok; tok = strtok(NULL, ","); }
-                opts.only = only_names;
-                opts.only_count = c;
-            }
-            else if (file == NULL) file = argv[i];
-        }
-        if (file == NULL) {
-            fprintf(stderr, "error: 'emit-c' requires a file path (usage: ls emit-c "
-                            "<file.ls> -o <out.c> [--only f1,f2] [--skip-unsupported])\n");
-            free(only_buf);
-            return 1;
-        }
-        if (output == NULL) {
-            fprintf(stderr, "error: 'emit-c' requires -o <out.c>\n");
-            free(only_buf);
-            return 1;
-        }
-        int rc = cmd_emit_c(file, output, &opts);
-        free(only_buf);
-        return rc;
-    }
-
-    if (strcmp(cmd, "compile") == 0) {
-        const char *output = NULL;
-        const char *file = NULL;
-        bool dump_ir = false;
-        bool memcheck = false;
-        bool profile = false;
-        CodegenFlags cf = {0};
-        cf.opt_level = LS_OPT_O2;
-        for (int i = 2; i < argc; i++) {
-            int consumed = parse_codegen_flags(argc, argv, i, &cf);
-            if (consumed > 0) { i += consumed - 1; continue; }
-            if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-                output = argv[++i];
-            } else if (strcmp(argv[i], "--dump-ir") == 0) {
-                dump_ir = true;
-            } else if (strcmp(argv[i], "--memcheck") == 0) {
-                memcheck = true;
-            } else if (strcmp(argv[i], "--profile") == 0) {
-                profile = true;
-            } else if (file == NULL) {
-                file = argv[i];
-            }
-        }
-        if (file == NULL) {
-            fprintf(stderr, "error: 'compile' requires a file path\n");
-            return 1;
-        }
-        return cmd_compile(file, output, dump_ir, memcheck, profile,
-                           cf.opt_set, cf.opt_level, cf.native, cf.target, cf.debug_info);
-    }
-
-    if (strcmp(cmd, "run") == 0) {
-        bool memcheck = false;
-        bool profile = false;
-        CodegenFlags cf = {0};
-        cf.opt_level = LS_OPT_O2;
-        const char *file = NULL;
-        int file_idx = -1;
-        for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "--memcheck") == 0) { memcheck = true; continue; }
-            if (strcmp(argv[i], "--profile") == 0) { profile = true; continue; }
-            if (strcmp(argv[i], "--optimize") == 0) { cf.opt_set = true; cf.opt_level = LS_OPT_O2; continue; }
-            int consumed = parse_codegen_flags(argc, argv, i, &cf);
-            if (consumed > 0) {
-                if (cf.target != NULL) {
-                    /* JIT always targets the host (cannot run foreign ISA); ignore. */
-                    fprintf(stderr, "note: 'run' (JIT) always targets the host CPU; "
-                                    "--target is ignored. Use 'compile --target=...' for AOT.\n");
-                    cf.target = NULL;
-                }
-                if (cf.debug_info) {
-                    /* JIT debug info (PDB registration) is not implemented yet
-                       (docs/plan_debug_info.md phase 2); ignore rather than
-                       silently mis-parse -g as the file path. */
-                    fprintf(stderr, "note: 'run' (JIT) does not support -g yet; ignored.\n");
-                    cf.debug_info = false;
-                }
-                i += consumed - 1;
-                continue;
-            }
-            if (file == NULL) { file = argv[i]; file_idx = i; }
-        }
-        if (file == NULL) {
-            fprintf(stderr, "error: 'run' requires a file path\n");
-            return 1;
-        }
-        {
-            /* argv[file_idx] is the script name; pass it as g_argv[0] so that
-               proc.program() returns the script name and proc.args() returns
-               the remaining arguments (i=1 .. n-1), matching POSIX convention. */
-            int script_argc = argc - file_idx;
-            char **script_argv = &argv[file_idx];
-            __ls_set_args(script_argc, script_argv);
-        }
-        if (memcheck) return jit_run_file_memcheck(file);
-        if (profile) return jit_run_file_profile(file);
-        if (cf.opt_set) return jit_run_file_optlevel(file, cf.opt_level);
-        return jit_run_file(file);
-    }
-
-    if (strcmp(cmd, "repl") == 0) {
-        return jit_repl();
     }
 
     fprintf(stderr, "error: unknown command '%s'\n", cmd);
