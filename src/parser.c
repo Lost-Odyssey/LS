@@ -197,7 +197,9 @@ void recover_in_body(Parser *p) {
    Sites with extra control flow between "member parsed" and "member
    appended" (e.g. parser_stmt.c's parse_block_inner, which can reject and
    discard a successfully-parsed nested declaration without recovering) do
-   NOT fit this contract and are left as hand-written loops on purpose. */
+   NOT fit this contract and are left as hand-written loops on purpose.
+   NOTE: *out_items may be NULL when *out_count is 0 (empty body) — callers
+   must guard element access with the count, as all five current sites do. */
 void parse_body_items(Parser *p, TokenType close,
                        AstNode *(*member_fn)(Parser *p, void *ctx), void *ctx,
                        AstNode ***out_items, int *out_count) {
