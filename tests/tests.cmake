@@ -70,7 +70,7 @@ add_executable(test_parser
     tests/test_parser.c
     src/scanner.c
     src/ast.c
-    src/parser.c
+    ${LS_PARSER_SOURCES}
     src/diag.c
     src/types.c
 )
@@ -81,7 +81,7 @@ add_executable(test_types
     tests/test_types.c
     src/scanner.c
     src/ast.c
-    src/parser.c
+    ${LS_PARSER_SOURCES}
     src/diag.c
     src/types.c
     src/symtable.c
@@ -101,7 +101,7 @@ add_executable(test_codegen
     tests/test_codegen.c
     src/scanner.c
     src/ast.c
-    src/parser.c
+    ${LS_PARSER_SOURCES}
     src/diag.c
     src/types.c
     src/symtable.c
@@ -133,7 +133,7 @@ add_executable(test_jit
     tests/test_jit.c
     src/scanner.c
     src/ast.c
-    src/parser.c
+    ${LS_PARSER_SOURCES}
     src/diag.c
     src/types.c
     src/symtable.c
@@ -172,7 +172,7 @@ add_executable(test_ffi
     tests/test_ffi.c
     src/scanner.c
     src/ast.c
-    src/parser.c
+    ${LS_PARSER_SOURCES}
     src/diag.c
     src/types.c
     src/symtable.c
@@ -211,7 +211,7 @@ add_executable(test_module
     tests/test_module.c
     src/scanner.c
     src/ast.c
-    src/parser.c
+    ${LS_PARSER_SOURCES}
     src/diag.c
     src/types.c
     src/symtable.c
@@ -251,7 +251,7 @@ add_executable(test_memory
     tests/test_memory.c
     src/scanner.c
     src/ast.c
-    src/parser.c
+    ${LS_PARSER_SOURCES}
     src/diag.c
     src/types.c
     src/symtable.c
