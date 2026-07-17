@@ -92,6 +92,7 @@ set(LS_PARSER_SOURCES
     src/parser_expr.c
     src/parser_type.c
     src/parser_decl.c
+    src/parser_stmt.c
 )
 
 # checker translation units (split per docs/plan_checker_split.md). Listed once
