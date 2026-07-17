@@ -715,22 +715,9 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
     /* Initialize scope — codegen_compile expects a base scope to exist */
     /* We don't call codegen_init because we share the JIT's LLVM context */
 
-    /* G1.5: transfer pending generic methods to codegen.
-       The struct layouts are identical but C sees them as distinct anonymous types,
-       so we copy element-by-element to avoid a pointer-type mismatch warning. */
-    if (gm && gm->count > 0) {
-        cg.pending_gm_count = gm->count;
-        size_t sz = (size_t)gm->count * sizeof(cg.pending_generic_methods[0]);
-        cg.pending_generic_methods = malloc(sz);
-        for (int gi = 0; gi < gm->count; gi++) {
-            cg.pending_generic_methods[gi].cloned_fn    = gm->methods[gi].cloned_fn;
-            cg.pending_generic_methods[gi].mangled_name = gm->methods[gi].mangled_name;
-            cg.pending_generic_methods[gi].struct_type  = gm->methods[gi].struct_type;
-        }
-        free(gm->methods);
-        gm->methods = NULL;
-        gm->count = 0;
-    }
+    /* G1.5: transfer pending generic methods to codegen (see
+       codegen_take_generic_methods for the element-by-element copy rationale). */
+    codegen_take_generic_methods(&cg, gm);
 
     /* Use codegen_compile to generate IR */
     if (codegen_compile(&cg, ast, registry) != 0) {

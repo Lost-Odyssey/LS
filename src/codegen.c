@@ -1299,6 +1299,24 @@ static void emit_str_replace_helper(CodegenContext *ctx)
 
 /* ---- Public API ---- */
 
+void codegen_take_generic_methods(CodegenContext *ctx, CheckerGenericMethods *gm)
+{
+    if (gm == NULL) return;
+    if (gm->count > 0) {
+        ctx->pending_gm_count = gm->count;
+        size_t sz = (size_t)gm->count * sizeof(ctx->pending_generic_methods[0]);
+        ctx->pending_generic_methods = malloc(sz);
+        for (int gi = 0; gi < gm->count; gi++) {
+            ctx->pending_generic_methods[gi].cloned_fn    = gm->methods[gi].cloned_fn;
+            ctx->pending_generic_methods[gi].mangled_name = gm->methods[gi].mangled_name;
+            ctx->pending_generic_methods[gi].struct_type  = gm->methods[gi].struct_type;
+        }
+        free(gm->methods);
+    }
+    gm->methods = NULL;
+    gm->count = 0;
+}
+
 void codegen_init(CodegenContext *ctx, const char *module_name)
 {
     memset(ctx, 0, sizeof(CodegenContext));

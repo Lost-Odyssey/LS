@@ -228,17 +228,7 @@ static int cmd_compile(const char *path, const char *output_path, bool dump_ir,
     ctx.debug_info = debug_info;  /* -g: line-table debug info (D1) */
 
     /* G1.5: transfer pending generic methods to codegen */
-    if (gm.count > 0) {
-        ctx.pending_gm_count = gm.count;
-        size_t sz = (size_t)gm.count * sizeof(ctx.pending_generic_methods[0]);
-        ctx.pending_generic_methods = malloc(sz);
-        for (int gi = 0; gi < gm.count; gi++) {
-            ctx.pending_generic_methods[gi].cloned_fn    = gm.methods[gi].cloned_fn;
-            ctx.pending_generic_methods[gi].mangled_name = gm.methods[gi].mangled_name;
-            ctx.pending_generic_methods[gi].struct_type  = gm.methods[gi].struct_type;
-        }
-        free(gm.methods);
-    }
+    codegen_take_generic_methods(&ctx, &gm);
 
     if (codegen_compile(&ctx, ast, reg) != 0) {
         codegen_destroy(&ctx);
@@ -330,17 +320,7 @@ static int cmd_emit_ir(const char *path, bool opt_set, LsOptLevel opt_level, boo
     CodegenContext ctx;
     codegen_init(&ctx, path);
     ctx.mode = CG_MODE_AOT;  /* emit-ir is an AOT path: forward argc/argv (bug #22) */
-    if (gm2.count > 0) {
-        ctx.pending_gm_count = gm2.count;
-        size_t sz = (size_t)gm2.count * sizeof(ctx.pending_generic_methods[0]);
-        ctx.pending_generic_methods = malloc(sz);
-        for (int gi = 0; gi < gm2.count; gi++) {
-            ctx.pending_generic_methods[gi].cloned_fn    = gm2.methods[gi].cloned_fn;
-            ctx.pending_generic_methods[gi].mangled_name = gm2.methods[gi].mangled_name;
-            ctx.pending_generic_methods[gi].struct_type  = gm2.methods[gi].struct_type;
-        }
-        free(gm2.methods);
-    }
+    codegen_take_generic_methods(&ctx, &gm2);
 
     if (opt_set) ctx.opt.level = opt_level;
     if (native) ctx.opt.native = true;
@@ -470,17 +450,7 @@ static int cmd_ir_asm(const char *fn_query, const char *path, bool want_asm,
     CodegenContext ctx;
     codegen_init(&ctx, path);
     ctx.mode = CG_MODE_AOT;
-    if (gm.count > 0) {
-        ctx.pending_gm_count = gm.count;
-        ctx.pending_generic_methods =
-            malloc((size_t)gm.count * sizeof(ctx.pending_generic_methods[0]));
-        for (int gi = 0; gi < gm.count; gi++) {
-            ctx.pending_generic_methods[gi].cloned_fn    = gm.methods[gi].cloned_fn;
-            ctx.pending_generic_methods[gi].mangled_name = gm.methods[gi].mangled_name;
-            ctx.pending_generic_methods[gi].struct_type  = gm.methods[gi].struct_type;
-        }
-        free(gm.methods);
-    }
+    codegen_take_generic_methods(&ctx, &gm);
     ctx.opt.level = opt_level;
     if (native) ctx.opt.native = true;
     if (target_cpu) ctx.opt.target_cpu = target_cpu;  /* --target / cross-target inspection */

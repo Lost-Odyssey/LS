@@ -6,6 +6,7 @@
 #include "types.h"
 #include "symtable.h"
 #include "optpipe.h"
+#include "checker.h"
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Target.h>
@@ -237,6 +238,19 @@ static inline bool cg_mode_builtins_extern(const CodegenContext *ctx) {
 
 /* Initialize the codegen context (creates LLVM module, target, etc.) */
 void codegen_init(CodegenContext *ctx, const char *module_name);
+
+/* G1.5: hand off checker-produced pending generic method instantiations to
+   a codegen context. Copies element-by-element (the two `struct { ... }
+   *pending_generic_methods` array types are structurally identical but
+   distinct anonymous C types, so a bulk memcpy would need a cast anyway;
+   this keeps both sides honest if a field is ever added to one but not
+   the other). Ownership of gm->methods transfers to ctx — this call frees
+   gm->methods and resets *gm to {0} so the source is left in a safe,
+   reusable state. No-op (besides zeroing *gm) when gm is NULL or empty.
+   Consumers: main.c (cmd_compile / cmd_emit_ir / cmd_ir_asm, all AOT-ish
+   paths) and jit.c (build_jit_module) — outside codegen.c itself, hence
+   the public (not codegen_internal.h) declaration. */
+void codegen_take_generic_methods(CodegenContext *ctx, CheckerGenericMethods *gm);
 
 /* Destroy the codegen context and free all LLVM resources */
 void codegen_destroy(CodegenContext *ctx);
