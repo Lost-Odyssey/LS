@@ -1417,7 +1417,11 @@ static int handle_ir_asm(int argc, char *argv[]) {
     const char *fn = NULL;
     const char *file = NULL;
     CodegenFlags cf = {0};
-    cf.opt_level = LS_OPT_O2;   /* default -O2: show real codegen */
+    cf.opt_level = LS_OPT_O2;   /* default -O2: show real codegen. Deliberate
+                                   pre-unification quirk kept as-is: ir/asm
+                                   apply this default over the LS_OPT env var
+                                   (cf.opt_set is intentionally unconsulted
+                                   here) — do not "fix" without a decision. */
     for (int i = 2; i < argc; i++) {
         int consumed = parse_codegen_flags(argc, argv, i, &cf);
         if (consumed > 0) { i += consumed - 1; continue; }
