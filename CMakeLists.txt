@@ -125,6 +125,8 @@ set(LS_CODEGEN_SOURCES
     src/codegen_stmt.c
     src/codegen_closure.c
     src/codegen_expr.c
+    src/codegen_print.c
+    src/codegen_call.c
     src/codegen_noalias.c
     src/codegen_di.c
     src/codegen_lifetime.c
