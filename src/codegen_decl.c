@@ -5,6 +5,7 @@
    No logic changes. All prototypes live in codegen_internal.h. */
 #include "codegen.h"
 #include "codegen_internal.h"
+#include "mangle.h"
 #include "module.h"
 #define LS_INCLUDE_CODEGEN 1
 #include "builtins_math.h"
@@ -1284,8 +1285,14 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
         /* ALL impl methods (static, instance, __drop) use qualified name to avoid conflicts */
         if (method->kind == AST_FN_DECL)
         {
-            static char qualified_name[256];
-            snprintf(qualified_name, sizeof(qualified_name), "%s.%s", struct_name, orig_name);
+            /* mangle_method_symbol: def-site symbol must match the checker's
+               use-site keys byte-for-byte (Task 7.2 — was a static char[256]
+               that silently truncated deep generic instance names while use
+               sites truncated at 512). Freed at the name-restore point below;
+               the AST node only borrows it for this iteration. */
+            char *qualified_name =
+                mangle_method_symbol(struct_name, NULL, orig_name);
+            char *user_name = NULL;
             method->as.fn_decl.name = qualified_name;
 
             if (strcmp(orig_name, "__drop") == 0 && !is_enum_impl)
@@ -1301,8 +1308,7 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
                 /* Step 1: generate user body as "StructName.__drop$"
                    The '$' character is not a valid LS identifier char, so users can never
                    define a method that conflicts with this internal name. */
-                char user_name[256];
-                snprintf(user_name, sizeof(user_name), "%s.__drop$", struct_name);
+                user_name = mangle_method_symbol(struct_name, NULL, "__drop$");
                 method->as.fn_decl.name = user_name;
                 codegen_fn_decl(ctx, method);
                 LLVMValueRef user_fn = LLVMGetNamedFunction(ctx->module, user_name);
@@ -1389,6 +1395,8 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
             }
             /* Restore original name */
             method->as.fn_decl.name = (char *)orig_name;
+            free(qualified_name);
+            free(user_name);
         }
         else
         {
