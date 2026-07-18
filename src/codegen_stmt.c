@@ -6,6 +6,7 @@
    No logic changes. All prototypes live in codegen_internal.h. */
 #include "codegen.h"
 #include "codegen_internal.h"
+#include "mangle.h"
 #include "module.h"
 #define LS_INCLUDE_CODEGEN 1
 #include "builtins_math.h"
@@ -1028,9 +1029,8 @@ static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
             {
                 AstNode *lit = node->as.var_decl.init;
                 LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
-                char fl_name[256];
-                snprintf(fl_name, sizeof(fl_name), "%s.__from_list",
-                         struct_llvm_name(var_type));
+                char *fl_name = mangle_method_symbol(
+                    struct_llvm_name(var_type), NULL, "__from_list"); /* Task 7.2 */
                 LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
                 if (fl_fn == NULL)
                 {
@@ -1043,6 +1043,7 @@ static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
                        lands in G1.5. Mirrors emit_user_from_list_value (F1). */
                     fl_fn = cg_declare_pending_generic_method(ctx, fl_name);
                 }
+                free(fl_name);
                 if (fl_fn)
                 {
                     LLVMTypeRef fl_ft = LLVMGlobalGetValueType(fl_fn);
@@ -1065,12 +1066,12 @@ static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
             {
                 AstNode *ml = node->as.var_decl.init;
                 LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
-                char fp_name[256];
-                snprintf(fp_name, sizeof(fp_name), "%s.__from_pairs",
-                         struct_llvm_name(var_type));
+                char *fp_name = mangle_method_symbol(
+                    struct_llvm_name(var_type), NULL, "__from_pairs"); /* Task 7.2 */
                 LLVMValueRef fp_fn = LLVMGetNamedFunction(ctx->module, fp_name);
                 if (fp_fn == NULL)
                     fp_fn = cg_declare_pending_generic_method(ctx, fp_name);
+                free(fp_name);
                 if (fp_fn)
                 {
                     LLVMTypeRef fp_ft = LLVMGlobalGetValueType(fp_fn);

@@ -5,6 +5,7 @@
    No logic changes. All prototypes live in codegen_internal.h. */
 #include "codegen.h"
 #include "codegen_internal.h"
+#include "mangle.h"
 #include "block_protocol.h"
 #include "module.h"
 #define LS_INCLUDE_CODEGEN 1
@@ -211,9 +212,8 @@ LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_type,
     LLVMValueRef tmp = cg_entry_alloca(ctx, st_llvm, "ufl.tmp");
     LLVMBuildStore(ctx->builder, LLVMConstNull(st_llvm), tmp);
 
-    char fl_name[256];
-    snprintf(fl_name, sizeof(fl_name), "%s.__from_list",
-             struct_llvm_name(struct_type));
+    char *fl_name = mangle_method_symbol(struct_llvm_name(struct_type),
+                                         NULL, "__from_list"); /* Task 7.2 */
     LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
     if (fl_fn == NULL)
     {
@@ -224,6 +224,7 @@ LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_type,
            G1.5. Mirrors the local var-decl path and other generic call sites. */
         fl_fn = cg_declare_pending_generic_method(ctx, fl_name);
     }
+    free(fl_name);
     if (fl_fn == NULL)
     {
         cg_error(ctx, lit->line, lit->column,

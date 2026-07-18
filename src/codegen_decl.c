@@ -1371,10 +1371,10 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
                             LLVMValueRef member_drop = (LLVMValueRef)ft->as.strukt.drop_fn;
                             if (member_drop == NULL)
                             {
-                                char mdrop_name[256];
-                                snprintf(mdrop_name, sizeof(mdrop_name), "%s.__drop",
-                                         ft->as.strukt.name);
+                                char *mdrop_name = mangle_method_symbol(
+                                    ft->as.strukt.name, NULL, "__drop"); /* Task 7.2 */
                                 member_drop = LLVMGetNamedFunction(ctx->module, mdrop_name);
+                                free(mdrop_name);
                             }
                             if (member_drop != NULL)
                             {
