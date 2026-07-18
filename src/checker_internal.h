@@ -9,8 +9,12 @@
    prototype below under the group owned by its defining TU.
 
    Defining TUs of the prototypes below:
-     - checker.c        — type/method/scope registries, error sinks, check_expr,
-                          check_stmt, forward_pass, intrinsic_lookup (the bulk).
+     - checker.c        — type/method/scope registries, error sinks,
+                          check_stmt, forward_pass, check_pass (the bulk).
+     - checker_expr.c   — expression checking: check_builtin_* families,
+                          intrinsic registry (intrinsic_lookup), check_call_*
+                          helpers, check_expr_* helpers, check_expr dispatcher.
+                          Batch 7 Task 7.5.
      - checker_decl.c   — declaration checkers (struct/enum/impl/trait/extern),
                           fn templates, imported-trait propagation.
      - checker_lower.c  — lowering/desugar (index protocol, opt-combinators,
@@ -53,6 +57,7 @@ typedef struct {
     int           arity;      /* fixed argument count         */
 } IntrinsicDef;
 
+/* [def: checker_expr.c since the Task 7.5 split] */
 const IntrinsicDef *intrinsic_lookup(const char *name);
 
 /* ---- Compile-time constant evaluator (checker_comptime.c) ----
@@ -104,10 +109,21 @@ void checker_elide_last_use(Checker *c, AstNode *fn_decl);
 /* ---- Internal types shared across checker TUs ----
    (moved out of checker.c so cross-TU prototypes below can reference them). */
 
-/* Unknown-type did-you-mean iterator state (C2-2); fed to diag_suggest via
-   diag_type_iter_next. Constructed by checker_generics.c (resolve_type_node)
-   and checker.c; the iterator body lives in checker.c. */
+/* Did-you-mean iterator states (C2-2); fed to diag_suggest via the
+   diag_*_iter_next callbacks whose bodies live in checker.c. Constructed by
+   checker_generics.c (unknown type), checker_expr.c (undefined variable /
+   unknown method or field), and checker.c. */
 typedef struct { Checker *c; int stage; int i; } DiagTypeIter;
+typedef struct { Scope *sc; int i; } DiagScopeIter;
+typedef struct {
+    Checker *c;
+    const Type *strukt;    /* NULL or TYPE_STRUCT: fields first */
+    const char *impl_key;  /* impl_registry key of the receiver */
+    int fi;                /* field cursor */
+    int ii;                /* impl_registry cursor (find once) */
+    int mi;                /* method cursor */
+    bool impl_found;
+} DiagMethodIter;
 
 typedef struct {
     Symbol *sym;
@@ -192,9 +208,15 @@ char *chk_strdup(const char *s);
 void checker_error_help(Checker *c, int line, int col, int len,
                         const char *help, const char *fmt, ...);
 const char *diag_type_iter_next(void *ctx);
+const char *diag_scope_iter_next(void *ctx);
+const char *diag_method_iter_next(void *ctx);
 const char *diag_help_suggestion(char *buf, size_t bufsz, const char *bad,
                                  DiagCandidateFn next, void *ctx);
 bool checker_type_is_ambiguous(Checker *c, const char *name);
+Type *checker_str_type(Checker *c);
+Type *str_target_of_expected(const Type *t);
+const char *type_impl_name(Type *t);
+bool type_is_str_struct(const Type *t);
 bool type_tab_disabled(void);
 void type_tab_insert(TypeTabEntry **tab, int *cap, int *count,
                      const char *name, Type *type);
@@ -253,7 +275,7 @@ void move_preseed_maybe_from_pass1(const MoveSnapshot *before, const MoveSnapsho
 void cap_push_bound(CaptureScan *s, const char *name);
 void capture_walk(CaptureScan *s, AstNode *node);
 /* [def: checker_lower.c] std.c prim match, module-call rewrite, opt-combinator,
-   bit-pattern lowering, for-in desugar. (check_expr below is [def: checker.c].) */
+   bit-pattern lowering, for-in desugar. (check_expr below is [def: checker_expr.c].) */
 int match_stdc_prim(Checker *c, AstNode *callee);
 bool rewrite_canonical_module_call(Checker *c, AstNode *callee);
 int disambig_variant_by_hint(Checker *c, AstNode *node, const char *vname, Type **out_enum, int *out_idx);
