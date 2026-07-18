@@ -212,6 +212,12 @@ LLVMValueRef codegen_lvalue_ptr(CodegenContext *ctx, AstNode *node);
 LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node);
 /* f-string lowering [def: codegen_print.c]; dispatched from codegen_expr. */
 LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node);
+/* call-expression lowering [def: codegen_call.c]; dispatched from
+   codegen_expr (Task 7.4/7.6 call-family TU split). */
+LLVMValueRef cg_expr_call(CodegenContext *ctx, AstNode *node);
+/* `&lvalue` address-of (non-eager) [def: codegen_expr.c]; shared with
+   codegen_call.c (self receiver materialisation). */
+LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node);
 /* Str value helpers [def: codegen_expr.c] shared with codegen_print.c
    (Task 7.6 print-family TU split). */
 bool cg_type_is_str(Type *t);
