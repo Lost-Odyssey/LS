@@ -1473,18 +1473,21 @@ void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
            "T.<Iface>.m" so the two bodies don't collide. The inherent method keeps
            "T.m" (codegen_impl_decl, unchanged); a single-provider interface method
            also keeps "T.m". Dispatch mirrors this in codegen_expr.c. */
-        static char qualified_name[256];
-        if (method->as.fn_decl.iface_method_contended)
-            snprintf(qualified_name, sizeof(qualified_name), "%s.%s.%s",
-                     struct_name, node->as.impl_trait_decl.trait_name, orig_name);
-        else
-            snprintf(qualified_name, sizeof(qualified_name), "%s.%s", struct_name, orig_name);
+        /* mangle_method_symbol: exact def-site symbol (Task 7.2 — twin of
+           codegen_impl_decl's site; was a static char[256] with silent
+           truncation). Freed at the name-restore point below. */
+        char *qualified_name = mangle_method_symbol(
+            struct_name,
+            method->as.fn_decl.iface_method_contended
+                ? node->as.impl_trait_decl.trait_name : NULL,
+            orig_name);
         method->as.fn_decl.name = qualified_name;
 
         codegen_fn_decl(ctx, method);
 
         /* Restore original name */
         method->as.fn_decl.name = (char *)orig_name;
+        free(qualified_name);
     }
 }
 
