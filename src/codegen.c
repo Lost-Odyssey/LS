@@ -1473,38 +1473,14 @@ static void emit_global_var_init(CodegenContext *ctx, AstNode *decl)
     }
 }
 
-int codegen_compile(CodegenContext *ctx, AstNode *ast,
-                    struct ModuleRegistry *registry)
+/* --- codegen_compile pass helpers (Task 7.3: verbatim extraction of the
+   sequential pass blocks; no cross-pass locals — each helper owns exactly
+   the block it replaced, original indentation preserved). --- */
+
+/* Imported modules, Pass A (forward-declare) + Pass B (bodies). */
+static void cg_compile_imported_modules(CodegenContext *ctx,
+                                        struct ModuleRegistry *registry)
 {
-    if (ast == NULL || ast->kind != AST_PROGRAM)
-        return -1;
-
-    /* Ensure we have a base scope (JIT path may not call codegen_init) */
-    if (ctx->current_scope == NULL)
-    {
-        ctx->current_scope = cg_scope_new(NULL);
-    }
-
-    /* D1: create the DIBuilder skeleton (-g only) before any body is emitted. */
-    cg_di_init(ctx);
-
-    declare_builtins(ctx);
-
-    /* Memcheck: install internal @malloc/@free wrappers BEFORE any helper
-       fn body is emitted, so all subsequent calls route through the tracker.
-       declare_builtins above declared malloc/free as externs; the wrapper
-       installer will rename those externs and shadow them with internals. */
-    cg_install_memcheck_wrappers(ctx);
-
-    emit_str_replace_helper(ctx);
-
-    /* Process imported modules in two separate passes so that transitive
-       dependencies (e.g. std.time importing std.os) have all symbols
-       forward-declared before any function body is generated.
-
-       Pass A (all modules): forward-declare structs, externs, fn signatures,
-                             global variable slots.
-       Pass B (all modules): generate function / impl bodies. */
     if (registry)
     {
         /* Pass A — forward-declare everything across all modules */
@@ -1643,12 +1619,12 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         ctx->current_emit_module = NULL;
         ctx->current_emit_file = NULL;
     }
+}
 
-    /* Phase E.2: ensure all extern struct LLVM types are emitted with their
-       bodies set BEFORE any extern fn declaration runs through extern_fn_type
-       (which calls LLVMABISizeOfType and requires non-opaque struct). */
-    cg_predeclare_extern_structs(ctx, ast);
-
+/* Root file, Pass 1: declare structs/enums/fn signatures/externs/FFI libs/
+   global variable slots. */
+static void cg_compile_declare_root(CodegenContext *ctx, AstNode *ast)
+{
     /* Pass 1: Declare all structs, function signatures, and FFI lib globals */
     for (int i = 0; i < ast->as.program.decl_count; i++)
     {
@@ -1728,6 +1704,48 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
                             global, var_type, NULL);
         }
     }
+}
+
+int codegen_compile(CodegenContext *ctx, AstNode *ast,
+                    struct ModuleRegistry *registry)
+{
+    if (ast == NULL || ast->kind != AST_PROGRAM)
+        return -1;
+
+    /* Ensure we have a base scope (JIT path may not call codegen_init) */
+    if (ctx->current_scope == NULL)
+    {
+        ctx->current_scope = cg_scope_new(NULL);
+    }
+
+    /* D1: create the DIBuilder skeleton (-g only) before any body is emitted. */
+    cg_di_init(ctx);
+
+    declare_builtins(ctx);
+
+    /* Memcheck: install internal @malloc/@free wrappers BEFORE any helper
+       fn body is emitted, so all subsequent calls route through the tracker.
+       declare_builtins above declared malloc/free as externs; the wrapper
+       installer will rename those externs and shadow them with internals. */
+    cg_install_memcheck_wrappers(ctx);
+
+    emit_str_replace_helper(ctx);
+
+    /* Process imported modules in two separate passes so that transitive
+       dependencies (e.g. std.time importing std.os) have all symbols
+       forward-declared before any function body is generated.
+
+       Pass A (all modules): forward-declare structs, externs, fn signatures,
+                             global variable slots.
+       Pass B (all modules): generate function / impl bodies. */
+    cg_compile_imported_modules(ctx, registry);
+
+    /* Phase E.2: ensure all extern struct LLVM types are emitted with their
+       bodies set BEFORE any extern fn declaration runs through extern_fn_type
+       (which calls LLVMABISizeOfType and requires non-opaque struct). */
+    cg_predeclare_extern_structs(ctx, ast);
+
+    cg_compile_declare_root(ctx, ast);
 
     /* Generate __ls_ffi_init if there are lib declarations */
     codegen_ffi_init(ctx, ast);
