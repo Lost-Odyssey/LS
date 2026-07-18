@@ -210,6 +210,17 @@ void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type);
 void emit_struct_drop(CodegenContext *ctx, LLVMValueRef drop_ptr, Type *struct_type);
 LLVMValueRef codegen_lvalue_ptr(CodegenContext *ctx, AstNode *node);
 LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node);
+/* f-string lowering [def: codegen_print.c]; dispatched from codegen_expr. */
+LLVMValueRef codegen_format_string(CodegenContext *ctx, AstNode *node);
+/* Str value helpers [def: codegen_expr.c] shared with codegen_print.c
+   (Task 7.6 print-family TU split). */
+bool cg_type_is_str(Type *t);
+LLVMValueRef cg_make_str(CodegenContext *ctx, LLVMTypeRef st,
+                         LLVMValueRef data, LLVMValueRef len, LLVMValueRef cap);
+LLVMValueRef cg_str_data(CodegenContext *ctx, LLVMValueRef str_val);
+LLVMValueRef cg_str_len(CodegenContext *ctx, LLVMValueRef str_val);
+LLVMValueRef cg_str_struct_from_literal(CodegenContext *ctx, const char *text,
+                                        Type *str_type);
 LLVMValueRef codegen_expr_or_borrow(CodegenContext *ctx, AstNode *node);
 int cg_match_stdc_prim(AstNode *callee);
 void codegen_stmt(CodegenContext *ctx, AstNode *node);
