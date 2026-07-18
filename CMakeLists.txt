@@ -106,6 +106,10 @@ set(LS_PARSER_SOURCES
 set(LS_CHECKER_SOURCES
     src/mangle.c
     src/checker.c
+    src/checker_generics.c
+    src/checker_expr.c
+    src/checker_call.c
+    src/checker_stmt.c
     src/checker_borrow.c
     src/checker_lower.c
     src/checker_decl.c
