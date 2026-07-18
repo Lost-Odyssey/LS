@@ -12,10 +12,11 @@
      - checker.c        — type/method/scope registries, error sinks,
                           forward_pass, check_pass, has_drop propagation,
                           teardown/inspect, checker_check API.
-     - checker_expr.c   — expression checking: check_builtin_* families,
+     - checker_expr.c   — expression checking: check_expr_* helpers and the
+                          check_expr dispatcher. Batch 7 Task 7.5.
+     - checker_call.c   — call-expression checking: check_builtin_* families,
                           intrinsic registry (intrinsic_lookup), check_call_*
-                          helpers, check_expr_* helpers, check_expr dispatcher.
-                          Batch 7 Task 7.5.
+                          helpers, check_expr_call. Batch 7 Task 7.5.
      - checker_stmt.c   — statement checking: check_stmt_var_decl/assign/
                           return + check_stmt dispatcher. Batch 7 Task 7.5.
      - checker_decl.c   — declaration checkers (struct/enum/impl/trait/extern),
@@ -60,7 +61,7 @@ typedef struct {
     int           arity;      /* fixed argument count         */
 } IntrinsicDef;
 
-/* [def: checker_expr.c since the Task 7.5 split] */
+/* [def: checker_call.c since the Task 7.5 split] */
 const IntrinsicDef *intrinsic_lookup(const char *name);
 
 /* ---- Compile-time constant evaluator (checker_comptime.c) ----
@@ -277,6 +278,12 @@ void move_elevate_moves_to_maybe(const MoveSnapshot *before);
 void move_preseed_maybe_from_pass1(const MoveSnapshot *before, const MoveSnapshot *after_pass1);
 void cap_push_bound(CaptureScan *s, const char *name);
 void capture_walk(CaptureScan *s, AstNode *node);
+/* [def: checker_call.c] call-expression entry + helpers shared with
+   checker_expr.c's dispatcher and f-string arm (Task 7.5 sub-split). */
+Type *check_expr_call(Checker *c, AstNode *node);
+bool is_builtin_function(const char *name);
+bool type_is_show_aggregate(Checker *c, Type *t);
+void wrap_arg_in_to_str(AstNode **slot);
 /* [def: checker_lower.c] std.c prim match, module-call rewrite, opt-combinator,
    bit-pattern lowering, for-in desugar. (check_expr below is [def: checker_expr.c].) */
 int match_stdc_prim(Checker *c, AstNode *callee);
