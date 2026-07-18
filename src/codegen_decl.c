@@ -66,9 +66,22 @@ const char *enum_llvm_name_of(const Type *t)
    change what either one emits, check the other. Still uses a fixed caller-
    supplied buffer (unlike the checker-side sites); callers are responsible for
    sizing `cap` generously (existing call sites use 512/640-byte buffers). */
+/* APPEND: clamp-safe append cursor. *pos may legitimately sit PAST cap after
+   a previous append truncated (deep TypeNode nesting) — the old bare
+   `snprintf(buf + *pos, (size_t)(cap - *pos), ...)` then underflowed the
+   size_t (huge size + out-of-bounds base = OOB write). With the clamp, an
+   overflowing name keeps accumulating its would-be length in *pos without
+   writing; callers detect truncation via *pos >= cap (Task 7.2 hardening —
+   behavior identical while *pos < cap, which is every previously-safe case). */
+#define APPEND(...) do {                                                   \
+        size_t rem_ = (*pos < cap) ? (size_t)(cap - *pos) : 0;             \
+        char *dst_ = (*pos < cap) ? buf + *pos : buf;                      \
+        *pos += snprintf(dst_, rem_, __VA_ARGS__);                         \
+    } while (0)
+
 void cg_append_type_node_name(TypeNode *tn, char *buf, int *pos, int cap)
 {
-    if (tn == NULL) { *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "?"); return; }
+    if (tn == NULL) { APPEND("?"); return; }
     if (tn->kind == TYPE_NODE_PRIMITIVE)
     {
         const char *tname = "?";
@@ -89,32 +102,34 @@ void cg_append_type_node_name(TypeNode *tn, char *buf, int *pos, int cap)
         case TOKEN_TYPE_CHAR:   tname = "char";   break;
         default:                tname = "?";      break;
         }
-        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "%s", tname);
+        APPEND("%s", tname);
     }
     else if (tn->kind == TYPE_NODE_NAMED)
     {
-        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "%s", tn->as.named.name);
+        APPEND("%s", tn->as.named.name);
         if (tn->as.named.arg_count > 0)
         {
-            *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "(");
+            APPEND("(");
             for (int i = 0; i < tn->as.named.arg_count; i++)
             {
-                if (i > 0) *pos += snprintf(buf + *pos, (size_t)(cap - *pos), ",");
+                if (i > 0) APPEND(",");
                 cg_append_type_node_name(tn->as.named.args[i], buf, pos, cap);
             }
-            *pos += snprintf(buf + *pos, (size_t)(cap - *pos), ")");
+            APPEND(")");
         }
     }
     else if (tn->kind == TYPE_NODE_POINTER)
     {
-        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "*");
+        APPEND("*");
         cg_append_type_node_name(tn->as.pointee, buf, pos, cap);
     }
     else
     {
-        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "?");
+        APPEND("?");
     }
 }
+#undef APPEND
+
 
 LLVMValueRef cg_declare_pending_generic_method(CodegenContext *ctx,
                                                       const char *name)
