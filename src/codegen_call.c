@@ -25,6 +25,24 @@ static LLVMValueRef codegen_errno_call(CodegenContext *ctx);
 static LLVMValueRef codegen_from_cstr(CodegenContext *ctx, AstNode *node);
 static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node);
 
+/* Auto-deref a pointer (*T) or reference (&T / &!T) receiver to its pointee
+   struct/enum so a method call whose receiver is a borrow-returning call
+   result — `v.get_ref(i).eq?(x)` where get_ref returns &T — dispatches as an
+   instance method (self prepended / qualified symbol resolved). Mirrors the
+   checker. (Shared by the two callee-detection passes in cg_expr_call_main —
+   they were byte-identical twins before Task 7.4.) */
+static Type *cg_call_autoderef_recv(Type *obj_type)
+{
+    if ((obj_type->kind == TYPE_POINTER ||
+         obj_type->kind == TYPE_REFERENCE) && obj_type->as.pointer_to &&
+        (obj_type->as.pointer_to->kind == TYPE_STRUCT ||
+         obj_type->as.pointer_to->kind == TYPE_ENUM))
+    {
+        return obj_type->as.pointer_to;
+    }
+    return obj_type;
+}
+
 static bool cg_is_intrinsic(const char *name, const char *canon, const char *legacy) {
     return name != NULL &&
            (strcmp(name, canon) == 0 || strcmp(name, legacy) == 0);
@@ -165,19 +183,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
         Type *obj_type = obj_node->resolved_type;
         if (obj_type)
         {
-            /* Auto-deref a pointer (*T) or reference (&T / &!T) receiver to
-               its pointee struct/enum so a method call whose receiver is a
-               borrow-returning call result — `v.get_ref(i).eq?(x)` where
-               get_ref returns &T — dispatches as an instance method (self
-               prepended / qualified symbol resolved). Mirrors the checker. */
-            Type *deref = obj_type;
-            if ((deref->kind == TYPE_POINTER ||
-                 deref->kind == TYPE_REFERENCE) && deref->as.pointer_to &&
-                (deref->as.pointer_to->kind == TYPE_STRUCT ||
-                 deref->as.pointer_to->kind == TYPE_ENUM))
-            {
-                deref = deref->as.pointer_to;
-            }
+            Type *deref = cg_call_autoderef_recv(obj_type);
             if (deref->kind == TYPE_STRUCT)
             {
                 /* Check if the callee resolved_type is a function (method) */
@@ -252,19 +258,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
         const char *struct_name = NULL;
         if (obj_type)
         {
-            /* Auto-deref a pointer (*T) or reference (&T / &!T) receiver to
-               its pointee struct/enum so a method call whose receiver is a
-               borrow-returning call result — `v.get_ref(i).eq?(x)` where
-               get_ref returns &T — dispatches as an instance method (self
-               prepended / qualified symbol resolved). Mirrors the checker. */
-            Type *deref = obj_type;
-            if ((deref->kind == TYPE_POINTER ||
-                 deref->kind == TYPE_REFERENCE) && deref->as.pointer_to &&
-                (deref->as.pointer_to->kind == TYPE_STRUCT ||
-                 deref->as.pointer_to->kind == TYPE_ENUM))
-            {
-                deref = deref->as.pointer_to;
-            }
+            Type *deref = cg_call_autoderef_recv(obj_type);
             if (deref->kind == TYPE_STRUCT)
             {
                 is_struct_method = true;
