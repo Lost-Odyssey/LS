@@ -1943,11 +1943,11 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         if ((decl)->resolved_type->kind == TYPE_STRUCT)                                                  \
         {                                                                                                \
             Type *gst = (decl)->resolved_type;                                                           \
-            char gdrop_name[256];                                                                        \
-            snprintf(gdrop_name, sizeof(gdrop_name), "%s.__drop", struct_llvm_name(gst));                \
+            char *gdrop_name = mangle_method_symbol(struct_llvm_name(gst), NULL, "__drop");              \
             LLVMValueRef gdrop = LLVMGetNamedFunction(ctx->module, gdrop_name);                          \
             if (gdrop == NULL)                                                                           \
                 gdrop = cg_declare_pending_generic_method(ctx, gdrop_name);                              \
+            free(gdrop_name);                                                                            \
             if (gdrop != NULL)                                                                           \
             {                                                                                            \
                 LLVMTypeRef gdft = LLVMGlobalGetValueType(gdrop);                                        \

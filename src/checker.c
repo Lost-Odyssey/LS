@@ -56,7 +56,7 @@ static int method_is_static(Checker *c, const char *struct_name, const char *met
 static int method_self_borrow_kind(Checker *c, const char *struct_name, const char *method_name);
 static bool path_is_under_stdlib(const char *path);
 static void pending_generic_method_add(Checker *c, AstNode *cloned, char *owned_mangled, Type *struct_type);
-static void generic_method_symbol(char *buf, size_t sz, const char *mangled_name, AstNode *method);
+static char *generic_method_symbol(const char *mangled_name, AstNode *method);
 static void register_builtin_enums(Checker *c);
 static void register_builtins(Checker *c);
 static int register_imported_struct_template(Checker *c, const char *base_name, char **type_params, int type_param_count, AstNode *decl_node, const char *module_path);
@@ -1891,13 +1891,16 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
                                            char **tp_names, Type **type_args,
                                            int tp_count, int line, int col)
 {
-    char mfn_name[512];
     /* L-002 v2: contended interface methods get `T.<Iface>.m` (the flag was
-       pre-set on `method` by the instantiation loop). */
-    generic_method_symbol(mfn_name, sizeof(mfn_name), mangled_name, method);
+       pre-set on `method` by the instantiation loop). malloc'd — freed on
+       every exit below. */
+    char *mfn_name = generic_method_symbol(mangled_name, method);
 
     if (!check_method_where_bounds(c, method, mfn_name, tp_names, type_args, tp_count))
+    {
+        free(mfn_name);
         return false;
+    }
 
     bool is_static = method->as.fn_decl.is_static;
     int sbk = method->as.fn_decl.self_borrow_kind;
@@ -1988,13 +1991,15 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
 
     if (c->had_error) {
         ast_free(cloned);
+        free(mfn_name);
         return false;
     }
 
     cloned->resolved_type = mtype;
-    char *owned_mfn = (char *)malloc_safe(strlen(mfn_name) + 1);
-    memcpy(owned_mfn, mfn_name, strlen(mfn_name) + 1);
-    pending_generic_method_add(c, cloned, owned_mfn, struct_type);
+    /* mfn_name is already an exclusively-owned malloc'd string — hand it to
+       the pending queue directly (it used to be copied out of a stack
+       buffer here). */
+    pending_generic_method_add(c, cloned, mfn_name, struct_type);
     (void)line;
     (void)col;
     return true;
@@ -2066,10 +2071,11 @@ static bool ensure_generic_method_instantiated(Checker *c,
                                                const char *method_name,
                                                int line, int col)
 {
-    char mfn_name[512];
-    snprintf(mfn_name, sizeof(mfn_name), "%s.%s", mangled_struct, method_name);
-    return ensure_generic_method_instantiated_sym(c, mangled_struct, mfn_name,
-                                                  line, col);
+    char *mfn_name = mangle_method_symbol(mangled_struct, NULL, method_name);
+    bool ok = ensure_generic_method_instantiated_sym(c, mangled_struct, mfn_name,
+                                                     line, col);
+    free(mfn_name); /* _sym only strcmp's against the lazy table */
+    return ok;
 }
 
 /* Try to instantiate a method-level generic impl method.
@@ -2458,16 +2464,16 @@ static bool generic_method_is_contended(AstNode *impl_node, AstNode *method)
    loop (so check_and_queue's clone carries it too). emit (codegen reads the
    pending mangled_name) and dispatch (codegen_expr.c builds `T.<Iface>.m` from
    node.qualified_iface) both land on this name. */
-static void generic_method_symbol(char *buf, size_t sz, const char *mangled_name,
-                                  AstNode *method)
+static char *generic_method_symbol(const char *mangled_name, AstNode *method)
 {
+    /* Task 7.2: exact malloc'd symbol via the mangle.h single authority
+       (was an out-buffer ABI with char[512] at every caller — silent
+       truncation for deep generic instance names). Caller frees. */
     const char *mname = method->as.fn_decl.name;
-    if (method->as.fn_decl.iface_method_contended &&
-        method->as.fn_decl.origin_iface)
-        snprintf(buf, sz, "%s.%s.%s", mangled_name,
-                 method->as.fn_decl.origin_iface, mname);
-    else
-        snprintf(buf, sz, "%s.%s", mangled_name, mname);
+    const char *iface = (method->as.fn_decl.iface_method_contended &&
+                         method->as.fn_decl.origin_iface)
+                            ? method->as.fn_decl.origin_iface : NULL;
+    return mangle_method_symbol(mangled_name, iface, mname);
 }
 
 /* G1.5: For each method in a generic impl, resolve its param/return types
@@ -2659,8 +2665,7 @@ static void instantiate_impl_method_types(
 
         /* Build mangled function name: "Pair(int,string).get_first"
            L-002 v2: a contended interface method becomes "T.<Iface>.m". */
-        char mfn_name[512];
-        generic_method_symbol(mfn_name, sizeof(mfn_name), mangled_name, method);
+        char *mfn_name = generic_method_symbol(mangled_name, method);
         if (generic_method_is_eager(mname))
             check_and_queue_generic_method(c, struct_type, mangled_name, method,
                                            mtype, tp_names, type_args, tp_count,
@@ -2668,6 +2673,7 @@ static void instantiate_impl_method_types(
         else
             register_lazy_generic_method(c, mfn_name, method, mtype, struct_type,
                                          tp_names, type_args, tp_count);
+        free(mfn_name); /* register_lazy copies; eager path never read it */
     }
 
     /* Remove temporary type aliases */
@@ -4434,14 +4440,11 @@ static bool check_call_instance_method(Checker *c, AstNode *node,
            Without this the qualified path would skip instantiation → JIT
            "Symbols not found". */
         {
-            char qsym[512];
-            if (node->as.call.qualified_iface)
-                snprintf(qsym, sizeof(qsym), "%s.%s.%s", method_struct,
-                         node->as.call.qualified_iface, method_name);
-            else
-                snprintf(qsym, sizeof(qsym), "%s.%s", method_struct, method_name);
+            char *qsym = mangle_method_symbol(
+                method_struct, node->as.call.qualified_iface, method_name);
             ensure_generic_method_instantiated_sym(c, method_struct, qsym,
                                                    node->line, node->column);
+            free(qsym);
         }
         goto after_method_check;
     }

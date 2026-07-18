@@ -5,6 +5,7 @@
    No logic changes. All prototypes live in codegen_internal.h. */
 #include "codegen.h"
 #include "codegen_internal.h"
+#include "mangle.h"
 #include "block_protocol.h"
 #include "module.h"
 #define LS_INCLUDE_CODEGEN 1
@@ -211,9 +212,8 @@ LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_type,
     LLVMValueRef tmp = cg_entry_alloca(ctx, st_llvm, "ufl.tmp");
     LLVMBuildStore(ctx->builder, LLVMConstNull(st_llvm), tmp);
 
-    char fl_name[256];
-    snprintf(fl_name, sizeof(fl_name), "%s.__from_list",
-             struct_llvm_name(struct_type));
+    char *fl_name = mangle_method_symbol(struct_llvm_name(struct_type),
+                                         NULL, "__from_list"); /* Task 7.2 */
     LLVMValueRef fl_fn = LLVMGetNamedFunction(ctx->module, fl_name);
     if (fl_fn == NULL)
     {
@@ -224,6 +224,7 @@ LLVMValueRef emit_user_from_list_value(CodegenContext *ctx, Type *struct_type,
            G1.5. Mirrors the local var-decl path and other generic call sites. */
         fl_fn = cg_declare_pending_generic_method(ctx, fl_name);
     }
+    free(fl_name);
     if (fl_fn == NULL)
     {
         cg_error(ctx, lit->line, lit->column,
@@ -1920,8 +1921,27 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
                node.qualified_iface — emit `StructName.<Iface>.method` to match
                the disambiguated symbol from codegen_impl_trait_decl. (Non-
                contended qualified calls have qualified_iface==NULL → plain.) */
+            /* Task 7.2: the def sites (codegen_impl_decl / checker pending
+               queue) now emit EXACT symbols of any length; this use-site
+               buffer stays fixed, so a symbol that does not fit must be a
+               loud fatal error, not a silent truncation that then misses
+               LLVMGetNamedFunction (mismatched def/use). Same discipline as
+               link_cmd_build's truncation checks (Batch 5.3). The guards
+               also keep npos from running past the buffer into the later
+               `qualified_name + npos` appends (size_t underflow → OOB). */
             static char qualified_name[512];
             int npos;
+#define QNAME_GUARD()                                                        \
+            do {                                                             \
+                if (npos >= (int)sizeof(qualified_name)) {                   \
+                    cg_error(ctx, node->line, node->column,                  \
+                             "method symbol too long (%d bytes, max %d): "   \
+                             "'%.128s...'", npos,                            \
+                             (int)sizeof(qualified_name) - 1,                \
+                             qualified_name);                                \
+                    return NULL;                                             \
+                }                                                            \
+            } while (0)
             if (node->as.call.qualified_iface)
                 npos = snprintf(qualified_name, sizeof(qualified_name), "%s.%s.%s",
                                 struct_name ? struct_name : "",
@@ -1929,6 +1949,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
             else
                 npos = snprintf(qualified_name, sizeof(qualified_name), "%s.%s",
                                 struct_name ? struct_name : "", method_name);
+            QNAME_GUARD();
             if (node->as.call.resolved_type_args)
             {
                 /* Prefer the checker's resolved method-level type-arg names
@@ -1940,19 +1961,28 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
                    abstract `Type.conv(T)` instead of `Type.conv(int)`. */
                 npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos,
                                  "(%s)", node->as.call.resolved_type_args);
+                QNAME_GUARD();
             }
             else if (node->as.call.type_arg_count > 0)
             {
                 npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, "(");
+                QNAME_GUARD();
                 for (int ti = 0; ti < node->as.call.type_arg_count; ti++)
                 {
                     if (ti > 0)
+                    {
                         npos += snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, ",");
+                        QNAME_GUARD();
+                    }
                     cg_append_type_node_name(node->as.call.type_args[ti],
                                              qualified_name, &npos, (int)sizeof(qualified_name));
+                    QNAME_GUARD();
                 }
                 snprintf(qualified_name + npos, sizeof(qualified_name) - (size_t)npos, ")");
+                npos += 1; /* the ')' the line above wrote (or tried to) */
+                QNAME_GUARD();
             }
+#undef QNAME_GUARD
             fn_name = qualified_name;
             callee = LLVMGetNamedFunction(ctx->module, fn_name);
             /* Step 0 (cross-module generics): a generic struct method

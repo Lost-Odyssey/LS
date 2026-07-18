@@ -5,6 +5,7 @@
    No logic changes. All prototypes live in codegen_internal.h. */
 #include "codegen.h"
 #include "codegen_internal.h"
+#include "mangle.h"
 #include "block_protocol.h"
 #include "module.h"
 #define LS_INCLUDE_CODEGEN 1
@@ -117,9 +118,10 @@ static LLVMValueRef cg_ensure_user_struct_drop_decl(CodegenContext *ctx,
     if (struct_type == NULL || struct_type->kind != TYPE_STRUCT)
         return NULL;
 
-    char drop_name[256];
-    snprintf(drop_name, sizeof(drop_name), "%s.__drop",
-             struct_llvm_name(struct_type));
+    /* Task 7.2: exact lookup key (def sites emit exact symbols now; a fixed
+       char[256] here would silently miss deep generic instance names). */
+    char *drop_name = mangle_method_symbol(struct_llvm_name(struct_type),
+                                           NULL, "__drop");
 
     LLVMValueRef drop_fn = LLVMGetNamedFunction(ctx->module, drop_name);
     if (drop_fn == NULL)
@@ -131,6 +133,7 @@ static LLVMValueRef cg_ensure_user_struct_drop_decl(CodegenContext *ctx,
                                                &ptr_struct, 1, 0);
         drop_fn = LLVMAddFunction(ctx->module, drop_name, fn_type);
     }
+    free(drop_name);
     LLVMSetFunctionCallConv(drop_fn, LLVMCCallConv);
     struct_type->as.strukt.drop_fn = drop_fn;
     return drop_fn;
@@ -232,9 +235,8 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
        cannot auto-deep-clone a raw pointer, so the user supplies the deep copy.
        Symmetric with the user __drop override. */
     {
-        char clone_fn_name[256];
-        snprintf(clone_fn_name, sizeof(clone_fn_name), "%s.__clone",
-                 struct_llvm_name(struct_type));
+        char *clone_fn_name = mangle_method_symbol(
+            struct_llvm_name(struct_type), NULL, "__clone"); /* Task 7.2: exact key */
         LLVMValueRef user_clone = LLVMGetNamedFunction(ctx->module, clone_fn_name);
         if (user_clone == NULL)
             user_clone = cg_declare_pending_generic_method(ctx, clone_fn_name);
@@ -251,6 +253,7 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
             LLVMTypeRef ucfn_t = LLVMFunctionType(llvm_struct_type, &ptr_t, 1, 0);
             user_clone = LLVMAddFunction(ctx->module, clone_fn_name, ucfn_t);
         }
+        free(clone_fn_name);
         if (user_clone != NULL)
         {
 #if CG_DEBUG
@@ -1651,8 +1654,9 @@ void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
 
     /* B-2: use LLVM-prefixed name for module-defined structs */
     const char *struct_name = struct_llvm_name(struct_type);
-    char drop_fn_name[256];
-    snprintf(drop_fn_name, sizeof(drop_fn_name), "%s.__drop", struct_name);
+    char *drop_fn_name = mangle_method_symbol(struct_name, NULL, "__drop");
+    /* Task 7.2: exact def-side symbol (was char[256] — a deep generic
+       instance name would truncate here while exact-symbol consumers miss). */
 
     /* Check if already defined */
     {
@@ -1663,6 +1667,7 @@ void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
                second Type instance for the same struct can keep drop_fn == NULL
                and cleanup callers may silently skip the value drop. */
             struct_type->as.strukt.drop_fn = existing;
+            free(drop_fn_name);
             return;
         }
     }
@@ -1674,6 +1679,7 @@ void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
 
     /* Add function to module */
     LLVMValueRef drop_fn = LLVMAddFunction(ctx->module, drop_fn_name, fn_type);
+    free(drop_fn_name);
     LLVMSetFunctionCallConv(drop_fn, LLVMCCallConv);
 
     /* Set dropping convention */
@@ -1738,9 +1744,10 @@ void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
                would corrupt the builder position, so we rely on pre-ordering. */
             /* B-2: use LLVM-prefixed name for module-defined member structs */
             const char *member_name = struct_llvm_name(field_type);
-            char member_drop_name[256];
-            snprintf(member_drop_name, sizeof(member_drop_name), "%s.__drop", member_name);
+            char *member_drop_name =
+                mangle_method_symbol(member_name, NULL, "__drop"); /* Task 7.2 */
             LLVMValueRef member_drop_fn = LLVMGetNamedFunction(ctx->module, member_drop_name);
+            free(member_drop_name);
             if (member_drop_fn == NULL)
             {
                 /* Fallback: use drop_fn stored in the type (set by Pass 2a or earlier iteration) */
@@ -1950,8 +1957,7 @@ void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
 
     /* B-2: use LLVM-prefixed name for module-defined enums */
     const char *enum_name = enum_llvm_name_of(enum_type);
-    char drop_fn_name[256];
-    snprintf(drop_fn_name, sizeof(drop_fn_name), "%s.__drop", enum_name);
+    char *drop_fn_name = mangle_method_symbol(enum_name, NULL, "__drop"); /* Task 7.2 */
     {
         LLVMValueRef existing = LLVMGetNamedFunction(ctx->module, drop_fn_name);
         if (existing != NULL) {
@@ -1959,6 +1965,7 @@ void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
                instance of the same logical enum type in a cross-module scenario).
                Bind the pointer to this Type* so future callers find it. */
             enum_type->as.enom.drop_fn = existing;
+            free(drop_fn_name);
             return;
         }
     }
@@ -1971,6 +1978,7 @@ void emit_auto_enum_drop_fn(CodegenContext *ctx, Type *enum_type)
                                             &ptr_type, 1, 0);
 
     LLVMValueRef drop_fn = LLVMAddFunction(ctx->module, drop_fn_name, fn_type);
+    free(drop_fn_name);
     LLVMSetFunctionCallConv(drop_fn, LLVMCCallConv);
 
     /* Pre-register so recursive variants find it during emission. */
@@ -2248,14 +2256,14 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
 
     /* B-2: use LLVM-prefixed name for module-defined enums */
     const char *enum_name = enum_llvm_name_of(enum_type);
-    char clone_fn_name[256];
-    snprintf(clone_fn_name, sizeof(clone_fn_name), "%s.__clone", enum_name);
+    char *clone_fn_name = mangle_method_symbol(enum_name, NULL, "__clone"); /* Task 7.2 */
     {
         LLVMValueRef existing = LLVMGetNamedFunction(ctx->module, clone_fn_name);
         if (existing != NULL) {
             /* Already generated for a different Type* of the same logical enum.
                Bind the pointer so future callers on this Type* find it. */
             enum_type->as.enom.clone_fn = existing;
+            free(clone_fn_name);
             return;
         }
     }
@@ -2269,6 +2277,7 @@ static void emit_auto_enum_clone_fn(CodegenContext *ctx, Type *enum_type)
     /* fn signature: enum_t __clone(ptr self_ptr) */
     LLVMTypeRef fn_type = LLVMFunctionType(enum_llvm, &ptr_type, 1, 0);
     LLVMValueRef clone_fn = LLVMAddFunction(ctx->module, clone_fn_name, fn_type);
+    free(clone_fn_name);
     LLVMSetFunctionCallConv(clone_fn, LLVMCCallConv);
 
     /* Pre-register so recursive variants find it during emission. */

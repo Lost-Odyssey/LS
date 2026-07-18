@@ -4581,6 +4581,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_lifetime_markers.cmake
 )
 
+# ---- Task 7.2: qualified method-symbol exactness (mangle_method_symbol) ----
+# Two 70-deep generic chains with a >255-char shared name prefix: def-site
+# char[256] truncation used to collapse their .__drop symbols into one
+# (silent cross-type drop binding). Asserts both full-length symbols exist
+# in emit-ir and the JIT output is correct.
+add_test(
+    NAME test_mangle_deep_collision
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/mangle_deep_collision.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -DSTDLIB=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_mangle_deep_collision.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

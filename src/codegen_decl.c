@@ -5,6 +5,7 @@
    No logic changes. All prototypes live in codegen_internal.h. */
 #include "codegen.h"
 #include "codegen_internal.h"
+#include "mangle.h"
 #include "module.h"
 #define LS_INCLUDE_CODEGEN 1
 #include "builtins_math.h"
@@ -65,9 +66,22 @@ const char *enum_llvm_name_of(const Type *t)
    change what either one emits, check the other. Still uses a fixed caller-
    supplied buffer (unlike the checker-side sites); callers are responsible for
    sizing `cap` generously (existing call sites use 512/640-byte buffers). */
+/* APPEND: clamp-safe append cursor. *pos may legitimately sit PAST cap after
+   a previous append truncated (deep TypeNode nesting) — the old bare
+   `snprintf(buf + *pos, (size_t)(cap - *pos), ...)` then underflowed the
+   size_t (huge size + out-of-bounds base = OOB write). With the clamp, an
+   overflowing name keeps accumulating its would-be length in *pos without
+   writing; callers detect truncation via *pos >= cap (Task 7.2 hardening —
+   behavior identical while *pos < cap, which is every previously-safe case). */
+#define APPEND(...) do {                                                   \
+        size_t rem_ = (*pos < cap) ? (size_t)(cap - *pos) : 0;             \
+        char *dst_ = (*pos < cap) ? buf + *pos : buf;                      \
+        *pos += snprintf(dst_, rem_, __VA_ARGS__);                         \
+    } while (0)
+
 void cg_append_type_node_name(TypeNode *tn, char *buf, int *pos, int cap)
 {
-    if (tn == NULL) { *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "?"); return; }
+    if (tn == NULL) { APPEND("?"); return; }
     if (tn->kind == TYPE_NODE_PRIMITIVE)
     {
         const char *tname = "?";
@@ -88,32 +102,34 @@ void cg_append_type_node_name(TypeNode *tn, char *buf, int *pos, int cap)
         case TOKEN_TYPE_CHAR:   tname = "char";   break;
         default:                tname = "?";      break;
         }
-        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "%s", tname);
+        APPEND("%s", tname);
     }
     else if (tn->kind == TYPE_NODE_NAMED)
     {
-        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "%s", tn->as.named.name);
+        APPEND("%s", tn->as.named.name);
         if (tn->as.named.arg_count > 0)
         {
-            *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "(");
+            APPEND("(");
             for (int i = 0; i < tn->as.named.arg_count; i++)
             {
-                if (i > 0) *pos += snprintf(buf + *pos, (size_t)(cap - *pos), ",");
+                if (i > 0) APPEND(",");
                 cg_append_type_node_name(tn->as.named.args[i], buf, pos, cap);
             }
-            *pos += snprintf(buf + *pos, (size_t)(cap - *pos), ")");
+            APPEND(")");
         }
     }
     else if (tn->kind == TYPE_NODE_POINTER)
     {
-        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "*");
+        APPEND("*");
         cg_append_type_node_name(tn->as.pointee, buf, pos, cap);
     }
     else
     {
-        *pos += snprintf(buf + *pos, (size_t)(cap - *pos), "?");
+        APPEND("?");
     }
 }
+#undef APPEND
+
 
 LLVMValueRef cg_declare_pending_generic_method(CodegenContext *ctx,
                                                       const char *name)
@@ -1284,8 +1300,14 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
         /* ALL impl methods (static, instance, __drop) use qualified name to avoid conflicts */
         if (method->kind == AST_FN_DECL)
         {
-            static char qualified_name[256];
-            snprintf(qualified_name, sizeof(qualified_name), "%s.%s", struct_name, orig_name);
+            /* mangle_method_symbol: def-site symbol must match the checker's
+               use-site keys byte-for-byte (Task 7.2 — was a static char[256]
+               that silently truncated deep generic instance names while use
+               sites truncated at 512). Freed at the name-restore point below;
+               the AST node only borrows it for this iteration. */
+            char *qualified_name =
+                mangle_method_symbol(struct_name, NULL, orig_name);
+            char *user_name = NULL;
             method->as.fn_decl.name = qualified_name;
 
             if (strcmp(orig_name, "__drop") == 0 && !is_enum_impl)
@@ -1301,8 +1323,7 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
                 /* Step 1: generate user body as "StructName.__drop$"
                    The '$' character is not a valid LS identifier char, so users can never
                    define a method that conflicts with this internal name. */
-                char user_name[256];
-                snprintf(user_name, sizeof(user_name), "%s.__drop$", struct_name);
+                user_name = mangle_method_symbol(struct_name, NULL, "__drop$");
                 method->as.fn_decl.name = user_name;
                 codegen_fn_decl(ctx, method);
                 LLVMValueRef user_fn = LLVMGetNamedFunction(ctx->module, user_name);
@@ -1350,10 +1371,10 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
                             LLVMValueRef member_drop = (LLVMValueRef)ft->as.strukt.drop_fn;
                             if (member_drop == NULL)
                             {
-                                char mdrop_name[256];
-                                snprintf(mdrop_name, sizeof(mdrop_name), "%s.__drop",
-                                         ft->as.strukt.name);
+                                char *mdrop_name = mangle_method_symbol(
+                                    ft->as.strukt.name, NULL, "__drop"); /* Task 7.2 */
                                 member_drop = LLVMGetNamedFunction(ctx->module, mdrop_name);
+                                free(mdrop_name);
                             }
                             if (member_drop != NULL)
                             {
@@ -1389,6 +1410,8 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
             }
             /* Restore original name */
             method->as.fn_decl.name = (char *)orig_name;
+            free(qualified_name);
+            free(user_name);
         }
         else
         {
@@ -1465,18 +1488,21 @@ void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
            "T.<Iface>.m" so the two bodies don't collide. The inherent method keeps
            "T.m" (codegen_impl_decl, unchanged); a single-provider interface method
            also keeps "T.m". Dispatch mirrors this in codegen_expr.c. */
-        static char qualified_name[256];
-        if (method->as.fn_decl.iface_method_contended)
-            snprintf(qualified_name, sizeof(qualified_name), "%s.%s.%s",
-                     struct_name, node->as.impl_trait_decl.trait_name, orig_name);
-        else
-            snprintf(qualified_name, sizeof(qualified_name), "%s.%s", struct_name, orig_name);
+        /* mangle_method_symbol: exact def-site symbol (Task 7.2 — twin of
+           codegen_impl_decl's site; was a static char[256] with silent
+           truncation). Freed at the name-restore point below. */
+        char *qualified_name = mangle_method_symbol(
+            struct_name,
+            method->as.fn_decl.iface_method_contended
+                ? node->as.impl_trait_decl.trait_name : NULL,
+            orig_name);
         method->as.fn_decl.name = qualified_name;
 
         codegen_fn_decl(ctx, method);
 
         /* Restore original name */
         method->as.fn_decl.name = (char *)orig_name;
+        free(qualified_name);
     }
 }
 
