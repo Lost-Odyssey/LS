@@ -172,7 +172,22 @@ LLVMValueRef codegen_expr_or_borrow(CodegenContext *ctx, AstNode *node)
 }
 
 
-static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
+/* Phase 1 of cg_expr_call_main (Task 7.4 split): resolve the callee for
+   every call shape — struct/enum instance + static methods (incl. generic
+   instances and interface-qualified dispatch), direct + G2 generic free
+   functions, module-qualified calls (math/perf/intrinsic dispatch included),
+   and indirect calls through function-pointer values. Returns false when
+   the call was fully handled here (intrinsic emitted / error) — *early is
+   the final result (may be NULL). Returns true to proceed to argument
+   building with *out_callee / *out_fn_type / *out_is_method_call filled.
+   Body is the verbatim first half of the old cg_expr_call_main; only the
+   early `return X` sites became EARLY_RETURN(X). */
+#define EARLY_RETURN(v) do { *early = (v); return false; } while (0)
+static bool cg_call_resolve_callee(CodegenContext *ctx, AstNode *node,
+                                   LLVMValueRef *out_callee,
+                                   LLVMTypeRef *out_fn_type,
+                                   bool *out_is_method_call,
+                                   LLVMValueRef *early)
 {
     /* Detect struct method calls: obj.method(args) or StructName.method(args).
        The checker has already validated and set resolved_type on the callee. */
@@ -350,7 +365,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
                              "'%.128s...'", npos,                            \
                              (int)sizeof(qualified_name) - 1,                \
                              qualified_name);                                \
-                    return NULL;                                             \
+                    EARLY_RETURN(NULL);                                             \
                 }                                                            \
             } while (0)
             if (node->as.call.qualified_iface)
@@ -437,7 +452,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
             {
                 cg_error(ctx, node->line, node->column,
                          "undefined method '%s'", fn_name);
-                return NULL;
+                EARLY_RETURN(NULL);
             }
             fn_type = LLVMGlobalGetValueType(callee);
         }
@@ -543,7 +558,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
             {
                 cg_error(ctx, node->line, node->column,
                          "undefined function '%s'", fn_name);
-                return NULL;
+                EARLY_RETURN(NULL);
             }
             fn_type = LLVMGlobalGetValueType(callee);
         }
@@ -572,15 +587,15 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef mv = builtin_math_emit_call(ctx, fn_name,
                                               node->as.call.args,
                                               node->as.call.arg_count);
-                if (mv != NULL) return mv;
+                if (mv != NULL) EARLY_RETURN(mv);
             }
             if (mod_t->as.module.is_builtin &&
                 mod_t->as.module.name &&
                 strcmp(mod_t->as.module.name, "perf") == 0)
             {
-                return builtin_perf_emit_call(ctx, fn_name,
-                                              node->as.call.args,
-                                              node->as.call.arg_count);
+                EARLY_RETURN(builtin_perf_emit_call(ctx, fn_name,
+                                                    node->as.call.args,
+                                                    node->as.call.arg_count));
             }
             /* Phase E.4: io has been migrated to pure-LS stdlib/io.ls.
                `import io` now goes through the normal user-module path
@@ -608,7 +623,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
                 node->as.call.arg_count == 5 &&
                 builtin_intrinsic_bytecopy_enabled())
             {
-                return builtin_intrinsic_emit_call(ctx, fn_name, node);
+                EARLY_RETURN(builtin_intrinsic_emit_call(ctx, fn_name, node));
             }
 
             /* L-009: the callee lives in module `mod_t->name`; look it up by
@@ -627,7 +642,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
             {
                 cg_error(ctx, node->line, node->column,
                          "undefined function '%s' in module", fn_name);
-                return NULL;
+                EARLY_RETURN(NULL);
             }
             fn_type = LLVMGlobalGetValueType(callee);
         }
@@ -636,7 +651,7 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
             /* Indirect call (function pointer) */
             callee = codegen_expr(ctx, node->as.call.callee);
             if (callee == NULL)
-                return NULL;
+                EARLY_RETURN(NULL);
             Type *ct = node->as.call.callee->resolved_type;
             if (ct && ct->kind == TYPE_FUNCTION)
             {
@@ -645,10 +660,28 @@ static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
             else
             {
                 cg_error(ctx, node->line, node->column, "cannot call non-function");
-                return NULL;
+                EARLY_RETURN(NULL);
             }
         }
     }
+
+
+    *out_callee = callee;
+    *out_fn_type = fn_type;
+    *out_is_method_call = cg_is_method_call;
+    return true;
+}
+#undef EARLY_RETURN
+
+static LLVMValueRef cg_expr_call_main(CodegenContext *ctx, AstNode *node)
+{
+    LLVMValueRef callee = NULL;
+    LLVMTypeRef fn_type = NULL;
+    bool cg_is_method_call = false; /* instance method: prepend self */
+    LLVMValueRef early = NULL;
+    if (!cg_call_resolve_callee(ctx, node, &callee, &fn_type,
+                                &cg_is_method_call, &early))
+        return early;
 
     /* Build args */
     int user_argc = node->as.call.arg_count;
