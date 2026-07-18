@@ -19,6 +19,10 @@
      - checker_elide.c  — A1 clone-elision last-use pass.
      - checker_comptime.c — compile-time constant evaluator (comptime for/const).
      - checker_derive.c — @derive(...) source-text generator (expand_derives).
+     - checker_generics.c — generics/type-resolution cluster (template registry,
+                          instantiate_template/checker_instantiate_struct,
+                          resolve_type_node family, impl/method registry,
+                          method-level generic instantiation). Batch 7 Task 7.5.
    Each prototype's owning TU is noted inline in the block below.
 
    The public Checker struct / checker API lives in checker.h (included below). */
@@ -26,6 +30,7 @@
 #define LS_CHECKER_INTERNAL_H
 
 #include "checker.h"
+#include "diag.h"   /* DiagCandidateFn, used by the diag_help_suggestion proto */
 
 /* "Self" sentinel type — defined in checker.c, used by trait checking and the
    operator-overload lowering in checker_lower.c. */
@@ -98,6 +103,11 @@ void checker_elide_last_use(Checker *c, AstNode *fn_decl);
 
 /* ---- Internal types shared across checker TUs ----
    (moved out of checker.c so cross-TU prototypes below can reference them). */
+
+/* Unknown-type did-you-mean iterator state (C2-2); fed to diag_suggest via
+   diag_type_iter_next. Constructed by checker_generics.c (resolve_type_node)
+   and checker.c; the iterator body lives in checker.c. */
+typedef struct { Checker *c; int stage; int i; } DiagTypeIter;
 
 typedef struct {
     Symbol *sym;
@@ -177,6 +187,39 @@ const char *impl_key_of_type(const Type *t);
 int find_or_create_impl(Checker *c, const char *struct_name);
 bool register_method(Checker *c, int impl_idx, const char *name, Type *type, bool is_static, int self_borrow_kind, const char *origin_iface, AstNode *decl_node, int line, int col);
 char *chk_strdup(const char *s);
+/* [def: checker.c] diagnostics + registry-table primitives shared with
+   checker_generics.c (promoted from static at the Task 7.5 TU split). */
+void checker_error_help(Checker *c, int line, int col, int len,
+                        const char *help, const char *fmt, ...);
+const char *diag_type_iter_next(void *ctx);
+const char *diag_help_suggestion(char *buf, size_t bufsz, const char *bad,
+                                 DiagCandidateFn next, void *ctx);
+bool checker_type_is_ambiguous(Checker *c, const char *name);
+bool type_tab_disabled(void);
+void type_tab_insert(TypeTabEntry **tab, int *cap, int *count,
+                     const char *name, Type *type);
+Type *type_tab_find(TypeTabEntry *tab, int cap, const char *name);
+void impl_tab_insert(Checker *c, const char *name, int idx);
+int find_impl_idx(Checker *c, const char *struct_name);
+/* [def: checker_generics.c] generics/type-resolution cluster (Task 7.5).
+   checker_instantiate_struct and resolve_type_node stay declared in
+   checker.h / earlier groups; these are the promoted former statics. */
+Type *check_variant_ctor(Checker *c, AstNode *node, Type *enum_type, int variant_idx, AstNode **args, int arg_count);
+void checker_stash_resolved_type_args(Checker *c, AstNode *call, Type **args, int n);
+int register_imported_struct_template(Checker *c, const char *base_name, char **type_params, int type_param_count, AstNode *decl_node, const char *module_path);
+void register_type_alias(Checker *c, const char *name, Type *type);
+void register_builtin_enums(Checker *c);
+int method_self_borrow_kind(Checker *c, const char *struct_name, const char *method_name);
+Type *find_method_origin(Checker *c, const char *struct_name, const char *method_name, const char *origin);
+void method_providers(Checker *c, const char *struct_name, const char *method_name, int *inherent_count, int *iface_count, const char **ia, const char **ib);
+bool checker_is_known_interface(Checker *c, const char *name);
+int method_is_static(Checker *c, const char *struct_name, const char *method_name);
+Type *builtin_module_make_type_merged(Checker *c, const char *name);
+bool ensure_generic_method_instantiated_sym(Checker *c, const char *mangled_struct, const char *mfn_name, int line, int col);
+bool ensure_generic_method_instantiated(Checker *c, const char *mangled_struct, const char *method_name, int line, int col);
+Type *try_instantiate_method_level_generic(Checker *c, const char *impl_key, const char *method_name, TypeNode **call_type_args, int call_type_arg_count, Type **pre_resolved_args, int line, int col);
+Type *try_infer_method_generic_from_closure(Checker *c, const char *impl_key, const char *method_name, AstNode *call, int line, int col);
+void ensure_generic_struct_impls_local(Checker *c, Type *st);
 /* [def: checker_lower.c] index-protocol desugar. */
 AstNode *make_index_protocol_call(int line, int column, AstNode *obj, AstNode *idx, AstNode *val, const char *method);
 AstNode *make_multi_index_call(int line, int column, AstNode *obj, AstNode **indices, int n, AstNode *val, const char *method);
