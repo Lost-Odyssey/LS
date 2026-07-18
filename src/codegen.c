@@ -1978,54 +1978,9 @@ static void cg_emit_global_cleanup(CodegenContext *ctx, AstNode *ast,
     }
 }
 
-int codegen_compile(CodegenContext *ctx, AstNode *ast,
-                    struct ModuleRegistry *registry)
+/* Root file, Pass 2a: impl blocks first (sets drop_fn for structs). */
+static void cg_compile_root_impls(CodegenContext *ctx, AstNode *ast)
 {
-    if (ast == NULL || ast->kind != AST_PROGRAM)
-        return -1;
-
-    /* Ensure we have a base scope (JIT path may not call codegen_init) */
-    if (ctx->current_scope == NULL)
-    {
-        ctx->current_scope = cg_scope_new(NULL);
-    }
-
-    /* D1: create the DIBuilder skeleton (-g only) before any body is emitted. */
-    cg_di_init(ctx);
-
-    declare_builtins(ctx);
-
-    /* Memcheck: install internal @malloc/@free wrappers BEFORE any helper
-       fn body is emitted, so all subsequent calls route through the tracker.
-       declare_builtins above declared malloc/free as externs; the wrapper
-       installer will rename those externs and shadow them with internals. */
-    cg_install_memcheck_wrappers(ctx);
-
-    emit_str_replace_helper(ctx);
-
-    /* Process imported modules in two separate passes so that transitive
-       dependencies (e.g. std.time importing std.os) have all symbols
-       forward-declared before any function body is generated.
-
-       Pass A (all modules): forward-declare structs, externs, fn signatures,
-                             global variable slots.
-       Pass B (all modules): generate function / impl bodies. */
-    cg_compile_imported_modules(ctx, registry);
-
-    /* Phase E.2: ensure all extern struct LLVM types are emitted with their
-       bodies set BEFORE any extern fn declaration runs through extern_fn_type
-       (which calls LLVMABISizeOfType and requires non-opaque struct). */
-    cg_predeclare_extern_structs(ctx, ast);
-
-    cg_compile_declare_root(ctx, ast);
-
-    /* Generate __ls_ffi_init if there are lib declarations */
-    codegen_ffi_init(ctx, ast);
-
-    cg_emit_global_stmts(ctx, ast, registry);
-
-    cg_emit_global_cleanup(ctx, ast, registry);
-
     /* Pass 2a: Process all IMPL declarations first (sets drop_fn for structs) */
     for (int i = 0; i < ast->as.program.decl_count; i++)
     {
@@ -2039,7 +1994,13 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             codegen_impl_trait_decl(ctx, decl);
         }
     }
+}
 
+/* G1.5: forward-declare + emit + free the checker's pending generic
+   method instantiations. */
+static void cg_emit_pending_generics(CodegenContext *ctx,
+                                     struct ModuleRegistry *registry)
+{
     /* G1.5: Emit pending generic method instantiations (from checker).
        Each entry has a cloned+type-checked fn_decl and a mangled function name.
        We forward-declare all of them first, then emit bodies, then free the ASTs. */
@@ -2109,7 +2070,12 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         ctx->pending_generic_methods = NULL;
         ctx->pending_gm_count = 0;
     }
+}
 
+/* Pass 2.5: auto-generate __drop for has_drop structs without one,
+   members before containers (fixed-point loop). */
+static void cg_emit_auto_drops(CodegenContext *ctx)
+{
     /* Pass 2.5: Generate auto-drop functions for structs that have has_drop=true but
        no user-defined __drop (drop_fn==NULL after Pass 2a).
        We iterate the struct registry multiple times so that member structs get their
@@ -2150,7 +2116,12 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             }
         }
     }
+}
 
+/* Pre-Pass 2b: synthetic main() when there is setup work but no user
+   main. */
+static void cg_emit_synthetic_main(CodegenContext *ctx)
+{
     /* Pre-Pass 2b: If there is global setup work (__ls_global_stmts or __ls_ffi_init)
        and no user-defined main(), create a minimal synthetic main() { ret 0 }.
        The injection step below will prepend the setup calls before the ret.
@@ -2184,7 +2155,12 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             ctx->current_fn = NULL;
         }
     }
+}
 
+/* Root file, Pass 2b: function bodies (everything else was handled in
+   earlier passes). */
+static void cg_compile_root_bodies(CodegenContext *ctx, AstNode *ast)
+{
     /* Pass 2b: Generate all function bodies and other decls */
     for (int i = 0; i < ast->as.program.decl_count; i++)
     {
@@ -2214,7 +2190,13 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
             break;
         }
     }
+}
 
+/* main() finalisation: inject __ls_set_args/ffi_init/global_stmts at
+   entry, __ls_global_cleanup + (AOT) __ls_flush_out before every ret,
+   and mark __ls_proc_exit noreturn+cold. */
+static void cg_finalize_main(CodegenContext *ctx)
+{
     /* Inject calls to __ls_ffi_init and __ls_global_stmts at the start of main() */
     {
         LLVMValueRef main_fn = LLVMGetNamedFunction(ctx->module, "main");
@@ -2330,6 +2312,67 @@ int codegen_compile(CodegenContext *ctx, AstNode *ast,
         LLVMValueRef pe = LLVMGetNamedFunction(ctx->module, "__ls_proc_exit");
         if (pe) cg_mark_noreturn_cold(ctx, pe);
     }
+}
+
+int codegen_compile(CodegenContext *ctx, AstNode *ast,
+                    struct ModuleRegistry *registry)
+{
+    if (ast == NULL || ast->kind != AST_PROGRAM)
+        return -1;
+
+    /* Ensure we have a base scope (JIT path may not call codegen_init) */
+    if (ctx->current_scope == NULL)
+    {
+        ctx->current_scope = cg_scope_new(NULL);
+    }
+
+    /* D1: create the DIBuilder skeleton (-g only) before any body is emitted. */
+    cg_di_init(ctx);
+
+    declare_builtins(ctx);
+
+    /* Memcheck: install internal @malloc/@free wrappers BEFORE any helper
+       fn body is emitted, so all subsequent calls route through the tracker.
+       declare_builtins above declared malloc/free as externs; the wrapper
+       installer will rename those externs and shadow them with internals. */
+    cg_install_memcheck_wrappers(ctx);
+
+    emit_str_replace_helper(ctx);
+
+    /* Process imported modules in two separate passes so that transitive
+       dependencies (e.g. std.time importing std.os) have all symbols
+       forward-declared before any function body is generated.
+
+       Pass A (all modules): forward-declare structs, externs, fn signatures,
+                             global variable slots.
+       Pass B (all modules): generate function / impl bodies. */
+    cg_compile_imported_modules(ctx, registry);
+
+    /* Phase E.2: ensure all extern struct LLVM types are emitted with their
+       bodies set BEFORE any extern fn declaration runs through extern_fn_type
+       (which calls LLVMABISizeOfType and requires non-opaque struct). */
+    cg_predeclare_extern_structs(ctx, ast);
+
+    cg_compile_declare_root(ctx, ast);
+
+    /* Generate __ls_ffi_init if there are lib declarations */
+    codegen_ffi_init(ctx, ast);
+
+    cg_emit_global_stmts(ctx, ast, registry);
+
+    cg_emit_global_cleanup(ctx, ast, registry);
+
+    cg_compile_root_impls(ctx, ast);
+
+    cg_emit_pending_generics(ctx, registry);
+
+    cg_emit_auto_drops(ctx);
+
+    cg_emit_synthetic_main(ctx);
+
+    cg_compile_root_bodies(ctx, ast);
+
+    cg_finalize_main(ctx);
 
     /* D1: materialise deferred DI nodes before the verifier / pass pipeline. */
     cg_di_finalize(ctx);
