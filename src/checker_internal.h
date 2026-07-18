@@ -10,11 +10,14 @@
 
    Defining TUs of the prototypes below:
      - checker.c        — type/method/scope registries, error sinks,
-                          check_stmt, forward_pass, check_pass (the bulk).
+                          forward_pass, check_pass, has_drop propagation,
+                          teardown/inspect, checker_check API.
      - checker_expr.c   — expression checking: check_builtin_* families,
                           intrinsic registry (intrinsic_lookup), check_call_*
                           helpers, check_expr_* helpers, check_expr dispatcher.
                           Batch 7 Task 7.5.
+     - checker_stmt.c   — statement checking: check_stmt_var_decl/assign/
+                          return + check_stmt dispatcher. Batch 7 Task 7.5.
      - checker_decl.c   — declaration checkers (struct/enum/impl/trait/extern),
                           fn templates, imported-trait propagation.
      - checker_lower.c  — lowering/desugar (index protocol, opt-combinators,
@@ -286,6 +289,7 @@ void check_bit_pattern_seq(Checker *c, AstNode *seq, int subj_bits, bool define_
 Type *check_expr(Checker *c, AstNode *node);
 AstNode *build_foreach_desugar(AstNode *node, bool has_iter, bool src_is_ident);
 AstNode *build_foreach_borrow_desugar(AstNode *node);
+/* [def: checker_stmt.c since the Task 7.5 split] */
 void check_stmt(Checker *c, AstNode *node);
 /* [def: checker_decl.c] declaration checkers (struct/enum/impl/trait/extern),
    fn templates, imported-trait propagation. (checker_reject_borrow_* below are
