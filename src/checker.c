@@ -3202,227 +3202,12 @@ void chk_pop_scope(Checker *c)
 
 
 /* Check builtin function calls that don't belong to a type */
-static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node)
+/* __task_spawn / __task_join (structured concurrency). [Task 7.7 split] */
+static Type *check_builtin_task(Checker *c, const char *name, AstNode *call_node)
 {
     int argc = call_node->as.call.arg_count;
     AstNode **args = call_node->as.call.args;
-
-    /* Phase 2: the legacy __take/__drop_at/__dup/__move spellings are retired.
-       Reject them with a clear pointer to the @-sigil replacement. */
-    const char *retired = intrinsic_retired_spelling(name);
-    if (retired != NULL)
-    {
-        checker_error(c, call_node->line, call_node->column,
-                      "'%s' is retired; use '%s'", name, retired);
-        return NULL;
-    }
-
-    /* Phase E.3.1: errno() -> int  — read C runtime errno (thread-local).
-       On Windows uses _errno(), on POSIX uses __errno_location(). The codegen
-       emits the platform-specific dereference inline. */
-    if (strcmp(name, "errno") == 0)
-    {
-        if (argc != 0)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "errno() takes no arguments, got %d", argc);
-            return NULL;
-        }
-        return type_int();
-    }
-
-    /* Phase E.3.3 / P5-4 S-2: from_cstr(object) -> Str
-       Copies a C-style NUL-terminated char* (received via FFI as `object`)
-       into an OWNED Str. Critical glue for getenv/strerror/readdir. */
-    if (strcmp(name, "from_cstr") == 0)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "from_cstr() takes 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg_type = check_expr(c, args[0]);
-        if (arg_type == NULL) return NULL;
-        if (arg_type->kind != TYPE_OBJECT && arg_type->kind != TYPE_POINTER &&
-            arg_type->kind != TYPE_NIL)
-        {
-            checker_error(c, args[0]->line, args[0]->column,
-                          "from_cstr() requires object/pointer type, got '%s'",
-                          type_name(arg_type));
-            return NULL;
-        }
-        Type *strt = checker_str_type(c);
-        if (strt == NULL)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "from_cstr() requires the Str type from std.core.str "
-                          "(add `import std.core.str`)");
-            return NULL;
-        }
-        return strt;
-    }
-
-    /* __move(var) -> T  — explicit move annotation.
-       Marks the argument variable as MOVED and returns its type transparently.
-       Works on any movable type; also force-moves static strings (unlike implicit moves). */
-    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_VAR_MOVE)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "__move() takes exactly 1 argument, got %d", argc);
-            return NULL;
-        }
-        AstNode *arg = args[0];
-        if (arg->kind != AST_IDENT)
-        {
-            checker_error(c, arg->line, arg->column,
-                          "__move() requires a variable identifier, not an expression");
-            /* Still type-check for error recovery */
-            return check_expr(c, arg);
-        }
-        Type *arg_type = check_expr(c, arg); /* also reports use-of-moved if already moved */
-        if (!arg_type) return NULL;
-        Symbol *sym = scope_resolve(c->current_scope, arg->as.ident.name);
-        if (sym)
-        {
-            if (sym->is_moved || sym->is_maybe_moved)
-            {
-                /* Already moved/maybe-moved — check_expr already reported; no double-report needed */
-            }
-            else if (sym->is_borrow)
-            {
-                /* Phase 5: __move() cannot transfer ownership of a borrow — it holds none. */
-                checker_move_error(c, arg->line, arg->column,
-                                   "cannot __move(): variable '%s' is a read-only borrow",
-                                   arg->as.ident.name);
-            }
-            else if (sym->is_mut_borrow)
-            {
-                /* Phase 5.5: writable borrow can mutate but not transfer ownership. */
-                checker_move_error(c, arg->line, arg->column,
-                                   "cannot __move(): variable '%s' is a writable borrow "
-                                   "(mutation allowed, but ownership cannot leave)",
-                                   arg->as.ident.name);
-            }
-            else if (type_is_movable(sym->type))
-            {
-                /* Force-mark as moved, even for static strings */
-                sym->is_moved = true;
-                /* Move-elision (Q4): explicit __move(x) transfers ownership; let
-                   codegen move instead of clone. Tag the inner IDENT (the value
-                   that flows into the dst is __move(x), but codegen inspects the
-                   unwrapped source via ast_unwrap_move). */
-                arg->moved_out = true;
-            }
-            else
-            {
-                checker_error(c, arg->line, arg->column,
-                              "__move() applied to non-movable type '%s'; "
-                              "only string, vec, map, and struct-with-drop can be moved",
-                              type_name(arg_type));
-            }
-        }
-        return arg_type; /* transparent: __move(s) has the same type as s */
-    }
-
-    /* __drop_at(place) -> void — run the recursive destructor on the value at an
-       lvalue place (e.g. a raw pointer slot p[i]). POD is a no-op. Lets a
-       self-managed container (RawVec) drop owned elements in __drop/set/clear
-       WITHOUT freeing the backing buffer. The slot is left logically dead;
-       liveness is the container's responsibility (its `len` bound). */
-    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_DISPOSE)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "__drop_at() takes exactly 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg_type = check_expr(c, args[0]);
-        if (arg_type == NULL) return NULL;
-        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
-            args[0]->kind != AST_IDENT &&
-            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
-        {
-            checker_error(c, args[0]->line, args[0]->column,
-                          "__drop_at() requires a place expression (p[i], field, or *p)");
-            return NULL;
-        }
-        return type_void();
-    }
-
-    /* __take(place) -> T — move-OUT of an lvalue slot: bit-read the value WITHOUT
-       cloning; the caller takes ownership and the slot is logically vacated (the
-       container must drop its `len`/track liveness). The move-out counterpart of
-       `__drop_at`; used by RawVec.pop / remove / insert / swap to relocate elements
-       without a clone. Returns the element (pointee) type. */
-    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_TAKE)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "__take() takes exactly 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg_type = check_expr(c, args[0]);
-        if (arg_type == NULL) return NULL;
-        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
-            args[0]->kind != AST_IDENT &&
-            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
-        {
-            checker_error(c, args[0]->line, args[0]->column,
-                          "__take() requires a place expression (p[i], field, or *p)");
-            return NULL;
-        }
-        return arg_type; /* the element type read out of the slot */
-    }
-
-    /* __dup(place) -> T — DEEP COPY of the value at a place, WITHOUT consuming it
-       (the source stays live). The generic value-duplication primitive: codegen
-       loads the value and runs emit_clone_value — a bit-copy for POD T, a deep
-       clone (__clone) for has_drop T (Str/Vec/Map/struct/enum). The counterpart of
-       __take (which moves out): use __dup when you need an independent copy of a
-       value you still own — e.g. Vec.fill(x) writes N copies of x; Map.get_or_insert
-       returns a copy of the default it also inserts. Returns the value type. */
-    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_DUP)
-    {
-        if (argc != 1)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "__dup() takes exactly 1 argument, got %d", argc);
-            return NULL;
-        }
-        Type *arg_type = check_expr(c, args[0]);
-        if (arg_type == NULL) return NULL;
-        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
-            args[0]->kind != AST_IDENT &&
-            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
-        {
-            checker_error(c, args[0]->line, args[0]->column,
-                          "__dup() requires a place expression (p[i], field, or *p)");
-            return NULL;
-        }
-        return arg_type; /* an independent copy of the value's type */
-    }
-
-    /* __rawstr("literal") -> *u8 — a raw pointer to a baked .rodata string,
-       WITHOUT going through Str. Needed by std.core.reflect_core (a leaf module
-       below Str/Vec that cannot import str), whose RawType stores names/signatures
-       as *u8+len. The arg must be a string literal; codegen emits its
-       GlobalStringPtr directly (same bytes Str's .data points at). Pair it with a
-       compile-time length (strlen of the literal) at the call site. */
-    if (strcmp(name, "__rawstr") == 0)
-    {
-        if (argc != 1 || args[0]->kind != AST_STRING_LIT)
-        {
-            checker_error(c, call_node->line, call_node->column,
-                          "__rawstr() takes exactly 1 string-literal argument");
-            return NULL;
-        }
-        return type_pointer(type_u8());
-    }
+    (void)argc; (void)args;
 
     /* __task_spawn(Block()->T, *T box) -> object — GENERIC structured-concurrency
        intrinsic (std.task). Runs the closure on a worker; codegen synthesises a
@@ -3477,6 +3262,18 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
        backend. Global intrinsics (like __task_*) so they survive generic-method
        instantiation in a consumer module without an `import std.c` alias. They
        know nothing about Mutex(T): a handle in/out. */
+
+    return NULL;
+}
+
+/* __mutex_* / __rwlock_* / __cond_* / __cpu_* (OS lock + relax/yield
+   primitives). [Task 7.7 split] */
+static Type *check_builtin_sync(Checker *c, const char *name, AstNode *call_node)
+{
+    int argc = call_node->as.call.arg_count;
+    AstNode **args = call_node->as.call.args;
+    (void)argc; (void)args;
+
     if (strncmp(name, "__mutex_", 8) == 0 || strncmp(name, "__rwlock_", 9) == 0 ||
         strncmp(name, "__cond_", 7) == 0 ||
         strcmp(name, "__cpu_relax") == 0 || strcmp(name, "__cpu_yield") == 0)
@@ -3525,6 +3322,17 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
        inline LLVM atomic instruction. T is the place's scalar type. The
        lock-free-scalar restriction on T is enforced at codegen (a clean
        cg_error pointing users at Mutex for larger types). */
+
+    return NULL;
+}
+
+/* __atomic_* (Atomic(T) lock-free scalar ops). [Task 7.7 split] */
+static Type *check_builtin_atomic(Checker *c, const char *name, AstNode *call_node)
+{
+    int argc = call_node->as.call.arg_count;
+    AstNode **args = call_node->as.call.args;
+    (void)argc; (void)args;
+
     if (strncmp(name, "__atomic_", 9) == 0)
     {
         if (strcmp(name, "__atomic_fence") == 0)
@@ -3593,6 +3401,17 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
        IR instruction (docs/plan_simd.md §4.2). Producers (zero/splat) take their
        result Simd(T,N) from the expected type (a `Simd(T,N) x = __simd_*(...)`
        context); operand-driven ops derive it from their Simd arguments. */
+
+    return NULL;
+}
+
+/* __simd_* (Simd(T,N) vector intrinsics — the largest family). [Task 7.7 split] */
+static Type *check_builtin_simd(Checker *c, const char *name, AstNode *call_node)
+{
+    int argc = call_node->as.call.arg_count;
+    AstNode **args = call_node->as.call.args;
+    (void)argc; (void)args;
+
     if (strncmp(name, "__simd_", 7) == 0)
     {
         for (int i = 0; i < argc; i++)
@@ -3823,6 +3642,243 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
                       "unknown simd intrinsic '%s'", name);
         return NULL;
     }
+
+    return NULL;
+}
+
+static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node)
+{
+    int argc = call_node->as.call.arg_count;
+    AstNode **args = call_node->as.call.args;
+
+    /* Phase 2: the legacy __take/__drop_at/__dup/__move spellings are retired.
+       Reject them with a clear pointer to the @-sigil replacement. */
+    const char *retired = intrinsic_retired_spelling(name);
+    if (retired != NULL)
+    {
+        checker_error(c, call_node->line, call_node->column,
+                      "'%s' is retired; use '%s'", name, retired);
+        return NULL;
+    }
+
+    /* Phase E.3.1: errno() -> int  — read C runtime errno (thread-local).
+       On Windows uses _errno(), on POSIX uses __errno_location(). The codegen
+       emits the platform-specific dereference inline. */
+    if (strcmp(name, "errno") == 0)
+    {
+        if (argc != 0)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "errno() takes no arguments, got %d", argc);
+            return NULL;
+        }
+        return type_int();
+    }
+
+    /* Phase E.3.3 / P5-4 S-2: from_cstr(object) -> Str
+       Copies a C-style NUL-terminated char* (received via FFI as `object`)
+       into an OWNED Str. Critical glue for getenv/strerror/readdir. */
+    if (strcmp(name, "from_cstr") == 0)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "from_cstr() takes 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (arg_type->kind != TYPE_OBJECT && arg_type->kind != TYPE_POINTER &&
+            arg_type->kind != TYPE_NIL)
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "from_cstr() requires object/pointer type, got '%s'",
+                          type_name(arg_type));
+            return NULL;
+        }
+        Type *strt = checker_str_type(c);
+        if (strt == NULL)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "from_cstr() requires the Str type from std.core.str "
+                          "(add `import std.core.str`)");
+            return NULL;
+        }
+        return strt;
+    }
+
+    /* __move(var) -> T  — explicit move annotation.
+       Marks the argument variable as MOVED and returns its type transparently.
+       Works on any movable type; also force-moves static strings (unlike implicit moves). */
+    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_VAR_MOVE)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__move() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        AstNode *arg = args[0];
+        if (arg->kind != AST_IDENT)
+        {
+            checker_error(c, arg->line, arg->column,
+                          "__move() requires a variable identifier, not an expression");
+            /* Still type-check for error recovery */
+            return check_expr(c, arg);
+        }
+        Type *arg_type = check_expr(c, arg); /* also reports use-of-moved if already moved */
+        if (!arg_type) return NULL;
+        Symbol *sym = scope_resolve(c->current_scope, arg->as.ident.name);
+        if (sym)
+        {
+            if (sym->is_moved || sym->is_maybe_moved)
+            {
+                /* Already moved/maybe-moved — check_expr already reported; no double-report needed */
+            }
+            else if (sym->is_borrow)
+            {
+                /* Phase 5: __move() cannot transfer ownership of a borrow — it holds none. */
+                checker_move_error(c, arg->line, arg->column,
+                                   "cannot __move(): variable '%s' is a read-only borrow",
+                                   arg->as.ident.name);
+            }
+            else if (sym->is_mut_borrow)
+            {
+                /* Phase 5.5: writable borrow can mutate but not transfer ownership. */
+                checker_move_error(c, arg->line, arg->column,
+                                   "cannot __move(): variable '%s' is a writable borrow "
+                                   "(mutation allowed, but ownership cannot leave)",
+                                   arg->as.ident.name);
+            }
+            else if (type_is_movable(sym->type))
+            {
+                /* Force-mark as moved, even for static strings */
+                sym->is_moved = true;
+                /* Move-elision (Q4): explicit __move(x) transfers ownership; let
+                   codegen move instead of clone. Tag the inner IDENT (the value
+                   that flows into the dst is __move(x), but codegen inspects the
+                   unwrapped source via ast_unwrap_move). */
+                arg->moved_out = true;
+            }
+            else
+            {
+                checker_error(c, arg->line, arg->column,
+                              "__move() applied to non-movable type '%s'; "
+                              "only string, vec, map, and struct-with-drop can be moved",
+                              type_name(arg_type));
+            }
+        }
+        return arg_type; /* transparent: __move(s) has the same type as s */
+    }
+
+    /* __drop_at(place) -> void — run the recursive destructor on the value at an
+       lvalue place (e.g. a raw pointer slot p[i]). POD is a no-op. Lets a
+       self-managed container (RawVec) drop owned elements in __drop/set/clear
+       WITHOUT freeing the backing buffer. The slot is left logically dead;
+       liveness is the container's responsibility (its `len` bound). */
+    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_DISPOSE)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__drop_at() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__drop_at() requires a place expression (p[i], field, or *p)");
+            return NULL;
+        }
+        return type_void();
+    }
+
+    /* __take(place) -> T — move-OUT of an lvalue slot: bit-read the value WITHOUT
+       cloning; the caller takes ownership and the slot is logically vacated (the
+       container must drop its `len`/track liveness). The move-out counterpart of
+       `__drop_at`; used by RawVec.pop / remove / insert / swap to relocate elements
+       without a clone. Returns the element (pointee) type. */
+    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_TAKE)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__take() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__take() requires a place expression (p[i], field, or *p)");
+            return NULL;
+        }
+        return arg_type; /* the element type read out of the slot */
+    }
+
+    /* __dup(place) -> T — DEEP COPY of the value at a place, WITHOUT consuming it
+       (the source stays live). The generic value-duplication primitive: codegen
+       loads the value and runs emit_clone_value — a bit-copy for POD T, a deep
+       clone (__clone) for has_drop T (Str/Vec/Map/struct/enum). The counterpart of
+       __take (which moves out): use __dup when you need an independent copy of a
+       value you still own — e.g. Vec.fill(x) writes N copies of x; Map.get_or_insert
+       returns a copy of the default it also inserts. Returns the value type. */
+    if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_PLACE_DUP)
+    {
+        if (argc != 1)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__dup() takes exactly 1 argument, got %d", argc);
+            return NULL;
+        }
+        Type *arg_type = check_expr(c, args[0]);
+        if (arg_type == NULL) return NULL;
+        if (args[0]->kind != AST_INDEX && args[0]->kind != AST_FIELD &&
+            args[0]->kind != AST_IDENT &&
+            !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
+        {
+            checker_error(c, args[0]->line, args[0]->column,
+                          "__dup() requires a place expression (p[i], field, or *p)");
+            return NULL;
+        }
+        return arg_type; /* an independent copy of the value's type */
+    }
+
+    /* __rawstr("literal") -> *u8 — a raw pointer to a baked .rodata string,
+       WITHOUT going through Str. Needed by std.core.reflect_core (a leaf module
+       below Str/Vec that cannot import str), whose RawType stores names/signatures
+       as *u8+len. The arg must be a string literal; codegen emits its
+       GlobalStringPtr directly (same bytes Str's .data points at). Pair it with a
+       compile-time length (strlen of the literal) at the call site. */
+    if (strcmp(name, "__rawstr") == 0)
+    {
+        if (argc != 1 || args[0]->kind != AST_STRING_LIT)
+        {
+            checker_error(c, call_node->line, call_node->column,
+                          "__rawstr() takes exactly 1 string-literal argument");
+            return NULL;
+        }
+        return type_pointer(type_u8());
+    }
+
+    /* Task 7.7: family dispatch — bodies moved verbatim (incl. their own
+       guards) into check_builtin_task/sync/atomic/simd above. */
+    if (strcmp(name, "__task_spawn") == 0 || strcmp(name, "__task_join") == 0)
+        return check_builtin_task(c, name, call_node);
+    if (strncmp(name, "__mutex_", 8) == 0 || strncmp(name, "__rwlock_", 9) == 0 ||
+        strncmp(name, "__cond_", 7) == 0 || strncmp(name, "__cpu_", 6) == 0)
+        return check_builtin_sync(c, name, call_node);
+    if (strncmp(name, "__atomic_", 9) == 0)
+        return check_builtin_atomic(c, name, call_node);
+    if (strncmp(name, "__simd_", 7) == 0)
+        return check_builtin_simd(c, name, call_node);
 
     return NULL;
 }
