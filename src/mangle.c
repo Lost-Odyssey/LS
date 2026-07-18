@@ -27,6 +27,27 @@ char *mangle_module_symbol(const char *module_name, const char *name)
     return out;
 }
 
+char *mangle_method_symbol(const char *type_name, const char *iface_or_null,
+                           const char *method_name)
+{
+    size_t tn = strlen(type_name);
+    size_t in = iface_or_null ? strlen(iface_or_null) : 0;
+    size_t mn = strlen(method_name);
+    /* "<type>" + "." + ["<iface>" + "."] + "<method>" + NUL */
+    size_t total = tn + 1 + (iface_or_null ? in + 1 : 0) + mn + 1;
+    char *out = (char *)malloc_safe(total);
+    size_t pos = 0;
+    memcpy(out + pos, type_name, tn); pos += tn;
+    out[pos++] = '.';
+    if (iface_or_null)
+    {
+        memcpy(out + pos, iface_or_null, in); pos += in;
+        out[pos++] = '.';
+    }
+    memcpy(out + pos, method_name, mn + 1); /* includes NUL */
+    return out;
+}
+
 /* ---- growable generic instance-name builder (Task 2.2) ---- */
 
 void mangle_buf_init(MangleBuf *b)

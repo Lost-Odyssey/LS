@@ -23,6 +23,21 @@
    malloc_safe (common.h discipline) — callers must not add NULL checks. */
 char *mangle_module_symbol(const char *module_name, const char *name);
 
+/* Qualified method symbol (Batch 7 / Task 7.2): "<type>.<method>", or
+   "<type>.<iface>.<method>" when iface_or_null is non-NULL (L-002 v2
+   contended-interface disambiguation). Single authority for the text that
+   BOTH the def site (codegen_impl_decl / codegen_impl_trait_decl name the
+   LLVM function) and the use sites (checker lazy-instantiation keys,
+   codegen_expr call-site lookup) must agree on byte-for-byte. Before this
+   helper the same string was built by 5+ snprintf sites with MISMATCHED
+   fixed buffers (def 256 vs use 512): a deep generic instance name (legal
+   since the Task 2.2 MangleBuf work) would truncate at the def site but not
+   at the use site — silent LLVMGetNamedFunction miss / symbol mismatch.
+   Returns a malloc'd, NUL-terminated string; caller takes ownership
+   (free() it). Never returns NULL (malloc_safe discipline). */
+char *mangle_method_symbol(const char *type_name, const char *iface_or_null,
+                           const char *method_name);
+
 /* ---- growable generic instance-name builder (Task 2.2) ----
 
    The other half of the "instance name" text contract: `Base(arg1,arg2)`
