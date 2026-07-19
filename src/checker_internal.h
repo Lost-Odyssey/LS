@@ -303,6 +303,8 @@ void check_stmt(Checker *c, AstNode *node);
    [def: checker_borrow.c], grouped here by call proximity.) */
 void register_fn_template(Checker *c, AstNode *node);
 int find_fn_template(Checker *c, const char *name);
+void reject_array_by_value_param(Checker *c, Type *pt,
+                                 const char *pname, int line, int col);
 void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type **params);
 void checker_reject_borrow_return(Checker *c, Type *ret, AstNode *fn, int line, int col);
 bool checker_reject_borrow_type_arg(Checker *c, Type *arg, const char *base, int line, int col);

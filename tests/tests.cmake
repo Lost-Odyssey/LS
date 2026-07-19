@@ -4612,6 +4612,22 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_impl_array_param.cmake
 )
 
+# ---- uniform by-value array param rejection: the four remaining paths ----
+# Policy A (2026-07-19): array(T,N) by-value params are rejected everywhere.
+# The interface-side fix left four sibling gaps: free fns (check pass inlines
+# AST_FN_DECL and bypassed check_fn_decl -> dead code), generic free fns, and
+# the two generic method instantiation paths. Negative corpus expects the
+# diagnostic at ALL FOUR sites in one run; positive corpus pins borrowed
+# slices (&array / &!array) staying legal on the free-fn and generic paths.
+add_test(
+    NAME test_fn_array_param
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_fn_array_param.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

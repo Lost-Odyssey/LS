@@ -200,10 +200,14 @@ void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type **para
 /* array(T,N) parameters must be passed by pointer (&array(T) / &!array(T)):
    a by-value array is bit-copied into the callee frame without cloning its
    elements, so has_drop elements (Str, Vec, ...) get dropped by both frames
-   (double free). Shared leaf of the four param-resolution loops: free fn,
-   inherent methods, interface declaration, and `methods T: Iface`. */
-static void reject_array_by_value_param(Checker *c, Type *pt,
-                                        const char *pname, int line, int col)
+   (double free). Policy A (2026-07-19): uniformly rejected on ALL param-
+   resolution paths — free fn (forward_pass; the check_fn_decl call below
+   only covers the statement-level check_decl path), inherent methods,
+   interface declaration, `methods T: Iface`, generic free-fn instantiation
+   (checker_call.c), and both generic method instantiation paths
+   (checker_generics.c). */
+void reject_array_by_value_param(Checker *c, Type *pt,
+                                 const char *pname, int line, int col)
 {
     if (pt != NULL && pt->kind == TYPE_ARRAY)
     {

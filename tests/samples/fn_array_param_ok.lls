@@ -1,0 +1,35 @@
+// Positive guard for the uniform by-value array-param rejection: borrowed
+// array slices (&array(T) / &!array(T)) stay legal on the free-fn and
+// generic-method paths — the check must only hit bare TYPE_ARRAY params,
+// never TYPE_REFERENCE-wrapped ones.
+import std.core.vec
+
+def sumr(&array(int) s) -> int {
+    int t = 0
+    for x in s { t = t + x }
+    return t
+}
+
+def bump(&!array(int) s) {
+    s[0] = s[0] + 1
+}
+
+struct Box(T) { T v }
+methods Box(T) {
+    def bsum(&self, &array(int) s) -> int {
+        int t = self.v
+        for x in s { t = t + x }
+        return t
+    }
+}
+
+def main() -> int {
+    Vec(int) v = [10, 20, 30]
+    int a = sumr(v[0..3])
+    bump(v[0..3])
+    Box(int) b = Box(int){v: 1}
+    int c = b.bsum(v[0..3])
+    @print(f"a={a} c={c} v0={v.get!(0)}")
+    // Expected: a=60 c=62 v0=11
+    return 0
+}
