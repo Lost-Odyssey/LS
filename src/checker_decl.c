@@ -197,6 +197,21 @@ void attach_param_defaults(Checker *c, AstNode *node, Type *fn_type, Type **para
     }
 }
 
+/* array(T,N) parameters must be passed by pointer (&array(T) / &!array(T)):
+   a by-value array is bit-copied into the callee frame without cloning its
+   elements, so has_drop elements (Str, Vec, ...) get dropped by both frames
+   (double free). Shared leaf of the four param-resolution loops: free fn,
+   inherent methods, interface declaration, and `methods T: Iface`. */
+static void reject_array_by_value_param(Checker *c, Type *pt,
+                                        const char *pname, int line, int col)
+{
+    if (pt != NULL && pt->kind == TYPE_ARRAY)
+    {
+        checker_error(c, line, col,
+                      "parameter '%s': array must be passed by pointer", pname);
+    }
+}
+
 static void check_fn_decl(Checker *c, AstNode *node)
 {
     /* G2: skip generic function templates — registered in forward_pass,
@@ -223,16 +238,9 @@ static void check_fn_decl(Checker *c, AstNode *node)
         {
             params[i] = resolve_type_node(c, node->as.fn_decl.param_types[i],
                                           node->line, node->column);
-            /* array(T,N) must be passed by pointer */
-            if (params[i])
-            {
-                if (params[i]->kind == TYPE_ARRAY)
-                {
-                    checker_error(c, node->line, node->column,
-                                  "parameter '%s': array must be passed by pointer",
-                                  node->as.fn_decl.param_names[i]);
-                }
-            }
+            reject_array_by_value_param(c, params[i],
+                                        node->as.fn_decl.param_names[i],
+                                        node->line, node->column);
         }
     }
     Type *ret = resolve_type_node(c, node->as.fn_decl.return_type,
@@ -787,16 +795,9 @@ void check_impl_decl(Checker *c, AstNode *node)
             {
                 user_params[j] = resolve_type_node(c, method->as.fn_decl.param_types[j],
                                                    method->line, method->column);
-                /* array(T,N) must be passed by pointer */
-                if (user_params[j])
-                {
-                    if (user_params[j]->kind == TYPE_ARRAY)
-                    {
-                        checker_error(c, method->line, method->column,
-                                      "parameter '%s': array must be passed by pointer",
-                                      method->as.fn_decl.param_names[j]);
-                    }
-                }
+                reject_array_by_value_param(c, user_params[j],
+                                            method->as.fn_decl.param_names[j],
+                                            method->line, method->column);
             }
         }
         Type *ret = resolve_type_node(c, method->as.fn_decl.return_type,
@@ -1142,6 +1143,9 @@ void check_trait_decl(Checker *c, AstNode *node)
             {
                 params[j] = resolve_type_node(c, sig->as.fn_decl.param_types[j],
                                                sig->line, sig->column);
+                reject_array_by_value_param(c, params[j],
+                                            sig->as.fn_decl.param_names[j],
+                                            sig->line, sig->column);
             }
         }
         Type *ret = resolve_type_node(c, sig->as.fn_decl.return_type,
@@ -1453,6 +1457,9 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
             {
                 user_params[j] = resolve_type_node(c, method->as.fn_decl.param_types[j],
                                                      method->line, method->column);
+                reject_array_by_value_param(c, user_params[j],
+                                            method->as.fn_decl.param_names[j],
+                                            method->line, method->column);
             }
         }
         Type *ret = resolve_type_node(c, method->as.fn_decl.return_type,

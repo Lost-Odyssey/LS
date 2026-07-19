@@ -1,0 +1,31 @@
+// Reject corpus: array(T,N) by-value parameters on the interface side.
+// The inherent-methods twin (check_impl_decl) has always rejected these
+// ("array must be passed by pointer"); before this fix the interface
+// declaration and `methods T: Iface` param loops let them through, and a
+// by-value array of has_drop elements bit-copies its Str buffers into the
+// callee frame -> both frames drop -> double free (memcheck: 4 dfree).
+// Expected: TWO "array must be passed by pointer" diagnostics in one run
+// (one at the interface signature, one at the impl method).
+
+interface Summable {
+    def sum(&self, array(int, 3) a) -> int
+}
+
+struct P { int x }
+
+methods P {
+    def id(&self) -> int { return self.x }
+}
+
+methods P: Summable {
+    def sum(&self, array(int, 3) a) -> int {
+        return a[0] + a[1] + a[2] + self.x
+    }
+}
+
+def main() -> int {
+    P p = P{x: 1}
+    array(int, 3) arr = [10, 20, 30]
+    @print(f"{p.sum(arr)}")
+    return 0
+}

@@ -4596,6 +4596,22 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_mangle_deep_collision.cmake
 )
 
+# ---- interface-side array(T,N) by-value param rejection ----
+# The inherent-methods twin has always rejected by-value array params; the
+# interface declaration and `methods T: Iface` param loops lacked the check
+# (found during Batch 7 Task 7.8), letting a by-value array of has_drop
+# elements bit-copy into the callee frame and double-free. Negative corpus
+# expects the diagnostic at BOTH decl sites; positive corpus pins borrowed
+# slices (&array / &!array) staying legal in interface + impl signatures.
+add_test(
+    NAME test_impl_array_param
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_impl_array_param.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

@@ -1,0 +1,37 @@
+// Positive guard for the interface-side array-param rejection: borrowed
+// array slices (&array(T) / &!array(T)) stay legal in interface signatures
+// and trait-impl methods — the check must only hit bare TYPE_ARRAY params,
+// never TYPE_REFERENCE-wrapped ones.
+import std.core.vec
+
+interface Summable {
+    def sum(&self, &array(int) s) -> int
+    def bump(&self, &!array(int) s)
+}
+
+struct P { int x }
+
+methods P {
+    def id(&self) -> int { return self.x }
+}
+
+methods P: Summable {
+    def sum(&self, &array(int) s) -> int {
+        int t = self.x
+        for x in s { t = t + x }
+        return t
+    }
+    def bump(&self, &!array(int) s) {
+        s[0] = s[0] + 1
+    }
+}
+
+def main() -> int {
+    P p = P{x: 1}
+    Vec(int) v = [10, 20, 30]
+    int r = p.sum(v[0..3])
+    p.bump(v[0..3])
+    @print(f"sum={r} v0={v.get!(0)}")
+    // Expected: sum=61 v0=11
+    return 0
+}
