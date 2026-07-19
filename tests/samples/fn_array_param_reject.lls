@@ -1,0 +1,43 @@
+// Reject corpus: array(T,N) by-value parameters — the four sibling gaps left
+// after the interface-side fix (see impl_array_param_reject.lls). Policy A
+// (2026-07-19): by-value array params are uniformly rejected on ALL paths;
+// pass arrays by borrowed slice (&array(T) / &!array(T)) instead.
+//   1. free fn           — check pass inlines AST_FN_DECL and bypassed
+//                          check_fn_decl, so its rejection was dead code
+//   2. generic free fn   — instantiation path (checker_call.c) lacked it
+//   3. struct-level generic method — instantiation path (checker_generics.c)
+//   4. method-level generic        — instantiation path (checker_generics.c)
+// Expected: FOUR "array must be passed by pointer" diagnostics in one run.
+
+// 1. free fn
+def sum3(array(int, 3) a) -> int {
+    return a[0] + a[1] + a[2]
+}
+
+// 2. generic free fn (rejected at instantiation gsum(int))
+def gsum(T)(array(T, 3) a) -> T {
+    return a[0]
+}
+
+// 3. struct-level generic method (rejected when Box(int) is instantiated)
+// 4. method-level generic (rejected at call instantiation msum(int))
+struct Box(T) { T v }
+methods Box(T) {
+    def bsum(&self, array(int, 3) a) -> int {
+        return a[0] + a[1] + a[2]
+    }
+    def msum(U)(&self, array(U, 2) a) -> U {
+        return a[0]
+    }
+}
+
+def main() -> int {
+    array(int, 3) arr = [1, 2, 3]
+    array(int, 2) arr2 = [4, 5]
+    @print(sum3(arr))
+    @print(gsum(int)(arr))
+    Box(int) b = Box(int){v: 7}
+    @print(b.bsum(arr))
+    @print(b.msum(int)(arr2))
+    return 0
+}

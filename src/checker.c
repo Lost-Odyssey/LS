@@ -863,6 +863,12 @@ void forward_pass(Checker *c, AstNode *program)
                 {
                     params[j] = resolve_type_node(c, decl->as.fn_decl.param_types[j],
                                                   decl->line, decl->column);
+                    /* Top-level fns register here and the check pass inlines
+                       AST_FN_DECL (bypassing check_fn_decl), so this is the
+                       live rejection site for free functions. */
+                    reject_array_by_value_param(c, params[j],
+                                                decl->as.fn_decl.param_names[j],
+                                                decl->line, decl->column);
                 }
             }
             Type *ret = resolve_type_node(c, decl->as.fn_decl.return_type,

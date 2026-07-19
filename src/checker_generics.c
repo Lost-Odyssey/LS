@@ -1551,6 +1551,10 @@ Type *try_instantiate_method_level_generic(Checker *c,
             c, method_ast->as.fn_decl.param_types[j],
             all_tp_names, all_tp_types, total_tp_count);
         params[offset + j] = pt ? pt : type_int();
+        /* Policy A: by-value array(T,N) params rejected on every path;
+           reported at the instantiating call site (line/col params). */
+        reject_array_by_value_param(c, params[offset + j],
+            method_ast->as.fn_decl.param_names[j], line, col);
     }
 
     Type *ret = method_ast->as.fn_decl.return_type
@@ -2007,6 +2011,15 @@ static void instantiate_impl_method_types(
            lazy instantiation (checker.c return-stmt handling).
            (docs/plan_borrow_extension.md "下一步") */
         checker_reject_borrow_return(c, ret, method, method->line, method->column);
+
+        /* Policy A: by-value array(T,N) params rejected on every path. Placed
+           after the sig_resolvable skip so un-callable signatures stay
+           silently unregistered; method-level generic templates (own type
+           params) resolve NULL here and are rejected at call instantiation
+           instead. Attribution follows the borrow-return line above. */
+        for (int j = 0; j < pc; j++)
+            reject_array_by_value_param(c, params[offset + j],
+                method->as.fn_decl.param_names[j], method->line, method->column);
 
         Type *mtype = type_function(params, total, ret, false);
 

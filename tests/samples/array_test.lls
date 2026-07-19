@@ -4,14 +4,6 @@
 array(int, 4) global_arr = [100, 200, 300, 400]
 int MAGIC = 42
 
-def sum_array(array(int, 3) data) -> int {
-    int s = 0
-    for x in data {
-        s = s + x
-    }
-    s
-}
-
 def main() -> int {
     // Local array declaration + initialization
     array(int, 3) nums = [10, 20, 30]
@@ -24,8 +16,13 @@ def main() -> int {
     nums[1] = 99
     @print(nums[1])           // 99
 
-    // for-in iteration + function parameter (by value)
-    int total = sum_array(nums)
+    // for-in iteration. Note: fixed arrays cannot be function parameters —
+    // by-value is uniformly rejected (policy A, 2026-07-19) and fixed arrays
+    // have no borrow form; wrap in a struct or use Vec(T) + &array(T) slices.
+    int total = 0
+    for x in nums {
+        total = total + x
+    }
     @print(total)             // 139 (10+99+30)
 
     // print whole array

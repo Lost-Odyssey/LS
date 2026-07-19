@@ -1649,6 +1649,10 @@ static bool check_call_generic_free_fn(Checker *c, AstNode *node, Type **out_res
         params[pi] = resolve_type_node(c, tmpl_decl->as.fn_decl.param_types[pi],
             node->line, node->column);
         if (!params[pi]) params[pi] = type_int(); /* fallback */
+        /* Policy A: by-value array(T,N) params rejected on every path;
+           reported at the instantiating call site (this file/line). */
+        reject_array_by_value_param(c, params[pi],
+            tmpl_decl->as.fn_decl.param_names[pi], node->line, node->column);
     }
     Type *ret = tmpl_decl->as.fn_decl.return_type
         ? resolve_type_node(c, tmpl_decl->as.fn_decl.return_type,
