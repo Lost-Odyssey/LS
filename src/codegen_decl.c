@@ -1180,17 +1180,18 @@ void codegen_struct_decl(CodegenContext *ctx, AstNode *node)
        to avoid generating auto-drop before user-defined __drop is known. */
 }
 
-void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
+/* Phase 2.5 / M-H: is this `methods <name>` / `methods <name>: Iface` target a
+   builtin scalar type (e.g. `methods int`, `impl Hash for int`)? Builtin types
+   are global, not owned by any module — their methods use the bare name
+   `int.hash` so callers in any importing file resolve the same symbol (§2.4).
+   Both impl codegen paths use this to skip B-3 module prefixing. (Task 7.8:
+   single authority for the twin strcmp chains that lived in codegen_impl_decl
+   and codegen_impl_trait_decl. Deliberately NOT extended to f16/bf16 — they
+   were absent from both original chains; widening the set is a behavior
+   decision, not a dedup.) */
+static bool cg_impl_target_is_builtin(const char *bare_name)
 {
-    /* G1.5: skip generic impl templates — methods are emitted per-instantiation */
-    if (node->as.impl_decl.type_param_count > 0) return;
-
-    const char *bare_name = node->as.impl_decl.name;
-    /* Phase 2.5: `impl <builtin type>` (e.g. int). Builtin types are global,
-       not owned by any module — their methods use the bare name `int.hash`
-       so callers in any importing file resolve the same symbol (§2.4). Skip the
-       B-3 module prefixing applied to struct/enum impls. */
-    bool is_builtin_impl =
+    return
         strcmp(bare_name, "int") == 0 ||
         strcmp(bare_name, "i64") == 0    || strcmp(bare_name, "f64") == 0 ||
         strcmp(bare_name, "bool") == 0   || strcmp(bare_name, "char") == 0 ||
@@ -1198,6 +1199,39 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
         strcmp(bare_name, "i32") == 0    || strcmp(bare_name, "u8") == 0 ||
         strcmp(bare_name, "u16") == 0    || strcmp(bare_name, "u32") == 0 ||
         strcmp(bare_name, "u64") == 0    || strcmp(bare_name, "f32") == 0;
+}
+
+/* B-3 adoption, shared leaf (Task 7.8): find the registered llvm_name of the
+   struct whose BARE name matches, scanning in registration order (first match
+   wins — same order both twin loops used). Returns NULL when no struct with
+   that bare name has an llvm_name. Callers layer their own policy on top:
+   codegen_impl_decl consults this only when its same-module Step 1 did not
+   adopt (and also scans enums); codegen_impl_trait_decl applies it
+   unconditionally (struct targets only — enums have no cross-module trait
+   impl today). */
+static const char *cg_struct_llvm_by_bare(CodegenContext *ctx, const char *bare_name)
+{
+    for (int si = 0; si < ctx->struct_type_count; si++)
+    {
+        Type *slt = ctx->struct_types[si].ls_type;
+        if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.name &&
+            strcmp(slt->as.strukt.name, bare_name) == 0 &&
+            slt->as.strukt.llvm_name != NULL)
+        {
+            return slt->as.strukt.llvm_name;
+        }
+    }
+    return NULL;
+}
+
+void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
+{
+    /* G1.5: skip generic impl templates — methods are emitted per-instantiation */
+    if (node->as.impl_decl.type_param_count > 0) return;
+
+    const char *bare_name = node->as.impl_decl.name;
+    /* Phase 2.5: `impl <builtin type>` (e.g. int) — see cg_impl_target_is_builtin. */
+    bool is_builtin_impl = cg_impl_target_is_builtin(bare_name);
     /* B-3 / L-022: prefix the struct/enum LLVM name so that qualified method
        names become "<mod>__Struct.method" rather than "Struct.method"
        (consistent with codegen_struct_decl's B-2 prefixing).
@@ -1259,14 +1293,12 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
 
         /* Step 2: cross-module methods block (or main-file user impl) — adopt
            the type's llvm_name by bare name, wherever it is declared. */
-        for (int si = 0; si < ctx->struct_type_count && !adopted; si++)
+        if (!adopted)
         {
-            Type *slt = ctx->struct_types[si].ls_type;
-            if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.name &&
-                strcmp(slt->as.strukt.name, bare_name) == 0 &&
-                slt->as.strukt.llvm_name != NULL)
+            const char *ln = cg_struct_llvm_by_bare(ctx, bare_name);
+            if (ln != NULL)
             {
-                struct_name = slt->as.strukt.llvm_name;
+                struct_name = ln;
                 adopted = true;
             }
         }
@@ -1426,18 +1458,8 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
 void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
 {
     const char *bare_name = node->as.impl_trait_decl.struct_name;
-    /* Phase 2.5 / M-H: `impl Trait for <builtin>` (e.g. `impl Hash for int`).
-       Builtin types are global, not owned by any module — their methods use the
-       bare name `int.hash` so callers in any importing file resolve the same
-       symbol (mirrors codegen_impl_decl's is_builtin_impl). Skip B-3 prefixing. */
-    bool is_builtin_impl =
-        strcmp(bare_name, "int") == 0 ||
-        strcmp(bare_name, "i64") == 0    || strcmp(bare_name, "f64") == 0 ||
-        strcmp(bare_name, "bool") == 0   || strcmp(bare_name, "char") == 0 ||
-        strcmp(bare_name, "i8") == 0     || strcmp(bare_name, "i16") == 0 ||
-        strcmp(bare_name, "i32") == 0    || strcmp(bare_name, "u8") == 0 ||
-        strcmp(bare_name, "u16") == 0    || strcmp(bare_name, "u32") == 0 ||
-        strcmp(bare_name, "u64") == 0    || strcmp(bare_name, "f32") == 0;
+    /* Phase 2.5 / M-H: `impl Trait for <builtin>` — see cg_impl_target_is_builtin. */
+    bool is_builtin_impl = cg_impl_target_is_builtin(bare_name);
     /* B-3: prefix trait impl method names for module-defined types. Default to the
        emit-module prefix (correct when this impl is in the type's OWN module). */
     char prefixed_name_buf[512];
@@ -1461,17 +1483,8 @@ void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
        targets only; enums have no cross-module trait impl today. */
     if (!is_builtin_impl)
     {
-        for (int si = 0; si < ctx->struct_type_count; si++)
-        {
-            Type *slt = ctx->struct_types[si].ls_type;
-            if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.name &&
-                strcmp(slt->as.strukt.name, bare_name) == 0 &&
-                slt->as.strukt.llvm_name != NULL)
-            {
-                struct_name = slt->as.strukt.llvm_name;
-                break;
-            }
-        }
+        const char *ln = cg_struct_llvm_by_bare(ctx, bare_name);
+        if (ln != NULL) struct_name = ln;
     }
 
     for (int i = 0; i < node->as.impl_trait_decl.method_count; i++)
