@@ -636,6 +636,64 @@ static Type *impl_method_fn_type(Type *self_type, Type **user_params, int user_n
     return type_function(all_params, total_n, ret, false);
 }
 
+/* Bind `self` (per its declared borrow kind) and the user params into the
+   current scope for a method body check — the identical prologue both twin
+   checkers ran after chk_push_scope. method_type's param array holds the
+   resolved types (implicit *Self at index 0 for instance methods).
+   Caller-side policy stays caller-side: check_impl_decl's static-with-self
+   diagnostic runs before this (its original order — that error preceded the
+   param binds), and its in_user_defined_drop flagging runs after.
+   (Task 7.8 shared leaf.) */
+static void impl_bind_method_scope(Checker *c, AstNode *method, Type *self_type,
+                                   Type *method_type, bool is_static)
+{
+    if (!is_static)
+    {
+        int sbk = method->as.fn_decl.self_borrow_kind;
+        if (sbk == 0)
+        {
+            /* Legacy: self is *Self pointer (mut-style). */
+            scope_define(c->current_scope, "self", type_pointer(self_type));
+        }
+        else
+        {
+            /* &self / &!self: self is Self with borrow flags. */
+            Symbol *self_sym = scope_define(c->current_scope, "self", self_type);
+            if (self_sym)
+            {
+                if (sbk == 1) self_sym->is_borrow = true;
+                else if (sbk == 2) self_sym->is_mut_borrow = true;
+            }
+        }
+    }
+    for (int j = 0; j < method->as.fn_decl.param_count; j++)
+    {
+        Type *pt = method_type->as.function.params[is_static ? j : j + 1];
+        if (pt)
+        {
+            /* Phase 5: unwrap &T / &!T → T; remember borrow kind on body symbol. */
+            bool is_borrow = false;
+            bool is_mut_borrow = false;
+            if (pt->kind == TYPE_REFERENCE)
+            {
+                if (pt->is_mut) is_mut_borrow = true;
+                else            is_borrow     = true;
+                pt = pt->as.pointer_to;
+            }
+            Symbol *param_sym = scope_define(c->current_scope,
+                                             method->as.fn_decl.param_names[j], pt);
+            if (param_sym)
+            {
+                param_sym->is_borrow = is_borrow;
+                param_sym->is_mut_borrow = is_mut_borrow;
+                /* F.2: Block params are shallow-copy borrows of caller's env */
+                if (pt->kind == TYPE_BLOCK)
+                    param_sym->is_borrow = true;
+            }
+        }
+    }
+}
+
 void check_impl_decl(Checker *c, AstNode *node)
 {
     const char *name = node->as.impl_decl.name;
@@ -765,61 +823,15 @@ void check_impl_decl(Checker *c, AstNode *node)
 
         /* Check body */
         chk_push_scope(c);
-        if (!is_static)
-        {
-            int sbk = method->as.fn_decl.self_borrow_kind;
-            /* Phase B: drop struct &self / &!self now allowed. */
-            if (sbk == 0)
-            {
-                /* Legacy: self is *Self pointer (mut-style). */
-                scope_define(c->current_scope, "self", type_pointer(self_type));
-            }
-            else
-            {
-                /* &self / &!self: self is Self with borrow flags. */
-                Symbol *self_sym = scope_define(c->current_scope, "self", self_type);
-                if (self_sym)
-                {
-                    if (sbk == 1) self_sym->is_borrow = true;
-                    else if (sbk == 2) self_sym->is_mut_borrow = true;
-                }
-            }
-        }
-        else if (method->as.fn_decl.self_borrow_kind != 0)
+        if (is_static && method->as.fn_decl.self_borrow_kind != 0)
         {
             /* `static fn m(&self/&!self ...)` is contradictory. */
             checker_error(c, method->line, method->column,
                           "static method '%s' cannot declare a self parameter",
                           method->as.fn_decl.name);
         }
-        for (int j = 0; j < user_n; j++)
-        {
-            /* method_type adopted the (possibly *Self-prepended) param array —
-               same pointers the old all_params local held. */
-            Type *pt = method_type->as.function.params[is_static ? j : j + 1];
-            if (pt)
-            {
-                /* Phase 5: unwrap &T / &!T → T; remember borrow kind on body symbol. */
-                bool is_borrow = false;
-                bool is_mut_borrow = false;
-                if (pt->kind == TYPE_REFERENCE)
-                {
-                    if (pt->is_mut) is_mut_borrow = true;
-                    else            is_borrow     = true;
-                    pt = pt->as.pointer_to;
-                }
-                Symbol *param_sym = scope_define(c->current_scope,
-                                                 method->as.fn_decl.param_names[j], pt);
-                if (param_sym)
-                {
-                    param_sym->is_borrow = is_borrow;
-                    param_sym->is_mut_borrow = is_mut_borrow;
-                    /* F.2: Block params are shallow-copy borrows of caller's env */
-                    if (pt->kind == TYPE_BLOCK)
-                        param_sym->is_borrow = true;
-                }
-            }
-        }
+        /* Phase B: drop struct &self / &!self now allowed. */
+        impl_bind_method_scope(c, method, self_type, method_type, is_static);
         Type *saved_ret = c->current_fn_return;
         bool saved_in_drop = c->in_user_defined_drop;
         c->current_fn_return = ret;
@@ -1497,47 +1509,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
 
         /* Check body (same pattern as check_impl_decl) */
         chk_push_scope(c);
-        if (!is_static)
-        {
-            int sbk = method->as.fn_decl.self_borrow_kind;
-            if (sbk == 0)
-            {
-                scope_define(c->current_scope, "self", type_pointer(st));
-            }
-            else
-            {
-                Symbol *self_sym = scope_define(c->current_scope, "self", st);
-                if (self_sym)
-                {
-                    if (sbk == 1) self_sym->is_borrow = true;
-                    else if (sbk == 2) self_sym->is_mut_borrow = true;
-                }
-            }
-        }
-        for (int j = 0; j < user_n; j++)
-        {
-            Type *pt = method_type->as.function.params[is_static ? j : j + 1];
-            if (pt)
-            {
-                bool is_borrow = false;
-                bool is_mut_borrow = false;
-                if (pt->kind == TYPE_REFERENCE)
-                {
-                    if (pt->is_mut) is_mut_borrow = true;
-                    else            is_borrow     = true;
-                    pt = pt->as.pointer_to;
-                }
-                Symbol *param_sym = scope_define(c->current_scope,
-                                                   method->as.fn_decl.param_names[j], pt);
-                if (param_sym)
-                {
-                    param_sym->is_borrow = is_borrow;
-                    param_sym->is_mut_borrow = is_mut_borrow;
-                    if (pt->kind == TYPE_BLOCK)
-                        param_sym->is_borrow = true;
-                }
-            }
-        }
+        impl_bind_method_scope(c, method, st, method_type, is_static);
         Type *saved_ret = c->current_fn_return;
         c->current_fn_return = ret;
         check_stmt(c, method->as.fn_decl.body);
