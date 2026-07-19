@@ -1201,6 +1201,29 @@ static bool cg_impl_target_is_builtin(const char *bare_name)
         strcmp(bare_name, "u64") == 0    || strcmp(bare_name, "f32") == 0;
 }
 
+/* B-3 adoption, shared leaf (Task 7.8): find the registered llvm_name of the
+   struct whose BARE name matches, scanning in registration order (first match
+   wins — same order both twin loops used). Returns NULL when no struct with
+   that bare name has an llvm_name. Callers layer their own policy on top:
+   codegen_impl_decl consults this only when its same-module Step 1 did not
+   adopt (and also scans enums); codegen_impl_trait_decl applies it
+   unconditionally (struct targets only — enums have no cross-module trait
+   impl today). */
+static const char *cg_struct_llvm_by_bare(CodegenContext *ctx, const char *bare_name)
+{
+    for (int si = 0; si < ctx->struct_type_count; si++)
+    {
+        Type *slt = ctx->struct_types[si].ls_type;
+        if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.name &&
+            strcmp(slt->as.strukt.name, bare_name) == 0 &&
+            slt->as.strukt.llvm_name != NULL)
+        {
+            return slt->as.strukt.llvm_name;
+        }
+    }
+    return NULL;
+}
+
 void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
 {
     /* G1.5: skip generic impl templates — methods are emitted per-instantiation */
@@ -1270,14 +1293,12 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
 
         /* Step 2: cross-module methods block (or main-file user impl) — adopt
            the type's llvm_name by bare name, wherever it is declared. */
-        for (int si = 0; si < ctx->struct_type_count && !adopted; si++)
+        if (!adopted)
         {
-            Type *slt = ctx->struct_types[si].ls_type;
-            if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.name &&
-                strcmp(slt->as.strukt.name, bare_name) == 0 &&
-                slt->as.strukt.llvm_name != NULL)
+            const char *ln = cg_struct_llvm_by_bare(ctx, bare_name);
+            if (ln != NULL)
             {
-                struct_name = slt->as.strukt.llvm_name;
+                struct_name = ln;
                 adopted = true;
             }
         }
@@ -1462,17 +1483,8 @@ void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
        targets only; enums have no cross-module trait impl today. */
     if (!is_builtin_impl)
     {
-        for (int si = 0; si < ctx->struct_type_count; si++)
-        {
-            Type *slt = ctx->struct_types[si].ls_type;
-            if (slt && slt->kind == TYPE_STRUCT && slt->as.strukt.name &&
-                strcmp(slt->as.strukt.name, bare_name) == 0 &&
-                slt->as.strukt.llvm_name != NULL)
-            {
-                struct_name = slt->as.strukt.llvm_name;
-                break;
-            }
-        }
+        const char *ln = cg_struct_llvm_by_bare(ctx, bare_name);
+        if (ln != NULL) struct_name = ln;
     }
 
     for (int i = 0; i < node->as.impl_trait_decl.method_count; i++)
