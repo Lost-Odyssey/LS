@@ -617,6 +617,25 @@ static bool has_member_drop_call(AstNode *node, Type *struct_type)
     return false;
 }
 
+/* Build the internal method fn-type: instance methods get *Self prepended as
+   the implicit first param; static methods take only the user params. Takes
+   ownership of user_params (freed on the prepend path, adopted directly by
+   the fn type on the static path — exactly what both twin sites did).
+   (Task 7.8 shared leaf of check_impl_decl / check_impl_trait_decl.) */
+static Type *impl_method_fn_type(Type *self_type, Type **user_params, int user_n,
+                                 Type *ret, bool is_static)
+{
+    if (is_static)
+        return type_function(user_params, user_n, ret, false);
+    int total_n = user_n + 1;
+    Type **all_params = (Type **)malloc_safe((size_t)total_n * sizeof(Type *));
+    all_params[0] = type_pointer(self_type); /* implicit *Self */
+    for (int j = 0; j < user_n; j++)
+        all_params[j + 1] = user_params[j];
+    free(user_params);
+    return type_function(all_params, total_n, ret, false);
+}
+
 void check_impl_decl(Checker *c, AstNode *node)
 {
     const char *name = node->as.impl_decl.name;
@@ -728,26 +747,8 @@ void check_impl_decl(Checker *c, AstNode *node)
 
         /* For instance methods: internal function type has an extra first param (*Struct).
            The user doesn't write 'self' — the compiler injects it. */
-        int total_n;
-        Type **all_params;
-        if (!is_static)
-        {
-            total_n = user_n + 1;
-            all_params = (Type **)malloc_safe((size_t)total_n * sizeof(Type *));
-            all_params[0] = type_pointer(self_type); /* implicit *Self */
-            for (int j = 0; j < user_n; j++)
-            {
-                all_params[j + 1] = user_params[j];
-            }
-            free(user_params);
-        }
-        else
-        {
-            total_n = user_n;
-            all_params = user_params;
-        }
-
-        Type *method_type = type_function(all_params, total_n, ret, false);
+        Type *method_type = impl_method_fn_type(self_type, user_params, user_n,
+                                                ret, is_static);
 
         /* Stage 5: warn when a user method collides with the Block container
            protocol names (see helpers at the top of this file). */
@@ -793,7 +794,9 @@ void check_impl_decl(Checker *c, AstNode *node)
         }
         for (int j = 0; j < user_n; j++)
         {
-            Type *pt = is_static ? all_params[j] : all_params[j + 1];
+            /* method_type adopted the (possibly *Self-prepended) param array —
+               same pointers the old all_params local held. */
+            Type *pt = method_type->as.function.params[is_static ? j : j + 1];
             if (pt)
             {
                 /* Phase 5: unwrap &T / &!T → T; remember borrow kind on body symbol. */
@@ -1480,22 +1483,8 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
 
         /* Build the internal function type. Instance methods get *Self prepended
            as the implicit self param; static methods take only the user params. */
-        Type *method_type;
-        if (is_static)
-        {
-            /* user_params is handed to (and owned by) the function type. */
-            method_type = type_function(user_params, user_n, ret, false);
-        }
-        else
-        {
-            int total_n = user_n + 1;
-            Type **all_params = (Type **)malloc_safe((size_t)total_n * sizeof(Type *));
-            all_params[0] = type_pointer(st); /* implicit *Self */
-            for (int j = 0; j < user_n; j++)
-                all_params[j + 1] = user_params[j];
-            free(user_params);
-            method_type = type_function(all_params, total_n, ret, false);
-        }
+        Type *method_type = impl_method_fn_type(st, user_params, user_n,
+                                                ret, is_static);
 
         /* Register in impl_registry (same as check_impl_decl) */
         if (!register_method(c, impl_idx, mname, method_type, is_static, user_sbk,
