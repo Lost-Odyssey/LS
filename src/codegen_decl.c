@@ -1180,17 +1180,18 @@ void codegen_struct_decl(CodegenContext *ctx, AstNode *node)
        to avoid generating auto-drop before user-defined __drop is known. */
 }
 
-void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
+/* Phase 2.5 / M-H: is this `methods <name>` / `methods <name>: Iface` target a
+   builtin scalar type (e.g. `methods int`, `impl Hash for int`)? Builtin types
+   are global, not owned by any module — their methods use the bare name
+   `int.hash` so callers in any importing file resolve the same symbol (§2.4).
+   Both impl codegen paths use this to skip B-3 module prefixing. (Task 7.8:
+   single authority for the twin strcmp chains that lived in codegen_impl_decl
+   and codegen_impl_trait_decl. Deliberately NOT extended to f16/bf16 — they
+   were absent from both original chains; widening the set is a behavior
+   decision, not a dedup.) */
+static bool cg_impl_target_is_builtin(const char *bare_name)
 {
-    /* G1.5: skip generic impl templates — methods are emitted per-instantiation */
-    if (node->as.impl_decl.type_param_count > 0) return;
-
-    const char *bare_name = node->as.impl_decl.name;
-    /* Phase 2.5: `impl <builtin type>` (e.g. int). Builtin types are global,
-       not owned by any module — their methods use the bare name `int.hash`
-       so callers in any importing file resolve the same symbol (§2.4). Skip the
-       B-3 module prefixing applied to struct/enum impls. */
-    bool is_builtin_impl =
+    return
         strcmp(bare_name, "int") == 0 ||
         strcmp(bare_name, "i64") == 0    || strcmp(bare_name, "f64") == 0 ||
         strcmp(bare_name, "bool") == 0   || strcmp(bare_name, "char") == 0 ||
@@ -1198,6 +1199,16 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
         strcmp(bare_name, "i32") == 0    || strcmp(bare_name, "u8") == 0 ||
         strcmp(bare_name, "u16") == 0    || strcmp(bare_name, "u32") == 0 ||
         strcmp(bare_name, "u64") == 0    || strcmp(bare_name, "f32") == 0;
+}
+
+void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
+{
+    /* G1.5: skip generic impl templates — methods are emitted per-instantiation */
+    if (node->as.impl_decl.type_param_count > 0) return;
+
+    const char *bare_name = node->as.impl_decl.name;
+    /* Phase 2.5: `impl <builtin type>` (e.g. int) — see cg_impl_target_is_builtin. */
+    bool is_builtin_impl = cg_impl_target_is_builtin(bare_name);
     /* B-3 / L-022: prefix the struct/enum LLVM name so that qualified method
        names become "<mod>__Struct.method" rather than "Struct.method"
        (consistent with codegen_struct_decl's B-2 prefixing).
@@ -1426,18 +1437,8 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
 void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
 {
     const char *bare_name = node->as.impl_trait_decl.struct_name;
-    /* Phase 2.5 / M-H: `impl Trait for <builtin>` (e.g. `impl Hash for int`).
-       Builtin types are global, not owned by any module — their methods use the
-       bare name `int.hash` so callers in any importing file resolve the same
-       symbol (mirrors codegen_impl_decl's is_builtin_impl). Skip B-3 prefixing. */
-    bool is_builtin_impl =
-        strcmp(bare_name, "int") == 0 ||
-        strcmp(bare_name, "i64") == 0    || strcmp(bare_name, "f64") == 0 ||
-        strcmp(bare_name, "bool") == 0   || strcmp(bare_name, "char") == 0 ||
-        strcmp(bare_name, "i8") == 0     || strcmp(bare_name, "i16") == 0 ||
-        strcmp(bare_name, "i32") == 0    || strcmp(bare_name, "u8") == 0 ||
-        strcmp(bare_name, "u16") == 0    || strcmp(bare_name, "u32") == 0 ||
-        strcmp(bare_name, "u64") == 0    || strcmp(bare_name, "f32") == 0;
+    /* Phase 2.5 / M-H: `impl Trait for <builtin>` — see cg_impl_target_is_builtin. */
+    bool is_builtin_impl = cg_impl_target_is_builtin(bare_name);
     /* B-3: prefix trait impl method names for module-defined types. Default to the
        emit-module prefix (correct when this impl is in the type's OWN module). */
     char prefixed_name_buf[512];
