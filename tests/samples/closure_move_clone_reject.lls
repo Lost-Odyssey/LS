@@ -1,0 +1,39 @@
+// closure_move_clone_reject.lls — a `[move v]` list must keep validating after
+// the AST is cloned.
+//
+// ast_clone_deep used to null closure.move_names/move_count while its comment
+// said "captures are filled by checker, not cloned here". captures ARE
+// checker-filled (correctly cleared), but move_names is PARSER-owned — it is
+// the `[move v]` source syntax, and ast_free frees it. Dropping it on clone
+// silently discarded the whole list inside every cloned subtree (generic method
+// bodies, comptime blocks, operator lowering), so the checker's "name in
+// [move ...] is not referenced inside the closure body" diagnostic vanished
+// there while firing normally in an ordinary function.
+//
+// Both closures below are the SAME shape; before the fix only the first was
+// diagnosed. `unused` is deliberately not mentioned in either body.
+type Th = Block() -> int
+
+struct Box(T) { T v }
+
+methods Box(T) {
+    // Generic method body — instantiating Box(int) clones this AST.
+    def run(&self) -> int {
+        int unused_generic = 7
+        Th b = [move unused_generic] || { return 1 }
+        return b()
+    }
+}
+
+def plain() -> int {
+    int unused_plain = 7
+    Th b = [move unused_plain] || { return 2 }
+    return b()
+}
+
+def main() -> int {
+    Box(int) bi = Box(int) { v: 1 }
+    @print(bi.run())
+    @print(plain())
+    return 0
+}

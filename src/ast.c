@@ -1,4 +1,10 @@
-/* ast.c — AST node printing and memory management */
+/* ast.c — AST node construction, deep-cloning, freeing and printing.
+   Four groups, in file order: TypeNode free/clone, AstNode construction +
+   ast_free, ast_kind_name, TypeNode/AstNode printing, and ast_clone_deep.
+   ast_free and ast_clone_deep are TWINS over the same ownership map: a field
+   one of them treats as owned, the other must too. Every historical bug here
+   came from breaking that symmetry (AST_AT_TIME shallow-copied into a double
+   free; closure.move_names cloned as NULL and lost its validation). */
 #include "ast.h"
 #include "types.h"
 #include <stdio.h>
@@ -128,9 +134,8 @@ TypeNode *type_node_clone(const TypeNode *src) {
     return dst;
 }
 
-/* ---- ast_free ---- */
+/* ---- ast_new / ast_inject_std_str_import / ast_free ---- */
 
-/* Recursively free an AstNode and all its children */
 /* Allocate a zero-initialized AstNode of the given kind. Public so the checker
    can synthesize nodes (e.g. operator-overload lowering). */
 AstNode *ast_new(AstNodeType kind, int line, int col) {
@@ -170,6 +175,8 @@ void ast_inject_std_str_import(AstNode *program) {
     program->as.program.decl_count = n + 1;
 }
 
+/* Recursively free an AstNode and all its children. Twin of ast_clone_deep:
+   every field freed here must be deep-copied there (see the file header). */
 void ast_free(AstNode *node) {
     if (node == NULL) return;
     type_free(node->coerce_block_type);
@@ -714,13 +721,19 @@ void type_node_print(TypeNode *type) {
     }
 }
 
-/* ---- ast_print ---- */
+/* ---- ast_print helper (ast_print itself is at the bottom of the file) ---- */
 
 static void print_indent(int indent) {
     for (int i = 0; i < indent; i++) printf("  ");
 }
 
-/* G1.5: Deep-clone an AST subtree.  resolved_type is NOT copied. */
+/* ---- ast_clone_deep ---- */
+
+/* G1.5: Deep-clone an AST subtree. Twin of ast_free — see the file header.
+   Checker/codegen back-fill fields are deliberately NOT copied (resolved_type,
+   captures[], lowered/desugared): the clone gets re-checked and rebuilds them.
+   Parser-owned fields always are, including ones that look incidental
+   (closure.move_names, call.qualified_iface). */
 AstNode *ast_clone_deep(const AstNode *src) {
     if (src == NULL) return NULL;
 
@@ -1059,11 +1072,35 @@ AstNode *ast_clone_deep(const AstNode *src) {
         }
         n->as.closure.return_type = type_node_clone(src->as.closure.return_type);
         n->as.closure.body = ast_clone_deep(src->as.closure.body);
-        /* Captures are filled by checker, not cloned here */
+        /* captures[] is CHECKER-filled (capture_walk, checker_expr.c): start the
+           clone empty so re-checking rebuilds it against the clone's own body. */
         n->as.closure.captures = NULL;
         n->as.closure.capture_count = 0;
-        n->as.closure.move_names = NULL;
-        n->as.closure.move_count = 0;
+        /* move_names is the opposite and used to be lumped in with the line
+           above: it is PARSER-owned source syntax — the `[move v]` list — and
+           ast_free frees it, so it must be deep-copied like any other owned
+           string array. Nulling it silently discarded the whole list inside
+           every cloned subtree (generic method bodies, comptime blocks,
+           operator lowering), which is where the checker's "'%s' in [move ...]
+           list is not referenced inside the closure body" validation went
+           missing while firing normally in an ordinary function.
+           No runtime divergence today — is_explicit_move only ever gates
+           `capture_type_is_by_ref_cg(t) && !explicit_move`, and that predicate
+           is unconditionally false since builtin string/vec/map were removed —
+           but the field is user-written syntax, and an owned pointer that
+           ast_free frees while ast_clone_deep ignores it is exactly the
+           asymmetry that made the missing AST_AT_TIME case a heap corruption. */
+        int mvc = src->as.closure.move_count;
+        n->as.closure.move_count = mvc;
+        if (mvc > 0) {
+            n->as.closure.move_names =
+                (char **)malloc_safe((size_t)mvc * sizeof(char *));
+            for (int i = 0; i < mvc; i++)
+                n->as.closure.move_names[i] =
+                    ast_strdup(src->as.closure.move_names[i]);
+        } else {
+            n->as.closure.move_names = NULL;
+        }
         break;
     }
     case AST_MATCH_OR_PATTERN:
@@ -1111,9 +1148,11 @@ AstNode *ast_clone_deep(const AstNode *src) {
        function is called on (method bodies, param defaults, comptime blocks,
        operator lowering). Fail fast instead of silently shallow-copying: an
        aliased owned pointer here is a heap-corruption double free at ast_free
-       time (exactly how the missing AT_TIME case above crashed — 0xC0000374).
-       NO default: — every new AstNodeType must add a case here or ast_free's
-       twin, and -Wswitch flags the omission at compile time. */
+       time — that is how AST_AT_TIME, which used to be missing from this switch
+       (it is handled above now), crashed with 0xC0000374.
+       NO default: — every new AstNodeType must be given a case here as well as
+       in ast_free. -Wswitch then flags an omission at compile time, though only
+       in the GCC/Clang builds (CI); MSVC, the primary Windows build, does not. */
     case AST_PROGRAM:
     case AST_MODULE_DECL:
     case AST_IMPORT_DECL:

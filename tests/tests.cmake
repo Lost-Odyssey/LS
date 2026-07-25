@@ -4646,6 +4646,22 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_struct_array_field.cmake
 )
 
+# ---- ast_clone_deep must not drop a parser-owned [move v] list ----
+# closure.move_names is the `[move v]` source syntax and ast_free frees it, but
+# ast_clone_deep nulled it alongside the checker-filled captures[]. Every cloned
+# subtree (generic method body, comptime block, operator lowering) therefore lost
+# the list and with it the "not referenced inside the closure body" validation,
+# which kept firing in ordinary functions: two identical closures produced one
+# diagnostic instead of two.
+add_test(
+    NAME test_closure_move_clone
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_closure_move_clone.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the
