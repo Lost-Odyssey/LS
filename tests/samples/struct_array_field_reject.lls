@@ -1,0 +1,18 @@
+// Negative half of struct_array_field_test: an array element STORE whose
+// target has no addressable storage.
+//
+// `mk()` returns a fresh Buf temporary; `mk().d[0] = 1` would write into a
+// value that is discarded the moment the statement ends. Before 2026-07-25 the
+// array-store site bailed out silently on any non-identifier target, so this
+// compiled to a no-op with rc=0 — indistinguishable from a real write. The
+// store site now demands a strict place (codegen_lvalue_ptr, never the
+// spill-capable read helper) and diagnoses a target that has none.
+
+struct Buf { array(int,3) d }
+
+def mk() -> Buf { return Buf { d: [4, 5, 6] } }
+
+def main() -> int {
+    mk().d[0] = 1
+    return 0
+}

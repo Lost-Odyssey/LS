@@ -774,9 +774,14 @@ static void test_check_array_foreach_ok(void) {
     printf(" ok\n");
 }
 
-static void test_check_array_param_ok(void) {
-    printf("  test_check_array_param_ok...");
-    ASSERT_TRUE(check_source(
+/* Policy A (2026-07-19): a by-value array(T,N) parameter is rejected on every
+   path. This test used to ASSERT_TRUE the by-value form and was left stale by
+   that change; it now pins the rejection plus the documented workaround —
+   wrapping the array in a struct, which passes the struct by value and reads
+   the array field through a place (fixed 2026-07-25, struct_array_field_test). */
+static void test_check_array_param_rejected(void) {
+    printf("  test_check_array_param_rejected...");
+    ASSERT_FALSE(check_source(
         "def sum3(array(int, 3) a) -> int {\n"
         "    return a[0] + a[1] + a[2]\n"
         "}\n"
@@ -786,12 +791,27 @@ static void test_check_array_param_ok(void) {
         "    return r\n"
         "}\n"
     ));
+    /* Workaround: the struct goes by value, the array rides inside it. */
+    ASSERT_TRUE(check_source(
+        "struct Buf { array(int, 3) d }\n"
+        "def sum3(Buf b) -> int {\n"
+        "    return b.d[0] + b.d[1] + b.d[2]\n"
+        "}\n"
+        "def main() -> int {\n"
+        "    Buf b = Buf { d: [1, 2, 3] }\n"
+        "    int r = sum3(b)\n"
+        "    return r\n"
+        "}\n"
+    ));
     printf(" ok\n");
 }
 
 static void test_check_array_param_size_mismatch(void) {
     printf("  test_check_array_param_size_mismatch...");
-    /* Passing array(int, 2) to a function expecting array(int, 3) */
+    /* Passing array(int, 2) to a function expecting array(int, 3). Since
+       policy A the by-value parameter itself is rejected first, so this stays a
+       negative for a different reason; array size mismatch on its own is still
+       covered by test_check_array_size_mismatch (var-decl form). */
     ASSERT_FALSE(check_source(
         "def sum3(array(int, 3) a) -> int {\n"
         "    return a[0] + a[1] + a[2]\n"
@@ -2039,7 +2059,7 @@ int main(void) {
     test_check_array_index_non_integer();
     test_check_array_no_field();
     test_check_array_foreach_ok();
-    test_check_array_param_ok();
+    test_check_array_param_rejected();
     test_check_array_param_size_mismatch();
 
     printf("\n=== Global Variable Type Checker Tests ===\n");

@@ -18,7 +18,10 @@ def main() -> int {
 
     // for-in iteration. Note: fixed arrays cannot be function parameters —
     // by-value is uniformly rejected (policy A, 2026-07-19) and fixed arrays
-    // have no borrow form; wrap in a struct or use Vec(T) + &array(T) slices.
+    // have no borrow form. Workarounds: wrap the array in a struct and pass the
+    // struct (by value, &T or &!T — the array field is read through a place;
+    // see struct_array_field_test.lls, which is what made this actually work,
+    // 2026-07-25), or use Vec(T) with &array(T) slices.
     int total = 0
     for x in nums {
         total = total + x

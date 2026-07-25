@@ -543,20 +543,10 @@ LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
             return NULL;
         }
 
-        /* Get the array pointer (alloca or global) */
-        LLVMValueRef arr_ptr = NULL;
-        if (arr_obj->kind == AST_IDENT)
-        {
-            CgSymbol *sym = cg_scope_resolve(ctx->current_scope, arr_obj->as.ident.name);
-            if (sym)
-                arr_ptr = sym->value;
-        }
-        else if (arr_obj->kind == AST_FIELD)
-        {
-            /* Handle field access like self.array_field */
-            arr_ptr = codegen_addr_of(ctx, arr_obj);
-        }
-
+        /* Get the array pointer. Recursing through the general place engine
+           (rather than the old IDENT / FIELD pair) also covers a nested array
+           (`M[0][1]`), a `*p` deref, and an rvalue array that needs a spill. */
+        LLVMValueRef arr_ptr = cg_array_place_ptr(ctx, arr_obj);
         if (arr_ptr == NULL)
         {
             return NULL;
@@ -680,6 +670,53 @@ LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
     }
 
     return NULL; /* Other lvalue forms not yet handled */
+}
+
+/* ---- Fixed-array place: SINGLE AUTHORITY for "address of an array(T,N)" ----
+ * A fixed array is represented by the ADDRESS of its storage, never by the
+ * loaded aggregate, so every consumer (element GEP, whole-array print, for-in)
+ * needs a pointer. Five sites used to hand-roll that address from an IDENT
+ * symbol lookup, which silently failed for every other place:
+ *   b.d / o.inner.d / bs[k].d / (&Buf b).d / M[0][1] / mk().d
+ * Symptoms were split between a "cannot get address of array" codegen error
+ * (element read) and — worse — SILENT wrong behaviour: a blank line from
+ * @print, a for-in body that never ran, a dropped element store.
+ *
+ * Resolution is delegated to codegen_addr_of, the general place engine
+ * (IDENT local+global, FIELD chains with &T / *T auto-deref, nested INDEX,
+ * *p deref, and a temp spill for a genuine rvalue such as `mk().d`).
+ *
+ * NOT for assignment targets: codegen_addr_of may hand back a spilled
+ * temporary, and a store through that is silently discarded. Store sites must
+ * use codegen_lvalue_ptr (strict place, no spill) and reject a NULL.
+ *
+ * Returns NULL only when the node has no place and cannot be evaluated; the
+ * caller is responsible for the diagnostic. */
+LLVMValueRef cg_array_place_ptr(CodegenContext *ctx, AstNode *node)
+{
+    if (node == NULL)
+        return NULL;
+
+    /* Module-qualified global array (`math.PRIMES[0]`): the object is a MODULE,
+       not a struct, so the general engine cannot GEP it. P1-1 gives module
+       globals a `<mod>__name` symbol; try that before the bare name, mirroring
+       the module field-read path (cg_expr_field). The old open-coded version
+       here looked up the BARE name only and so missed prefixed globals. */
+    if (node->kind == AST_FIELD &&
+        node->as.field_access.object->resolved_type &&
+        node->as.field_access.object->resolved_type->kind == TYPE_MODULE)
+    {
+        const char *mod = node->as.field_access.object->resolved_type->as.module.name;
+        const char *fld = node->as.field_access.field;
+        char gv_sym[512];
+        cg_module_fn_symbol(gv_sym, sizeof(gv_sym), mod, fld);
+        LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, gv_sym);
+        if (gv == NULL)
+            gv = LLVMGetNamedGlobal(ctx->module, fld);
+        return gv;
+    }
+
+    return codegen_addr_of(ctx, node);
 }
 
 static LLVMValueRef cg_expr_field(CodegenContext *ctx, AstNode *node)
@@ -1071,20 +1108,7 @@ static LLVMValueRef cg_expr_index(CodegenContext *ctx, AstNode *node)
     }
 
     /* Get the alloca/global pointer for the array (not a load) */
-    LLVMValueRef arr_ptr = NULL;
-    if (obj->kind == AST_IDENT)
-    {
-        CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj->as.ident.name);
-        if (sym)
-            arr_ptr = sym->value;
-    }
-    else if (obj->kind == AST_FIELD &&
-             obj->as.field_access.object->resolved_type &&
-             obj->as.field_access.object->resolved_type->kind == TYPE_MODULE)
-    {
-        /* Module variable: math.PRIMES[0] */
-        arr_ptr = LLVMGetNamedGlobal(ctx->module, obj->as.field_access.field);
-    }
+    LLVMValueRef arr_ptr = cg_array_place_ptr(ctx, obj);
     if (arr_ptr == NULL)
     {
         cg_error(ctx, node->line, node->column, "cannot get address of array");

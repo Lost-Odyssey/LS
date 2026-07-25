@@ -238,16 +238,19 @@ static void codegen_print_array(CodegenContext *ctx, AstNode *arg)
     Type *elem_type = arr_type->as.array.elem;
     const char *elem_fmt = printf_fmt_for_type(elem_type);
 
-    /* Get array pointer */
-    LLVMValueRef arr_ptr = NULL;
-    if (arg->kind == AST_IDENT)
-    {
-        CgSymbol *sym = cg_scope_resolve(ctx->current_scope, arg->as.ident.name);
-        if (sym)
-            arr_ptr = sym->value;
-    }
+    /* Get array pointer. The old IDENT-only lookup returned SILENTLY for any
+       other place — `@print(b.d)` emitted a bare newline instead of the
+       elements. cg_array_place_ptr covers field chains, array elements,
+       borrowed receivers, nested arrays and rvalues; a NULL now means the
+       argument could not be evaluated at all, which deserves a diagnostic
+       rather than a missing line. */
+    LLVMValueRef arr_ptr = cg_array_place_ptr(ctx, arg);
     if (arr_ptr == NULL)
+    {
+        cg_error(ctx, arg->line, arg->column,
+                 "cannot get address of array to print");
         return;
+    }
 
     LLVMTypeRef arr_llvm = type_to_llvm(ctx, arr_type);
     LLVMTypeRef elem_llvm = type_to_llvm(ctx, elem_type);
