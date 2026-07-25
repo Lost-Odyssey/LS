@@ -4628,6 +4628,24 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_fn_array_param.cmake
 )
 
+# ---- array(T,N) through a non-identifier place (2026-07-25) ----
+# Fixed arrays are represented by the ADDRESS of their storage. Five sites
+# (print / for-in / element store / element read / codegen_addr_of) each
+# hand-rolled that address from an IDENT symbol, so struct fields, nested field
+# chains, array elements, borrowed receivers, nested arrays and rvalues all
+# failed — half with "cannot get address of array", half SILENTLY (blank print,
+# skipped loop body, dropped store, rc=0). The corpus value-checks every read
+# and pins every whole-array print; the negative half pins that a store with no
+# addressable target is a diagnostic instead of a silent no-op.
+add_test(
+    NAME test_struct_array_field
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_struct_array_field.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

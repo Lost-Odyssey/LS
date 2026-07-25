@@ -838,15 +838,20 @@ static void cg_stmt_assign(CodegenContext *ctx, AstNode *node)
                 if (obj_type == NULL || obj_type->kind != TYPE_ARRAY)
                     return;
 
-                LLVMValueRef arr_ptr = NULL;
-                if (obj->kind == AST_IDENT)
-                {
-                    CgSymbol *sym = cg_scope_resolve(ctx->current_scope, obj->as.ident.name);
-                    if (sym)
-                        arr_ptr = sym->value;
-                }
+                /* Strict place — codegen_lvalue_ptr, NOT cg_array_place_ptr:
+                   the read helper may hand back a spilled temporary, and a
+                   store into that is silently discarded. The old IDENT-only
+                   lookup returned silently, so `b.d[0] = 9` was a no-op write
+                   with rc=0; a target with no place (`mk().d[0] = 1`) is now a
+                   diagnostic instead. */
+                LLVMValueRef arr_ptr = codegen_lvalue_ptr(ctx, obj);
                 if (arr_ptr == NULL)
+                {
+                    cg_error(ctx, target->line, target->column,
+                             "cannot assign to array element: "
+                             "target has no addressable storage");
                     return;
+                }
 
                 LLVMValueRef index = codegen_expr(ctx, target->as.index_expr.index);
                 if (index == NULL)
@@ -1475,15 +1480,14 @@ static void cg_stmt_for(CodegenContext *ctx, AstNode *node)
             start_val = LLVMConstInt(LLVMInt32TypeInContext(ctx->context), 0, false);
             end_val = LLVMConstInt(LLVMInt32TypeInContext(ctx->context),
                                    (unsigned long long)iter_type->as.array.size, false);
-            /* Get array pointer */
-            if (iter_node->kind == AST_IDENT)
-            {
-                CgSymbol *sym = cg_scope_resolve(ctx->current_scope, iter_node->as.ident.name);
-                if (sym)
-                    arr_ptr = sym->value;
-            }
+            /* Get array pointer. The old IDENT-only lookup bailed SILENTLY for
+               any other place, so `for x in b.d` compiled to a loop whose body
+               never ran (a zero sum, rc=0, no diagnostic). */
+            arr_ptr = cg_array_place_ptr(ctx, iter_node);
             if (arr_ptr == NULL)
             {
+                cg_error(ctx, iter_node->line, iter_node->column,
+                         "cannot get address of array to iterate");
                 pop_scope(ctx);
                 return;
             }

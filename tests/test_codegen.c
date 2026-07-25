@@ -605,20 +605,28 @@ static void test_array_foreach(void) {
     printf(" ok\n");
 }
 
-static void test_array_as_param(void) {
-    printf("  test_array_as_param...");
+/* A by-value array(T,N) parameter is rejected since policy A (2026-07-19), so
+   this test's original shape no longer compiles — it was left stale by that
+   change. It now pins the documented workaround: wrap the array in a struct.
+   That shape reads the array field through a PLACE (`b.d[i]`), which is exactly
+   what used to fail with "cannot get address of array" (fixed 2026-07-25). */
+static void test_array_in_struct_param(void) {
+    printf("  test_array_in_struct_param...");
     char *ir = compile_to_ir(
-        "def sum3(array(int, 3) a) -> int {\n"
-        "    return a[0] + a[1] + a[2]\n"
+        "struct Buf { array(int, 3) d }\n"
+        "def sum3(Buf b) -> int {\n"
+        "    return b.d[0] + b.d[1] + b.d[2]\n"
         "}\n"
         "def main() -> int {\n"
-        "    array(int, 3) nums = [1, 2, 3]\n"
-        "    return sum3(nums)\n"
+        "    Buf b = Buf { d: [1, 2, 3] }\n"
+        "    return sum3(b)\n"
         "}\n"
     );
     ASSERT_NOT_NULL(ir);
     ASSERT_TRUE(ir_contains(ir, "define i32 @sum3("));
     ASSERT_TRUE(ir_contains(ir, "call i32 @sum3("));
+    /* The field array must be GEP'd, not loaded as an aggregate. */
+    ASSERT_TRUE(ir_contains(ir, "arr.idx"));
     LLVMDisposeMessage(ir);
     printf(" ok\n");
 }
@@ -1704,7 +1712,7 @@ int main(void) {
     test_array_length();
     test_array_index_write();
     test_array_foreach();
-    test_array_as_param();
+    test_array_in_struct_param();
 
     printf("\n=== Global Variable Codegen Tests ===\n");
     test_global_int();

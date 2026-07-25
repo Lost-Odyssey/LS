@@ -669,4 +669,48 @@ B-MAP-OPT-001 两条协议路径）在所有档位仍按契约静默——这部
 现只报 str_core 的方法，search/parse 方法不在其列。这是模块局部方法扫描的
 设计性结果，已在 reflect_containers 测试注释说明。
 
+## L-023 · `array(T,N)` 的 has_drop 元素无所有权语义（值垃圾 + 双释）
+
+**发现**（2026-07-25，修「array 字段读取缺陷」时用 memcheck 探针掘出；
+与该修复无关的**预存**问题，且**不限于 struct 字段位置**）
+
+固定数组的元素若是 has_drop 类型（`Str` / `Vec(T)` / has_drop struct / has_drop
+enum），所有权链是断的。最小复现——**纯局部**数组，完全不涉及 struct 字段：
+
+```lls
+Str x = "he"; Str y = "llo"; x.push_str(&y)
+Str p = "wo"; Str q = "rld"; p.push_str(&q)
+array(Str,2) L = [x, p]      // 元素装入，源 x/p 未标 moved
+@print(L[0].len())           // 值对（5），但 memcheck: 2 × DOUBLE FREE
+```
+
+作为 struct 字段时另有一层：
+
+```lls
+struct SBuf { array(Str,2) d }
+array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
+@print(c[0].len())           // 值是垃圾（-891880560），memcheck: 1 × INVALID FREE
+```
+
+**症状清单**
+- 数组字面量把 owned 元素**位拷贝**进数组槽，源局部不标 moved → 双释。
+- 结构体的 array 字段整体读出（`array(Str,2) c = s.d`）**不深拷元素**
+  （`cg_expr_field` 的读后 clone 只覆盖 `TYPE_STRUCT` / `TYPE_ENUM` /
+  `TYPE_BLOCK` 字段，`TYPE_ARRAY` 不在其列）→ 别名 + 垃圾值。
+- rvalue 数组 spill 不登记 drop（`cg_push_temp_drop` 只认 struct/enum/Block，
+  `TYPE_ARRAY` 静默过滤）→ 泄漏。
+
+**为何不在本次修复范围内**
+本次修的是 **place 解析**（"array(T,N) 的地址怎么取"），五个站点统一走
+`cg_array_place_ptr`。那修的是可达性，与元素所有权是两件事：上面的纯局部
+复现证明 has_drop 元素在**没有任何 struct 字段参与**时就已经坏了，故 place
+修复既不是病因也不是解药。回归语料 `struct_array_field_test.lls` 因此**刻意
+只用 POD 元素**（`array(int,N)`），让 memcheck 0/0/0 这个门禁保持有意义。
+
+**方向**（未开工）：把 `emit_array_clone_val`（已能逐元素 clone）接到 array
+字段读出点，数组字面量元素走 `cg_store_owned`（与 enum ctor payload 同协议），
+`cg_push_temp_drop` 认 has_drop 元素的 `TYPE_ARRAY`。三处都要，缺一仍不健全。
+或者按 policy A 的思路评估「has_drop 元素的定长数组直接 checker 拒绝，
+改用 `Vec(T)`」——`Vec(T)` 的元素所有权是完整的，成本可能更低。
+
 <!-- 后续新增限制条目请沿用 L-NNN · 标题 格式 -->

@@ -1,0 +1,143 @@
+// struct_array_field_test.lls — array(T,N) reachable through a PLACE that is
+// not a bare identifier: struct fields, nested field chains, array elements,
+// borrowed receivers, and nested arrays.
+//
+// Pre-fix behaviour (all of it wrong, and half of it SILENT):
+//   * `@print(b.d)`      -> blank line   (print's array handler only knew IDENT)
+//   * `for x in b.d`     -> body skipped (for-in's array iter only knew IDENT)
+//   * `b.d[0] = 9`       -> write dropped (array store only knew IDENT)
+//   * `b.d[0]`           -> [codegen] cannot get address of array
+//   * `M[0][1]`          -> same codegen error (nested array, same root cause)
+// Fixed arrays are represented by the ADDRESS of their storage; the five sites
+// above hand-rolled that address from an IDENT symbol instead of asking the
+// general place engine, so every non-IDENT array place failed.
+//
+// Owned-element fixed arrays (array(Str,N) and friends) are deliberately NOT
+// covered here: they are unsound independently of place resolution (a plain
+// LOCAL array(Str,2) already double-frees), so keeping this corpus POD keeps
+// memcheck 0/0/0 meaningful. See known_limitations L-023.
+
+struct Buf { array(int,3) d }
+struct Outer { Buf inner }
+
+array(int, 3) GLOB = [10, 20, 30]
+
+// Borrowed receiver: the field place must resolve through the &Buf pointer ABI.
+def sum_ref(&Buf b) -> int {
+    int s = 0
+    for x in b.d { s = s + x }
+    return s
+}
+
+def head_ref(&Buf b) -> int { return b.d[0] }
+
+// By-value struct receiver (legal — it is the STRUCT that is passed by value,
+// not the array; policy A only rejects a bare array(T,N) parameter).
+def head_val(Buf b) -> int { return b.d[1] }
+
+def bump(&!Buf b) {
+    b.d[2] = b.d[2] + 100
+}
+
+def check(int got, int want, Str tag) -> int {
+    if got == want { return 0 }
+    @print(f"BAD {tag}: got {got} want {want}")
+    return 1
+}
+
+def main() -> int {
+    int bad = 0
+    Buf b = Buf { d: [1, 2, 3] }
+
+    // ---- 1. whole-array field read (print) ----
+    @print("T1")
+    @print(b.d)
+
+    // ---- 2. for-in over a field ----
+    int t = 0
+    for x in b.d { t = t + x }
+    bad = bad + check(t, 6, "forin-field")
+
+    // ---- 3. element read from a field ----
+    bad = bad + check(b.d[0], 1, "elem0")
+    bad = bad + check(b.d[1], 2, "elem1")
+    bad = bad + check(b.d[2], 3, "elem2")
+    bad = bad + check(b.d.length, 3, "length")
+
+    // ---- 4. element write into a field ----
+    b.d[0] = 9
+    bad = bad + check(b.d[0], 9, "write-then-read")
+    @print("T4")
+    @print(b.d)
+
+    // computed index, and a field element on both sides of a store
+    int i = 1
+    b.d[i] = b.d[i] + 40
+    bad = bad + check(b.d[1], 42, "computed-index")
+
+    // ---- 5. borrowed / by-value receivers ----
+    bad = bad + check(sum_ref(&b), 54, "sum-ref")       // 9 + 42 + 3
+    bad = bad + check(head_ref(&b), 9, "head-ref")
+    bad = bad + check(head_val(b), 42, "head-val")
+    bump(&!b)
+    bad = bad + check(b.d[2], 103, "mut-borrow-write")
+
+    // ---- 6. nested field chain: o.inner.d ----
+    Outer o = Outer { inner: Buf { d: [5, 6, 7] } }
+    bad = bad + check(o.inner.d[1], 6, "chain-elem")
+    o.inner.d[1] = 60
+    bad = bad + check(o.inner.d[1], 60, "chain-write")
+    int ct = 0
+    for x in o.inner.d { ct = ct + x }
+    bad = bad + check(ct, 72, "chain-forin")            // 5 + 60 + 7
+    @print("T6")
+    @print(o.inner.d)
+
+    // ---- 7. array field of an array element: arr[k].d ----
+    array(Buf, 2) bs = [Buf { d: [1, 1, 1] }, Buf { d: [2, 2, 2] }]
+    bad = bad + check(bs[1].d[0], 2, "elem-field-elem")
+    bs[1].d[0] = 20
+    bad = bad + check(bs[1].d[0], 20, "elem-field-write")
+    int et = 0
+    for x in bs[1].d { et = et + x }
+    bad = bad + check(et, 24, "elem-field-forin")       // 20 + 2 + 2
+    @print("T7")
+    @print(bs[1].d)
+
+    // ---- 8. nested arrays (same root cause, no struct involved) ----
+    array(array(int, 2), 2) M = [[1, 2], [3, 4]]
+    bad = bad + check(M[0][1], 2, "nested-read")
+    M[1][0] = 7
+    bad = bad + check(M[1][0], 7, "nested-write")
+    @print("T8")
+    @print(M[1])
+
+    // ---- 9. struct literal fed from an array variable ----
+    array(int, 3) src = [7, 8, 9]
+    Buf fromvar = Buf { d: src }
+    bad = bad + check(fromvar.d[2], 9, "literal-from-var")
+    @print("T9")
+    @print(fromvar.d)
+
+    // ---- 10. no-regression: bare local and global arrays ----
+    array(int, 3) loc = [4, 5, 6]
+    bad = bad + check(loc[1], 5, "local-read")
+    loc[1] = 50
+    bad = bad + check(loc[1], 50, "local-write")
+    int lt = 0
+    for x in loc { lt = lt + x }
+    bad = bad + check(lt, 60, "local-forin")
+    @print("T10")
+    @print(loc)
+
+    GLOB[0] = 11
+    bad = bad + check(GLOB[0] + GLOB[1] + GLOB[2], 61, "global-rw")
+    int gt = 0
+    for x in GLOB { gt = gt + x }
+    bad = bad + check(gt, 61, "global-forin")
+    @print("T11")
+    @print(GLOB)
+
+    @print(f"RESULT bad={bad}")
+    return 0
+}
