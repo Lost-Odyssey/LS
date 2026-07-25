@@ -1,0 +1,47 @@
+// closure_move_clone_test.lls — positive half of the ast_clone_deep move_names
+// fix: a VALID `[move v]` list inside a cloned subtree must keep working.
+//
+// The reject corpus (closure_move_clone_reject.lls) pins that the validation
+// fires after cloning; this one pins that cloning a legitimate list does not
+// start rejecting or miscompiling it. Two instantiations of the same generic
+// method exercise the clone path twice (once per monomorphisation), which is
+// also how the old ast_clone_deep AT_TIME bug corrupted the heap: cloning the
+// same template twice while sharing an owned pointer.
+import std.core.str
+
+type Th = Block() -> int
+
+struct Box(T) { T v }
+
+methods Box(T) {
+    def sum_with(&self, int extra) -> int {
+        int base = 40
+        Th b = [move base, extra] || { return base + extra }
+        return b()
+    }
+}
+
+def ck(bool cond, Str tag) -> int {
+    if cond { return 0 }
+    @print(f"BAD {tag}")
+    return 1
+}
+
+def main() -> int {
+    int bad = 0
+
+    Box(int) bi = Box(int) { v: 1 }
+    bad = bad + ck(bi.sum_with(2) == 42, "generic-int-instance")
+
+    // A second monomorphisation clones the same method AST again.
+    Box(Str) bs = Box(Str) { v: "x" }
+    bad = bad + ck(bs.sum_with(5) == 45, "generic-str-instance")
+
+    // Same shape in an ordinary function, for comparison.
+    int base = 40
+    Th b = [move base] || { return base }
+    bad = bad + ck(b() == 40, "plain-fn")
+
+    @print(f"RESULT bad={bad}")
+    return 0
+}
