@@ -1,0 +1,153 @@
+// array_owned_elem_test.lls — array(T,N) whose ELEMENTS own heap data
+// (`array(Str,N)` and friends). Companion to struct_array_field_test.lls, which
+// covers array PLACE resolution and is deliberately POD-only.
+//
+// Pre-fix (L-023, 2026-07-25) the write side of a fixed array had no ownership
+// protocol at all, while the read side and the by-value return already cloned.
+// Five sites, four of them silent with rc=0:
+//   ① `array(Str,2) a = [x, "s"]`  named owned source bit-copied  -> double free
+//   ② `a[0] = n`                   source bit-copied AND old value not dropped
+//   ③ `array(Str,2) b = a`         whole-array bind shares the heap -> double free
+//   ④ `s.d[0]` / `array c = s.d`   field read does not clone -> garbage value,
+//                                  invalid free, and @print of an element SEGFAULTS
+//   ⑤ `build()[0]`                 rvalue array temp never registered for drop -> leak
+//
+// Every read is VALUE-CHECKED (RESULT bad=0) because memcheck alone cannot see
+// the garbage-value half, and rc alone cannot see any of it.
+//
+// Two deliberate corpus properties, both learned the hard way:
+//   * Elements are HEAP Strs (built via mkA/mkB, never bare literals). A static
+//     Str has cap==0 and its free is a no-op, which masks both the leak and the
+//     double-free halves.
+//   * The field read is exercised TWICE — once as the very first statement of
+//     main (no prior heap traffic) and again after many allocations. Pre-fix the
+//     garbage value is non-deterministic: with nothing allocated before it, the
+//     stale read can print the RIGHT answer by accident.
+
+import std.core.str
+import std.core.vec
+
+struct SBuf { array(Str,2) d }
+
+def mkA() -> Str { Str s = "a"; s.push_str("1"); return s }   // heap "a1"
+def mkB() -> Str { Str s = "b"; s.push_str("2"); return s }   // heap "b2"
+
+def build() -> array(Str,2) {
+    array(Str,2) a = [mkA(), mkB()]
+    return a
+}
+
+def ck(bool cond, Str tag) -> int {
+    if cond { return 0 }
+    @print(f"BAD {tag}")
+    return 1
+}
+
+def main() -> int {
+    int bad = 0
+
+    // ---- ④a field read as the FIRST statement (no prior heap traffic) ----
+    // This ordering is the point: pre-fix the stale/aliased read can accidentally
+    // produce the correct value here, so the later ④b instance is what actually
+    // fails. Both must pass.
+    SBuf early = SBuf { d: [mkA(), mkB()] }
+    Str e0 = early.d[0]
+    bad = bad + ck(e0 == "a1", "field-elem-read-first")
+
+    // ---- positives: forms that were already sound (no-regression guards) ----
+    array(Str,2) st = ["p", "q"]              // static elements
+    Str s0 = st[0]
+    bad = bad + ck(s0 == "p", "static-elem")
+
+    array(Str,2) rv = [mkA(), mkB()]          // rvalue elements — must NOT clone
+    Str r0 = rv[0]
+    bad = bad + ck(r0 == "a1", "rvalue-elem0")
+    Str r1 = rv[1]
+    bad = bad + ck(r1 == "b2", "rvalue-elem1")
+
+    array(Str,2) ret = build()                // by-value return (already cloned)
+    Str t0 = ret[0]
+    bad = bad + ck(t0 == "a1", "return-elem")
+
+    // ---- ① literal element from a NAMED owned source ----
+    // After the fix the source is moved into the slot, so `named` is dead here on
+    // purpose — use-after-move is pinned separately in array_owned_elem_reject.lls.
+    Str named = mkA()
+    array(Str,2) lit = [named, mkB()]
+    Str l0 = lit[0]
+    bad = bad + ck(l0 == "a1", "lit-named-source")
+    Str l1 = lit[1]
+    bad = bad + ck(l1 == "b2", "lit-rvalue-neighbour")
+    // NOTE: `@print(lit)` is deliberately NOT pinned here. Printing a whole
+    // container of has_drop struct elements renders the raw first field rather
+    // than the element's Show output (`array(Str,2)` prints pointers, and
+    // `Vec(Str)` prints `Vec(..){data=..,len=..}`) — a pre-existing display gap,
+    // unrelated to ownership and out of scope for L-023.
+
+    // ---- ② indexed assignment ----
+    array(Str,2) asg = [mkA(), mkB()]
+    Str fresh = mkB()
+    asg[0] = fresh                            // old "a1" must be dropped, not leaked
+    Str g0 = asg[0]
+    bad = bad + ck(g0 == "b2", "idx-assign")
+    Str g1 = asg[1]
+    bad = bad + ck(g1 == "b2", "idx-assign-neighbour")
+
+    // self-assignment: the RHS read must be cloned BEFORE the old value dies
+    array(Str,2) sa = [mkA(), mkB()]
+    sa[1] = sa[0]
+    Str q1 = sa[1]
+    bad = bad + ck(q1 == "a1", "idx-self-assign")
+    Str q0 = sa[0]
+    bad = bad + ck(q0 == "a1", "idx-self-assign-source")
+
+    // ---- ③ whole-array bind: a copy, and the source stays usable ----
+    array(Str,2) src = [mkA(), mkB()]
+    array(Str,2) cp = src
+    Str c0 = cp[0]
+    bad = bad + ck(c0 == "a1", "bind-copy-elem")
+    Str v0 = src[0]
+    bad = bad + ck(v0 == "a1", "bind-source-intact")
+    Str c1 = cp[1]
+    bad = bad + ck(c1 == "b2", "bind-copy-elem1")
+
+    // ---- ④b field read after plenty of heap traffic ----
+    SBuf sb = SBuf { d: [mkA(), mkB()] }
+    Str f0 = sb.d[0]
+    bad = bad + ck(f0 == "a1", "field-elem-read")
+    bad = bad + ck(sb.d[0].len() == 2, "field-elem-len")
+
+    array(Str,2) fc = sb.d                    // whole field read -> clone
+    Str fc0 = fc[0]
+    bad = bad + ck(fc0 == "a1", "field-whole-read")
+    Str f0b = sb.d[0]
+    bad = bad + ck(f0b == "a1", "field-source-intact")
+
+    // printing a heap element through the field place segfaulted pre-fix
+    @print("T-fieldprint")
+    @print(sb.d[0])
+
+    // ---- ⑤ rvalue array temp: indexed without ever being bound ----
+    Str rb = build()[0]
+    bad = bad + ck(rb == "a1", "rvalue-array-elem")
+
+    // ---- Vec twin of ①: `[x]` must mean the same thing for both containers ----
+    // Vec's literal lowers to __from_list, a different code path that had the
+    // very same bit-copy of a named owned source.
+    Str vnamed = mkA()
+    Vec(Str) vl = [vnamed, mkB()]
+    Str vg0 = vl.get!(0)
+    bad = bad + ck(vg0 == "a1", "vec-lit-named-source")
+    Str vg1 = vl.get!(1)
+    bad = bad + ck(vg1 == "b2", "vec-lit-rvalue")
+
+    // explicit push of a named source — the path that was always sound
+    Vec(Str) vp = []
+    Str pushed = mkB()
+    vp.push(pushed)
+    Str vp0 = vp.get!(0)
+    bad = bad + ck(vp0 == "b2", "vec-push-named-source")
+
+    @print(f"RESULT bad={bad}")
+    return 0
+}

@@ -327,7 +327,12 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
         bool field_needs_clone =
             (ft->kind == TYPE_STRUCT && ft->as.strukt.has_drop) ||
             (ft->kind == TYPE_ENUM && ft->as.enom.has_drop) ||
-            (ft->kind == TYPE_BLOCK);
+            (ft->kind == TYPE_BLOCK) ||
+            /* A fixed-array field owns its elements (L-023): cloning the struct
+               must clone them too, or the clone and the source share element
+               buffers and both drop them. emit_clone_value routes arrays to
+               emit_array_clone_val; trivial element types are a no-op. */
+            (ft->kind == TYPE_ARRAY && type_array_elem_owns_heap(ft));
         if (!field_needs_clone)
             continue;
 
@@ -405,6 +410,25 @@ LLVMValueRef emit_enum_clone_val(CodegenContext *ctx,
     return result;
 }
 
+/* type_array_elem_owns_heap — does a fixed array own heap THROUGH its elements?
+   Deliberately a codegen-side twin of the array case in the checker's
+   type_owns_heap_for_enum rather than a call into it: codegen must not depend on
+   checker internals. The two must agree — if one grows a case, so does the other.
+   Peels nested arrays so array(array(Str,2),3) counts. (L-023.) */
+bool type_array_elem_owns_heap(Type *t)
+{
+    if (t == NULL || t->kind != TYPE_ARRAY)
+        return false;
+    Type *e = t->as.array.elem;
+    while (e != NULL && e->kind == TYPE_ARRAY)
+        e = e->as.array.elem;
+    if (e == NULL)
+        return false;
+    return (e->kind == TYPE_STRUCT && e->as.strukt.has_drop) ||
+           (e->kind == TYPE_ENUM && e->as.enom.has_drop) ||
+           (e->kind == TYPE_BLOCK);
+}
+
 /* emit_array_clone_val — deep-copy each element that owns heap data.
    For arrays with trivial element types, the value is returned as-is (no alloc).
    For arrays with string/has_drop struct elements, each element is cloned via
@@ -422,7 +446,10 @@ LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val,
     bool elem_needs_clone =
                             (elem_type->kind == TYPE_STRUCT && elem_type->as.strukt.has_drop) ||
                             (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop) ||
-                            (elem_type->kind == TYPE_BLOCK);
+                            (elem_type->kind == TYPE_BLOCK) ||
+                            /* nested array of owning elements — array(array(Str,2),3) */
+                            (elem_type->kind == TYPE_ARRAY &&
+                             type_array_elem_owns_heap(elem_type));
     if (!elem_needs_clone)
         return arr_val; /* trivial elements — value copy is fine */
 
@@ -444,7 +471,12 @@ LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val,
         LLVMValueRef elem = LLVMBuildExtractValue(ctx->builder, result,
                                                   (unsigned)i, "ac.elem");
         LLVMValueRef cloned;
-        if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
+        if (elem_type->kind == TYPE_ARRAY)
+            /* Nested array element: recurse through the general dispatcher so the
+               inner array clones element-wise too (emit_clone_value routes
+               TYPE_ARRAY straight back here). */
+            cloned = emit_clone_value(ctx, elem, elem_llvm, elem_type);
+        else if (elem_type->kind == TYPE_ENUM && elem_type->as.enom.has_drop)
             cloned = emit_enum_clone_val(ctx, elem, elem_type);
         else if (elem_type->kind == TYPE_BLOCK)
             /* Deep-clone the closure env (symmetric with emit_struct_clone_val's
@@ -476,6 +508,13 @@ LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val,
     case TYPE_STRUCT:
         return type->as.strukt.has_drop
                    ? emit_struct_clone_val(ctx, val, llvm_type, type) : val;
+    case TYPE_ARRAY:
+        /* Symmetric with the drop side (emit_drop_value's TYPE_ARRAY case): a
+           fixed array owns its elements, so copying one out of a place has to
+           clone element-wise or both copies share the element buffers.
+           emit_array_clone_val returns the value untouched for trivial element
+           types, so POD arrays emit no extra instructions. (L-023.) */
+        return emit_array_clone_val(ctx, val, llvm_type, type);
     /* TYPE_BLOCK deliberately falls through to the shallow default: container
        reads (ptr[i]/arr[i]) hand out an ALIAS and the consumer clones per the
        Phase G copy-out protocol (cg_block_source_is_aliased). Sites that need
@@ -554,16 +593,21 @@ void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type)
     bool is_drop_struct = (type->kind == TYPE_STRUCT && type->as.strukt.has_drop);
     bool is_drop_enum   = (type->kind == TYPE_ENUM   && type->as.enom.has_drop);
     bool is_block       = (type->kind == TYPE_BLOCK); /* closure: owns its heap env */
+    /* A fixed array with owning elements is just as droppable: an unbound array
+       rvalue (`build()[0]` — the temp array feeding the index) used to be filtered
+       out here and never released its elements (L-023 site ⑤). */
+    bool is_drop_array  = (type->kind == TYPE_ARRAY && type_array_elem_owns_heap(type));
     if (cg_debug_temps_on())
         fprintf(stderr, "[tmp] push fn=%s type=%s drop=%d n=%d\n",
                 ctx->current_fn ? LLVMGetValueName(ctx->current_fn) : "?",
                 type->kind == TYPE_STRUCT ? (type->as.strukt.name ? type->as.strukt.name : "?")
                 : type->kind == TYPE_BLOCK ? "(block)"
+                : type->kind == TYPE_ARRAY ? "(array)"
                                            : "(enum)",
-                (int)(is_drop_struct || is_drop_enum || is_block),
+                (int)(is_drop_struct || is_drop_enum || is_block || is_drop_array),
                 ctx->temp_drop_count);
-    if (!is_drop_struct && !is_drop_enum && !is_block)
-        return; /* nothing to drop — POD struct/enum or non-drop type */
+    if (!is_drop_struct && !is_drop_enum && !is_block && !is_drop_array)
+        return; /* nothing to drop — POD struct/enum/array or non-drop type */
 
     /* A6: a match's result_alloca must NEVER be registered as a temp_drop
        (guide 坑① — the consumer transfers the result; registration means a
@@ -716,12 +760,10 @@ static void cg_flush_temp_drops(CodegenContext *ctx)
     {
         Type *t = ctx->temp_drop_types[i];
         LLVMValueRef slot = ctx->temp_drop_slots[i];
-        if (t->kind == TYPE_STRUCT)
-            emit_struct_drop(ctx, slot, t);
-        else if (t->kind == TYPE_ENUM)
-            emit_enum_drop(ctx, slot, t);
-        else if (t->kind == TYPE_BLOCK)
-            cg_emit_block_drop_at(ctx, slot);
+        /* Single authority for "drop the value in this place" — equivalent to the
+           former struct/enum/Block chain (everything registered here is has_drop
+           by cg_push_temp_drop's guard) and additionally covers owning arrays. */
+        emit_drop_value(ctx, slot, t);
     }
     ctx->temp_drop_count = base;
 }
@@ -1071,12 +1113,8 @@ void cg_flush_temps_from(CodegenContext *ctx, int drop_floor)
         {
             Type *t = ctx->temp_drop_types[i];
             LLVMValueRef slot = ctx->temp_drop_slots[i];
-            if (t->kind == TYPE_STRUCT)
-                emit_struct_drop(ctx, slot, t);
-            else if (t->kind == TYPE_ENUM)
-                emit_enum_drop(ctx, slot, t);
-            else if (t->kind == TYPE_BLOCK)
-                cg_emit_block_drop_at(ctx, slot);
+            /* Same single authority as cg_flush_temps_scope_exit above. */
+            emit_drop_value(ctx, slot, t);
         }
     }
     if (ctx->temp_drop_count > drop_floor) ctx->temp_drop_count = drop_floor;
@@ -1724,6 +1762,21 @@ void emit_auto_drop_fn(CodegenContext *ctx, Type *struct_type)
             continue;
         }
 
+        /* Drop a fixed-array field element by element. The struct is has_drop
+           precisely because the element type owns heap (checker's
+           type_owns_heap_for_enum array case), so without this branch the field
+           was skipped and every element buffer leaked — L-023 site ⑥.
+           emit_drop_value handles the element loop and recurses for nested
+           arrays; POD element types emit nothing. */
+        if (field_type->kind == TYPE_ARRAY && type_array_elem_owns_heap(field_type))
+        {
+            LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, llvm_struct,
+                                                         self_ptr, (unsigned)i,
+                                                         "drop.arrfield");
+            emit_drop_value(ctx, field_ptr, field_type);
+            continue;
+        }
+
         /* Drop has_drop enum fields (call the enum's __drop). */
         if (field_type->kind == TYPE_ENUM && field_type->as.enom.has_drop)
         {
@@ -1936,6 +1989,34 @@ void emit_drop_value(CodegenContext *ctx, LLVMValueRef place_ptr, Type *type)
            drop_fn first for any captured has_drop values). Needed so a pure-LS
            Vec(Block) drops its element envs via __drop_at(self.data[i]). */
         cg_emit_block_drop_at(ctx, place_ptr);
+        return;
+    case TYPE_ARRAY:
+        /* A fixed array OWNS its elements, so dropping the array means dropping
+           each element in reverse construction order. Recursion bottoms out in
+           the POD default, which emits nothing — so `array(int,N)` still costs
+           zero instructions here.
+           Before this, the general drop dispatcher had no array case at all: a
+           `struct { array(Str,2) d }` field and every registered array temp
+           silently released nothing (L-023 site ⑤/⑥). Bare array LOCALS were
+           unaffected because scope cleanup has its own open-coded element loop
+           (cg_emit_scope_cleanup). */
+        {
+            Type *elem = type->as.array.elem;
+            if (elem == NULL)
+                return;
+            LLVMTypeRef arr_llvm = type_to_llvm(ctx, type);
+            LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+            LLVMValueRef zero = LLVMConstInt(i64_t, 0, 0);
+            for (int i = type->as.array.size - 1; i >= 0; i--)
+            {
+                LLVMValueRef idx = LLVMConstInt(i64_t, (uint64_t)i, 0);
+                LLVMValueRef indices[2] = {zero, idx};
+                LLVMValueRef elem_ptr = LLVMBuildGEP2(ctx->builder, arr_llvm,
+                                                      place_ptr, indices, 2,
+                                                      "ad.elem");
+                emit_drop_value(ctx, elem_ptr, elem);
+            }
+        }
         return;
     default:
         return; /* POD / non-owning */

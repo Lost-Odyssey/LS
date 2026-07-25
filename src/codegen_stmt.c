@@ -869,7 +869,22 @@ static void cg_stmt_assign(CodegenContext *ctx, AstNode *node)
                 LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, arr_llvm, arr_ptr,
                                                  indices, 2, "arr.store");
 
-                LLVMBuildStore(ctx->builder, val, gep);
+                /* The slot holds a LIVE element: drop the old value before the new
+                   one moves in, then transfer ownership through cg_store_owned
+                   (named owned source → move + moved_flag, borrowed → deep copy,
+                   rvalue → take). Mirrors the writable-slice sibling above and
+                   `vec[i] =`. The old raw store did neither, so `a[0] = x` leaked
+                   the element it overwrote AND bit-copied x's handle, which x and
+                   the slot then both dropped (L-023 site ②).
+                   Both steps are safe for POD elements: emit_drop_value is a no-op
+                   and cg_store_owned degenerates to a plain store.
+                   Self-assignment `a[i] = a[j]` is sound: the RHS was evaluated —
+                   and cloned, since an array read clones — before the old value
+                   dies here. Uninitialised owning arrays are zero-initialised at
+                   declaration (above), so the drop never sees stack garbage. */
+                Type *elem_ty = obj_type->as.array.elem;
+                emit_drop_value(ctx, gep, elem_ty);
+                cg_store_owned(ctx, gep, val, elem_ty, node->as.assign.value);
             }
         }
         else if (node->as.assign.target->kind == AST_UNARY &&
@@ -1021,6 +1036,17 @@ static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
         {
             LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
         }
+        /* Same reason for a fixed array whose ELEMENTS own heap: `array(Str,2) a`
+           with no initializer used to be raw stack garbage, so scope cleanup (and,
+           since L-023 site ②, the drop-old-value step of `a[i] = x`) would free
+           garbage pointers. Zeroed Str/Vec/Map elements are the valid empty state
+           (cap==0 → free is a no-op), so this makes both paths safe.
+           POD element arrays keep their uninitialized alloca — nothing reads a
+           trivial element's ownership state. */
+        if (var_type->kind == TYPE_ARRAY && type_array_elem_owns_heap(var_type))
+        {
+            LLVMBuildStore(ctx->builder, LLVMConstNull(llvm_type), alloca);
+        }
         if (node->as.var_decl.init)
         {
             /* Track temp slots created during init expression evaluation */
@@ -1054,8 +1080,30 @@ static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
                     LLVMTypeRef fl_ft = LLVMGlobalGetValueType(fl_fn);
                     for (int i = 0; i < lit->as.array_lit.count; i++)
                     {
-                        LLVMValueRef ev = codegen_expr(ctx, lit->as.array_lit.elements[i]);
+                        AstNode *el = lit->as.array_lit.elements[i];
+                        LLVMValueRef ev = codegen_expr(ctx, el);
                         if (ev == NULL) continue;
+                        /* __from_list TAKES the element (it stores it into the
+                           container), so ownership must transfer here. Passing the
+                           loaded value straight through bit-copied a named owned
+                           source's handle: `Vec(Str) v = [x]` left x and v[0]
+                           owning the same buffer and both dropped it (L-023
+                           Phase C — the Vec twin of the fixed-array site ①).
+                           Stage the value through cg_store_owned so this path uses
+                           the SAME move/clone/take decision as the fixed-array
+                           literal — `[x]` must not mean different things for
+                           Vec(Str) and array(Str,N). The staging slot is folded
+                           away by mem2reg. */
+                        Type *et = el->resolved_type;
+                        if (et != NULL)
+                        {
+                            LLVMTypeRef et_llvm = type_to_llvm(ctx, et);
+                            LLVMValueRef staging =
+                                cg_entry_alloca_zeroed(ctx, et_llvm, "fl.elem");
+                            cg_store_owned(ctx, staging, ev, et, el);
+                            ev = LLVMBuildLoad2(ctx->builder, et_llvm, staging,
+                                                "fl.arg");
+                        }
                         LLVMValueRef fl_args[2] = { alloca, ev };
                         LLVMBuildCall2(ctx->builder, fl_ft, fl_fn, fl_args, 2, "");
                     }
@@ -1108,17 +1156,28 @@ static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
                 }
                 else
                 {
-                    /* Element-by-element store */
+                    /* Element-by-element store. Ownership goes through
+                       cg_store_owned, exactly like a struct literal's fields: a
+                       named owned source moves in (and is marked moved), a
+                       borrowed source is deep-copied, a fresh rvalue is taken as
+                       is. The old raw store bit-copied a named source's handle,
+                       so `array(Str,2) a = [x, "s"]` left x and a[0] owning the
+                       same buffer and both dropped it (L-023 site ①).
+                       No drop-old here: this is initialisation of a fresh slot
+                       (zero-initialised above for owning element types), not an
+                       assignment. */
+                    Type *elem_ty = var_type->as.array.elem;
                     for (int i = 0; i < count; i++)
                     {
-                        LLVMValueRef elem_val = codegen_expr(ctx, lit->as.array_lit.elements[i]);
+                        AstNode *el = lit->as.array_lit.elements[i];
+                        LLVMValueRef elem_val = codegen_expr(ctx, el);
                         if (elem_val == NULL)
                             continue;
                         LLVMValueRef idx = LLVMConstInt(i64_type, (uint64_t)i, 0);
                         LLVMValueRef indices[2] = {zero, idx};
                         LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, llvm_type,
                                                          alloca, indices, 2, "arr.init");
-                        LLVMBuildStore(ctx->builder, elem_val, gep);
+                        cg_store_owned(ctx, gep, elem_val, elem_ty, el);
                     }
                 }
             }
@@ -1176,6 +1235,22 @@ static void cg_stmt_var_decl(CodegenContext *ctx, AstNode *node)
                                e.g. JsonValue b = a  →  b gets its own deep copy of a. */
                             init = emit_enum_clone_val(ctx, init, var_type);
                         }
+                    }
+                    else if (var_type->kind == TYPE_ARRAY &&
+                             type_array_elem_owns_heap(var_type) &&
+                             ast_unwrap_move(node->as.var_decl.init)->kind == AST_IDENT)
+                    {
+                        /* `array(Str,2) b = a` — a fixed array is a VALUE type, so
+                           binding it copies. The bit-copy alone shared every element
+                           handle with the source and both dropped them (L-023 site
+                           ③), so clone element-wise. Same IDENT-only split as the
+                           struct/enum branches above: reads out of a place already
+                           clone at the read site (cg_expr_field / arr[i]).
+                           No move-elision arm here: `type_is_movable` does not
+                           include fixed arrays, so an array source is never marked
+                           moved_out and the clone is always the right answer. */
+                        LLVMTypeRef llvm_arr = type_to_llvm(ctx, var_type);
+                        init = emit_array_clone_val(ctx, init, llvm_arr, var_type);
                     }
                     else if (var_type->kind == TYPE_BLOCK)
                     {

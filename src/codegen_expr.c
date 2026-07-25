@@ -984,6 +984,15 @@ static LLVMValueRef cg_expr_field(CodegenContext *ctx, AstNode *node)
        (memcheck-found 2026-07-04; field_enum_subject_test.lls = BUG-1.) */
     else if (field_type && field_type->kind == TYPE_ENUM && field_type->as.enom.has_drop)
         field_val = emit_enum_clone_val(ctx, field_val, field_type);
+    /* Same reasoning one level down for a FIXED-ARRAY field whose ELEMENTS own
+       heap (`array(Str,2) d`): the load copies the aggregate bit-for-bit, so
+       every element handle would be shared with the struct's own field and both
+       sides would drop it. Reading a place clones — exactly like the struct and
+       enum branches above; the IDENT-to-IDENT array bind clones in var_decl
+       instead, mirroring how struct binds are split. (L-023 site ④.) */
+    else if (field_type && field_type->kind == TYPE_ARRAY &&
+             type_array_elem_owns_heap(field_type))
+        field_val = emit_array_clone_val(ctx, field_val, field_llvm, field_type);
     /* F.3: Block field read — the struct retains env ownership, so the loaded
        LsBlock is a shallow ALIAS; return it directly (do NOT clone here).
        Phase G removed the old `Block g = p.step1` rejection
@@ -1143,6 +1152,48 @@ static LLVMValueRef cg_expr_index(CodegenContext *ctx, AstNode *node)
     return elem;
 }
 
+/* cg_store_array_lit_elements — materialise an array literal element by element
+   into an array slot that already exists.
+
+   CONTRACT (cg_expr_array_lit): an array literal whose elements are not all pure
+   literals emits NOTHING and returns NULL, because the CALLER is expected to
+   store the elements itself. var_decl has always honoured that (its sibling loop
+   in codegen_stmt.c); the struct-literal field path had no such fallback and
+   silently gave up, leaving the field as uninitialised stack garbage with rc=0
+   and no diagnostic — `S { d: [mk(), mk()] }` then produced garbage element
+   values, segfaulted when printing an element, and hit an invalid free at
+   scope exit. (L-023 site ④'s real cause, value+memcheck probes 2026-07-25.)
+
+   Ownership goes through cg_store_owned, the same protocol the var_decl sibling
+   and struct-literal fields use: a named owned source moves in (and is marked
+   moved), a borrowed source is deep-copied, a fresh rvalue is taken as is
+   (L-023 sites ① and ④). The destination is a freshly zero-initialised struct
+   field, so there is no old value to drop. A NULL element means that element
+   already reported its own diagnostic; skip it and let compilation fail,
+   mirroring the sibling. */
+static void cg_store_array_lit_elements(CodegenContext *ctx, LLVMValueRef slot,
+                                        Type *arr_type, AstNode *lit)
+{
+    LLVMTypeRef arr_llvm = type_to_llvm(ctx, arr_type);
+    LLVMTypeRef i64_t = LLVMInt64TypeInContext(ctx->context);
+    LLVMValueRef zero = LLVMConstInt(i64_t, 0, 0);
+    Type *elem_ty = arr_type->as.array.elem;
+    int count = lit->as.array_lit.count;
+
+    for (int i = 0; i < count; i++)
+    {
+        AstNode *el = lit->as.array_lit.elements[i];
+        LLVMValueRef ev = codegen_expr(ctx, el);
+        if (ev == NULL)
+            continue;
+        LLVMValueRef idx = LLVMConstInt(i64_t, (uint64_t)i, 0);
+        LLVMValueRef indices[2] = {zero, idx};
+        LLVMValueRef gep = LLVMBuildGEP2(ctx->builder, arr_llvm, slot,
+                                         indices, 2, "fld.arr.init");
+        cg_store_owned(ctx, gep, ev, elem_ty, el);
+    }
+}
+
 static LLVMValueRef cg_expr_new_expr(CodegenContext *ctx, AstNode *node)
 {
     bool on_stack = node->as.new_expr.on_stack;
@@ -1225,11 +1276,27 @@ static LLVMValueRef cg_expr_new_expr(CodegenContext *ctx, AstNode *node)
             continue;
 
         /* 记录本字段求值前的 temp mark，供 cg_store_owned 的 rvalue pop 使用 */
-        LLVMValueRef val = codegen_expr(ctx, node->as.new_expr.field_inits[i].value);
-        if (val == NULL)
-            return NULL;
-
+        AstNode *init_expr = node->as.new_expr.field_inits[i].value;
+        LLVMValueRef val = codegen_expr(ctx, init_expr);
         Type *field_type = struct_type->as.strukt.fields[field_idx].type;
+        if (val == NULL)
+        {
+            /* Array-literal field with non-constant elements: nothing was
+               emitted and the caller owes the element stores (see
+               cg_store_array_lit_elements). */
+            if (field_type && field_type->kind == TYPE_ARRAY &&
+                init_expr->kind == AST_ARRAY_LIT)
+            {
+                LLVMValueRef arr_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
+                                                           storage,
+                                                           (unsigned)field_idx,
+                                                           "field_arr_ptr");
+                cg_store_array_lit_elements(ctx, arr_ptr, field_type, init_expr);
+                continue;
+            }
+            return NULL;
+        }
+
         LLVMValueRef field_ptr = LLVMBuildStructGEP2(ctx->builder, st_llvm,
                                                      storage, (unsigned)field_idx,
                                                      "field_ptr");

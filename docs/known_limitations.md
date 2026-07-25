@@ -669,7 +669,31 @@ B-MAP-OPT-001 两条协议路径）在所有档位仍按契约静默——这部
 现只报 str_core 的方法，search/parse 方法不在其列。这是模块局部方法扫描的
 设计性结果，已在 reflect_containers 测试注释说明。
 
-## L-023 · `array(T,N)` 的 has_drop 元素无所有权语义（值垃圾 + 双释）
+## L-023 · `array(T,N)` 的 has_drop 元素无所有权语义（值垃圾 + 双释）✅ 已解决（2026-07-25）
+
+**已解决**（2026-07-25，同日，施工书
+[plan_array_owned_elements.md](plan_array_owned_elements.md)，ctest 371/371）：
+固定数组的元素现在与 struct 字段同一套所有权协议。六处落地——
+① 数组字面量元素 store 走 `cg_store_owned`（命名 owned→move+moved_flag，
+borrowed→深拷，rvalue→取走）；② `a[i] = x` 先析构旧值再 `cg_store_owned`
+（并给拥有型数组局部补零初始化，使这个 drop 不会碰到栈垃圾）；
+③ `array b = a` 绑定走 `emit_array_clone_val`（值类型语义＝拷贝，
+与已经正确的按值返回侧对齐）；④ struct 字面量的内联数组字面量字段补上
+**逐元素兜底 store**（真因：`cg_expr_array_lit` 对非常量元素按约定返回 NULL
+让调用方兜底，而这条路径静默放弃，字段留栈垃圾）+ 字段读出侧 clone；
+⑤ `cg_push_temp_drop` 与两个冲刷循环认 `TYPE_ARRAY`（冲刷统一收敛到
+`emit_drop_value`）；⑥ `type_owns_heap_for_enum` 补 `TYPE_ARRAY` 递归，
+`emit_drop_value`/`emit_clone_value` 补数组分支，struct 的 `__drop`/`__clone`
+字段循环认拥有型数组字段。`Vec(Str) v = [x]` 的孪生漏账（`__from_list` 路径）
+同批修复，经暂存槽复用同一 `cg_store_owned` 决策，保证 `[x]` 在两种容器上
+语义不分叉。回归语料 `tests/samples/array_owned_elem_test.lls`
+（driver `test_array_owned_elem`）：12 正例 + 六站点负例形态，逐形态**值校验**，
+JIT+AOT+memcheck 0/0/0。
+
+**遗留（本条范围外，独立小缺陷）**：`@print` 整体打印「元素是 has_drop struct
+的容器」时不走元素的 Show，只打印其首字段——`array(Str,2)` 打出指针、
+`Vec(Str)` 打出 `Vec(..){data=..,len=..}`。与所有权无关，纯显示缺口，
+语料已注明不钉这两行文本。
 
 **发现**（2026-07-25，修「array 字段读取缺陷」时用 memcheck 探针掘出；
 与该修复无关的**预存**问题，且**不限于 struct 字段位置**）
@@ -707,10 +731,23 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
 修复既不是病因也不是解药。回归语料 `struct_array_field_test.lls` 因此**刻意
 只用 POD 元素**（`array(int,N)`），让 memcheck 0/0/0 这个门禁保持有意义。
 
-**方向**（未开工）：把 `emit_array_clone_val`（已能逐元素 clone）接到 array
-字段读出点，数组字面量元素走 `cg_store_owned`（与 enum ctor payload 同协议），
-`cg_push_temp_drop` 认 has_drop 元素的 `TYPE_ARRAY`。三处都要，缺一仍不健全。
-或者按 policy A 的思路评估「has_drop 元素的定长数组直接 checker 拒绝，
-改用 `Vec(T)`」——`Vec(T)` 的元素所有权是完整的，成本可能更低。
+**方向**（当时的判断，事后对照）：这里预判的三处（字段读出接
+`emit_array_clone_val`、字面量元素走 `cg_store_owned`、`cg_push_temp_drop` 认
+`TYPE_ARRAY`）方向全部正确且都已落地，但**不止三处**——实际六处，另加一个
+前置条件，见本条开头。两处判断需要修正：
+- 「字段读出没 clone」只是站点 ④ 的**第二半**，真因是 struct 字面量里的内联
+  数组字面量**一个 store 都没发**（`cg_expr_array_lit` 对非常量元素返回 NULL
+  让调用方兜底，这条路径静默放弃）。先按「读出 clone」单独下刀会把段错
+  **提前**（clone 一份栈垃圾），TDD 的红灯当场拦下了这个误诊。
+- 「含拥有型数组字段的 struct 根本不是 has_drop」（`type_owns_heap_for_enum`
+  的 `default: return false` 吃掉 `TYPE_ARRAY`）此前未被记录，是第六站点。
+
+**policy A 式「直接 checker 拒绝」评估结论：no-go**（普查 2026-07-25）——
+`lib/std` 对 has_drop 元素定长数组**零使用**（两个 grep 命中是假阳性：
+`nn.lls:38` 是注释、`json.lls:187` 是函数名 `is_array(JsonValue`），但
+`tests/samples` 的 5 处**全是今天就正确工作的形态**（静态元素或 rvalue 元素）。
+拒绝会毙掉 `array(Str,3) names = ["alice","bob","cy"]` 这类干净可用的固定
+字符串表——政策 A 的先例不适用，那里禁掉的形态本来就是坏的，这里要禁的
+本来是好的。
 
 <!-- 后续新增限制条目请沿用 L-NNN · 标题 格式 -->
