@@ -435,6 +435,13 @@ bool type_owns_heap_for_enum(const Type *t)
     case TYPE_STRUCT: return t->as.strukt.has_drop;
     case TYPE_ENUM:   return t->as.enom.has_drop;
     case TYPE_BLOCK:  return true; /* closure owns its heap env (F.2) */
+    case TYPE_ARRAY:
+        /* A fixed array owns its elements, so it contributes exactly what its
+           element type contributes: `struct { array(Str,2) d }` is has_drop and
+           gets a __drop that releases both elements. Without this the struct was
+           treated as POD — no __drop emitted, both element buffers leaked
+           (L-023 site ⑥). Recursive so array(array(Str,2),3) works too. */
+        return type_owns_heap_for_enum(t->as.array.elem);
     default:          return false;
     }
 }

@@ -4646,6 +4646,26 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_struct_array_field.cmake
 )
 
+# ---- L-023: array(T,N) with has_drop ELEMENTS ----
+# The write side of a fixed array had no ownership protocol while the read side
+# and the by-value return already cloned: a named owned source was bit-copied
+# into a literal element / indexed slot / whole-array bind (double free), an
+# indexed assignment never dropped the value it overwrote (leak), a struct
+# literal with an inline array-literal field stored NOTHING (stack garbage ->
+# garbage values, invalid free, segfault when printing an element), a struct with
+# an owning array field was not has_drop at all (leak), and an unbound rvalue
+# array temp was never released (leak). `Vec(Str) v = [x]` had the same bit-copy
+# through __from_list. Four of the six were silent with rc=0, so the corpus
+# value-checks every read and requires memcheck 0/0/0.
+add_test(
+    NAME test_array_owned_elem
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_array_owned_elem.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

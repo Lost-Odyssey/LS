@@ -166,6 +166,8 @@ bool cg_struct_is_move_only(const Type *t);
 LLVMValueRef emit_struct_clone_val(CodegenContext *ctx, LLVMValueRef struct_val, LLVMTypeRef llvm_struct_type, Type *struct_type);
 LLVMValueRef emit_enum_clone_val(CodegenContext *ctx, LLVMValueRef enum_val, Type *enum_type);
 LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val, LLVMTypeRef llvm_arr_type, Type *arr_type);
+/* Does a fixed array own heap through its element type? (nested arrays peeled) */
+bool type_array_elem_owns_heap(Type *t);
 void cg_emit_bounds_guard(CodegenContext *ctx, LLVMValueRef ok_cond, const char *msg, int line, int col);
 LLVMValueRef emit_clone_value(CodegenContext *ctx, LLVMValueRef val, LLVMTypeRef llvm_type, Type *type);
 void cg_push_temp_drop(CodegenContext *ctx, LLVMValueRef slot, Type *type);
