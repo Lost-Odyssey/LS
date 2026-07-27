@@ -542,22 +542,25 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         return strt;
     }
 
-    /* __move(var) -> T  — explicit move annotation.
+    /* @move(var) -> T  — explicit move annotation.
        Marks the argument variable as MOVED and returns its type transparently.
-       Works on any movable type; also force-moves static strings (unlike implicit moves). */
+       Works on any movable type; also force-moves static Strs (unlike implicit moves).
+       Diagnostics print `name` (always the canonical @-spelling here — the legacy
+       `__move` form is rejected by intrinsic_retired_spelling above), so they cannot
+       drift back to naming a spelling the user is not allowed to write. */
     if (intrinsic_lookup(name) && intrinsic_lookup(name)->kind == INTR_VAR_MOVE)
     {
         if (argc != 1)
         {
             checker_error(c, call_node->line, call_node->column,
-                          "__move() takes exactly 1 argument, got %d", argc);
+                          "%s() takes exactly 1 argument, got %d", name, argc);
             return NULL;
         }
         AstNode *arg = args[0];
         if (arg->kind != AST_IDENT)
         {
             checker_error(c, arg->line, arg->column,
-                          "__move() requires a variable identifier, not an expression");
+                          "%s() requires a variable identifier, not an expression", name);
             /* Still type-check for error recovery */
             return check_expr(c, arg);
         }
@@ -574,16 +577,16 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
             {
                 /* Phase 5: __move() cannot transfer ownership of a borrow — it holds none. */
                 checker_move_error(c, arg->line, arg->column,
-                                   "cannot __move(): variable '%s' is a read-only borrow",
-                                   arg->as.ident.name);
+                                   "cannot %s(): variable '%s' is a read-only borrow",
+                                   name, arg->as.ident.name);
             }
             else if (sym->is_mut_borrow)
             {
                 /* Phase 5.5: writable borrow can mutate but not transfer ownership. */
                 checker_move_error(c, arg->line, arg->column,
-                                   "cannot __move(): variable '%s' is a writable borrow "
+                                   "cannot %s(): variable '%s' is a writable borrow "
                                    "(mutation allowed, but ownership cannot leave)",
-                                   arg->as.ident.name);
+                                   name, arg->as.ident.name);
             }
             else if (type_is_movable(sym->type))
             {
@@ -598,9 +601,10 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
             else
             {
                 checker_error(c, arg->line, arg->column,
-                              "__move() applied to non-movable type '%s'; "
-                              "only string, vec, map, and struct-with-drop can be moved",
-                              type_name(arg_type));
+                              "%s() applied to non-movable type '%s'; "
+                              "only has_drop struct (incl. Str/Vec/Map), "
+                              "has_drop enum, and Block can be moved",
+                              name, type_name(arg_type));
             }
         }
         return arg_type; /* transparent: __move(s) has the same type as s */
@@ -616,7 +620,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         if (argc != 1)
         {
             checker_error(c, call_node->line, call_node->column,
-                          "__drop_at() takes exactly 1 argument, got %d", argc);
+                          "%s() takes exactly 1 argument, got %d", name, argc);
             return NULL;
         }
         Type *arg_type = check_expr(c, args[0]);
@@ -626,7 +630,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
             !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
         {
             checker_error(c, args[0]->line, args[0]->column,
-                          "__drop_at() requires a place expression (p[i], field, or *p)");
+                          "%s() requires a place expression (p[i], field, or *p)", name);
             return NULL;
         }
         return type_void();
@@ -642,7 +646,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         if (argc != 1)
         {
             checker_error(c, call_node->line, call_node->column,
-                          "__take() takes exactly 1 argument, got %d", argc);
+                          "%s() takes exactly 1 argument, got %d", name, argc);
             return NULL;
         }
         Type *arg_type = check_expr(c, args[0]);
@@ -652,7 +656,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
             !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
         {
             checker_error(c, args[0]->line, args[0]->column,
-                          "__take() requires a place expression (p[i], field, or *p)");
+                          "%s() requires a place expression (p[i], field, or *p)", name);
             return NULL;
         }
         return arg_type; /* the element type read out of the slot */
@@ -670,7 +674,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
         if (argc != 1)
         {
             checker_error(c, call_node->line, call_node->column,
-                          "__dup() takes exactly 1 argument, got %d", argc);
+                          "%s() takes exactly 1 argument, got %d", name, argc);
             return NULL;
         }
         Type *arg_type = check_expr(c, args[0]);
@@ -680,7 +684,7 @@ static Type *check_builtin_call(Checker *c, const char *name, AstNode *call_node
             !(args[0]->kind == AST_UNARY && args[0]->as.unary.op == TOKEN_STAR))
         {
             checker_error(c, args[0]->line, args[0]->column,
-                          "__dup() requires a place expression (p[i], field, or *p)");
+                          "%s() requires a place expression (p[i], field, or *p)", name);
             return NULL;
         }
         return arg_type; /* an independent copy of the value's type */
