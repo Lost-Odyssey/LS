@@ -43,7 +43,8 @@ bool type_is_movable(Type *t)
 }
 
 /* Attempt to mark an IDENT arg as MOVED for any movable type
-   (string, vec, map, struct-with-drop — see type_is_movable).
+   (has_drop struct incl. Str/Vec/Map, has_drop enum, Block — the authority is
+   type_is_movable directly above; do not restate the set here).
    - Non-IDENT nodes (temporaries, literals, field accesses) are silently skipped.
    - Already-moved variables are skipped (error already reported by check_expr).
    Call AFTER check_expr() has been called on the arg so that:
@@ -746,9 +747,9 @@ static void cap_record(CaptureScan *s, AstNode *site, const char *name, Type *t)
         checker_error(s->c, site->line, site->column,
                       "capturing variable '%s' of type '%s' in a closure is "
                       "not yet implemented (supported: POD types, "
-                      "array(POD,N) (by-copy), string (by-move), "
-                      "vec(T)/map(K,V) (by-ref), struct(has_drop) (by-move), "
-                      "enum (by-copy or by-move depending on has_drop))",
+                      "array(POD,N) (by-copy), Block (by-clone), "
+                      "has_drop struct incl. Str/Vec/Map (by-move), "
+                      "enum (by-copy when POD, by-move when has_drop))",
                       name, type_name(t));
         s->had_error = true;
         return;

@@ -229,7 +229,7 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
     if (!struct_type->as.strukt.has_drop)
         return struct_val; /* no owned resources — plain value copy is fine */
 
-    /* User-defined __clone hook: if the struct provides `fn __clone(&self) -> Self`,
+    /* User-defined __clone hook: if the struct provides `def __clone(&self) -> Self`,
        call it instead of field-wise auto-clone. Required for structs that own heap
        through a raw *T pointer field (e.g. a hand-written container): the compiler
        cannot auto-deep-clone a raw pointer, so the user supplies the deep copy.
@@ -320,7 +320,8 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
            field shares the caller's heap → callee scope_drop + caller
            scope_drop double-free (e.g. by-value `struct { vec(int) }` arg).
            A Block (closure) field owns a refcount=1 env; it must be included —
-           a struct with a Block field is has_drop (checker_decl.c:269-272) and
+           a struct with a Block field is has_drop (the TYPE_BLOCK branch of
+           check_struct_decl's field scan, checker_decl.c) and
            its __drop releases the env, so a shallow field copy would make the
            clone and the source release the SAME env (UAF/double-release,
            audit B-1/BUG-2). */
@@ -342,12 +343,14 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
         if (ft->kind == TYPE_BLOCK)
         {
             /* emit_clone_value is INTENTIONALLY shallow for Block (the Phase G
-               alias-passthrough protocol, own.c:417-420) — it hands out the
-               same env. An owned struct clone needs an INDEPENDENT env, so call
-               the deep-clone helper explicitly (mirrors the enum-clone Block
-               payload path own.c:2138-2146 and __env_clone's nested Block
-               codegen_stmt.c:2418-2424). NULL env (no captures) is handled by
-               the helper. Do NOT route this through emit_clone_value. */
+               alias-passthrough protocol — see its TYPE_BLOCK fallthrough
+               comment below in this file): it hands out the same env. An owned
+               struct clone needs an INDEPENDENT env, so call the deep-clone
+               helper explicitly (mirrors the Block payload branch of
+               emit_auto_enum_clone_fn in this file, and the nested-Block clone
+               in codegen_closure_literal's __env_clone builder,
+               codegen_closure.c). NULL env (no captures) is handled by the
+               helper. Do NOT route this through emit_clone_value. */
             cloned = cg_emit_block_env_clone(ctx, field_val);
         }
         else
@@ -482,7 +485,8 @@ LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val,
             /* Deep-clone the closure env (symmetric with emit_struct_clone_val's
                Block field). Defensive: array(Block,N) is checker-accepted, but no
                current caller reaches here with bare Block elements — the return
-               clone guard (codegen_stmt.c:1345) filters to struct elements and
+               clone guard in cg_stmt_return (codegen_stmt.c) filters to struct
+               elements and
                by-value arrays aren't cloned, so array(Block,N) is presently sound
                without this. Kept for symmetry (audit root cause ②) so any future
                clone-and-both-drop caller gets independent envs, not a shared one. */
@@ -863,27 +867,38 @@ bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Type *type
    fresh rvalue → take over; POD → plain store).
 
    HONEST SCOPE (audit OWN-7): despite the "统一 API" ambition of its birth
-   (M-3), this helper only covers the CONTAINER-STORE sites:
-     - enum ctor payload stores (plain field + self-recursive box),
-       codegen_decl.c:1030/:1077;
-     - slice `s[i] = v` / raw-pointer `p[i] = v` element stores,
-       codegen_stmt.c:1096/:1120;
-     - struct literal field inits + field defaults,
-       codegen_expr.c:4953/:4992.
+   (M-3), this helper only covers the CONTAINER-STORE sites. All ten of them,
+   by enclosing function (deliberately NOT by line number — every previous
+   revision of this list rotted the moment a TU was split or code was inserted
+   above it; `grep -n cg_store_owned src/*.c` is the authoritative index):
+     - enum ctor payload stores, plain field + self-recursive box:
+       emit_enum_ctor (codegen_decl.c), 2 sites;
+     - slice `s[i] = v` / raw-pointer `p[i] = v` / fixed-array `a[i] = v`
+       element stores: cg_stmt_assign (codegen_stmt.c), 3 sites;
+     - struct literal field inits + field defaults:
+       cg_expr_new_expr (codegen_expr.c), 2 sites;
+     - array literal element stores: cg_store_array_lit_elements
+       (codegen_expr.c), 1 site;
+     - fixed-array element stores from a var_decl initializer, and the staging
+       slot that funnels a `[x]` list literal into Vec's __from_list so both
+       containers make the SAME move/clone decision for the same syntax:
+       cg_stmt_var_decl (codegen_stmt.c), 2 sites.
+   The last four arrived with L-023 (2026-07-25, fixed-array element
+   ownership); the fixed-array `a[i] = v` store is a distinct kind from the
+   slice/raw-pointer ones it sits next to — it drops the old value first.
    All are move-into-container semantics (the old 3-value transfer-kind
    selector parameter was never read — `(void)kind` — and has been deleted).
    The OTHER ownership-transfer sites each have an independent protocol —
    do NOT assume they route through here:
-     - var_decl init: codegen_stmt.c case AST_VAR_DECL (:412), its own
-       move/clone decision + A1 clone-elision;
-     - return: codegen_stmt.c case AST_RETURN (:1193), return-clone guard +
-       skip-alloca;
+     - var_decl init proper: cg_stmt_var_decl's own move/clone decision
+       + A1 clone-elision (distinct from its two array/staging stores above);
+     - return: cg_stmt_return, return-clone guard + skip-alloca;
      - match arm results / binders: codegen_match.c cg_match_arm_own_tail +
        the variant-arm binder clone (decision key = subj_owned_temp, not a
        source AST node — unification rejected, audit M-6);
      - Block alias-boundary clone: caller-side, e.g. the enum-ctor Block
-       payload guard right above its cg_store_owned call
-       (codegen_decl.c:1052) — see that comment for why it cannot live here. */
+       payload guard right above its cg_store_owned call in emit_enum_ctor
+       — see that comment for why it cannot live here. */
 void cg_store_owned(CodegenContext *ctx,
                            LLVMValueRef dst_ptr,
                            LLVMValueRef val,
@@ -2233,8 +2248,8 @@ void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type)
            first-scene instead of silently aliasing freed heap. Gate mirrors
            cg_env_poison_on (codegen_stmt.c): the Release non-memcheck fast
            path stays byte-identical. Uses the same libc-memset-call
-           convention as the enum ctor's payload zeroing in
-           codegen_decl.c:989 (this file has no LLVMBuildMemSet precedent
+           convention as the enum ctor's payload zeroing in emit_enum_ctor
+           (codegen_decl.c; this file has no LLVMBuildMemSet precedent
            anywhere); cg_ensure_memset_decl declares memset on demand. */
         if (cg_enum_poison_on(ctx))
         {

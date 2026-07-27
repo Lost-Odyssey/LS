@@ -146,7 +146,7 @@ static bool cg_build_spec_conv(CodegenContext *ctx, int line, int col, Type *et,
     return true;
 }
 
-/* Shared by both f-string codegen paths (string-building and the print()
+/* Shared by both f-string codegen paths (string-building and the @print
    fast path). Picks the printf conversion (default by type, or from `user_spec`),
    appends it to fmt_buf, and applies the matching value coercion. Returns the
    value to pass to sprintf/printf, or NULL on error. */
@@ -204,7 +204,7 @@ static LLVMValueRef cg_fstring_emit_arg(CodegenContext *ctx, AstNode *expr,
 
 /* Helper: emit a print call with the given format string and args. Targets
    __ls_printf (vfprintf to the current sink stream) rather than printf, so
-   set_sink redirects all print() output. Default stream is stdout, so output is
+   set_sink redirects all @print output. Default stream is stdout, so output is
    byte-identical to the old direct-printf path. */
 static LLVMValueRef emit_printf(CodegenContext *ctx, const char *fmt,
                                 LLVMValueRef *extra_args, int extra_count)
@@ -468,7 +468,7 @@ static void codegen_print_enum_value(CodegenContext *ctx, LLVMValueRef val, Type
     LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
 }
 
-/* Codegen for print() with any type — generates inline printf */
+/* Codegen for @print with any type — generates inline printf */
 LLVMValueRef codegen_print_call(CodegenContext *ctx, AstNode *node)
 {
     int argc = node->as.call.arg_count;

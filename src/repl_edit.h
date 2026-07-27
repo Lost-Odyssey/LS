@@ -4,7 +4,7 @@
  * Zero external dependencies (only the project's own scanner). The line editor
  * runs a raw-mode, char-by-char input loop with live syntax highlighting on a
  * real terminal; when stdin is not a TTY it transparently falls back to plain
- * line-buffered fgets so piped input (`echo ... | ls repl`) and CI keep working.
+ * line-buffered fgets so piped input (`echo ... | lls repl`) and CI keep working.
  */
 #ifndef LS_REPL_EDIT_H
 #define LS_REPL_EDIT_H

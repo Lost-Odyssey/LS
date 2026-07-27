@@ -726,9 +726,10 @@ void chk_pop_scope(Checker *c)
 
 
 /* Phase G note: the former F.3/F.4A rejections (copy a Block out of a struct
-   field / vec element / map value) have been removed — codegen now deep-clones
-   the closure env at the copy-out site (cg_emit_block_env_clone in codegen.c),
-   so the destination owns an independent env with no shared-env double-free. */
+   field / Vec element / Map value) have been removed — codegen now deep-clones
+   the closure env at the copy-out site (cg_emit_block_env_clone, defined in
+   codegen_stmt.c), so the destination owns an independent env with no
+   shared-env double-free. */
 
 
 /* ---- Move semantics helpers (Phase B: control-flow aware) ---- */
@@ -1218,8 +1219,8 @@ void forward_pass(Checker *c, AstNode *program)
                                      method->resolved_type);
                     }
                 }
-                /* An imported `trait Foo`/`impl Trait for Type` (incl. builtin
-                   targets like `impl Hash for int`): register it so `where T:Foo`
+                /* An imported `interface Foo`/`methods Type: Foo` (incl. builtin
+                   targets like `methods int: Hash`): register it so `where T:Foo`
                    bounds and `x.foo()` dispatch work in THIS importer. */
                 else if (d->kind == AST_TRAIT_DECL ||
                          d->kind == AST_IMPL_TRAIT_DECL)
@@ -1367,7 +1368,7 @@ static void register_builtins(Checker *c)
     }
     /* A-FLIP (docs/plan_runtime_primitives.md): malloc/realloc/free/abort are no
        longer global builtins. They live in std.c (extern fn malloc/realloc/free
-       + `fn abort`) and are reached either by canonical path std.c.malloc (which
+       + `def abort`) and are reached either by canonical path std.c.malloc (which
        the checker/codegen recognise by spelling — works inside generic bodies) or
        via an import alias (c.malloc). A bare `malloc(...)` is now "undefined". */
     /* sizeof(Type) is handled as a compile-time AST_SIZEOF node (see parser

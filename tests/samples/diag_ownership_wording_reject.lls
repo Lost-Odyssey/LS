@@ -1,0 +1,48 @@
+// diag_ownership_wording_reject.lls — pins the WORDING of two ownership
+// diagnostics that had drifted away from the implementation they describe.
+// Both fire in a single check pass (the checker collects up to 20 errors).
+//
+// Why a test exists for message text: these two messages are the only place a
+// user learns the capture model and the movable-type set, and both had gone
+// stale silently — a wrong-but-plausible message costs more than no message.
+//
+//   ① @move on a POD type. The message enumerates the movable set, whose single
+//      authority is type_is_movable() (src/checker_borrow.c). It used to say
+//      "only string, vec, map, and struct-with-drop" — three retired builtin
+//      type names, and it omitted has_drop enum (movable since L-019,
+//      2026-07-05) and Block (movable since F.2).
+//
+//   ② Capturing an unsupported type. The message enumerates capture strategies.
+//      It used to advertise "vec(T)/map(K,V) (by-ref)", but by-ref capture no
+//      longer exists in the language: capture_type_is_by_ref_cg() is
+//      `return false` (src/codegen_closure.c) since the builtin vec/map were
+//      removed. See CLAUDE.md §8 — "不再有 by-ref 捕获".
+//      array(Str,2) is the trigger: a non-POD fixed array is neither by-copy
+//      (capture_type_is_pod_array) nor by-move (struct/enum/Block only).
+//
+// Both diagnostics must also name the intrinsic the way the USER spells it
+// (@move, not the retired __move — that spelling is rejected far earlier by
+// intrinsic_retired_spelling, so a message saying "__move()" named something
+// the user is not allowed to write).
+
+import std.core.str
+
+type Probe = Block() -> int
+
+def mk() -> Str {
+    Str s = ""
+    s.push_str("heap")
+    return s
+}
+
+def main() {
+    // ① @move applied to a POD type -> "only has_drop struct ... enum ... Block"
+    int n = 7
+    int m = @move(n)
+
+    // ② capture of array(Str,2) -> the supported-strategies list
+    array(Str,2) owned = [mk(), mk()]
+    Probe f = || { return owned[0].len() }
+    @print(f())
+    @print(m)
+}

@@ -418,7 +418,7 @@ int jit_init(JitEngine *engine) {
         REG(ls_cond_broadcast);
         REG(ls_cond_destroy);
         REG(__ls_ptr_at);
-        /* std.core.sink — stream handles + print() redirect */
+        /* std.core.sink — stream handles + @print redirect */
         REG(__ls_stdout);
         REG(__ls_stderr);
         REG(__ls_sink_stream);
@@ -739,9 +739,13 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
 
     /* Optionally run O2 optimization pipeline on the module before handing it
        to LLJIT. Enables inlining, loop vectorization, DCE, etc. — the same
-       passes AOT gets. Controlled by engine->jit_optimize (set from --optimize
-       flag or LS_JIT_OPT=1 env var). Off by default: O2 adds ~1s compile time
-       for large modules (e.g. std.json). */
+       passes AOT gets. Controlled by engine->jit_optimize, which is derived
+       solely from the CLI level (`-O<n>` / `--optimize`) in jit_run_file_impl —
+       there is no env knob: the plain `lls run` entry points hard-code
+       LS_OPT_O0, and jit_run_file_impl then overwrites .level unconditionally,
+       so LS_OPT does not reach the JIT either (only .native / .verify_each come
+       from the environment, via ls_opt_default_jit). Off by default: O2 adds
+       ~1s compile time for large modules (e.g. std.json). */
     if (engine->jit_optimize) {
         char *target_triple = LLVMGetDefaultTargetTriple();
         LLVMTargetMachineRef tm = ls_opt_create_target_machine(target_triple, &engine->opt);
@@ -866,9 +870,9 @@ static int jit_run_file_impl(const char *path, bool memcheck, bool profile, LsOp
     }
 
     /* Call main() with the correct ABI.
-       - fn main()        → void return; always exit 0.
-       - fn main() -> int → int return; propagate as exit code.
-         If the user writes fn main() -> int but omits explicit return,
+       - def main()        → void return; always exit 0.
+       - def main() -> int → int return; propagate as exit code.
+         If the user writes def main() -> int but omits explicit return,
          codegen emits 'ret i32 0' automatically (LLVMConstNull fallback). */
     int result = 0;
     if (main_returns_int) {

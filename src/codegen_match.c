@@ -327,14 +327,16 @@ static LLVMValueRef cg_emit_bit_pattern_seq(CodegenContext *ctx, AstNode *seq,
                      drop (or a borrow-match zero-copy path) frees it.
      AST_UNARY       NOT owned — `&x` read-only borrow; owner keeps ownership.
      AST_MUT_BORROW  NOT owned — `&!x` writable borrow; owner keeps ownership.
-     AST_FIELD       owned — field READ clones: has_drop struct field via
-                     emit_struct_clone_val (codegen_expr.c:4279), has_drop enum
-                     field via emit_enum_clone_val (codegen_expr.c:4289,
-                     BUG-1 fix 72c3f9d; guide 坑⑧).
-     AST_INDEX       owned — element READ clones: fixed array arr[i] via
-                     emit_clone_value (codegen_expr.c:4756), slice s[i]
-                     (:4674), raw-pointer p[i] (:4703). Vec `v[i]` desugars to
-                     the __index method → AST_CALL, cloned by the callee.
+     AST_FIELD       owned — field READ clones, all three branches in
+                     cg_expr_field (codegen_expr.c): has_drop struct via
+                     emit_struct_clone_val, has_drop enum via
+                     emit_enum_clone_val (BUG-1 fix 72c3f9d; guide 坑⑧),
+                     owning fixed array via emit_array_clone_val (L-023).
+     AST_INDEX       owned — element READ clones, all three branches in
+                     cg_expr_index (codegen_expr.c): fixed array arr[i], slice
+                     s[i], raw-pointer p[i], each via emit_clone_value. Vec
+                     `v[i]` desugars to the __index method → AST_CALL, cloned
+                     by the callee.
      AST_CALL        owned — fn/method/ctor result is a fresh value (container
                      getters like Vec.get! clone inside the callee).
      AST_MATCH / AST_TRY / AST_FORCE_UNWRAP / AST_FORMAT_STRING / AST_BLOCK

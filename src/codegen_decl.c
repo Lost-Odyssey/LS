@@ -528,7 +528,7 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
     LLVMTypeRef fn_type = type_to_llvm(ctx, fn_type_ml);
 
     /* AOT fix: C runtime expects `int main()`.  When the user writes
-       `fn main()` (void return), override the LLVM function type to
+       `def main()` (void return), override the LLVM function type to
        return i32 so the CRT receives a well-defined exit code (0).
        Without this, `ret void` leaves EAX undefined and the OS may
        report a garbage exit code. */
@@ -773,7 +773,7 @@ void codegen_fn_decl(CodegenContext *ctx, AstNode *node)
         }
         /* Last statement: if it's an expression stmt whose resolved type matches
            the function's return type, return its value (implicit return).
-           Guard: if the expression resolves to void (e.g. a print() call whose
+           Guard: if the expression resolves to void (e.g. an @print call whose
            underlying printf returns int), do NOT use it as the return value —
            fall through to the implicit 'ret 0' path below instead. */
         AstNode *last = body->as.block.stmts[last_idx];
@@ -1181,7 +1181,7 @@ void codegen_struct_decl(CodegenContext *ctx, AstNode *node)
 }
 
 /* Phase 2.5 / M-H: is this `methods <name>` / `methods <name>: Iface` target a
-   builtin scalar type (e.g. `methods int`, `impl Hash for int`)? Builtin types
+   builtin scalar type (e.g. `methods int`, `methods int: Hash`)? Builtin types
    are global, not owned by any module — their methods use the bare name
    `int.hash` so callers in any importing file resolve the same symbol (§2.4).
    Both impl codegen paths use this to skip B-3 module prefixing. (Task 7.8:
@@ -1237,8 +1237,9 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
        (consistent with codegen_struct_decl's B-2 prefixing).
 
        Method DISPATCH always resolves through the TYPE's real llvm_name
-       (struct_llvm_name / enum_llvm_name_of at the call site, codegen_expr.c
-       ~:1854), so the emitted symbol must use the SAME name. The type's real
+       (struct_llvm_name / enum_llvm_name_of at the method call site — now in
+       cg_expr_call_main, codegen_call.c, after the Batch 7 call-family TU
+       split), so the emitted symbol must use the SAME name. The type's real
        llvm_name follows the module that DECLARES the type. That module may
        differ from `current_emit_module`, the module hosting THIS `methods`
        block: an inherent `methods Widget` block can live in a different module
@@ -1255,7 +1256,8 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
          2. Otherwise (L-022 cross-module methods block, or main-file user impl
             with current_emit_module == NULL), adopt the type's llvm_name by a
             bare-name lookup wherever it is declared (struct registry first,
-            then enum registry). Mirrors codegen_impl_trait_decl ~:1366.
+            then enum registry). Shared with codegen_impl_trait_decl via
+            cg_struct_llvm_by_bare (Batch 7 Task 7.8 leaf).
          3. Conservative fallback: type not in either registry — keep the old
             emit-module prefix. */
     char prefixed_name_buf[512];
@@ -1452,13 +1454,13 @@ void codegen_impl_decl(CodegenContext *ctx, AstNode *node)
     }
 }
 
-/* Codegen for `impl Trait for Struct { ... }` — same pattern as codegen_impl_decl
+/* Codegen for `methods Struct: Interface { ... }` — same pattern as codegen_impl_decl
    but reads from impl_trait_decl AST fields. Trait methods are emitted as
    StructName.method_name, exactly like regular impl methods. */
 void codegen_impl_trait_decl(CodegenContext *ctx, AstNode *node)
 {
     const char *bare_name = node->as.impl_trait_decl.struct_name;
-    /* Phase 2.5 / M-H: `impl Trait for <builtin>` — see cg_impl_target_is_builtin. */
+    /* Phase 2.5 / M-H: `methods <builtin>: Interface` — see cg_impl_target_is_builtin. */
     bool is_builtin_impl = cg_impl_target_is_builtin(bare_name);
     /* B-3: prefix trait impl method names for module-defined types. Default to the
        emit-module prefix (correct when this impl is in the type's OWN module). */

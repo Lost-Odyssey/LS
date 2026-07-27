@@ -27,7 +27,13 @@
    Replaces 7 per-site inline AST-kind whitelists (and the old
    cg_is_owned_combinator_rvalue helper) that had drifted apart — every gap
    below was a REAL leak, reproduced under memcheck 2026-07-04
-   (own_rvalue_sites_test.lls):
+   (own_rvalue_sites_test.lls).
+
+   The file:line column is a HISTORICAL snapshot of where those sites lived
+   before the 2026-07-04 unification; do not chase the numbers. Four of the
+   sites have since moved out of codegen_expr.c entirely — the print family to
+   codegen_print.c and the chained receiver to codegen_call.c (Batch 7 Task
+   7.4/7.6). `grep -n cg_expr_yields_owned_rvalue src/*.c` lists the live ones.
 
      site (pre-unification)          old whitelist                    gaps (all leaked)
      ------------------------------  -------------------------------  -----------------------

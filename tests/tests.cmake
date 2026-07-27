@@ -1400,6 +1400,19 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_bare_print_reject.cmake
 )
 
+# Two ownership diagnostics whose text documents the movable-type set and the
+# capture strategies to the user. Both had drifted away from the code they
+# describe (retired builtin type names, a by-ref capture strategy that no longer
+# exists, missing has_drop-enum/Block movable cases, retired __move spelling).
+# Pins the true wording and asserts the stale wording never returns.
+add_test(
+    NAME test_diag_ownership_wording
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/diag_ownership_wording_reject.lls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_diag_ownership_wording.cmake
+)
+
 # Vec(T).sort / sort_by — O(n log n) stable merge sort (bugs/27_vec.txt #2):
 # larger n, explicit stability, has_drop elements, degenerate sizes.
 add_test(

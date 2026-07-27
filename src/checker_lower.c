@@ -1217,7 +1217,7 @@ static void add_builtin_lifecycle_trait(Checker *c, const char *name,
 }
 
 /* Pre-register the 7 built-in operator traits into the trait registry, before any
-   user declarations. A user `trait Add {}` then collides via the duplicate check. */
+   user declarations. A user `interface Add {}` then collides via the duplicate check. */
 void register_builtin_operator_traits(Checker *c)
 {
     static const char *const m_add[] = {"$op_add"};
