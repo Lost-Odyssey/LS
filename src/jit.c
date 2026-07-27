@@ -739,9 +739,13 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
 
     /* Optionally run O2 optimization pipeline on the module before handing it
        to LLJIT. Enables inlining, loop vectorization, DCE, etc. — the same
-       passes AOT gets. Controlled by engine->jit_optimize (set from --optimize
-       flag or LS_JIT_OPT=1 env var). Off by default: O2 adds ~1s compile time
-       for large modules (e.g. std.json). */
+       passes AOT gets. Controlled by engine->jit_optimize, which is derived
+       solely from the CLI level (`-O<n>` / `--optimize`) in jit_run_file_impl —
+       there is no env knob: the plain `lls run` entry points hard-code
+       LS_OPT_O0, and jit_run_file_impl then overwrites .level unconditionally,
+       so LS_OPT does not reach the JIT either (only .native / .verify_each come
+       from the environment, via ls_opt_default_jit). Off by default: O2 adds
+       ~1s compile time for large modules (e.g. std.json). */
     if (engine->jit_optimize) {
         char *target_triple = LLVMGetDefaultTargetTriple();
         LLVMTargetMachineRef tm = ls_opt_create_target_machine(target_triple, &engine->opt);

@@ -863,27 +863,38 @@ bool cg_invalidate_moved_source(CodegenContext *ctx, AstNode *source, Type *type
    fresh rvalue → take over; POD → plain store).
 
    HONEST SCOPE (audit OWN-7): despite the "统一 API" ambition of its birth
-   (M-3), this helper only covers the CONTAINER-STORE sites:
-     - enum ctor payload stores (plain field + self-recursive box),
-       codegen_decl.c:1030/:1077;
-     - slice `s[i] = v` / raw-pointer `p[i] = v` element stores,
-       codegen_stmt.c:1096/:1120;
-     - struct literal field inits + field defaults,
-       codegen_expr.c:4953/:4992.
+   (M-3), this helper only covers the CONTAINER-STORE sites. All ten of them,
+   by enclosing function (deliberately NOT by line number — every previous
+   revision of this list rotted the moment a TU was split or code was inserted
+   above it; `grep -n cg_store_owned src/*.c` is the authoritative index):
+     - enum ctor payload stores, plain field + self-recursive box:
+       emit_enum_ctor (codegen_decl.c), 2 sites;
+     - slice `s[i] = v` / raw-pointer `p[i] = v` / fixed-array `a[i] = v`
+       element stores: cg_stmt_assign (codegen_stmt.c), 3 sites;
+     - struct literal field inits + field defaults:
+       cg_expr_new_expr (codegen_expr.c), 2 sites;
+     - array literal element stores: cg_store_array_lit_elements
+       (codegen_expr.c), 1 site;
+     - fixed-array element stores from a var_decl initializer, and the staging
+       slot that funnels a `[x]` list literal into Vec's __from_list so both
+       containers make the SAME move/clone decision for the same syntax:
+       cg_stmt_var_decl (codegen_stmt.c), 2 sites.
+   The last four arrived with L-023 (2026-07-25, fixed-array element
+   ownership); the fixed-array `a[i] = v` store is a distinct kind from the
+   slice/raw-pointer ones it sits next to — it drops the old value first.
    All are move-into-container semantics (the old 3-value transfer-kind
    selector parameter was never read — `(void)kind` — and has been deleted).
    The OTHER ownership-transfer sites each have an independent protocol —
    do NOT assume they route through here:
-     - var_decl init: codegen_stmt.c case AST_VAR_DECL (:412), its own
-       move/clone decision + A1 clone-elision;
-     - return: codegen_stmt.c case AST_RETURN (:1193), return-clone guard +
-       skip-alloca;
+     - var_decl init proper: cg_stmt_var_decl's own move/clone decision
+       + A1 clone-elision (distinct from its two array/staging stores above);
+     - return: cg_stmt_return, return-clone guard + skip-alloca;
      - match arm results / binders: codegen_match.c cg_match_arm_own_tail +
        the variant-arm binder clone (decision key = subj_owned_temp, not a
        source AST node — unification rejected, audit M-6);
      - Block alias-boundary clone: caller-side, e.g. the enum-ctor Block
-       payload guard right above its cg_store_owned call
-       (codegen_decl.c:1052) — see that comment for why it cannot live here. */
+       payload guard right above its cg_store_owned call in emit_enum_ctor
+       — see that comment for why it cannot live here. */
 void cg_store_owned(CodegenContext *ctx,
                            LLVMValueRef dst_ptr,
                            LLVMValueRef val,

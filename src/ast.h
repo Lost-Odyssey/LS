@@ -672,9 +672,12 @@ AstNode *ast_new(AstNodeType kind, int line, int col);
 /* Recursively free an AST node and all its children */
 void ast_free(AstNode *node);
 
-/* P5-2 dry-run (LS_STR_DEFAULT=1): prepend `import std.str` to a root program
-   so the flipped default literal type (Str) resolves. No-op when the flag is
-   off or std.str is already imported. Call on ROOT files only (not modules). */
+/* P5-2 prelude: prepend `import std.core.str` to a ROOT program so the default
+   literal type (Str) resolves without every file spelling the import. Runs
+   unconditionally — the LS_STR_DEFAULT dry-run flag it was introduced behind is
+   long gone. No-op when the node isn't a program or the import is already
+   present. Call on ROOT files only (not modules) — see ast.c for why injecting
+   into a module would create an import cycle. */
 void ast_inject_std_str_import(AstNode *program);
 
 /* Recursively free a TypeNode */

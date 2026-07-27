@@ -726,9 +726,10 @@ void chk_pop_scope(Checker *c)
 
 
 /* Phase G note: the former F.3/F.4A rejections (copy a Block out of a struct
-   field / vec element / map value) have been removed — codegen now deep-clones
-   the closure env at the copy-out site (cg_emit_block_env_clone in codegen.c),
-   so the destination owns an independent env with no shared-env double-free. */
+   field / Vec element / Map value) have been removed — codegen now deep-clones
+   the closure env at the copy-out site (cg_emit_block_env_clone, defined in
+   codegen_stmt.c), so the destination owns an independent env with no
+   shared-env double-free. */
 
 
 /* ---- Move semantics helpers (Phase B: control-flow aware) ---- */
