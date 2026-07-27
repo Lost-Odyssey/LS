@@ -1219,8 +1219,8 @@ void forward_pass(Checker *c, AstNode *program)
                                      method->resolved_type);
                     }
                 }
-                /* An imported `trait Foo`/`impl Trait for Type` (incl. builtin
-                   targets like `impl Hash for int`): register it so `where T:Foo`
+                /* An imported `interface Foo`/`methods Type: Foo` (incl. builtin
+                   targets like `methods int: Hash`): register it so `where T:Foo`
                    bounds and `x.foo()` dispatch work in THIS importer. */
                 else if (d->kind == AST_TRAIT_DECL ||
                          d->kind == AST_IMPL_TRAIT_DECL)
@@ -1368,7 +1368,7 @@ static void register_builtins(Checker *c)
     }
     /* A-FLIP (docs/plan_runtime_primitives.md): malloc/realloc/free/abort are no
        longer global builtins. They live in std.c (extern fn malloc/realloc/free
-       + `fn abort`) and are reached either by canonical path std.c.malloc (which
+       + `def abort`) and are reached either by canonical path std.c.malloc (which
        the checker/codegen recognise by spelling — works inside generic bodies) or
        via an import alias (c.malloc). A bare `malloc(...)` is now "undefined". */
     /* sizeof(Type) is handled as a compile-time AST_SIZEOF node (see parser

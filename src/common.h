@@ -47,9 +47,9 @@
    FOR ORDINARY LEAK / DOUBLE-FREE / USE-AFTER-FREE DEBUGGING — DO NOT enable
    CG_DEBUG. Use the runtime memcheck instead:
 
-     ls run --memcheck file.ls                          # leak/dfree report
-     LS_MEMCHECK_VERBOSE=1 ls run --memcheck file.ls    # full alloc/free trace
-     LS_MEMCHECK_STRICT=1  ls run --memcheck file.ls    # exit 2 on violation
+     lls run --memcheck file.lls                          # leak/dfree report
+     LS_MEMCHECK_VERBOSE=1 lls run --memcheck file.lls    # full alloc/free trace
+     LS_MEMCHECK_STRICT=1  lls run --memcheck file.lls    # exit 2 on violation
 
    The runtime path covers every actual heap operation with full site info
    (kind + file:line:col) plus a captured LS call-stack backtrace, and adds

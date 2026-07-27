@@ -1,6 +1,6 @@
 /* leakcheck.h — opt-in compiler self heap-leak tracker (Windows-native).
  *
- * The runtime memcheck (`ls run --memcheck`) instruments the *generated LS
+ * The runtime memcheck (`lls run --memcheck`) instruments the *generated LS
  * program*. This tracks the *compiler's own* allocations (scanner / parser /
  * checker / codegen). MSVC's _CrtDumpMemoryLeaks needs a debug CRT (/MDd),
  * which cannot link against the release-CRT static LLVM (crt_mismatch_bug.md);

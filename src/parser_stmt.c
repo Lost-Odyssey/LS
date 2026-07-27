@@ -524,7 +524,7 @@ AstNode *parse_statement(Parser *p) {
         return decl;
     }
 
-    /* fn name(...) {...} — function declaration vs closure expression */
+    /* def name(...) {...} — function declaration vs closure expression */
     if (check(p, TOKEN_FN)) {
         /* Peek: if next after 'fn' is an identifier -> function declaration */
         Scanner saved_scanner = p->scanner;

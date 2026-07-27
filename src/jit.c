@@ -418,7 +418,7 @@ int jit_init(JitEngine *engine) {
         REG(ls_cond_broadcast);
         REG(ls_cond_destroy);
         REG(__ls_ptr_at);
-        /* std.core.sink — stream handles + print() redirect */
+        /* std.core.sink — stream handles + @print redirect */
         REG(__ls_stdout);
         REG(__ls_stderr);
         REG(__ls_sink_stream);
@@ -870,9 +870,9 @@ static int jit_run_file_impl(const char *path, bool memcheck, bool profile, LsOp
     }
 
     /* Call main() with the correct ABI.
-       - fn main()        → void return; always exit 0.
-       - fn main() -> int → int return; propagate as exit code.
-         If the user writes fn main() -> int but omits explicit return,
+       - def main()        → void return; always exit 0.
+       - def main() -> int → int return; propagate as exit code.
+         If the user writes def main() -> int but omits explicit return,
          codegen emits 'ret i32 0' automatically (LLVMConstNull fallback). */
     int result = 0;
     if (main_returns_int) {

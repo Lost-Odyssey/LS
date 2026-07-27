@@ -11,16 +11,18 @@
   #include <process.h> /* _spawnv, _P_WAIT */
 #endif
 
-/* Full path to this ls executable (for spawning `ls run <driver>`). Must be
-   an absolute path, not the bare name "ls" -- on POSIX, PATH lookup would
-   resolve "ls" to coreutils' directory-listing tool instead of us. */
+/* Full path to this lls executable (for spawning `lls run <driver>`). Must be
+   an absolute path rather than the bare name: relying on PATH would depend on
+   the compiler being installed and first on it. (The `lls` name was chosen so
+   the bare name no longer collides with coreutils' `ls`, but PATH-independence
+   is still the point here.) */
 static const char *self_exe_path(void) {
     static char buf[2048];
     if (get_executable_path(buf, sizeof(buf)) == 0) return buf;
-    return "ls";  /* last-resort fallback; may collide with coreutils `ls` */
+    return "lls";  /* last-resort fallback: needs lls on PATH to work */
 }
 
-/* Run `ls run [--memcheck] <driver>` as a child, inheriting stdio; return its
+/* Run `lls run [--memcheck] <driver>` as a child, inheriting stdio; return its
    exit code (test failures => report() exits 1). */
 static int run_driver(const char *driver_path, bool memcheck) {
     const char *exe = self_exe_path();

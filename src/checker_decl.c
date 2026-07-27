@@ -837,7 +837,7 @@ void check_impl_decl(Checker *c, AstNode *node)
         chk_push_scope(c);
         if (is_static && method->as.fn_decl.self_borrow_kind != 0)
         {
-            /* `static fn m(&self/&!self ...)` is contradictory. */
+            /* `static def m(&self/&!self ...)` is contradictory. */
             checker_error(c, method->line, method->column,
                           "static method '%s' cannot declare a self parameter",
                           method->as.fn_decl.name);
@@ -1179,7 +1179,7 @@ void check_trait_decl(Checker *c, AstNode *node)
     c->current_impl_struct_type = saved_impl_st;
 }
 
-/* Check an `impl Trait for Struct { ... }` block:
+/* Check a `methods Struct: Interface { ... }` block:
    verify trait exists, struct exists, method signatures match the trait,
    then register methods into impl_registry and record the trait-impl pair. */
 void check_impl_trait_decl(Checker *c, AstNode *node)
@@ -1397,7 +1397,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
 
         /* Operator overloading: a $op_* method (parsed from `fn +`, `fn ==`, ...)
            is only valid when this trait is the matching built-in operator trait.
-           Catches `impl Add for T { fn == }` and `impl UserTrait for T { fn + }`. */
+           Catches `methods T: Add { def == }` and `methods T: UserTrait { def + }`. */
         if (mname[0] == '$')
         {
             const char *want = operator_trait_for_method(mname);
@@ -1572,7 +1572,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
     c->current_impl_struct_type = saved_impl_st;
 }
 
-/* M-H: register a single imported `trait`/`impl Trait for T` decl into importer
+/* M-H: register a single imported `interface`/`methods T: Interface` decl into importer
    `c`. For traits → trait_registry (deduped by find_trait). For trait-impls →
    methods into impl_registry (so `x.foo()` dispatches) + the (trait,type) pair
    into trait_impls (so `where K: Foo` is satisfied). Builtin targets (int/string)
@@ -1607,7 +1607,7 @@ void register_one_imported_trait_decl(Checker *c, AstNode *d, Type *mod_type)
 
     /* Idempotency (B-MAP-M5-003): if this (trait, type) pair was already
        registered — e.g. a diamond import where both `import std.map` and another
-       module that transitively imports it propagate `impl Hash for int` — skip
+       module that transitively imports it propagate `methods int: Hash` — skip
        the whole thing. Crucially this guards register_method() below, which is
        NOT idempotent and would otherwise error "conflicting method 'hash'". The
        methods were already registered when the pair was first recorded. */
@@ -1704,8 +1704,8 @@ void propagate_imported_traits(Checker *c, const char *import_path,
    submodules) still sees the types + methods those submodules define. Without
    this, `import facade` where the concrete type lives in facade's dependency
    cone leaves the type unnameable and its methods undispatchable at the call
-   site. The direct-import loop (checker.c:9762-9906) handles depth 1; this
-   handles the transitive tail. `visited`/`vcount` guard diamonds/cycles.
+   site. The direct-import loop in forward_pass (checker.c) handles depth 1;
+   this handles the transitive tail. `visited`/`vcount` guard diamonds/cycles.
 
    Idempotency: register_method reports a "conflicting method" error for a
    same-name, same-origin (inherent == origin NULL) duplicate — it is NOT a
@@ -1747,7 +1747,8 @@ void propagate_inherited_methods(Checker *c, const char *import_path,
     {
         AstNode *d = mod_ast->as.program.decls[j];
         /* Register the concrete struct/enum types so the consumer can name them
-           (mirrors checker.c:9762-9785 / :9821-9843, minus generic templates). */
+           (mirrors the struct/enum registration in forward_pass's direct-import
+           loop, checker.c, minus generic templates). */
         if (d->kind == AST_STRUCT_DECL && d->resolved_type &&
             d->as.struct_decl.type_param_count == 0)
         {
@@ -1768,8 +1769,9 @@ void propagate_inherited_methods(Checker *c, const char *import_path,
                 checker_register_enum(c, ename, d->resolved_type);
         }
         /* Register inherent (non-generic) impl methods, keyed by B-4.1 llvm_name
-           (mirrors checker.c:9865-9905), with an existence pre-check for
-           idempotency across diamond import paths. */
+           (mirrors the impl-method registration in forward_pass's direct-import
+           loop, checker.c), with an existence pre-check for idempotency across
+           diamond import paths. */
         else if (d->kind == AST_IMPL_DECL &&
                  d->as.impl_decl.type_param_count == 0)
         {
@@ -1808,8 +1810,8 @@ void propagate_inherited_methods(Checker *c, const char *import_path,
                                 method->as.fn_decl.self_borrow_kind,
                                 NULL, method,  /* imported inherent impl */
                                 method->line, method->column);
-                /* NOTE: unlike the direct-import loop (checker.c:9902), we do NOT
-                   scope_define the method as a bare free function here. Doing so
+                /* NOTE: unlike forward_pass's direct-import loop (checker.c),
+                   we do NOT scope_define the method as a bare free function here. Doing so
                    transitively would pollute the consumer scope with every
                    reachable module's method names (e.g. reflect_core's static
                    `make`/`empty`) and shadow the user's own free functions.

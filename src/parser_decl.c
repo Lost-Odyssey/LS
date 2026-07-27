@@ -508,7 +508,7 @@ static WhereBound *parse_where_bounds(Parser *p, int *out_count) {
     return bounds;
 }
 
-/* allow_operator_name: when true (only inside `impl Trait for Type` blocks),
+/* allow_operator_name: when true (only inside `methods Type: Interface` blocks),
    an operator token is accepted as the method name and canonicalized to its
    $op_* internal name. Elsewhere only TOKEN_IDENTIFIER is a valid name, so
    top-level `fn +` and symbol names in plain `impl`/`trait` bodies are rejected. */
@@ -551,7 +551,7 @@ AstNode *parse_fn_decl(Parser *p, bool allow_operator_name) {
         return NULL;
     }
 
-    /* G2: optional type parameter list — fn name(T, U)(params...) -> R { ... }
+    /* G2: optional type parameter list — def name(T, U)(params...) -> R { ... }
        Disambiguate: if '(' followed by uppercase identifier then ',' or ')' or ':' → type params. */
     char **fn_type_params = NULL;
     int    fn_type_param_count = 0;
@@ -1010,7 +1010,7 @@ AstNode *parse_enum_decl(Parser *p) {
 
 /* ---- parse_trait_decl ---- */
 
-/* One interface-body member: `[static] fn sig(...) [-> T];`. Returns NULL
+/* One interface-body member: `[static] def sig(...) [-> T];`. Returns NULL
    (member parse failed) to signal the parse_body_items driver to recover. */
 static AstNode *parse_one_trait_sig(Parser *p, void *ctx) {
     (void)ctx;
@@ -1030,7 +1030,7 @@ static AstNode *parse_one_trait_sig(Parser *p, void *ctx) {
     return sig;
 }
 
-/* Parse: trait Name { fn sig(); fn sig(); ... }
+/* Parse: interface Name { def sig(); def sig(); ... }
    'trait' already consumed. */
 AstNode *parse_trait_decl(Parser *p) {
     int line = p->previous.line;
@@ -1086,7 +1086,7 @@ static void parse_receiver_type_params(Parser *p, char ***params,
     consume(p, TOKEN_RPAREN, "expected ')' after methods receiver type params");
 }
 
-/* One `methods` (impl) body member: `[static] fn name(...) { ... }`. Shared
+/* One `methods` body member: `[static] def name(...) { ... }`. Shared
    by the three near-identical methods-block loops below (trait-impl `for`
    form / merged `Type: Interface` form / plain `methods Type { ... }` form)
    via the parse_body_items driver. */

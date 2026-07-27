@@ -1451,7 +1451,7 @@ static void cg_stmt_return(CodegenContext *ctx, AstNode *node)
                 }
 
                 /* Implicit numeric widening to the function's declared return
-                   type (e.g. `fn f() -> f64 { return 5 }`). The checker has
+                   type (e.g. `def f() -> f64 { return 5 }`). The checker has
                    already validated assignability via type_widens_to. */
                 if (ctx->current_fn_return_type && ret_type &&
                     type_is_numeric(ret_type) &&

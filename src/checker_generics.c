@@ -1882,7 +1882,7 @@ static void instantiate_impl_method_types(
        The impl's N-th type param maps to the N-th struct type arg because
        the impl signature is `impl(Param) StructName(Param)`.  This ensures
        method-level generics can resolve the impl's type param names when
-       they appear in method signatures (e.g. `fn map(U)(&self, Block(W)->U f)`). */
+       they appear in method signatures (e.g. `def map(U)(&self, Block(W)->U f)`). */
     if (impl_node->as.impl_decl.type_param_count > 0) {
         for (int i = 0; i < impl_node->as.impl_decl.type_param_count && i < tp_count; i++) {
             if (strcmp(impl_node->as.impl_decl.type_params[i], tp_names[i]) == 0)

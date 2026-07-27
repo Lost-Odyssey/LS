@@ -1,6 +1,6 @@
 /* profiler.c — LS instrumented function-level profiler.
  *
- * Activation: ls run --profile / ls compile --profile
+ * Activation: lls run --profile / lls compile --profile
  * Injected enter/leave calls surround every user function.
  * At program exit (or explicit ls_prof_report call), prints a sorted table.
  *

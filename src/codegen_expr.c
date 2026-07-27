@@ -989,15 +989,19 @@ static LLVMValueRef cg_expr_field(CodegenContext *ctx, AstNode *node)
        every element handle would be shared with the struct's own field and both
        sides would drop it. Reading a place clones — exactly like the struct and
        enum branches above; the IDENT-to-IDENT array bind clones in var_decl
-       instead, mirroring how struct binds are split. (L-023 site ④.) */
+       instead, mirroring how struct binds are split. (L-023 site ④.)
+       Same CONTRACT as the two branches above: the AST_FIELD row of the table
+       on cg_match_subject_is_owned_rvalue (codegen_match.c) counts on this
+       read yielding an independent copy. */
     else if (field_type && field_type->kind == TYPE_ARRAY &&
              type_array_elem_owns_heap(field_type))
         field_val = emit_array_clone_val(ctx, field_val, field_llvm, field_type);
     /* F.3: Block field read — the struct retains env ownership, so the loaded
        LsBlock is a shallow ALIAS; return it directly (do NOT clone here).
-       Phase G removed the old `Block g = p.step1` rejection
-       (checker.c:3026-3029): binding a Block out of a field now deep-clones
-       the env at the BIND site (cg_emit_block_env_clone), and a direct call
+       Phase G removed the old `Block g = p.step1` rejection: binding a Block
+       out of a field now deep-clones the env at the BIND site
+       (check_stmt_var_decl in checker_stmt.c documents the checker half;
+       cg_emit_block_env_clone does the work), and a direct call
        `p.step1(args)` just uses the aliased value. (When the WHOLE struct is
        cloned by value, emit_struct_clone_val deep-clones its Block fields —
        a separate path.) */

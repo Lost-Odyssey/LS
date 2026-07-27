@@ -889,7 +889,7 @@ static void fn_call_strip_amp_shell(AstNode *call, int ai, const Type *pt)
 }
 
 /* Stage C-2 / D (docs/plan_print_sink.md): a struct/enum that impls Show renders
-   via Show in print() and f-string interpolation. These two helpers detect such a
+   via Show in @print and f-string interpolation. These two helpers detect such a
    type and rewrite an arg slot `x` -> `to_str(x)` (an owned Str) in place. Str is
    excluded (its raw-text form is the desired output); POD/array aren't aggregates.
    The rewrite only fires when the type satisfies Show, which means std.core.show
@@ -1806,7 +1806,7 @@ static Type *check_call_arguments(Checker *c, AstNode *node, Type *callee_type, 
     int user_expected = expected - self_offset;
     int param_offset = self_offset;
 
-    /* Special case: print() requires at least 1 argument */
+    /* Special case: @print requires at least 1 argument */
     if (callee_type->as.function.is_vararg && user_expected == 0 && actual == 0 && node->as.call.callee->kind == AST_IDENT && strcmp(node->as.call.callee->as.ident.name, "@print") == 0)
     {
         checker_error(c, node->line, node->column,

@@ -229,7 +229,7 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
     if (!struct_type->as.strukt.has_drop)
         return struct_val; /* no owned resources — plain value copy is fine */
 
-    /* User-defined __clone hook: if the struct provides `fn __clone(&self) -> Self`,
+    /* User-defined __clone hook: if the struct provides `def __clone(&self) -> Self`,
        call it instead of field-wise auto-clone. Required for structs that own heap
        through a raw *T pointer field (e.g. a hand-written container): the compiler
        cannot auto-deep-clone a raw pointer, so the user supplies the deep copy.
@@ -320,7 +320,8 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
            field shares the caller's heap → callee scope_drop + caller
            scope_drop double-free (e.g. by-value `struct { vec(int) }` arg).
            A Block (closure) field owns a refcount=1 env; it must be included —
-           a struct with a Block field is has_drop (checker_decl.c:269-272) and
+           a struct with a Block field is has_drop (the TYPE_BLOCK branch of
+           check_struct_decl's field scan, checker_decl.c) and
            its __drop releases the env, so a shallow field copy would make the
            clone and the source release the SAME env (UAF/double-release,
            audit B-1/BUG-2). */
@@ -342,12 +343,14 @@ LLVMValueRef emit_struct_clone_val(CodegenContext *ctx,
         if (ft->kind == TYPE_BLOCK)
         {
             /* emit_clone_value is INTENTIONALLY shallow for Block (the Phase G
-               alias-passthrough protocol, own.c:417-420) — it hands out the
-               same env. An owned struct clone needs an INDEPENDENT env, so call
-               the deep-clone helper explicitly (mirrors the enum-clone Block
-               payload path own.c:2138-2146 and __env_clone's nested Block
-               codegen_stmt.c:2418-2424). NULL env (no captures) is handled by
-               the helper. Do NOT route this through emit_clone_value. */
+               alias-passthrough protocol — see its TYPE_BLOCK fallthrough
+               comment below in this file): it hands out the same env. An owned
+               struct clone needs an INDEPENDENT env, so call the deep-clone
+               helper explicitly (mirrors the Block payload branch of
+               emit_auto_enum_clone_fn in this file, and the nested-Block clone
+               in codegen_closure_literal's __env_clone builder,
+               codegen_closure.c). NULL env (no captures) is handled by the
+               helper. Do NOT route this through emit_clone_value. */
             cloned = cg_emit_block_env_clone(ctx, field_val);
         }
         else
@@ -482,7 +485,8 @@ LLVMValueRef emit_array_clone_val(CodegenContext *ctx, LLVMValueRef arr_val,
             /* Deep-clone the closure env (symmetric with emit_struct_clone_val's
                Block field). Defensive: array(Block,N) is checker-accepted, but no
                current caller reaches here with bare Block elements — the return
-               clone guard (codegen_stmt.c:1345) filters to struct elements and
+               clone guard in cg_stmt_return (codegen_stmt.c) filters to struct
+               elements and
                by-value arrays aren't cloned, so array(Block,N) is presently sound
                without this. Kept for symmetry (audit root cause ②) so any future
                clone-and-both-drop caller gets independent envs, not a shared one. */
@@ -2244,8 +2248,8 @@ void emit_enum_drop(CodegenContext *ctx, LLVMValueRef enum_ptr, Type *enum_type)
            first-scene instead of silently aliasing freed heap. Gate mirrors
            cg_env_poison_on (codegen_stmt.c): the Release non-memcheck fast
            path stays byte-identical. Uses the same libc-memset-call
-           convention as the enum ctor's payload zeroing in
-           codegen_decl.c:989 (this file has no LLVMBuildMemSet precedent
+           convention as the enum ctor's payload zeroing in emit_enum_ctor
+           (codegen_decl.c; this file has no LLVMBuildMemSet precedent
            anywhere); cg_ensure_memset_decl declares memset on demand. */
         if (cg_enum_poison_on(ctx))
         {

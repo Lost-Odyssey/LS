@@ -968,13 +968,13 @@ static void declare_builtins(CodegenContext *ctx)
     LLVMTypeRef i32_type = LLVMInt32TypeInContext(ctx->context);
     LLVMTypeRef void_type = LLVMVoidTypeInContext(ctx->context);
 
-    /* printf — used by print() builtin */
+    /* printf — used by the @print intrinsic */
     LLVMTypeRef printf_args[] = {ptr_type};
     LLVMTypeRef printf_type = LLVMFunctionType(i32_type, printf_args, 1, 1);
     LLVMAddFunction(ctx->module, "printf", printf_type);
 
     /* __ls_printf — vfprintf to the current sink stream (std.core.sink redirect).
-       print()'s emit_printf targets THIS, not printf, so set_sink redirects all
+       @print's emit_printf targets THIS, not printf, so set_sink redirects all
        print output to a file/stderr. Default stream is stdout → byte-identical. */
     LLVMAddFunction(ctx->module, "__ls_printf", printf_type);
 
@@ -983,7 +983,7 @@ static void declare_builtins(CodegenContext *ctx)
     LLVMTypeRef puts_type = LLVMFunctionType(i32_type, puts_args, 1, 0);
     LLVMAddFunction(ctx->module, "puts", puts_type);
 
-    /* print() is handled as a compiler intrinsic in codegen_print_call().
+    /* @print is handled as a compiler intrinsic in codegen_print_call().
        No LLVM function is needed — calls are expanded to printf inline. */
 
     /* malloc */
@@ -1644,7 +1644,7 @@ static void cg_compile_declare_root(CodegenContext *ctx, AstNode *ast)
             if (fn_type_ml && fn_type_ml->kind == TYPE_FUNCTION)
             {
                 LLVMTypeRef fn_type = type_to_llvm(ctx, fn_type_ml);
-                /* AOT: fn main() (void) → i32 main() for CRT compatibility */
+                /* AOT: def main() (void) → i32 main() for CRT compatibility */
                 bool fwd_main = (strcmp(decl->as.fn_decl.name, "main") == 0 &&
                                  decl->as.fn_decl.param_count == 0);
                 bool fwd_main_void = (fwd_main &&

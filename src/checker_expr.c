@@ -1658,7 +1658,7 @@ Type *check_expr(Checker *c, AstNode *node)
                 continue;
             /* Stage D: a Show struct/enum interpolates via Show — rewrite to
                to_str(expr) (Str), then fall through to the printable check (Str
-               passes). Mirrors print()'s C-2 rewrite. */
+               passes). Mirrors @print's C-2 rewrite. */
             if (type_is_show_aggregate(c, et))
             {
                 wrap_arg_in_to_str(&node->as.format_string.exprs[i]);
