@@ -1,0 +1,22 @@
+// Minimal file carrying a preprocessor directive, for test_fmt_directive_stdout.
+//
+// `lls fmt` refuses files like this: it cannot see the tokens inside inactive
+// #if branches, so reformatting them is unsafe. The point of the test is that
+// refusing must still pass the source through verbatim in --stdout mode --
+// writing nothing there destroys the file in any pipeline use.
+//
+// Keep this file ASCII-only. The driver compares the source against the tool's
+// stdout through CMake execute_process, which re-encodes non-ASCII bytes; an em
+// dash in a comment shows up as a false mismatch even when the pass-through is
+// byte-correct. (That is exactly why this sample exists instead of reusing
+// condcomp_test.lls, which has one.)
+
+#if WINDOWS
+def platform_tag() -> int { return 1 }
+#else
+def platform_tag() -> int { return 2 }
+#endif
+
+def main() {
+    @print(platform_tag())
+}

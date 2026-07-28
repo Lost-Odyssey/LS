@@ -1400,6 +1400,32 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_bare_print_reject.cmake
 )
 
+# `lls fmt` must be behavior-preserving. An fmt round-trip sweep over all 634
+# samples found two inverse @-token spacing bugs in format.c space_between():
+# the complete tokens @time/@bench were glued to their operand (producing
+# `@timefib(10)`, which does not parse), while the @print call form was NOT
+# glued (`@print (v)`). Oracle: run(fmt(x)) stdout == run(x) stdout, plus
+# idempotence.
+add_test(
+    NAME test_fmt_roundtrip
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fmt_roundtrip_attime.lls
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_fmt_roundtrip.cmake
+)
+
+# `fmt --stdout` on a file the formatter refuses (preprocessor directives) used
+# to write zero bytes and exit 0, so `lls fmt f --stdout > f` destroyed it.
+# In-place mode was always correct. Pins verbatim pass-through.
+add_test(
+    NAME test_fmt_directive_stdout
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/fmt_directive_stdout.lls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_fmt_directive_stdout.cmake
+)
+
 # Two ownership diagnostics whose text documents the movable-type set and the
 # capture strategies to the user. Both had drifted away from the code they
 # describe (retired builtin type names, a by-ref capture strategy that no longer

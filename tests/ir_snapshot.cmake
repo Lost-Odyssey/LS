@@ -34,6 +34,28 @@ if(NOT EXISTS "${GOLDEN}")
         "Run tests/regen_ir_golden.sh to generate it (only when the IR change is intentional).")
 endif()
 
+# Golden files are generated with default flags. Every LS_NO_* switch is defined
+# to change the emitted IR while preserving semantics -- LS_NO_ELIDE, for one,
+# legitimately turns twelve lines of match_own_stress from a move into a
+# Str.__clone call -- so comparing against a golden while such a switch is set is
+# a guaranteed false red. That combination was a standing backlog item: the
+# snapshot infrastructure (2026-07-15) postdates clone-elision (2026-07-02) and
+# nobody had run the two together until an LS_NO_ELIDE sweep turned
+# test_ir_snapshot_match_own_stress_test red for an entirely correct difference.
+#
+# Skip instead of failing. Semantic parity under these switches is covered by
+# tests/fuzz/switchparity.py, whose oracle is the run output rather than the IR.
+set(_ir_changing_switches
+    LS_NO_ELIDE LS_NO_INTERNALIZE LS_NO_ENUM_RANGE LS_NO_LIFETIME
+    LS_NO_DROP_SENTINEL LS_NO_MEMCPY_PRIM LS_NO_NOALIAS LS_FORCE_NOALIAS
+    LS_NO_BORROW_ATTRS LS_NO_FMA)
+foreach(_sw IN LISTS _ir_changing_switches)
+    if(DEFINED ENV{${_sw}} AND NOT "$ENV{${_sw}}" STREQUAL "")
+        message(STATUS "ir_snapshot(${NAME}): SKIPPED (${_sw} is set; goldens assume default flags)")
+        return()
+    endif()
+endforeach()
+
 execute_process(
     COMMAND "${LS_EXE}" emit-ir "${SAMPLE}"
     OUTPUT_VARIABLE _out

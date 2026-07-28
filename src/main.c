@@ -574,7 +574,13 @@ static int cmd_fmt(int argc, char *argv[]) {
         char *src = read_file(paths[i]);
         if (src == NULL) { rc = 1; continue; }
         if (has_directive(src)) {
+            /* The formatter cannot see the tokens inside inactive #if branches,
+               so reformatting such a file is unsafe and we refuse. In --stdout
+               mode the caller is a pipeline (`lls fmt f --stdout > f`), so a
+               refusal must still pass the source through verbatim -- writing
+               nothing would destroy the file. */
             fprintf(stderr, "fmt: skipped %s (preprocessor directives)\n", paths[i]);
+            if (to_stdout) fputs(src, stdout);
             free(src);
             continue;
         }
@@ -620,6 +626,15 @@ static int cmd_fmt(int argc, char *argv[]) {
     }
     if (check && would_change > 0) rc = 1;
     if (check && over_width > 0) rc = 1;
+    /* Flush explicitly rather than trusting exit-time flush. With stdout
+       redirected to a pipe it is fully buffered, and measured over 200 runs
+       this subcommand silently dropped its ENTIRE output (rc=0, zero bytes) in
+       ~2% of them -- while `check --json`, which writes stdout the same way but
+       does not call _setmode, dropped 0/200. Same failure shape as the AOT
+       stdout loss documented in CLAUDE.md section 3, and the same remedy.
+       Losing the output here is destructive: `lls fmt f --stdout > f` would
+       truncate the file. */
+    fflush(stdout);
     return rc;
 }
 
