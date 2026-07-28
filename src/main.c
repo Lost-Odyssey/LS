@@ -574,7 +574,13 @@ static int cmd_fmt(int argc, char *argv[]) {
         char *src = read_file(paths[i]);
         if (src == NULL) { rc = 1; continue; }
         if (has_directive(src)) {
+            /* The formatter cannot see the tokens inside inactive #if branches,
+               so reformatting such a file is unsafe and we refuse. In --stdout
+               mode the caller is a pipeline (`lls fmt f --stdout > f`), so a
+               refusal must still pass the source through verbatim -- writing
+               nothing would destroy the file. */
             fprintf(stderr, "fmt: skipped %s (preprocessor directives)\n", paths[i]);
+            if (to_stdout) fputs(src, stdout);
             free(src);
             continue;
         }
