@@ -149,7 +149,9 @@ def run_program(text, workdir, memcheck, timeout):
     except subprocess.TimeoutExpired:
         return None, "<timeout>", ""
     err = p.stderr.decode("utf-8", "replace")
-    first = next((l for l in err.splitlines() if l.strip()), "")
+    # skip the JIT's per-function progress lines; the diagnostic is after them
+    first = next((l for l in err.splitlines()
+                  if l.strip() and not l.startswith("[jit]")), "")
     return p.returncode, normalize(p.stdout.decode("utf-8", "replace")), first
 
 
