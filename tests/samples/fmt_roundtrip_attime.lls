@@ -1,0 +1,47 @@
+// fmt round-trip: @-token spacing must survive `lls fmt`.
+//
+// Regression for two inverse bugs in format.c space_between():
+//   @time fib(10) -> @timefib(10)   (complete token glued to its operand,
+//                                    so the formatted source no longer parses)
+//   @print(v)     -> @print (v)     (call form that should glue, did not)
+//
+// The oracle is behavioral, not textual: running the formatted source must
+// produce byte-identical stdout to running this file.
+//
+// Keep this file ASCII-only. The driver round-trips the formatted text through
+// CMake execute_process/file(WRITE), which re-encodes non-ASCII bytes; a stray
+// em dash in a comment shows up as a spurious idempotence failure. Non-ASCII
+// fmt round-trip is covered by tests/fuzz/fmtround.py, which does not go
+// through CMake.
+
+def fib(int n) -> int {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+def main() {
+    // @time on a call: the form that fused into `@timefib(10)`
+    int v = @time fib(10)
+    @print(v)
+
+    // @time on a bare integer literal: fused into `@time42`
+    int lit = @time 42
+    @print(lit)
+
+    // @time on a string method chain: fused into `@time"hello"`
+    Str s = @time "hello".upper()
+    @print(s)
+
+    // @time inside parentheses, result used in an expression
+    int doubled = (@time fib(8)) * 2
+    @print(doubled)
+
+    // @bench(n): the count form, which glues to `(` and must keep doing so
+    f64 mean = @bench(10) fib(12)
+    if mean >= 0.0 { @print("bench ok") }
+
+    f64 mean_one = @bench(1) fib(5)
+    if mean_one >= 0.0 { @print("bench1 ok") }
+
+    @print("ALL PASS")
+}

@@ -102,9 +102,15 @@ static bool space_between(TokenType prev, bool prev_value_end,
     if (cur == TOKEN_BANG && prev_value_end) return false;
     /* colon: no space before, space after */
     if (cur == TOKEN_COLON) return false;
-    /* annotation @ glues to its name */
-    if (prev == TOKEN_AT || prev == TOKEN_AT_TIME || prev == TOKEN_AT_BENCH)
-        return false;
+    /* `@` is a sigil awaiting its annotation name, so it glues: `@` + `derive`
+       -> `@derive`. But `@time` / `@bench` / `@print` are COMPLETE tokens —
+       gluing them to whatever follows fuses `@time fib(10)` into the single
+       identifier-looking `@timefib(10)`, which does not parse. They glue only
+       to an immediately following `(`, which is the `@bench(10)` count form and
+       the `@print(x)` call form. */
+    if (prev == TOKEN_AT) return false;
+    if (prev == TOKEN_AT_TIME || prev == TOKEN_AT_BENCH || prev == TOKEN_AT_PRINT)
+        return cur != TOKEN_LPAREN;
     return true;
 }
 
