@@ -4777,6 +4777,19 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_derive_declaration_gap.cmake
 )
 
+# B4: >255-variant enum -- locks in the drop-sentinel/!range fallback path
+# (whole-slot zeroing, since an i8 tag has no spare value left when every one
+# of its 256 possible values is a live variant) that existed since 2026-07-05
+# but had zero test coverage before this.
+add_test(
+    NAME test_enum_300_variants
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/enum_300_variants_test.lls
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_enum_300_variants.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the
