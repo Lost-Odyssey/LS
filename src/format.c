@@ -288,8 +288,25 @@ char *ls_format_source(const char *source) {
             if (c == '/' && p + 1 < ge && p[1] == '*') {
                 const char *cs = p;
                 p += 2;
-                while (p + 1 < ge && !(*p == '*' && p[1] == '/')) p++;
-                if (p + 1 < ge) p += 2; else p = ge;
+                /* Nesting-aware close search, mirroring the scanner's own
+                   skip_whitespace(): the prior version stopped at the very
+                   first close marker it saw, which for a nested comment is
+                   the INNERMOST one -- every outer close marker that should
+                   still follow got silently dropped from the re-emitted
+                   text, leaving more open markers than close markers.
+                   Feeding that back to the scanner (which DOES track depth)
+                   makes it read as unterminated: it keeps counting depth
+                   through the rest of the file and reports "unterminated
+                   block comment" at EOF. Depth here mirrors `ge`, which the
+                   scanner already placed correctly past the WHOLE nested
+                   comment, so this walk cannot run past it. */
+                int depth = 1;
+                while (p + 1 < ge && depth > 0) {
+                    if (*p == '/' && p[1] == '*') { p += 2; depth++; }
+                    else if (*p == '*' && p[1] == '/') { p += 2; depth--; }
+                    else p++;
+                }
+                if (depth > 0) p = ge;
                 int clen = (int)(p - cs);
                 if (pending_nl == 0 && started) {
                     buf_putc(&b, ' ');

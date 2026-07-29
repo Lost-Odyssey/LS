@@ -162,11 +162,22 @@ def check_file(src_path, work_dir):
     return findings
 
 
+# Deliberately malformed sources that a DIFFERENT test (a *_reject.cmake) feeds
+# straight to the scanner/checker to pin a diagnostic. `lls fmt` failing on
+# text that is not valid source is the CORRECT behavior, not a finding -- if
+# it did not fail, the file would not be doing its job as a reject sample.
+KNOWN_MALFORMED = {
+    "unterminated_comment_reject.lls",
+    "unterminated_comment_nested_reject.lls",
+}
+
+
 def collect(corpus):
     files = []
     if "samples" in corpus:
         for n in sorted(os.listdir(SAMPLES)):
-            if n.endswith((".lls", ".ls")) and not n.startswith("_"):
+            if (n.endswith((".lls", ".ls")) and not n.startswith("_")
+                    and n not in KNOWN_MALFORMED):
                 files.append(os.path.join(SAMPLES, n))
     if "stdlib" in corpus:
         for d, _, ns in os.walk(STDLIB):
