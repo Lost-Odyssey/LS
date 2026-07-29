@@ -68,6 +68,35 @@ ELEMS = {
                               "@print(sum%d)\n@print(%s[1])" % (i, p, i, i, i, p)),
         "mutate": lambda p: "%s[1] = 99" % p,
     },
+    # has_drop struct: every place must clone on read and drop exactly once
+    "struct": {
+        "type": "Res",
+        "imports": ["std.core.str"],
+        "decls": "struct Res {\n    Str name\n    int n\n}\n",
+        "init": 'Res{name: "r1", n: 1}',
+        "show": lambda p, i: "@print(%s.name)\n@print(%s.n)" % (p, p),
+        "mutate": lambda p: '%s = Res{name: "r2", n: 2}' % p,
+    },
+    # has_drop enum: binding is a MOVE since L-019, so the read path must clone
+    "enum": {
+        "type": "Tag",
+        "imports": ["std.core.str"],
+        "decls": "enum Tag {\n    A(Str)\n    B(int)\n}\n",
+        "init": 'A("t1")',
+        "show": lambda p, i: ("match %s {\n    A(s) => { @print(s) }\n"
+                              "    B(k) => { @print(k) }\n}" % p),
+        "mutate": lambda p: "%s = B(9)" % p,
+    },
+    # owning container as the element. Mutation goes through push rather than a
+    # whole-value store: a list literal converts to a Vec only in initializer
+    # position, so `p = [30, 40, 50]` is an array(int,3) and does not assign.
+    "vec": {
+        "type": "Vec(int)",
+        "imports": ["std.core.vec"],
+        "init": "[10, 20]",
+        "show": lambda p, i: "@print(%s.len())\n@print(%s[0])" % (p, p),
+        "mutate": lambda p: "%s.push(30)" % p,
+    },
 }
 
 # Combinations the language deliberately rejects. Reported as N/A with the
@@ -77,6 +106,15 @@ ELEMS = {
 UNSUPPORTED = {
     ("array", "vec_elem"):
         "policy A: Vec(array(T,N)) needs a by-value array parameter, which is banned",
+    ("array", "mutref_param"):
+        "borrowing a fixed-size array is not supported (`&array(T)` is a sizeless slice)",
+    ("enum", "mutref_param"):
+        "&! is restricted to structs: `&!Tag` is rejected",
+    ("int", "mutref_param"):
+        "&!int is not implemented; only &struct / &!struct / &enum exist",
+    ("vec", "array_elem"):
+        "array(Vec(T), N) cannot be initialized: the nested list literal types as "
+        "array(array(int,N),M), not as a list of Vecs",
 }
 
 
@@ -109,6 +147,25 @@ def place_global(e):
     return ("%s PG = %s\n" % (e["type"], e["init"]), "", "PG")
 
 
+def place_mutref_param(e):
+    """The value is reached through a `&!T` borrow parameter. Borrows only exist
+    in parameter position, so the whole read/mutate/re-read sequence has to run
+    inside the callee -- hence `wrap`."""
+    return ("", "%s pv = %s" % (e["type"], e["init"]), "p",
+            "def via_mut(&!%s p) {\n{BODY}\n}\n" % e["type"],
+            "via_mut(&!pv)")
+
+
+def place_module_global(e):
+    """A global living in an imported module: its symbol is module-prefixed
+    (P1-1), a path several place readers used to miss by looking up the bare
+    name only."""
+    return ("", "", "pmod.MG", None, None,
+            "module pmod\n%s%s\n%s MG = %s\n"
+            % ("".join("import %s\n" % m for m in e["imports"]),
+               e.get("decls", ""), e["type"], e["init"]))
+
+
 PLACES = {
     "local": place_local,
     "struct_field": place_struct_field,
@@ -116,32 +173,61 @@ PLACES = {
     "vec_elem": place_vec_elem,
     "array_elem": place_array_elem,
     "global": place_global,
+    "mutref_param": place_mutref_param,
+    "module_global": place_module_global,
 }
-# Not covered in v1, deliberately: &T / &!T parameter places (need a callee
-# wrapper per element type) and module-level globals (need a second file).
-# Both are worth adding; neither is faked here.
+# A read-only `&T` place is deliberately absent: this matrix's whole shape is
+# read / mutate / re-read, and a read-only borrow cannot perform the middle
+# step. `&T` reads are covered by the read half of mutref_param.
+
+
+def _indent(text, n=4):
+    pad = " " * n
+    return "\n".join(pad + l for l in text.splitlines())
 
 
 def build_program(elem, place):
+    """Return {filename: text}; "main.lls" is the entry point."""
     e = ELEMS[elem]
-    decls, setup, p = PLACES[place](e)
-    imports = "".join("import %s\n" % m for m in e["imports"])
-    if elem in ("array",) or place in ("vec_elem",):
-        imports += "import std.core.vec\n" if "std.core.vec" not in imports else ""
-    body = []
-    if setup:
-        body.append(setup)
-    body.append(e["show"](p, 1))
-    body.append(e["mutate"](p))
-    body.append(e["show"](p, 2))
-    indented = "\n".join("    " + l for chunk in body for l in chunk.splitlines())
-    return "%s%s\ndef main() {\n%s\n}\n" % (imports, decls, indented)
+    spec = PLACES[place](e)
+    decls, setup, p = spec[0], spec[1], spec[2]
+    wrap = spec[3] if len(spec) > 3 else None
+    call = spec[4] if len(spec) > 4 else None
+    modfile = spec[5] if len(spec) > 5 else None
+
+    mods = list(e["imports"])
+    if elem == "vec" or place == "vec_elem":
+        if "std.core.vec" not in mods:
+            mods.append("std.core.vec")
+    if modfile:
+        mods.append("pmod")
+    imports = "".join("import %s\n" % m for m in mods)
+
+    seq = "\n".join([e["show"](p, 1), e["mutate"](p), e["show"](p, 2)])
+
+    # element-type declarations belong wherever the value's type is named; with
+    # a module file that is the module, so main must not redeclare them
+    head = imports + (e.get("decls", "") if not modfile else "") + decls
+
+    if wrap:
+        helper = wrap.replace("{BODY}", _indent(seq))
+        main_body = "\n".join(x for x in (setup, call) if x)
+        text = "%s\n%s\ndef main() {\n%s\n}\n" % (head, helper, _indent(main_body))
+    else:
+        main_body = "\n".join(x for x in (setup, seq) if x)
+        text = "%s\ndef main() {\n%s\n}\n" % (head, _indent(main_body))
+
+    files = {"main.lls": ("module main\n" + text) if modfile else text}
+    if modfile:
+        files["pmod.lls"] = modfile
+    return files
 
 
-def run_program(text, workdir, memcheck, timeout):
+def run_program(files, workdir, memcheck, timeout):
+    for name, text in files.items():
+        with open(os.path.join(workdir, name), "w", encoding="utf-8", newline="") as f:
+            f.write(text)
     path = os.path.join(workdir, "main.lls")
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
     cmd = [LS, "run"] + (["--memcheck"] if memcheck else []) + [path]
     try:
         p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
