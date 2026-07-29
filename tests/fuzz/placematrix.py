@@ -103,6 +103,18 @@ ELEMS = {
 # reason rather than counted as findings -- policy A (2026-07-19) bans by-value
 # fixed-size-array parameters outright, and Vec's element handling goes through
 # one.
+# Places that are EXPECTED to diverge from the rest, by design rather than by
+# rejection: reading a Vec element (`v[i]`) returns a clone (the three-tier
+# access model), so mutating the read result is expected not to persist. This
+# is a different thing from UNSUPPORTED -- the program compiles and runs, it
+# just isn't reachable through this place's semantics. Reported separately so
+# it stays visible without being counted as a finding.
+EXPECTED_READ_CLONE = {
+    ("vec", "vec_elem"):
+        "Vec element read (v[i]) yields a clone by design; mutating it is not "
+        "expected to persist",
+}
+
 UNSUPPORTED = {
     ("array", "vec_elem"):
         "policy A: Vec(array(T,N)) needs a by-value array parameter, which is banned",
@@ -282,16 +294,24 @@ def main():
             if rc != 0:
                 findings += 1
                 print("  BUILD    %s / %s: rc=%s\n           %s" % (elem, p, rc, err))
+
+        # places expected to diverge by design (e.g. a read that clones) are
+        # pulled out before comparing; they are reported but never counted
+        core = {p: r for p, r in ok.items() if (elem, p) not in EXPECTED_READ_CLONE}
+        caveat = {p: r for p, r in ok.items() if (elem, p) in EXPECTED_READ_CLONE}
+
         vals = {}
-        for p, (rc, out, err) in ok.items():
+        for p, (rc, out, err) in core.items():
             vals.setdefault(out, []).append(p)
         if len(vals) > 1:
             findings += 1
             print("  DIVERGE  %s: %d distinct outputs across places" % (elem, len(vals)))
             for out, ps in sorted(vals.items(), key=lambda kv: -len(kv[1])):
                 print("     %-30s %s" % (",".join(sorted(ps)), repr(out[:100])))
-        elif ok:
-            print("  ok       %s (%d places agree)" % (elem, len(ok)))
+        elif core:
+            print("  ok       %s (%d places agree)" % (elem, len(core)))
+        for p in sorted(caveat):
+            print("  caveat   %s / %s: %s" % (elem, p, EXPECTED_READ_CLONE[(elem, p)]))
 
     print("placematrix: %d finding(s)" % findings)
     return 1 if findings else 0
