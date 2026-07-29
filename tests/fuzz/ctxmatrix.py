@@ -20,6 +20,13 @@ both of which are invisible to a crash-or-leak oracle:
     code 0. The module and duplicate-module contexts put the same fragment
     behind those name-building paths.
 
+Ten contexts total: top-level def, generic method body, generic free function,
+closure body, match arm, loop body, imported module, duplicate same-named
+modules, trailing-closure-sugar call, and comptime. The last is special-cased:
+its restricted evaluator (scalars/arrays/loops/if/locals, no I/O, no heap, no
+closures) can only ever run ONE fragment, so it is not a normal CONTEXTS entry
+-- see ctx_comptime's docstring.
+
 Output normalization, both empirically necessary:
   * `[jit] compiling function '<name>' (hash=...)` lines name the enclosing
     function, which differs by construction across contexts.
@@ -120,6 +127,20 @@ for x in b.d { sum = sum + x }
 @print(sum)
 @print(b.d[1])""",
     },
+    # Pure int/loop arithmetic: no imports, no heap types, no closures. This is
+    # the ONLY fragment reachable from ctx_comptime, since the comptime
+    # evaluator is a restricted interpreter (scalars/arrays/loops/if/locals,
+    # no I/O, no heap). `comptime_value` names the local ctx_comptime returns
+    # instead of printing, so the same computation is checked both as a
+    # compile-time constant and as ordinary runtime code.
+    "pure_arith": {
+        "imports": [],
+        "pre": "",
+        "body": """int s = 0
+for i in 0..10 { s = s + i }
+@print(s)""",
+        "comptime_value": "s",
+    },
 }
 
 
@@ -184,6 +205,39 @@ def ctx_module(frag):
     return {"main": main, "ctxmod.lls": mod}
 
 
+def ctx_trailing_closure(frag):
+    """The trailing-closure call sugar (`f() { || ... }` desugars to
+    `f(|| ...)`) builds its AST_CLOSURE through a DIFFERENT parser path
+    (parser_expr.c's Phase A.5) than the Ruby `|| { ... }` literal every other
+    context uses. Its multi-statement tail-expression handling is the same
+    generic codegen path the closure-tail-expr fix covers, but this exercises
+    it via the sugar's own construction rather than the literal's, so a
+    regression specific to that path would show up here and nowhere else."""
+    return {"main": "%s%s\ntype CtxTrailFn = Block() -> int\n"
+                    "def cx_trailing_apply(CtxTrailFn f) -> int { return f() }\n\n"
+                    "def main() {\n    cx_trailing_apply() {\n        ||\n%s\n        0\n    }\n}\n"
+                    % (_imports(frag), frag["pre"], _indent(frag["body"], 8))}
+
+
+def ctx_comptime(frag):
+    """comptime is a restricted compile-time interpreter (scalars, arrays,
+    loops, if, locals -- no heap types, no I/O, no closures), so it can only
+    ever run the one fragment that declares itself comptime-compatible via
+    `comptime_value`. That value names the local holding the fragment's
+    result; the fragment's OWN body (ending in `@print(<value>)`, used by
+    every other context) has its last line stripped and replaced with a
+    `return <value>` inside a `comptime { ... }` block, then printed from
+    `main()` -- so the same computation is checked as a compile-time constant
+    and as ordinary runtime code."""
+    if "comptime_value" not in frag:
+        return None
+    stmt_lines = frag["body"].splitlines()[:-1]   # drop the trailing @print(...)
+    stmt = "\n".join(stmt_lines)
+    return {"main": "comptime int CTX_R = comptime {\n%s\n    return %s\n}\n\n"
+                    "def main() {\n    @print(CTX_R)\n}\n"
+                    % (_indent(stmt, 4), frag["comptime_value"])}
+
+
 def ctx_dup_modules(frag):
     """Two modules declaring the same type and function names, both carrying the
     fragment. Only the first is called; the second exists to make the symbol
@@ -208,11 +262,14 @@ CONTEXTS = {
     "loop_body": ctx_loop_body,
     "module": ctx_module,
     "dup_modules": ctx_dup_modules,
+    "trailing_closure": ctx_trailing_closure,
 }
-# Not implemented in v1, deliberately rather than silently: `comptime` (its
-# restricted evaluator rejects most fragments, so it needs its own fragment set)
-# and trailing-closure sugar (needs a user function taking a Block, i.e. a
-# per-fragment wrapper). Both are worth adding; neither is pretended here.
+# comptime is deliberately NOT a normal CONTEXTS entry: its restricted evaluator
+# (scalars/arrays/loops/if/locals, no I/O, no heap, no closures) can only ever
+# run the one fragment that opts in via `comptime_value` -- wiring it in like
+# the other contexts would report a BUILD failure for every OTHER fragment,
+# which is expected rather than a finding and would just be noise. The main
+# loop calls ctx_comptime directly, once per fragment, only when eligible.
 
 
 def build_and_run(files, workdir, timeout):
@@ -235,7 +292,7 @@ def build_and_run(files, workdir, timeout):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fragments", default=",".join(FRAGMENTS))
-    ap.add_argument("--contexts", default=",".join(CONTEXTS))
+    ap.add_argument("--contexts", default=",".join(list(CONTEXTS) + ["comptime"]))
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--keep", action="store_true",
                     help="keep the generated programs for inspection")
@@ -254,12 +311,26 @@ def main():
         frag = FRAGMENTS[fname]
         results = {}
         for cname in ctxs:
+            if cname == "comptime":
+                continue   # not a CONTEXTS entry; handled specially below
             work = tempfile.mkdtemp(prefix="ctxm_%s_%s_" % (fname, cname))
             try:
                 rc, out, err = build_and_run(CONTEXTS[cname](frag), work, args.timeout)
                 results[cname] = (rc, out, err)
                 if args.keep:
                     print("    kept %s" % work)
+            finally:
+                if not args.keep:
+                    shutil.rmtree(work, ignore_errors=True)
+
+        # comptime opts in per-fragment (see ctx_comptime docstring); silently
+        # skipped for every other fragment rather than reported as a BUILD
+        # failure, since that failure is expected and would just be noise
+        if "comptime" in ctxs and "comptime_value" in frag:
+            work = tempfile.mkdtemp(prefix="ctxm_%s_comptime_" % fname)
+            try:
+                rc, out, err = build_and_run(ctx_comptime(frag), work, args.timeout)
+                results["comptime"] = (rc, out, err)
             finally:
                 if not args.keep:
                     shutil.rmtree(work, ignore_errors=True)
