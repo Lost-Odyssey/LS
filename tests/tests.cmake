@@ -4735,6 +4735,18 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_closure_tail_expr.cmake
 )
 
+# Cross-module assignment to a module global (`mod.VAR = v`) silently stored
+# nothing: codegen_lvalue_ptr bailed on non-struct objects and the assign path
+# treats a NULL address as "nothing to do". Reads and same-module writes always
+# worked. Pins values through the module's own accessors plus memcheck.
+add_test(
+    NAME test_modglobal_assign
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/modglobal_assign/main.lls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_modglobal_assign.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

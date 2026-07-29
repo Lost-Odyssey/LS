@@ -1,0 +1,32 @@
+// Globals owned by an imported module. Reads of these always worked from the
+// importer; writes silently vanished -- see main.lls.
+module pmod
+
+import std.core.str
+
+struct Res {
+    Str name
+    int n
+}
+
+int PI = 1
+Str PS = "s1"
+Res MG = Res{name: "r1", n: 1}
+
+// the module's own view, used to prove a write actually landed in the global
+// rather than in some copy the importer was handed
+def peek_int() -> int {
+    return PI
+}
+
+def peek_str() -> Str {
+    return PS
+}
+
+def peek_name() -> Str {
+    return MG.name
+}
+
+def peek_n() -> int {
+    return MG.n
+}

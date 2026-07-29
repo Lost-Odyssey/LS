@@ -1,0 +1,43 @@
+// Cross-module assignment to a module's global must actually store.
+//
+// It used to silently do nothing. `mod.VAR = v` is an AST_FIELD assignment, so
+// codegen asked codegen_lvalue_ptr for the target address -- and that function
+// bailed out on anything whose object is not a struct, which a MODULE is not.
+// The assign path guards on `if (ptr != NULL)` with no else, so every
+// cross-module store was dropped on the floor: exit code 0, no diagnostic,
+// reads still returning the old value.
+//
+// Each write is verified through the MODULE's own accessor, not just by reading
+// the global back through the same qualified path, so a write that landed
+// somewhere other than the real global would still fail.
+module main
+
+import pmod
+import std.core.str
+
+def main() {
+    // --- POD global ---
+    @print(pmod.PI)             // 1
+    pmod.PI = 42
+    @print(pmod.PI)             // 42
+    @print(pmod.peek_int())     // 42
+
+    // --- owning (Str) global: the old value must be dropped, not leaked ---
+    @print(pmod.PS)             // s1
+    pmod.PS = "s2"
+    @print(pmod.PS)             // s2
+    @print(pmod.peek_str())     // s2
+
+    // --- has_drop struct global, whole-value store ---
+    @print(pmod.MG.name)        // r1
+    pmod.MG = Res{name: "r2", n: 2}
+    @print(pmod.MG.name)        // r2
+    @print(pmod.peek_name())    // r2
+    @print(pmod.peek_n())       // 2
+
+    // --- field of a module global (the nested place) ---
+    pmod.MG.n = 7
+    @print(pmod.peek_n())       // 7
+
+    @print("ALL PASS")
+}

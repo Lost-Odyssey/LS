@@ -371,6 +371,28 @@ LLVMValueRef codegen_lvalue_ptr(CodegenContext *ctx, AstNode *node)
         Type *obj_type = obj_node->resolved_type;
         const char *fname = node->as.field_access.field;
 
+        /* Module-qualified global (`pmod.COUNT = 1`). The object is a MODULE,
+           not a struct, so the field walk below cannot GEP it and used to fall
+           out at the "not a struct" bail with NULL -- and the assign path guards
+           on `if (ptr != NULL)` with no else, so every cross-module store was
+           dropped on the floor. Reads worked, writes vanished, exit code 0, no
+           diagnostic. P1-1 gives module globals a `<mod>__name` symbol; try that
+           before the bare name, the same way cg_array_place_ptr already does for
+           `math.PRIMES[0]`. This also fixes the nested place `pmod.MG.n = 7`,
+           whose base is resolved through here. */
+        if (obj_type != NULL && obj_type->kind == TYPE_MODULE)
+        {
+            const char *mod = obj_type->as.module.name;
+            if (mod == NULL)
+                return LLVMGetNamedGlobal(ctx->module, fname);
+            char gv_sym[512];
+            cg_module_fn_symbol(gv_sym, sizeof(gv_sym), mod, fname);
+            LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, gv_sym);
+            if (gv == NULL)
+                gv = LLVMGetNamedGlobal(ctx->module, fname);
+            return gv;
+        }
+
         /* Auto-dereference pointer-to-struct and reference-to-struct (&Doc / &!Doc).
            Both are lowered to a pointer ABI; the alloca holds the pointer value. */
         bool is_ptr = false;
