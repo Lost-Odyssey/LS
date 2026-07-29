@@ -597,6 +597,31 @@ LLVMValueRef codegen_addr_of(CodegenContext *ctx, AstNode *node)
         AstNode *sub_obj = node->as.field_access.object;
         Type *sub_type = sub_obj->resolved_type;
 
+        /* Module-qualified global (`qmod.GV.push(30)`): the object is a
+           MODULE, not a struct, so this used to bail at the "not a struct"
+           check below with NULL. The caller (codegen_call.c's &self/&!self
+           method-receiver path) then fell through to the fresh-rvalue spill,
+           which evaluates the global's CURRENT VALUE, copies it into a fresh
+           temp, and calls the mutating method on that copy -- the shared
+           global itself was never touched. `qmod.GV.push(30)` therefore
+           silently did nothing, exit code 0, no diagnostic; only a
+           module-internal mutation of the same global worked.
+           Same P1-1 symbol lookup already used by cg_array_place_ptr and by
+           codegen_lvalue_ptr's mirroring fix for `mod.VAR = v`. */
+        if (sub_type != NULL && sub_type->kind == TYPE_MODULE)
+        {
+            const char *mod = sub_type->as.module.name;
+            const char *fname = node->as.field_access.field;
+            if (mod == NULL)
+                return LLVMGetNamedGlobal(ctx->module, fname);
+            char gv_sym[512];
+            cg_module_fn_symbol(gv_sym, sizeof(gv_sym), mod, fname);
+            LLVMValueRef gv = LLVMGetNamedGlobal(ctx->module, gv_sym);
+            if (gv == NULL)
+                gv = LLVMGetNamedGlobal(ctx->module, fname);
+            return gv;
+        }
+
         bool is_ptr = sub_type && sub_type->kind == TYPE_POINTER &&
                       sub_type->as.pointer_to &&
                       sub_type->as.pointer_to->kind == TYPE_STRUCT;

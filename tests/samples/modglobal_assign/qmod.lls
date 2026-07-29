@@ -1,0 +1,18 @@
+// Companion module for the mutating-method half of the module-global place
+// bug: same defining/importing shape as pmod.lls, but exercises calling a
+// &!self method on a module-qualified global rather than assigning to it.
+module qmod
+
+import std.core.vec
+
+Vec(int) GV = [10, 20]
+
+def peek_len() -> int {
+    return GV.len()
+}
+
+// module-internal mutation always worked; it exists to prove the global
+// itself is mutable, isolating the bug to the IMPORTER's call path
+def bump() {
+    GV.push(77)
+}

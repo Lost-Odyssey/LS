@@ -10,10 +10,20 @@
 // Each write is verified through the MODULE's own accessor, not just by reading
 // the global back through the same qualified path, so a write that landed
 // somewhere other than the real global would still fail.
+//
+// The second half (qmod) exercises the sibling bug in the same function family:
+// calling a &!self mutating method on a module-qualified global
+// (`qmod.GV.push(30)`) used to silently do nothing too. Method calls resolve
+// their receiver's address through codegen_addr_of, which had the identical gap
+// -- its AST_FIELD case required the object to be a TYPE_STRUCT, so a
+// TYPE_MODULE object fell through to the fresh-rvalue spill and the method ran
+// on a private COPY of the global's current value.
 module main
 
 import pmod
+import qmod
 import std.core.str
+import std.core.vec
 
 def main() {
     // --- POD global ---
@@ -38,6 +48,14 @@ def main() {
     // --- field of a module global (the nested place) ---
     pmod.MG.n = 7
     @print(pmod.peek_n())       // 7
+
+    // --- &!self mutating method call on a module global ---
+    @print(qmod.GV.len())       // 2
+    qmod.GV.push(30)
+    @print(qmod.GV.len())       // 3
+    @print(qmod.peek_len())     // 3 if the push landed in the real global
+    qmod.bump()                // module-internal mutation, known good
+    @print(qmod.peek_len())     // 4
 
     @print("ALL PASS")
 }
