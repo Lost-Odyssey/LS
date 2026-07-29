@@ -4790,6 +4790,17 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_enum_300_variants.cmake
 )
 
+# B5: \xHH hex escapes + correctly-closed multi-level nested block comments.
+# Both confirmed working by probe during the boundary-testing investigation,
+# neither previously covered by any test.
+add_test(
+    NAME test_lex_boundary
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/lex_boundary_test.lls
+        -P ${CMAKE_SOURCE_DIR}/tests/test_lex_boundary.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

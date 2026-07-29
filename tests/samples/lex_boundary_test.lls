@@ -1,0 +1,7 @@
+/* outer /* nested level 2 /* nested level 3 */ back to level 2 */ back to level 1 */
+// a single-line comment containing /* which must NOT start a block comment
+def main() {
+    Str s = "hex:\x41\x42\x43 done"
+    @print(s)
+    /* a trailing block comment right before the closing brace */
+}
