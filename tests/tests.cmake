@@ -4721,6 +4721,20 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_closure_move_clone.cmake
 )
 
+# A closure's braced body must yield its tail expression, like a function's.
+# codegen intercepts the last statement for functions but not for closures, so
+# `|| { 7 }` fell through to `ret zeroinitializer` and silently returned 0.
+# Pins the values (JIT + AOT) and the ownership path (an owned Str leaves
+# through the tail), which is where a codegen-side fix would double-free.
+add_test(
+    NAME test_closure_tail_expr
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/closure_tail_expr_test.lls
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_closure_tail_expr.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

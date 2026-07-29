@@ -1,0 +1,78 @@
+// A closure whose body is a braced block yields the block's tail expression,
+// exactly like `def f() -> int { 7 }` does.
+//
+// It used to not: codegen's function path intercepts the last statement to make
+// it the return value, the closure path had no such interception, and so
+// `|| { 7 }` fell through to `ret zeroinitializer` and silently returned 0 --
+// exit code 0, no diagnostic, wrong value. Str-returning closures returned an
+// empty Str the same way.
+//
+// The `return` and expression-body spellings always worked; they are kept here
+// as controls, since a fix that broke them would otherwise go unnoticed.
+import std.core.vec
+import std.core.str
+
+type I0 = Block() -> int
+type I1 = Block(int) -> int
+type S0 = Block() -> Str
+// A Block type cannot be written inline in a declaration; every use in the tree
+// goes through an alias like these.
+type MutV = Block(&!Vec(int)) -> void
+
+struct Holder(T) {
+    T seed
+}
+
+methods Holder(T) {
+    // same shape inside a generic body, which is cloned per instantiation
+    def tail(&self) -> int {
+        I1 f = |x| { x + 5 }
+        return f(10)
+    }
+}
+
+def main() {
+    // --- the bug: braced block whose tail is an expression ---
+    I0 a = || { 7 }
+    @print(a())                     // 7
+
+    I1 b = |x| { x + 1 }
+    @print(b(10))                   // 11
+
+    // multi-statement body: only the tail is the value
+    I1 c = |x| { int y = x * 2  y + 1 }
+    @print(c(10))                   // 21
+
+    // --- controls: the spellings that always worked ---
+    I0 d = || { return 7 }
+    @print(d())                     // 7
+
+    I0 e = || 7
+    @print(e())                     // 7
+
+    I1 g = |x| x + 1
+    @print(g(10))                   // 11
+
+    // --- ownership: an owned Str leaving a closure via the block tail ---
+    S0 h = || { "hello" }
+    Str hs = h()
+    @print(hs.len())                // 5
+    @print(hs)                      // hello
+
+    // tail is a heap-built Str, so the value must be moved out, not copied
+    S0 i = || { Str t = "ab" t.push_str("cd") t }
+    Str is2 = i()
+    @print(is2)                     // abcd
+
+    // --- void closure must be unaffected ---
+    Vec(int) v = {}
+    MutV mut = |vv| { vv.push(99) }
+    mut(&!v)
+    @print(v.len())                 // 1
+
+    // --- same shape inside a cloned generic body ---
+    Holder(int) hh = Holder(int){seed: 1}
+    @print(hh.tail())               // 15
+
+    @print("ALL PASS")
+}

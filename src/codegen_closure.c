@@ -358,7 +358,53 @@ LLVMValueRef codegen_closure_literal(CodegenContext *ctx, AstNode *node)
             psym->no_drop_reason = CG_BORROWED;
     }
 
-    /* 6) Compile the body. */
+    /* 6) Compile the body.
+
+       A closure whose body is a braced block yields the block's tail
+       expression, exactly like `def f() -> int { 7 }` does -- codegen gives
+       functions that behaviour by intercepting the last statement (see "handle
+       implicit return of last expression" in codegen_fn_decl). This path had no
+       such interception: it emitted the whole block as statements and fell
+       through to the `ret zeroinitializer` at step 7, so `|| { 7 }` silently
+       returned 0 and a Str-returning closure returned an empty Str -- exit code
+       0, no diagnostic, wrong value.
+
+       Rewriting the tail into a real `return` reuses the return path, which
+       already gets scope cleanup and ownership transfer right under this
+       function's own scope layout (captures materialised as body-local allocas
+       that scope cleanup must not free). Re-deriving that sequencing inline is
+       how double-frees get introduced.
+
+       The void guard is not optional and is the same one the function path
+       documents: a tail whose value is void must be left alone and fall through
+       to the default return. The common shape is a `match` whose arms all
+       `return`, which is itself void; rewriting those turned five existing
+       closure samples into "return type mismatch: expected int, got void".
+       That is also why this lives here rather than in the checker -- the
+       decision needs the tail's RESOLVED type, and by the time the checker has
+       computed it the block scope that its identifiers resolve in is gone.
+
+       Idempotent: a second pass sees AST_RETURN and does nothing. */
+    if (ret_lst != NULL && ret_lst->kind != TYPE_VOID)
+    {
+        AstNode *cl_body = node->as.closure.body;
+        if (cl_body != NULL && cl_body->kind == AST_BLOCK &&
+            cl_body->as.block.stmt_count > 0)
+        {
+            AstNode *cl_last = cl_body->as.block.stmts[cl_body->as.block.stmt_count - 1];
+            if (cl_last->kind == AST_EXPR_STMT)
+            {
+                AstNode *cl_tail = cl_last->as.expr_stmt.expr;  /* read before the union write */
+                if (cl_tail != NULL && cl_tail->resolved_type != NULL &&
+                    cl_tail->resolved_type->kind != TYPE_VOID)
+                {
+                    cl_last->kind = AST_RETURN;
+                    cl_last->as.return_stmt.value = cl_tail;
+                }
+            }
+        }
+    }
+
     codegen_stmt(ctx, node->as.closure.body);
 
     /* A4-closure (own-audit): the body ran with zeroed, isolated ledgers; on
