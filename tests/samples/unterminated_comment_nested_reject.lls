@@ -1,0 +1,2 @@
+/* outer /* inner never closes
+def main() { @print(1) }

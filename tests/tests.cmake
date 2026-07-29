@@ -4750,6 +4750,18 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_modglobal_assign.cmake
 )
 
+# An unterminated block comment used to silently swallow the rest of the file
+# with zero diagnostic (`lls check` reported "Type check passed" on a program
+# whose real body was eaten as comment text). Pins a clean scanner error for
+# both single-level and nested unterminated comments.
+add_test(
+    NAME test_unterminated_comment_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -P ${CMAKE_SOURCE_DIR}/tests/test_unterminated_comment_reject.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

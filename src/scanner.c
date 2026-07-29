@@ -54,7 +54,17 @@ static Token error_token(Scanner *s, const char *message) {
 
 /* ---- Whitespace & Comments ---- */
 
-static void skip_whitespace(Scanner *s) {
+/* Returns false if a block comment ran off the end of the file before its
+   matching close. Without this, an unterminated block comment silently
+   swallowed the rest of the file as comment text with ZERO diagnostic --
+   `lls check` on an opened-but-never-closed comment followed by
+   `def main() { ... }` reported "Type check passed" on what was, after the
+   missing close marker, an effectively empty program. Both a single-level
+   and a nested unterminated comment hit this the same way: the while loop
+   below exits on `depth > 0` (still open) exactly the same way it
+   exits on `depth == 0` (properly closed), and the caller used to treat both
+   as "done, keep going" with no way to tell them apart. */
+static bool skip_whitespace(Scanner *s) {
     for (;;) {
         char c = peek(s);
         switch (c) {
@@ -94,12 +104,13 @@ static void skip_whitespace(Scanner *s) {
                         }
                     }
                 }
+                if (depth > 0) return false;
             } else {
-                return;
+                return true;
             }
             break;
         default:
-            return;
+            return true;
         }
     }
 }
@@ -493,8 +504,10 @@ Token scanner_next(Scanner *s) {
     for (;;) {
         /* Skip whitespace only when NOT in f-string text mode; inside
            f-string literal segments (depth==0) spaces are content. */
-        if (!(s->in_fstring && s->fstring_brace_depth == 0))
-            skip_whitespace(s);
+        if (!(s->in_fstring && s->fstring_brace_depth == 0)) {
+            if (!skip_whitespace(s))
+                return error_token(s, "unterminated block comment");
+        }
         /* Process directives at the start of a line/inline. The `#` must
            appear with only whitespace between it and the start of file or
            a newline; we accept it anywhere whitespace-skipped, simpler. */
@@ -524,7 +537,8 @@ static Token scanner_next_inner(Scanner *s) {
         return scan_fstring_text(s);
     }
 
-    skip_whitespace(s);
+    if (!skip_whitespace(s))
+        return error_token(s, "unterminated block comment");
 
     s->start = s->current;
     s->start_column = s->column;

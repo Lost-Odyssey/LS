@@ -1,0 +1,2 @@
+/* unterminated comment, never closed
+def main() { @print(1) }
