@@ -1,0 +1,44 @@
+// @derive on a generic struct must not care what sits between the struct and
+// its own inherent `methods T(T) {...}` block. expand_derives's look-ahead
+// used to check only the IMMEDIATELY NEXT declaration and give up the moment
+// anything else intervened -- an unrelated interface, a free function,
+// another struct -- so the derive-synthesized trait impls landed BEFORE the
+// inherent block and the fold failed with "requires an inherent methods
+// block" on a program that genuinely had one.
+
+@derive(Equal, Show)
+struct Pt(T) {
+    T x
+    T y
+}
+
+// an unrelated interface sitting between the struct/derive and the
+// inherent block: this alone used to trigger the bug
+interface Loud { def tag(&self) -> int }
+interface Quiet { def tag(&self) -> int }
+
+// an unrelated free function: confirms the bug is not interface-specific
+def helper_one() -> int { return 10 }
+
+methods Pt(T) {
+    static def origin() -> Pt(T) { return Pt(T){x: 0, y: 0} }
+}
+methods Pt(T): Add { def +(&self, &Pt(T) rhs) -> Pt(T) { return Pt(T){x: self.x + rhs.x, y: self.y + rhs.y} } }
+methods Pt(T): Loud  { def tag(&self) -> int { return 1 } }
+methods Pt(T): Quiet { def tag(&self) -> int { return 2 } }
+
+def main() {
+    // the exact bug shape: static generic method + operator overload +
+    // @derive + L-002 two-interface disambiguation, all on one type
+    Pt(int) a = Pt(int).origin()
+    Pt(int) b = Pt(int){x: 3, y: 4}
+    Pt(int) c = a + b
+    @print(c.x)              // 3
+    @print(c.y)               // 4
+    @print(Loud.tag(c))       // 1
+    @print(Quiet.tag(c))      // 2
+    @print(c == Pt(int){x: 3, y: 4})   // true
+    @print(helper_one())      // 10
+
+    @print("ALL PASS")
+}

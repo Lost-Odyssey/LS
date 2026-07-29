@@ -4762,6 +4762,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_unterminated_comment_reject.cmake
 )
 
+# @derive on a generic struct wrongly required its own inherent methods(T)
+# block to be textually adjacent -- any unrelated declaration in between
+# (an interface, a free function, another struct) made the derive-synthesized
+# trait impls land before that block and fail with a spurious "requires an
+# inherent methods block" error. Pins the fix plus a sibling-combination smoke
+# test (static generic method + operator overload + derive + L-002
+# disambiguation, all together).
+add_test(
+    NAME test_derive_declaration_gap
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -P ${CMAKE_SOURCE_DIR}/tests/test_derive_declaration_gap.cmake
+)
+
 # ---- P0: parser recursion depth guard (docs/plan_arch_cleanup.md W1) ----
 # Deep-nesting corpora (parens / prefix stars / blocks) must fail fast with a
 # clean "nesting too deep" diagnostic instead of a stack-overflow crash, the

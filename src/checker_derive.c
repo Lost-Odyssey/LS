@@ -765,6 +765,18 @@ void expand_derives(Checker *c, AstNode *program) {
 
     for (int i = 0; i < oldn; i++) {
         AstNode *d = program->as.program.decls[i];
+        /* A slot the derive-splice below already relocated earlier in the
+           array (see the inherent-impl look-ahead a few lines down) --
+           without this the node would be copied into `out` a SECOND time
+           here, in its original position, and every downstream consumer
+           that walks the rebuilt array unconditionally derefs each entry
+           (nothing here was ever built to expect a NULL slot; the old
+           adjacency-splice avoided this by advancing the shared `i` past
+           consumed nodes instead of nulling them). Missing this guard
+           segfaults on EVERY generic @derive, including the previously
+           passing derive_generic.lls -- caught by rerunning it after this
+           fix, not by the new regression sample alone. */
+        if (d == NULL) continue;
         if (nc >= ncap) { ncap = ncap ? ncap * 2 : (oldn + 8);
             out = realloc_safe(out, (size_t)ncap * sizeof(AstNode *)); }
         out[nc++] = d;
@@ -783,25 +795,36 @@ void expand_derives(Checker *c, AstNode *program) {
             /* Generic structs: derived interface-impls must follow the struct's
                inherent methods Name(T) block (the fold anchor). Push any impl blocks
                for this struct first (advancing i), so the synth lands after them. */
+            int found_inherent_idx = -1;
             if (is_struct_der && d->as.struct_decl.type_param_count > 0) {
                 const char *sname = d->as.struct_decl.name;
-                while (i + 1 < oldn) {
-                    AstNode *nx = program->as.program.decls[i + 1];
-                    bool is_impl_for = nx &&
-                        ((nx->kind == AST_IMPL_DECL && nx->as.impl_decl.name &&
-                          strcmp(nx->as.impl_decl.name, sname) == 0) ||
-                         (nx->kind == AST_IMPL_TRAIT_DECL && nx->as.impl_trait_decl.struct_name &&
-                          strcmp(nx->as.impl_trait_decl.struct_name, sname) == 0));
-                    if (!is_impl_for) break;
-                    if (nc >= ncap) { ncap *= 2;
-                        out = realloc_safe(out, (size_t)ncap * sizeof(AstNode *)); }
-                    out[nc++] = nx;
-                    i++;
+                for (int j = i + 1; j < oldn; j++) {
+                    AstNode *nx = program->as.program.decls[j];
+                    if (nx && nx->kind == AST_IMPL_DECL && nx->as.impl_decl.name &&
+                        strcmp(nx->as.impl_decl.name, sname) == 0)
+                    {
+                        if (nc >= ncap) { ncap *= 2;
+                            out = realloc_safe(out, (size_t)ncap * sizeof(AstNode *)); }
+                        out[nc++] = nx;
+                        found_inherent_idx = j;   /* NULL deferred -- see below */
+                        break;
+                    }
                 }
             }
             DeriveBuf sb; db_init(&sb);
             if (is_struct_der) derive_emit_struct(c, &sb, d, program);
             else               derive_emit_enum(c, &sb, d);
+            /* Only NULL the relocated slot now, AFTER derive_emit_struct's own
+               has_inherent scan (which reads this same array) has run. Nulling
+               it before that scan makes has_inherent wrongly conclude "no
+               inherent block" and synthesize a SECOND, EMPTY `methods T(T) {}`
+               -- which then overwrites impl_node (unconditional assignment in
+               check_impl_decl, no NULL guard) and erases every method the real
+               block declared. Caught by derive_generic.lls regressing to
+               "struct has no field or method" after this fix, not by the new
+               sample alone. */
+            if (found_inherent_idx >= 0)
+                program->as.program.decls[found_inherent_idx] = NULL;
             if (sb.len > 0) {
                 AstNode *synth = parse(sb.data, "<derive>");
                 if (synth != NULL && synth->kind == AST_PROGRAM) {
