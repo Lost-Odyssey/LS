@@ -52,4 +52,82 @@ if(NOT "${mc_err}" MATCHES "OK clean")
 endif()
 message(STATUS "iface_marker_ok memcheck: OK clean")
 
+# Section 2 (Task 3): Phase A -- shape validation at FOLD time for generic
+#   trait impls. The generic branch of check_impl_trait_decl used to fold the
+#   methods into the inherent impl_node and return early, so none of these
+#   five mistakes was reported at all ("Type check passed." rc=0).
+set(NEG "${SAMPLE_DIR}/iface_generic_sig_reject.lls")
+execute_process(COMMAND "${LS_EXE}" check "${NEG}"
+    OUTPUT_VARIABLE s2_out ERROR_VARIABLE s2_err RESULT_VARIABLE s2_rc)
+if(s2_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_sig_reject: expected compile errors, got success\n${s2_out}${s2_err}")
+endif()
+set(s2_all "${s2_out}${s2_err}")
+foreach(pat
+        "method 'to_int' parameter count mismatch"
+        "does not implement interface 'Two': missing method 'b'"
+        "method 'touch' self parameter mismatch"
+        "method 'make' static mismatch"
+        "method 'bogus' is not declared in interface 'Conv'")
+    string(FIND "${s2_all}" "${pat}" _at)
+    if(_at EQUAL -1)
+        message(FATAL_ERROR "iface_generic_sig_reject: missing diagnostic '${pat}'\n${s2_all}")
+    endif()
+endforeach()
+message(STATUS "iface_generic_sig_reject: all 5 shape diagnostics present (rc=${s2_rc})")
+
+# each mistake must be reported ONCE, not once per instantiation
+string(REGEX MATCHALL "method 'to_int' parameter count mismatch" s2_dup "${s2_all}")
+list(LENGTH s2_dup s2_dup_n)
+if(NOT s2_dup_n EQUAL 1)
+    message(FATAL_ERROR "iface_generic_sig_reject: arity diagnostic reported ${s2_dup_n} times, expected exactly 1\n${s2_all}")
+endif()
+message(STATUS "iface_generic_sig_reject: no duplicate diagnostics")
+
+# ---- positive twin: every legal shape still compiles and runs ----
+set(POS2 "${SAMPLE_DIR}/iface_generic_sig_ok.lls")
+set(_exp2_a "to_int=5")
+set(_exp2_b "sum=425")
+set(_exp2_c "len=5")
+execute_process(COMMAND "${LS_EXE}" run "${POS2}"
+    OUTPUT_VARIABLE p2_out ERROR_VARIABLE p2_err RESULT_VARIABLE p2_rc)
+if(NOT p2_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_sig_ok JIT FAILED (rc=${p2_rc})\n${p2_out}\n${p2_err}")
+endif()
+foreach(pat "${_exp2_a}" "${_exp2_b}" "${_exp2_c}")
+    if(NOT "${p2_out}" MATCHES "${pat}")
+        message(FATAL_ERROR "iface_generic_sig_ok JIT missing '${pat}'\n${p2_out}")
+    endif()
+endforeach()
+message(STATUS "iface_generic_sig_ok JIT: OK")
+
+set(aot2 "${WORK_DIR}/iface_generic_sig_ok_aot")
+if(WIN32)
+    set(aot2 "${aot2}.exe")
+endif()
+execute_process(COMMAND "${LS_EXE}" compile "${POS2}" -o "${aot2}"
+    RESULT_VARIABLE a2_rc ERROR_VARIABLE a2_err)
+if(NOT a2_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_sig_ok AOT compile FAILED:\n${a2_err}")
+endif()
+execute_process(COMMAND "${aot2}" OUTPUT_VARIABLE a2_out RESULT_VARIABLE a2_run_rc)
+if(NOT a2_run_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_sig_ok AOT run FAILED (rc=${a2_run_rc})\n${a2_out}")
+endif()
+if(NOT "${a2_out}" MATCHES "${_exp2_b}")
+    message(FATAL_ERROR "iface_generic_sig_ok AOT missing '${_exp2_b}'\n${a2_out}")
+endif()
+file(REMOVE "${aot2}")
+message(STATUS "iface_generic_sig_ok AOT: OK")
+
+execute_process(COMMAND "${LS_EXE}" run --memcheck "${POS2}"
+    OUTPUT_VARIABLE m2_out ERROR_VARIABLE m2_err RESULT_VARIABLE m2_rc)
+if(NOT m2_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_sig_ok memcheck FAILED (rc=${m2_rc})\n${m2_err}")
+endif()
+if(NOT "${m2_err}" MATCHES "OK clean")
+    message(FATAL_ERROR "iface_generic_sig_ok memcheck not clean\n${m2_err}")
+endif()
+message(STATUS "iface_generic_sig_ok memcheck: OK clean")
+
 message(STATUS "test_iface_generic_sig: ALL PASSED")

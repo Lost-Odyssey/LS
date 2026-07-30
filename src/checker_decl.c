@@ -1336,6 +1336,84 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
                           "'methods %s(T)' block before it", trait_name, struct_name, struct_name);
             return;
         }
+
+        /* Phase A: validate everything that needs no concrete types, HERE at fold
+           time -- once per impl block, located at the impl block, and reported even
+           if the generic type is never instantiated. The two comparisons that need
+           a concrete Self (param types, return type) cannot be done here (`Self`
+           has no Type* yet and T is unbound) and run at monomorphization instead;
+           see instantiate_impl_method_types. Historically this whole branch just
+           folded and returned, so a generic `methods X(T): Iface` was never checked
+           against its interface at all.
+           Operator interfaces (Add/Sub/...) are registered with real signatures, so
+           they participate; a trait absent from the registry (find_trait < 0) has
+           nothing to compare against and is skipped. */
+        int gen_tidx = find_trait(c, trait_name);
+        if (gen_tidx >= 0)
+        {
+            int gen_tmc = c->trait_registry[gen_tidx].method_count;
+            bool *gen_matched = (bool *)calloc_safe((size_t)gen_tmc, sizeof(bool));
+
+            for (int i = 0; i < node->as.impl_trait_decl.method_count; i++)
+            {
+                AstNode *gm = node->as.impl_trait_decl.methods[i];
+                if (gm == NULL || gm->kind != AST_FN_DECL) continue;
+                const char *gmn = gm->as.fn_decl.name;
+                if (gmn == NULL) continue;
+
+                /* Operator methods are only valid under their own operator
+                   interface (mirrors the non-generic loop). */
+                if (gmn[0] == '$')
+                {
+                    const char *want = operator_trait_for_method(gmn);
+                    if (want == NULL || strcmp(want, trait_name) != 0)
+                    {
+                        checker_error(c, gm->line, gm->column,
+                                      "operator method '%s' is only valid when implementing built-in interface '%s'",
+                                      operator_symbol_for_method(gmn), want ? want : "<operator>");
+                        continue;
+                    }
+                }
+
+                int gmi = find_trait_method(c, gen_tidx, gmn);
+                if (gmi < 0)
+                {
+                    checker_error(c, gm->line, gm->column,
+                                  "method '%s' is not declared in interface '%s'",
+                                  gmn, trait_name);
+                    continue;
+                }
+                if (gen_matched[gmi])
+                {
+                    checker_error(c, gm->line, gm->column,
+                                  "duplicate implementation of method '%s'", gmn);
+                    continue;
+                }
+                gen_matched[gmi] = true;
+
+                iface_check_method_shape(c, gen_tidx, gmi, gm, trait_name, gmn,
+                                         gm->as.fn_decl.is_static,
+                                         gm->as.fn_decl.self_borrow_kind,
+                                         gm->as.fn_decl.param_count);
+            }
+
+            /* Completeness. Same optional-operator exemption as the non-generic
+               path: !=, >, <=, >= are synthesized from == / < when absent. */
+            for (int j = 0; j < gen_tmc; j++)
+            {
+                if (gen_matched[j]) continue;
+                const char *tmn = c->trait_registry[gen_tidx].methods[j].name;
+                if (is_builtin_operator_trait(trait_name) && is_optional_operator_method(tmn))
+                    continue;
+                const char *disp = is_builtin_operator_trait(trait_name)
+                                       ? operator_symbol_for_method(tmn) : tmn;
+                checker_error(c, node->line, node->column,
+                              "struct '%s' does not implement interface '%s': missing method '%s'",
+                              struct_name, trait_name, disp);
+            }
+            free(gen_matched);
+        }
+
         int old_n = impl_node->as.impl_decl.method_count;
         int add_n = node->as.impl_trait_decl.method_count;
         impl_node->as.impl_decl.methods = realloc_safe(
