@@ -144,7 +144,8 @@ set(s3_all "${s3_out}${s3_err}")
 foreach(pat
         "method 'to_int' return type mismatch in interface 'Conv'"
         "method 'eat' parameter 1 type mismatch in interface 'Eat'"
-        "method '__clone' return type mismatch in interface 'Clone'")
+        "method '__clone' return type mismatch in interface 'Clone'"
+        "method 'gated' return type mismatch in interface 'Gated'")
     string(FIND "${s3_all}" "${pat}" _at3)
     if(_at3 EQUAL -1)
         message(FATAL_ERROR "iface_generic_type_reject: missing diagnostic '${pat}'\n${s3_all}")

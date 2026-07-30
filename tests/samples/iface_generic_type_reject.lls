@@ -19,6 +19,10 @@ interface Conv {
     def to_int(&self) -> int
 }
 
+interface Gated {
+    def gated(&self) -> int
+}
+
 interface Eat {
     def eat(&self, int n) -> int
 }
@@ -44,6 +48,23 @@ methods Holder(T): Clone {
     def clone(&self) -> int { return 42 }
 }
 
+// (4) INDIRECT first instantiation. T4 is never named in main; it is first
+// instantiated while resolving Gate(T)'s method signature, which happens inside
+// the checker's silent_type_errors window. Phase B sets a permanent
+// "already checked" flag, so a suppressed run used to consume the only chance to
+// report -- the error vanished for the whole compilation and, for a Clone impl,
+// reached codegen as invalid IR. Phase B now reports through that window.
+struct T4(T) { int n }
+methods T4(T) { def id(&self) -> int { return self.n } }
+methods T4(T): Gated {
+    def gated(&self) -> f64 { return 4.5 }
+}
+
+struct Gate(T) { int k }
+methods Gate(T) {
+    def open(&self) -> T4(T) { return T4(T){n: self.k} }
+}
+
 def main() {
     T1(int) a = T1(int){n: 1}
     @print(a.id())
@@ -53,6 +74,9 @@ def main() {
     @print(ab.id())
     T2(int) b = T2(int){n: 2}
     @print(b.id())
+    Gate(int) g = Gate(int){k: 4}
+    T4(int) t4 = g.open()
+    @print(t4.id())
     Str nm = "hi"
     Holder(int) h = Holder(int){name: nm}
     Vec(Holder(int)) hs = []

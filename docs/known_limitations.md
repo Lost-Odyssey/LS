@@ -764,7 +764,10 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
    `methods Wrap(T): Conv` 且类型写错、同时**整个程序从不实例化 `Wrap`**，
    那条类型错误不会出现。彻底修需要在抽象 `T` 上做结构比较
    （`Self` ≡ `Wrap(T)`、抽象 `T` 与自身相等），属独立特性，未做。
-   ⭐注意这**不是**「定义方模块自己不实例化就漏检」——实测 `std.core.vec`
+   ⭐**边界的准确说法是「全程序从不实例化」，不是「直接实例化」**：模板被
+   *间接*首次实例化（例如另一个泛型的方法签名里出现 `Bad(T)`）同样会检查——
+   这一条曾经不成立，见下面第三个附带修复。
+   ⭐注意这也**不是**「定义方模块自己不实例化就漏检」——实测 `std.core.vec`
    自己从不实例化具体 `Vec(int)`，但消费方实例化时照样报，且经
    `generic_template_source_file` 把诊断落回 `vec.lls` 的正确行。
 
@@ -777,6 +780,12 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
    写法不会在 impl 处被拒，只会在字面量初始化的调用点失败。彻底修需要 interface
    自带类型参数（`interface FromList(E)`），触面远超收益，未做。
 
+3. **方法级泛型的方法不走 Phase B。** `methods X(T): Iface` 里带自己类型参的
+   方法（`def convert(U)(&self) -> U`）在单态化循环里于 Phase B **之前**
+   `continue`（它们进的是 `generic_impl_method_templates` 延迟实例化路径），
+   所以其参数/返回类型从不与 interface 声明比较。Phase A 仍查其 shape。
+   这是同族的第三个残留边界，2026-07-31 终审发现后补记。
+
 **顺带修掉的三个独立 bug（都是主修过程中暴露的，不在原计划内）：**
 - **非泛型类型根本无法实现 `FromList`/`FromPairs`**：marker 豁免之前被
   `requires 0, got 1` 拒死，而泛型类型能用**只因泛型路径当时完全不查**——
@@ -784,6 +793,17 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
 - **`FromPairs` 注册的 `self_borrow_kind` 是 `3`**（非法哨兵，合法值只有
   `0/1/2`，见 `checker.h`），与同行注释和紧邻的 `FromList` 都矛盾。它一直
   不可观测，因为唯一消费者 `Map(K,V)` 是泛型的、而泛型路径从不比较签名。
+- **Phase B 的去重标志会吞掉真错误（终审发现，reproducer 实证）**：标志是
+  永久的，而 Phase B 可能运行在**别人**的 `silent_type_errors` 窗口里——解析
+  模板 A 的方法签名会实例化模板 B，B 的 Phase B 于是在抑制状态下跑：
+  `checker_error` 丢弃诊断，标志却已记为「查过」，整次编译再无人报。实证：
+  把出错模板改为只经 `def mk(&self) -> Bad(T)` 间接首次实例化 → `Type check
+  passed.` rc=0；Clone 形态则一路到 codegen 产非法 IR（正是本轮要堵的洞）。
+  修＝Phase B 调用期间同时保存/清除 `silent_type_errors`（它比较的是已解析
+  且经 `sig_resolvable` 把关的类型，不会产生该窗口要遮的跨作用域噪音）。
+  顺带把 Phase B 也 gate 在 `sig_resolvable` 上——eager 方法在签名解析失败时
+  会带着 `int`/`void` 兜底值走到这里，比较的是伪造类型。
+  护栏＝语料第 (4) 例（间接首次实例化），注入实验确认非空转。
 - **Phase B 诊断的文件归属错**：`checker_error` 用当前 checker 的
   `source_path`，而模板方法 AST 的行号属于**定义方**模块 → 消费方实例化时
   把定义方的行号盖在消费方的文件上。注入实验实证：把

@@ -2078,6 +2078,8 @@ static void instantiate_impl_method_types(
            this consumer cannot resolve is deliberately skipped silently -- e.g.
            Vec(T): Reflect in a module that never imported std.core.reflect), and
            after ret's NULL normalization.
+           Gated on sig_resolvable: an unresolvable eager signature reaches
+           here with fabricated int/void fallbacks, which would compare bogus.
            Deduped via the flag on the SHARED template node, so Vec(int) /
            Vec(Str) / Vec(f64) report a mismatch once, not three times.
 
@@ -2092,7 +2094,8 @@ static void instantiate_impl_method_types(
            defining module" instead would be wrong: std.core.vec never
            instantiates a concrete Vec(int) itself, so the check would never run
            for stdlib templates at all (verified by injection). */
-        if (origin != NULL && !method->as.fn_decl.iface_sig_types_checked)
+        if (origin != NULL && sig_resolvable &&
+            !method->as.fn_decl.iface_sig_types_checked)
         {
             int b_tidx = find_trait(c, origin);
             if (b_tidx >= 0)
@@ -2102,10 +2105,25 @@ static void instantiate_impl_method_types(
                 {
                     const char *def_file = generic_template_source_file(c, struct_type);
                     const char *saved_path = c->source_path;
+                    /* The flag is permanent, so the one run that sets it MUST be
+                       able to report. This block can execute inside somebody
+                       else's silent_type_errors window: resolving template A's
+                       method signature instantiates template B, and B's Phase B
+                       then runs suppressed -- checker_error drops the diagnostic
+                       while the flag still records it as checked, losing the
+                       error for the whole compilation. That is not theoretical:
+                       a bad Clone reached codegen as invalid IR through
+                       `def mk(&self) -> Bad(T)`. Phase B compares types that are
+                       already resolved and gated on sig_resolvable, so it cannot
+                       produce the cross-scope resolution noise the window exists
+                       to hide -- it is safe to report through it. */
+                    bool saved_silent = c->silent_type_errors;
                     if (def_file != NULL) c->source_path = def_file;
+                    c->silent_type_errors = false;
                     method->as.fn_decl.iface_sig_types_checked = true;
                     iface_check_method_types(c, b_tidx, b_mi, method, origin, mname,
                                              params + offset, pc, ret, struct_type);
+                    c->silent_type_errors = saved_silent;
                     c->source_path = saved_path;
                 }
             }
