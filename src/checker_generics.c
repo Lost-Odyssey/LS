@@ -32,6 +32,7 @@ static char *generic_method_symbol(const char *mangled_name, AstNode *method);
 static void register_lazy_generic_method(Checker *c, const char *mfn_name, AstNode *method, Type *mtype, Type *struct_type, char **tp_names, Type **type_args, int tp_count);
 static void register_template(Checker *c, const char *base_name, int type_param_count, int variant_count, const char *const *variant_names, const int *variant_payload_counts, const int *variant_payload_param_idxs);
 static Type *resolve_type_node_with_substitution( Checker *c, TypeNode *node, char **tp_names, Type **type_args, int tp_count);
+static Type *checker_instantiate_struct_inner(Checker *c, const char *base_name, Type **type_args, int type_arg_count, int line, int col);
 
 /* ---- G1: Generic struct template registry ---- */
 
@@ -905,7 +906,36 @@ static Type *resolve_type_node_with_substitution(
    Returns cached/freshly-built TYPE_STRUCT.  NULL if base_name is not a template. */
 /* G1.5: Forward declarations */
 
+/* Recursion limit for generic instantiation. Mirrors parser.c's
+   LS_MAX_PARSE_DEPTH. 64 is far above anything real (the deepest nesting in the
+   whole tree is test_mangle_deep_nest's Vec(Map(Str,Vec(Pair(int,int)))) at 5)
+   while still bounding the pathological case cheaply.
+   The recursion runs through the instantiated struct's own field types, so the
+   guard has to wrap the whole function -- hence the thin-shell split, which also
+   guarantees the counter is restored on every return path. */
+#define LS_MAX_INST_DEPTH 64
+
 Type *checker_instantiate_struct(Checker *c,
+                                 const char *base_name,
+                                 Type **type_args, int type_arg_count,
+                                 int line, int col)
+{
+    if (c->inst_depth >= LS_MAX_INST_DEPTH)
+    {
+        checker_error(c, line, col,
+                      "generic instantiation too deep (limit %d) while instantiating '%s' "
+                      "-- is the template self-referential?",
+                      LS_MAX_INST_DEPTH, base_name ? base_name : "<anonymous>");
+        return NULL;
+    }
+    c->inst_depth++;
+    Type *r = checker_instantiate_struct_inner(c, base_name, type_args,
+                                               type_arg_count, line, col);
+    c->inst_depth--;
+    return r;
+}
+
+static Type *checker_instantiate_struct_inner(Checker *c,
                                  const char *base_name,
                                  Type **type_args, int type_arg_count,
                                  int line, int col)

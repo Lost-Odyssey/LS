@@ -4903,3 +4903,18 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_iface_generic_sig.cmake
 )
+
+# ---- generic instantiation depth guard (2026-07-30) ----
+# checker_instantiate_struct <-> resolve_type_node_with_substitution <->
+# instantiate_template recursed with no limit, so a self-referential template
+# (struct Rec(T) { Rec(Rec(T)) inner }) overflowed the stack: 0xC00000FD, no
+# diagnostic, no output. The parser's own depth guard cannot help -- the
+# nesting is generated, not written.
+add_test(
+    NAME test_generic_depth
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_generic_depth.cmake
+)
