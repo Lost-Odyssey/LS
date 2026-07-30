@@ -326,6 +326,17 @@ bool is_optional_operator_method(const char *mname);
    types come from the implementing type's generics). Callers must skip arity and
    param/return type comparison for these. */
 bool is_marker_protocol_trait(const char *name);
+/* [def: checker_decl.c] */
+int find_trait(Checker *c, const char *name);
+/* [def: checker_decl.c] Index of `mname` in trait `tidx`'s method table, or -1. */
+int find_trait_method(Checker *c, int tidx, const char *mname);
+/* [def: checker_decl.c] Compare a user method's SHAPE (static-ness, self borrow
+   kind, user param count) against its interface declaration. Emits diagnostics.
+   Type comparisons are separate -- see iface_check_method_types. */
+void iface_check_method_shape(Checker *c, int tidx, int trait_mi,
+                              const AstNode *method, const char *trait_name,
+                              const char *mname, bool is_static, int user_sbk,
+                              int user_n);
 void register_builtin_operator_traits(Checker *c);
 bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *right, Type **out_result);
 /* [def: checker_decl.c] trait satisfaction + trait/impl-trait decl checkers. */

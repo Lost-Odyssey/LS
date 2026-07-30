@@ -13,7 +13,6 @@
 #include <string.h>
 /* File-local helpers (single-TU; re-static'd at checker split end). */
 static void check_fn_decl(Checker *c, AstNode *node);
-static int find_trait(Checker *c, const char *name);
 static bool has_member_drop_call(AstNode *node, Type *struct_type);
 static bool type_is_c_compatible(const Type *t);
 
@@ -1032,12 +1031,29 @@ void check_load_lib(Checker *c, AstNode *node)
     node->resolved_type = type_lib();
 }
 
-static int find_trait(Checker *c, const char *name)
+/* [def: checker_decl.c] Look up a trait by name in the registry; -1 if absent.
+   Exported for checker_generics.c (monomorphization-time signature checks). */
+int find_trait(Checker *c, const char *name)
 {
     for (int i = 0; i < c->trait_count; i++)
     {
         if (strcmp(c->trait_registry[i].name, name) == 0)
             return i;
+    }
+    return -1;
+}
+
+/* Look up a method by name inside a trait's declared method table; -1 if the
+   interface does not declare it. Three callers need this: the non-generic impl
+   loop, the generic fold-time shape check, and the monomorphization-time type
+   check. */
+int find_trait_method(Checker *c, int tidx, const char *mname)
+{
+    if (mname == NULL) return -1;
+    for (int j = 0; j < c->trait_registry[tidx].method_count; j++)
+    {
+        if (strcmp(c->trait_registry[tidx].methods[j].name, mname) == 0)
+            return j;
     }
     return -1;
 }
@@ -1177,6 +1193,54 @@ void check_trait_decl(Checker *c, AstNode *node)
 
     /* Restore Self context */
     c->current_impl_struct_type = saved_impl_st;
+}
+
+/* Shared leaf: compare the SHAPE of a user method against its interface
+   declaration -- everything that needs no concrete types (static-ness, self
+   borrow kind, user parameter COUNT). The two comparisons that DO need a
+   concrete Self (param types, return type) live in iface_check_method_types.
+   That split is what lets the generic path validate shape at FOLD time (once,
+   located at the impl block, even if the type is never instantiated) and defer
+   only the type comparisons to monomorphization.
+   Callers: check_impl_trait_decl's non-generic loop and its generic fold branch.
+   Diagnostics are emitted here; the caller does not need to inspect a result. */
+void iface_check_method_shape(Checker *c, int tidx, int trait_mi,
+                              const AstNode *method, const char *trait_name,
+                              const char *mname, bool is_static, int user_sbk,
+                              int user_n)
+{
+    bool trait_static = c->trait_registry[tidx].methods[trait_mi].is_static;
+    if (is_static != trait_static)
+    {
+        checker_error(c, method->line, method->column,
+                      "method '%s' static mismatch: interface '%s' declares it %s",
+                      mname, trait_name, trait_static ? "static" : "non-static");
+    }
+
+    if (!is_static)
+    {
+        int trait_sbk = c->trait_registry[tidx].methods[trait_mi].self_borrow_kind;
+        if (user_sbk != trait_sbk)
+        {
+            const char *expected_str = trait_sbk == 1 ? "&self" : (trait_sbk == 2 ? "&!self" : "no self");
+            const char *got_str = user_sbk == 1 ? "&self" : (user_sbk == 2 ? "&!self" : "no self");
+            checker_error(c, method->line, method->column,
+                          "method '%s' self parameter mismatch: interface '%s' requires %s, got %s",
+                          mname, trait_name, expected_str, got_str);
+        }
+    }
+
+    /* Marker protocol interfaces declare no arity -- see is_marker_protocol_trait. */
+    if (!is_marker_protocol_trait(trait_name))
+    {
+        int trait_n = c->trait_registry[tidx].methods[trait_mi].type->as.function.param_count;
+        if (user_n != trait_n)
+        {
+            checker_error(c, method->line, method->column,
+                          "method '%s' parameter count mismatch: interface '%s' requires %d, got %d",
+                          mname, trait_name, trait_n, user_n);
+        }
+    }
 }
 
 /* Check a `methods Struct: Interface { ... }` block:
@@ -1411,15 +1475,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
         }
 
         /* Find matching trait method by name */
-        int trait_mi = -1;
-        for (int j = 0; j < trait_method_count; j++)
-        {
-            if (strcmp(c->trait_registry[tidx].methods[j].name, mname) == 0)
-            {
-                trait_mi = j;
-                break;
-            }
-        }
+        int trait_mi = find_trait_method(c, tidx, mname);
         if (trait_mi < 0)
         {
             checker_error(c, method->line, method->column,
@@ -1435,31 +1491,11 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
         }
         matched[trait_mi] = true;
 
-        /* Static-ness must match the trait declaration */
-        bool trait_static = c->trait_registry[tidx].methods[trait_mi].is_static;
-        if (is_static != trait_static)
-        {
-            checker_error(c, method->line, method->column,
-                          "method '%s' static mismatch: interface '%s' declares it %s",
-                          mname, trait_name, trait_static ? "static" : "non-static");
-        }
-
-        /* Check self_borrow_kind matches (instance methods only) */
-        if (!is_static)
-        {
-            int trait_sbk = c->trait_registry[tidx].methods[trait_mi].self_borrow_kind;
-            if (user_sbk != trait_sbk)
-            {
-                const char *expected_str = trait_sbk == 1 ? "&self" : (trait_sbk == 2 ? "&!self" : "no self");
-                const char *got_str = user_sbk == 1 ? "&self" : (user_sbk == 2 ? "&!self" : "no self");
-                checker_error(c, method->line, method->column,
-                              "method '%s' self parameter mismatch: interface '%s' requires %s, got %s",
-                              mname, trait_name, expected_str, got_str);
-            }
-        }
+        int user_n = method->as.fn_decl.param_count;
+        iface_check_method_shape(c, tidx, trait_mi, method, trait_name,
+                                 mname, is_static, user_sbk, user_n);
 
         /* Resolve user parameter types */
-        int user_n = method->as.fn_decl.param_count;
         Type **user_params = NULL;
         if (user_n > 0)
         {
@@ -1478,26 +1514,19 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
         checker_reject_borrow_return(c, ret, method, method->line, method->column);  /* Phase 0/2 */
 
         /* Marker protocol interfaces declare no arity/types -- see
-           is_marker_protocol_trait. static-ness and self-borrow kind above are
-           still compared; only the three comparisons below are skipped. */
+           is_marker_protocol_trait. static-ness, self-borrow kind, and arity
+           are compared in iface_check_method_shape above; only the two
+           comparisons below (param types, return type) are skipped here. */
         bool skip_sig_types = is_marker_protocol_trait(trait_name);
 
-        /* Compare parameter count and types against trait signature.
-           The trait signature does NOT include the implicit *Self param —
-           it stores only user-visible params (same as what parser gives). */
+        /* Compare parameter types against trait signature (arity already
+           checked in iface_check_method_shape -- only compare types when
+           arity matches, same "mismatch suppresses type comparison" behavior
+           as before). The trait signature does NOT include the implicit
+           *Self param — it stores only user-visible params (same as what
+           parser gives). */
         Type *trait_fn = c->trait_registry[tidx].methods[trait_mi].type;
-        int trait_n = trait_fn->as.function.param_count;
-        if (skip_sig_types)
-        {
-            /* nothing to compare */
-        }
-        else if (user_n != trait_n)
-        {
-            checker_error(c, method->line, method->column,
-                          "method '%s' parameter count mismatch: interface '%s' requires %d, got %d",
-                          mname, trait_name, trait_n, user_n);
-        }
-        else
+        if (!skip_sig_types && user_n == trait_fn->as.function.param_count)
         {
             for (int j = 0; j < user_n; j++)
             {
