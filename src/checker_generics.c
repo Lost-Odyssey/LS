@@ -34,6 +34,24 @@ static void register_template(Checker *c, const char *base_name, int type_param_
 static Type *resolve_type_node_with_substitution( Checker *c, TypeNode *node, char **tp_names, Type **type_args, int tp_count);
 static Type *checker_instantiate_struct_inner(Checker *c, const char *base_name, Type **type_args, int type_arg_count, int line, int col);
 
+/* Source file that `st`'s generic template was DEFINED in, or NULL when that
+   cannot be determined (template defined in the root file, or the module is not
+   in the registry). checker_error stamps diagnostics with c->source_path, which
+   during monomorphization is the CONSUMER's file -- but a template's method AST
+   nodes carry line numbers from the defining file. Callers reporting against
+   those nodes must swap source_path over for the call, or the diagnostic points
+   into the wrong file at a line that may not even exist there. */
+static const char *generic_template_source_file(Checker *c, Type *st)
+{
+    if (st == NULL || st->kind != TYPE_STRUCT) return NULL;
+    const char *def_mod = st->as.strukt.generic_module;
+    if (def_mod == NULL || c->registry == NULL) return NULL;
+    if (c->module_name != NULL && strcmp(def_mod, c->module_name) == 0)
+        return NULL;   /* already checking the defining module */
+    ModuleInfo *mi = module_find(c->registry, def_mod);
+    return mi ? mi->file_path : NULL;
+}
+
 /* ---- G1: Generic struct template registry ---- */
 
 
@@ -2061,7 +2079,19 @@ static void instantiate_impl_method_types(
            Vec(T): Reflect in a module that never imported std.core.reflect), and
            after ret's NULL normalization.
            Deduped via the flag on the SHARED template node, so Vec(int) /
-           Vec(Str) / Vec(f64) report a mismatch once, not three times. */
+           Vec(Str) / Vec(f64) report a mismatch once, not three times.
+
+           Attribution: checker_error stamps diagnostics with the CURRENT
+           checker's source_path, but `method` is the template's node and its
+           line numbers belong to the DEFINING module. Left alone, a consumer
+           instantiating an imported generic reports the defining file's line
+           against the consumer's file -- an injected fault at
+           lib/std/core/vec.lls:626 came out as "str_core.lls:626", a line that
+           file does not have (it is 483 lines long). So swap source_path to the
+           defining module's file for the call. Gating on "only check in the
+           defining module" instead would be wrong: std.core.vec never
+           instantiates a concrete Vec(int) itself, so the check would never run
+           for stdlib templates at all (verified by injection). */
         if (origin != NULL && !method->as.fn_decl.iface_sig_types_checked)
         {
             int b_tidx = find_trait(c, origin);
@@ -2070,9 +2100,13 @@ static void instantiate_impl_method_types(
                 int b_mi = find_trait_method(c, b_tidx, mname);
                 if (b_mi >= 0)
                 {
+                    const char *def_file = generic_template_source_file(c, struct_type);
+                    const char *saved_path = c->source_path;
+                    if (def_file != NULL) c->source_path = def_file;
                     method->as.fn_decl.iface_sig_types_checked = true;
                     iface_check_method_types(c, b_tidx, b_mi, method, origin, mname,
                                              params + offset, pc, ret, struct_type);
+                    c->source_path = saved_path;
                 }
             }
         }
