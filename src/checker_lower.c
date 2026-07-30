@@ -1267,7 +1267,7 @@ void register_builtin_operator_traits(Checker *c)
        arity (from_list takes 1 element, from_pairs takes 2). is_marker_protocol_trait
        exempts them from arity/type comparison; see its header comment. */
     add_builtin_lifecycle_trait(c, "FromList",  "__from_list",  type_void(), 2); /* def from_list(&!self, E x) */
-    add_builtin_lifecycle_trait(c, "FromPairs", "__from_pairs", type_void(), 3); /* def from_pairs(&!self, K k, V v) */
+    add_builtin_lifecycle_trait(c, "FromPairs", "__from_pairs", type_void(), 2); /* def from_pairs(&!self, K k, V v) */
 }
 
 /* Build `obj.method(arg)` as a fresh AST_CALL. obj/arg are TAKEN BY OWNERSHIP
