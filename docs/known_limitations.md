@@ -750,4 +750,47 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
 字符串表——政策 A 的先例不适用，那里禁掉的形态本来就是坏的，这里要禁的
 本来是好的。
 
+
+---
+
+## L-024 · 泛型 trait-impl 签名校验的两处残留边界（2026-07-30，随主修一并成文）
+
+主体已闭合（Phase A 折叠时查 shape、Phase B 单态化时查类型），残留两点，
+都是刻意的，记录以免日后被当成新 bug：
+
+1. **类型比较仍依赖至少一次实例化。** Phase A（arity / static / self borrow
+   kind / 未声明 / 重复 / 完备性）不需要实例化，定义方 `lls check` 即报。但
+   参数/返回**类型**比较需要具体 `Self`，只能在单态化时做。所以一个库若定义了
+   `methods Wrap(T): Conv` 且类型写错、同时**整个程序从不实例化 `Wrap`**，
+   那条类型错误不会出现。彻底修需要在抽象 `T` 上做结构比较
+   （`Self` ≡ `Wrap(T)`、抽象 `T` 与自身相等），属独立特性，未做。
+   ⭐注意这**不是**「定义方模块自己不实例化就漏检」——实测 `std.core.vec`
+   自己从不实例化具体 `Vec(int)`，但消费方实例化时照样报，且经
+   `generic_template_source_file` 把诊断落回 `vec.lls` 的正确行。
+
+2. **`FromList` / `FromPairs` 的 arity 与元素类型不被校验。** 这两个是 marker
+   protocol interface：`add_builtin_lifecycle_trait` 注册时 `param_count` 恒为
+   0，是**占位符不是真 arity**（`from_list` 实收 1 个元素、`from_pairs` 收 2 个），
+   元素/键/值类型来自实现类型自己的泛型参数。`is_marker_protocol_trait`
+   （`checker_lower.c`）因此让它们跳过 arity 与类型比较；static / self borrow
+   kind / 存在性仍然照查。所以 `def from_list(&!self, int a, int b)` 这种多参
+   写法不会在 impl 处被拒，只会在字面量初始化的调用点失败。彻底修需要 interface
+   自带类型参数（`interface FromList(E)`），触面远超收益，未做。
+
+**顺带修掉的三个独立 bug（都是主修过程中暴露的，不在原计划内）：**
+- **非泛型类型根本无法实现 `FromList`/`FromPairs`**：marker 豁免之前被
+  `requires 0, got 1` 拒死，而泛型类型能用**只因泛型路径当时完全不查**——
+  一个有文档的 opt-in（实现 FromList 即可 `Bag b = [a,b,c]`）事实上不可用。
+- **`FromPairs` 注册的 `self_borrow_kind` 是 `3`**（非法哨兵，合法值只有
+  `0/1/2`，见 `checker.h`），与同行注释和紧邻的 `FromList` 都矛盾。它一直
+  不可观测，因为唯一消费者 `Map(K,V)` 是泛型的、而泛型路径从不比较签名。
+- **Phase B 诊断的文件归属错**：`checker_error` 用当前 checker 的
+  `source_path`，而模板方法 AST 的行号属于**定义方**模块 → 消费方实例化时
+  把定义方的行号盖在消费方的文件上。注入实验实证：把
+  `lib/std/core/vec.lls:626` 改坏，报出来是 `str_core.lls:626`，而那个文件
+  只有 483 行。修＝调用期间把 `source_path` 换成定义方文件
+  （`generic_template_source_file`）。⭐先试过的「只在定义方模块查」方案是
+  **错的**：`std.core.vec` 自己从不实例化具体 `Vec(int)`，该方案会让 stdlib
+  模板完全不被检查——同一个注入实验实证了它变哑。
+
 <!-- 后续新增限制条目请沿用 L-NNN · 标题 格式 -->
