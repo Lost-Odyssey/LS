@@ -321,6 +321,29 @@ bool is_builtin_operator_trait(const char *name);
 const char *operator_trait_for_method(const char *mname);
 const char *operator_symbol_for_method(const char *mname);
 bool is_optional_operator_method(const char *mname);
+/* [def: checker_lower.c] FromList/FromPairs -- interfaces whose registered
+   signature carries only the method name + self-borrow kind (arity and element
+   types come from the implementing type's generics). Callers must skip arity and
+   param/return type comparison for these. */
+bool is_marker_protocol_trait(const char *name);
+/* [def: checker_decl.c] */
+int find_trait(Checker *c, const char *name);
+/* [def: checker_decl.c] Index of `mname` in trait `tidx`'s method table, or -1. */
+int find_trait_method(Checker *c, int tidx, const char *mname);
+/* [def: checker_decl.c] Compare a user method's SHAPE (static-ness, self borrow
+   kind, user param count) against its interface declaration. Emits diagnostics.
+   Type comparisons are separate -- see iface_check_method_types. */
+void iface_check_method_shape(Checker *c, int tidx, int trait_mi,
+                              const AstNode *method, const char *trait_name,
+                              const char *mname, bool is_static, int user_sbk,
+                              int user_n);
+/* [def: checker_decl.c] Compare a user method's param/return TYPES against its
+   interface declaration. Needs a concrete Self, so the generic path calls it at
+   monomorphization, not at fold time. Emits diagnostics. */
+void iface_check_method_types(Checker *c, int tidx, int trait_mi,
+                             const AstNode *method, const char *trait_name,
+                             const char *mname, Type **user_params, int user_n,
+                             Type *ret, Type *st);
 void register_builtin_operator_traits(Checker *c);
 bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *right, Type **out_result);
 /* [def: checker_decl.c] trait satisfaction + trait/impl-trait decl checkers. */

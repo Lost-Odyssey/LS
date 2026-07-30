@@ -4884,3 +4884,37 @@ ls_ir_snapshot(NAME enum_basic_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/enu
 ls_ir_snapshot(NAME closure_g SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/closure_g.lls)
 ls_ir_snapshot(NAME match_own_stress_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/match_own_stress_test.lls)
 endif()
+
+# ---- interface signature validation (2026-07-30) ----
+# Three defects, one family. (1) FromList/FromPairs are marker protocol
+# interfaces registered with param_count 0 on purpose, so comparing a real
+# impl's arity against it rejected every non-generic impl. (2) Generic
+# `methods X(T): Iface` skipped signature validation ENTIRELY (folded into
+# the inherent impl_node then early-returned) -- wrong arity, wrong types,
+# wrong static-ness, wrong self-borrow-kind and missing methods were all
+# silently accepted; a bogus generic Clone reached codegen and produced
+# invalid IR caught only by the LLVM verifier. (3) covered by
+# test_generic_depth.
+add_test(
+    NAME test_iface_generic_sig
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_iface_generic_sig.cmake
+)
+
+# ---- generic instantiation depth guard (2026-07-30) ----
+# checker_instantiate_struct <-> resolve_type_node_with_substitution <->
+# instantiate_template recursed with no limit, so a self-referential template
+# (struct Rec(T) { Rec(Rec(T)) inner }) overflowed the stack: 0xC00000FD, no
+# diagnostic, no output. The parser's own depth guard cannot help -- the
+# nesting is generated, not written.
+add_test(
+    NAME test_generic_depth
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_generic_depth.cmake
+)

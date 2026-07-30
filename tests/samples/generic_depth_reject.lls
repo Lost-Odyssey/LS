@@ -1,0 +1,20 @@
+// checker_instantiate_struct <-> resolve_type_node_with_substitution <->
+// instantiate_template are mutually recursive with no depth limit, so a
+// self-referential template expands forever. Before the guard this crashed the
+// compiler with STATUS_STACK_OVERFLOW (0xC00000FD): no diagnostic, no output,
+// process killed by the OS.
+//
+// The parser's LS_MAX_PARSE_DEPTH guard cannot catch this -- you cannot WRITE
+// 256 levels of nesting here; the template generates them.
+struct Rec(T) {
+    Rec(Rec(T)) inner
+}
+
+methods Rec(T) {
+    def id(&self) -> int { return 1 }
+}
+
+def main() {
+    Rec(int) r = Rec(int){inner: 0}
+    @print(r.id())
+}

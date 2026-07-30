@@ -528,6 +528,13 @@ struct AstNode
                this AST field is the carrier across the generic fold, which erases
                the separate impl_trait_decl node.) */
             const char *origin_iface;
+            /* Phase B dedup anchor: set once the param/return TYPE comparison has
+               run for this template method at monomorphization. The node is the
+               SHARED template (folded into the struct's inherent impl_node), so one
+               flag per template method is exactly the granularity we want -- without
+               it, Vec(int)/Vec(Str)/Vec(f64) would each report the same mismatch.
+               Checker-written, not set by the parser. */
+            bool iface_sig_types_checked;
         } fn_decl;
         struct
         {

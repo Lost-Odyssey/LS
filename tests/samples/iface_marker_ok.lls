@@ -1,0 +1,26 @@
+// FromList / FromPairs are MARKER protocol interfaces: the registered signature
+// carries only the method name and self-borrow kind, so a NON-generic type must
+// be able to implement them too. Before the marker exemption this file was
+// rejected with "parameter count mismatch: interface 'FromList' requires 0,
+// got 1" -- i.e. a documented opt-in was unusable on non-generic types.
+struct Bag {
+    int total
+    int calls
+}
+
+methods Bag {
+    def total_of(&self) -> int { return self.total }
+    def call_count(&self) -> int { return self.calls }
+}
+
+methods Bag: FromList {
+    def from_list(&!self, int x) {
+        self.total = self.total + x
+        self.calls = self.calls + 1
+    }
+}
+
+def main() {
+    Bag b = [10, 20, 30]
+    @print(f"total={b.total_of()} calls={b.call_count()}")
+}

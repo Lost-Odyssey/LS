@@ -32,6 +32,25 @@ static char *generic_method_symbol(const char *mangled_name, AstNode *method);
 static void register_lazy_generic_method(Checker *c, const char *mfn_name, AstNode *method, Type *mtype, Type *struct_type, char **tp_names, Type **type_args, int tp_count);
 static void register_template(Checker *c, const char *base_name, int type_param_count, int variant_count, const char *const *variant_names, const int *variant_payload_counts, const int *variant_payload_param_idxs);
 static Type *resolve_type_node_with_substitution( Checker *c, TypeNode *node, char **tp_names, Type **type_args, int tp_count);
+static Type *checker_instantiate_struct_inner(Checker *c, const char *base_name, Type **type_args, int type_arg_count, int line, int col);
+
+/* Source file that `st`'s generic template was DEFINED in, or NULL when that
+   cannot be determined (template defined in the root file, or the module is not
+   in the registry). checker_error stamps diagnostics with c->source_path, which
+   during monomorphization is the CONSUMER's file -- but a template's method AST
+   nodes carry line numbers from the defining file. Callers reporting against
+   those nodes must swap source_path over for the call, or the diagnostic points
+   into the wrong file at a line that may not even exist there. */
+static const char *generic_template_source_file(Checker *c, Type *st)
+{
+    if (st == NULL || st->kind != TYPE_STRUCT) return NULL;
+    const char *def_mod = st->as.strukt.generic_module;
+    if (def_mod == NULL || c->registry == NULL) return NULL;
+    if (c->module_name != NULL && strcmp(def_mod, c->module_name) == 0)
+        return NULL;   /* already checking the defining module */
+    ModuleInfo *mi = module_find(c->registry, def_mod);
+    return mi ? mi->file_path : NULL;
+}
 
 /* ---- G1: Generic struct template registry ---- */
 
@@ -905,7 +924,36 @@ static Type *resolve_type_node_with_substitution(
    Returns cached/freshly-built TYPE_STRUCT.  NULL if base_name is not a template. */
 /* G1.5: Forward declarations */
 
+/* Recursion limit for generic instantiation. Mirrors parser.c's
+   LS_MAX_PARSE_DEPTH. 64 is far above anything real (the deepest nesting in the
+   whole tree is test_mangle_deep_nest's Vec(Map(Str,Vec(Pair(int,int)))) at 5)
+   while still bounding the pathological case cheaply.
+   The recursion runs through the instantiated struct's own field types, so the
+   guard has to wrap the whole function -- hence the thin-shell split, which also
+   guarantees the counter is restored on every return path. */
+#define LS_MAX_INST_DEPTH 64
+
 Type *checker_instantiate_struct(Checker *c,
+                                 const char *base_name,
+                                 Type **type_args, int type_arg_count,
+                                 int line, int col)
+{
+    if (c->inst_depth >= LS_MAX_INST_DEPTH)
+    {
+        checker_error(c, line, col,
+                      "generic instantiation too deep (limit %d) while instantiating '%s' "
+                      "-- is the template self-referential?",
+                      LS_MAX_INST_DEPTH, base_name ? base_name : "<anonymous>");
+        return NULL;
+    }
+    c->inst_depth++;
+    Type *r = checker_instantiate_struct_inner(c, base_name, type_args,
+                                               type_arg_count, line, col);
+    c->inst_depth--;
+    return r;
+}
+
+static Type *checker_instantiate_struct_inner(Checker *c,
                                  const char *base_name,
                                  Type **type_args, int type_arg_count,
                                  int line, int col)
@@ -2020,6 +2068,66 @@ static void instantiate_impl_method_types(
         for (int j = 0; j < pc; j++)
             reject_array_by_value_param(c, params[offset + j],
                 method->as.fn_decl.param_names[j], method->line, method->column);
+
+        /* Phase B: the half of interface validation that needs a concrete Self.
+           Shape (arity / static-ness / self borrow kind / presence) was already
+           checked once at fold time in check_impl_trait_decl; here we compare the
+           param and return TYPES now that T is bound and `struct_type` IS the
+           concrete Self.
+           Placement matters: after the sig_resolvable early-continue (a signature
+           this consumer cannot resolve is deliberately skipped silently -- e.g.
+           Vec(T): Reflect in a module that never imported std.core.reflect), and
+           after ret's NULL normalization.
+           Gated on sig_resolvable: an unresolvable eager signature reaches
+           here with fabricated int/void fallbacks, which would compare bogus.
+           Deduped via the flag on the SHARED template node, so Vec(int) /
+           Vec(Str) / Vec(f64) report a mismatch once, not three times.
+
+           Attribution: checker_error stamps diagnostics with the CURRENT
+           checker's source_path, but `method` is the template's node and its
+           line numbers belong to the DEFINING module. Left alone, a consumer
+           instantiating an imported generic reports the defining file's line
+           against the consumer's file -- an injected fault at
+           lib/std/core/vec.lls:626 came out as "str_core.lls:626", a line that
+           file does not have (it is 483 lines long). So swap source_path to the
+           defining module's file for the call. Gating on "only check in the
+           defining module" instead would be wrong: std.core.vec never
+           instantiates a concrete Vec(int) itself, so the check would never run
+           for stdlib templates at all (verified by injection). */
+        if (origin != NULL && sig_resolvable &&
+            !method->as.fn_decl.iface_sig_types_checked)
+        {
+            int b_tidx = find_trait(c, origin);
+            if (b_tidx >= 0)
+            {
+                int b_mi = find_trait_method(c, b_tidx, mname);
+                if (b_mi >= 0)
+                {
+                    const char *def_file = generic_template_source_file(c, struct_type);
+                    const char *saved_path = c->source_path;
+                    /* The flag is permanent, so the one run that sets it MUST be
+                       able to report. This block can execute inside somebody
+                       else's silent_type_errors window: resolving template A's
+                       method signature instantiates template B, and B's Phase B
+                       then runs suppressed -- checker_error drops the diagnostic
+                       while the flag still records it as checked, losing the
+                       error for the whole compilation. That is not theoretical:
+                       a bad Clone reached codegen as invalid IR through
+                       `def mk(&self) -> Bad(T)`. Phase B compares types that are
+                       already resolved and gated on sig_resolvable, so it cannot
+                       produce the cross-scope resolution noise the window exists
+                       to hide -- it is safe to report through it. */
+                    bool saved_silent = c->silent_type_errors;
+                    if (def_file != NULL) c->source_path = def_file;
+                    c->silent_type_errors = false;
+                    method->as.fn_decl.iface_sig_types_checked = true;
+                    iface_check_method_types(c, b_tidx, b_mi, method, origin, mname,
+                                             params + offset, pc, ret, struct_type);
+                    c->silent_type_errors = saved_silent;
+                    c->source_path = saved_path;
+                }
+            }
+        }
 
         Type *mtype = type_function(params, total, ret, false);
 

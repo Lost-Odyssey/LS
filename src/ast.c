@@ -1058,6 +1058,10 @@ AstNode *ast_clone_deep(const AstNode *src) {
         n->as.fn_decl.body = ast_clone_deep(src->as.fn_decl.body);
         /* impl_struct_name points into the impl_decl; don't strdup — it
            will be overridden by the caller for generic instantiations. */
+        /* Derived, not source syntax: the clone is a fresh instantiation, so it
+           re-derives this. (Contrast closure.move_names, which IS source syntax --
+           clearing it there silently dropped a user-visible diagnostic.) */
+        n->as.fn_decl.iface_sig_types_checked = false;
         break;
     }
     case AST_CLOSURE: {

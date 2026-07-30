@@ -13,7 +13,6 @@
 #include <string.h>
 /* File-local helpers (single-TU; re-static'd at checker split end). */
 static void check_fn_decl(Checker *c, AstNode *node);
-static int find_trait(Checker *c, const char *name);
 static bool has_member_drop_call(AstNode *node, Type *struct_type);
 static bool type_is_c_compatible(const Type *t);
 
@@ -1032,12 +1031,29 @@ void check_load_lib(Checker *c, AstNode *node)
     node->resolved_type = type_lib();
 }
 
-static int find_trait(Checker *c, const char *name)
+/* [def: checker_decl.c] Look up a trait by name in the registry; -1 if absent.
+   Exported for checker_generics.c (monomorphization-time signature checks). */
+int find_trait(Checker *c, const char *name)
 {
     for (int i = 0; i < c->trait_count; i++)
     {
         if (strcmp(c->trait_registry[i].name, name) == 0)
             return i;
+    }
+    return -1;
+}
+
+/* Look up a method by name inside a trait's declared method table; -1 if the
+   interface does not declare it. Three callers need this: the non-generic impl
+   loop, the generic fold-time shape check, and the monomorphization-time type
+   check. */
+int find_trait_method(Checker *c, int tidx, const char *mname)
+{
+    if (mname == NULL) return -1;
+    for (int j = 0; j < c->trait_registry[tidx].method_count; j++)
+    {
+        if (strcmp(c->trait_registry[tidx].methods[j].name, mname) == 0)
+            return j;
     }
     return -1;
 }
@@ -1179,6 +1195,94 @@ void check_trait_decl(Checker *c, AstNode *node)
     c->current_impl_struct_type = saved_impl_st;
 }
 
+/* Shared leaf: compare the SHAPE of a user method against its interface
+   declaration -- everything that needs no concrete types (static-ness, self
+   borrow kind, user parameter COUNT). The two comparisons that DO need a
+   concrete Self (param types, return type) live in iface_check_method_types.
+   That split is what lets the generic path validate shape at FOLD time (once,
+   located at the impl block, even if the type is never instantiated) and defer
+   only the type comparisons to monomorphization.
+   Callers: check_impl_trait_decl's non-generic loop and its generic fold branch.
+   Diagnostics are emitted here; the caller does not need to inspect a result. */
+void iface_check_method_shape(Checker *c, int tidx, int trait_mi,
+                              const AstNode *method, const char *trait_name,
+                              const char *mname, bool is_static, int user_sbk,
+                              int user_n)
+{
+    bool trait_static = c->trait_registry[tidx].methods[trait_mi].is_static;
+    if (is_static != trait_static)
+    {
+        checker_error(c, method->line, method->column,
+                      "method '%s' static mismatch: interface '%s' declares it %s",
+                      mname, trait_name, trait_static ? "static" : "non-static");
+    }
+
+    if (!is_static)
+    {
+        int trait_sbk = c->trait_registry[tidx].methods[trait_mi].self_borrow_kind;
+        if (user_sbk != trait_sbk)
+        {
+            const char *expected_str = trait_sbk == 1 ? "&self" : (trait_sbk == 2 ? "&!self" : "no self");
+            const char *got_str = user_sbk == 1 ? "&self" : (user_sbk == 2 ? "&!self" : "no self");
+            checker_error(c, method->line, method->column,
+                          "method '%s' self parameter mismatch: interface '%s' requires %s, got %s",
+                          mname, trait_name, expected_str, got_str);
+        }
+    }
+
+    /* Marker protocol interfaces declare no arity -- see is_marker_protocol_trait. */
+    if (!is_marker_protocol_trait(trait_name))
+    {
+        int trait_n = c->trait_registry[tidx].methods[trait_mi].type->as.function.param_count;
+        if (user_n != trait_n)
+        {
+            checker_error(c, method->line, method->column,
+                          "method '%s' parameter count mismatch: interface '%s' requires %d, got %d",
+                          mname, trait_name, trait_n, user_n);
+        }
+    }
+}
+
+/* Shared leaf: compare a user method's param/return TYPES against its interface
+   declaration. Needs a CONCRETE Self (`st`) -- that is exactly why this half
+   cannot run at generic fold time and is called from
+   instantiate_impl_method_types instead (see iface_check_method_shape for the
+   split rationale).
+   `user_params` holds only the USER params (no implicit self), parallel to the
+   trait signature's own params. Marker protocol interfaces declare no types and
+   are skipped; an arity mismatch also skips (already reported by the shape leaf,
+   and comparing element-wise past the end would read out of bounds). */
+void iface_check_method_types(Checker *c, int tidx, int trait_mi,
+                             const AstNode *method, const char *trait_name,
+                             const char *mname, Type **user_params, int user_n,
+                             Type *ret, Type *st)
+{
+    if (is_marker_protocol_trait(trait_name)) return;
+
+    Type *trait_fn = c->trait_registry[tidx].methods[trait_mi].type;
+    if (user_n == trait_fn->as.function.param_count)
+    {
+        for (int j = 0; j < user_n; j++)
+        {
+            if (user_params[j] && trait_fn->as.function.params[j] &&
+                !type_equals_with_self(trait_fn->as.function.params[j], user_params[j], st))
+            {
+                checker_error(c, method->line, method->column,
+                              "method '%s' parameter %d type mismatch in interface '%s'",
+                              mname, j + 1, trait_name);
+            }
+        }
+    }
+
+    Type *trait_ret = trait_fn->as.function.return_type;
+    if (ret && trait_ret && !type_equals_with_self(trait_ret, ret, st))
+    {
+        checker_error(c, method->line, method->column,
+                      "method '%s' return type mismatch in interface '%s'",
+                      mname, trait_name);
+    }
+}
+
 /* Check a `methods Struct: Interface { ... }` block:
    verify trait exists, struct exists, method signatures match the trait,
    then register methods into impl_registry and record the trait-impl pair. */
@@ -1272,6 +1376,84 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
                           "'methods %s(T)' block before it", trait_name, struct_name, struct_name);
             return;
         }
+
+        /* Phase A: validate everything that needs no concrete types, HERE at fold
+           time -- once per impl block, located at the impl block, and reported even
+           if the generic type is never instantiated. The two comparisons that need
+           a concrete Self (param types, return type) cannot be done here (`Self`
+           has no Type* yet and T is unbound) and run at monomorphization instead;
+           see instantiate_impl_method_types. Historically this whole branch just
+           folded and returned, so a generic `methods X(T): Iface` was never checked
+           against its interface at all.
+           Operator interfaces (Add/Sub/...) are registered with real signatures, so
+           they participate; a trait absent from the registry (find_trait < 0) has
+           nothing to compare against and is skipped. */
+        int gen_tidx = find_trait(c, trait_name);
+        if (gen_tidx >= 0)
+        {
+            int gen_tmc = c->trait_registry[gen_tidx].method_count;
+            bool *gen_matched = (bool *)calloc_safe((size_t)gen_tmc, sizeof(bool));
+
+            for (int i = 0; i < node->as.impl_trait_decl.method_count; i++)
+            {
+                AstNode *gm = node->as.impl_trait_decl.methods[i];
+                if (gm == NULL || gm->kind != AST_FN_DECL) continue;
+                const char *gmn = gm->as.fn_decl.name;
+                if (gmn == NULL) continue;
+
+                /* Operator methods are only valid under their own operator
+                   interface (mirrors the non-generic loop). */
+                if (gmn[0] == '$')
+                {
+                    const char *want = operator_trait_for_method(gmn);
+                    if (want == NULL || strcmp(want, trait_name) != 0)
+                    {
+                        checker_error(c, gm->line, gm->column,
+                                      "operator method '%s' is only valid when implementing built-in interface '%s'",
+                                      operator_symbol_for_method(gmn), want ? want : "<operator>");
+                        continue;
+                    }
+                }
+
+                int gmi = find_trait_method(c, gen_tidx, gmn);
+                if (gmi < 0)
+                {
+                    checker_error(c, gm->line, gm->column,
+                                  "method '%s' is not declared in interface '%s'",
+                                  gmn, trait_name);
+                    continue;
+                }
+                if (gen_matched[gmi])
+                {
+                    checker_error(c, gm->line, gm->column,
+                                  "duplicate implementation of method '%s'", gmn);
+                    continue;
+                }
+                gen_matched[gmi] = true;
+
+                iface_check_method_shape(c, gen_tidx, gmi, gm, trait_name, gmn,
+                                         gm->as.fn_decl.is_static,
+                                         gm->as.fn_decl.self_borrow_kind,
+                                         gm->as.fn_decl.param_count);
+            }
+
+            /* Completeness. Same optional-operator exemption as the non-generic
+               path: !=, >, <=, >= are synthesized from == / < when absent. */
+            for (int j = 0; j < gen_tmc; j++)
+            {
+                if (gen_matched[j]) continue;
+                const char *tmn = c->trait_registry[gen_tidx].methods[j].name;
+                if (is_builtin_operator_trait(trait_name) && is_optional_operator_method(tmn))
+                    continue;
+                const char *disp = is_builtin_operator_trait(trait_name)
+                                       ? operator_symbol_for_method(tmn) : tmn;
+                checker_error(c, node->line, node->column,
+                              "struct '%s' does not implement interface '%s': missing method '%s'",
+                              struct_name, trait_name, disp);
+            }
+            free(gen_matched);
+        }
+
         int old_n = impl_node->as.impl_decl.method_count;
         int add_n = node->as.impl_trait_decl.method_count;
         impl_node->as.impl_decl.methods = realloc_safe(
@@ -1411,15 +1593,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
         }
 
         /* Find matching trait method by name */
-        int trait_mi = -1;
-        for (int j = 0; j < trait_method_count; j++)
-        {
-            if (strcmp(c->trait_registry[tidx].methods[j].name, mname) == 0)
-            {
-                trait_mi = j;
-                break;
-            }
-        }
+        int trait_mi = find_trait_method(c, tidx, mname);
         if (trait_mi < 0)
         {
             checker_error(c, method->line, method->column,
@@ -1435,31 +1609,11 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
         }
         matched[trait_mi] = true;
 
-        /* Static-ness must match the trait declaration */
-        bool trait_static = c->trait_registry[tidx].methods[trait_mi].is_static;
-        if (is_static != trait_static)
-        {
-            checker_error(c, method->line, method->column,
-                          "method '%s' static mismatch: interface '%s' declares it %s",
-                          mname, trait_name, trait_static ? "static" : "non-static");
-        }
-
-        /* Check self_borrow_kind matches (instance methods only) */
-        if (!is_static)
-        {
-            int trait_sbk = c->trait_registry[tidx].methods[trait_mi].self_borrow_kind;
-            if (user_sbk != trait_sbk)
-            {
-                const char *expected_str = trait_sbk == 1 ? "&self" : (trait_sbk == 2 ? "&!self" : "no self");
-                const char *got_str = user_sbk == 1 ? "&self" : (user_sbk == 2 ? "&!self" : "no self");
-                checker_error(c, method->line, method->column,
-                              "method '%s' self parameter mismatch: interface '%s' requires %s, got %s",
-                              mname, trait_name, expected_str, got_str);
-            }
-        }
+        int user_n = method->as.fn_decl.param_count;
+        iface_check_method_shape(c, tidx, trait_mi, method, trait_name,
+                                 mname, is_static, user_sbk, user_n);
 
         /* Resolve user parameter types */
-        int user_n = method->as.fn_decl.param_count;
         Type **user_params = NULL;
         if (user_n > 0)
         {
@@ -1477,39 +1631,11 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
                                         method->line, method->column);
         checker_reject_borrow_return(c, ret, method, method->line, method->column);  /* Phase 0/2 */
 
-        /* Compare parameter count and types against trait signature.
-           The trait signature does NOT include the implicit *Self param —
-           it stores only user-visible params (same as what parser gives). */
-        Type *trait_fn = c->trait_registry[tidx].methods[trait_mi].type;
-        int trait_n = trait_fn->as.function.param_count;
-        if (user_n != trait_n)
-        {
-            checker_error(c, method->line, method->column,
-                          "method '%s' parameter count mismatch: interface '%s' requires %d, got %d",
-                          mname, trait_name, trait_n, user_n);
-        }
-        else
-        {
-            for (int j = 0; j < user_n; j++)
-            {
-                if (user_params[j] && trait_fn->as.function.params[j] &&
-                    !type_equals_with_self(trait_fn->as.function.params[j], user_params[j], st))
-                {
-                    checker_error(c, method->line, method->column,
-                                  "method '%s' parameter %d type mismatch in interface '%s'",
-                                  mname, j + 1, trait_name);
-                }
-            }
-        }
-
-        /* Compare return type (Self placeholder → st) */
-        Type *trait_ret = trait_fn->as.function.return_type;
-        if (ret && trait_ret && !type_equals_with_self(trait_ret, ret, st))
-        {
-            checker_error(c, method->line, method->column,
-                          "method '%s' return type mismatch in interface '%s'",
-                          mname, trait_name);
-        }
+        /* Compare param/return TYPES against the trait signature (arity already
+           checked in iface_check_method_shape above; marker protocol interfaces
+           and arity mismatches are skipped inside the leaf). */
+        iface_check_method_types(c, tidx, trait_mi, method, trait_name, mname,
+                                 user_params, user_n, ret, st);
 
         /* Build the internal function type. Instance methods get *Self prepended
            as the implicit self param; static methods take only the user params. */

@@ -1,0 +1,68 @@
+// Positive twin of iface_generic_sig_reject: every shape the new Phase A check
+// must accept. Covers a plain interface, a static interface method, a &!self
+// interface method, an operator interface (Add), and the Clone lifecycle
+// interface, whose registered signature is real (unlike the FromList /
+// FromPairs marker interfaces, which declare no arity). Destroy is not
+// exercised here; lib/std's seven generic Destroy impls cover it.
+interface Conv {
+    def to_int(&self) -> int
+}
+
+interface Bump {
+    def bump(&!self) -> int
+}
+
+interface Maker {
+    static def make() -> int
+}
+
+struct Ok1(T) { int n }
+methods Ok1(T) {
+    def id(&self) -> int { return self.n }
+}
+methods Ok1(T): Conv {
+    def to_int(&self) -> int { return self.n }
+}
+methods Ok1(T): Bump {
+    def bump(&!self) -> int { self.n = self.n + 1  return self.n }
+}
+methods Ok1(T): Maker {
+    static def make() -> int { return 42 }
+}
+
+struct Money(T) { int cents }
+methods Money(T) {
+    def cents_of(&self) -> int { return self.cents }
+}
+methods Money(T): Add {
+    def +(&self, &Money(T) rhs) -> Money(T) {
+        return {cents: self.cents + rhs.cents}
+    }
+}
+
+struct Holder(T) { Str name }
+methods Holder(T) {
+    def name_len(&self) -> int { return self.name.len() }
+}
+methods Holder(T): Clone {
+    def clone(&self) -> Holder(T) { return {name: @dup(self.name)} }
+}
+
+def main() {
+    Ok1(int) a = Ok1(int){n: 5}
+    @print(f"to_int={a.to_int()}")
+    @print(f"bump={a.bump()}")
+    @print(f"make={Ok1(int).make()}")
+
+    Money(int) m1 = Money(int){cents: 150}
+    Money(int) m2 = Money(int){cents: 275}
+    Money(int) m3 = m1 + m2
+    @print(f"sum={m3.cents_of()}")
+
+    Str nm = "hello"
+    Holder(int) h = Holder(int){name: nm}
+    Vec(Holder(int)) hs = []
+    hs.push(h)
+    Holder(int) h2 = hs.get!(0)
+    @print(f"len={h2.name_len()}")
+}

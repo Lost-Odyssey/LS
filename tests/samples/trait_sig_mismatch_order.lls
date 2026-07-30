@@ -1,0 +1,30 @@
+// trait_sig_mismatch_order.lls — negative test: pins the RELATIVE ORDER of
+// checker diagnostics when a trait-impl method trips more than one check at
+// once. Since the iface_check_method_shape leaf was extracted, that shape
+// leaf runs before parameter-type resolution, so the arity
+// diagnostic ("parameter count mismatch") now fires before the by-value
+// array-param diagnostic ("array must be passed by pointer"). See
+// tests/test_impl_trait_parse.cmake for the order assertion.
+
+interface Ord2 {
+    def go(&self) -> int
+}
+
+struct P {
+    int v
+}
+
+methods P {
+    def id(&self) -> int {
+        return self.v
+    }
+}
+
+// Wrong parameter count AND an illegal by-value array param, at once.
+methods P: Ord2 {
+    def go(&self, array(int,3) a) -> int { return 1 }
+}
+
+def main() {
+    @print(1)
+}

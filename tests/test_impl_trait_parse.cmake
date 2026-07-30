@@ -87,6 +87,40 @@ if(NOT "${sig_err}" MATCHES "parameter count mismatch")
 endif()
 message(STATUS "test_impl_trait_parse signature mismatch reject: OK")
 
+# ---- Negative: signature mismatch (combined) — RELATIVE ORDER of diagnostics.
+# A method that trips both the arity check and the by-value-array-param check
+# at once must report the arity mismatch first. Since the
+# iface_check_method_shape leaf was extracted, that shape leaf runs
+# before parameter-type resolution, so "parameter count mismatch" now
+# precedes "array must be passed by pointer" (previously the reverse). This
+# pins that ordering as decided behavior rather than an accident -- a test
+# that only checked both strings were present would not catch a future
+# reordering.
+execute_process(
+    COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/trait_sig_mismatch_order.lls"
+    OUTPUT_VARIABLE ord_out
+    ERROR_VARIABLE  ord_err
+    RESULT_VARIABLE ord_rc
+)
+if(ord_rc EQUAL 0)
+    message(FATAL_ERROR "trait_sig_mismatch_order should have failed but succeeded")
+endif()
+string(FIND "${ord_err}" "parameter count mismatch" _arity_pos)
+string(FIND "${ord_err}" "array must be passed by pointer" _array_pos)
+if(_arity_pos EQUAL -1)
+    message(FATAL_ERROR
+        "trait_sig_mismatch_order: expected 'parameter count mismatch' error\nstderr:\n${ord_err}")
+endif()
+if(_array_pos EQUAL -1)
+    message(FATAL_ERROR
+        "trait_sig_mismatch_order: expected 'array must be passed by pointer' error\nstderr:\n${ord_err}")
+endif()
+if(NOT _arity_pos LESS _array_pos)
+    message(FATAL_ERROR
+        "trait_sig_mismatch_order: expected arity diagnostic BEFORE array-by-value diagnostic (ordering pinned when iface_check_method_shape was extracted), got arity@${_arity_pos} array@${_array_pos}\nstderr:\n${ord_err}")
+endif()
+message(STATUS "test_impl_trait_parse signature mismatch order: OK")
+
 # ---- Negative: extra method should error ----
 execute_process(
     COMMAND "${LS_EXE}" run "${SAMPLE_DIR}/trait_extra_method.lls"
