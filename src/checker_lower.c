@@ -1147,6 +1147,23 @@ bool is_optional_operator_method(const char *mname)
            strcmp(mname, "$op_le") == 0 || strcmp(mname, "$op_ge") == 0;
 }
 
+/* FromList / FromPairs are MARKER protocol interfaces. add_builtin_lifecycle_trait
+   registers them with param_count 0 DELIBERATELY: the internal method name is all
+   the literal-init detection needs (find_method(..., "__from_list")), and the
+   element/key/value types come from the implementing type's own generics -- there
+   is no interface type parameter to declare them with. So the arity and the
+   param/return TYPE comparisons must be skipped for these two; static-ness,
+   self-borrow kind and presence are still meaningful and are still checked.
+   Without this exemption a non-generic `methods Bag: FromList` (a documented
+   opt-in: implementing FromList enables `Bag b = [a, b, c]`) is rejected with
+   "requires 0, got 1", and adding the same arity check to the generic path would
+   break lib/std's Vec(T): FromList and Map(K,V): FromPairs. */
+bool is_marker_protocol_trait(const char *name)
+{
+    if (name == NULL) return false;
+    return strcmp(name, "FromList") == 0 || strcmp(name, "FromPairs") == 0;
+}
+
 /* Register one built-in operator trait. Every method is `fn OP(&self, &Self rhs)`;
    ret_is_bool selects comparison (-> bool) vs arithmetic (-> Self). */
 static void add_builtin_op_trait(Checker *c, const char *name,
@@ -1246,6 +1263,9 @@ void register_builtin_operator_traits(Checker *c)
        scans for (find_method(..., "__from_list") etc.). Element/key/value types
        come from the implementing type's own generics — no interface type parameter
        needed. The `from_list`→`__from_list` rename happens in check_impl_trait_decl. */
+    /* Marker protocol interfaces -- param_count 0 is a placeholder, NOT the real
+       arity (from_list takes 1 element, from_pairs takes 2). is_marker_protocol_trait
+       exempts them from arity/type comparison; see its header comment. */
     add_builtin_lifecycle_trait(c, "FromList",  "__from_list",  type_void(), 2); /* def from_list(&!self, E x) */
     add_builtin_lifecycle_trait(c, "FromPairs", "__from_pairs", type_void(), 3); /* def from_pairs(&!self, K k, V v) */
 }

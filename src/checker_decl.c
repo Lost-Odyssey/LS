@@ -1477,12 +1477,21 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
                                         method->line, method->column);
         checker_reject_borrow_return(c, ret, method, method->line, method->column);  /* Phase 0/2 */
 
+        /* Marker protocol interfaces declare no arity/types -- see
+           is_marker_protocol_trait. static-ness and self-borrow kind above are
+           still compared; only the three comparisons below are skipped. */
+        bool skip_sig_types = is_marker_protocol_trait(trait_name);
+
         /* Compare parameter count and types against trait signature.
            The trait signature does NOT include the implicit *Self param —
            it stores only user-visible params (same as what parser gives). */
         Type *trait_fn = c->trait_registry[tidx].methods[trait_mi].type;
         int trait_n = trait_fn->as.function.param_count;
-        if (user_n != trait_n)
+        if (skip_sig_types)
+        {
+            /* nothing to compare */
+        }
+        else if (user_n != trait_n)
         {
             checker_error(c, method->line, method->column,
                           "method '%s' parameter count mismatch: interface '%s' requires %d, got %d",
@@ -1504,7 +1513,7 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
 
         /* Compare return type (Self placeholder → st) */
         Type *trait_ret = trait_fn->as.function.return_type;
-        if (ret && trait_ret && !type_equals_with_self(trait_ret, ret, st))
+        if (!skip_sig_types && ret && trait_ret && !type_equals_with_self(trait_ret, ret, st))
         {
             checker_error(c, method->line, method->column,
                           "method '%s' return type mismatch in interface '%s'",

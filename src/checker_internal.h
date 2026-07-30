@@ -321,6 +321,11 @@ bool is_builtin_operator_trait(const char *name);
 const char *operator_trait_for_method(const char *mname);
 const char *operator_symbol_for_method(const char *mname);
 bool is_optional_operator_method(const char *mname);
+/* [def: checker_lower.c] FromList/FromPairs -- interfaces whose registered
+   signature carries only the method name + self-borrow kind (arity and element
+   types come from the implementing type's generics). Callers must skip arity and
+   param/return type comparison for these. */
+bool is_marker_protocol_trait(const char *name);
 void register_builtin_operator_traits(Checker *c);
 bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *right, Type **out_result);
 /* [def: checker_decl.c] trait satisfaction + trait/impl-trait decl checkers. */
