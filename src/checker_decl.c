@@ -1243,6 +1243,46 @@ void iface_check_method_shape(Checker *c, int tidx, int trait_mi,
     }
 }
 
+/* Shared leaf: compare a user method's param/return TYPES against its interface
+   declaration. Needs a CONCRETE Self (`st`) -- that is exactly why this half
+   cannot run at generic fold time and is called from
+   instantiate_impl_method_types instead (see iface_check_method_shape for the
+   split rationale).
+   `user_params` holds only the USER params (no implicit self), parallel to the
+   trait signature's own params. Marker protocol interfaces declare no types and
+   are skipped; an arity mismatch also skips (already reported by the shape leaf,
+   and comparing element-wise past the end would read out of bounds). */
+void iface_check_method_types(Checker *c, int tidx, int trait_mi,
+                             const AstNode *method, const char *trait_name,
+                             const char *mname, Type **user_params, int user_n,
+                             Type *ret, Type *st)
+{
+    if (is_marker_protocol_trait(trait_name)) return;
+
+    Type *trait_fn = c->trait_registry[tidx].methods[trait_mi].type;
+    if (user_n == trait_fn->as.function.param_count)
+    {
+        for (int j = 0; j < user_n; j++)
+        {
+            if (user_params[j] && trait_fn->as.function.params[j] &&
+                !type_equals_with_self(trait_fn->as.function.params[j], user_params[j], st))
+            {
+                checker_error(c, method->line, method->column,
+                              "method '%s' parameter %d type mismatch in interface '%s'",
+                              mname, j + 1, trait_name);
+            }
+        }
+    }
+
+    Type *trait_ret = trait_fn->as.function.return_type;
+    if (ret && trait_ret && !type_equals_with_self(trait_ret, ret, st))
+    {
+        checker_error(c, method->line, method->column,
+                      "method '%s' return type mismatch in interface '%s'",
+                      mname, trait_name);
+    }
+}
+
 /* Check a `methods Struct: Interface { ... }` block:
    verify trait exists, struct exists, method signatures match the trait,
    then register methods into impl_registry and record the trait-impl pair. */
@@ -1591,41 +1631,11 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
                                         method->line, method->column);
         checker_reject_borrow_return(c, ret, method, method->line, method->column);  /* Phase 0/2 */
 
-        /* Marker protocol interfaces declare no arity/types -- see
-           is_marker_protocol_trait. static-ness, self-borrow kind, and arity
-           are compared in iface_check_method_shape above; only the two
-           comparisons below (param types, return type) are skipped here. */
-        bool skip_sig_types = is_marker_protocol_trait(trait_name);
-
-        /* Compare parameter types against trait signature (arity already
-           checked in iface_check_method_shape -- only compare types when
-           arity matches, same "mismatch suppresses type comparison" behavior
-           as before). The trait signature does NOT include the implicit
-           *Self param — it stores only user-visible params (same as what
-           parser gives). */
-        Type *trait_fn = c->trait_registry[tidx].methods[trait_mi].type;
-        if (!skip_sig_types && user_n == trait_fn->as.function.param_count)
-        {
-            for (int j = 0; j < user_n; j++)
-            {
-                if (user_params[j] && trait_fn->as.function.params[j] &&
-                    !type_equals_with_self(trait_fn->as.function.params[j], user_params[j], st))
-                {
-                    checker_error(c, method->line, method->column,
-                                  "method '%s' parameter %d type mismatch in interface '%s'",
-                                  mname, j + 1, trait_name);
-                }
-            }
-        }
-
-        /* Compare return type (Self placeholder → st) */
-        Type *trait_ret = trait_fn->as.function.return_type;
-        if (!skip_sig_types && ret && trait_ret && !type_equals_with_self(trait_ret, ret, st))
-        {
-            checker_error(c, method->line, method->column,
-                          "method '%s' return type mismatch in interface '%s'",
-                          mname, trait_name);
-        }
+        /* Compare param/return TYPES against the trait signature (arity already
+           checked in iface_check_method_shape above; marker protocol interfaces
+           and arity mismatches are skipped inside the leaf). */
+        iface_check_method_types(c, tidx, trait_mi, method, trait_name, mname,
+                                 user_params, user_n, ret, st);
 
         /* Build the internal function type. Instance methods get *Self prepended
            as the implicit self param; static methods take only the user params. */

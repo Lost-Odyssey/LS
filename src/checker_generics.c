@@ -2021,6 +2021,32 @@ static void instantiate_impl_method_types(
             reject_array_by_value_param(c, params[offset + j],
                 method->as.fn_decl.param_names[j], method->line, method->column);
 
+        /* Phase B: the half of interface validation that needs a concrete Self.
+           Shape (arity / static-ness / self borrow kind / presence) was already
+           checked once at fold time in check_impl_trait_decl; here we compare the
+           param and return TYPES now that T is bound and `struct_type` IS the
+           concrete Self.
+           Placement matters: after the sig_resolvable early-continue (a signature
+           this consumer cannot resolve is deliberately skipped silently -- e.g.
+           Vec(T): Reflect in a module that never imported std.core.reflect), and
+           after ret's NULL normalization.
+           Deduped via the flag on the SHARED template node, so Vec(int) /
+           Vec(Str) / Vec(f64) report a mismatch once, not three times. */
+        if (origin != NULL && !method->as.fn_decl.iface_sig_types_checked)
+        {
+            int b_tidx = find_trait(c, origin);
+            if (b_tidx >= 0)
+            {
+                int b_mi = find_trait_method(c, b_tidx, mname);
+                if (b_mi >= 0)
+                {
+                    method->as.fn_decl.iface_sig_types_checked = true;
+                    iface_check_method_types(c, b_tidx, b_mi, method, origin, mname,
+                                             params + offset, pc, ret, struct_type);
+                }
+            }
+        }
+
         Type *mtype = type_function(params, total, ret, false);
 
         register_method(c, impl_idx, mname, mtype, is_static, sbk,

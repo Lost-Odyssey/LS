@@ -337,6 +337,13 @@ void iface_check_method_shape(Checker *c, int tidx, int trait_mi,
                               const AstNode *method, const char *trait_name,
                               const char *mname, bool is_static, int user_sbk,
                               int user_n);
+/* [def: checker_decl.c] Compare a user method's param/return TYPES against its
+   interface declaration. Needs a concrete Self, so the generic path calls it at
+   monomorphization, not at fold time. Emits diagnostics. */
+void iface_check_method_types(Checker *c, int tidx, int trait_mi,
+                             const AstNode *method, const char *trait_name,
+                             const char *mname, Type **user_params, int user_n,
+                             Type *ret, Type *st);
 void register_builtin_operator_traits(Checker *c);
 bool try_operator_overload(Checker *c, AstNode *node, Type *left, Type *right, Type **out_result);
 /* [def: checker_decl.c] trait satisfaction + trait/impl-trait decl checkers. */

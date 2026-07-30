@@ -1,0 +1,61 @@
+// Phase B: param/return TYPE validation at monomorphization time. These impls
+// all pass Phase A (right arity, right self borrow kind, right static-ness) --
+// only the TYPES are wrong, and they need a concrete Self to compare against.
+//
+// The Clone case is the regression point that motivated all of this: it used
+// to reach codegen and produce invalid IR
+//   call i32 @"Holder(int).__clone"(ptr %uc.self)
+// caught only by the LLVM module verifier, with no source location.
+//
+// T1's type parameter is unused in its body, so it's the one instantiated at
+// THREE distinct type args below (int, f64, bool). That is deliberate: the
+// mismatch lives on the shared template method node, deduped via
+// iface_sig_types_checked, so without cross-instantiation dedup the driver's
+// "exactly 1 diagnostic" check for T1's return-type mismatch would report 3
+// instead of 1. A single instantiation (as T2 and Holder still are -- Holder
+// in particular is the invalid-IR regression point and stays exactly as it
+// was) cannot tell "reported once" apart from "only ever checked once."
+interface Conv {
+    def to_int(&self) -> int
+}
+
+interface Eat {
+    def eat(&self, int n) -> int
+}
+
+// (1) return type mismatch: interface says int, impl says f64
+struct T1(T) { int n }
+methods T1(T) { def id(&self) -> int { return self.n } }
+methods T1(T): Conv {
+    def to_int(&self) -> f64 { return 1.5 }
+}
+
+// (2) parameter type mismatch: interface says int, impl says Str
+struct T2(T) { int n }
+methods T2(T) { def id(&self) -> int { return self.n } }
+methods T2(T): Eat {
+    def eat(&self, Str s) -> int { return s.len() }
+}
+
+// (3) Clone must return Self -- the invalid-IR regression point
+struct Holder(T) { Str name }
+methods Holder(T) { def name_len(&self) -> int { return self.name.len() } }
+methods Holder(T): Clone {
+    def clone(&self) -> int { return 42 }
+}
+
+def main() {
+    T1(int) a = T1(int){n: 1}
+    @print(a.id())
+    T1(f64) af = T1(f64){n: 2}
+    @print(af.id())
+    T1(bool) ab = T1(bool){n: 3}
+    @print(ab.id())
+    T2(int) b = T2(int){n: 2}
+    @print(b.id())
+    Str nm = "hi"
+    Holder(int) h = Holder(int){name: nm}
+    Vec(Holder(int)) hs = []
+    hs.push(h)
+    @print(hs.len())
+}

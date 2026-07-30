@@ -130,4 +130,45 @@ if(NOT "${m2_err}" MATCHES "OK clean")
 endif()
 message(STATUS "iface_generic_sig_ok memcheck: OK clean")
 
+# Section 3 (Task 4): Phase B -- param/return TYPE validation at
+#   monomorphization. These shapes are all legal; only the types are wrong.
+#   The Clone case used to reach codegen and emit invalid IR, caught only by
+#   the LLVM module verifier with no source location.
+set(NEG3 "${SAMPLE_DIR}/iface_generic_type_reject.lls")
+execute_process(COMMAND "${LS_EXE}" run "${NEG3}"
+    OUTPUT_VARIABLE s3_out ERROR_VARIABLE s3_err RESULT_VARIABLE s3_rc)
+if(s3_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_type_reject: expected compile errors, got success\n${s3_out}${s3_err}")
+endif()
+set(s3_all "${s3_out}${s3_err}")
+foreach(pat
+        "method 'to_int' return type mismatch in interface 'Conv'"
+        "method 'eat' parameter 1 type mismatch in interface 'Eat'"
+        "method '__clone' return type mismatch in interface 'Clone'")
+    string(FIND "${s3_all}" "${pat}" _at3)
+    if(_at3 EQUAL -1)
+        message(FATAL_ERROR "iface_generic_type_reject: missing diagnostic '${pat}'\n${s3_all}")
+    endif()
+endforeach()
+message(STATUS "iface_generic_type_reject: all 3 type diagnostics present (rc=${s3_rc})")
+
+# the whole point: a clean type error, NOT an LLVM verifier complaint
+foreach(bad
+        "module verification failed"
+        "Call parameter type does not match function signature")
+    string(FIND "${s3_all}" "${bad}" _bad3)
+    if(NOT _bad3 EQUAL -1)
+        message(FATAL_ERROR "iface_generic_type_reject: reached codegen and produced invalid IR ('${bad}') instead of a checker diagnostic\n${s3_all}")
+    endif()
+endforeach()
+message(STATUS "iface_generic_type_reject: rejected in the checker, no invalid IR")
+
+# reported once per template method, not once per instantiation
+string(REGEX MATCHALL "method 'to_int' return type mismatch" s3_dup "${s3_all}")
+list(LENGTH s3_dup s3_dup_n)
+if(NOT s3_dup_n EQUAL 1)
+    message(FATAL_ERROR "iface_generic_type_reject: type diagnostic reported ${s3_dup_n} times, expected exactly 1\n${s3_all}")
+endif()
+message(STATUS "iface_generic_type_reject: no duplicate diagnostics")
+
 message(STATUS "test_iface_generic_sig: ALL PASSED")
