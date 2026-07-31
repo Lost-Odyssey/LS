@@ -758,7 +758,15 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
 主体已闭合（Phase A 折叠时查 shape、Phase B 单态化时查类型），残留两点，
 都是刻意的，记录以免日后被当成新 bug：
 
-1. **类型比较仍依赖至少一次实例化。** Phase A（arity / static / self borrow
+1. **部分类型比较仍依赖至少一次实例化。**
+   ⭐**2026-07-31 已收窄**：签名中**每一个位置都是标量内建类型**
+   （不提 `T`、不提 `Self`）的方法，现在**折叠时就比**，不需要任何实例化
+   （`methods Wrap(T): Conv { def to_int(&self) -> f64 }` 即使全程序没人写过
+   `Wrap(具体类型)` 也报）。下面描述的缺口因此只剩三类签名：
+   提到 `T` 的、提到 `Self` 的、以及含**非标量命名类型**的（后者刻意排除：
+   forward pass 期解析出的命名类型可能与接口注册时用的**不是同一个
+   `Type` 对象**——`@derive` 的 `reflect() -> TypeInfo` 实测会因此误报）。
+   以下为原文，描述剩下的那三类： Phase A（arity / static / self borrow
    kind / 未声明 / 重复 / 完备性）不需要实例化，定义方 `lls check` 即报。但
    参数/返回**类型**比较需要具体 `Self`，只能在单态化时做。所以一个库若定义了
    `methods Wrap(T): Conv` 且类型写错、同时**整个程序从不实例化 `Wrap`**，

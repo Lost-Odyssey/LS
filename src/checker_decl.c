@@ -1204,6 +1204,168 @@ void check_trait_decl(Checker *c, AstNode *node)
    only the type comparisons to monomorphization.
    Callers: check_impl_trait_decl's non-generic loop and its generic fold branch.
    Diagnostics are emitted here; the caller does not need to inspect a result. */
+/* Upper bound on user params a signature may have for the fold-time comparison
+   to buffer them; anything wider simply defers to Phase B. Interface methods in
+   this language are small -- the widest in lib/std takes 2. */
+#define LS_MAX_FOLD_SIG_PARAMS 16
+
+/* Does this syntactic type mention one of the template's type parameters?
+   Checked on the TypeNode rather than after resolution, because at fold time a
+   type parameter is not merely unresolvable -- it could also collide with a real
+   type of the same name (`struct T` alongside `methods Wrap(T)`) and resolve to
+   something unrelated, turning a correct impl into a spurious error. */
+static bool type_node_mentions_param(const TypeNode *tn, char **names, int count)
+{
+    if (tn == NULL || names == NULL || count <= 0) return false;
+    switch (tn->kind)
+    {
+        case TYPE_NODE_POINTER:
+        case TYPE_NODE_REFERENCE:
+            return type_node_mentions_param(tn->as.pointee, names, count);
+        case TYPE_NODE_ARRAY:
+        case TYPE_NODE_SIMD:
+        case TYPE_NODE_SLICE:
+            return type_node_mentions_param(tn->as.array.elem, names, count);
+        case TYPE_NODE_VECTOR:
+            return type_node_mentions_param(tn->as.vec.elem, names, count);
+        case TYPE_NODE_MAP:
+            return type_node_mentions_param(tn->as.map.key, names, count) ||
+                   type_node_mentions_param(tn->as.map.val, names, count);
+        case TYPE_NODE_FN:
+        case TYPE_NODE_BLOCK:
+            for (int i = 0; i < tn->as.fn.param_count; i++)
+                if (type_node_mentions_param(tn->as.fn.params[i], names, count))
+                    return true;
+            return type_node_mentions_param(tn->as.fn.ret, names, count);
+        case TYPE_NODE_NAMED:
+            if (tn->as.named.name != NULL)
+                for (int i = 0; i < count; i++)
+                    if (names[i] != NULL && strcmp(tn->as.named.name, names[i]) == 0)
+                        return true;
+            for (int i = 0; i < tn->as.named.arg_count; i++)
+                if (type_node_mentions_param(tn->as.named.args[i], names, count))
+                    return true;
+            return false;
+        default:
+            return false;   /* TYPE_NODE_PRIMITIVE and anything new: no names */
+    }
+}
+
+/* Scalar built-ins are the only types whose identity is stable at fold time.
+   A NAMED type resolved during the forward pass can be a DIFFERENT Type object
+   than the one the interface was registered with -- notably across modules,
+   where the importer has not bound the defining module's types yet. That is not
+   hypothetical: comparing a derived `reflect() -> TypeInfo` this way reported a
+   mismatch against an interface declaring exactly `TypeInfo`. Scalars have no
+   such ambiguity (`int` is `int` in every module), and they are precisely the
+   case worth catching early. Everything else defers to monomorphization, where
+   resolution happens in a fully bound scope. */
+static bool type_is_fold_comparable_scalar(const Type *t)
+{
+    if (t == NULL) return false;
+    switch (t->kind)
+    {
+        case TYPE_INT: case TYPE_I8: case TYPE_I16: case TYPE_I32: case TYPE_I64:
+        case TYPE_U8:  case TYPE_U16: case TYPE_U32: case TYPE_U64:
+        case TYPE_F32: case TYPE_F64: case TYPE_F16: case TYPE_BF16:
+        case TYPE_BOOL: case TYPE_CHAR: case TYPE_VOID:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* Resolve one syntactic type at FOLD time, or return NULL when it cannot be
+   compared here: anything naming a template type parameter, anything that does
+   not resolve (suppressed, so an unresolvable signature stays silent rather than
+   emitting "unknown type" at the impl block), and anything that is not a scalar
+   built-in per the note above. */
+static Type *fold_time_resolve(Checker *c, TypeNode *tn, char **tp_names,
+                               int tp_count, int line, int col)
+{
+    if (tn == NULL) return NULL;
+    if (type_node_mentions_param(tn, tp_names, tp_count)) return NULL;
+    bool saved = c->silent_type_errors;
+    c->silent_type_errors = true;
+    Type *t = resolve_type_node(c, tn, line, col);
+    c->silent_type_errors = saved;
+    return type_is_fold_comparable_scalar(t) ? t : NULL;
+}
+
+/* Fold-time half of the TYPE comparison: methods whose signature is ENTIRELY
+   concrete -- no position mentions `Self` or a template type parameter. Those
+   need no bound `T`, so checking them at the definition catches a wrong
+   signature even in a program that never instantiates the generic type.
+
+   All-or-nothing on purpose. The two phases must PARTITION the work: if this
+   handled only the concrete positions of a mixed signature, Phase B would still
+   run for the rest and re-report the concrete ones, so every such error would
+   print twice. So a signature with even one T- or Self-mentioning position is
+   left entirely to Phase B (which is where it was handled before this existed --
+   no regression, just no early report).
+
+   Returns true when it took ownership of this method's type checking, which the
+   caller records so Phase B skips it. Marker interfaces declare no types; they
+   are neither checked here nor claimed. */
+static bool iface_check_concrete_types_at_fold(Checker *c, int tidx, int trait_mi,
+                                               const AstNode *method,
+                                               const char *trait_name,
+                                               const char *mname,
+                                               char **tp_names, int tp_count)
+{
+    if (is_marker_protocol_trait(trait_name)) return false;
+
+    Type *tfn = c->trait_registry[tidx].methods[trait_mi].type;
+    int user_n = method->as.fn_decl.param_count;
+
+    /* An arity mismatch is already reported by the shape leaf, and comparing
+       element-wise past the end would read out of bounds -- leave it alone. */
+    if (user_n != tfn->as.function.param_count) return false;
+
+    /* Pass 1: is every position comparable here? Resolve into a local buffer so
+       pass 2 does not resolve twice. A void return is comparable (both NULL). */
+    Type *impl_params[LS_MAX_FOLD_SIG_PARAMS];
+    if (user_n > LS_MAX_FOLD_SIG_PARAMS) return false;
+
+    for (int j = 0; j < user_n; j++)
+    {
+        Type *trait_p = tfn->as.function.params[j];
+        if (!type_is_fold_comparable_scalar(trait_p)) return false;
+        impl_params[j] = fold_time_resolve(c, method->as.fn_decl.param_types[j],
+                                           tp_names, tp_count,
+                                           method->line, method->column);
+        if (impl_params[j] == NULL) return false;
+    }
+
+    Type *trait_ret = tfn->as.function.return_type;
+    if (!type_is_fold_comparable_scalar(trait_ret)) return false;
+    /* An absent return TypeNode means void, exactly as resolve_type_node(NULL)
+       yields on the non-generic path -- NOT "unresolvable". Leaving it NULL made
+       every void interface method (Destroy's `def ~(&!self)`) compare void
+       against NULL and report a bogus return type mismatch. */
+    Type *impl_ret = (method->as.fn_decl.return_type == NULL)
+                         ? type_void()
+                         : fold_time_resolve(c, method->as.fn_decl.return_type,
+                                             tp_names, tp_count,
+                                             method->line, method->column);
+    if (impl_ret == NULL) return false;
+
+    /* Pass 2: everything is concrete, so compare and report. `concrete` is NULL
+       because pass 1 established that no position involves Self. */
+    for (int j = 0; j < user_n; j++)
+        if (!type_equals_with_self(tfn->as.function.params[j], impl_params[j], NULL))
+            checker_error(c, method->line, method->column,
+                          "method '%s' parameter %d type mismatch in interface '%s'",
+                          mname, j + 1, trait_name);
+
+    if (!type_equals_with_self(trait_ret, impl_ret, NULL))
+        checker_error(c, method->line, method->column,
+                      "method '%s' return type mismatch in interface '%s'",
+                      mname, trait_name);
+
+    return true;
+}
+
 void iface_check_method_shape(Checker *c, int tidx, int trait_mi,
                               const AstNode *method, const char *trait_name,
                               const char *mname, bool is_static, int user_sbk,
@@ -1435,6 +1597,17 @@ void check_impl_trait_decl(Checker *c, AstNode *node)
                                          gm->as.fn_decl.is_static,
                                          gm->as.fn_decl.self_borrow_kind,
                                          gm->as.fn_decl.param_count);
+
+                /* Types too, for the subset that needs no bound T: a signature
+                   mentioning neither Self nor a template type parameter is
+                   already fully concrete here, so waiting for monomorphization
+                   would only delay the diagnostic -- and lose it entirely in a
+                   program that never instantiates this type. */
+                if (iface_check_concrete_types_at_fold(
+                        c, gen_tidx, gmi, gm, trait_name, gmn,
+                        c->struct_templates[gtidx].type_params,
+                        c->struct_templates[gtidx].type_param_count))
+                    gm->as.fn_decl.iface_sig_types_checked = true;
             }
 
             /* Completeness. Same optional-operator exemption as the non-generic

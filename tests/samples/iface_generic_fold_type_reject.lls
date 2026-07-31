@@ -1,0 +1,32 @@
+// Fold-time type comparison: a generic trait impl whose signature types are
+// FULLY CONCRETE (they never mention the type parameter or Self) can be checked
+// the moment the `methods` block is read -- no instantiation required.
+//
+// Nothing here is ever instantiated: no Wrap(int) / Take(int) appears anywhere
+// in the program. Before this check, all of these passed silently and would
+// only surface the day someone first used the type.
+interface Conv {
+    def to_int(&self) -> int
+}
+
+interface Eat {
+    def eat(&self, int n) -> int
+}
+
+// (1) return type: interface says int, impl says f64. Both concrete.
+struct Wrap(T) { T v }
+methods Wrap(T) { def id(&self) -> T { return self.v } }
+methods Wrap(T): Conv {
+    def to_int(&self) -> f64 { return 1.5 }
+}
+
+// (2) parameter type: interface says int, impl says f64. Both scalar.
+struct Take(T) { T v }
+methods Take(T) { def id(&self) -> T { return self.v } }
+methods Take(T): Eat {
+    def eat(&self, f64 s) -> int { return 1 }
+}
+
+def main() {
+    @print(1)
+}
