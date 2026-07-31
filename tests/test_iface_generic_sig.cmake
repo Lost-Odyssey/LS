@@ -172,4 +172,88 @@ if(NOT s3_dup_n EQUAL 1)
 endif()
 message(STATUS "iface_generic_type_reject: no duplicate diagnostics")
 
+
+# Section 4 (fold-time concrete types): a generic trait impl whose signature is
+#   entirely scalar needs no bound T, so it is compared at the DEFINITION -- even
+#   when nothing in the program ever instantiates the type. Before this, these
+#   passed silently and would only surface the day someone first used the type.
+set(NEG4 "${SAMPLE_DIR}/iface_generic_fold_type_reject.lls")
+execute_process(COMMAND "${LS_EXE}" check "${NEG4}"
+    OUTPUT_VARIABLE s4_out ERROR_VARIABLE s4_err RESULT_VARIABLE s4_rc)
+if(s4_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_fold_type_reject: expected compile errors, got success
+${s4_out}${s4_err}")
+endif()
+set(s4_all "${s4_out}${s4_err}")
+foreach(pat
+        "method 'to_int' return type mismatch in interface 'Conv'"
+        "method 'eat' parameter 1 type mismatch in interface 'Eat'")
+    string(FIND "${s4_all}" "${pat}" _at4)
+    if(_at4 EQUAL -1)
+        message(FATAL_ERROR "iface_generic_fold_type_reject: missing diagnostic '${pat}'
+${s4_all}")
+    endif()
+endforeach()
+# Nothing here is instantiated, so these can only have come from the fold-time
+# check -- that is the whole point of this section.
+string(FIND "${s4_all}" "Wrap(" _inst4)
+if(NOT _inst4 EQUAL -1)
+    message(FATAL_ERROR "iface_generic_fold_type_reject: diagnostic names a concrete instance, so the corpus is no longer instantiation-free
+${s4_all}")
+endif()
+message(STATUS "iface_generic_fold_type_reject: caught at the definition, no instantiation (rc=${s4_rc})")
+
+# Positive twin: signatures mentioning Self or a type parameter must NOT be
+# compared at fold time (T is unbound, Self has no concrete type) -- a false
+# positive here would reject correct code.
+set(POS4 "${SAMPLE_DIR}/iface_generic_fold_type_ok.lls")
+execute_process(COMMAND "${LS_EXE}" run "${POS4}"
+    OUTPUT_VARIABLE p4_out ERROR_VARIABLE p4_err RESULT_VARIABLE p4_rc)
+if(NOT p4_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_fold_type_ok JIT FAILED (rc=${p4_rc})
+${p4_out}
+${p4_err}")
+endif()
+foreach(pat "to_int=7" "len=5")
+    if(NOT "${p4_out}" MATCHES "${pat}")
+        message(FATAL_ERROR "iface_generic_fold_type_ok JIT missing '${pat}'
+${p4_out}")
+    endif()
+endforeach()
+message(STATUS "iface_generic_fold_type_ok JIT: OK")
+
+set(aot4 "${WORK_DIR}/iface_generic_fold_type_ok_aot")
+if(WIN32)
+    set(aot4 "${aot4}.exe")
+endif()
+execute_process(COMMAND "${LS_EXE}" compile "${POS4}" -o "${aot4}"
+    RESULT_VARIABLE a4_rc ERROR_VARIABLE a4_err)
+if(NOT a4_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_fold_type_ok AOT compile FAILED:
+${a4_err}")
+endif()
+execute_process(COMMAND "${aot4}" OUTPUT_VARIABLE a4_out RESULT_VARIABLE a4_run_rc)
+if(NOT a4_run_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_fold_type_ok AOT run FAILED (rc=${a4_run_rc})
+${a4_out}")
+endif()
+if(NOT "${a4_out}" MATCHES "len=5")
+    message(FATAL_ERROR "iface_generic_fold_type_ok AOT missing 'len=5'
+${a4_out}")
+endif()
+file(REMOVE "${aot4}")
+message(STATUS "iface_generic_fold_type_ok AOT: OK")
+
+execute_process(COMMAND "${LS_EXE}" run --memcheck "${POS4}"
+    OUTPUT_VARIABLE m4_out ERROR_VARIABLE m4_err RESULT_VARIABLE m4_rc)
+if(NOT m4_rc EQUAL 0)
+    message(FATAL_ERROR "iface_generic_fold_type_ok memcheck FAILED (rc=${m4_rc})
+${m4_err}")
+endif()
+if(NOT "${m4_err}" MATCHES "OK clean")
+    message(FATAL_ERROR "iface_generic_fold_type_ok memcheck not clean
+${m4_err}")
+endif()
+message(STATUS "iface_generic_fold_type_ok memcheck: OK clean")
+
 message(STATUS "test_iface_generic_sig: ALL PASSED")

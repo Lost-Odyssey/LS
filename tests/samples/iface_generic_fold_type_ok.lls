@@ -1,0 +1,41 @@
+// Positive twin: signatures that MENTION the type parameter or Self must NOT be
+// compared at fold time -- T is unbound there and Self has no concrete type, so
+// any comparison would be a false positive. These are deferred to
+// monomorphization and must stay silent at the definition site.
+interface Conv {
+    def to_int(&self) -> int
+}
+
+// Self-mentioning: Clone requires `-> Self`, impl writes `-> Keep(T)`. Correct,
+// and only provable once T is bound -- fold time must not touch it.
+struct Keep(T) { Str name }
+methods Keep(T) {
+    def name_len(&self) -> int { return self.name.len() }
+}
+methods Keep(T): Clone {
+    def clone(&self) -> Keep(T) { return {name: @dup(self.name)} }
+}
+
+// Type-parameter-mentioning parameter, plus a correct fully-concrete method on
+// the same interface -- the concrete one is compared, the T one is skipped.
+struct Holder(T) { T v }
+methods Holder(T) {
+    def id(&self) -> T { return self.v }
+    def stash(&!self, T x) { self.v = x }
+}
+methods Holder(T): Conv {
+    def to_int(&self) -> int { return 7 }
+}
+
+def main() {
+    Holder(int) h = Holder(int){v: 3}
+    h.stash(9)
+    @print(f"to_int={h.to_int()}")
+
+    Str nm = "hello"
+    Keep(int) k = Keep(int){name: nm}
+    Vec(Keep(int)) ks = []
+    ks.push(k)
+    Keep(int) k2 = ks.get!(0)
+    @print(f"len={k2.name_len()}")
+}
