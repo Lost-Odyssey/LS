@@ -1,0 +1,50 @@
+// Two gaps recorded as L-024 residuals, both reachable on the generic AND the
+// non-generic path -- so both are fixed in the shared shape leaf, and this
+// corpus pins all four sites in one run.
+//
+// (A) Marker protocol interfaces (FromList/FromPairs) are registered with a
+//     placeholder arity of 0, so nothing compared their real arity. The arity
+//     is fixed BY THE PROTOCOL though (from_list takes exactly one element),
+//     and getting it wrong produced invalid IR, not a diagnostic:
+//       Incorrect number of arguments passed to called function!
+//         call void @Bag.__from_list(ptr %b, i32 %fl.arg)
+//
+// (B) An interface can never declare a method with its own type parameters --
+//     the parser rejects `def convert(U)(&self)` inside an interface body. But
+//     an impl could still supply one, and it was accepted; calling it through
+//     the interface then failed with "cannot call non-function type 'void'"
+//     (the placeholder that method-level generic templates register).
+
+interface Conv { def to_int(&self) -> int }
+
+// (A1) marker arity, non-generic
+struct Bag { int total }
+methods Bag { def id(&self) -> int { return self.total } }
+methods Bag: FromList {
+    def from_list(&!self, int a, int b) { self.total = a + b }
+}
+
+// (A2) marker arity, generic
+struct GBag(T) { int total }
+methods GBag(T) { def id(&self) -> int { return self.total } }
+methods GBag(T): FromList {
+    def from_list(&!self, T a, T b) { self.total = 1 }
+}
+
+// (B1) method-level type parameter on an interface method, non-generic
+struct P { int n }
+methods P { def id(&self) -> int { return self.n } }
+methods P: Conv {
+    def to_int(U)(&self) -> int { return 1 }
+}
+
+// (B2) method-level type parameter on an interface method, generic
+struct W(T) { T v }
+methods W(T) { def wid(&self) -> T { return self.v } }
+methods W(T): Conv {
+    def to_int(U)(&self) -> int { return 1 }
+}
+
+def main() {
+    @print(1)
+}

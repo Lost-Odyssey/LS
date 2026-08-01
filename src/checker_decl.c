@@ -1392,8 +1392,33 @@ void iface_check_method_shape(Checker *c, int tidx, int trait_mi,
         }
     }
 
-    /* Marker protocol interfaces declare no arity -- see is_marker_protocol_trait. */
-    if (!is_marker_protocol_trait(trait_name))
+    /* An interface can never declare a method with its own type parameters --
+       the parser rejects `def convert(U)(&self)` inside an interface body -- so
+       an impl supplying one does not implement the declared method. It used to
+       be accepted, and calling it through the interface then failed with
+       "cannot call non-function type 'void'", the placeholder that method-level
+       generic templates register in the method table. */
+    if (method->as.fn_decl.type_param_count > 0)
+    {
+        checker_error(c, method->line, method->column,
+                      "method '%s' cannot declare its own type parameters: "
+                      "interface '%s' declares it without any",
+                      mname, trait_name);
+    }
+
+    /* Marker protocol interfaces carry a placeholder arity of 0, but their real
+       arity is fixed by the protocol -- compare against that instead of skipping.
+       Element TYPES still come from the implementing type's generics and stay
+       unchecked (L-024). */
+    int marker_n = marker_protocol_arity(trait_name);
+    if (marker_n >= 0)
+    {
+        if (user_n != marker_n)
+            checker_error(c, method->line, method->column,
+                          "method '%s' parameter count mismatch: interface '%s' requires %d, got %d",
+                          mname, trait_name, marker_n, user_n);
+    }
+    else
     {
         int trait_n = c->trait_registry[tidx].methods[trait_mi].type->as.function.param_count;
         if (user_n != trait_n)

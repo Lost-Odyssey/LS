@@ -326,6 +326,11 @@ bool is_optional_operator_method(const char *mname);
    types come from the implementing type's generics). Callers must skip arity and
    param/return type comparison for these. */
 bool is_marker_protocol_trait(const char *name);
+
+/* [def: checker_lower.c] Protocol-fixed user-param count for a marker protocol
+   interface (FromList 1, FromPairs 2); -1 when `name` is not one. The registry
+   stores a placeholder 0, so this is what an arity check must compare against. */
+int marker_protocol_arity(const char *name);
 /* [def: checker_decl.c] */
 int find_trait(Checker *c, const char *name);
 /* [def: checker_decl.c] Index of `mname` in trait `tidx`'s method table, or -1. */

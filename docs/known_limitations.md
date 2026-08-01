@@ -779,7 +779,13 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
    自己从不实例化具体 `Vec(int)`，但消费方实例化时照样报，且经
    `generic_template_source_file` 把诊断落回 `vec.lls` 的正确行。
 
-2. **`FromList` / `FromPairs` 的 arity 与元素类型不被校验。** 这两个是 marker
+2. **`FromList` / `FromPairs` 的元素类型不被校验（arity 已收）。**
+   ⭐**2026-08-01 已收窄**：arity 现在查了——它是**协议固定的常量**
+   （`from_list` 恰好 1 个元素、`from_pairs` 恰好 2 个），不需要 interface
+   自带类型参数就能判定（`marker_protocol_arity`）。修前写错个数会
+   **穿过 checker 产非法 IR**：`Incorrect number of arguments passed to
+   called function!`。剩下的只有**元素类型**（`E`/`K`/`V`）不比，
+   那才真需要 `interface FromList(E)` 这类接口泛型。以下为原文： 这两个是 marker
    protocol interface：`add_builtin_lifecycle_trait` 注册时 `param_count` 恒为
    0，是**占位符不是真 arity**（`from_list` 实收 1 个元素、`from_pairs` 收 2 个），
    元素/键/值类型来自实现类型自己的泛型参数。`is_marker_protocol_trait`
@@ -788,7 +794,14 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
    写法不会在 impl 处被拒，只会在字面量初始化的调用点失败。彻底修需要 interface
    自带类型参数（`interface FromList(E)`），触面远超收益，未做。
 
-3. **方法级泛型的方法不走 Phase B。** `methods X(T): Iface` 里带自己类型参的
+3. **（已解决 2026-08-01）方法级泛型的方法不走 Phase B。**
+   ⭐本条的真实形状与原先记录的不同，且**不是泛型特有**：interface
+   根本**无法声明**方法级泛型（parser 拒绝 interface 体内的
+   `def convert(U)(&self)`），所以 impl 提供一个带自己类型参的方法本身
+   就不合法——而这一点**泛型与非泛型两条路都接受了**。通过接口调用它
+   会撞上 `cannot call non-function type 'void'`（方法级泛型模板在方法表里
+   注册的占位值）。修＝共享的 shape 叶子直接拒绝，一处同时堵住两条路。
+   既然不合法就拒掉了，也就不存在「它们不走 Phase B」的问题。以下为原文： `methods X(T): Iface` 里带自己类型参的
    方法（`def convert(U)(&self) -> U`）在单态化循环里于 Phase B **之前**
    `continue`（它们进的是 `generic_impl_method_templates` 延迟实例化路径），
    所以其参数/返回类型从不与 interface 声明比较。Phase A 仍查其 shape。
