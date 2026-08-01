@@ -1158,6 +1158,22 @@ bool is_optional_operator_method(const char *mname)
    opt-in: implementing FromList enables `Bag b = [a, b, c]`) is rejected with
    "requires 0, got 1", and adding the same arity check to the generic path would
    break lib/std's Vec(T): FromList and Map(K,V): FromPairs. */
+/* User-parameter count a marker protocol method must have. The registry stores 0
+   for these (see is_marker_protocol_trait), but the real arity is fixed by the
+   PROTOCOL, not declared by the interface: `from_list(&!self, E x)` always takes
+   one element and `from_pairs(&!self, K k, V v)` always takes two. Only the
+   element TYPES come from the implementing type's generics, so the count is
+   perfectly checkable -- and getting it wrong used to reach codegen as
+   "Incorrect number of arguments passed to called function!" rather than a
+   diagnostic. Returns -1 for anything that is not a marker protocol trait. */
+int marker_protocol_arity(const char *name)
+{
+    if (name == NULL) return -1;
+    if (strcmp(name, "FromList") == 0)  return 1;
+    if (strcmp(name, "FromPairs") == 0) return 2;
+    return -1;
+}
+
 bool is_marker_protocol_trait(const char *name)
 {
     if (name == NULL) return false;

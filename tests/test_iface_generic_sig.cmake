@@ -256,4 +256,47 @@ ${m4_err}")
 endif()
 message(STATUS "iface_generic_fold_type_ok memcheck: OK clean")
 
+
+# Section 5 (L-024 residuals): two gaps that were reachable on BOTH the generic
+#   and the non-generic path, so both are fixed in the shared shape leaf and all
+#   four sites must report in one run.
+#   (A) marker protocol arity -- fixed by the protocol, not declared by the
+#       interface; getting it wrong reached codegen as "Incorrect number of
+#       arguments passed to called function!".
+#   (B) an impl method declaring its own type parameters, which no interface can
+#       declare; calling it through the interface failed with "cannot call
+#       non-function type 'void'".
+set(NEG5 "${SAMPLE_DIR}/iface_residual_reject.lls")
+execute_process(COMMAND "${LS_EXE}" check "${NEG5}"
+    OUTPUT_VARIABLE s5_out ERROR_VARIABLE s5_err RESULT_VARIABLE s5_rc)
+if(s5_rc EQUAL 0)
+    message(FATAL_ERROR "iface_residual_reject: expected compile errors, got success
+${s5_out}${s5_err}")
+endif()
+set(s5_all "${s5_out}${s5_err}")
+string(REGEX MATCHALL "interface 'FromList' requires 1, got 2" s5_arity "${s5_all}")
+list(LENGTH s5_arity s5_arity_n)
+if(NOT s5_arity_n EQUAL 2)
+    message(FATAL_ERROR "iface_residual_reject: expected the marker arity diagnostic at BOTH the non-generic and generic site, got ${s5_arity_n}
+${s5_all}")
+endif()
+string(REGEX MATCHALL "cannot declare its own type parameters" s5_tp "${s5_all}")
+list(LENGTH s5_tp s5_tp_n)
+if(NOT s5_tp_n EQUAL 2)
+    message(FATAL_ERROR "iface_residual_reject: expected the type-parameter diagnostic at BOTH the non-generic and generic site, got ${s5_tp_n}
+${s5_all}")
+endif()
+# Neither may leak past the checker into the backend.
+foreach(bad
+        "Incorrect number of arguments"
+        "cannot call non-function type"
+        "module verification failed")
+    string(FIND "${s5_all}" "${bad}" _bad5)
+    if(NOT _bad5 EQUAL -1)
+        message(FATAL_ERROR "iface_residual_reject: leaked past the checker ('${bad}')
+${s5_all}")
+    endif()
+endforeach()
+message(STATUS "iface_residual_reject: both gaps rejected on both paths (rc=${s5_rc})")
+
 message(STATUS "test_iface_generic_sig: ALL PASSED")
