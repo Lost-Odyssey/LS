@@ -1,5 +1,9 @@
 # Phase 9 — &Enum read-only borrow + zero-copy match destructuring
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# @subsystem codegen/enum
+# @guards Phase 9 &Enum read-only borrow + zero-copy match
+# @sources codegen_match.c:cg_match_lower_enum
 
 cmake_minimum_required(VERSION 3.20)
 

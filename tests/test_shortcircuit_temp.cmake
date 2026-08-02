@@ -10,6 +10,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   TEST_NAME — test name (for error messages)
+#
+# @subsystem codegen/match
+# @guards short-circuit && / || must flush owned temporaries
+# @sources codegen_own.c:cg_flush_temps_scope_exit
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

@@ -2,6 +2,10 @@
 # （plan_ndarray_stdlib.md §-1/§4）。t[i,j]/t[i,j,k]/t[i,j,k,l] 经编译器按下标个数
 # 派发到 __index{N}/__index_set{N} 协议方法。正向 2D/3D/4D 读写 + 表达式 + f64 +
 # 单下标 Vec 不受影响；负向 Vec 多下标编译期拒绝。JIT + AOT + memcheck 0/0/0。
+#
+# @subsystem stdlib/numeric
+# @guards Tensor multi-index t[i,j,k] via __index{N} arity dispatch
+# @sources checker_expr.c:check_expr_index
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

@@ -2,6 +2,10 @@
 #  * Positive: m[k]=v insert/update + m[k] read (clone, chains) — JIT+AOT+memcheck.
 #  * Negative: reading a missing key via m[k] aborts with a "key not found"
 #    diagnostic and a non-zero exit; the post-access line must NOT run.
+#
+# @subsystem stdlib/containers
+# @guards std.map index protocol m[k] / m[k]=v
+# @sources checker_expr.c:check_expr_index
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/map_index_test.lls")

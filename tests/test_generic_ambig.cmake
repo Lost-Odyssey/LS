@@ -6,6 +6,10 @@
 # behaviour for non-generic types (test_modtype_conflict).
 #
 # Required: LS_EXE, SAMPLE_DIR
+#
+# @subsystem checker/generics
+# @guards cross-module same-name generic must be a clear ambiguity error
+# @sources checker_generics.c:resolve_type_node
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

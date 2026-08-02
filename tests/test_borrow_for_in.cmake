@@ -1,5 +1,9 @@
 # test_borrow_for_in.cmake — `for x in &v` borrowing for-in (zero-copy read).
 # JIT + AOT + memcheck 0/0/0. x binds as non-escaping &T; source survives loop.
+#
+# @subsystem checker/borrow
+# @guards `for x in &v` zero-copy element read
+# @sources checker_stmt.c:check_stmt
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/borrow_for_in_test.lls")

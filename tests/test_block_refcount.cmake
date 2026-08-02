@@ -4,6 +4,10 @@
 # the binding owns it. Map(Block) rehash relocates entries by move. Guards the
 # O1 (make()() leak), O3 (Vec/Map get!() consistency) and O2 (Map rehash
 # double-free) fixes. JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem codegen/ownership
+# @guards Block env refcount O1/O2/O3 (fc741bf)
+# @sources codegen_own.c:cg_spill_owned_rvalue, codegen_own.c:cg_track_block_rvalue, codegen_stmt.c:cg_emit_block_env_clone
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/block_refcount_test.lls")

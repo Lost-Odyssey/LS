@@ -2,6 +2,10 @@
 # §008 index-read-through of has_drop struct + §009 rvalue string move-into-
 # container). JIT + memcheck 0/0/0 + AOT. Self-verifying sample prints
 # "OWNDROP PASS" (and "FAIL <l>" on any failed assertion).
+#
+# @subsystem codegen/ownership
+# @guards plan_vec_ownership_drop 008/009
+# @sources codegen_own.c:emit_drop_value, codegen_expr.c:cg_expr_index
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

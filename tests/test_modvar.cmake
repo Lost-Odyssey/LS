@@ -6,6 +6,10 @@
 #   P1-3: has_drop global (string) — memcheck clean
 #   P1-4: accumulator pattern (multiple functions sharing one global)
 #   P1-4: external read via mod.VAR syntax
+#
+# @subsystem modules
+# @guards P1-1..P1-4 module global variables
+# @sources codegen.c:cg_emit_global_cleanup
 cmake_minimum_required(VERSION 3.20)
 
 # ---- helper ----

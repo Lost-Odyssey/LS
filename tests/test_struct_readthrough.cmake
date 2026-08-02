@@ -17,6 +17,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   TEST_NAME — test name (for error messages)
+#
+# @subsystem codegen/struct
+# @guards transient has_drop struct field read-through
+# @sources codegen_expr.c:cg_expr_field
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

@@ -1,4 +1,18 @@
 # test_enum_user_vec_payload.cmake -- enum payload holding user Vec(T)
+#
+# The same shape as the vec/map payload corpus, but with a USER-defined `Vec(T)`
+# rather than the (now retired) builtin vector.
+#
+# Keeping both mattered during the transition: the builtin container was a
+# compiler-known type with hand-written drop/clone, while `Vec(T)` is an ordinary
+# has_drop struct whose destructor is synthesised like any other. An enum payload
+# had to work through the generic struct path, not just the special-cased one.
+# Since the builtin vector was removed this is the only remaining form -- the test
+# now guards that enum payloads keep working through plain struct machinery.
+#
+# @subsystem codegen/enum
+# @guards enum with a user Vec(T) payload
+# @sources codegen_own.c:emit_enum_drop
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

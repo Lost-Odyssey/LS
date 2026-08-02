@@ -1,6 +1,10 @@
 # std.map M-0: struct Map(K,V) + construct + set/get/has?/len + overwrite +
 # grow/rehash (Robin Hood + Fibonacci scatter), POD K/V. JIT + memcheck 0/0/0 +
 # AOT. See docs/plan_std_map.md. Self-verifying sample prints "MAP PASS".
+#
+# @subsystem stdlib/containers
+# @guards std.map M-0 Robin Hood open addressing
+# @sources lib/std/core/map.lls
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

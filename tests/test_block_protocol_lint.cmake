@@ -6,6 +6,10 @@
 #   reader + non-generic sink + generic template via type alias), reserved
 #   names WITHOUT Block and Block under free names stay silent, and the
 #   program still type-checks (rc=0) and runs with pinned output.
+#
+# @subsystem codegen/closure
+# @guards stage 5 audit B-2 Block container-ownership protocol lint
+# @sources block_protocol.h
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/block_protocol_lint_test.lls")

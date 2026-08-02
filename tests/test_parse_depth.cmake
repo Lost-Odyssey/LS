@@ -5,6 +5,10 @@
 #  * Error-flood cap: the nested-block corpus must not render more than
 #    LS_MAX_PARSE_ERRORS diagnostics (regression: 4746 errors / 84 MB / 94 s).
 #  * Positive: 64-level parens still parse clean (guard must not misfire).
+#
+# @subsystem frontend/parser
+# @guards P0 parser recursion depth guard
+# @sources parser.c:parse
 cmake_minimum_required(VERSION 3.20)
 
 set(deep_dir "${WORK_DIR}/parse_depth_scratch")

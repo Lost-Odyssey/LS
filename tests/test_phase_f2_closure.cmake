@@ -6,6 +6,10 @@
 # function correctly skips scope cleanup.
 #
 # Expected output (in order): 6, 107, 8, 9, "factory_ok"
+#
+# @subsystem codegen/closure
+# @guards Phase F.2 Block assignment + move semantics
+# @sources codegen_own.c:cg_store_owned
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

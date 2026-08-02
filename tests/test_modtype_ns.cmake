@@ -1,6 +1,10 @@
 # test_modtype_ns.cmake — B-2 and B-3 module struct/enum namespace tests
 # B-2: struct/enum Type name baked with module prefix; zero behavioral change
 # B-3: impl method / drop / clone names follow module prefix
+#
+# @subsystem modules
+# @guards B-2 + B-3 module struct/enum type namespace
+# @sources checker.c:checker_module_type_llvmname
 
 cmake_minimum_required(VERSION 3.20)
 

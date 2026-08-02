@@ -1,6 +1,10 @@
 # std/perf.lls: import std.perf as p — now / rdtsc / rdtscp / elapsed_*
 # Verifies: JIT output / AOT output / JIT memcheck 0 leaks
 # (std.perf uses no heap allocation; 0-leak check confirms no hidden allocs)
+#
+# @subsystem stdlib/numeric
+# @guards std.sys.perf wrapper module
+# @sources lib/std/sys/perf.lls
 
 cmake_minimum_required(VERSION 3.20)
 

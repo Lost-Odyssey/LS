@@ -9,6 +9,10 @@
 #     emitted "l022_methods__Widget.doubled" while dispatch required
 #     "l022_owner__Widget.doubled" -> link failure.
 #   * main imports both and asserts w.base()==21, w.doubled()==42 -> "L022 21 42".
+#
+# @subsystem modules
+# @guards L-022 cross-module inherent methods
+# @sources checker_decl.c:check_impl_decl
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/l022_crossmod/main.lls")

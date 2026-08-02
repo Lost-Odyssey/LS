@@ -2,6 +2,18 @@
 # (JIT + AOT + memcheck). Locks the fix for `vec(int) g = [1,2,3]` (POD) and
 # owned-element vecs `vec(string)` / `vec(has_drop struct)` reading back empty/0,
 # plus per-element drop at exit (memcheck 0 leak / 0 dfree).
+#
+# BF-042: a global initialised from a POD vector literal.
+#
+# Globals are initialised before `main` by generated code, which is a different
+# emission path from a local's initialiser -- it cannot rely on the enclosing
+# function's entry block or on scope cleanup. A literal that works perfectly as a
+# local can therefore fail as a global, which is the whole reason this shape has
+# its own corpus rather than being folded into the vector literal tests.
+#
+# @subsystem codegen/struct
+# @guards BF-042 global POD vec literal initializer
+# @sources codegen.c:cg_emit_global_cleanup
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/global_vec_lit/main.lls")

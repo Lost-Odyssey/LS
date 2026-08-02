@@ -2,6 +2,10 @@
 # （plan_ndarray_stdlib.md §-1）。覆盖 init/init_zeros/init_from 构造、rank/size/dim、
 # 三层 flat 访问、多下标 at2/set2/at3/set3、reshape、for-in、move+copy、as_ptr。
 # JIT + AOT + memcheck 0/0/0。
+#
+# @subsystem stdlib/numeric
+# @guards Tensor(T) heap tensor + runtime shape/strides
+# @sources lib/std/sci/tensor.lls
 cmake_minimum_required(VERSION 3.20)
 
 # Resolve std/ from the source tree (the test imports std.tensor / std.vec / std.str).

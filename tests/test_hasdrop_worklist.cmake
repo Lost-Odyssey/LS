@@ -4,6 +4,10 @@
 #   (The legacy full-scan oracle + LS_HASDROP_VERIFY parity harness this test
 #   used to also exercise were retired once the worklist was the sole
 #   implementation; see git history.)
+#
+# @subsystem checker/types
+# @guards C1 has_drop fixpoint worklist
+# @sources checker.c:checker_propagate_has_drop_worklist
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

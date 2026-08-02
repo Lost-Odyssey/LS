@@ -3,6 +3,10 @@
 # Verifies the full make_adder pattern (closure outlives the function that
 # built it) plus mixed-POD captures and shadowing semantics. Runs JIT, AOT,
 # and memcheck (must be 0 leaks since the env is freed at scope cleanup).
+#
+# @subsystem codegen/closure
+# @guards Phase C POD captures + heap env + RAII
+# @sources codegen_closure.c:codegen_closure_literal
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

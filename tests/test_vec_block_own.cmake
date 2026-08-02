@@ -3,6 +3,10 @@
 # a shared env double-frees at scope exit. Fix: @dup(Block) env-clones +
 # Vec.extend routes through @dup. (match_codegen_guide.html §7.A.)
 # JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem codegen/ownership
+# @guards Vec(Block) element copy shares env (8bcabf4)
+# @sources codegen_own.c:emit_clone_value, lib/std/core/vec.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/vec_block_own_test.lls")

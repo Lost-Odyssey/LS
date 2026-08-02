@@ -3,6 +3,10 @@
 # stderr); none should run.
 #
 # Required: LS_EXE, SAMPLE_DIR
+#
+# @subsystem codegen/match
+# @guards bit-pattern width mismatch / non-integer subject rejected
+# @sources checker_expr.c:check_expr_match
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE_DIR)

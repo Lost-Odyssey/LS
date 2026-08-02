@@ -4,6 +4,10 @@
 #   LS_EXE   — path to ls.exe
 #   SAMPLE   — absolute path to fs_test.lls
 #   WORK_DIR — scratch directory for AOT output
+#
+# @subsystem stdlib/sys
+# @guards bugs_deferred_p5_4 C-1 std.sys.fs (was an orphan driver)
+# @sources lib/std/sys/fs.lls
 
 if(NOT LS_EXE OR NOT SAMPLE OR NOT WORK_DIR)
     message(FATAL_ERROR "test_fs.cmake requires LS_EXE, SAMPLE, WORK_DIR")

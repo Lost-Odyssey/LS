@@ -1,6 +1,10 @@
 # test_literal_overflow.cmake — numeric literals that don't fit are parse errors:
 # decimal/hex > 64 bits, float overflow (1e999), and absurdly long tokens.
 # Boundary values (i64 max, full-64-bit hex, denormal underflow, 1e308) keep working.
+#
+# @subsystem frontend/lexer
+# @guards numeric literal overflow saturated silently (1aab966)
+# @sources parser_expr.c:prefix_int_lit, parser_expr.c:prefix_float_lit
 cmake_minimum_required(VERSION 3.20)
 
 # ---- reject: all overflow shapes diagnosed, non-zero exit ----

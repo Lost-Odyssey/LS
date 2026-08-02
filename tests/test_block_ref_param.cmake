@@ -1,6 +1,10 @@
 # Regression for B-MAP-M5-002: Block/closure params of reference type `&T`
 # (Block(&Map)/Block(&struct)) use the pointer borrow ABI end-to-end. JIT +
 # memcheck 0/0/0 + AOT. Self-verifying sample prints "BLOCKREF PASS".
+#
+# @subsystem codegen/closure
+# @guards B-MAP-M5-002 Block params of reference type &T
+# @sources codegen_call.c:cg_expr_call
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

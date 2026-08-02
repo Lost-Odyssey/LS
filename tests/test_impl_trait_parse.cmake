@@ -1,4 +1,8 @@
 # test_impl_trait_parse.cmake — impl Trait for Struct parsing tests (JIT + AOT)
+#
+# @subsystem frontend/parser
+# @guards trait-impl declaration parsing
+# @sources parser_decl.c:parse_fn_signature
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

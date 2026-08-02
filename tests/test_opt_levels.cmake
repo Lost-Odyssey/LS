@@ -5,6 +5,10 @@
 # regression changing program behavior.
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR, TEST_NAME (default "opt_levels").
+#
+# @subsystem codegen/optimization
+# @guards optimization pipeline levels
+# @sources optpipe.c:ls_opt_run_passes
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

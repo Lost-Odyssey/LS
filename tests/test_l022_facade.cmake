@@ -12,6 +12,10 @@
 #   * main imports ONLY the facade and asserts w.base()==21, w.doubled()==42.
 #     Without propagate_inherited_methods, Widget is unnameable / doubled()
 #     undispatchable through the facade.
+#
+# @subsystem modules
+# @guards L-022 facade transitive inherent-method visibility
+# @sources module.c:module_load
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/l022_facade/main.lls")

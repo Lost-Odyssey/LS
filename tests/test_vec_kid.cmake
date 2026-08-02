@@ -1,4 +1,8 @@
 # KI-D: lazy generic method monomorphization + method-level where bounds.
+#
+# @subsystem stdlib/containers
+# @guards KI-D Vec(T) without Eq stays usable until an equality search
+# @sources checker_generics.c:instantiate_template
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")

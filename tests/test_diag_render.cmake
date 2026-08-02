@@ -3,6 +3,10 @@
 # diagnostic. One sample per diagnostic kind (type / move / parse); each must
 # fail `lls check` and render both the legacy one-line message (byte-stable
 # contract) and the new snippet + caret lines.
+#
+# @subsystem diagnostics
+# @guards C2-1 source snippet + caret rendering
+# @sources diag.c:diag_emit
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

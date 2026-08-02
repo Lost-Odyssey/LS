@@ -2,6 +2,10 @@
 #   正向：methods X: Destroy { def ~(&!self) } 折叠成固有 __drop —— 作用域结束
 #         自动调用、has_drop 字段自动释放、where T: Destroy 约束。JIT + AOT + memcheck。
 #   负向：① 裸 `def ~` 在固有块拒绝；② 手动 .__drop() 拒绝。
+#
+# @subsystem codegen/ownership
+# @guards Destroy interface + ~ destructor
+# @sources checker_decl.c:has_member_drop_call, codegen_own.c:emit_auto_drop_fn
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

@@ -9,6 +9,10 @@
 # and leaves the normal path untouched. The evidence is instead (a) the crash
 # became a diagnostic, (b) legal deep nesting still checks clean, and (c) the IR
 # snapshots stay byte-identical.
+#
+# @subsystem checker/generics
+# @guards L-024 unbounded generic instantiation -> stack overflow, no diagnostic
+# @sources checker_generics.c:checker_instantiate_struct
 cmake_minimum_required(VERSION 3.20)
 
 set(NEG "${SAMPLE_DIR}/generic_depth_reject.lls")

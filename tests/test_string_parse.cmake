@@ -1,5 +1,15 @@
 # Phase S.P1 — string.to_int / to_i64 / to_float
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# `to_int` / `to_i64` / `to_float` on Str.
+#
+# Parsing is where a string library quietly returns wrong answers rather than
+# failing: overflow, leading/trailing space, an empty string, a lone sign. The
+# corpus pins the results rather than only checking that the calls succeed.
+#
+# @subsystem stdlib/string
+# @guards S.P1 to_int / to_i64 / to_float
+# @sources lib/std/core/str.lls
 
 cmake_minimum_required(VERSION 3.20)
 

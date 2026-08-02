@@ -1,4 +1,8 @@
 # test_tensor_complex.cmake — std.complex / FFT foundation. JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem stdlib/numeric
+# @guards Tensor(Complex(f64)) nested generics + T.zero() dispatch
+# @sources checker_call.c:check_expr_call
 cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

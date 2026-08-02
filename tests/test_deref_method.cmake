@@ -2,6 +2,10 @@
 # (*ptr).method() on a &!self/&self method must operate on the pointee, not a
 # spilled copy. JIT + AOT ("DEREF OK") + memcheck 0/0/0.
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB.
+#
+# @subsystem codegen/struct
+# @guards (*ptr).method() on a &self/&!self method
+# @sources codegen_expr.c:codegen_addr_of
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

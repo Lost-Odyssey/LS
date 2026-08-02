@@ -1,4 +1,8 @@
 # test_regex.cmake — Tests for std.regex (Pike VM NFA engine)
+#
+# @subsystem stdlib/text
+# @guards std.regex Pike VM NFA engine
+# @sources runtime/ls_regex.c
 
 if(DEFINED ENV{CMAKE_SOURCE_DIR_OVERRIDE})
     set(_root "$ENV{CMAKE_SOURCE_DIR_OVERRIDE}")

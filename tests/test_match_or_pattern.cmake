@@ -1,6 +1,20 @@
 # test_match_or_pattern.cmake — OR-pattern in match (bugs/18 fix)
 # Tests: integer switch with OR patterns, string OR patterns (CondBr path),
 #        JIT + AOT + memcheck
+#
+# OR-patterns (`1 | 2 => ...`) lower through two different backends and the corpus
+# covers both on purpose.
+#
+# Integer subjects become a switch, where the arms of an OR-pattern are several
+# cases pointing at ONE block -- so the arm body must be emitted once and reached
+# from multiple predecessors. String subjects cannot use a switch at all and lower
+# to a chain of comparisons with a conditional branch. The bodies are the same
+# source but the control-flow shapes are not, and ownership bookkeeping in an arm
+# (drops, binders) has to be correct under both.
+#
+# @subsystem codegen/match
+# @guards match OR-pattern (bugs/18)
+# @sources codegen_match.c:cg_match_lower_enum
 
 cmake_minimum_required(VERSION 3.20)
 

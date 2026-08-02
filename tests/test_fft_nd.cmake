@@ -1,4 +1,8 @@
 # test_fft_nd.cmake — std.fft Phase 5: multi-dim fft2/fftn over Tensor(Complex).
+#
+# @subsystem stdlib/numeric
+# @guards std.fft Phase 5 fft2/fftn over Tensor
+# @sources lib/std/sci/fft.lls
 cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

@@ -13,6 +13,10 @@
 #      with correct output.
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB (repo root → LS_HOME).
+#
+# @subsystem codegen/optimization
+# @guards D1 -g line-table debug info
+# @sources codegen_di.c
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

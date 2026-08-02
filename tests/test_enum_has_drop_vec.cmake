@@ -3,6 +3,10 @@
 #  resize / first / last / get). Regression guard for VR-LIM-020: a match arm
 # that yields an owned (cloned) has_drop payload binder as the arm's result
 # value (block-tail form `Some(x) => { x }`) must not double-free.
+#
+# @subsystem codegen/ownership
+# @guards VR-LIM-020
+# @sources codegen_match.c:cg_match_emit_arm_body, codegen_own.c:emit_enum_clone_val
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

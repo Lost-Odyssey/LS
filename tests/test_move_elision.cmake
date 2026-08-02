@@ -13,6 +13,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   TEST_NAME — test name (for error messages)
+#
+# @subsystem codegen/ownership
+# @guards move-elision Q4 (2026-06-01)
+# @sources codegen_own.c:cg_invalidate_moved_source, checker_borrow.c:checker_try_mark_moved
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

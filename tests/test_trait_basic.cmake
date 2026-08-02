@@ -1,4 +1,15 @@
 # test_trait_basic.cmake — Trait end-to-end integration tests (JIT + AOT)
+#
+# An interface implemented by a struct, end to end: declare, implement, call.
+#
+# The floor for the whole interface feature. Method resolution goes through the
+# impl registry keyed by (type, interface), and the emitted symbol carries both --
+# which is what later made same-name methods from two interfaces (L-002) a
+# solvable problem rather than a silent collision.
+#
+# @subsystem checker/traits
+# @guards interface end-to-end
+# @sources checker_decl.c:check_impl_trait_decl
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

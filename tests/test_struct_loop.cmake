@@ -1,5 +1,9 @@
 # test_struct_loop.cmake — bug #24: struct literal alloca in loop body caused
 # JIT stack overflow. n=200000 would crash before fix. JIT + AOT + memcheck.
+#
+# @subsystem codegen/struct
+# @guards Bug #24 struct literal alloca in a loop -> JIT stack overflow
+# @sources codegen_stmt.c:cg_stmt_var_decl
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/struct_loop_test.lls")

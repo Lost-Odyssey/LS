@@ -2,6 +2,10 @@
 # Ownership sweep: POD / owned Str / has_drop struct / nested Vec payloads through
 # match, combinators (unwrap_or / is_none?), force-unwrap and try+ok_or.
 # JIT + AOT + memcheck; FAIL anywhere in output vetoes.
+#
+# @subsystem stdlib/containers
+# @guards Vec.get(i) -> Option(T) recoverable read
+# @sources lib/std/core/vec.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/vec_get_option_test.lls")

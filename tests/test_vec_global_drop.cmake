@@ -1,4 +1,31 @@
 # test_vec_global_drop.cmake — VR-LIM-002 global user Vec(T) cleanup.
+#
+# Globals are released before main returns, by the generated cleanup function.
+# Pre-fix that function only knew two shapes: TYPE_STRING (free when cap>0) and
+# the then-builtin TYPE_VECTOR (drop each element, free the buffer). A pure-LS
+# `Vec(T)` is neither -- it is a has_drop STRUCT -- so a global Vec never got
+# its `__drop` and its raw buffer leaked for the whole process.
+#
+# The asymmetry is what let this survive: LOCAL Vecs were always fine, because
+# scope cleanup has had a `TYPE_STRUCT && has_drop` branch all along. Only
+# globals lacked it, and only memcheck can see the difference -- the program
+# prints the right numbers either way.
+#
+# Two places had to change, and doing only one is a silent no-op: the predicate
+# deciding whether a cleanup function is emitted AT ALL was also limited to
+# string/vector, so adding the struct branch to the body without widening the
+# predicate leaves that body unreachable.
+#
+# The corpus covers three element kinds because they leak for different reasons:
+# `Vec(int)` (buffer only), `Vec(Str)` (buffer + per-element heap), `Vec(Item)`
+# with Item a has_drop struct (buffer + per-element `__drop` -> nested Str).
+# Values are checked too (VEC_GLOBAL_DROP PASS, never FAIL), so a "fix" that
+# drops elements too eagerly and corrupts the reads cannot pass by being
+# merely leak-free.
+#
+# @subsystem codegen/ownership
+# @guards VR-LIM-002 global Vec cleanup
+# @sources codegen.c:cg_emit_global_cleanup, codegen_own.c:emit_auto_drop_fn
 
 cmake_minimum_required(VERSION 3.20)
 

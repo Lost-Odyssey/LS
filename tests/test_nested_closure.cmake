@@ -12,6 +12,10 @@
 #                             (tracker not thread-safe — same as task/sync);
 #                             soundness via repeated AOT runs.
 #   nested_closure_reject.lls  negative: transitive by-move capture -> compile error.
+#
+# @subsystem codegen/closure
+# @guards Phase B nested closure literals (transitive capture)
+# @sources codegen_closure.c:codegen_closure_literal
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")

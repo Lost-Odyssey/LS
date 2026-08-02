@@ -2,6 +2,10 @@
 #  ① borrow-match binder Vec（含导入模块实例化 Vec(std_str__Str)）用 [i] 下标
 #  ② 显式 `&局部` 实参传只读 `&T` 参数（剥壳走 auto-borrow 路径）
 # 正向 JIT + AOT + memcheck；负向 `&x` 传 `&!T` 仍编译拒绝。
+#
+# @subsystem checker/borrow
+# @guards plan_std_map 13: borrow-match binder indexing + &local arguments
+# @sources checker_borrow.c:checker_place_root_symbol
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/s13_borrow_gaps_test.lls")

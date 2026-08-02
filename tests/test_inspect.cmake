@@ -3,6 +3,10 @@
 #  * enum:   variants with payload types
 #  * negative: unknown type -> nonzero exit
 # Needles avoid regex metachars ( ) [ ] so they match literally.
+#
+# @subsystem checker/reflection
+# @guards Stage 1.5 `lls inspect`
+# @sources checker.c:checker_inspect
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/inspect_demo.lls")

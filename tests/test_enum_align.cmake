@@ -1,5 +1,19 @@
 # test_enum_align.cmake — bug #25: enum payload alignment. f64/i64 payloads must
 # round-trip through aligned construction + match. JIT + AOT + memcheck.
+#
+# Bug #25: an enum's payload area has to be ALIGNED, not merely large enough.
+#
+# The corpus is a `Mixed` enum whose variants carry f64 and i64 in several
+# combinations, constructed and destructured in a loop. If the payload starts at
+# an offset that does not satisfy the alignment of its widest member, the stores
+# and loads still compile -- they just move the bytes to and from the wrong place,
+# and the values come back subtly wrong instead of crashing. Summing the variants
+# and comparing against the expected total is therefore the whole point: an
+# alignment regression is a VALUE bug, and only a value check can see it.
+#
+# @subsystem codegen/enum
+# @guards Bug #25 enum payload alignment (f64/i64)
+# @sources codegen_decl.c:emit_enum_ctor
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/enum_align_test.lls")

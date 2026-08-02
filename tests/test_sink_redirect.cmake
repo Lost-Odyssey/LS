@@ -3,6 +3,10 @@
 # sink stream, so set_sink(file/stderr) captures ALL print output; reset returns
 # to stdout. Verifies byte-exact captured content + close-on-switch + memcheck.
 # docs/plan_print_sink.md Stage C.
+#
+# @subsystem stdlib/print
+# @guards Stage C-1 set_sink redirects print itself
+# @sources codegen_print.c
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

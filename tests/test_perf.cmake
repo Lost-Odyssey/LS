@@ -1,6 +1,10 @@
 # Built-in `perf` module: now / rdtsc / rdtscp / elapsed_ns / elapsed_ms / elapsed_s
 # Verifies: JIT output / AOT output
 # (memcheck not run — perf functions are inline LLVM intrinsics with no heap allocation)
+#
+# @subsystem stdlib/numeric
+# @guards builtin perf module (rdtsc / elapsed_*)
+# @sources builtins_perf.c
 
 cmake_minimum_required(VERSION 3.20)
 

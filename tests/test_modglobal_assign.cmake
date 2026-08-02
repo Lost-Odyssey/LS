@@ -26,6 +26,10 @@
 # global must drop the old value) and through the AOT-compiled binary.
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR
+#
+# @subsystem modules
+# @guards cross-module writes to a module global stored nothing, silently
+# @sources codegen_expr.c:codegen_lvalue_ptr, codegen_expr.c:codegen_addr_of
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required_var LS_EXE SAMPLE WORK_DIR)

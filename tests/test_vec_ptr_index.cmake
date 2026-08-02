@@ -1,5 +1,9 @@
 # Step 3 — typed *T pointer indexing p[i] (read+write). POD + padded struct
 # stride + field access on index read + *u8 bytes. JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem stdlib/containers
+# @guards RawVec Step 3 typed *T pointer indexing
+# @sources codegen_expr.c:cg_expr_index
 
 cmake_minimum_required(VERSION 3.20)
 

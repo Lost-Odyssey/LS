@@ -4,6 +4,10 @@
 #  * memcheck: clean
 #  * inspect: the derived ==, hash, < methods show up
 #  * negative: an unsupported trait is a compile error
+#
+# @subsystem checker/reflection
+# @guards Stage 1 @derive(Equal)
+# @sources checker_derive.c:expand_derives
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/derive_equal.lls")

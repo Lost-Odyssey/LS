@@ -1,6 +1,10 @@
 # test_diag_json.cmake — C2-3 (docs/plan_diagnostics_v2.md §3.4/§6):
 # `lls check --json` prints one schema-v1 JSON object on stdout, keeps
 # stderr empty, and preserves the exit code (non-zero on any error).
+#
+# @subsystem diagnostics
+# @guards C2-3 `lls check --json` schema v1
+# @sources diag.c:diag_emit
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

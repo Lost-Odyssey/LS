@@ -5,6 +5,10 @@
 # owned `io.open(...)` rvalue by move. Asserts memcheck is clean (the auto-close
 # frees the handle; the explicit-then-auto close does not double-free).
 # Runs io_basic_test.lls (which now includes a no-explicit-close RAII case).
+#
+# @subsystem stdlib/sys
+# @guards io.File RAII auto-close under memcheck
+# @sources lib/std/sys/io.lls
 cmake_minimum_required(VERSION 3.20)
 
 # Resolve stdlib (the updated lib/std/sys/io.lls) from the source tree, not the

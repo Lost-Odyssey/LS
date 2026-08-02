@@ -3,6 +3,10 @@
 # a real per-variant `match`, binding the active payload — write-once enum
 # show/serialize/visitor with no @derive.
 #  JIT + AOT + memcheck 0/0/0; negative: comptime match on a non-enum is a clean error.
+#
+# @subsystem checker/reflection
+# @guards comptime v3 comptime match
+# @sources checker_comptime.c:comptime_expand_block
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/comptime_match_test.lls")

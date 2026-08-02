@@ -5,6 +5,10 @@
 #           zero-copy (memcheck 0/0/0). by-value `T` still works.
 #   negative: a type param appearing in no value-arg position is a clean compile
 #             error (not a crash, not a silent miscompile).
+#
+# @subsystem checker/generics
+# @guards generic free-function value-arg inference
+# @sources checker_call.c:check_expr_call
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/generic_free_fn_borrow.lls")

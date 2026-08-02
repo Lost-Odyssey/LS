@@ -12,6 +12,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   TEST_NAME — test name (for error messages)
+#
+# @subsystem codegen/closure
+# @guards Phase G Block env deep-clone, resolves L-007
+# @sources codegen_stmt.c:cg_emit_block_env_clone
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

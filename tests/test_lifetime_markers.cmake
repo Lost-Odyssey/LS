@@ -13,6 +13,10 @@
 #      on: two disjoint aggregate locals coalesce into one frame slot.
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB (repo root -> LS_HOME).
+#
+# @subsystem codegen/optimization
+# @guards A2 alloca lifetime markers
+# @sources codegen_lifetime.c:cg_emit_lifetime_start
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

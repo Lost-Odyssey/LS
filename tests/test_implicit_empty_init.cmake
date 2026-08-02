@@ -3,6 +3,10 @@
 # zero-init, the built-in map). POD `int x` keeps its no-init behavior.
 # See docs/plan_std_map.md §F2 / M-DEF. JIT + memcheck 0/0/0 + AOT.
 # Self-verifying sample prints "MDEF PASS" (and "FAIL <l>" on any failure).
+#
+# @subsystem checker/types
+# @guards M-DEF implicit empty init `T v`
+# @sources checker_stmt.c:check_stmt_var_decl
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

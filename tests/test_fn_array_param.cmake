@@ -6,6 +6,10 @@
 #    pointer" diagnostics.
 #  * Positive: &array(int) / &!array(int) slice params on the free-fn and
 #    generic-method paths stay legal (JIT + AOT + memcheck 0/0/0).
+#
+# @subsystem language/syntax
+# @guards policy A: by-value array params rejected on all four paths
+# @sources checker_decl.c:reject_array_by_value_param
 cmake_minimum_required(VERSION 3.20)
 
 # ---- negative: all four sites must reject ----

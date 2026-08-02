@@ -2,6 +2,10 @@
 # ast_clone_deep must deep-copy their child expr (silent shallow-copy default
 # used to alias the subtree between template and per-instantiation clones →
 # compiler heap corruption). JIT + AOT + memcheck.
+#
+# @subsystem frontend/ast
+# @guards ast_clone_deep shallow-copied @time/@bench -> heap corruption (7ff720b)
+# @sources ast.c:ast_clone_deep
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/generic_clone_attime.lls")

@@ -1,5 +1,9 @@
 # test_vec_get_unsafe.cmake — vec.get_unsafe(i) unchecked index load.
 # JIT + AOT + memcheck (string elems must not double-free).
+#
+# @subsystem stdlib/containers
+# @guards vec.get!(i) unchecked index load
+# @sources lib/std/core/vec.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/vec_get_unsafe_test.lls")

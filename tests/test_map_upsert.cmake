@@ -1,6 +1,10 @@
 # test_map_upsert.cmake — Map.upsert (update-or-insert, single hash+probe).
 # JIT + AOT + memcheck 0/0/0. Covers POD counter, Str key (has_drop key drop on
 # present path), Vec value (has_drop group-by), equivalence with get-then-set.
+#
+# @subsystem stdlib/containers
+# @guards Map.upsert single hash+probe update-or-insert
+# @sources lib/std/core/map.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/map_upsert_test.lls")

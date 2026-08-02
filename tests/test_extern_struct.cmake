@@ -4,6 +4,10 @@
 #   LS_EXE    — path to ls.exe
 #   SAMPLE    — path to extern_struct_test.lls
 #   WORK_DIR  — build directory (for AOT output)
+#
+# @subsystem codegen/ffi
+# @guards Phase E.1 extern struct + extern block
+# @sources codegen_decl.c
 
 # ---- JIT path ----
 execute_process(

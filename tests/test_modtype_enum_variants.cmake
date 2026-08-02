@@ -2,6 +2,10 @@
 # variant names. Bare variants resolve by type context (decl/arg/match scrutinee),
 # so two modules' `Res { Ok, Err }` coexist without explicit qualified-variant
 # syntax. JIT + AOT + memcheck.
+#
+# @subsystem modules
+# @guards B-5 cross-module same-named enum + same variant names
+# @sources checker_generics.c:resolve_type_node
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/modtype_enum_variants/main.lls")

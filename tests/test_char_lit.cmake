@@ -1,6 +1,10 @@
 # test_char_lit.cmake — C-style char literal support
 # Tests: 'A' == int, '\n' etc. escapes, match with char patterns, OR-pattern with chars
 #        JIT + AOT + memcheck
+#
+# @subsystem frontend/lexer
+# @guards char literals
+# @sources scanner.c:scanner_next
 
 cmake_minimum_required(VERSION 3.20)
 

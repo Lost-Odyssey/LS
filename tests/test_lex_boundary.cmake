@@ -14,6 +14,10 @@
 # compile.
 #
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem frontend/lexer
+# @guards B5 lexical boundaries (\xHH escapes, nested block comments)
+# @sources scanner.c:skip_whitespace
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required_var LS_EXE SAMPLE)

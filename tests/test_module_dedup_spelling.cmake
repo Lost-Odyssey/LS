@@ -12,6 +12,10 @@
 # Assertions: JIT + AOT run correctly; the emitted IR contains the canonical
 # `std_text_strconv__int_to_hex` and NOT a duplicate `@text_strconv__` symbol;
 # memcheck clean.
+#
+# @subsystem modules
+# @guards B-5 dedup imports by resolved file
+# @sources module.c, codegen.c:cg_module_fn_symbol
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/module_dedup_spelling.lls")

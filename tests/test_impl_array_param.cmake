@@ -7,6 +7,10 @@
 #    TWO "array must be passed by pointer" diagnostics in one run.
 #  * Positive: &array(int) / &!array(int) slice params in interface + impl
 #    stay legal (JIT + AOT + memcheck 0/0/0).
+#
+# @subsystem language/syntax
+# @guards interface-side by-value array param rejection
+# @sources checker_decl.c:reject_array_by_value_param
 cmake_minimum_required(VERSION 3.20)
 
 # ---- negative: both decl sites must reject ----

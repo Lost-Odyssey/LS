@@ -3,6 +3,10 @@
 # is rejected — an unmatched subject would silently yield a zeroed result.
 # Pins: 2 reject shapes (int + char subjects, both diagnosed in one pass),
 # the four exempt shapes compile silently, and the exempt program runs pinned.
+#
+# @subsystem codegen/match
+# @guards L-020 value-producing scalar match without `_` is an error
+# @sources checker_expr.c:check_expr_match
 cmake_minimum_required(VERSION 3.20)
 
 # ---- reject: both shapes diagnosed, non-zero exit ----

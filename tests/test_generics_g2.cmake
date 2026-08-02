@@ -1,4 +1,16 @@
 # test_generics_g2.cmake — G2 generic function tests (JIT + AOT)
+#
+# Phase G2: generic FREE functions, as opposed to generic structs.
+#
+# Different instantiation path from G1: there is no receiver to infer the type
+# parameter from, so the argument types (or an explicit `f(T)(...)`) drive it, and
+# the resulting symbol is named from the type arguments rather than from a struct.
+# That naming step is where the abstract-`T` and deep-nesting bugs later showed
+# up.
+#
+# @subsystem checker/generics
+# @guards G2 generic functions
+# @sources checker_generics.c:instantiate_template
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

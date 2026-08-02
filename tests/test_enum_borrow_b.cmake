@@ -1,6 +1,10 @@
 # Phase B — &Enum owned-payload borrow bindings
 # string/vec/map/struct/nested-enum payload from &Enum match are zero-copy borrows.
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# @subsystem codegen/enum
+# @guards Phase B &Enum owned-payload borrow bindings
+# @sources codegen_match.c:cg_match_lower_enum
 
 cmake_minimum_required(VERSION 3.20)
 

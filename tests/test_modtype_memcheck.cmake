@@ -1,6 +1,10 @@
 # test_modtype_memcheck.cmake — B-6: has_drop same-named struct/enum across two
 # modules, stressed through methods, vecs (+ Phase H deep copy), enum payloads and
 # cross-module returns. JIT + AOT + memcheck (0 leak / 0 double-free).
+#
+# @subsystem modules
+# @guards B-6 same-named has_drop types across modules
+# @sources checker.c:checker_module_type_llvmname, codegen_own.c:emit_auto_drop_fn
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/modtype_memcheck/main.lls")

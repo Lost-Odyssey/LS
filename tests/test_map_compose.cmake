@@ -1,6 +1,10 @@
 # std.map M-4: composition/integration verification. Map as struct field
 # (including `{}` zero-init), global variable, enum payload, and nested Map value.
 # JIT + memcheck 0/0/0 + AOT. Self-verifying sample prints "COMPOSE PASS".
+#
+# @subsystem stdlib/containers
+# @guards std.map M-4 Map as struct field / global / enum payload
+# @sources lib/std/core/map.lls
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

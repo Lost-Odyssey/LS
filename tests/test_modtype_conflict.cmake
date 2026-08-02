@@ -6,6 +6,10 @@
 # S2: bare `Config` (mod_a: 1 field, mod_b: 3 fields) → ambiguous-use error
 # S6: bare `Box`    (mod_a: 2 fields, mod_b: 1 field) → ambiguous-use error
 # Both scenarios must: exit non-zero AND stderr contain "multiple imported modules"
+#
+# @subsystem modules
+# @guards B-1 same type name from several modules -> clear error
+# @sources checker.c:checker_module_type_llvmname
 cmake_minimum_required(VERSION 3.20)
 
 macro(expect_conflict sample label)

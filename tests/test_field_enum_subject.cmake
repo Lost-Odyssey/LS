@@ -10,6 +10,10 @@
 # Covers the three field-subject forms (local struct field / owned parameter field
 # / &self method field) x {discard arm, value-yield binder arm} x {Option(Str)
 # field, user-enum Str-payload field}. JIT + AOT + memcheck (0 leak / 0 double-free).
+#
+# @subsystem codegen/match
+# @guards BUG-1 `match struct.field` over an enum field double-freed
+# @sources codegen_own.c:emit_enum_clone_val
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/field_enum_subject_test.lls")

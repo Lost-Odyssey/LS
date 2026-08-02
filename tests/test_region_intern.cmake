@@ -1,6 +1,10 @@
 # test_region_intern.cmake — std.mem.arena: Region.str_substr zero-malloc slice
 # interning (parser/AST token pattern). See docs/plan_region_intern_str.md.
 #   JIT + AOT + memcheck (0 leak / 0 double-free / 0 invalid free).
+#
+# @subsystem stdlib/sys
+# @guards std.arena Region.str_substr zero-malloc slice interning
+# @sources lib/std/mem/arena.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/region_intern_test.lls")

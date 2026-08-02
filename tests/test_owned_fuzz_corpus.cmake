@@ -8,6 +8,10 @@
 # time — only the generator (genfuzz.py) needs python. See docs/plan_fuzzing.md.
 #
 # Required: LS_EXE, CORPUS_DIR, LS_HOME
+#
+# @subsystem codegen/ownership
+# @guards L-012, L-013, M5-004
+# @sources codegen_own.c, codegen_match.c
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT CORPUS_DIR OR NOT LS_HOME)

@@ -6,6 +6,10 @@
 #                          final count proves real cross-thread atomicity.
 #                          NO --memcheck (tracker not thread-safe — like task);
 #                          soundness/correctness via repeated AOT runs.
+#
+# @subsystem stdlib/concurrency
+# @guards std.atomic Atomic(T) lock-free scalars
+# @sources checker_call.c:check_builtin_atomic
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")

@@ -3,6 +3,10 @@
 # @llvm.memcpy (zero extern calls remain); ② LS_NO_MEMCPY_PRIM=1 fully falls
 # back to the extern call (zero memcpy intrinsics from the prim); ③ runtime
 # output identical in both modes; ④ memcheck clean.
+#
+# @subsystem codegen/optimization
+# @guards __ls_bytecopy lowered to llvm.memcpy (form 3)
+# @sources codegen_call.c:cg_expr_call
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/memcpy_prim_test.lls")

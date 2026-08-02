@@ -2,6 +2,30 @@
 #
 # 用 `ls run --memcheck $SAMPLE` 运行测试，断言 stderr 包含 "OK clean"。
 #
+# ---- why 26 tests share this one driver -----------------------------------
+#
+# The whole oracle is one line: the program must run AND the allocator report
+# must say 0 leak / 0 double-free / 0 invalid free. There is nothing per-test to
+# configure, so the corpus IS the test — which is why this driver is the most
+# reused one in the suite.
+#
+# That also makes its blind spot worth stating plainly: a test on this driver
+# checks MEMORY behaviour only. It never looks at what the program printed, so a
+# change that keeps every allocation balanced while computing the wrong answer
+# passes here. Tests whose corpora are self-verifying (they print a PASS marker
+# and the driver greps for it) use test_plotfmt.cmake instead. When adding a
+# corpus, prefer the self-verifying form; reach for this driver only when the
+# property under test really is allocation balance.
+#
+# The bulk of the users are the M-series memory-model overhaul corpora
+# (docs/memory_model_overhaul.md). That project exists because 28 of the first
+# 36 recorded bugfixes were memory-safety bugs, all traceable to three
+# structural defects: two parallel temp-tracking tables that could register the
+# same string twice (double free), an overloaded `cap == 0` that could not tell
+# a static literal from a borrowed parameter, and ownership-transfer logic
+# hand-written at 5+ sites per container operation, where missing one site was
+# a bug. The corpora below are the permanent guard on those fixes.
+#
 # Required cache variables (passed by add_test):
 #   LS_EXE    — path to the ls.exe / ls binary
 #   SAMPLE    — absolute path to the .lls sample to run

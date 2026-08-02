@@ -1,5 +1,9 @@
 # Phase V.1 — vec functional methods: any, all, count, each
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# @subsystem stdlib/containers
+# @guards Phase V.1 any/all/count/each
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

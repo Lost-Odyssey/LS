@@ -6,6 +6,10 @@
 # container goes out of scope.
 #
 # Expected output (in order): 11, 20, 7, "add3", "sub2", 100
+#
+# @subsystem codegen/closure
+# @guards Phase F.4 containers of Block
+# @sources codegen_own.c:emit_clone_value
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

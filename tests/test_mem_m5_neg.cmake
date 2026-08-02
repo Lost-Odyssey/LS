@@ -1,6 +1,10 @@
 # test_mem_m5_neg.cmake — M-5 negative tests: move-after-use must be rejected
 # at compile time. Each sample uses a moved variable; the checker must emit a
 # [move error] and exit non-zero.
+#
+# @subsystem runtime/memcheck
+# @guards M-5 move-after-use / branch MAYBE_MOVED rejected
+# @sources checker_borrow.c:checker_try_mark_moved
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

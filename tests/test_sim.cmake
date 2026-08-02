@@ -1,6 +1,10 @@
 # test_sim.cmake — sim (instruction-level microarch sim + advisor, lib/sim/).
 # Runs each sim_* sample through JIT + AOT + memcheck (0/0/0).
 # LS_HOME points at the source tree so ls.exe resolves lib/sim/*.lls.
+#
+# @subsystem stdlib/numeric
+# @guards instruction-level microarch sim + advisor
+# @sources lib/sim/core/engine.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(ENV{LS_HOME} "${REPO_DIR}")

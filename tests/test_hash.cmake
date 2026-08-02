@@ -3,6 +3,10 @@
 # and `where T: Hash` trait-bound dispatch. JIT + memcheck 0/0/0 + AOT, plus a
 # negative case (a type without `impl Hash` must be rejected at compile time).
 # See docs/plan_std_map.md §3. Self-verifying sample prints "HASH PASS".
+#
+# @subsystem stdlib/containers
+# @guards M-H Hash trait + FxHash
+# @sources lib/std/core/hash.lls
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

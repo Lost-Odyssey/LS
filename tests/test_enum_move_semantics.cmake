@@ -1,6 +1,10 @@
 # test_enum_move_semantics.cmake — L-019 (audit OWN-6): has_drop enum
 # bindings move like every other has_drop type; @dup keeps an explicit deep
 # copy; use-after-move is a checker error. JIT + AOT + reject triple.
+#
+# @subsystem codegen/ownership
+# @guards L-019
+# @sources checker_borrow.c:type_is_movable, checker_borrow.c:checker_try_mark_moved, codegen_own.c:cg_invalidate_moved_source
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/enum_move_semantics_test.lls")

@@ -1,6 +1,10 @@
 # test_zero_trait.cmake — Phase 0 of std.complex/std.fft: compiler foundation for
 # `T.zero()`. Static trait methods + static-method dispatch on a generic type
 # parameter. JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem checker/traits
+# @guards T.zero() static trait method (std.complex/fft Phase 0)
+# @sources checker_call.c:check_expr_call
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

@@ -1,5 +1,9 @@
 # test_modtype_qualified.cmake — B-4: module-qualified types `A.Config`/`mod.Config`
 # let two modules' same-named (different-layout) structs coexist. JIT + AOT + memcheck.
+#
+# @subsystem modules
+# @guards B-4 module-qualified types mod.Type
+# @sources checker_generics.c:resolve_type_node
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/modtype_qualified/main.lls")

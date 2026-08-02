@@ -1,6 +1,10 @@
 # Phase S.P3 — std/strconv.lls: format / int_to_hex / int_to_oct / int_to_bin /
 #               float_fixed / to_string / to_string_f
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# @subsystem stdlib/string
+# @guards S.P3 std.text.strconv format / int_to_hex / oct / bin
+# @sources lib/std/text/strconv.lls
 
 cmake_minimum_required(VERSION 3.20)
 

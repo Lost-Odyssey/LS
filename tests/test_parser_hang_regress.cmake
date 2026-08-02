@@ -9,6 +9,10 @@
 # src/parser.c, which guarantees forward progress. See docs/plan_fuzzing.md.
 #
 # Required: LS_EXE, REGRESS_DIR
+#
+# @subsystem frontend/parser
+# @guards malformed input must not hang the parser
+# @sources parser.c:synchronize
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT REGRESS_DIR)

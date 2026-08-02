@@ -4,6 +4,10 @@
 # (struct: clone leaked at loop-enclosing scope; enum: shallow copy double-freed the
 # shared payload). The fix borrows the field in place via GEP — no clone. Without it
 # the new sample reports 2 leaks + 1 double-free; with it, 0/0/0. JIT + AOT + memcheck.
+#
+# @subsystem checker/borrow
+# @guards L-006 family: owned-local field borrow
+# @sources codegen_expr.c:codegen_addr_of, checker_borrow.c:checker_place_root_symbol
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

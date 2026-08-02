@@ -2,6 +2,10 @@
 #  * TypeInfo { name, fields (name+type), funcs (name+signature+static) }
 #  * fields from the struct; method signatures scanned from the program AST
 #  * JIT + AOT + memcheck
+#
+# @subsystem checker/reflection
+# @guards Stage 3 @derive(Reflect) runtime TypeInfo
+# @sources checker_derive.c:expand_derives
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/derive_reflect.lls")

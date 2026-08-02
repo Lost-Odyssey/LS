@@ -8,6 +8,10 @@
 #
 # Required -D vars: LS_EXE, SCRIPT, EXPECT (a substring a clean run must print).
 # Optional: RUNS (default 60).
+#
+# @subsystem tooling/repl
+# @guards residual L-010: import re-emission left a dangling block reference
+# @sources jit.c
 
 if(NOT LS_EXE OR NOT SCRIPT OR NOT DEFINED EXPECT)
     message(FATAL_ERROR "usage: -DLS_EXE= -DSCRIPT= -DEXPECT= [-DRUNS=]")

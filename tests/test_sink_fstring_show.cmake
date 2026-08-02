@@ -2,6 +2,10 @@
 # f"...{showStruct}..." renders the struct/enum via Show (was a compile error
 # before). Exact output + memcheck (interpolated owned Str rvalues dropped).
 # docs/plan_print_sink.md Stage D.
+#
+# @subsystem stdlib/print
+# @guards Stage D f-string interpolation honours Show
+# @sources codegen_print.c:codegen_format_string
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

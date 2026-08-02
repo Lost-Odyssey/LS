@@ -10,6 +10,10 @@
 #   LS_EXE     — path to ls.exe
 #   SAMPLE_DIR — directory containing the .lls fixtures
 #   WORK_DIR   — scratch directory for AOT outputs
+#
+# @subsystem codegen/closure
+# @guards Phase A type alias + Block keyword + closure literal
+# @sources codegen_closure.c:codegen_closure_literal
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

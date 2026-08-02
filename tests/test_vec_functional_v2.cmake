@@ -1,5 +1,9 @@
 # Phase V.2 — vec functional methods: filter, find, find_index
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# @subsystem stdlib/containers
+# @guards Phase V.2 filter/find/find_index
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

@@ -4,6 +4,10 @@
 # LS_NO_INTERNALIZE (A5 internalize+GlobalDCE), LS_NO_ENUM_RANGE (A3 tag
 # !range). Disabling any of them must not change program output — a
 # silently-broken pass (or off-path) fails loudly here.
+#
+# @subsystem codegen/optimization
+# @guards LS_NO_* kill-switch A/B parity
+# @sources optpipe.c:ls_opt_run_passes
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/match_own_stress_test.lls")

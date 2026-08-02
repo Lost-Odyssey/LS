@@ -3,6 +3,10 @@
 #         + owned Str move-out + 单一提供者回归）。JIT + AOT + memcheck。
 #   负向：① 裸歧义调用报错（含两 interface 名）② 限定调用缺 receiver
 #         ③ recv 未实现该 interface ④ 泛型类型同名（v1 限制）。
+#
+# @subsystem checker/traits
+# @guards L-002 same-name interface method disambiguation
+# @sources checker_call.c:check_expr_call
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

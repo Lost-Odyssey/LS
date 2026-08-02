@@ -1,6 +1,10 @@
 # test_block_mutref.cmake — Block(&!T) 可写借用块参数（plan_std_map §13 收官）
 # 正向 JIT + AOT + memcheck（Vec/Str/Map 载体、转发、混合参数、只读对照）；
 # 负向①只读 &T 体内调 &!self 方法拒绝；负向②裸 v 传 &!T 拒绝。
+#
+# @subsystem codegen/closure
+# @guards Block(&!T) writable-borrow block params (plan_std_map 13)
+# @sources codegen_call.c:cg_expr_call
 cmake_minimum_required(VERSION 3.20)
 
 set(POS  "${SAMPLE_DIR}/block_mutref_test.lls")

@@ -1,5 +1,9 @@
 # Phase V.4 — vec.reduce(init, Block(A,T)->A) -> A
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# @subsystem stdlib/containers
+# @guards Phase V.4 vec.reduce(init, Block(A,T)->A)
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

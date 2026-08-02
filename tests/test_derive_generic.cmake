@@ -5,6 +5,10 @@
 #  * Reflect on Box(T) via alias + index access (name, fields incl. "T" param)
 #  * negative: deriving on a generic adds no `where T: Trait` bound, so instantiating
 #    with a T that lacks the operation fails at monomorphization (clear error)
+#
+# @subsystem checker/reflection
+# @guards @derive on user generic structs
+# @sources checker_derive.c:expand_derives
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/derive_generic.lls")

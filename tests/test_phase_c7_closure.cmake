@@ -1,5 +1,18 @@
 # test_phase_c7_closure.cmake - Phase C.7 (revised): Vec/Map/struct by-move.
 # Expected output: 10, 30, hello-world, 90, 0, LVL:7
+#
+# Phase C.7: closures capturing values that OWN heap (Vec, Map, has_drop struct).
+#
+# This is where capture stopped being a copy. An owned capture is moved into the
+# closure's environment, the outer variable is marked moved, and the environment
+# gains a generated destructor that releases each captured field. Three things
+# have to agree -- the checker's move marking, the environment layout, and the
+# per-closure drop function -- and a mismatch in any one of them is a leak or a
+# double free rather than a compile error.
+#
+# @subsystem codegen/closure
+# @guards Phase C.7 Vec/Map/struct(drop) by-move captures
+# @sources codegen_closure.c:capture_type_is_by_ref_cg
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

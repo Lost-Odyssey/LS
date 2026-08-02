@@ -5,6 +5,10 @@
 # Also verifies 0 leak / 0 double-free under memcheck.
 #
 # Expected output (in order): 6, 99, 4, "hello world"
+#
+# @subsystem codegen/closure
+# @guards Phase F.1 [move v] capture spec, factory pattern
+# @sources checker_borrow.c:capture_type_supported
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

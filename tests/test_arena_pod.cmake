@@ -2,6 +2,10 @@
 #  * Positive: alloc/get/set!/auto-grow/handle-linked list/reset+reuse
 #    (JIT + AOT + memcheck 0/0/0).
 #  * Negative: Arena(Str).alloc is a compile error (element type must be Pod).
+#
+# @subsystem stdlib/sys
+# @guards std.arena Phase 1 typed POD bump arena
+# @sources lib/std/mem/arena.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/arena_pod_test.lls")

@@ -1,6 +1,10 @@
 # test_enum_print.cmake — print(enum) readable rendering (Variant / Variant(…),
 # Option/Result, enum fields in structs) + owned enum rvalue not leaked.
 # JIT + AOT (exact-line asserts) + memcheck (0 leak / 0 double-free).
+#
+# @subsystem codegen/enum
+# @guards readable enum rendering for @print
+# @sources codegen_print.c
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

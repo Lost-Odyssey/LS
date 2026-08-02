@@ -8,6 +8,10 @@
 #   discards, and owned MATCH/TRY objects spilled for field reads. Unified into
 #   cg_expr_yields_owned_rvalue / cg_expr_is_fresh_rvalue_kind.
 # Self-verifying corpus; JIT + AOT + memcheck (0 leak / 0 double-free).
+#
+# @subsystem codegen/ownership
+# @guards OWN-1 (footgun phase 3)
+# @sources codegen_internal.h:cg_expr_yields_owned_rvalue, codegen_internal.h:cg_expr_is_fresh_rvalue_kind, codegen_own.c:cg_push_temp_drop
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/own_rvalue_sites_test.lls")

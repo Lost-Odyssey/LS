@@ -2,6 +2,10 @@
 # imported enum whose payload is a std.vec Vec(T), and calls Vec methods
 # (.len()/.get()/[i]/for-in) on the binder. The consumer does NOT import
 # std.vec directly — the template is pulled transitively. JIT + AOT + memcheck.
+#
+# @subsystem modules
+# @guards VR-LIM-018 / F6 cross-module generic method resolution
+# @sources checker_generics.c:instantiate_template
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/xmod_generic/main.lls")

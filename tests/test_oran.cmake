@@ -1,6 +1,10 @@
 # test_oran.cmake — oran.cus (O-RAN CUS-plane) library: parse + build + filter +
 # stats + render. Runs every oran_* sample through JIT + AOT + memcheck (0/0/0).
 # LS_HOME points at the source tree so ls.exe resolves lib/oran/cus.lls.
+#
+# @subsystem stdlib/text
+# @guards oran.cus O-RAN CUS-plane parse/build/filter/stats
+# @sources lib/oran/cus.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(ENV{LS_HOME} "${REPO_DIR}")

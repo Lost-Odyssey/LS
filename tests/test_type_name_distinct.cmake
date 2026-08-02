@@ -1,6 +1,10 @@
 # test_type_name_distinct.cmake — type_name static-buffer self-clobber regression.
 # A type mismatch involving a nested Block type must show the REAL `got` name
 # (`def(int, int) -> int`), not a copy of `expected` (the old corruption symptom).
+#
+# @subsystem checker/types
+# @guards type_name static-buffer self-clobber
+# @sources types.c:type_name
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

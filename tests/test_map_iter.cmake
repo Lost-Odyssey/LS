@@ -2,6 +2,10 @@
 # yields Entry(K,V); no `for (k,v)` destructuring). POD + has_drop keys (string)
 # + has_drop container values (Vec). See docs/plan_std_map.md §7.
 # JIT + memcheck 0/0/0 + AOT. Self-verifying sample prints "ITER PASS".
+#
+# @subsystem stdlib/containers
+# @guards std.map M-3 MapIter + keys/values/each
+# @sources lib/std/core/map.lls
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

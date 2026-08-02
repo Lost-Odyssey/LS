@@ -2,6 +2,10 @@
 #   正向：def / methods / interface / private + 合并 trait-impl `methods T: I`
 #         （含泛型）跑通 JIT + AOT，输出 DERUST OK。
 #   负向：退役的旧关键字 `fn` 现被当普通标识符 → 编译期拒绝。
+#
+# @subsystem language/syntax
+# @guards de-rust phase 1 def/methods/interface/public/private
+# @sources parser_decl.c:parse_fn_signature
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

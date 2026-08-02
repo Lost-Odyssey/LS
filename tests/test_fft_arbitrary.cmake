@@ -1,4 +1,8 @@
 # test_fft_arbitrary.cmake — std.fft Phase 3: arbitrary-N FFT via Bluestein (vs naive DFT).
+#
+# @subsystem stdlib/numeric
+# @guards std.fft Phase 3 arbitrary-N via Bluestein
+# @sources lib/std/sci/fft.lls
 cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

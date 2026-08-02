@@ -3,6 +3,10 @@
 # plus a cross-module type argument (Option(mod_w.Widget)) feeding the
 # instance-name builders that moved from fixed 256/512-byte snprintf buffers
 # to the growable MangleBuf (src/mangle.c). JIT + AOT + memcheck.
+#
+# @subsystem checker/generics
+# @guards Batch 2 deep generic instance names truncated in fixed buffers
+# @sources mangle.c:mangle_type_arg_name
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/mangle_deep_nest/main.lls")

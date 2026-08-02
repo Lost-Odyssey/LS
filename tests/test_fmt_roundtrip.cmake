@@ -10,6 +10,10 @@
 # Also pins idempotence: fmt(fmt(x)) == fmt(x).
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR
+#
+# @subsystem tooling/cli
+# @guards fmt must be behaviour-preserving over the whole corpus
+# @sources format.c
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required_var LS_EXE SAMPLE WORK_DIR)

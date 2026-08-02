@@ -8,6 +8,10 @@
 #   (3) generic_borrow_scalar_reject.lls (NEGATIVE) — a POD-scalar element borrow
 #       (`Box(int).get_ref -> &int`) must be a clean compile error (aggregate-only).
 # FAIL anywhere in positive output vetoes; the negative must rc!=0 with a message.
+#
+# @subsystem checker/borrow
+# @guards generic single-input return-borrow elision (Vec.get_ref)
+# @sources checker_borrow.c:checker_place_root_symbol
 cmake_minimum_required(VERSION 3.20)
 if(STDLIB)
     set(ENV{LS_HOME} "${STDLIB}")

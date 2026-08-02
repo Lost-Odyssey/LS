@@ -5,6 +5,10 @@
 # Also verifies struct drop handles multiple has_drop field types (Block + string).
 #
 # Expected output (in order): 10, 15, "factory_ok", 3, 7
+#
+# @subsystem codegen/closure
+# @guards Phase F.3 Block as struct fields
+# @sources codegen_own.c:emit_struct_clone_val
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

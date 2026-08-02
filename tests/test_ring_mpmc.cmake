@@ -7,6 +7,10 @@
 # hangs the count below total).
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB (repo root → LS_HOME).
+#
+# @subsystem stdlib/concurrency
+# @guards std.ring Phase 3 MPMC lock-free (CAS)
+# @sources lib/std/sync/ring.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

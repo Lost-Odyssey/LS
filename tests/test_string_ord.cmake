@@ -1,3 +1,8 @@
+# test_string_ord.cmake
+#
+# @subsystem stdlib/string
+# @guards Str ordering
+# @sources lib/std/core/str.lls
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/string_ord_test.lls")

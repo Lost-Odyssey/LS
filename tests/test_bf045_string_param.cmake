@@ -1,6 +1,25 @@
 # test_bf045_string_param.cmake — BF-045: owned string param stored into a returned
 # struct field / returned directly must be cloned (param is a cap=-2 borrow). Was
 # AOT garbage / JIT lucky-UAF. JIT + AOT + memcheck (the AOT path is the key one).
+#
+# An AOT-only wrong-value bug, and one where the JIT's luck actively hid it.
+#
+# A `string` parameter arrives borrowed: the prologue marks it `cap = -2`, meaning
+# it aliases the caller's buffer. But the codegen SYMBOL was not marked borrowed
+# the way vec/map/Block parameters were, so storing it into a returned struct
+# field took the move branch instead of the clone branch. The field then escaped
+# holding a pointer into the caller's temporary; the caller freed it; the value
+# read back was garbage. Under the JIT the freed memory usually still held the
+# old bytes, so the same program printed the right answer -- which is exactly why
+# this needs an AOT leg rather than a JIT-only corpus.
+#
+# Two sites had to change: the parameter registration (so container/field stores
+# clone), and `return s` on a borrowed string parameter (the same clone point the
+# global-return fix uses).
+#
+# @subsystem codegen/struct
+# @guards BF-045 owned string param into a returned struct field
+# @sources codegen_own.c:cg_store_owned
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/bf045_string_param/main.lls")

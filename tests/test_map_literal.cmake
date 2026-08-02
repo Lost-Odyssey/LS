@@ -2,6 +2,10 @@
 # build AST_MAP_LIT, routed by LHS type to the __from_pairs protocol. POD/string/
 # Vec values, empty `{}`, trailing comma, anonymous-struct-literal regression.
 # See docs/plan_std_map.md §F1. JIT + memcheck 0/0/0 + AOT. Prints "MLIT PASS".
+#
+# @subsystem stdlib/containers
+# @guards std.map M-LIT `{ k: v }` literals via FromPairs
+# @sources checker_expr.c:check_expr_new_expr
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

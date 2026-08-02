@@ -3,6 +3,10 @@
 # the compiler: `ls emit-ir` (the full parse -> check -> codegen "emit" path) must
 # exit 0 (compiled) or 1 (clean error), never a crash or hang. Stresses the new
 # @derive parser + checker + source-synthesis paths. See docs/plan_fuzzing.md.
+#
+# @subsystem checker/reflection
+# @guards @derive robustness on edge/malformed programs
+# @sources checker_derive.c:expand_derives
 cmake_minimum_required(VERSION 3.20)
 if(NOT LS_EXE OR NOT CORPUS_DIR)
     message(FATAL_ERROR "requires LS_EXE, CORPUS_DIR")

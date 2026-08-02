@@ -2,6 +2,10 @@
 # Emits the coverage kernel, asserts the expected AVX-512 intrinsics appear,
 # compiles the generated C with clang (AVX-512 feature flags) to prove it is
 # valid immediately-compilable C, and verifies the out-of-subset reject path.
+#
+# @subsystem tooling/cli
+# @guards `lls emit-c` C/Intel-intrinsics emitter for the SIMD kernel subset
+# @sources main.c
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")

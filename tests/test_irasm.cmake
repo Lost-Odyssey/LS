@@ -4,6 +4,10 @@
 #  * fuzzy name match: 'area' resolves to 'Point.area'
 #  * negative: unknown function -> nonzero exit
 # Output is platform/LLVM-version dependent; assert only stable anchors.
+#
+# @subsystem tooling/cli
+# @guards `lls ir <fn>` / `lls asm <fn>` per-function inspection
+# @sources main.c
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/irasm_demo.lls")

@@ -9,6 +9,10 @@
 # if any of the stale wording comes back.
 #
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem diagnostics
+# @guards stale ownership diagnostics (0c4855e)
+# @sources checker_borrow.c:capture_type_supported, checker_borrow.c:type_is_movable, checker_call.c:intrinsic_retired_spelling
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

@@ -2,6 +2,10 @@
 # (__simd_splat/zero/lane/fma/reduce_add) + elementwise operators (+ - * /),
 # lowering to <N x T> LLVM IR. Single-threaded correctness; Simd is POD so
 # --memcheck is 0/0/0. JIT + memcheck + AOT, like test_atomic.
+#
+# @subsystem stdlib/numeric
+# @guards Simd(T,N) portable SIMD vector type (Phase 1a)
+# @sources checker_call.c:check_builtin_simd
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")

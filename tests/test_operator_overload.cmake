@@ -1,4 +1,8 @@
 # test_operator_overload.cmake — operator overloading end-to-end (JIT + AOT)
+#
+# @subsystem checker/traits
+# @guards operator overloading Add/Sub/Mul/Div/Rem/Eq/Ord
+# @sources checker_expr.c:check_expr_binary
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

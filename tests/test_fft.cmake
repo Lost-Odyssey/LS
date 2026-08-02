@@ -1,4 +1,8 @@
 # test_fft.cmake — std.fft Phase 2: radix-2 FFT/ifft. JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem stdlib/numeric
+# @guards std.fft Phase 2 radix-2 Cooley-Tukey
+# @sources lib/std/sci/fft.lls
 cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

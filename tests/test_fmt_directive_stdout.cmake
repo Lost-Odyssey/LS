@@ -12,6 +12,10 @@
 # keeps the explanatory note on stderr.
 #
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem tooling/cli
+# @guards `fmt --stdout` wrote 0 bytes for files with preprocessor directives
+# @sources main.c
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required_var LS_EXE SAMPLE)

@@ -1,3 +1,8 @@
+# test_vec_functional_p3.cmake
+#
+# @subsystem stdlib/containers
+# @guards functional-method batch P3
+# @sources lib/std/core/vec.lls
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/vec_functional_p3_test.lls")

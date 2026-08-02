@@ -4,6 +4,10 @@
 #   ③ f.type as a type value — static-call receiver f.type.from_value(x)
 #      (write-once generic deserialize, no @derive)
 #  JIT + AOT + memcheck 0/0/0; negative: variants(non-enum) is a clean error.
+#
+# @subsystem checker/reflection
+# @guards comptime v2 generic construction T{}
+# @sources checker_comptime.c:comptime_expand_block
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/comptime_v2_test.lls")

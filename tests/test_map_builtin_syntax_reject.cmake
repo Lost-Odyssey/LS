@@ -1,6 +1,10 @@
 # test_map_builtin_syntax_reject.cmake - builtin map(K,V) frontend syntax is gone.
 #
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem language/syntax
+# @guards M6-1 builtin map(K,V) syntax retired
+# @sources parser_type.c:parse_type
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

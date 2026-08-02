@@ -9,6 +9,10 @@
 #                             by-clone. Workers write disjoint slots; join then
 #                             verify. NO --memcheck (tracker not thread-safe —
 #                             same as task/sync); soundness via repeated AOT runs.
+#
+# @subsystem codegen/closure
+# @guards Phase A capture another Block by-clone (parallel_for)
+# @sources codegen_stmt.c:cg_emit_block_env_clone
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")

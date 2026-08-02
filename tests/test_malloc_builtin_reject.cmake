@@ -3,6 +3,10 @@
 # must now be rejected as an undefined variable.
 #
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem codegen/ffi
+# @guards A-FLIP bare malloc/free/realloc/abort are retired
+# @sources checker_call.c:check_expr_call
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(
