@@ -3,6 +3,18 @@
 # used to alias the subtree between template and per-instantiation clones →
 # compiler heap corruption). JIT + AOT + memcheck.
 #
+# `ast_clone_deep` must handle every node kind that can appear in a function body.
+#
+# A generic method body is cloned once per instantiation. Four node kinds fell
+# through to a `default` that shallow-copied them, so the clone and the template
+# shared owned pointers -- and `ast_free` then released the same subtree twice. A
+# generic method containing `@time` or `@bench` therefore crashed the COMPILER
+# with heap corruption (0xC0000374, all output lost).
+#
+# The fix removed the `default` entirely, so a newly added node kind now fails to
+# compile under -Wswitch instead of silently corrupting the heap -- which is why
+# this corpus instantiates the same generic body twice.
+#
 # @subsystem frontend/ast
 # @guards ast_clone_deep shallow-copied @time/@bench -> heap corruption (7ff720b)
 # @sources ast.c:ast_clone_deep

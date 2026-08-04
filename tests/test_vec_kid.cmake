@@ -1,5 +1,14 @@
 # KI-D: lazy generic method monomorphization + method-level where bounds.
 #
+# KI-D: a `Vec(T)` whose element type has no `Eq` must stay usable until an
+# equality-based method is actually called.
+#
+# This is about WHEN a bound is required. Instantiating the container, pushing,
+# indexing and dropping need nothing from `T`; only `contains` / `index_of` do. A
+# checker that demanded `Eq` at instantiation would make the container unusable
+# for perfectly reasonable element types -- so the corpus asserts both halves: the
+# non-equality methods work, and the equality one is refused.
+#
 # @subsystem stdlib/containers
 # @guards KI-D Vec(T) without Eq stays usable until an equality search
 # @sources checker_generics.c:instantiate_template

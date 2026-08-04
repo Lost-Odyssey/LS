@@ -1,5 +1,12 @@
 # test_fft_real_dct.cmake — std.fft Phase 4: rfft/irfft + DCT-II/III. JIT+AOT+memcheck.
 #
+# `std.fft` Phase 4: real-input `rfft`/`irfft` plus DCT-II/III.
+#
+# The real-input variants exploit symmetry to do half the work, which means they
+# produce a DIFFERENT (packed) output layout from the complex transform. That
+# packing is the part worth testing: the numbers can be right while the layout
+# convention is wrong, and every consumer downstream then reads the wrong bin.
+#
 # @subsystem stdlib/numeric
 # @guards std.fft Phase 4 rfft/irfft + DCT-II/III
 # @sources lib/std/sci/fft.lls

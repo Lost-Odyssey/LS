@@ -3,6 +3,14 @@
 # so two modules' `Res { Ok, Err }` coexist without explicit qualified-variant
 # syntax. JIT + AOT + memcheck.
 #
+# B-5: two modules declaring same-named enums whose VARIANTS also share names.
+#
+# Variant names are resolved from the type context rather than globally, so
+# `Color.Red` from one module and `Color.Red` from another must stay distinct all
+# the way through construction and matching. A resolution that falls back to a
+# global variant table picks whichever was registered first and mis-tags the
+# value -- a wrong-variant bug that type-checks.
+#
 # @subsystem modules
 # @guards B-5 cross-module same-named enum + same variant names
 # @sources checker_generics.c:resolve_type_node

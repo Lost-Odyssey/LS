@@ -5471,3 +5471,67 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_generic_depth.cmake
 )
+
+# ---- previously-orphaned drivers, registered 2026-08-02 --------------------
+# These three drivers existed on disk but no add_test() ever referenced them,
+# so they had never run. The doc generator's self-audit surfaced them; all
+# three were then executed by hand and passed unchanged, which means the
+# features below had ZERO coverage the whole time rather than broken coverage.
+# (A fourth, test_generics_g15.cmake, was deleted instead: its corpus was never
+# written, it was never registered, and generic `methods` blocks are covered by
+# test_generics_g1.)
+
+# std.sys.path: pure-LS path utilities (join / dirname / basename / extension).
+#
+# String manipulation with a long tail of edge cases -- trailing separators,
+# empty components, a path that is only a separator, drive letters -- exactly
+# the shape that returns a slightly wrong string instead of failing.
+#
+# This driver sat on disk unregistered until 2026-08-02: it had never run once.
+# It passed unchanged when finally executed, so the module was never broken --
+# it was simply unguarded.
+#
+# @subsystem stdlib/sys
+# @guards std.sys.path batch-2 utilities (unregistered until 2026-08-02)
+# @sources lib/std/sys/path.lls
+add_test(
+    NAME test_path
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/path_test.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_path.cmake
+)
+
+# `--profile` instrumentation on both the JIT and the AOT path. The flag injects
+# per-function counters, so it edits the emitted module -- a regression here is
+# a compile failure or a corrupted program under a flag nothing else exercises.
+#
+# @subsystem tooling/cli
+# @guards --profile instrumentation (unregistered until 2026-08-02)
+# @sources main.c
+add_test(
+    NAME test_profile
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/profile_test.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_profile.cmake
+)
+
+# std.sys.proc and std.sys.env: process arguments/exit and environment access.
+# Both are thin wrappers over platform C, so the JIT and AOT legs matter -- the
+# JIT resolves the runtime symbol in-process while AOT links it, and only one of
+# those breaking is a realistic failure.
+#
+# @subsystem stdlib/sys
+# @guards std.sys.proc + std.sys.env (unregistered until 2026-08-02)
+# @sources lib/std/sys/proc.lls, lib/std/sys/env.lls
+add_test(
+    NAME test_proc_env
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_proc_env.cmake
+)

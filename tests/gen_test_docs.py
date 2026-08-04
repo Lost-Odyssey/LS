@@ -868,6 +868,15 @@ ORACLE_TITLE = {
 
 def render(tests, driver_users, ctest_names, scope_note):
     BLOBS.clear()
+    OUTSIDE_STATS["corpora"] = sum(
+        len([s for s in t.samples if not s.endswith("(multiple, see driver)")])
+        for t in tests.values())
+    n = 0
+    for f in ("test_scanner.c", "test_parser.c", "test_types.c", "test_codegen.c"):
+        p = os.path.join(TESTS, f)
+        if os.path.isfile(p):
+            n += read_text(p).count("ASSERT")
+    OUTSIDE_STATS["asserts"] = n
     order = sorted(tests.values(), key=lambda t: t.name)
     by_sub = {}
     for t in order:
@@ -1031,10 +1040,71 @@ cd build &amp;&amp; ctest -j 5 --output-on-failure -C Release</code></pre>
         else:
             A("<p class='ok'>与 <code>ctest -N</code> 完全一致（%d 个）。</p>" % len(parsed))
 
+    A(render_outside_ctest())
     A("</section>")
     A(render_blob_payload())
     A("</body></html>")
     return "\n".join(P)
+
+
+def py_docstring(path):
+    """Module docstring of a python file, as lines."""
+    text = read_text(path).replace("\r\n", "\n")
+    m = re.search(r'^\s*(?:"""|\'\'\')(.*?)(?:"""|\'\'\')', text, re.S | re.M)
+    if not m:
+        return []
+    return m.group(1).strip("\n").split("\n")
+
+
+def render_outside_ctest():
+    """Test assets that ctest never runs, and the granularity this doc reports at.
+
+    Both belong in the document precisely because "383/383 documented" would
+    otherwise read as "everything is covered".
+    """
+    P = ['<section id="outside"><h2>5. ctest 之外的测试资产</h2>']
+    P.append("""<p class="note">这一节的存在是为了不让「383/383 已文档化」被误读。
+下面这些是真实的测试资产，但<b>不在 ctest 里</b>，因此不在上面的清单中。</p>""")
+
+    fuzz_dir = os.path.join(TESTS, "fuzz")
+    scripts = sorted(f for f in os.listdir(fuzz_dir)) if os.path.isdir(fuzz_dir) else []
+    scripts = [f for f in scripts if f.endswith(".py")]
+    if scripts:
+        P.append("<h3>差分 / 变形 oracle <span class='count'>%d 个</span></h3>" % len(scripts))
+        P.append("""<p class="note">这些 <b>刻意不进 ctest</b>：它们要么耗时不可控，要么需要
+python（测试期须 python-free）。它们抓的是 ctest 判据抓不到的一类——
+<code>rc=0</code> 的静默错值。说明由脚本自身的 docstring 抽取，不是手写的。</p>""")
+        for f in scripts:
+            doc = py_docstring(os.path.join(fuzz_dir, f))
+            head = doc[0] if doc else "（无 docstring）"
+            body = doc[1:] if len(doc) > 1 else []
+            P.append("<div class='entry'><h4><code>tests/fuzz/%s</code></h4>" % esc(f))
+            P.append("<div class='prose'><p><b>%s</b></p>%s</div></div>"
+                     % (esc(head), prose_html(body)))
+
+    P.append("<h3>其他</h3><ul class='note'>")
+    if os.path.isfile(os.path.join(REPO, "model", "CMakeLists.txt")):
+        P.append("<li><code>model/</code> —— .lsm 推理工具链的<b>独立本地套件</b>"
+                 "（gitignore，不进主 ctest；见 CLAUDE.md D3 行）。</li>")
+    bench = os.path.join(REPO, "benchmarks")
+    if os.path.isdir(bench):
+        P.append("<li><code>benchmarks/</code> —— 性能基准，不是正确性测试，"
+                 "不进 ctest。</li>")
+    P.append("</ul>")
+
+    P.append("<h3>本文档的粒度</h3><ul class='note'>")
+    P.append("<li>条目粒度是<b>测试</b>，不是语料：383 个条目底下实际运行 "
+             "<b>%d 份</b>语料文件，单个测试跑几十份的不在少数"
+             "（<code>test_owned_fuzz_corpus</code> 30 份、<code>test_sim</code> 25 份）。</li>"
+             % OUTSIDE_STATS.get("corpora", 0))
+    P.append("<li>C 单元测试内部的断言<b>没有逐条文档化</b>：四个主要 .c 测试合计约 "
+             "<b>%d 条</b> <code>ASSERT</code>，在本文档里各是一个条目。</li>"
+             % OUTSIDE_STATS.get("asserts", 0))
+    P.append("</ul></section>")
+    return "\n".join(P)
+
+
+OUTSIDE_STATS = {}
 
 
 def render_blob_payload():
@@ -1092,7 +1162,8 @@ def guards_html(t):
     g = t.tags.get("guards") or []
     if not g:
         return "<span class='gap'>—</span>"
-    return " ".join("<code>%s</code>" % esc(x) for x in g)
+    # the whole entry is already a code span, so nested backticks are noise
+    return " ".join("<code>%s</code>" % esc(x.replace("`", "")) for x in g)
 
 
 def sources_html(t):
@@ -1243,6 +1314,19 @@ def render_sources_pane(t):
                "".join(right) or "<p class='gap'>未标注 <code>@sources</code></p>"))
 
 
+def inline_md(s):
+    """Minimal inline markdown for prose read out of comments.
+
+    The comments use `backticks` and **bold** heavily -- rendering them literally
+    made identifiers and emphasis disappear into the running text. Escaping
+    happens first, so this only ever wraps already-safe content.
+    """
+    s = esc(s)
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
+    return s
+
+
 def prose_html(lines):
     out = []
     para = []
@@ -1251,23 +1335,23 @@ def prose_html(lines):
         rule = re.match(r"^-{2,}\s*(.+?)\s*-{2,}$", ln.strip())
         if rule:
             if para:
-                out.append("<p>%s</p>" % esc(" ".join(para)))
+                out.append("<p>%s</p>" % inline_md(" ".join(para)))
                 para = []
-            out.append("<p class='lead'><b>%s</b></p>" % esc(rule.group(1)))
+            out.append("<p class='lead'><b>%s</b></p>" % inline_md(rule.group(1)))
             continue
         if not ln.strip():
             if para:
-                out.append("<p>%s</p>" % esc(" ".join(para)))
+                out.append("<p>%s</p>" % inline_md(" ".join(para)))
                 para = []
         elif re.match(r"^\s{2,}\S", ln) or ln.lstrip().startswith(("①", "②", "③", "④", "⑤", "⑥", "1.", "2.", "|")):
             if para:
-                out.append("<p>%s</p>" % esc(" ".join(para)))
+                out.append("<p>%s</p>" % inline_md(" ".join(para)))
                 para = []
             out.append("<pre class='snip'>%s</pre>" % esc(ln))
         else:
             para.append(ln.strip())
     if para:
-        out.append("<p>%s</p>" % esc(" ".join(para)))
+        out.append("<p>%s</p>" % inline_md(" ".join(para)))
     # merge adjacent snips
     merged = []
     for chunk in out:

@@ -1,6 +1,14 @@
 # test_vec_get_unsafe.cmake — vec.get_unsafe(i) unchecked index load.
 # JIT + AOT + memcheck (string elems must not double-free).
 #
+# `vec.get!(i)` -- the unchecked index load.
+#
+# The counterpart to the bounds-checked family: `get!` deliberately skips the
+# check, so this corpus pins that it really is a plain load (the fast path stays
+# fast) while `get` / `v[i]` keep aborting. A "safety improvement" that quietly
+# added a check here would be a silent performance regression nothing else
+# notices.
+#
 # @subsystem stdlib/containers
 # @guards vec.get!(i) unchecked index load
 # @sources lib/std/core/vec.lls

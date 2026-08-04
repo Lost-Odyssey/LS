@@ -2,6 +2,19 @@
 # decimal/hex > 64 bits, float overflow (1e999), and absurdly long tokens.
 # Boundary values (i64 max, full-64-bit hex, denormal underflow, 1e308) keep working.
 #
+# Numeric literals that do not fit must be REJECTED at parse time, not silently
+# saturated.
+#
+# `strtoull` / `strtod` do not report overflow through their return value, so
+# without an `errno` check an out-of-range integer became `ULLONG_MAX` and `1e999`
+# became infinity -- a wrong constant compiled in with no diagnostic. Over-long
+# tokens were additionally truncated before parsing, so a 70-bit binary literal
+# was cut to 61 bits and did not even set the overflow flag.
+#
+# The corpus keeps boundary values passing (i64 max, all-f hex, 5e-324, 1e308)
+# alongside the rejections, because the easy over-correction is to reject the
+# largest legal values too.
+#
 # @subsystem frontend/lexer
 # @guards numeric literal overflow saturated silently (1aab966)
 # @sources parser_expr.c:prefix_int_lit, parser_expr.c:prefix_float_lit

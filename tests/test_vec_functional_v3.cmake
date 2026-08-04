@@ -1,6 +1,14 @@
 # Phase V.3 — vec.map(Block(T)->U) -> vec(U)
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
 #
+# Phase V.3 -- `vec.map(Block(T)->U)`, where the result element type DIFFERS from
+# the source.
+#
+# That is what separates it from filter: the method is generic in `U`, so each
+# call site instantiates a distinct method and a distinct `Vec(U)`, including its
+# synthesised drop and clone. Mapping `Vec(int)` to `Vec(Str)` therefore has to
+# build a has_drop container out of a POD one.
+#
 # @subsystem stdlib/containers
 # @guards Phase V.3 vec.map(Block(T)->U)
 # @sources lib/std/core/vec.lls

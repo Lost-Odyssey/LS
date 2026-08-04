@@ -2,6 +2,13 @@
 # imported modules coexist (impl_registry keyed by type unique name). Instance +
 # static methods + enum methods, disambiguated via qualified types. JIT+AOT+memcheck.
 #
+# B-4.1: same-named types across modules that also have METHODS.
+#
+# Type-name prefixing (B-2/B-3) is not enough on its own -- each method also gets
+# a symbol derived from the type, so two modules' `Node.get` must mangle apart.
+# Otherwise the second definition either fails to link or, worse, overwrites the
+# first and every call reaches the wrong body.
+#
 # @subsystem modules
 # @guards B-4.1 same-named struct/enum WITH methods across modules
 # @sources checker_decl.c:check_impl_decl

@@ -2,6 +2,13 @@
 # Verifies: JIT output / AOT output
 # (memcheck not run — perf functions are inline LLVM intrinsics with no heap allocation)
 #
+# The builtin `perf` module: `now` / `rdtsc` / `rdtscp` / `elapsed_ns` / `elapsed_ms`.
+#
+# Compiler-intrinsic rather than library code -- `rdtsc` lowers to the instruction,
+# not to a call -- so the corpus checks that values are monotone and plausible
+# rather than exact. An intrinsic that silently lowered to a constant would still
+# "work" until someone tried to measure with it.
+#
 # @subsystem stdlib/numeric
 # @guards builtin perf module (rdtsc / elapsed_*)
 # @sources builtins_perf.c

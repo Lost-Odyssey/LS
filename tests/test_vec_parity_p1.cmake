@@ -1,5 +1,13 @@
 # test_vec_parity_p1.cmake
 #
+# Parity batch P1: the pure-LS `Vec(T)` must behave like the builtin vector it
+# replaced, method for method.
+#
+# Written during the migration, when both existed and could be compared directly.
+# It stays useful as a behavioural specification now that only `Vec(T)` remains --
+# it is the record of what the semantics are supposed to be, independent of the
+# current implementation.
+#
 # @subsystem stdlib/containers
 # @guards Vec parity batch P1
 # @sources lib/std/core/vec.lls

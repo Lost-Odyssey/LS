@@ -1,5 +1,13 @@
 # test_fft.cmake — std.fft Phase 2: radix-2 FFT/ifft. JIT + AOT + memcheck 0/0/0.
 #
+# `std.fft` Phase 2: radix-2 Cooley-Tukey forward and inverse transform.
+#
+# Validated numerically -- a transform followed by its inverse must return the
+# original within tolerance, and known inputs must produce known spectra. That
+# matters because an FFT with a wrong twiddle sign or a mis-ordered butterfly
+# still returns an array of plausible-looking numbers; only comparing against a
+# reference catches it.
+#
 # @subsystem stdlib/numeric
 # @guards std.fft Phase 2 radix-2 Cooley-Tukey
 # @sources lib/std/sci/fft.lls
