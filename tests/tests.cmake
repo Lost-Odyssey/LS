@@ -4436,6 +4436,20 @@ set_tests_properties(test_regex PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- std.regex prefilter (literal / first-byte fast paths) — JIT + AOT ----
+# Guards against the prefilter silently skipping a valid start position.
+add_test(
+    NAME test_regex_prefilter
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_prefilter.cmake
+)
+set_tests_properties(test_regex_prefilter PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- VR-LIM-018 / F6: cross-module generic method resolution ----
 # Consumer matches an imported enum's Vec(T) payload and calls Vec methods on
 # the binder, without importing std.vec directly (transitive template pull).

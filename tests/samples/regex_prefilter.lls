@@ -1,0 +1,94 @@
+// regex_prefilter.lls — guards the literal/first-byte prefilter added to
+// runtime/ls_regex.c (see __ls_regex_exec).
+//
+// The prefilter is a fast path that skips impossible start positions. The
+// danger it introduces is SILENT WRONG ANSWERS: a prefilter that skips too
+// much turns a match into a miss with rc=0 and no diagnostic. Every case
+// below therefore pins an exact expected value, not just "did not crash".
+//
+// Shapes chosen to hit each prefilter tier:
+//   whole-literal   -> dispatched to __ls_str_find, never enters the VM
+//   literal-prefix  -> BMH locates the prefix, VM verifies from there
+//   first-byte-set  -> bitmap skip only
+//   no prefilter    -> full scan fallback
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+
+int failures = 0
+
+def check_bool(Str name, bool got, bool want) {
+    if got != want {
+        @print(f"FAIL {name}: got {got} want {want}")
+        failures = failures + 1
+    }
+}
+
+def check_str(Str name, Str got, Str want) {
+    if got != want {
+        @print(f"FAIL {name}: got '{got}' want '{want}'")
+        failures = failures + 1
+    }
+}
+
+def check_int(Str name, int got, int want) {
+    if got != want {
+        @print(f"FAIL {name}: got {got} want {want}")
+        failures = failures + 1
+    }
+}
+
+def main() -> int {
+    Str hay = "alpha beta gamma delta"
+
+    // ---- tier 1: whole-literal patterns ----
+    check_bool("lit hit", re.matches(hay, "gamma"), true)
+    check_bool("lit miss", re.matches(hay, "epsilon"), false)
+    check_bool("lit at start", re.matches(hay, "alpha"), true)
+    check_bool("lit at end", re.matches(hay, "delta"), true)
+    check_bool("lit empty", re.matches(hay, ""), true)
+    // literal longer than the text must not read out of bounds
+    check_bool("lit overlong", re.matches("ab", "abcdefghij"), false)
+    // a literal that ALMOST matches at several offsets (BMH shift correctness)
+    check_bool("lit near miss", re.matches("aaaaab", "aaab"), true)
+    check_bool("lit near miss 2", re.matches("aaaaac", "aaab"), false)
+
+    // ---- tier 2: literal prefix, then VM ----
+    match re.find(hay, "gam+a") {
+        Some(m) => { check_str("prefix find", m, "gamma") }
+        None    => { @print("FAIL prefix find: no match"); failures = failures + 1 }
+    }
+    check_bool("prefix miss", re.matches(hay, "gam+z"), false)
+
+    // ---- tier 3: first-byte set only ----
+    match re.find(hay, "[bg]e[a-z]+") {
+        Some(m) => { check_str("firstbyte find", m, "beta") }
+        None    => { @print("FAIL firstbyte find: no match"); failures = failures + 1 }
+    }
+
+    // ---- tier 4: no prefilter possible ----
+    check_bool("nofilter dot", re.matches(hay, ".lpha"), true)
+    check_bool("nofilter alt", re.matches(hay, "(alpha|zeta)"), true)
+    check_bool("nofilter anch", re.matches(hay, "^alpha"), true)
+    check_bool("nofilter anch miss", re.matches(hay, "^beta"), false)
+
+    // ---- prefilter must not disturb capture offsets ----
+    Vec(Str) caps = re.capture("x=42;y=7", "([a-z])=([0-9]+)")
+    check_int("cap count", caps.len(), 3)
+    if caps.len() == 3 {
+        check_str("cap 0", caps[0], "x=42")
+        check_str("cap 1", caps[1], "x")
+        check_str("cap 2", caps[2], "42")
+    }
+
+    // ---- prefilter must not break repeated exec from a start offset ----
+    Vec(Str) all = re.find_all("ab ab ab", "ab")
+    check_int("find_all count", all.len(), 3)
+
+    // ---- case-insensitive: the literal fast path must NOT be used blindly ----
+    check_bool("icase via inline flag", re.matches("HELLO", "(?i)hello"), true)
+
+    if failures == 0 { @print("ALL PASS") } else { @print(f"FAILURES {failures}") }
+    return 0
+}
