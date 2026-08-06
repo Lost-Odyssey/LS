@@ -1206,7 +1206,13 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
        BMH/Sunday search and skip the VM entirely. */
     if (re->lit_is_whole && !(re->flags & LS_RE_IGNORECASE)) {
         int at = __ls_str_find(text, text_len, re->lit, re->lit_len, start);
-        if (at < 0) return 0;
+        if (at < 0) {
+            /* No match: clear the handle's captures so a later group() query
+               cannot hand back offsets from an earlier, successful exec on
+               this handle. */
+            for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+            return 0;
+        }
         for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
         re->saved[0] = at;
         re->saved[1] = at + re->lit_len;
@@ -1217,7 +1223,12 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
         /* Tier 2: every match starts with a known literal -- jump there. */
         if (re->lit_len > 0) {
             int at = __ls_str_find(text, text_len, re->lit, re->lit_len, s);
-            if (at < 0) return 0;
+            if (at < 0) {
+                /* No match: clear the handle's captures (see the tier-1
+                   comment above). */
+                for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+                return 0;
+            }
             s = at;
         }
         /* Tier 3: we know the set of bytes a match may start with. */
@@ -1246,6 +1257,9 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
             return re->n_groups + 1; /* groups + group-0 */
         }
     }
+    /* No match: clear the handle's captures so a later group() query cannot
+       hand back offsets from an earlier, successful exec on this handle. */
+    for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
     return 0;
 }
 

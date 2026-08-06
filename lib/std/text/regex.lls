@@ -37,6 +37,74 @@ def _own(Str pattern, int flags) -> object {
     return c.__ls_regex_compile(pattern.c_str(), flags)
 }
 
+// ---- Compiled pattern object ----
+//
+// Regex owns a C-side handle and releases it at scope exit. It has a
+// destructor and no Clone, which makes it MOVE-ONLY: passing it by value is a
+// compile error (use `&Regex`), and ownership transfers on move. Same shape as
+// io.File.
+//
+// Use this when the same pattern runs more than once. The free functions below
+// take the pattern as a string and go through a thread-local cache, which is
+// convenient for one-off calls but cannot hand you the match state.
+struct Regex {
+    object h
+}
+
+methods Regex: Destroy {
+    def ~(&!self) {
+        if self.h != nil {
+            c.__ls_regex_free(self.h)
+            self.h = nil
+        }
+    }
+}
+
+methods Regex {
+    // True if the pattern occurs anywhere in `text`. Allocates nothing: the
+    // match offsets stay in the handle until you ask for a group.
+    //
+    // Uses `text.as_ptr()` rather than `text.c_str()`: the latter needs a
+    // writable self (it may grow the buffer to append a NUL terminator), but
+    // `&self` here is a read-only borrow. `__ls_regex_exec` is given the
+    // length explicitly and never reads past it, so it has no need for NUL
+    // termination anyway.
+    def matches?(&self, &Str text) -> bool {
+        return c.__ls_regex_exec(self.h, text.as_ptr() as *u8, text.len(), 0) > 0
+    }
+
+    // Same, but starts scanning at byte offset `start`.
+    def find_from(&self, &Str text, int start) -> bool {
+        return c.__ls_regex_exec(self.h, text.as_ptr() as *u8, text.len(), start) > 0
+    }
+
+    // Group `i` of the last successful match on THIS Regex, materialized on
+    // demand. Group 0 is the whole match. None if there was no match, if the
+    // group did not participate, or if `i` is out of range.
+    def group(&self, &Str text, int i) -> Option(Str) {
+        if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
+        int s = c.__ls_regex_cap_start(self.h, i)
+        int l = c.__ls_regex_cap_len(self.h, i)
+        if s < 0 || l < 0 { return None }
+        return Some(text.substr(s, l))
+    }
+
+    // Number of capture groups, not counting group 0.
+    def group_count(&self) -> int {
+        return c.__ls_regex_group_count(self.h)
+    }
+}
+
+// Compiles `pattern`. Returns Err with the engine's message when the pattern
+// is malformed.
+def compile(Str pattern, int flags) -> Result(Regex, Str) {
+    object h = _own(pattern, flags)
+    if h == nil {
+        return Err(from_cstr(c.__ls_regex_last_error()))
+    }
+    return Ok(Regex{ h: h })
+}
+
 // Extract capture group `group` (of the last exec on `h`) as an owned Str.
 def _cap_str(object h, &Str text, int group) -> Str {
     int s = c.__ls_regex_cap_start(h, group)

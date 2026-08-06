@@ -4450,6 +4450,19 @@ set_tests_properties(test_regex_prefilter PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- std.regex compiled Regex object — JIT + AOT ----
+add_test(
+    NAME test_regex_object
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_object.cmake
+)
+set_tests_properties(test_regex_object PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- VR-LIM-018 / F6: cross-module generic method resolution ----
 # Consumer matches an imported enum's Vec(T) payload and calls Vec methods on
 # the binder, without importing std.vec directly (transitive template pull).

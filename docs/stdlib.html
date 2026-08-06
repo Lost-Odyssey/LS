@@ -1248,6 +1248,34 @@ never freed); only the <code>fields</code>/<code>funcs</code> arrays are heap-ow
 <span class="k">if</span> re.matches(<span class="s">"abc123"</span>, <span class="s">"[0-9]+"</span>) {
     <span class="t">Vec</span>(<span class="t">Str</span>) caps = re.capture(<span class="s">"abc123"</span>, <span class="s">"([a-z]+)([0-9]+)"</span>)  <span class="c">// ["abc123","abc","123"]</span>
 }</pre></div>
+
+<h3>Compiled patterns</h3>
+<p class="purpose">The free functions above take the pattern as a <code>Str</code> and go through a
+thread-local cache — convenient for one-off calls, but each call still allocates a fresh handle
+lookup and (for <code>capture</code>/<code>capture_all</code>) materializes every group as an owned
+<code>Str</code>. When the same pattern runs many times, compile it once instead: <code>re.compile</code>
+returns a move-only <code>Regex</code> handle whose <code>matches?</code> allocates nothing and whose
+<code>group</code> slices out only the group you ask for.</p>
+<div class="types"><pre>struct Regex { object h }   // move-only RAII handle: no Clone, releases the C-side handle at scope exit</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def compile(Str pattern, int flags) -&gt; Result(Regex, Str)</span></td><td class="d">Compile once; <code>Err</code> with the engine's message if malformed.</td></tr>
+<tr><td class="s"><span class="sig">def matches?(&amp;self, &amp;Str text) -&gt; bool</span></td><td class="d">True if the pattern occurs anywhere in <code>text</code>. Allocates nothing.</td></tr>
+<tr><td class="s"><span class="sig">def find_from(&amp;self, &amp;Str text, int start) -&gt; bool</span></td><td class="d">Same, scanning from byte offset <code>start</code>.</td></tr>
+<tr><td class="s"><span class="sig">def group(&amp;self, &amp;Str text, int i) -&gt; Option(Str)</span></td><td class="d">Group <code>i</code> of the last match on <em>this</em> handle, materialized on demand. <code>None</code> if there was no match, the group didn't participate, or <code>i</code> is out of range.</td></tr>
+<tr><td class="s"><span class="sig">def group_count(&amp;self) -&gt; int</span></td><td class="d">Number of capture groups (not counting group 0).</td></tr>
+</table>
+<p><strong>Which to use:</strong> same pattern run more than once → <code>compile</code> +
+<code>matches?</code>/<code>group</code>. One-off call → the free functions (they already cache
+internally). Need every group at once → <code>re.capture</code>, which materializes the whole
+<code>Vec(Str)</code>.</p>
+<div class="ex"><pre><span class="k">match</span> re.compile(<span class="s">"([a-z]+)=([0-9]+)"</span>, <span class="n">0</span>) {
+    <span class="t">Ok</span>(r) =&gt; {
+        <span class="k">if</span> r.matches?(&amp;line) {
+            <span class="k">match</span> r.group(&amp;line, <span class="n">1</span>) { <span class="t">Some</span>(k) =&gt; @print(k)  <span class="t">None</span> =&gt; {} }
+        }
+    }  <span class="c">// r auto-releases the compiled handle here</span>
+    <span class="t">Err</span>(e) =&gt; { @print(e) }
+}</pre></div>
 </section>
 
 <!-- ===================== IO ===================== -->
