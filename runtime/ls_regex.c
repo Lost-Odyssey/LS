@@ -101,6 +101,15 @@ typedef struct {
     int saved[MAX_GROUPS * 2];
 } ReThread;
 
+/* Number of saved[] slots this pattern actually uses: two per capture group
+   plus two for group 0.  Copying only these instead of the fixed MAX_GROUPS*2
+   is what keeps thread propagation cheap for the common 0-5 group case. */
+static int re_slot_count(const ReHandle *re) {
+    int n = (re->n_groups + 1) * 2;
+    if (n > MAX_GROUPS * 2) n = MAX_GROUPS * 2;
+    return n;
+}
+
 /* ===== Utility ===== */
 
 static void class_set(ReCharClass *cls, unsigned char c) {
@@ -863,7 +872,7 @@ static int add_thread(const ReHandle *re, ThreadList *next, Visited *vis,
         }
 
         case OP_MATCH:
-            memcpy(match_saved, t.saved, MAX_GROUPS * 2 * sizeof(int));
+            memcpy(match_saved, t.saved, (size_t)re_slot_count(re) * sizeof(int));
             return 1;
 
         default:
@@ -895,8 +904,9 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
     ThreadList tl_a, tl_b;
     ThreadList *cur = &tl_a, *nxt = &tl_b;
     Visited vis;
+    const int nslot = re_slot_count(re);
     int found_saved[MAX_GROUPS * 2];
-    for (int k = 0; k < MAX_GROUPS * 2; k++) found_saved[k] = -1;
+    for (int k = 0; k < nslot; k++) found_saved[k] = -1;
     int found = 0;
 
     tl_init(cur);
@@ -906,7 +916,7 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
     {
         ReThread t0;
         t0.pc = pc_start;
-        for (int k = 0; k < MAX_GROUPS * 2; k++) t0.saved[k] = -1;
+        for (int k = 0; k < nslot; k++) t0.saved[k] = -1;
         visited_clear(&vis);
         add_thread(re, cur, &vis, t0, text, text_len, start, found_saved);
         if (found_saved[0] >= 0 && found_saved[1] >= 0) {
@@ -969,10 +979,10 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
                 ReThread nt = t;
                 nt.pc = t.pc + 1;
                 int ms[MAX_GROUPS * 2];
-                memcpy(ms, found_saved, MAX_GROUPS * 2 * sizeof(int));
+                memcpy(ms, found_saved, (size_t)nslot * sizeof(int));
                 int got = add_thread(re, nxt, &vis, nt, text, text_len, pos + 1, ms);
                 if (got) {
-                    memcpy(found_saved, ms, MAX_GROUPS * 2 * sizeof(int));
+                    memcpy(found_saved, ms, (size_t)nslot * sizeof(int));
                     found = 1;
                 }
             }
@@ -985,7 +995,7 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
     }
 
     if (found) {
-        memcpy(match_saved, found_saved, MAX_GROUPS * 2 * sizeof(int));
+        memcpy(match_saved, found_saved, (size_t)nslot * sizeof(int));
         return 1;
     }
     return 0;
@@ -998,12 +1008,16 @@ int __ls_regex_exec(int handle, const char *text, int text_len, int start) {
     ReHandle *re = &g_pool[handle];
 
     /* Try matching starting at each position */
+    const int nslot = re_slot_count(re);
     for (int s = start; s <= text_len; s++) {
         int ms[MAX_GROUPS * 2];
         for (int k = 0; k < MAX_GROUPS * 2; k++) ms[k] = -1;
         int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms);
         if (ok) {
-            memcpy(g_last_saved, ms, MAX_GROUPS * 2 * sizeof(int));
+            /* Copy only the slots this pattern uses; the rest of g_last_saved
+               is left from an earlier exec but is never read, because
+               __ls_regex_cap_start/_len are only valid for groups < n_groups+1. */
+            memcpy(g_last_saved, ms, (size_t)nslot * sizeof(int));
             return re->n_groups + 1; /* groups + group-0 */
         }
     }
