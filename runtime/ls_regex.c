@@ -749,10 +749,6 @@ void __ls_regex_free(int handle) {
 
 const char *__ls_regex_last_error(void) { return g_last_error; }
 
-/* Forward declaration — vm_exec_range is defined after add_thread */
-static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
-                         int start, int pc_start, int pc_end, int *match_saved);
-
 /* ===== Pike VM ===== */
 
 /* visited[] tracks which pc values have been added to current list
@@ -779,6 +775,23 @@ typedef struct {
 } ThreadList;
 
 static void tl_init(ThreadList *tl) { tl->count = 0; }
+
+/* Forward declarations — both defined after add_thread.
+ *
+ * vm_exec_range now takes its two ThreadList working buffers as parameters
+ * instead of declaring them as locals (see the comment on its definition for
+ * why). add_thread only ever calls vm_exec_lookahead, never vm_exec_range
+ * directly: vm_exec_lookahead is a thin wrapper that owns a fresh buffer
+ * pair in its *own* stack frame. That keeps the buffers out of add_thread's
+ * frame entirely — add_thread is the hottest function in the engine (called
+ * once per thread per position, recursively for every OP_SPLIT branch), and
+ * OP_LOOKAHEAD is a rare opcode, so the ~143 KB pair must not become part of
+ * every add_thread call's frame just because one switch case might need it. */
+static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
+                         int start, int pc_start, int pc_end, int *match_saved,
+                         ThreadList *buf_a, ThreadList *buf_b);
+static int vm_exec_lookahead(const ReHandle *re, const char *text, int text_len,
+                             int start, int pc_start, int pc_end, int *match_saved);
 
 /* Add thread following epsilon transitions (OP_SPLIT, OP_JUMP, OP_SAVE,
    anchors, lookahead).  Returns 1 if OP_MATCH was hit (fill match_saved). */
@@ -863,7 +876,7 @@ static int add_thread(const ReHandle *re, ThreadList *next, Visited *vis,
             int is_neg     = in->operand_b;
             int tmp_saved[MAX_GROUPS * 2];
             for (int k = 0; k < MAX_GROUPS * 2; k++) tmp_saved[k] = -1;
-            int ok = vm_exec_range(re, text, text_len, pos, t.pc + 1, sub_end_pc - 1, tmp_saved);
+            int ok = vm_exec_lookahead(re, text, text_len, pos, t.pc + 1, sub_end_pc - 1, tmp_saved);
             if ((ok != 0) != (is_neg != 0)) {
                 t.pc = sub_end_pc;
                 continue;
@@ -888,21 +901,33 @@ static int add_thread(const ReHandle *re, ThreadList *next, Visited *vis,
 /* Run VM on text[start..text_len), using program[pc_start..pc_end] (pc_end unused — OP_MATCH terminates).
    Fills match_saved[] (group-open/close byte offsets).
    Returns number of groups+1 (=n_groups+1) on match, 0 on no match.
-   pc_end=-1 means run to end of program. */
+   pc_end=-1 means run to end of program.
+
+   buf_a/buf_b: caller-owned ThreadList working buffers (~71.7 KB each). They
+   used to be locals here, but this function is called once per candidate
+   start position by __ls_regex_exec's outer loop (~50 times for a 49-byte
+   text against an anchored pattern that never advances past position 0) --
+   declaring ~143 KB of locals on every one of those calls means MSVC emits a
+   __chkstk stack-probe loop touching ~36 pages on every single call, not
+   just the ones that do real matching work. Taking the buffers as parameters
+   lets the caller hoist them out of the per-start-position loop and pay that
+   probe cost once per __ls_regex_exec call instead of once per start
+   position. Callers must each own a buffer pair that is not shared with any
+   other *concurrently in-progress* vm_exec_range call -- see
+   vm_exec_lookahead below for why the recursive lookahead path needs its
+   own pair rather than reusing the outer match's. */
 static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
                          int start, int pc_start, int pc_end,
-                         int *match_saved)
+                         int *match_saved,
+                         ThreadList *buf_a, ThreadList *buf_b)
 {
     (void)pc_end; /* we rely on OP_MATCH to terminate */
 
     /* Two buffers plus a pointer swap.  The previous code did `cur = nxt`
        once per character position, which copies the whole ThreadList struct
        (MAX_THREADS * sizeof(ReThread) ~= 71.7 KB) regardless of how many
-       threads are actually live -- measured at 15-38x of total exec time.
-       Both buffers stay on the stack so the recursive lookahead path
-       (vm_exec_range -> add_thread -> vm_exec_range) keeps its own pair. */
-    ThreadList tl_a, tl_b;
-    ThreadList *cur = &tl_a, *nxt = &tl_b;
+       threads are actually live -- measured at 15-38x of total exec time. */
+    ThreadList *cur = buf_a, *nxt = buf_b;
     Visited vis;
     const int nslot = re_slot_count(re);
     int found_saved[MAX_GROUPS * 2];
@@ -1001,18 +1026,48 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
     return 0;
 }
 
+/* Lookahead entry point for add_thread's OP_LOOKAHEAD case. Declares its own
+   fresh ThreadList buffer pair, in *this* function's stack frame rather than
+   add_thread's, and runs the sub-expression in a nested vm_exec_range call.
+   A fresh pair is required (not the outer match's buffers): the outer
+   vm_exec_range call that led here is still mid-flight -- its own cur/nxt
+   still hold live threads for the enclosing match -- and the sub-expression
+   being tested by the lookahead may have a different capture-group count,
+   so it cannot safely reuse the caller's slots either way. Lookahead is a
+   rare opcode, so paying a second ~143 KB frame (and its own __chkstk probe)
+   only on this rarely-taken path, instead of on every add_thread call, is
+   the right trade. */
+static int vm_exec_lookahead(const ReHandle *re, const char *text, int text_len,
+                             int start, int pc_start, int pc_end, int *match_saved)
+{
+    ThreadList tl_a, tl_b;
+    return vm_exec_range(re, text, text_len, start, pc_start, pc_end, match_saved, &tl_a, &tl_b);
+}
+
 /* ===== Public exec API ===== */
 
 int __ls_regex_exec(int handle, const char *text, int text_len, int start) {
     if (handle < 0 || handle >= MAX_HANDLES || !g_pool[handle].used) return 0;
     ReHandle *re = &g_pool[handle];
 
+    /* Buffers hoisted out of vm_exec_range and shared across every start
+       position tried below. Each is ~71.7 KB, so declaring the pair pays one
+       __chkstk stack-probe here per __ls_regex_exec call, instead of once
+       per start position in the loop (an anchored pattern that only ever
+       matches at position 0, if at all, otherwise tries and fails ~text_len
+       more times -- ~50 for this benchmark's ~49-byte corpus strings). Safe
+       to share across iterations of this loop because they run strictly
+       sequentially: each vm_exec_range call fully finishes (and either
+       returns a match we act on immediately, or is done with the buffers)
+       before the next one starts. */
+    ThreadList tl_a, tl_b;
+
     /* Try matching starting at each position */
     const int nslot = re_slot_count(re);
     for (int s = start; s <= text_len; s++) {
         int ms[MAX_GROUPS * 2];
         for (int k = 0; k < MAX_GROUPS * 2; k++) ms[k] = -1;
-        int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms);
+        int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b);
         if (ok) {
             /* Copy only the slots this pattern uses; the rest of g_last_saved
                is left from an earlier exec but is never read, because
