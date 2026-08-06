@@ -64,6 +64,15 @@ methods Regex {
     // True if the pattern occurs anywhere in `text`. Allocates nothing: the
     // match offsets stay in the handle until you ask for a group.
     //
+    // CONTRACT: this is the "last match" call that `group()` reads offsets
+    // from. If you later call `group(&other_text, i)` with a `Str` that is
+    // NOT the same one you passed here, `group` has no way to detect that —
+    // it will slice `other_text` at offsets that were computed against THIS
+    // `text` and hand back plausible-looking, silently wrong data (bounds
+    // are still checked, so it cannot read out of `other_text`, but the
+    // substring itself belongs to the wrong string). Always pass the exact
+    // same `text` to `group`/`find_from` that you last matched with.
+    //
     // Uses `text.as_ptr()` rather than `text.c_str()`: the latter needs a
     // writable self (it may grow the buffer to append a NUL terminator), but
     // `&self` here is a read-only borrow. `__ls_regex_exec` is given the
@@ -73,7 +82,10 @@ methods Regex {
         return c.__ls_regex_exec(self.h, text.as_ptr() as *u8, text.len(), 0) > 0
     }
 
-    // Same, but starts scanning at byte offset `start`.
+    // Same, but starts scanning at byte offset `start`. Also sets the "last
+    // match" state that `group()` reads — see the CONTRACT note on
+    // `matches?` above: the `text` you pass to a following `group()` call
+    // must be this same `text`.
     def find_from(&self, &Str text, int start) -> bool {
         return c.__ls_regex_exec(self.h, text.as_ptr() as *u8, text.len(), start) > 0
     }
@@ -81,11 +93,21 @@ methods Regex {
     // Group `i` of the last successful match on THIS Regex, materialized on
     // demand. Group 0 is the whole match. None if there was no match, if the
     // group did not participate, or if `i` is out of range.
+    //
+    // CONTRACT: `text` MUST be the same `Str` passed to the preceding
+    // `matches?`/`find_from` call on this handle — see the note there. As a
+    // cheap, sound safety net (not a substitute for passing the right
+    // `text`), this also returns `None` when the stored offsets do not fit
+    // inside `text` (`s + l > text.len()`), which catches the case where a
+    // shorter, unrelated `text` is passed by mistake. It cannot catch an
+    // unrelated `text` that happens to be long enough — that case still
+    // returns a plausible-looking but wrong substring.
     def group(&self, &Str text, int i) -> Option(Str) {
         if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
         int s = c.__ls_regex_cap_start(self.h, i)
         int l = c.__ls_regex_cap_len(self.h, i)
         if s < 0 || l < 0 { return None }
+        if s + l > text.len() { return None }
         return Some(text.substr(s, l))
     }
 

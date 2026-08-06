@@ -101,6 +101,33 @@ def main() -> int {
         Err(e) => { @print(f"FAIL compile gc: {e}"); failures = failures + 1 }
     }
 
+    // ---- group() with a text unrelated to the match: bounds guard ----
+    // group() reads capture offsets stored in the handle by the last
+    // matches?()/find_from() call; nothing ties the `text` argument to the
+    // text that match actually ran against (see the CONTRACT note on
+    // Regex.group in lib/std/text/regex.lls). Pin the one case the cheap
+    // guard CAN catch: the offsets from a long match don't fit inside a
+    // shorter, unrelated text, so group() returns None instead of handing
+    // back a substring that belongs to the wrong string.
+    match re.compile("xx=([0-9]+)", 0) {
+        Ok(r) => {
+            Str a = "xx=999"
+            check_bool("unrelated-text setup: match", r.matches?(&a), true)
+            match r.group(&a, 1) {
+                Some(g) => { check_str("unrelated-text setup: group", g, "999") }
+                None    => { @print("FAIL unrelated-text setup: none"); failures = failures + 1 }
+            }
+            // group 1 is offset 3, length 3 ("999") -- too long to fit in
+            // this 2-byte text, so the bounds guard must reject it.
+            Str b = "hi"
+            match r.group(&b, 1) {
+                Some(g) => { @print(f"FAIL unrelated-text guard: got Some('{g}')"); failures = failures + 1 }
+                None    => { }
+            }
+        }
+        Err(e) => { @print(f"FAIL compile unrelated-text: {e}"); failures = failures + 1 }
+    }
+
     if failures == 0 { @print("ALL PASS") } else { @print(f"FAILURES {failures}") }
     return 0
 }
