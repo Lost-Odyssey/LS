@@ -11,30 +11,33 @@ extern "C" {
 #define LS_RE_MULTILINE   0x02   /* (?m) ^ $ match line boundaries */
 #define LS_RE_DOTALL      0x04   /* (?s) . matches \n */
 
-/* Compile pattern; returns handle 0..31, or -1 on error */
-int  __ls_regex_compile(const char *pattern, int flags);
+/* Compile pattern; returns an opaque handle, or NULL on error.
+   The caller owns the handle and must release it with __ls_regex_free. */
+void *__ls_regex_compile(const char *pattern, int flags);
 
-/* Release handle */
-void __ls_regex_free(int handle);
+/* Release a handle returned by __ls_regex_compile. NULL is a no-op. */
+void __ls_regex_free(void *h);
 
-/* Error message from last failed compile */
+/* Error message from the last failed compile. Compile failures have no handle
+   to hang the message on, so this stays process-global; it is advisory only. */
 const char *__ls_regex_last_error(void);
 
 /* Execute on text[start..text_len).
-   Returns number of groups (incl. group 0 = full match), 0 = no match. */
-int  __ls_regex_exec(int handle, const char *text, int text_len, int start);
+   Returns number of groups (incl. group 0 = full match), 0 = no match.
+   Results are stored in the handle, so two handles never clobber each other. */
+int __ls_regex_exec(void *h, const char *text, int text_len, int start);
 
-/* Query results of last successful exec */
-int  __ls_regex_cap_start(int group);   /* byte offset, -1 = did not participate */
-int  __ls_regex_cap_len(int group);     /* byte length */
+/* Query results of the last successful exec ON THIS HANDLE */
+int __ls_regex_cap_start(void *h, int group);   /* byte offset, -1 = absent */
+int __ls_regex_cap_len(void *h, int group);     /* byte length */
 
 /* Number of capture groups in compiled pattern (excluding group 0) */
-int         __ls_regex_group_count(int handle);
+int __ls_regex_group_count(void *h);
 
 /* Named capture queries */
-int         __ls_regex_named_count(int handle);
-const char *__ls_regex_named_name(int handle, int i);
-int         __ls_regex_named_index(int handle, int i);
+int         __ls_regex_named_count(void *h);
+const char *__ls_regex_named_name(void *h, int i);
+int         __ls_regex_named_index(void *h, int i);
 
 #ifdef __cplusplus
 }

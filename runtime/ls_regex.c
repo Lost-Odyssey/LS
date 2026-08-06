@@ -23,7 +23,6 @@ extern int __ls_str_find(const char *hay, int hlen,
 
 #define MAX_GROUPS    17    /* group 0 = full match, 1..16 = captures */
 #define MAX_NAMED     16
-#define MAX_HANDLES   32
 #define MAX_INSTRS    2048
 #define MAX_THREADS   512
 #define NAME_MAX_LEN  64
@@ -84,15 +83,21 @@ typedef struct {
 /* ===== Pattern handle ===== */
 
 typedef struct {
-    int          used;
     int          flags;         /* LS_RE_* bits */
     int          n_groups;      /* number of capture groups (excl. group 0) */
-    ReInstr      prog[MAX_INSTRS];
     int          prog_len;
+    int          prog_cap;      /* allocated length of prog[] */
+    ReInstr     *prog;          /* heap, prog_cap entries */
     ReCharClass  classes[MAX_CLASSES];
     int          n_classes;
     NamedGroup   named[MAX_NAMED];
     int          n_named;
+
+    /* Results of the last exec on THIS handle. Used to be a single
+       file-level global (g_last_saved), which raced between threads and
+       forced every caller to read the captures before running any other
+       pattern. */
+    int          saved[MAX_GROUPS * 2];
 
     /* ---- Prefilter (built once at compile time, read by __ls_regex_exec) ----
        lit/lit_len: a literal string every match must start with. If
@@ -108,8 +113,8 @@ typedef struct {
     int           has_first_bytes;
 } ReHandle;
 
-static ReHandle g_pool[MAX_HANDLES];
-static int      g_last_saved[MAX_GROUPS * 2];
+/* Compile failures have no handle to hang an error message on, so this one
+   stays process-global; it is advisory only (see ls_regex.h). */
 static char     g_last_error[256];
 
 /* ===== Thread ===== */
@@ -171,6 +176,14 @@ static void comp_error(Compiler *c, const char *msg) {
 
 static int  emit(ReHandle *re, ReOpCode op, int a, int b) {
     if (re->prog_len >= MAX_INSTRS - 1) return -1;
+    if (re->prog_len >= re->prog_cap) {
+        int ncap = re->prog_cap ? re->prog_cap * 2 : 16;
+        if (ncap > MAX_INSTRS) ncap = MAX_INSTRS;
+        ReInstr *np = (ReInstr *)realloc(re->prog, (size_t)ncap * sizeof(ReInstr));
+        if (!np) return -1;
+        re->prog     = np;
+        re->prog_cap = ncap;
+    }
     re->prog[re->prog_len].op         = op;
     re->prog[re->prog_len].operand_a  = a;
     re->prog[re->prog_len].operand_b  = b;
@@ -764,18 +777,13 @@ static void re_build_prefilter(ReHandle *re) {
 
 /* ===== Compile API ===== */
 
-int __ls_regex_compile(const char *pattern, int flags) {
-    /* Find free slot */
-    int h = -1;
-    for (int i = 0; i < MAX_HANDLES; i++) {
-        if (!g_pool[i].used) { h = i; break; }
+void *__ls_regex_compile(const char *pattern, int flags) {
+    ReHandle *re = (ReHandle *)calloc(1, sizeof(ReHandle));
+    if (!re) {
+        snprintf(g_last_error, sizeof(g_last_error), "out of memory");
+        return NULL;
     }
-    if (h < 0) { snprintf(g_last_error, sizeof(g_last_error), "regex handle pool exhausted"); return -1; }
-
-    ReHandle *re = &g_pool[h];
-    memset(re, 0, sizeof(*re));
-    re->used   = 1;
-    re->flags  = flags;
+    re->flags = flags;
 
     Compiler c;
     memset(&c, 0, sizeof(c));
@@ -790,13 +798,15 @@ int __ls_regex_compile(const char *pattern, int flags) {
 
     if (c.had_error || r < 0) {
         snprintf(g_last_error, sizeof(g_last_error), "%s", c.error);
-        re->used = 0;
-        return -1;
+        free(re->prog);
+        free(re);
+        return NULL;
     }
     if (c.pos < c.pat_len) {
         snprintf(g_last_error, sizeof(g_last_error), "unexpected ')' at pos %d", c.pos);
-        re->used = 0;
-        return -1;
+        free(re->prog);
+        free(re);
+        return NULL;
     }
 
     /* Emit group 0 close SAVE + MATCH */
@@ -805,12 +815,14 @@ int __ls_regex_compile(const char *pattern, int flags) {
 
     re->n_groups = c.group_counter;
     re_build_prefilter(re);
-    return h;
+    return re;
 }
 
-void __ls_regex_free(int handle) {
-    if (handle >= 0 && handle < MAX_HANDLES)
-        g_pool[handle].used = 0;
+void __ls_regex_free(void *h) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re) return;
+    free(re->prog);
+    free(re);
 }
 
 const char *__ls_regex_last_error(void) { return g_last_error; }
@@ -1112,9 +1124,9 @@ static int vm_exec_lookahead(const ReHandle *re, const char *text, int text_len,
 
 /* ===== Public exec API ===== */
 
-int __ls_regex_exec(int handle, const char *text, int text_len, int start) {
-    if (handle < 0 || handle >= MAX_HANDLES || !g_pool[handle].used) return 0;
-    ReHandle *re = &g_pool[handle];
+int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re) return 0;
 
     /* Buffers hoisted out of vm_exec_range and shared across every start
        position tried below. Each is ~71.7 KB, so declaring the pair pays one
@@ -1136,9 +1148,9 @@ int __ls_regex_exec(int handle, const char *text, int text_len, int start) {
     if (re->lit_is_whole && !(re->flags & LS_RE_IGNORECASE)) {
         int at = __ls_str_find(text, text_len, re->lit, re->lit_len, start);
         if (at < 0) return 0;
-        for (int k = 0; k < MAX_GROUPS * 2; k++) g_last_saved[k] = -1;
-        g_last_saved[0] = at;
-        g_last_saved[1] = at + re->lit_len;
+        for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+        re->saved[0] = at;
+        re->saved[1] = at + re->lit_len;
         return re->n_groups + 1;
     }
 
@@ -1168,47 +1180,49 @@ int __ls_regex_exec(int handle, const char *text, int text_len, int start) {
         for (int k = 0; k < MAX_GROUPS * 2; k++) ms[k] = -1;
         int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b);
         if (ok) {
-            /* Copy only the slots this pattern uses; the rest of g_last_saved
+            /* Copy only the slots this pattern uses; the rest of re->saved
                is left from an earlier exec but is never read, because
                __ls_regex_cap_start/_len are only valid for groups < n_groups+1. */
-            memcpy(g_last_saved, ms, (size_t)nslot * sizeof(int));
+            memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
             return re->n_groups + 1; /* groups + group-0 */
         }
     }
     return 0;
 }
 
-int __ls_regex_cap_start(int group) {
-    if (group < 0 || group >= MAX_GROUPS) return -1;
-    return g_last_saved[group * 2];
+int __ls_regex_cap_start(void *h, int group) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re || group < 0 || group >= MAX_GROUPS) return -1;
+    return re->saved[group * 2];
 }
 
-int __ls_regex_cap_len(int group) {
-    if (group < 0 || group >= MAX_GROUPS) return -1;
-    int s = g_last_saved[group * 2];
-    int e = g_last_saved[group * 2 + 1];
+int __ls_regex_cap_len(void *h, int group) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re || group < 0 || group >= MAX_GROUPS) return -1;
+    int s = re->saved[group * 2];
+    int e = re->saved[group * 2 + 1];
     if (s < 0 || e < 0) return -1;
     return e - s;
 }
 
-int __ls_regex_group_count(int handle) {
-    if (handle < 0 || handle >= MAX_HANDLES || !g_pool[handle].used) return 0;
-    return g_pool[handle].n_groups;
+int __ls_regex_group_count(void *h) {
+    ReHandle *re = (ReHandle *)h;
+    return re ? re->n_groups : 0;
 }
 
-int __ls_regex_named_count(int handle) {
-    if (handle < 0 || handle >= MAX_HANDLES || !g_pool[handle].used) return 0;
-    return g_pool[handle].n_named;
+int __ls_regex_named_count(void *h) {
+    ReHandle *re = (ReHandle *)h;
+    return re ? re->n_named : 0;
 }
 
-const char *__ls_regex_named_name(int handle, int i) {
-    if (handle < 0 || handle >= MAX_HANDLES || !g_pool[handle].used) return "";
-    if (i < 0 || i >= g_pool[handle].n_named) return "";
-    return g_pool[handle].named[i].name;
+const char *__ls_regex_named_name(void *h, int i) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re || i < 0 || i >= re->n_named) return "";
+    return re->named[i].name;
 }
 
-int __ls_regex_named_index(int handle, int i) {
-    if (handle < 0 || handle >= MAX_HANDLES || !g_pool[handle].used) return -1;
-    if (i < 0 || i >= g_pool[handle].n_named) return -1;
-    return g_pool[handle].named[i].group_id;
+int __ls_regex_named_index(void *h, int i) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re || i < 0 || i >= re->n_named) return -1;
+    return re->named[i].group_id;
 }

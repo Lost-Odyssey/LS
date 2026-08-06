@@ -432,25 +432,25 @@ declare ptr @__ls_readline_take()
 
 declare ptr @__ls_readline_ptr()
 
-declare i32 @__ls_regex_compile(ptr %0, i32 %1)
+declare ptr @__ls_regex_compile(ptr %0, i32 %1)
 
-declare void @__ls_regex_free(i32 %0)
+declare void @__ls_regex_free(ptr %0)
 
 declare ptr @__ls_regex_last_error()
 
-declare i32 @__ls_regex_exec(i32 %0, ptr %1, i32 %2, i32 %3)
+declare i32 @__ls_regex_exec(ptr %0, ptr %1, i32 %2, i32 %3)
 
-declare i32 @__ls_regex_cap_start(i32 %0)
+declare i32 @__ls_regex_cap_start(ptr %0, i32 %1)
 
-declare i32 @__ls_regex_cap_len(i32 %0)
+declare i32 @__ls_regex_cap_len(ptr %0, i32 %1)
 
-declare i32 @__ls_regex_group_count(i32 %0)
+declare i32 @__ls_regex_group_count(ptr %0)
 
-declare i32 @__ls_regex_named_count(i32 %0)
+declare i32 @__ls_regex_named_count(ptr %0)
 
-declare ptr @__ls_regex_named_name(i32 %0, i32 %1)
+declare ptr @__ls_regex_named_name(ptr %0, i32 %1)
 
-declare i32 @__ls_regex_named_index(i32 %0, i32 %1)
+declare i32 @__ls_regex_named_index(ptr %0, i32 %1)
 
 define internal %std_core_reflect__TypeInfo @std_core_reflect__from_raw(%std_core_reflect_core__RawType %0) {
 entry:

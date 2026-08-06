@@ -25,14 +25,14 @@ import std.core.str
 
 // ---- internal helpers ----
 
-def _compile(Str pattern, int flags) -> int {
+def _compile(Str pattern, int flags) -> object {
     return c.__ls_regex_compile(pattern.c_str(), flags)
 }
 
-// Extract capture group `group` (of the last exec) as an owned Str.
-def _cap_str(&Str text, int group) -> Str {
-    int s = c.__ls_regex_cap_start(group)
-    int l = c.__ls_regex_cap_len(group)
+// Extract capture group `group` (of the last exec on `h`) as an owned Str.
+def _cap_str(object h, &Str text, int group) -> Str {
+    int s = c.__ls_regex_cap_start(h, group)
+    int l = c.__ls_regex_cap_len(h, group)
     if s < 0 { return "" }
     return text.substr(s, l)
 }
@@ -41,8 +41,8 @@ def _cap_str(&Str text, int group) -> Str {
 
 // Returns true if pattern appears anywhere in text.
 def matches(Str text, Str pattern) -> bool {
-    int h = _compile(pattern, 0)
-    if h < 0 { return false }
+    object h = _compile(pattern, 0)
+    if h == nil { return false }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
     c.__ls_regex_free(h)
     return n > 0
@@ -51,8 +51,8 @@ def matches(Str text, Str pattern) -> bool {
 // Returns true if the entire text matches pattern (anchored both ends).
 def full_match(Str text, Str pattern) -> bool {
     Str anchored = "\\A(?:" + pattern + ")\\Z"
-    int h = _compile(anchored, 0)
-    if h < 0 { return false }
+    object h = _compile(anchored, 0)
+    if h == nil { return false }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
     c.__ls_regex_free(h)
     return n > 0
@@ -62,11 +62,11 @@ def full_match(Str text, Str pattern) -> bool {
 
 // Returns Some(first_match) or None.
 def find(Str text, Str pattern) -> Option(Str) {
-    int h = _compile(pattern, 0)
-    if h < 0 { return None }
+    object h = _compile(pattern, 0)
+    if h == nil { return None }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
     if n == 0 { c.__ls_regex_free(h); return None }
-    Str ms = _cap_str(text, 0)
+    Str ms = _cap_str(h, text, 0)
     c.__ls_regex_free(h)
     return Some(ms)
 }
@@ -74,16 +74,16 @@ def find(Str text, Str pattern) -> Option(Str) {
 // Returns all non-overlapping full matches.
 def find_all(Str text, Str pattern) -> Vec(Str) {
     Vec(Str) result = {}
-    int h = _compile(pattern, 0)
-    if h < 0 { return result }
+    object h = _compile(pattern, 0)
+    if h == nil { return result }
     *u8 tptr = text.c_str()
     int tlen = text.len()
     int pos = 0
     while pos <= tlen {
         int n = c.__ls_regex_exec(h, tptr, tlen, pos)
         if n == 0 { break }
-        int s = c.__ls_regex_cap_start(0)
-        int l = c.__ls_regex_cap_len(0)
+        int s = c.__ls_regex_cap_start(h, 0)
+        int l = c.__ls_regex_cap_len(h, 0)
         Str piece = text.substr(s, l)
         result.push(piece)
         if l == 0 { pos = s + 1 } else { pos = s + l }
@@ -97,13 +97,13 @@ def find_all(Str text, Str pattern) -> Vec(Str) {
 // Returns [full_match, group1, group2, ...] for the first match, or empty Vec.
 def capture(Str text, Str pattern) -> Vec(Str) {
     Vec(Str) caps = {}
-    int h = _compile(pattern, 0)
-    if h < 0 { return caps }
+    object h = _compile(pattern, 0)
+    if h == nil { return caps }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
     if n == 0 { c.__ls_regex_free(h); return caps }
     int i = 0
     while i < n {
-        Str g = _cap_str(text, i)
+        Str g = _cap_str(h, text, i)
         caps.push(g)
         i = i + 1
     }
@@ -113,8 +113,8 @@ def capture(Str text, Str pattern) -> Vec(Str) {
 
 // Returns the number of capture groups in the pattern (not counting group 0).
 def group_count(Str pattern) -> int {
-    int h = _compile(pattern, 0)
-    if h < 0 { return 0 }
+    object h = _compile(pattern, 0)
+    if h == nil { return 0 }
     int n = c.__ls_regex_group_count(h)
     c.__ls_regex_free(h)
     return n
@@ -125,19 +125,19 @@ def group_count(Str pattern) -> int {
 // Stride = group_count(pattern) + 1.  Returns empty Vec if no matches.
 def capture_all(Str text, Str pattern) -> Vec(Str) {
     Vec(Str) result = {}
-    int h = _compile(pattern, 0)
-    if h < 0 { return result }
+    object h = _compile(pattern, 0)
+    if h == nil { return result }
     *u8 tptr = text.c_str()
     int tlen = text.len()
     int pos = 0
     while pos <= tlen {
         int n = c.__ls_regex_exec(h, tptr, tlen, pos)
         if n == 0 { break }
-        int s = c.__ls_regex_cap_start(0)
-        int l = c.__ls_regex_cap_len(0)
+        int s = c.__ls_regex_cap_start(h, 0)
+        int l = c.__ls_regex_cap_len(h, 0)
         int i = 0
         while i < n {
-            Str g = _cap_str(text, i)
+            Str g = _cap_str(h, text, i)
             result.push(g)
             i = i + 1
         }
@@ -153,8 +153,8 @@ def capture_all(Str text, Str pattern) -> Vec(Str) {
 // Returns an empty map if no match or no named groups.
 def capture_named(Str text, Str pattern) -> Map(Str, Str) {
     Map(Str, Str) m = {}
-    int h = _compile(pattern, 0)
-    if h < 0 { return m }
+    object h = _compile(pattern, 0)
+    if h == nil { return m }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
     if n == 0 { c.__ls_regex_free(h); return m }
     int nc = c.__ls_regex_named_count(h)
@@ -162,8 +162,8 @@ def capture_named(Str text, Str pattern) -> Map(Str, Str) {
     while i < nc {
         Str name = from_cstr(c.__ls_regex_named_name(h, i))
         int idx = c.__ls_regex_named_index(h, i)
-        int s = c.__ls_regex_cap_start(idx)
-        int l = c.__ls_regex_cap_len(idx)
+        int s = c.__ls_regex_cap_start(h, idx)
+        int l = c.__ls_regex_cap_len(h, idx)
         if s >= 0 {
             Str val = text.substr(s, l)
             m.set(name, val)
@@ -178,12 +178,12 @@ def capture_named(Str text, Str pattern) -> Map(Str, Str) {
 
 // Replaces the first match of pattern with replacement.
 def replace(Str text, Str pattern, Str replacement) -> Str {
-    int h = _compile(pattern, 0)
-    if h < 0 { return text.copy() }
+    object h = _compile(pattern, 0)
+    if h == nil { return text.copy() }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
     if n == 0 { c.__ls_regex_free(h); return text.copy() }
-    int s = c.__ls_regex_cap_start(0)
-    int l = c.__ls_regex_cap_len(0)
+    int s = c.__ls_regex_cap_start(h, 0)
+    int l = c.__ls_regex_cap_len(h, 0)
     int tlen = text.len()
     Str result = text.substr(0, s) + replacement + text.substr(s + l, tlen - s - l)
     c.__ls_regex_free(h)
@@ -192,8 +192,8 @@ def replace(Str text, Str pattern, Str replacement) -> Str {
 
 // Replaces all non-overlapping matches of pattern with replacement.
 def replace_all(Str text, Str pattern, Str replacement) -> Str {
-    int h = _compile(pattern, 0)
-    if h < 0 { return text.copy() }
+    object h = _compile(pattern, 0)
+    if h == nil { return text.copy() }
     Str result = ""
     *u8 tptr = text.c_str()
     int tlen = text.len()
@@ -201,8 +201,8 @@ def replace_all(Str text, Str pattern, Str replacement) -> Str {
     while pos <= tlen {
         int n = c.__ls_regex_exec(h, tptr, tlen, pos)
         if n == 0 { break }
-        int s = c.__ls_regex_cap_start(0)
-        int l = c.__ls_regex_cap_len(0)
+        int s = c.__ls_regex_cap_start(h, 0)
+        int l = c.__ls_regex_cap_len(h, 0)
         result = result + text.substr(pos, s - pos) + replacement
         if l == 0 { result = result + text.substr(s, 1); pos = s + 1 }
         else { pos = s + l }
@@ -218,8 +218,8 @@ def replace_all(Str text, Str pattern, Str replacement) -> Str {
 // separators are omitted.
 def split(Str text, Str pattern) -> Vec(Str) {
     Vec(Str) result = {}
-    int h = _compile(pattern, 0)
-    if h < 0 {
+    object h = _compile(pattern, 0)
+    if h == nil {
         result.push(text.copy())
         return result
     }
@@ -229,8 +229,8 @@ def split(Str text, Str pattern) -> Vec(Str) {
     while pos <= tlen {
         int n = c.__ls_regex_exec(h, tptr, tlen, pos)
         if n == 0 { break }
-        int s = c.__ls_regex_cap_start(0)
-        int l = c.__ls_regex_cap_len(0)
+        int s = c.__ls_regex_cap_start(h, 0)
+        int l = c.__ls_regex_cap_len(h, 0)
         Str piece = text.substr(pos, s - pos)
         if piece.len() > 0 { result.push(piece) }
         if l == 0 { pos = s + 1 } else { pos = s + l }
