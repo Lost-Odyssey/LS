@@ -127,6 +127,7 @@ extern def __ls_readline_ptr() -> object
 
 extern def __ls_regex_compile(*u8 pattern, int flags) -> object
 extern def __ls_regex_free(object h)
+extern def __ls_regex_cached(*u8 pattern, int flags) -> object
 extern def __ls_regex_last_error() -> object
 extern def __ls_regex_exec(object h, *u8 text, int text_len, int start) -> int
 extern def __ls_regex_cap_start(object h, int group) -> int

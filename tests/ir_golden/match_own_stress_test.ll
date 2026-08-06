@@ -392,6 +392,8 @@ declare ptr @__ls_regex_compile(ptr %0, i32 %1)
 
 declare void @__ls_regex_free(ptr %0)
 
+declare ptr @__ls_regex_cached(ptr %0, i32 %1)
+
 declare ptr @__ls_regex_last_error()
 
 declare i32 @__ls_regex_exec(ptr %0, ptr %1, i32 %2, i32 %3)

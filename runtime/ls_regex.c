@@ -825,6 +825,65 @@ void __ls_regex_free(void *h) {
     free(re);
 }
 
+/* ===== Thread-local pattern cache =====
+   The free functions in std.text.regex take the pattern as a string on every
+   call. Compiling a handle also means it cannot outlive the call, which is
+   what forces the two-lifetime split (owned vs. cached) this cache removes;
+   with the engine now ~165x faster on the literal shape (see git history),
+   compilation is the dominant remaining cost for short patterns, so this is
+   also a real per-call win, not just a Task 7 prerequisite.
+
+   Thread-local rather than shared+locked: a shared cache would put a lock on
+   the hot path of every regex call, and with heap-allocated handles the cost
+   of one cache per thread is a few hundred bytes per entry. */
+
+#define RE_CACHE_SLOTS 32
+#define RE_CACHE_PATLEN 128
+
+typedef struct {
+    char      pat[RE_CACHE_PATLEN];
+    int       flags;
+    ReHandle *re;
+    unsigned  stamp;      /* LRU: higher is more recently used */
+} ReCacheSlot;
+
+#ifdef _MSC_VER
+#  define RE_THREAD_LOCAL __declspec(thread)
+#else
+#  define RE_THREAD_LOCAL _Thread_local
+#endif
+
+static RE_THREAD_LOCAL ReCacheSlot tls_cache[RE_CACHE_SLOTS];
+static RE_THREAD_LOCAL unsigned    tls_clock;
+
+void *__ls_regex_cached(const char *pattern, int flags) {
+    size_t plen = strlen(pattern);
+    /* Patterns longer than the inline key are not cached -- correctness first;
+       they just compile every time, exactly like before this cache existed. */
+    if (plen >= RE_CACHE_PATLEN) return NULL;
+
+    int lru = 0;
+    for (int i = 0; i < RE_CACHE_SLOTS; i++) {
+        ReCacheSlot *s = &tls_cache[i];
+        if (s->re && s->flags == flags && strcmp(s->pat, pattern) == 0) {
+            s->stamp = ++tls_clock;
+            return s->re;
+        }
+        if (s->stamp < tls_cache[lru].stamp) lru = i;
+    }
+
+    ReHandle *re = (ReHandle *)__ls_regex_compile(pattern, flags);
+    if (!re) return NULL;
+
+    ReCacheSlot *victim = &tls_cache[lru];
+    if (victim->re) __ls_regex_free(victim->re);
+    memcpy(victim->pat, pattern, plen + 1);
+    victim->flags = flags;
+    victim->re    = re;
+    victim->stamp = ++tls_clock;
+    return re;
+}
+
 const char *__ls_regex_last_error(void) { return g_last_error; }
 
 /* ===== Pike VM ===== */

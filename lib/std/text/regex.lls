@@ -25,7 +25,15 @@ import std.core.str
 
 // ---- internal helpers ----
 
-def _compile(Str pattern, int flags) -> object {
+// Cached compile for the free functions: the handle is owned by the C-side
+// thread-local cache and must NOT be freed here. Returns nil when the pattern
+// is invalid, or when it is too long to cache -- callers fall back to _own.
+def _cached(Str pattern, int flags) -> object {
+    return c.__ls_regex_cached(pattern.c_str(), flags)
+}
+
+// Uncached compile; the caller owns the handle and must free it.
+def _own(Str pattern, int flags) -> object {
     return c.__ls_regex_compile(pattern.c_str(), flags)
 }
 
@@ -41,20 +49,24 @@ def _cap_str(object h, &Str text, int group) -> Str {
 
 // Returns true if pattern appears anywhere in text.
 def matches(Str text, Str pattern) -> bool {
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return false }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return n > 0
 }
 
 // Returns true if the entire text matches pattern (anchored both ends).
 def full_match(Str text, Str pattern) -> bool {
     Str anchored = "\\A(?:" + pattern + ")\\Z"
-    object h = _compile(anchored, 0)
+    object h = _cached(anchored, 0)
+    bool owned = false
+    if h == nil { h = _own(anchored, 0); owned = true }
     if h == nil { return false }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return n > 0
 }
 
@@ -62,19 +74,23 @@ def full_match(Str text, Str pattern) -> bool {
 
 // Returns Some(first_match) or None.
 def find(Str text, Str pattern) -> Option(Str) {
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return None }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
-    if n == 0 { c.__ls_regex_free(h); return None }
+    if n == 0 { if owned { c.__ls_regex_free(h) }; return None }
     Str ms = _cap_str(h, text, 0)
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return Some(ms)
 }
 
 // Returns all non-overlapping full matches.
 def find_all(Str text, Str pattern) -> Vec(Str) {
     Vec(Str) result = {}
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return result }
     *u8 tptr = text.c_str()
     int tlen = text.len()
@@ -88,7 +104,7 @@ def find_all(Str text, Str pattern) -> Vec(Str) {
         result.push(piece)
         if l == 0 { pos = s + 1 } else { pos = s + l }
     }
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return result
 }
 
@@ -97,26 +113,30 @@ def find_all(Str text, Str pattern) -> Vec(Str) {
 // Returns [full_match, group1, group2, ...] for the first match, or empty Vec.
 def capture(Str text, Str pattern) -> Vec(Str) {
     Vec(Str) caps = {}
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return caps }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
-    if n == 0 { c.__ls_regex_free(h); return caps }
+    if n == 0 { if owned { c.__ls_regex_free(h) }; return caps }
     int i = 0
     while i < n {
         Str g = _cap_str(h, text, i)
         caps.push(g)
         i = i + 1
     }
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return caps
 }
 
 // Returns the number of capture groups in the pattern (not counting group 0).
 def group_count(Str pattern) -> int {
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return 0 }
     int n = c.__ls_regex_group_count(h)
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return n
 }
 
@@ -125,7 +145,9 @@ def group_count(Str pattern) -> int {
 // Stride = group_count(pattern) + 1.  Returns empty Vec if no matches.
 def capture_all(Str text, Str pattern) -> Vec(Str) {
     Vec(Str) result = {}
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return result }
     *u8 tptr = text.c_str()
     int tlen = text.len()
@@ -143,7 +165,7 @@ def capture_all(Str text, Str pattern) -> Vec(Str) {
         }
         if l == 0 { pos = s + 1 } else { pos = s + l }
     }
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return result
 }
 
@@ -153,10 +175,12 @@ def capture_all(Str text, Str pattern) -> Vec(Str) {
 // Returns an empty map if no match or no named groups.
 def capture_named(Str text, Str pattern) -> Map(Str, Str) {
     Map(Str, Str) m = {}
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return m }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
-    if n == 0 { c.__ls_regex_free(h); return m }
+    if n == 0 { if owned { c.__ls_regex_free(h) }; return m }
     int nc = c.__ls_regex_named_count(h)
     int i = 0
     while i < nc {
@@ -170,7 +194,7 @@ def capture_named(Str text, Str pattern) -> Map(Str, Str) {
         }
         i = i + 1
     }
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return m
 }
 
@@ -178,21 +202,25 @@ def capture_named(Str text, Str pattern) -> Map(Str, Str) {
 
 // Replaces the first match of pattern with replacement.
 def replace(Str text, Str pattern, Str replacement) -> Str {
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return text.copy() }
     int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
-    if n == 0 { c.__ls_regex_free(h); return text.copy() }
+    if n == 0 { if owned { c.__ls_regex_free(h) }; return text.copy() }
     int s = c.__ls_regex_cap_start(h, 0)
     int l = c.__ls_regex_cap_len(h, 0)
     int tlen = text.len()
     Str result = text.substr(0, s) + replacement + text.substr(s + l, tlen - s - l)
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return result
 }
 
 // Replaces all non-overlapping matches of pattern with replacement.
 def replace_all(Str text, Str pattern, Str replacement) -> Str {
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return text.copy() }
     Str result = ""
     *u8 tptr = text.c_str()
@@ -208,7 +236,7 @@ def replace_all(Str text, Str pattern, Str replacement) -> Str {
         else { pos = s + l }
     }
     result = result + text.substr(pos, tlen - pos)
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return result
 }
 
@@ -218,7 +246,9 @@ def replace_all(Str text, Str pattern, Str replacement) -> Str {
 // separators are omitted.
 def split(Str text, Str pattern) -> Vec(Str) {
     Vec(Str) result = {}
-    object h = _compile(pattern, 0)
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil {
         result.push(text.copy())
         return result
@@ -239,6 +269,6 @@ def split(Str text, Str pattern) -> Vec(Str) {
         Str tail = text.substr(pos, tlen - pos)
         if tail.len() > 0 { result.push(tail) }
     }
-    c.__ls_regex_free(h)
+    if owned { c.__ls_regex_free(h) }
     return result
 }

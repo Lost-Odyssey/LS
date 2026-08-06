@@ -251,6 +251,7 @@ int jit_init(JitEngine *engine) {
         /* regex engine (runtime/ls_regex.c) — used by std.regex via std.c FFI */
         extern int         __ls_regex_compile(const char *, int);
         extern void        __ls_regex_free(int);
+        extern void       *__ls_regex_cached(const char *, int);
         extern const char *__ls_regex_last_error(void);
         extern int         __ls_regex_exec(int, const char *, int, int);
         extern int         __ls_regex_cap_start(int);
@@ -373,6 +374,7 @@ int jit_init(JitEngine *engine) {
         /* regex engine */
         REG(__ls_regex_compile);
         REG(__ls_regex_free);
+        REG(__ls_regex_cached);
         REG(__ls_regex_last_error);
         REG(__ls_regex_exec);
         REG(__ls_regex_cap_start);

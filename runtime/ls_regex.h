@@ -18,6 +18,12 @@ void *__ls_regex_compile(const char *pattern, int flags);
 /* Release a handle returned by __ls_regex_compile. NULL is a no-op. */
 void __ls_regex_free(void *h);
 
+/* Compile via a thread-local LRU cache. The returned handle is owned by the
+   cache -- do NOT pass it to __ls_regex_free. Returns NULL on a bad pattern
+   or when the pattern is too long to cache (in which case the caller should
+   fall back to __ls_regex_compile + __ls_regex_free). */
+void *__ls_regex_cached(const char *pattern, int flags);
+
 /* Error message from the last failed compile. Compile failures have no handle
    to hang the message on, so this stays process-global; it is advisory only. */
 const char *__ls_regex_last_error(void);
