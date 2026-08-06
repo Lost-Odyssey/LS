@@ -14,6 +14,11 @@
 #include <string.h>
 #include <ctype.h>
 
+/* Boyer-Moore-Horspool / Sunday substring search, shared with std.core.str.
+   Defined in runtime/builtins.c; both files link into ls and ls_os_backend. */
+extern int __ls_str_find(const char *hay, int hlen,
+                         const char *needle, int nlen, int start);
+
 /* ===== Constants ===== */
 
 #define MAX_GROUPS    17    /* group 0 = full match, 1..16 = captures */
@@ -88,6 +93,19 @@ typedef struct {
     int          n_classes;
     NamedGroup   named[MAX_NAMED];
     int          n_named;
+
+    /* ---- Prefilter (built once at compile time, read by __ls_regex_exec) ----
+       lit/lit_len: a literal string every match must start with. If
+       lit_is_whole is set the pattern is nothing BUT this literal, so a match
+       can be answered by __ls_str_find alone without entering the VM.
+       first_bytes: 128-bit set of bytes a match may start with; only valid
+       when has_first_bytes is set. Both are disabled under LS_RE_IGNORECASE,
+       where a byte-exact search would be wrong. */
+    char          lit[64];
+    int           lit_len;
+    int           lit_is_whole;
+    unsigned char first_bytes[CLASS_BITMAP_BYTES];
+    int           has_first_bytes;
 } ReHandle;
 
 static ReHandle g_pool[MAX_HANDLES];
@@ -697,6 +715,53 @@ static int parse_expr_inner(Compiler *c) {
     return c->re->prog_len;
 }
 
+/* Walk the program from pc 0 and derive what every match must start with.
+   Only the leading run of OP_CHAR instructions is used: the moment anything
+   else appears (a split, a class, an anchor, a save that is not group 0's
+   opening one) the literal ends. Conservative by construction -- when in
+   doubt we record nothing and __ls_regex_exec falls back to a full scan. */
+static void re_build_prefilter(ReHandle *re) {
+    re->lit_len         = 0;
+    re->lit_is_whole    = 0;
+    re->has_first_bytes = 0;
+
+    /* A byte-exact prefilter is wrong when folding case. */
+    if (re->flags & LS_RE_IGNORECASE) return;
+
+    int pc = 0;
+    /* Skip the group-0 opening SAVE emitted by __ls_regex_compile. */
+    if (pc < re->prog_len && re->prog[pc].op == OP_SAVE && re->prog[pc].operand_a == 0)
+        pc++;
+
+    while (pc < re->prog_len &&
+           re->prog[pc].op == OP_CHAR &&
+           re->lit_len < (int)sizeof(re->lit)) {
+        re->lit[re->lit_len++] = (char)re->prog[pc].operand_a;
+        pc++;
+    }
+
+    if (re->lit_len > 0) {
+        /* Nothing but the literal, then group-0 close + MATCH? Then the whole
+           pattern is that literal and the VM is not needed at all. */
+        if (pc + 1 < re->prog_len &&
+            re->prog[pc].op == OP_SAVE && re->prog[pc].operand_a == 1 &&
+            re->prog[pc + 1].op == OP_MATCH) {
+            re->lit_is_whole = 1;
+        }
+        return;
+    }
+
+    /* No literal prefix. Fall back to a first-byte set if the first consuming
+       instruction is a class we can copy verbatim. */
+    if (pc < re->prog_len) {
+        const ReInstr *in = &re->prog[pc];
+        if (in->op == OP_CLASS && in->operand_a >= 0 && in->operand_a < re->n_classes) {
+            memcpy(re->first_bytes, re->classes[in->operand_a].bits, CLASS_BITMAP_BYTES);
+            re->has_first_bytes = 1;
+        }
+    }
+}
+
 /* ===== Compile API ===== */
 
 int __ls_regex_compile(const char *pattern, int flags) {
@@ -739,6 +804,7 @@ int __ls_regex_compile(const char *pattern, int flags) {
     emit(re, OP_MATCH, 0, 0);
 
     re->n_groups = c.group_counter;
+    re_build_prefilter(re);
     return h;
 }
 
@@ -1064,7 +1130,40 @@ int __ls_regex_exec(int handle, const char *text, int text_len, int start) {
 
     /* Try matching starting at each position */
     const int nslot = re_slot_count(re);
+
+    /* Tier 1: the pattern is nothing but a literal -- answer with the shared
+       BMH/Sunday search and skip the VM entirely. */
+    if (re->lit_is_whole && !(re->flags & LS_RE_IGNORECASE)) {
+        int at = __ls_str_find(text, text_len, re->lit, re->lit_len, start);
+        if (at < 0) return 0;
+        for (int k = 0; k < MAX_GROUPS * 2; k++) g_last_saved[k] = -1;
+        g_last_saved[0] = at;
+        g_last_saved[1] = at + re->lit_len;
+        return re->n_groups + 1;
+    }
+
     for (int s = start; s <= text_len; s++) {
+        /* Tier 2: every match starts with a known literal -- jump there. */
+        if (re->lit_len > 0) {
+            int at = __ls_str_find(text, text_len, re->lit, re->lit_len, s);
+            if (at < 0) return 0;
+            s = at;
+        }
+        /* Tier 3: we know the set of bytes a match may start with. */
+        else if (re->has_first_bytes) {
+            while (s < text_len) {
+                unsigned char ch = (unsigned char)text[s];
+                if (ch < 128 &&
+                    ((re->first_bytes[ch >> 3] >> (ch & 7)) & 1)) break;
+                s++;
+            }
+            if (s >= text_len && text_len > 0) {
+                /* Still try the empty position at end-of-text: a pattern like
+                   [a-z]* can match empty there. */
+                s = text_len;
+            }
+        }
+
         int ms[MAX_GROUPS * 2];
         for (int k = 0; k < MAX_GROUPS * 2; k++) ms[k] = -1;
         int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b);
