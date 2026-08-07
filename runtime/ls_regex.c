@@ -211,6 +211,89 @@ static int re_prog_reserve(ReHandle *re, int extra) {
     return 0;
 }
 
+/* apply_quantifier and the two alternation rewrites in parse_expr_inner all
+   make room for a new SPLIT ahead of an already-emitted body by memmove'ing
+   that body forward `shift` slots (shift is always 1 at every current call
+   site, but the helper is written generally). Several opcodes carry
+   ABSOLUTE program counters in their operands -- OP_JUMP.operand_a,
+   OP_SPLIT.operand_a/b (the enum comment calls them "offsets" but every
+   writer in this file stores absolute pcs like start+1 and end), and
+   OP_LOOKAHEAD.operand_a -- and a plain memmove does not adjust any of
+   them.
+
+   The naive fix ("bump every operand >= old_pos by `shift`, uniformly")
+   is WRONG. An operand whose value is exactly old_pos is genuinely
+   ambiguous, and the two readings need opposite treatment:
+
+     - An instruction that sits BEFORE old_pos (i.e. was already emitted
+       when this shift happens, such as an enclosing alternation's SPLIT
+       whose branch-B target is exactly old_pos) means "the entry point of
+       the construct that starts here". After the insertion, that entry
+       point is still old_pos -- the newly inserted instruction (the new
+       SPLIT this shift is making room for) IS the construct's new front
+       door. This operand must NOT be bumped when it equals old_pos
+       exactly (only bumped if it is strictly greater, i.e. it names
+       something deeper inside the region that physically moved).
+       Concretely: "x|(a*)*" -- the outer alternation's branch-B target
+       (old_pos) must keep pointing at old_pos, which after the shift
+       holds the new outer '*' SPLIT, the correct entry to "(a*)*".
+       Bumping it would skip that SPLIT and jump straight past it.
+
+     - An instruction that is ITSELF part of the region that just
+       physically moved (now living at index >= old_pos+shift) was
+       created while compiling the body, so any of its absolute operands
+       were computed relative to the OLD, pre-shift layout and range over
+       [old_pos, end) -- including possibly old_pos itself. E.g. a
+       non-capturing "(?:a*)*": the inner '*'s own back-edge JUMP points
+       to the inner SPLIT, which (with no SAVE to offset it) sits at
+       exactly old_pos before the outer shift. That reference MUST bump
+       when it equals old_pos, or the loop-back ends up targeting the
+       newly-inserted OUTER split instead of the inner one it meant.
+
+   So the rule keys off WHERE THE OPERAND LIVES, not just its value:
+   strict '>' for instructions before old_pos, non-strict '>=' for
+   instructions in the moved region. The vacated slot(s)
+   [old_pos, old_pos+shift) hold a stale leftover duplicate of the body's
+   old first instruction(s) at fixup time and are skipped outright -- the
+   caller overwrites them immediately after with freshly computed values.
+
+   Walk the WHOLE program (0..limit), not just the moved region: an
+   earlier, unmoved instruction can legitimately hold a forward reference
+   into the region that just moved, and that reference needs the same
+   correction (see the "x|(a*)*" example above).
+   Callers must invoke this AFTER the memmove (and after bumping prog_len)
+   but BEFORE writing the new instruction's own operands into the vacated
+   slot -- those operands are computed fresh for the post-shift layout and
+   must not be adjusted again. */
+static void re_fixup_pcs_after_shift(ReHandle *re, int old_pos, int shift, int limit) {
+    int moved_from = old_pos + shift; /* first index holding relocated body content */
+    for (int i = 0; i < limit; i++) {
+        if (i >= old_pos && i < moved_from) continue; /* vacated slot(s): ignore */
+        int in_moved_region = (i >= moved_from);
+        ReInstr *ins = &re->prog[i];
+        switch (ins->op) {
+            case OP_JUMP:
+            case OP_LOOKAHEAD: {
+                int hit = in_moved_region ? (ins->operand_a >= old_pos)
+                                           : (ins->operand_a >  old_pos);
+                if (hit) ins->operand_a += shift;
+                break;
+            }
+            case OP_SPLIT: {
+                int hit_a = in_moved_region ? (ins->operand_a >= old_pos)
+                                             : (ins->operand_a >  old_pos);
+                int hit_b = in_moved_region ? (ins->operand_b >= old_pos)
+                                             : (ins->operand_b >  old_pos);
+                if (hit_a) ins->operand_a += shift;
+                if (hit_b) ins->operand_b += shift;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+}
+
 /* Forward declarations for recursive descent */
 static int parse_expr(Compiler *c);
 static int parse_expr_inner(Compiler *c);
@@ -298,6 +381,7 @@ static int apply_quantifier(Compiler *c, int start, char qc, int lazy) {
         memmove(&re->prog[start+1], &re->prog[start], (size_t)(end - start) * sizeof(ReInstr));
         re->prog_len++;
         end++;
+        re_fixup_pcs_after_shift(re, start, 1, re->prog_len);
         re->prog[start].op = OP_SPLIT;
         if (lazy) {
             re->prog[start].operand_a = end;    /* skip first = lazy */
@@ -315,6 +399,7 @@ static int apply_quantifier(Compiler *c, int start, char qc, int lazy) {
         memmove(&re->prog[start+1], &re->prog[start], (size_t)(end - start) * sizeof(ReInstr));
         re->prog_len++;
         end++;
+        re_fixup_pcs_after_shift(re, start, 1, re->prog_len);
         /* append JUMP back to SPLIT */
         int jmp = emit(re, OP_JUMP, start, 0);
         if (jmp < 0) return -1;
@@ -715,6 +800,7 @@ static int parse_expr_inner(Compiler *c) {
         memmove(&re->prog[alt_start + 1], &re->prog[alt_start],
                 (size_t)a_len * sizeof(ReInstr));
         re->prog_len++;
+        re_fixup_pcs_after_shift(re, alt_start, 1, re->prog_len);
         /* placeholder SPLIT at alt_start */
         re->prog[alt_start].op = OP_SPLIT;
 
@@ -762,6 +848,7 @@ static int parse_expr_inner(Compiler *c) {
                 memmove(&re->prog[alt_start+1], &re->prog[alt_start],
                         (size_t)blen * sizeof(ReInstr));
                 re->prog_len++;
+                re_fixup_pcs_after_shift(re, alt_start, 1, re->prog_len);
                 re->prog[alt_start].op = OP_SPLIT;
                 /* will be patched on next iteration */
                 /* the jump before this branch needs to jump past the SPLIT we just inserted,

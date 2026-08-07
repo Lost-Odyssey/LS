@@ -212,6 +212,41 @@ def test_split() {
     @print("PASS: split")
 }
 
+def test_stale_pc_after_shift() {
+    // Regression for bug (b): apply_quantifier and the two alternation
+    // rewrites in parse_expr_inner make room for a new SPLIT by memmove'ing
+    // an already-emitted body forward one slot, but several opcodes carry
+    // ABSOLUTE program-counter operands (OP_JUMP.operand_a, OP_SPLIT's
+    // operand_a/b, OP_LOOKAHEAD.operand_a) that a plain memmove does not
+    // adjust. Whenever '?' or '*' wraps a body that already contains its
+    // own quantifier or alternation, every such operand pointing at or
+    // past the insertion point is left stale, corrupting control flow.
+    // Confirmed against Python's `re`.
+    if !re.full_match("aaa", "(a*)*") { @print("FAIL: stale_pc (a*)* full_match"); return }
+    Vec(Str) c1 = re.capture("aaa", "(a*)*")
+    if c1.len() != 2 { @print(f"FAIL: stale_pc (a*)* length {c1.len()}"); return }
+    if !c1[0].eq?("aaa") { @print(f"FAIL: stale_pc (a*)* group0 {c1[0]}"); return }
+
+    if !re.full_match("ab", "(a|b)*") { @print("FAIL: stale_pc (a|b)* full_match"); return }
+    Vec(Str) c2 = re.capture("ab", "(a|b)*")
+    if c2.len() != 2 { @print(f"FAIL: stale_pc (a|b)* length {c2.len()}"); return }
+    if !c2[0].eq?("ab") { @print(f"FAIL: stale_pc (a|b)* group0 {c2[0]}"); return }
+    if !c2[1].eq?("b") { @print(f"FAIL: stale_pc (a|b)* group1 {c2[1]}"); return }
+
+    // "a*b*" also exercises the border case of the fix: an EXTERNAL
+    // reference (here, none -- these are two adjacent top-level pieces,
+    // but the second quantifier's insertion point coincides with where an
+    // earlier SPLIT's "give up, exit the loop" operand points) must NOT be
+    // bumped, only references belonging to the body that physically moved.
+    // A naive "bump every operand >= insertion point" fix breaks this:
+    // a*'s exit edge would skip straight past b*'s own SPLIT into a
+    // now-mandatory 'b', making zero b's (and zero a's) impossible.
+    if !re.matches("", "a*b*") { @print("FAIL: stale_pc a*b* empty"); return }
+    if !re.matches("a", "a*b*") { @print("FAIL: stale_pc a*b* just-a"); return }
+    if !re.full_match("bb", "a*b*") { @print("FAIL: stale_pc a*b* bb"); return }
+    @print("PASS: stale_pc_after_shift")
+}
+
 def test_error_handling() {
     // Invalid pattern — unclosed group — should return safe defaults
     bool m = re.matches("hello", "(unclosed")
@@ -237,6 +272,7 @@ def main() {
     test_flags()
     test_replace()
     test_split()
+    test_stale_pc_after_shift()
     test_error_handling()
     @print("ALL PASS")
 }
