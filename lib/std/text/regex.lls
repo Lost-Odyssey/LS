@@ -10,8 +10,10 @@
 //
 //   capture()     -> Vec(Str)        — empty = no match
 //   capture_all() -> Vec(Str)        — flat: all groups from all matches
+//   capture_all_spans() -> Vec(int)  — flat, zero-alloc: (offset,len) pairs
 //   capture_named() -> Map(Str,Str)  — empty = no match
-// Use group_count(pattern) to get the per-match stride for capture_all.
+// Use group_count(pattern) to get the per-match stride for capture_all /
+// capture_all_spans (spans stride is (group_count+1)*2 ints).
 //
 // FFI (P5-3): the C regex engine is a direct extern taking char*/length. Str
 // values are handed across via `str.c_str()` (NUL-terminated) + `str.len()`;
@@ -261,6 +263,64 @@ def capture_all(Str text, Str pattern) -> Vec(Str) {
         while i < n {
             Str g = _cap_str(h, text, i)
             result.push(g)
+            i = i + 1
+        }
+        if l == 0 { pos = s + 1 } else { pos = s + l }
+    }
+    if owned { c.__ls_regex_free(h) }
+    return result
+}
+
+// ---- 3.3.1 Capture group spans (zero-allocation find-all) ----
+
+// Same match/group traversal as capture_all, but instead of materializing
+// each group into an owned Str, packs (offset, length) pairs into a flat
+// Vec(int). No Str is allocated by this call -- not even for group 0: the
+// only allocation left is the Vec(int)'s own backing-array growth, the same
+// bookkeeping cost capture_all's Vec(Str) already pays on top of its
+// per-group Str allocations.
+//
+// Layout: [g0_off, g0_len, g1_off, g1_len, ..., gN_off, gN_len] for match 0,
+// then the same 2*(group_count+1) ints for match 1, and so on. Stride (in
+// ints) = (group_count(pattern) + 1) * 2. Empty Vec if there are no matches.
+//
+// A group that did not participate in a match is encoded as (-1, -1) --
+// exactly the "absent" sentinel __ls_regex_cap_start/cap_len already
+// return, so there is no translation step at this layer: check `off < 0`
+// before slicing (the same check `group()` above makes before calling
+// substr). An empty (zero-width) match or group is (offset, 0) -- a real,
+// present, zero-length span -- which is a different case from "absent".
+//
+// To turn a span back into text once you actually need the bytes: `text.
+// substr(off, len)` for an owned copy (the same call capture_all makes
+// internally, so switching call sites costs nothing) or `text.subslice(off,
+// len)` for a zero-copy StrSlice view (valid only while `text` is
+// unchanged) -- both already exist on Str, so this is not a new idiom.
+//
+// Use this instead of capture_all() when a caller only needs to measure,
+// compare, or scan groups -- e.g. summing lengths, or checking a group
+// equals a literal -- without needing the bytes as an owned, independent
+// Str. If you are going to materialize every group anyway, capture_all() is
+// simpler; this exists for the case where most or all of that
+// materialization would otherwise be wasted work.
+def capture_all_spans(Str text, Str pattern) -> Vec(int) {
+    Vec(int) result = {}
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
+    if h == nil { return result }
+    *u8 tptr = text.c_str()
+    int tlen = text.len()
+    int pos = 0
+    while pos <= tlen {
+        int n = c.__ls_regex_exec(h, tptr, tlen, pos)
+        if n == 0 { break }
+        int s = c.__ls_regex_cap_start(h, 0)
+        int l = c.__ls_regex_cap_len(h, 0)
+        int i = 0
+        while i < n {
+            result.push(c.__ls_regex_cap_start(h, i))
+            result.push(c.__ls_regex_cap_len(h, i))
             i = i + 1
         }
         if l == 0 { pos = s + 1 } else { pos = s + l }

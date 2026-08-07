@@ -1238,6 +1238,7 @@ never freed); only the <code>fields</code>/<code>funcs</code> arrays are heap-ow
 <tr><td class="s"><span class="sig">def find_all(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d">All non-overlapping matches.</td></tr>
 <tr><td class="s"><span class="sig">def capture(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d"><code>[full, g1, g2, …]</code> for the first match.</td></tr>
 <tr><td class="s"><span class="sig">def capture_all(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d">All matches × all groups, flat (stride = groups+1).</td></tr>
+<tr><td class="s"><span class="sig">def capture_all_spans(Str text, Str pattern) -&gt; Vec(int)</span></td><td class="d">Same traversal as <code>capture_all</code>, zero-allocation: flat <code>(offset, len)</code> pairs instead of owned <code>Str</code>s (stride = <code>(groups+1)*2</code>). See “Zero-allocation spans” below.</td></tr>
 <tr><td class="s"><span class="sig">def capture_named(Str text, Str pattern) -&gt; Map(Str, Str)</span></td><td class="d">Named groups → values for first match.</td></tr>
 <tr><td class="s"><span class="sig">def group_count(Str pattern) -&gt; int</span></td><td class="d">Number of capture groups.</td></tr>
 <tr><td class="s"><span class="sig">def replace(Str text, Str pattern, Str rep) -&gt; Str</span></td><td class="d">Replace first match.</td></tr>
@@ -1282,6 +1283,39 @@ enough, which silently returns a plausible-looking but wrong substring.</p>
         }
     }  <span class="c">// r auto-releases the compiled handle here</span>
     <span class="t">Err</span>(e) =&gt; { @print(e) }
+}</pre></div>
+
+<h3>Zero-allocation spans</h3>
+<p class="purpose"><code>capture_all</code> materializes every captured group into an independently-owned
+<code>Str</code> — a deep copy of the matched bytes, needed if you're going to keep, store, or mutate that
+group after the match is gone. Measurement on this project's find-all benchmarks showed that
+allocation as 26–38% of the total cost of a <code>capture_all</code> call, on top of engine execution —
+real work when all you actually need is a length, a comparison, or a slice you'll read once and
+discard. <code>capture_all_spans</code> runs the exact same match/group traversal but pushes
+<code>(offset, len)</code> pairs into a <code>Vec(int)</code> instead of calling <code>substr</code> per group — no
+<code>Str</code> is allocated, not even for group 0.</p>
+<p>A non-participating group (e.g. inside <code>(a)?</code> when the <code>a</code> didn't match) is encoded as
+<code>(-1, -1)</code> — the same "absent" sentinel the underlying engine already uses, so there is no
+translation step. An empty (zero-width) match or group is <code>(offset, 0)</code> — a real, present,
+zero-length span, not the same thing as absent. No match at all → an empty <code>Vec(int)</code>, same
+contract as <code>capture_all</code>.</p>
+<p>To read a span back as text once you actually need the bytes, use what <code>Str</code> already offers —
+no new type is introduced for this: <code>text.substr(off, len)</code> for an owned copy (the same call
+<code>capture_all</code> makes internally), or <code>text.subslice(off, len)</code> for a zero-copy
+<a href="#str"><code>StrSlice</code></a> view (valid only while <code>text</code> is unchanged and not mutated).</p>
+<p><strong>Which to use:</strong> materializing every group as its own <code>Str</code> anyway (storing it,
+returning it, mutating it) → <code>capture_all</code>, it's simpler. Only measuring, comparing, or reading
+groups once during the scan — summing lengths, checking a group against a literal, streaming fields
+out to another sink — → <code>capture_all_spans</code>, and materialize only the groups you end up
+needing via <code>substr</code>/<code>subslice</code>.</p>
+<div class="ex"><pre><span class="t">Vec</span>(<span class="t">int</span>) spans = re.capture_all_spans(html, <span class="s">"href=\"([^\"]*)\""</span>)  <span class="c">// stride = 4 (2 groups incl. g0)</span>
+<span class="t">int</span> i = <span class="n">0</span>
+<span class="t">int</span> total_href_len = <span class="n">0</span>
+<span class="k">while</span> i &lt; spans.len() {
+    <span class="t">int</span> off = spans[i + <span class="n">2</span>]   <span class="c">// group 1: the href value</span>
+    <span class="t">int</span> len = spans[i + <span class="n">3</span>]
+    <span class="k">if</span> off &gt;= <span class="n">0</span> { total_href_len = total_href_len + len }  <span class="c">// no Str allocated at all</span>
+    i = i + <span class="n">4</span>
 }</pre></div>
 </section>
 

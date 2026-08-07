@@ -141,6 +141,57 @@ def test_capture() {
     @print("PASS: capture")
 }
 
+def test_capture_all_spans() {
+    // Zero-allocation find-all: capture_all_spans returns a flat Vec(int) of
+    // (offset, len) pairs instead of materializing a Str per group. Pins the
+    // same four behaviours find_all/capture_all's loop must get right,
+    // exactly matching capture_all's own match/group traversal (same
+    // pattern used in test_capture above; stride = (group_count+1)*2 ints).
+
+    // -- multiple matches --
+    Vec(int) sp1 = re.capture_all_spans("a=1 b=2 c=3", "([a-zA-Z_]+)=(\\S+)")
+    if sp1.len() != 18 { @print(f"FAIL: spans multi len {sp1.len()}"); return }
+    Vec(int) want1 = [0,3, 0,1, 2,1,  4,3, 4,1, 6,1,  8,3, 8,1, 10,1]
+    int k = 0
+    while k < 18 {
+        if sp1[k] != want1[k] { @print(f"FAIL: spans multi[{k}] got {sp1[k]} want {want1[k]}"); return }
+        k = k + 1
+    }
+    // a span must round-trip to the same bytes capture_all() would have
+    // materialized -- this is the "get back to Str" usability requirement.
+    Str t1 = "a=1 b=2 c=3"
+    Str g0m1 = t1.substr(sp1[6], sp1[7])
+    if !g0m1.eq?("b=2") { @print(f"FAIL: spans multi substr roundtrip [{g0m1}]"); return }
+
+    // -- non-participating group: (a)? does not match, encoded as (-1,-1) --
+    Vec(int) sp2 = re.capture_all_spans("b", "(a)?(b)")
+    if sp2.len() != 6 { @print(f"FAIL: spans nonpart len {sp2.len()}"); return }
+    Vec(int) want2 = [0,1, -1,-1, 0,1]
+    k = 0
+    while k < 6 {
+        if sp2[k] != want2[k] { @print(f"FAIL: spans nonpart[{k}] got {sp2[k]} want {want2[k]}"); return }
+        k = k + 1
+    }
+
+    // -- empty matches: (x?) with no 'x' in the text matches empty at every
+    // position, a REAL zero-length span (offset >= 0, len == 0), distinct
+    // from the (-1,-1) non-participating sentinel above --
+    Vec(int) sp3 = re.capture_all_spans("ab", "(x?)")
+    if sp3.len() != 12 { @print(f"FAIL: spans empty len {sp3.len()}"); return }
+    Vec(int) want3 = [0,0, 0,0,  1,0, 1,0,  2,0, 2,0]
+    k = 0
+    while k < 12 {
+        if sp3[k] != want3[k] { @print(f"FAIL: spans empty[{k}] got {sp3[k]} want {want3[k]}"); return }
+        k = k + 1
+    }
+
+    // -- no match at all: empty Vec(int), same contract as capture_all --
+    Vec(int) sp4 = re.capture_all_spans("abc", "zzz")
+    if sp4.len() != 0 { @print(f"FAIL: spans nomatch len {sp4.len()}"); return }
+
+    @print("PASS: capture_all_spans")
+}
+
 def test_named_capture() {
     // capture_named returns Map(Str,Str); empty map = no match
     Map(Str, Str) mp = re.capture_named(
@@ -456,6 +507,7 @@ def main() {
     test_alternation_priority()
     test_find()
     test_capture()
+    test_capture_all_spans()
     test_named_capture()
     test_lookahead()
     test_flags()
