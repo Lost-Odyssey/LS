@@ -314,6 +314,114 @@ def test_stale_pc_after_copy() {
     @print("PASS: stale_pc_after_copy")
 }
 
+def test_onepass() {
+    // Regression corpus for the one-pass execution path (vm_exec_onepass,
+    // runtime/ls_regex.c): patterns the compile-time classifier
+    // (re_is_onepass, Task 1) marks ONEPASS route through a single-pc,
+    // non-speculative-SAVE executor instead of the Pike VM's thread list.
+    // The one-pass hazard is that a SAVE write is no longer speculative --
+    // there is only one saved[] array, no per-thread copies -- so any
+    // capture corruption here is exactly the failure mode the classifier
+    // exists to prevent. Every pattern below is confirmed ONEPASS via
+    // is_onepass() (so this corpus stays honest if the classifier or the
+    // program shapes ever change), and every one includes a non-matching
+    // input, confirming no stale capture offsets survive from an earlier
+    // successful exec on the same handle.
+
+    // 5-group full-line log/HTTP pattern.
+    Str p1 = "([A-Za-z]+) (/[A-Za-z0-9/]*) HTTP/([0-9.]+) ([0-9]+) ([0-9]+)"
+    match re.compile(p1, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p1 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p1 compile {e}"); return }
+    }
+    Vec(Str) c1 = re.capture("GET /api/v2/orders HTTP/1.1 200 1532", p1)
+    if c1.len() != 6 { @print(f"FAIL: onepass p1 caps len {c1.len()}"); return }
+    if !c1[1].eq?("GET") { @print(f"FAIL: onepass p1 g1 {c1[1]}"); return }
+    if !c1[2].eq?("/api/v2/orders") { @print(f"FAIL: onepass p1 g2 {c1[2]}"); return }
+    if !c1[3].eq?("1.1") { @print(f"FAIL: onepass p1 g3 {c1[3]}"); return }
+    if !c1[4].eq?("200") { @print(f"FAIL: onepass p1 g4 {c1[4]}"); return }
+    if !c1[5].eq?("1532") { @print(f"FAIL: onepass p1 g5 {c1[5]}"); return }
+    Vec(Str) c1n = re.capture("not a log line at all", p1)
+    if c1n.len() != 0 { @print(f"FAIL: onepass p1 stale on no-match len {c1n.len()}"); return }
+
+    // key=value pattern (S1_kv benchmark shape).
+    Str p2 = "([a-zA-Z_]+)=(\\S+)"
+    match re.compile(p2, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p2 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p2 compile {e}"); return }
+    }
+    Vec(Str) c2 = re.capture("user_id=4821", p2)
+    if c2.len() != 3 { @print(f"FAIL: onepass p2 caps len {c2.len()}"); return }
+    if !c2[0].eq?("user_id=4821") { @print(f"FAIL: onepass p2 g0 {c2[0]}"); return }
+    if !c2[1].eq?("user_id") { @print(f"FAIL: onepass p2 g1 {c2[1]}"); return }
+    if !c2[2].eq?("4821") { @print(f"FAIL: onepass p2 g2 {c2[2]}"); return }
+    Vec(Str) c2n = re.capture("no equals sign here", p2)
+    if c2n.len() != 0 { @print(f"FAIL: onepass p2 stale on no-match len {c2n.len()}"); return }
+
+    // href pattern (S3_href benchmark shape), including an empty capture.
+    Str p3 = "href=\"([^\"]*)\""
+    match re.compile(p3, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p3 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p3 compile {e}"); return }
+    }
+    Vec(Str) c3 = re.capture("<a href=\"/cat/electronics\">Electronics</a>", p3)
+    if c3.len() != 2 { @print(f"FAIL: onepass p3 caps len {c3.len()}"); return }
+    if !c3[1].eq?("/cat/electronics") { @print(f"FAIL: onepass p3 g1 {c3[1]}"); return }
+    Vec(Str) c3e = re.capture("href=\"\"", p3)
+    if c3e.len() != 2 { @print(f"FAIL: onepass p3 empty caps len {c3e.len()}"); return }
+    if !c3e[1].eq?("") { @print(f"FAIL: onepass p3 empty g1 [{c3e[1]}]"); return }
+    Vec(Str) c3n = re.capture("no href attribute here", p3)
+    if c3n.len() != 0 { @print(f"FAIL: onepass p3 stale on no-match len {c3n.len()}"); return }
+
+    // date pattern -- {n} with n==m needs no SPLIT at all, trivially onepass.
+    Str p4 = "([0-9]{4})-([0-9]{2})-([0-9]{2})"
+    match re.compile(p4, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p4 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p4 compile {e}"); return }
+    }
+    Vec(Str) c4 = re.capture("2026-08-07", p4)
+    if c4.len() != 4 { @print(f"FAIL: onepass p4 caps len {c4.len()}"); return }
+    if !c4[1].eq?("2026") { @print(f"FAIL: onepass p4 g1 {c4[1]}"); return }
+    if !c4[2].eq?("08") { @print(f"FAIL: onepass p4 g2 {c4[2]}"); return }
+    if !c4[3].eq?("07") { @print(f"FAIL: onepass p4 g3 {c4[3]}"); return }
+    Vec(Str) c4n = re.capture("20260807", p4)
+    if c4n.len() != 0 { @print(f"FAIL: onepass p4 stale on no-match len {c4n.len()}"); return }
+
+    // Apache combined-log 9-field pattern (S2_fields benchmark shape) --
+    // largest and most anchor-dense onepass shape in the suite.
+    Str p5 = "^(\\S+) \\S+ \\S+ \\[([^\\]]+)\\] \"(\\S+) (\\S+) HTTP/([\\d.]+)\" (\\d+) (\\d+) \"([^\"]*)\" \"([^\"]*)\"$"
+    match re.compile(p5, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p5 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p5 compile {e}"); return }
+    }
+    Str line5 = "10.1.2.3 - - [07/Aug/2026:14:23:01 +0000] \"GET /api/v2/orders?id=42 HTTP/1.1\" 200 1532 \"-\" \"Mozilla/5.0\""
+    Vec(Str) c5 = re.capture(line5, p5)
+    if c5.len() != 10 { @print(f"FAIL: onepass p5 caps len {c5.len()}"); return }
+    if !c5[1].eq?("10.1.2.3") { @print(f"FAIL: onepass p5 g1 {c5[1]}"); return }
+    if !c5[2].eq?("07/Aug/2026:14:23:01 +0000") { @print(f"FAIL: onepass p5 g2 {c5[2]}"); return }
+    if !c5[3].eq?("GET") { @print(f"FAIL: onepass p5 g3 {c5[3]}"); return }
+    if !c5[4].eq?("/api/v2/orders?id=42") { @print(f"FAIL: onepass p5 g4 {c5[4]}"); return }
+    if !c5[5].eq?("1.1") { @print(f"FAIL: onepass p5 g5 {c5[5]}"); return }
+    if !c5[6].eq?("200") { @print(f"FAIL: onepass p5 g6 {c5[6]}"); return }
+    if !c5[7].eq?("1532") { @print(f"FAIL: onepass p5 g7 {c5[7]}"); return }
+    if !c5[8].eq?("-") { @print(f"FAIL: onepass p5 g8 {c5[8]}"); return }
+    if !c5[9].eq?("Mozilla/5.0") { @print(f"FAIL: onepass p5 g9 {c5[9]}"); return }
+    Vec(Str) c5n = re.capture("not an apache log line", p5)
+    if c5n.len() != 0 { @print(f"FAIL: onepass p5 stale on no-match len {c5n.len()}"); return }
+
+    @print("PASS: onepass")
+}
+
 def test_error_handling() {
     // Invalid pattern — unclosed group — should return safe defaults
     bool m = re.matches("hello", "(unclosed")
@@ -342,6 +450,7 @@ def main() {
     test_stale_pc_after_shift()
     test_alt_branch_split_corruption()
     test_stale_pc_after_copy()
+    test_onepass()
     test_error_handling()
     @print("ALL PASS")
 }
