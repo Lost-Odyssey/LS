@@ -146,6 +146,18 @@ static int re_slot_count(const ReHandle *re) {
     return n;
 }
 
+/* NOTE: a variable-length-memcpy version of thread propagation (copying
+   only re_slot_count(re) ints of saved[] instead of the fixed MAX_GROUPS*2
+   via plain struct assignment) was tried here and measured WORSE on cap/
+   capmat (~7-16% slower, reproduced across two runs) -- MSVC compiles
+   `memcpy` with a runtime-variable length as a real call, while the plain
+   fixed-size `ReThread b = a;` struct assignment it would have replaced is
+   small enough (136 bytes) that the compiler inlines it as a straight-line
+   sequence of loads/stores. The call overhead outweighed the smaller
+   payload for every pattern size tried. Reverted; see the task-vmopt
+   report for the measurement. Left as a documented dead end so it is not
+   retried without re-measuring. */
+
 /* ===== Utility ===== */
 
 static void class_set(ReCharClass *cls, unsigned char c) {
@@ -968,7 +980,22 @@ static void re_build_prefilter(ReHandle *re) {
     if (re->flags & LS_RE_IGNORECASE) return;
 
     int pc = 0;
-    /* Skip the group-0 opening SAVE emitted by __ls_regex_compile. */
+    /* Skip the group-0 opening SAVE emitted by __ls_regex_compile.
+
+       NOTE: a variant of this was tried that skipped the WHOLE leading run
+       of OP_SAVE instructions (group-0 open plus any capturing group opens
+       that begin the pattern, e.g. the benchmark's `([A-Za-z]+) ...`,
+       sound by the same dominance argument as re_detect_anchor). It is
+       correct and does let has_first_bytes fire for group-leading
+       patterns that previously got no prefilter at all, but measured as a
+       null result on the gated benchmark (cap ~49.1-49.9ms both with and
+       without it, i.e. noise-level -- reproduced across three runs): most
+       of the positions it lets the outer loop skip via a cheap byte check
+       were already failing just as cheaply inside vm_exec_range (the
+       class test fails on the first character, no thread survives, the
+       position loop exits immediately), so the byte check is a lateral
+       move, not a real skip. Reverted to keep the diff to the two levers
+       with measured effect; see the task-vmopt report. */
     if (pc < re->prog_len && re->prog[pc].op == OP_SAVE && re->prog[pc].operand_a == 0)
         pc++;
 
@@ -1156,21 +1183,72 @@ const char *__ls_regex_last_error(void) { return g_last_error; }
 /* ===== Pike VM ===== */
 
 /* visited[] tracks which pc values have been added to current list
-   in this position step, to avoid duplicate threads. */
+   in this position step, to avoid duplicate threads.
 
-#define VM_VISITED_BYTES  ((MAX_INSTRS + 7) / 8)
+   Represented as a generation counter per pc rather than a bitmap: pc `p`
+   counts as "visited in the current generation" exactly when
+   gen[p] == current. A "clear" is then a single increment of `current`
+   instead of an O(MAX_INSTRS/8) memset -- visited_clear is called once per
+   text position stepped through (plus once to seed the initial thread),
+   so on the cap/capmat shapes (many start positions x many positions
+   stepped per start) that memset dominated: it always zeroed the full
+   256-byte bitmap sized for MAX_INSTRS, regardless of how few instructions
+   the compiled pattern actually used.
+
+   Ownership mirrors ThreadList's buf_a/buf_b (see the comment above
+   vm_exec_range): Visited is hoisted out of vm_exec_range into a parameter
+   the caller owns, instead of being a >=4KB per-call local. vm_exec_range
+   runs once per candidate start position -- up to text_len+1 times for an
+   unanchored pattern -- and a local that size would reintroduce exactly
+   the repeated __chkstk stack-probe cost that comment documents fixing for
+   ThreadList. Hoisting also means `current` stays monotonic across every
+   candidate start tried within one __ls_regex_exec call: since it only
+   ever increases (short of the wraparound handled in visited_clear), a
+   stale gen[pc] from an earlier candidate start can never equal the new
+   `current`, so the array never needs re-zeroing except once, when the
+   Visited is first constructed (visited_init).
+
+   gen[] is declared at the MAX_INSTRS worst-case size (a fixed, one-time
+   stack reservation -- irrelevant to per-call cost), but every zeroing
+   pass (visited_init, and visited_clear's wraparound fallback) only
+   touches the first `prog_len` entries, not all MAX_INSTRS. This matters:
+   the OLD bitmap this replaces was ALSO fixed at MAX_INSTRS/8 = 256 bytes
+   regardless of how few instructions a given pattern actually compiled to,
+   so a first cut of this change that zeroed the full gen[MAX_INSTRS] once
+   per __ls_regex_exec call measurably REGRESSED small patterns like
+   "^GET " (prog_len ~8): one 8192-byte memset beat out five 256-byte
+   memsets it replaced. Sizing the zeroing pass to the pattern's actual
+   prog_len (a handful of ints for "^GET ", tens for the 5-group
+   benchmark pattern) is what makes this a strict improvement over the old
+   bitmap at every pattern size instead of only the larger ones. */
 
 typedef struct {
-    unsigned char bits[VM_VISITED_BYTES];
+    unsigned gen[MAX_INSTRS];
+    unsigned current;
 } Visited;
 
-static void visited_clear(Visited *v) { memset(v->bits, 0, sizeof(v->bits)); }
-static int  visited_test(Visited *v, int pc) {
-    return (v->bits[pc >> 3] >> (pc & 7)) & 1;
+static void visited_init(Visited *v, int prog_len) {
+    memset(v->gen, 0, (size_t)prog_len * sizeof(v->gen[0]));
+    v->current = 0;
 }
-static void visited_set(Visited *v, int pc) {
-    v->bits[pc >> 3] |= (unsigned char)(1u << (pc & 7));
+static void visited_clear(Visited *v, int prog_len) {
+    v->current++;
+    if (v->current == 0) {
+        /* Wrapped past UINT_MAX increments. Never observed in practice --
+           this call is made once per text position stepped through per
+           candidate start position within a single __ls_regex_exec call,
+           so it would take billions of text-position steps in one call to
+           reach -- but a wrapped counter without this guard would make an
+           old generation's gen[pc]==0 collide with a freshly-wrapped
+           current==0, resurrecting stale "visited" marks. A full reset
+           restores the invariant; skip generation 0 afterwards so it stays
+           reserved for "never visited" (matching a freshly-init'd array). */
+        memset(v->gen, 0, (size_t)prog_len * sizeof(v->gen[0]));
+        v->current = 1;
+    }
 }
+static int  visited_test(Visited *v, int pc) { return v->gen[pc] == v->current; }
+static void visited_set(Visited *v, int pc) { v->gen[pc] = v->current; }
 
 /* Thread list */
 typedef struct {
@@ -1193,7 +1271,7 @@ static void tl_init(ThreadList *tl) { tl->count = 0; }
  * every add_thread call's frame just because one switch case might need it. */
 static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
                          int start, int pc_start, int pc_end, int *match_saved,
-                         ThreadList *buf_a, ThreadList *buf_b);
+                         ThreadList *buf_a, ThreadList *buf_b, Visited *vis);
 static int vm_exec_lookahead(const ReHandle *re, const char *text, int text_len,
                              int start, int pc_start, int pc_end, int *match_saved);
 
@@ -1336,7 +1414,7 @@ static void reverse_thread_range(ReThread *threads, int lo, int hi) {
 static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
                          int start, int pc_start, int pc_end,
                          int *match_saved,
-                         ThreadList *buf_a, ThreadList *buf_b)
+                         ThreadList *buf_a, ThreadList *buf_b, Visited *vis)
 {
     (void)pc_end; /* we rely on OP_MATCH to terminate */
 
@@ -1345,7 +1423,6 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
        (MAX_THREADS * sizeof(ReThread) ~= 71.7 KB) regardless of how many
        threads are actually live -- measured at 15-38x of total exec time. */
     ThreadList *cur = buf_a, *nxt = buf_b;
-    Visited vis;
     const int nslot = re_slot_count(re);
     int found_saved[MAX_GROUPS * 2];
     for (int k = 0; k < nslot; k++) found_saved[k] = -1;
@@ -1359,8 +1436,8 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
         ReThread t0;
         t0.pc = pc_start;
         for (int k = 0; k < nslot; k++) t0.saved[k] = -1;
-        visited_clear(&vis);
-        add_thread(re, cur, &vis, t0, text, text_len, start, found_saved);
+        visited_clear(vis, re->prog_len);
+        add_thread(re, cur, vis, t0, text, text_len, start, found_saved);
         if (found_saved[0] >= 0 && found_saved[1] >= 0) {
             found = 1;
         }
@@ -1370,7 +1447,7 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
         if (cur->count == 0) break;
 
         tl_init(nxt);
-        visited_clear(&vis);
+        visited_clear(vis, re->prog_len);
 
         /* Threads in cur are in priority order, but *ascending*: add_thread's
            OP_SPLIT handling recurses into the lower-priority operand_b branch
@@ -1464,7 +1541,7 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
                 int ms[MAX_GROUPS * 2];
                 memcpy(ms, found_saved, (size_t)nslot * sizeof(int));
                 int nxt_before = nxt->count;
-                int got = add_thread(re, nxt, &vis, nt, text, text_len, pos + 1, ms);
+                int got = add_thread(re, nxt, vis, nt, text, text_len, pos + 1, ms);
                 int contributed = nxt->count - nxt_before;
                 if (contributed > 0 && n_blocks < MAX_THREADS) {
                     blk_start[n_blocks] = nxt_before;
@@ -1519,12 +1596,17 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
    so it cannot safely reuse the caller's slots either way. Lookahead is a
    rare opcode, so paying a second ~143 KB frame (and its own __chkstk probe)
    only on this rarely-taken path, instead of on every add_thread call, is
-   the right trade. */
+   the right trade. Same reasoning applies to Visited now that it is a
+   hoisted parameter rather than a vm_exec_range local: this nested call
+   needs its own, independent from the outer match's (still mid-flight,
+   possibly a different pc range), so it gets a fresh one here too. */
 static int vm_exec_lookahead(const ReHandle *re, const char *text, int text_len,
                              int start, int pc_start, int pc_end, int *match_saved)
 {
     ThreadList tl_a, tl_b;
-    return vm_exec_range(re, text, text_len, start, pc_start, pc_end, match_saved, &tl_a, &tl_b);
+    Visited vis;
+    visited_init(&vis, re->prog_len);
+    return vm_exec_range(re, text, text_len, start, pc_start, pc_end, match_saved, &tl_a, &tl_b, &vis);
 }
 
 /* ===== Public exec API ===== */
@@ -1565,6 +1647,16 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
         return re->n_groups + 1;
     }
 
+    /* Visited is hoisted the same way tl_a/tl_b are (see above) and shared
+       across every vm_exec_range call below within this __ls_regex_exec
+       invocation -- see the comment on the Visited typedef for why that is
+       sound (its generation counter never needs re-zeroing except here, at
+       construction). Declared/initialized only on paths that actually
+       reach the VM: Tier 1 above never touches it, so the whole-literal
+       shapes ("lit", "obj_lit") do not pay for this 8 KB zero-init at all. */
+    Visited vis;
+    visited_init(&vis, re->prog_len);
+
     /* Tier 0: the pattern is anchored (see re_detect_anchor) -- skip every
        candidate start position that is provably doomed instead of paying
        for a VM call per position that fails on its very first
@@ -1585,7 +1677,7 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
         }
         int ms[MAX_GROUPS * 2];
         for (int k = 0; k < nslot; k++) ms[k] = -1;
-        int ok = vm_exec_range(re, text, text_len, 0, 0, re->prog_len - 1, ms, &tl_a, &tl_b);
+        int ok = vm_exec_range(re, text, text_len, 0, 0, re->prog_len - 1, ms, &tl_a, &tl_b, &vis);
         if (ok) {
             memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
             return re->n_groups + 1;
@@ -1605,7 +1697,7 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
         while (s <= text_len) {
             int ms[MAX_GROUPS * 2];
             for (int k = 0; k < nslot; k++) ms[k] = -1;
-            int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b);
+            int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b, &vis);
             if (ok) {
                 memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
                 return re->n_groups + 1;
@@ -1647,7 +1739,7 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
 
         int ms[MAX_GROUPS * 2];
         for (int k = 0; k < MAX_GROUPS * 2; k++) ms[k] = -1;
-        int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b);
+        int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b, &vis);
         if (ok) {
             /* Copy only the slots this pattern uses; the rest of re->saved
                is left from an earlier exec but is never read, because
