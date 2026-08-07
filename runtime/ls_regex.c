@@ -111,6 +111,19 @@ typedef struct {
     int           lit_is_whole;
     unsigned char first_bytes[CLASS_BITMAP_BYTES];
     int           has_first_bytes;
+
+    /* ---- Anchor detection (built once at compile time, read by
+       __ls_regex_exec) ----
+       0 = unanchored: every start position in [start, text_len] must be
+           tried, same as before this field existed.
+       1 = absolute: every match must begin at text position 0 (\A, or ^
+           without LS_RE_MULTILINE). __ls_regex_exec then tries at most
+           ONE candidate position instead of walking the whole string.
+       2 = line-start: every match must begin at position 0 or immediately
+           after a '\n' (^ WITH LS_RE_MULTILINE). __ls_regex_exec then
+           only tries line-start positions.
+       See re_detect_anchor for the conservative rule that sets this. */
+    int           anchor_mode;
 } ReHandle;
 
 /* Compile failures have no handle to hang an error message on, so this one
@@ -988,6 +1001,46 @@ static void re_build_prefilter(ReHandle *re) {
     }
 }
 
+/* Detect whether every match this pattern can ever produce must begin at
+   text position 0 (anchor_mode=1) or at a line start under LS_RE_MULTILINE
+   (anchor_mode=2). __ls_regex_exec uses this to skip candidate start
+   positions that are provably doomed instead of entering the VM at each one
+   just to have it fail the anchor check on its very first instruction.
+
+   Soundness: __ls_regex_compile always emits the group-0 opening OP_SAVE as
+   the unconditional first instruction (prog[0]), and the VM's single seed
+   thread walks pc 0, 1, 2, ... in a straight line -- there is no branch
+   before prog[1] can execute. So prog[1] is, unconditionally, the first
+   real instruction of every possible execution path. If prog[1] is itself
+   an anchor, EVERY thread that ever exists must have passed it, because
+   there is no alternate route into the program that skips pc 1.
+
+   This is why the check is exactly "is prog[1] an anchor", not "does an
+   anchor appear anywhere reachable from pc 0". An anchor behind a SPLIT --
+   e.g. "(^a|b)" (group open at prog[1], SPLIT at prog[2]) or "^a|b" (the
+   top-level alternation's SPLIT sits at prog[1], with ANCHOR_BOL only on
+   the A branch at prog[2]) -- does NOT dominate every path: "b" alone can
+   still match without ever touching the anchor. In both cases prog[1] is a
+   SAVE or a SPLIT, not the anchor opcode, so the detector correctly stays
+   at anchor_mode=0 and __ls_regex_exec falls back to trying every
+   position. A detector that walked past SPLITs looking for an anchor on
+   "some" branch would be unsound (a silent wrong answer on exactly the
+   inputs the caller warned about), which is why this one does not. */
+static void re_detect_anchor(ReHandle *re) {
+    re->anchor_mode = 0;
+    if (re->prog_len < 2) return;
+    if (re->prog[0].op != OP_SAVE || re->prog[0].operand_a != 0) return; /* defensive */
+
+    ReOpCode op = re->prog[1].op;
+    if (op == OP_ANCHOR_BOS) {
+        re->anchor_mode = 1; /* \A: absolute, independent of MULTILINE */
+    } else if (op == OP_ANCHOR_BOL) {
+        /* Non-multiline ^ behaves exactly like \A (pos==0 only). Multiline
+           ^ additionally allows any position right after a '\n'. */
+        re->anchor_mode = (re->flags & LS_RE_MULTILINE) ? 2 : 1;
+    }
+}
+
 /* ===== Compile API ===== */
 
 void *__ls_regex_compile(const char *pattern, int flags) {
@@ -1028,6 +1081,7 @@ void *__ls_regex_compile(const char *pattern, int flags) {
 
     re->n_groups = c.group_counter;
     re_build_prefilter(re);
+    re_detect_anchor(re);
     return re;
 }
 
@@ -1509,6 +1563,59 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
         re->saved[0] = at;
         re->saved[1] = at + re->lit_len;
         return re->n_groups + 1;
+    }
+
+    /* Tier 0: the pattern is anchored (see re_detect_anchor) -- skip every
+       candidate start position that is provably doomed instead of paying
+       for a VM call per position that fails on its very first
+       instruction. anchor_mode is mutually exclusive with lit_is_whole
+       (re_build_prefilter's literal scan starts right after the same
+       leading OP_SAVE and stops the instant it sees a non-OP_CHAR
+       instruction, so an anchor at prog[1] guarantees lit_len==0), so this
+       never shadows the Tier-1 path above. */
+    if (re->anchor_mode == 1) {
+        /* Absolute: only text position 0 can ever satisfy the anchor. If
+           the caller's start offset is already past 0, no position in
+           [start, text_len] is 0, so the match is impossible -- the exact
+           same answer the unconditional loop below would have computed
+           after up to text_len+1 doomed vm_exec_range calls. */
+        if (start > 0) {
+            for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+            return 0;
+        }
+        int ms[MAX_GROUPS * 2];
+        for (int k = 0; k < nslot; k++) ms[k] = -1;
+        int ok = vm_exec_range(re, text, text_len, 0, 0, re->prog_len - 1, ms, &tl_a, &tl_b);
+        if (ok) {
+            memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
+            return re->n_groups + 1;
+        }
+        for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+        return 0;
+    }
+
+    if (re->anchor_mode == 2) {
+        /* Line-start under MULTILINE: only position 0 or a position
+           immediately after a '\n' can ever satisfy the anchor. Walk only
+           those positions instead of every byte offset. */
+        int s = (start < 0) ? 0 : start;
+        if (s != 0) {
+            while (s < text_len && text[s - 1] != '\n') s++;
+        }
+        while (s <= text_len) {
+            int ms[MAX_GROUPS * 2];
+            for (int k = 0; k < nslot; k++) ms[k] = -1;
+            int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b);
+            if (ok) {
+                memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
+                return re->n_groups + 1;
+            }
+            if (s >= text_len) break;
+            s++;
+            while (s < text_len && text[s - 1] != '\n') s++;
+        }
+        for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+        return 0;
     }
 
     for (int s = start; s <= text_len; s++) {
