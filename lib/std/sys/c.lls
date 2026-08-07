@@ -134,6 +134,11 @@ extern def __ls_regex_cap_start(object h, int group) -> int
 extern def __ls_regex_cap_len(object h, int group) -> int
 extern def __ls_regex_group_count(object h) -> int
 extern def __ls_regex_is_onepass(object h) -> int
+// Diagnostic-only counters proving which exec engine actually ran (see
+// re_exec_vm_onepass/re_exec_vm_general in runtime/ls_regex.c); not part of
+// the Regex object's public API, called directly via std.sys.c by probes.
+extern def __ls_regex_debug_onepass_execs() -> i64
+extern def __ls_regex_debug_general_execs() -> i64
 extern def __ls_regex_named_count(object h) -> int
 extern def __ls_regex_named_name(object h, int i) -> object
 extern def __ls_regex_named_index(object h, int i) -> int

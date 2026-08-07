@@ -131,10 +131,26 @@ typedef struct {
            position, so it is safe to execute by walking a single pc and
            writing capture offsets directly instead of running the Pike VM's
            thread list. 0 = general; must run the Pike VM.
-       This field is PURELY DIAGNOSTIC as of this commit -- nothing reads it
-       yet, __ls_regex_exec's behavior is completely unchanged. See
-       re_is_onepass for the analysis and its soundness argument. */
+       When onepass is 1, __ls_regex_exec routes to vm_exec_onepass instead
+       of the Pike VM. See re_is_onepass for the analysis and its soundness
+       argument. */
     int           onepass;
+
+    /* ---- One-pass per-SPLIT dispatch tables (built once at compile time
+       by re_build_onepass_tables, read by vm_exec_onepass) ----
+       Heap array, re->prog_len entries, indexed by pc; only entries at an
+       actual OP_SPLIT pc are ever populated or read (the rest sit
+       zero-initialized and unused -- prog_len is typically small, so this
+       is cheap and simpler than a sparse map). NULL unless onepass==1.
+       Each entry holds the SAME FirstSet(operand_a)/FirstSet(operand_b)
+       re_is_onepass already computes to classify the pattern -- see that
+       function's rule 1+2+3 commentary for what these mean and why they
+       are safe to use as a runtime dispatch decision. Recomputed by a
+       second walk (re_build_onepass_tables) rather than having
+       re_is_onepass itself stash them, so Task 1's already-verified
+       classifier is not touched by this. */
+    void         *onepass_splits;  /* ReSplitInfo*, opaque here to keep the
+                                       type defined next to its only user */
 } ReHandle;
 
 /* Compile failures have no handle to hang an error message on, so this one
@@ -1188,6 +1204,21 @@ typedef struct {
     int           can_match_empty;
 } ReFirstSet;
 
+/* Per-OP_SPLIT dispatch entry for the one-pass executor (vm_exec_onepass,
+   defined further down). Holds exactly the two FirstSets re_is_onepass
+   computes to classify a SPLIT (rule 1+2+3), so the executor can decide
+   which branch to take from the current input byte in O(1) instead of
+   re-walking the epsilon closure at run time. See re_build_onepass_tables
+   and vm_exec_onepass for how this is populated and consumed. Declared
+   here, next to ReFirstSet, rather than down by its use so ReHandle (above)
+   can hold a pointer to an array of these without needing this whole
+   analysis section forward-declared -- ReHandle's field is `void *` for
+   that reason and is cast back to `ReSplitInfo *` at every use. */
+typedef struct {
+    ReFirstSet a;
+    ReFirstSet b;
+} ReSplitInfo;
+
 /* Epsilon-closure walk computing FirstSet(pc): follow SAVE, JUMP and BOTH
    branches of SPLIT (all zero-width) and the four positional anchors
    (^ $ \A \Z, also zero-width) until a consuming instruction is reached
@@ -1373,6 +1404,49 @@ static int re_is_onepass(const ReHandle *re) {
     return 1;
 }
 
+/* Populate re->onepass_splits: for every OP_SPLIT pc, the same
+   FirstSet(operand_a)/FirstSet(operand_b) re_is_onepass computed above to
+   classify the pattern, this time stashed so vm_exec_onepass can look them
+   up by pc instead of recomputing an epsilon closure on every step of every
+   match attempt. Deliberately a SEPARATE walk (calling the same re_first_set
+   helper a second time) rather than having re_is_onepass itself save its
+   results -- that keeps Task 1's already-tested classifier untouched by
+   this addition; the extra walk is compile-time-only and cheap (the TLS
+   pattern cache means most patterns pay it once, not once per exec).
+
+   Only called when re_is_onepass has already returned 1. If anything here
+   disagrees with that verdict (should be unreachable -- defensive only, see
+   the `unsupported` comment on re_first_set) or allocation fails, this
+   fails CLOSED: it clears re->onepass back to 0 so __ls_regex_exec falls
+   back to the Pike VM rather than run vm_exec_onepass without valid
+   dispatch tables. */
+static void re_build_onepass_tables(ReHandle *re) {
+    ReSplitInfo *tab = (ReSplitInfo *)calloc((size_t)re->prog_len, sizeof(ReSplitInfo));
+    if (!tab) { re->onepass = 0; return; }
+
+    unsigned char seen[MAX_INSTRS];
+
+    for (int pc = 0; pc < re->prog_len; pc++) {
+        if (re->prog[pc].op != OP_SPLIT) continue;
+        const ReInstr *sp = &re->prog[pc];
+        ReSplitInfo *info = &tab[pc];
+        int unsupported = 0;
+
+        memset(seen, 0, (size_t)re->prog_len);
+        re_first_set(re, sp->operand_a, seen, &info->a, &unsupported);
+        memset(seen, 0, (size_t)re->prog_len);
+        re_first_set(re, sp->operand_b, seen, &info->b, &unsupported);
+
+        if (unsupported) {
+            free(tab);
+            re->onepass = 0;
+            return;
+        }
+    }
+
+    re->onepass_splits = tab;
+}
+
 /* ===== Compile API ===== */
 
 void *__ls_regex_compile(const char *pattern, int flags) {
@@ -1415,12 +1489,14 @@ void *__ls_regex_compile(const char *pattern, int flags) {
     re_build_prefilter(re);
     re_detect_anchor(re);
     re->onepass = re_is_onepass(re);
+    if (re->onepass) re_build_onepass_tables(re);
     return re;
 }
 
 void __ls_regex_free(void *h) {
     ReHandle *re = (ReHandle *)h;
     if (!re) return;
+    free(re->onepass_splits);
     free(re->prog);
     free(re);
 }
@@ -1915,51 +1991,291 @@ static int vm_exec_lookahead(const ReHandle *re, const char *text, int text_len,
     return vm_exec_range(re, text, text_len, start, pc_start, pc_end, match_saved, &tl_a, &tl_b, &vis);
 }
 
-/* ===== Public exec API ===== */
+/* ===== One-pass executor =====
 
-int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
-    ReHandle *re = (ReHandle *)h;
-    if (!re) return 0;
+   Walks a SINGLE pc and writes capture offsets into a SINGLE saved[] array
+   -- no thread list, no per-position epsilon closure fan-out, no ThreadList/
+   Visited buffers. Only ever called when re->onepass is 1, i.e. Task 1's
+   analysis has already proven at most one thread can be alive at any input
+   position for this pattern.
 
+   THE HAZARD (see the plan and the file header on re_is_onepass): in the
+   Pike VM every thread carries its own saved[], so a thread that dies takes
+   its SAVE writes with it -- speculation is safe because it is discarded on
+   failure. Here there is exactly one saved[] and every SAVE write lands
+   directly in match_saved, non-speculatively. This is only sound because
+   the one-pass property guarantees there is never a competing path: at
+   every OP_SPLIT, the decision below (which branch to take) is made by the
+   SAME disjointness/self-ambiguity facts (re->onepass_splits, built by
+   re_build_onepass_tables from the identical re_first_set computation
+   re_is_onepass used to classify the pattern) that make the classifier
+   correct in the first place. If a SPLIT's two branches were not actually
+   disjoint, this function would silently pick a branch, consume/SAVE along
+   it, and never discover the other branch might also have matched --
+   exactly the corrupted-capture failure mode the classifier exists to
+   prevent. This function does not re-derive that guarantee; it TRUSTS it.
+   Any imprecision belongs in re_is_onepass/re_build_onepass_tables, not
+   here.
+
+   A failure at any point (a byte does not match a consuming instruction, an
+   anchor fails, or a SPLIT reaches a position where neither branch's first
+   byte matches and neither branch can match empty) means this ENTIRE start
+   position fails -- there is no other thread to fall back to, so return 0
+   immediately. The caller's start-position loop (mirroring the Pike VM
+   path's prefilter/anchor tiers) tries the next candidate start. */
+static int vm_exec_onepass(const ReHandle *re, const char *text, int text_len,
+                            int start, int *match_saved)
+{
+    const int nslot = re_slot_count(re);
+    for (int k = 0; k < nslot; k++) match_saved[k] = -1;
+
+    const ReSplitInfo *splits = (const ReSplitInfo *)re->onepass_splits;
+    int pc  = 0;
+    int pos = start;
+
+    for (;;) {
+        const ReInstr *in = &re->prog[pc];
+
+        switch (in->op) {
+
+        case OP_SAVE:
+            match_saved[in->operand_a] = pos;
+            pc++;
+            continue;
+
+        case OP_JUMP:
+            pc = in->operand_a;
+            continue;
+
+        case OP_SPLIT: {
+            const ReSplitInfo *info = &splits[pc];
+            int chosen = -1;
+
+            if (pos < text_len) {
+                unsigned char ch = (unsigned char)text[pos];
+                int in_a = (info->a.bytes[ch >> 3] >> (ch & 7)) & 1;
+                int in_b = (info->b.bytes[ch >> 3] >> (ch & 7)) & 1;
+                /* re_is_onepass's rule 2 guarantees these are never both
+                   true -- the classifier would have rejected this pattern
+                   otherwise. */
+                if (in_a)      chosen = in->operand_a;
+                else if (in_b) chosen = in->operand_b;
+            }
+            if (chosen < 0) {
+                /* Either at end of text (no byte to test) or the current
+                   byte matched neither branch's first-byte set: fall
+                   through via whichever branch can match having consumed
+                   zero further bytes here. Rule 3 guarantees at most one of
+                   the two can_match_empty (a branch with a nonempty byte
+                   set can never also be flagged can_match_empty by that
+                   rule), so this is not a second live-thread choice -- it
+                   is reading off the single answer the classifier already
+                   proved unique. */
+                if (info->a.can_match_empty)      chosen = in->operand_a;
+                else if (info->b.can_match_empty)  chosen = in->operand_b;
+                else return 0;  /* dead end: this start position fails */
+            }
+            pc = chosen;
+            continue;
+        }
+
+        case OP_ANCHOR_BOL:
+            if (re->flags & LS_RE_MULTILINE) {
+                if (pos == 0 || (pos > 0 && text[pos-1] == '\n')) { pc++; continue; }
+            } else {
+                if (pos == 0) { pc++; continue; }
+            }
+            return 0;
+
+        case OP_ANCHOR_EOL:
+            if (re->flags & LS_RE_MULTILINE) {
+                if (pos == text_len || (pos < text_len && text[pos] == '\n')) { pc++; continue; }
+            } else {
+                if (pos == text_len) { pc++; continue; }
+            }
+            return 0;
+
+        case OP_ANCHOR_BOS:
+            if (pos == 0) { pc++; continue; }
+            return 0;
+
+        case OP_ANCHOR_EOS:
+            if (pos == text_len) { pc++; continue; }
+            return 0;
+
+        case OP_MATCH:
+            return 1;
+
+        case OP_WORDBND:
+        case OP_NWORDBND:
+        case OP_LOOKAHEAD:
+            /* Unreachable in a well-formed one-pass program: re_is_onepass
+               rejects any pattern containing these globally before
+               re->onepass is ever set to 1, so vm_exec_onepass is never
+               invoked on a program that can reach this case. Defensive
+               only -- fail rather than guess at a result. */
+            return 0;
+
+        default: {
+            /* Consuming instruction -- mirrors vm_exec_range's per-position
+               switch exactly (same opcodes, same case-folding/DOTALL/class
+               rules), just applied to one byte at the current pc/pos
+               instead of to every live thread. */
+            if (pos >= text_len) return 0;
+            unsigned char ch = (unsigned char)text[pos];
+            int match_char = 0;
+            switch (in->op) {
+            case OP_CHAR:
+                if (re->flags & LS_RE_IGNORECASE)
+                    match_char = (tolower(ch) == tolower((unsigned char)in->operand_a));
+                else
+                    match_char = (ch == (unsigned char)in->operand_a);
+                break;
+            case OP_ANY:
+                match_char = (ch != '\n') || (re->flags & LS_RE_DOTALL);
+                break;
+            case OP_CLASS: {
+                const ReCharClass *cls = &re->classes[in->operand_a];
+                unsigned char lc = (re->flags & LS_RE_IGNORECASE) ? (unsigned char)tolower(ch) : ch;
+                match_char = class_test(cls, lc);
+                break;
+            }
+            case OP_NCLASS: {
+                const ReCharClass *cls = &re->classes[in->operand_a];
+                unsigned char lc = (re->flags & LS_RE_IGNORECASE) ? (unsigned char)tolower(ch) : ch;
+                match_char = !class_test(cls, lc);
+                break;
+            }
+            case OP_DIGIT:  match_char = isdigit(ch) != 0; break;
+            case OP_NDIGIT: match_char = !isdigit(ch); break;
+            case OP_WORD:   match_char = is_word_char(ch) != 0; break;
+            case OP_NWORD:  match_char = !is_word_char(ch); break;
+            case OP_SPACE:  match_char = is_space_char(ch) != 0; break;
+            case OP_NSPACE: match_char = !is_space_char(ch); break;
+            default: return 0; /* unreachable: every opcode is handled above or here */
+            }
+            if (!match_char) return 0;
+            pos++;
+            pc++;
+            continue;
+        }
+        }
+    }
+}
+
+/* ===== Public exec API =====
+
+   __ls_regex_exec is a thin dispatcher: it owns only the Tier-1 whole-
+   literal fast path (needs neither engine) and then hands off to one of two
+   engines with completely separate stack frames -- re_exec_vm_general (the
+   Pike VM, unchanged from before this task) or re_exec_vm_onepass (new).
+   Keeping them as separate functions, not a runtime branch inside one
+   function, matters for more than readability: re_exec_vm_general declares
+   ThreadList tl_a/tl_b and a Visited buffer (~150 KB combined -- see their
+   own comments for why they are hoisted this high already), and a local
+   declaration's frame cost is paid at function entry regardless of which
+   branch of an if/else actually touches it. A one-pass pattern that took
+   that hit on every __ls_regex_exec call would be paying the exact
+   __chkstk stack-probe cost this file has already gone to some trouble to
+   avoid, for buffers it never uses. */
+
+static long long re_onepass_debug_execs;   /* see __ls_regex_debug_onepass_execs */
+static long long re_general_debug_execs;   /* see __ls_regex_debug_general_execs */
+
+/* Tier 0/2/3 candidate-position selection mirrors re_exec_vm_general exactly
+   (see that function's own comments for why each tier is sound) -- the only
+   difference is which engine runs at each candidate position. */
+static int re_exec_vm_onepass(ReHandle *re, const char *text, int text_len, int start) {
+    const int nslot = re_slot_count(re);
+
+    if (re->anchor_mode == 1) {
+        if (start > 0) {
+            for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+            return 0;
+        }
+        int ms[MAX_GROUPS * 2];
+        re_onepass_debug_execs++;
+        int ok = vm_exec_onepass(re, text, text_len, 0, ms);
+        if (ok) {
+            memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
+            return re->n_groups + 1;
+        }
+        for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+        return 0;
+    }
+
+    if (re->anchor_mode == 2) {
+        int s = (start < 0) ? 0 : start;
+        if (s != 0) {
+            while (s < text_len && text[s - 1] != '\n') s++;
+        }
+        while (s <= text_len) {
+            int ms[MAX_GROUPS * 2];
+            re_onepass_debug_execs++;
+            int ok = vm_exec_onepass(re, text, text_len, s, ms);
+            if (ok) {
+                memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
+                return re->n_groups + 1;
+            }
+            if (s >= text_len) break;
+            s++;
+            while (s < text_len && text[s - 1] != '\n') s++;
+        }
+        for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+        return 0;
+    }
+
+    for (int s = start; s <= text_len; s++) {
+        if (re->lit_len > 0) {
+            int at = __ls_str_find(text, text_len, re->lit, re->lit_len, s);
+            if (at < 0) {
+                for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+                return 0;
+            }
+            s = at;
+        } else if (re->has_first_bytes) {
+            while (s < text_len) {
+                unsigned char ch = (unsigned char)text[s];
+                if (ch < 128 &&
+                    ((re->first_bytes[ch >> 3] >> (ch & 7)) & 1)) break;
+                s++;
+            }
+            if (s >= text_len && text_len > 0) {
+                s = text_len;
+            }
+        }
+
+        int ms[MAX_GROUPS * 2];
+        re_onepass_debug_execs++;
+        int ok = vm_exec_onepass(re, text, text_len, s, ms);
+        if (ok) {
+            memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
+            return re->n_groups + 1;
+        }
+    }
+    for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+    return 0;
+}
+
+static int re_exec_vm_general(ReHandle *re, const char *text, int text_len, int start) {
     /* Buffers hoisted out of vm_exec_range and shared across every start
        position tried below. Each is ~71.7 KB, so declaring the pair pays one
-       __chkstk stack-probe here per __ls_regex_exec call, instead of once
-       per start position in the loop (an anchored pattern that only ever
-       matches at position 0, if at all, otherwise tries and fails ~text_len
-       more times -- ~50 for this benchmark's ~49-byte corpus strings). Safe
-       to share across iterations of this loop because they run strictly
+       __chkstk stack-probe here per call, instead of once per start
+       position in the loop (an anchored pattern that only ever matches at
+       position 0, if at all, otherwise tries and fails ~text_len more times
+       -- ~50 for this benchmark's ~49-byte corpus strings). Safe to share
+       across iterations of this loop because they run strictly
        sequentially: each vm_exec_range call fully finishes (and either
        returns a match we act on immediately, or is done with the buffers)
        before the next one starts. */
     ThreadList tl_a, tl_b;
 
-    /* Try matching starting at each position */
     const int nslot = re_slot_count(re);
 
-    /* Tier 1: the pattern is nothing but a literal -- answer with the shared
-       BMH/Sunday search and skip the VM entirely. */
-    if (re->lit_is_whole && !(re->flags & LS_RE_IGNORECASE)) {
-        int at = __ls_str_find(text, text_len, re->lit, re->lit_len, start);
-        if (at < 0) {
-            /* No match: clear the handle's captures so a later group() query
-               cannot hand back offsets from an earlier, successful exec on
-               this handle. */
-            for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
-            return 0;
-        }
-        for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
-        re->saved[0] = at;
-        re->saved[1] = at + re->lit_len;
-        return re->n_groups + 1;
-    }
-
     /* Visited is hoisted the same way tl_a/tl_b are (see above) and shared
-       across every vm_exec_range call below within this __ls_regex_exec
-       invocation -- see the comment on the Visited typedef for why that is
-       sound (its generation counter never needs re-zeroing except here, at
-       construction). Declared/initialized only on paths that actually
-       reach the VM: Tier 1 above never touches it, so the whole-literal
-       shapes ("lit", "obj_lit") do not pay for this 8 KB zero-init at all. */
+       across every vm_exec_range call below within this call -- see the
+       comment on the Visited typedef for why that is sound (its generation
+       counter never needs re-zeroing except here, at construction). */
     Visited vis;
     visited_init(&vis, re->prog_len);
 
@@ -1970,7 +2286,7 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
        (re_build_prefilter's literal scan starts right after the same
        leading OP_SAVE and stops the instant it sees a non-OP_CHAR
        instruction, so an anchor at prog[1] guarantees lit_len==0), so this
-       never shadows the Tier-1 path above. */
+       never shadows the Tier-1 path in __ls_regex_exec. */
     if (re->anchor_mode == 1) {
         /* Absolute: only text position 0 can ever satisfy the anchor. If
            the caller's start offset is already past 0, no position in
@@ -1983,6 +2299,7 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
         }
         int ms[MAX_GROUPS * 2];
         for (int k = 0; k < nslot; k++) ms[k] = -1;
+        re_general_debug_execs++;
         int ok = vm_exec_range(re, text, text_len, 0, 0, re->prog_len - 1, ms, &tl_a, &tl_b, &vis);
         if (ok) {
             memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
@@ -2003,6 +2320,7 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
         while (s <= text_len) {
             int ms[MAX_GROUPS * 2];
             for (int k = 0; k < nslot; k++) ms[k] = -1;
+            re_general_debug_execs++;
             int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b, &vis);
             if (ok) {
                 memcpy(re->saved, ms, (size_t)nslot * sizeof(int));
@@ -2045,6 +2363,7 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
 
         int ms[MAX_GROUPS * 2];
         for (int k = 0; k < MAX_GROUPS * 2; k++) ms[k] = -1;
+        re_general_debug_execs++;
         int ok = vm_exec_range(re, text, text_len, s, 0, re->prog_len - 1, ms, &tl_a, &tl_b, &vis);
         if (ok) {
             /* Copy only the slots this pattern uses; the rest of re->saved
@@ -2058,6 +2377,35 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
        hand back offsets from an earlier, successful exec on this handle. */
     for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
     return 0;
+}
+
+int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re) return 0;
+
+    /* Tier 1: the pattern is nothing but a literal -- answer with the shared
+       BMH/Sunday search and skip BOTH engines entirely. Checked here, once,
+       ahead of the onepass/general split: a whole-literal pattern is
+       trivially one-pass too (no SPLIT at all), but there is no reason to
+       route it through vm_exec_onepass's dispatch loop when this direct
+       answer is cheaper still. */
+    if (re->lit_is_whole && !(re->flags & LS_RE_IGNORECASE)) {
+        int at = __ls_str_find(text, text_len, re->lit, re->lit_len, start);
+        if (at < 0) {
+            /* No match: clear the handle's captures so a later group() query
+               cannot hand back offsets from an earlier, successful exec on
+               this handle. */
+            for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+            return 0;
+        }
+        for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+        re->saved[0] = at;
+        re->saved[1] = at + re->lit_len;
+        return re->n_groups + 1;
+    }
+
+    if (re->onepass) return re_exec_vm_onepass(re, text, text_len, start);
+    return re_exec_vm_general(re, text, text_len, start);
 }
 
 int __ls_regex_cap_start(void *h, int group) {
@@ -2080,16 +2428,26 @@ int __ls_regex_group_count(void *h) {
     return re ? re->n_groups : 0;
 }
 
-/* Diagnostic query surface for re_is_onepass (see the comment there). Does
-   not affect execution: __ls_regex_exec still always runs the Pike VM
-   (vm_exec_range), regardless of what this returns. Exists so later work
-   that DOES route execution differently based on this property can be
-   validated -- and so tests can prove which path actually ran -- before
-   anything depends on it. */
+/* Diagnostic query surface for re_is_onepass (see the comment there).
+   __ls_regex_exec routes to vm_exec_onepass exactly when this returns
+   nonzero (see re_exec_vm_onepass/re_exec_vm_general in __ls_regex_exec's
+   dispatcher). */
 int __ls_regex_is_onepass(void *h) {
     ReHandle *re = (ReHandle *)h;
     return re ? re->onepass : 0;
 }
+
+/* Process-wide (not thread-local, unlike the pattern cache -- these are
+   diagnostic counters, not correctness-sensitive, and the probes that read
+   them run single-threaded) counters of how many times each engine's
+   per-start-position exec function actually ran, incremented in
+   re_exec_vm_onepass/re_exec_vm_general. Exists purely to let a probe PROVE
+   the one-pass path is taken for a given pattern, rather than trusting that
+   is_onepass()==true implies vm_exec_onepass ran -- see the Task 2 report
+   (.superpowers/sdd/op2-report.md) for how this was used to confirm the
+   benchmark shapes route through the new engine. */
+long long __ls_regex_debug_onepass_execs(void) { return re_onepass_debug_execs; }
+long long __ls_regex_debug_general_execs(void) { return re_general_debug_execs; }
 
 int __ls_regex_named_count(void *h) {
     ReHandle *re = (ReHandle *)h;

@@ -42,9 +42,17 @@ int __ls_regex_group_count(void *h);
 
 /* 1 if the compiled pattern was classified one-pass at compile time (at
    most one thread can ever be live at any input position), 0 otherwise.
-   Diagnostic only as of this commit: __ls_regex_exec's behavior does not
-   depend on it yet. See re_is_onepass in ls_regex.c for the analysis. */
+   __ls_regex_exec routes to the one-pass executor exactly when this is 1.
+   See re_is_onepass in ls_regex.c for the analysis. */
 int __ls_regex_is_onepass(void *h);
+
+/* Process-wide counters of how many times each exec engine actually ran
+   (incremented once per candidate start position tried, i.e. once per
+   vm_exec_onepass/vm_exec_range call, not once per __ls_regex_exec call).
+   Diagnostic only, for proving which engine a given pattern/workload
+   actually exercises -- see ls_regex.c's comment on the counters. */
+long long __ls_regex_debug_onepass_execs(void);
+long long __ls_regex_debug_general_execs(void);
 
 /* Named capture queries */
 int         __ls_regex_named_count(void *h);

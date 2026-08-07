@@ -64,6 +64,20 @@ def test_alternation() {
     if re.matches("bird", "cat|dog") { @print("FAIL: alt neg"); return }
     if !re.matches("red sky", "(red|blue) sky") { @print("FAIL: group alt"); return }
     if !re.matches("blue sky", "(red|blue) sky") { @print("FAIL: group alt 2"); return }
+    // Overlapping alternation branches. These are the ONLY assertions in this
+    // corpus that depend on the one-pass classifier's disjoint-first-byte rule:
+    // both branches here can start with the same byte, so the next input byte
+    // does not decide which one survives and the pattern must fall back to the
+    // general Pike VM. Classify it one-pass by mistake and the single
+    // non-speculative saved[] is written by a path that then dies, which shows
+    // up as a silent no-match with exit code 0 -- verified by injection.
+    // Every other alternation above has disjoint branch prefixes (c/d, r/b) and
+    // so stays correct even with that rule disabled.
+    Vec(Str) ov = re.capture("abc", "(a|ab)c")
+    if ov.len() != 2 { @print(f"FAIL: overlap alt length {ov.len()}"); return }
+    if !ov[0].eq?("abc") { @print(f"FAIL: overlap alt group0 {ov[0]}"); return }
+    if !ov[1].eq?("ab") { @print(f"FAIL: overlap alt group1 {ov[1]}"); return }
+    if !re.matches("aab", "[a-c]*b") { @print("FAIL: overlap star"); return }
     @print("PASS: alternation")
 }
 
