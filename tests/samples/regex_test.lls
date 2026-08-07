@@ -24,6 +24,21 @@ def test_quantifiers() {
     if !re.matches("aaa", "a{3}") { @print("FAIL: {n}"); return }
     if re.matches("aa", "a{3}") { @print("FAIL: {n} neg"); return }
     if !re.matches("aaaa", "a{2,4}") { @print("FAIL: {n,m}"); return }
+    // {0,m} — a zero lower bound really means zero. apply_count is handed a
+    // body copy that is already mandatory, so the zero case needs its own path;
+    // without it {0,m} silently behaved as {1,m+1} (both bounds off by one).
+    if !re.matches("b", "a{0,3}b") { @print("FAIL: {0,m} zero"); return }
+    if !re.matches("aaab", "a{0,3}b") { @print("FAIL: {0,m} max"); return }
+    if re.full_match("aaaab", "a{0,3}b") { @print("FAIL: {0,m} over"); return }
+    if !re.matches("b", "a{0,}b") { @print("FAIL: {0,} zero"); return }
+    if !re.matches("b", "a{0}b") { @print("FAIL: {0} zero"); return }
+    if re.full_match("ab", "a{0}b") { @print("FAIL: {0} over"); return }
+    if !re.matches("xy", "(ab){0,2}xy") { @print("FAIL: group {0,m} zero"); return }
+    if !re.matches("ababxy", "(ab){0,2}xy") { @print("FAIL: group {0,m} max"); return }
+    if !re.matches("b", "a{0,3}?b") { @print("FAIL: lazy {0,m} zero"); return }
+    // a non-zero lower bound must be unaffected by the {0,m} path
+    if re.matches("b", "a{1,3}b") { @print("FAIL: {1,m} zero"); return }
+    if re.full_match("aaaab", "a{1,3}b") { @print("FAIL: {1,m} over"); return }
     // lazy — capture returns Vec(Str), empty = no match
     Vec(Str) c = re.capture("aXbXc", "(a.*?c)")
     if c.len() == 0 { @print("FAIL: lazy none"); return }

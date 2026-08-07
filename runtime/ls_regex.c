@@ -335,6 +335,36 @@ static int apply_count(Compiler *c, int body_start, int body_end,
     ReHandle *re = c->re;
     int body_len = body_end - body_start;
 
+    /* A zero lower bound needs its own path. The caller has already emitted one
+       copy of the body and that copy is mandatory as written; the loop below
+       only ever appends n_min-1 MORE copies, so with n_min == 0 nothing ever
+       makes that first copy optional and {0,m} silently behaves as {1,m+1}.
+       Make it optional up front, then append m-1 further optional copies --
+       the wrapped copy accounts for one of the m allowed repetitions.
+       Note apply_quantifier inserts its SPLIT ahead of the body and shifts the
+       body forward one slot, so later copies must be taken from body_start+1. */
+    if (n_min == 0) {
+        if (n_max == 0) {           /* {0,0}: the body must not match at all */
+            re->prog_len = body_start;
+            return re->prog_len;
+        }
+        if (n_max == -1)            /* {0,} is exactly * */
+            return apply_quantifier(c, body_start, '*', lazy);
+        if (apply_quantifier(c, body_start, '?', lazy) < 0) return -1;
+        body_start += 1;
+        for (int i = 1; i < n_max; i++) {
+            if (re->prog_len + body_len + 2 >= MAX_INSTRS - 4) {
+                comp_error(c, "{n,m}: pattern too large"); return -1;
+            }
+            int opt_start = re->prog_len;
+            memcpy(&re->prog[opt_start], &re->prog[body_start],
+                   (size_t)body_len * sizeof(ReInstr));
+            re->prog_len += body_len;
+            if (apply_quantifier(c, opt_start, '?', lazy) < 0) return -1;
+        }
+        return re->prog_len;
+    }
+
     /* Emit n_min-1 additional mandatory copies */
     for (int i = 1; i < n_min; i++) {
         if (re->prog_len + body_len >= MAX_INSTRS - 4) {
