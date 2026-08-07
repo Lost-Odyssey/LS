@@ -190,6 +190,27 @@ static int  emit(ReHandle *re, ReOpCode op, int a, int b) {
     return re->prog_len++;
 }
 
+/* Ensure prog[] has room for `extra` more instructions beyond prog_len.
+   emit() grows the buffer itself, but several places write instructions
+   directly -- apply_quantifier's memmove, the alternation rewrites, and
+   apply_count's body copies -- and those bypass emit entirely. That was
+   harmless while prog was a fixed MAX_INSTRS array, but prog is heap-grown
+   now, so prog_len can sit exactly at prog_cap and a raw write runs off the
+   end of the allocation. Returns 0 on success, -1 if it cannot grow. */
+static int re_prog_reserve(ReHandle *re, int extra) {
+    int need = re->prog_len + extra;
+    if (need > MAX_INSTRS) return -1;
+    if (need <= re->prog_cap) return 0;
+    int ncap = re->prog_cap ? re->prog_cap : 16;
+    while (ncap < need) ncap *= 2;
+    if (ncap > MAX_INSTRS) ncap = MAX_INSTRS;
+    ReInstr *np = (ReInstr *)realloc(re->prog, (size_t)ncap * sizeof(ReInstr));
+    if (!np) return -1;
+    re->prog     = np;
+    re->prog_cap = ncap;
+    return 0;
+}
+
 /* Forward declarations for recursive descent */
 static int parse_expr(Compiler *c);
 static int parse_expr_inner(Compiler *c);
@@ -272,6 +293,7 @@ static int apply_quantifier(Compiler *c, int start, char qc, int lazy) {
         /* SPLIT(start, end+1) ... [body] ... */
         /* Insert SPLIT before body: shift body instructions */
         if (end - start > MAX_INSTRS - 3) return -1;
+        if (re_prog_reserve(re, 1) < 0) return -1;
         /* Move body forward by 1 slot */
         memmove(&re->prog[start+1], &re->prog[start], (size_t)(end - start) * sizeof(ReInstr));
         re->prog_len++;
@@ -289,6 +311,7 @@ static int apply_quantifier(Compiler *c, int start, char qc, int lazy) {
 
     if (qc == '*') {
         /* SPLIT(start+1, end+1)  [body]  JUMP(start)  */
+        if (re_prog_reserve(re, 1) < 0) return -1;
         memmove(&re->prog[start+1], &re->prog[start], (size_t)(end - start) * sizeof(ReInstr));
         re->prog_len++;
         end++;
@@ -356,6 +379,9 @@ static int apply_count(Compiler *c, int body_start, int body_end,
             if (re->prog_len + body_len + 2 >= MAX_INSTRS - 4) {
                 comp_error(c, "{n,m}: pattern too large"); return -1;
             }
+            if (re_prog_reserve(re, body_len + 2) < 0) {
+                comp_error(c, "{n,m}: pattern too large"); return -1;
+            }
             int opt_start = re->prog_len;
             memcpy(&re->prog[opt_start], &re->prog[body_start],
                    (size_t)body_len * sizeof(ReInstr));
@@ -370,6 +396,9 @@ static int apply_count(Compiler *c, int body_start, int body_end,
         if (re->prog_len + body_len >= MAX_INSTRS - 4) {
             comp_error(c, "{n,m}: pattern too large"); return -1;
         }
+        if (re_prog_reserve(re, body_len) < 0) {
+            comp_error(c, "{n,m}: pattern too large"); return -1;
+        }
         memcpy(&re->prog[re->prog_len], &re->prog[body_start],
                (size_t)body_len * sizeof(ReInstr));
         re->prog_len += body_len;
@@ -377,6 +406,9 @@ static int apply_count(Compiler *c, int body_start, int body_end,
 
     if (n_max == -1) {
         /* {n,} → emit one more copy wrapped with * */
+        if (re_prog_reserve(re, body_len + 2) < 0) {
+            comp_error(c, "{n,m}: pattern too large"); return -1;
+        }
         int opt_start = re->prog_len;
         memcpy(&re->prog[opt_start], &re->prog[body_start],
                (size_t)body_len * sizeof(ReInstr));
@@ -387,6 +419,9 @@ static int apply_count(Compiler *c, int body_start, int body_end,
     /* {n,m}: emit (n_max - n_min) optional copies each wrapped with ? */
     for (int i = n_min; i < n_max; i++) {
         if (re->prog_len + body_len + 2 >= MAX_INSTRS - 4) {
+            comp_error(c, "{n,m}: pattern too large"); return -1;
+        }
+        if (re_prog_reserve(re, body_len + 2) < 0) {
             comp_error(c, "{n,m}: pattern too large"); return -1;
         }
         int opt_start = re->prog_len;
@@ -676,6 +711,7 @@ static int parse_expr_inner(Compiler *c) {
         /* Move A body forward by 1 to make room for SPLIT */
         int a_len = re->prog_len - alt_start;
         if (re->prog_len + 2 >= MAX_INSTRS) { comp_error(c, "pattern too long"); return -1; }
+        if (re_prog_reserve(re, 1) < 0) { comp_error(c, "pattern too long"); return -1; }
         memmove(&re->prog[alt_start + 1], &re->prog[alt_start],
                 (size_t)a_len * sizeof(ReInstr));
         re->prog_len++;
@@ -722,6 +758,7 @@ static int parse_expr_inner(Compiler *c) {
                 /* More branches — insert SPLIT before this branch */
                 int blen = re->prog_len - alt_start;
                 if (re->prog_len + 1 >= MAX_INSTRS) { comp_error(c, "pattern too long"); return -1; }
+                if (re_prog_reserve(re, 1) < 0) { comp_error(c, "pattern too long"); return -1; }
                 memmove(&re->prog[alt_start+1], &re->prog[alt_start],
                         (size_t)blen * sizeof(ReInstr));
                 re->prog_len++;
