@@ -247,6 +247,25 @@ def test_stale_pc_after_shift() {
     @print("PASS: stale_pc_after_shift")
 }
 
+def test_alt_branch_split_corruption() {
+    // Regression for bug (d): parse_expr_inner's alternation compiler used
+    // to "fix up" whatever instruction sat at the start of the LAST
+    // alternation branch, assuming it was always a dangling SPLIT it had
+    // inserted itself. That assumption is false -- every genuinely
+    // inserted placeholder SPLIT is already patched by the very next loop
+    // iteration (guaranteed to run, since the insertion only happens when
+    // another '|' was already seen). So by the time the loop exits there
+    // is nothing left to patch. When the LAST branch's own first
+    // instruction happened to be an unrelated SPLIT -- e.g. an inner
+    // alternation or a quantifier at the very front of that branch -- the
+    // bogus fix-up silently overwrote ITS targets instead, making some of
+    // its options unreachable. Confirmed against Python's `re`.
+    if !re.full_match("cd", "a|(?:b|c)d") { @print("FAIL: split_corrupt a|(?:b|c)d on cd"); return }
+    if !re.full_match("bd", "a|(?:b|c)d") { @print("FAIL: split_corrupt a|(?:b|c)d on bd"); return }
+    if !re.full_match("a", "a|(?:b|c)d") { @print("FAIL: split_corrupt a|(?:b|c)d on a"); return }
+    @print("PASS: alt_branch_split_corruption")
+}
+
 def test_error_handling() {
     // Invalid pattern — unclosed group — should return safe defaults
     bool m = re.matches("hello", "(unclosed")
@@ -273,6 +292,7 @@ def main() {
     test_replace()
     test_split()
     test_stale_pc_after_shift()
+    test_alt_branch_split_corruption()
     test_error_handling()
     @print("ALL PASS")
 }

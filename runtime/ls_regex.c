@@ -864,19 +864,23 @@ static int parse_expr_inner(Compiler *c) {
         for (int i = 0; i < n_jumps; i++) {
             re->prog[jump_patches[i]].operand_a = final_end;
         }
-        /* Also fix the last SPLIT (no more '|' branches to fill in) */
-        /* The last branch was parsed directly, so alt_start's SPLIT points to it already */
-        /* But if we inserted a SPLIT for multi-way, its B needs to point to branch_start */
-        /* At this point, alt_start is the last SPLIT we inserted.
-           Its B should point to the branch after it (alt_start+1). */
-        if (re->prog[alt_start].op == OP_SPLIT) {
-            int bs = alt_start + 1;
-            /* Find the last JUMP we emitted before alt_start to get branch start */
-            /* Actually alt_start+1 is the start of the last branch */
-            re->prog[alt_start].operand_a = bs;
-            /* operand_b not needed for last SPLIT (no next branch) — point past end */
-            re->prog[alt_start].operand_b = final_end;
-        }
+        /* No further fix-up is needed here. Every placeholder SPLIT this
+           function inserts (the one before the loop, and any inserted at
+           the bottom of a loop iteration when another '|' follows) is
+           patched at the top of the NEXT loop iteration, which is
+           guaranteed to run because the insertion only happens when the
+           lookahead already saw a pending '|'. So by the time the loop
+           exits, `alt_start` merely names the start of the LAST branch --
+           there is no dangling SPLIT left to patch there.
+           A previous version of this code assumed otherwise and blindly
+           patched `re->prog[alt_start]` whenever it happened to be an
+           OP_SPLIT. That fired whenever the last branch's own first
+           instruction was itself a SPLIT belonging to an unrelated inner
+           construct (e.g. "a|(?:b|c)d", where B's first instruction is the
+           inner b|c alternation's SPLIT, or "a|b*", where B's first
+           instruction is the '*' quantifier's SPLIT) and silently
+           corrupted that inner SPLIT's targets. See bug (d) in the regex
+           differential-oracle writeup. */
     }
 
     return c->re->prog_len;
