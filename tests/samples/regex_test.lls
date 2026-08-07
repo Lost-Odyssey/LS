@@ -67,6 +67,25 @@ def test_alternation() {
     @print("PASS: alternation")
 }
 
+def test_alternation_priority() {
+    // Regression for the Pike VM thread-priority bug: vm_exec_range's
+    // per-position loop recorded whichever thread completed a match LAST
+    // (in array/temporal order) instead of whichever thread had the
+    // HIGHEST priority (leftmost-first: earlier alternation branches, and
+    // greedy quantifiers, win ties regardless of which thread finishes
+    // its epsilon closure first). Confirmed against Python's `re`, which
+    // implements the same leftmost-first semantics via backtracking:
+    //   re.match(r'[^a]?([a-c]|ba)[ab]', 'bab').groups() == ('a',)
+    // Before the fix this engine returned 'ba' (the second, lower-
+    // priority alternative "ba" won because its thread happened to reach
+    // OP_MATCH at a later text position than the first alternative's).
+    Vec(Str) caps = re.capture("bab", "[^a]?([a-c]|ba)[ab]")
+    if caps.len() != 2 { @print(f"FAIL: alt_priority length {caps.len()}"); return }
+    if !caps[0].eq?("bab") { @print(f"FAIL: alt_priority group0 {caps[0]}"); return }
+    if !caps[1].eq?("a") { @print(f"FAIL: alt_priority group1 {caps[1]}"); return }
+    @print("PASS: alternation_priority")
+}
+
 def test_find() {
     Option(Str) m = re.find("price: 42.5 USD", "\\d+\\.\\d+")
     match m {
@@ -210,6 +229,7 @@ def main() {
     test_quantifiers()
     test_charclass()
     test_alternation()
+    test_alternation_priority()
     test_find()
     test_capture()
     test_named_capture()

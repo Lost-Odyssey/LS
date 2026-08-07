@@ -1120,6 +1120,19 @@ static int add_thread(const ReHandle *re, ThreadList *next, Visited *vis,
    other *concurrently in-progress* vm_exec_range call -- see
    vm_exec_lookahead below for why the recursive lookahead path needs its
    own pair rather than reusing the outer match's. */
+/* Reverse ReThread entries in the inclusive range [lo, hi] in place. Used by
+   vm_exec_range to restore priority order in a thread list -- see the
+   comment above its per-position loop. No-op if lo >= hi. */
+static void reverse_thread_range(ReThread *threads, int lo, int hi) {
+    while (lo < hi) {
+        ReThread tmp = threads[lo];
+        threads[lo] = threads[hi];
+        threads[hi] = tmp;
+        lo++;
+        hi--;
+    }
+}
+
 static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
                          int start, int pc_start, int pc_end,
                          int *match_saved,
@@ -1159,7 +1172,48 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
         tl_init(nxt);
         visited_clear(&vis);
 
-        for (int ti = 0; ti < cur->count; ti++) {
+        /* Threads in cur are in priority order, but *ascending*: add_thread's
+           OP_SPLIT handling recurses into the lower-priority operand_b branch
+           first and only appends the higher-priority operand_a branch's
+           consuming instructions afterwards (see the OP_MATCH case -- it
+           relies on "last write wins" to let a later, higher-priority branch
+           overwrite an earlier, lower-priority one within a single closure).
+           So cur->threads[count-1] is the highest-priority thread and
+           cur->threads[0] is the lowest.
+
+           We must walk this list highest-priority first, for two reasons:
+             1. `vis` (the per-position visited set, shared by every ti in
+                this loop) deduplicates threads that converge on the same
+                pc: whichever thread gets there first "wins" that pc for
+                this position, so the winner must be the highest-priority
+                one.
+             2. Once some ti completes a full match, every thread with
+                *lower* priority than ti can never produce a better match at
+                this position (leftmost-first semantics: a higher-priority
+                path that fully matches is always preferred over a lower-
+                priority path, regardless of match length) -- so we must cut
+                them, both from overwriting the recorded match and from
+                extending into nxt.
+
+           Walking cur high-to-low and calling add_thread(nxt, ...) in that
+           order gets both of those right for *this* position. But it also
+           means each ti's own (internally ascending) contribution lands in
+           nxt in descending ti order -- e.g. [ti=3's entries][ti=2's
+           entries][ti=1's entries] -- which would corrupt the very
+           ascending-priority invariant the *next* position's iteration
+           relies on (nxt becomes cur next iteration). So we track the
+           [start,len) each processed ti contributed to nxt, and afterwards
+           restore ascending order with a standard block-order reversal:
+           reverse the whole array, then reverse each block back to its own
+           internal order at its new position. That turns descending block
+           order (with ascending content) into ascending block order (with
+           ascending content restored) in O(nxt->count) -- no extra
+           MAX_THREADS-sized buffer needed. */
+        int blk_start[MAX_THREADS];
+        int blk_len[MAX_THREADS];
+        int n_blocks = 0;
+
+        for (int ti = cur->count - 1; ti >= 0; ti--) {
             ReThread t = cur->threads[ti];
             const ReInstr *in = &re->prog[t.pc];
 
@@ -1209,11 +1263,36 @@ static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
                 nt.pc = t.pc + 1;
                 int ms[MAX_GROUPS * 2];
                 memcpy(ms, found_saved, (size_t)nslot * sizeof(int));
+                int nxt_before = nxt->count;
                 int got = add_thread(re, nxt, &vis, nt, text, text_len, pos + 1, ms);
+                int contributed = nxt->count - nxt_before;
+                if (contributed > 0 && n_blocks < MAX_THREADS) {
+                    blk_start[n_blocks] = nxt_before;
+                    blk_len[n_blocks] = contributed;
+                    n_blocks++;
+                }
                 if (got) {
                     memcpy(found_saved, ms, (size_t)nslot * sizeof(int));
                     found = 1;
+                    /* This is the highest-priority thread (in this
+                       high-to-low walk) that reached a match at this
+                       position -- cut every remaining, strictly-lower-
+                       priority thread in cur per the comment above. */
+                    break;
                 }
+            }
+        }
+
+        /* Restore ascending priority order in nxt: a full-array reversal
+           followed by reversing each (now relocated) block back to its own
+           internal order. See the comment above the loop. */
+        if (n_blocks > 1) {
+            reverse_thread_range(nxt->threads, 0, nxt->count - 1);
+            int total = nxt->count;
+            for (int b = 0; b < n_blocks; b++) {
+                int new_lo = total - (blk_start[b] + blk_len[b]);
+                int new_hi = total - blk_start[b] - 1;
+                reverse_thread_range(nxt->threads, new_lo, new_hi);
             }
         }
 
