@@ -294,6 +294,56 @@ static void re_fixup_pcs_after_shift(ReHandle *re, int old_pos, int shift, int l
     }
 }
 
+/* apply_count's {n,m} expansion (below) duplicates an already-emitted body
+   to new locations via memcpy, not memmove -- unlike apply_quantifier and
+   the alternation rewrites above, which shift a body IN PLACE inside the
+   same array (handled by re_fixup_pcs_after_shift). A copy leaves a second,
+   independent instance of the body's instructions coexisting with the
+   original, and every ABSOLUTE pc operand in the copy (OP_JUMP,
+   OP_SPLIT.operand_a/b, OP_LOOKAHEAD.operand_a) still points into the
+   ORIGINAL body's address range -- so, uncorrected, a copy with any
+   internal control flow (a nested quantifier or alternation) branches back
+   into the first copy instead of staying inside itself.
+
+   A copied body is always a self-contained compiled sub-program (one
+   piece's whole emitted output, or that same output after being wrapped by
+   apply_quantifier and re-fixed-up in place): every internal
+   SPLIT/JUMP/LOOKAHEAD operand it carries was computed relative to itself
+   and lies in the CLOSED interval [src_start, src_end]. The interval must
+   be closed (inclusive of src_end, i.e. "one past my own last
+   instruction") because a piece with nothing emitted after it -- e.g. a
+   non-capturing group whose content is itself an alternation -- ends with
+   a JUMP operand equal to exactly that: "fall through to whatever follows
+   me" (see parse_expr_inner's `final_end`, which is the alternation's own
+   prog_len at the moment nothing else has been emitted yet). There is no
+   backreference-into-an-enclosing-construct in this engine, so no operand
+   inside a body should ever point outside that interval; it is therefore
+   both safe and correct to translate every in-range operand by the same
+   delta and leave everything else alone. Call this AFTER the memcpy (and
+   after bumping prog_len), on the instructions now living at dst_start. */
+static void re_fixup_pcs_after_copy(ReHandle *re, int src_start, int src_end, int dst_start) {
+    int delta = dst_start - src_start;
+    int len   = src_end - src_start;
+    for (int i = 0; i < len; i++) {
+        ReInstr *ins = &re->prog[dst_start + i];
+        switch (ins->op) {
+            case OP_JUMP:
+            case OP_LOOKAHEAD:
+                if (ins->operand_a >= src_start && ins->operand_a <= src_end)
+                    ins->operand_a += delta;
+                break;
+            case OP_SPLIT:
+                if (ins->operand_a >= src_start && ins->operand_a <= src_end)
+                    ins->operand_a += delta;
+                if (ins->operand_b >= src_start && ins->operand_b <= src_end)
+                    ins->operand_b += delta;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 /* Forward declarations for recursive descent */
 static int parse_expr(Compiler *c);
 static int parse_expr_inner(Compiler *c);
@@ -471,6 +521,7 @@ static int apply_count(Compiler *c, int body_start, int body_end,
             memcpy(&re->prog[opt_start], &re->prog[body_start],
                    (size_t)body_len * sizeof(ReInstr));
             re->prog_len += body_len;
+            re_fixup_pcs_after_copy(re, body_start, body_start + body_len, opt_start);
             if (apply_quantifier(c, opt_start, '?', lazy) < 0) return -1;
         }
         return re->prog_len;
@@ -484,9 +535,11 @@ static int apply_count(Compiler *c, int body_start, int body_end,
         if (re_prog_reserve(re, body_len) < 0) {
             comp_error(c, "{n,m}: pattern too large"); return -1;
         }
-        memcpy(&re->prog[re->prog_len], &re->prog[body_start],
+        int dst_start = re->prog_len;
+        memcpy(&re->prog[dst_start], &re->prog[body_start],
                (size_t)body_len * sizeof(ReInstr));
         re->prog_len += body_len;
+        re_fixup_pcs_after_copy(re, body_start, body_start + body_len, dst_start);
     }
 
     if (n_max == -1) {
@@ -498,6 +551,7 @@ static int apply_count(Compiler *c, int body_start, int body_end,
         memcpy(&re->prog[opt_start], &re->prog[body_start],
                (size_t)body_len * sizeof(ReInstr));
         re->prog_len += body_len;
+        re_fixup_pcs_after_copy(re, body_start, body_start + body_len, opt_start);
         return apply_quantifier(c, opt_start, '*', lazy);
     }
 
@@ -513,6 +567,7 @@ static int apply_count(Compiler *c, int body_start, int body_end,
         memcpy(&re->prog[opt_start], &re->prog[body_start],
                (size_t)body_len * sizeof(ReInstr));
         re->prog_len += body_len;
+        re_fixup_pcs_after_copy(re, body_start, body_start + body_len, opt_start);
         int r = apply_quantifier(c, opt_start, '?', lazy);
         if (r < 0) return -1;
     }

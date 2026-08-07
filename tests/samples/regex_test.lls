@@ -266,6 +266,54 @@ def test_alt_branch_split_corruption() {
     @print("PASS: alt_branch_split_corruption")
 }
 
+def test_stale_pc_after_copy() {
+    // Regression for bug (e): apply_count implements {n,m} by memcpy'ing an
+    // already-emitted body to new locations (mandatory-copies loop, the
+    // {n,} copy, the {n,m} optional-copies loop, and the zero-lower-bound
+    // path's own loop -- four call sites). Unlike apply_quantifier's
+    // memmove (a body shifted in place, fixed up by
+    // re_fixup_pcs_after_shift), a memcpy leaves the ORIGINAL body's
+    // ABSOLUTE pc operands (OP_JUMP, OP_SPLIT's operand_a/b,
+    // OP_LOOKAHEAD.operand_a) unchanged inside every copy. Whenever the
+    // body itself contains a nested quantifier or alternation -- so it has
+    // internal control flow, not just flat OP_CHARs -- every copy after
+    // the first branches back into the FIRST copy instead of staying
+    // inside itself. Confirmed against Python's `re`.
+
+    // Mandatory-copies loop ({n} / {n,m} with n_min >= 2): nested '*'.
+    if !re.full_match("aaaa", "(a*){2}") { @print("FAIL: stale_pc_copy (a*){2}"); return }
+    if !re.full_match("a", "(a*){2}") { @print("FAIL: stale_pc_copy (a*){2} single"); return }
+    if !re.full_match("aaaaaa", "(a*){3}") { @print("FAIL: stale_pc_copy (a*){3}"); return }
+
+    // Mandatory-copies loop: nested alternation.
+    if !re.full_match("aa", "(a|b){2}") { @print("FAIL: stale_pc_copy (a|b){2} aa"); return }
+    if !re.full_match("ab", "(a|b){2}") { @print("FAIL: stale_pc_copy (a|b){2} ab"); return }
+    if re.full_match("aab", "(a|b){2}") { @print("FAIL: stale_pc_copy (a|b){2} over"); return }
+    if !re.full_match("aba", "(a|b){3}") { @print("FAIL: stale_pc_copy (a|b){3}"); return }
+    if re.full_match("abab", "(a|b){3}") { @print("FAIL: stale_pc_copy (a|b){3} over"); return }
+
+    // {n,} copy site.
+    if !re.full_match("aaaa", "(a*){2,}") { @print("FAIL: stale_pc_copy (a*){2,}"); return }
+    if !re.full_match("abba", "(a|b){2,}") { @print("FAIL: stale_pc_copy (a|b){2,}"); return }
+
+    // {n,m} optional-copies loop (n_min > 0, n_max > n_min).
+    if !re.full_match("aaaaaa", "(a*){2,4}") { @print("FAIL: stale_pc_copy (a*){2,4}"); return }
+    if !re.full_match("abba", "(a|b){2,4}") { @print("FAIL: stale_pc_copy (a|b){2,4}"); return }
+
+    // Zero-lower-bound path's own loop (n_min == 0, n_max >= 2).
+    if !re.full_match("aaaaaa", "(a*){0,3}") { @print("FAIL: stale_pc_copy (a*){0,3}"); return }
+    if !re.full_match("", "(a*){0,3}") { @print("FAIL: stale_pc_copy (a*){0,3} empty"); return }
+
+    // Nested-quantifier-inside-{n,m}: a nested '+' inside an alternation,
+    // wrapped by {n,m} -- exercises the optional-copies loop with a body
+    // whose internal control flow (the '+' SPLIT) is itself nested one
+    // level inside the alternation's SPLIT/JUMP.
+    if !re.full_match("aabbb", "(a+|b+){2,3}") { @print("FAIL: stale_pc_copy (a+|b+){2,3}"); return }
+    if re.full_match("aabbbcc", "(a+|b+){2,3}") { @print("FAIL: stale_pc_copy (a+|b+){2,3} over"); return }
+
+    @print("PASS: stale_pc_after_copy")
+}
+
 def test_error_handling() {
     // Invalid pattern — unclosed group — should return safe defaults
     bool m = re.matches("hello", "(unclosed")
@@ -293,6 +341,7 @@ def main() {
     test_split()
     test_stale_pc_after_shift()
     test_alt_branch_split_corruption()
+    test_stale_pc_after_copy()
     test_error_handling()
     @print("ALL PASS")
 }
