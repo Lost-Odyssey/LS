@@ -260,6 +260,7 @@ int jit_init(JitEngine *engine) {
         extern int         __ls_regex_named_count(int);
         extern const char *__ls_regex_named_name(int, int);
         extern int         __ls_regex_named_index(int, int);
+        extern int         __ls_regex_is_onepass(int);
 
         LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
@@ -383,6 +384,7 @@ int jit_init(JitEngine *engine) {
         REG(__ls_regex_named_count);
         REG(__ls_regex_named_name);
         REG(__ls_regex_named_index);
+        REG(__ls_regex_is_onepass);
         REG(__ls_readline_ptr);
         REG(ls_os_exec_stdout_ptr);
         REG(ls_os_exec_stderr_ptr);

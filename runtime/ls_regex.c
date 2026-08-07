@@ -124,6 +124,17 @@ typedef struct {
            only tries line-start positions.
        See re_detect_anchor for the conservative rule that sets this. */
     int           anchor_mode;
+
+    /* ---- One-pass classification (built once at compile time by
+       re_is_onepass, read via __ls_regex_is_onepass) ----
+       1 = the pattern can never have more than one live thread at any input
+           position, so it is safe to execute by walking a single pc and
+           writing capture offsets directly instead of running the Pike VM's
+           thread list. 0 = general; must run the Pike VM.
+       This field is PURELY DIAGNOSTIC as of this commit -- nothing reads it
+       yet, __ls_regex_exec's behavior is completely unchanged. See
+       re_is_onepass for the analysis and its soundness argument. */
+    int           onepass;
 } ReHandle;
 
 /* Compile failures have no handle to hang an error message on, so this one
@@ -1068,6 +1079,300 @@ static void re_detect_anchor(ReHandle *re) {
     }
 }
 
+/* ===== One-pass classification =====
+
+   Detects, once per compiled pattern, whether execution can ever have more
+   than one live thread at any input position. If it cannot, a later
+   execution path (not this one -- this commit only computes and exposes the
+   property) can walk a single pc and write capture offsets directly instead
+   of running the Pike VM's thread list.
+
+   THIS IS PURELY ANALYSIS. It does not change what __ls_regex_exec does.
+   That separation is deliberate: an imprecise analysis here would, once
+   something depends on it, turn directly into silently corrupted capture
+   offsets -- the failure mode this project pays most dearly for (see
+   CLAUDE.md's running list of rc=0 wrong-answer bugs). A false negative
+   (calling a safe pattern "general") only costs the speed of a path this
+   pattern would have qualified for; a false positive is unacceptable. Every
+   rule below is written to fail toward "general" whenever it is not certain.
+
+   ---- The byte-set representation ----
+
+   A "byte set" here is 256 bits (32 bytes), one per possible input byte
+   value 0-255 -- not the compiler's 128-bit ReCharClass (which only covers
+   ASCII and is what OP_CLASS/OP_NCLASS operands point at). The wider set
+   matters because OP_NDIGIT, OP_NWORD and OP_NSPACE are satisfied by any
+   byte outside their positive class, including bytes 128-255, which the
+   128-bit ReCharClass has no room to represent. re_consuming_first_bytes
+   below computes each opcode's byte set by literally re-running the same
+   byte-by-byte predicate vm_exec_range uses in its OP_CHAR/OP_CLASS/...
+   switch (case-folding, DOTALL, class lookup and all) over all 256 byte
+   values, rather than hand-deriving a table that could drift from the VM's
+   actual matching semantics. */
+
+#define RE_BYTESET_BYTES 32   /* 256 bits */
+
+static void re_byteset_zero(unsigned char *bs) {
+    memset(bs, 0, RE_BYTESET_BYTES);
+}
+static void re_byteset_set(unsigned char *bs, unsigned char b) {
+    bs[b >> 3] |= (unsigned char)(1u << (b & 7));
+}
+static int re_byteset_intersects(const unsigned char *a, const unsigned char *b) {
+    for (int i = 0; i < RE_BYTESET_BYTES; i++) if (a[i] & b[i]) return 1;
+    return 0;
+}
+static int re_byteset_any(const unsigned char *a) {
+    for (int i = 0; i < RE_BYTESET_BYTES; i++) if (a[i]) return 1;
+    return 0;
+}
+
+/* Byte set of a single CONSUMING instruction (everything except SAVE,
+   SPLIT, JUMP, the anchors, OP_LOOKAHEAD and OP_MATCH). Mirrors
+   vm_exec_range's per-position switch exactly, byte by byte, instead of
+   re-deriving the same classification a second, independently-maintained
+   way -- see the file comment above. OP_CLASS/OP_NCLASS only ever test
+   bytes 0-127 against the 128-bit ReCharClass (class_test indexes
+   cls->bits[c>>3], which is out of bounds past byte 127), matching the
+   comment on parse_class_body ("keep non-ASCII always off"): bytes >= 128
+   never set a bit here for either polarity, which is the conservative
+   answer for OP_NCLASS too (an unclaimed byte is simply absent from the
+   set, never wrongly claimed). */
+static void re_consuming_first_bytes(const ReHandle *re, const ReInstr *in, unsigned char *out) {
+    re_byteset_zero(out);
+    for (int ci = 0; ci < 256; ci++) {
+        unsigned char ch = (unsigned char)ci;
+        int match_char = 0;
+        switch (in->op) {
+        case OP_CHAR:
+            if (re->flags & LS_RE_IGNORECASE)
+                match_char = (tolower(ch) == tolower((unsigned char)in->operand_a));
+            else
+                match_char = (ch == (unsigned char)in->operand_a);
+            break;
+        case OP_ANY:
+            match_char = (ch != '\n') || (re->flags & LS_RE_DOTALL);
+            break;
+        case OP_CLASS:
+            if (ch < 128 && in->operand_a >= 0 && in->operand_a < re->n_classes) {
+                const ReCharClass *cls = &re->classes[in->operand_a];
+                unsigned char lc = (re->flags & LS_RE_IGNORECASE) ? (unsigned char)tolower(ch) : ch;
+                match_char = class_test(cls, lc);
+            }
+            break;
+        case OP_NCLASS:
+            if (ch < 128 && in->operand_a >= 0 && in->operand_a < re->n_classes) {
+                const ReCharClass *cls = &re->classes[in->operand_a];
+                unsigned char lc = (re->flags & LS_RE_IGNORECASE) ? (unsigned char)tolower(ch) : ch;
+                match_char = !class_test(cls, lc);
+            }
+            break;
+        case OP_DIGIT:  match_char = isdigit(ch) != 0; break;
+        case OP_NDIGIT: match_char = !isdigit(ch); break;
+        case OP_WORD:   match_char = is_word_char(ch) != 0; break;
+        case OP_NWORD:  match_char = !is_word_char(ch); break;
+        case OP_SPACE:  match_char = is_space_char(ch) != 0; break;
+        case OP_NSPACE: match_char = !is_space_char(ch); break;
+        default: break; /* not a consuming opcode; caller never asks */
+        }
+        if (match_char) re_byteset_set(out, ch);
+    }
+}
+
+/* Result of an epsilon-closure walk from one program counter: the union of
+   every consuming instruction's byte set reachable via epsilon transitions
+   only, plus whether OP_MATCH is reachable via an all-epsilon path (i.e.
+   the closure can accept having consumed zero further bytes from here). */
+typedef struct {
+    unsigned char bytes[RE_BYTESET_BYTES];
+    int           can_match_empty;
+} ReFirstSet;
+
+/* Epsilon-closure walk computing FirstSet(pc): follow SAVE, JUMP and BOTH
+   branches of SPLIT (all zero-width) and the four positional anchors
+   (^ $ \A \Z, also zero-width) until a consuming instruction is reached
+   (its byte set is OR'd in and this path stops) or OP_MATCH is reached
+   (can_match_empty is set and this path stops).
+
+   `seen` is a caller-owned array of re->prog_len flags, zeroed by the
+   caller before the top-level call. It both breaks the cycles that JUMP
+   loops (`*`/`+`) introduce -- the plan's watch item -- and makes this
+   traversal a sound, complete reachability computation despite them: once
+   a pc has been visited, everything reachable FROM it has already been
+   folded into `out`, so a revisit correctly contributes nothing further
+   (standard DFS-with-visited graph reachability; it does not undercount).
+
+   Each call site gives each branch of a SPLIT it is inspecting its OWN
+   fresh `seen` array (see re_is_onepass below) -- the two branches must be
+   allowed to independently revisit whatever pcs they each reach, including
+   pcs the OTHER branch also reaches, since rule 2 below needs each
+   branch's byte set computed in full on its own.
+
+   Treats OP_WORDBND/OP_NWORDBND and OP_LOOKAHEAD as unreachable in
+   practice: re_is_onepass rejects any pattern containing either, globally,
+   before ever calling this, for reasons that don't fit a byte set (see the
+   comment on that rejection). If one is ever reached here regardless (it
+   should not be, but "bail on anything unsure" applies), it is treated
+   like any other unrecognized opcode: contributes nothing and is flagged
+   via `unsupported` so the caller can force the whole pattern to "general"
+   rather than silently under-approximate. */
+static void re_first_set(const ReHandle *re, int pc, unsigned char *seen,
+                          ReFirstSet *out, int *unsupported)
+{
+    if (pc < 0 || pc >= re->prog_len) { *unsupported = 1; return; }
+    if (seen[pc]) return;
+    seen[pc] = 1;
+
+    const ReInstr *in = &re->prog[pc];
+    switch (in->op) {
+    case OP_SAVE:
+        re_first_set(re, pc + 1, seen, out, unsupported);
+        return;
+    case OP_JUMP:
+        re_first_set(re, in->operand_a, seen, out, unsupported);
+        return;
+    case OP_SPLIT:
+        re_first_set(re, in->operand_a, seen, out, unsupported);
+        re_first_set(re, in->operand_b, seen, out, unsupported);
+        return;
+    case OP_ANCHOR_BOL:
+    case OP_ANCHOR_EOL:
+    case OP_ANCHOR_BOS:
+    case OP_ANCHOR_EOS:
+        /* Zero-width positional test. Its pass/fail depends only on the
+           input position, not on which byte (if any) sits at that
+           position, so -- unlike OP_WORDBND below -- stepping over it
+           optimistically (as if it always passes) cannot make two
+           genuinely disjoint branches look like they share a byte: the
+           byte reachable beyond the anchor is a property of the pattern
+           text at that point, independent of whether the anchor itself
+           holds. Worst case this over-approximates reachability (treats a
+           position the anchor would actually reject as reachable too),
+           which only pushes an intersection test toward "general", never
+           the other way. */
+        re_first_set(re, pc + 1, seen, out, unsupported);
+        return;
+    case OP_MATCH:
+        out->can_match_empty = 1;
+        return;
+    case OP_WORDBND:
+    case OP_NWORDBND:
+    case OP_LOOKAHEAD:
+        /* Should be unreachable -- re_is_onepass rejects these globally
+           before calling here. Defensive only; see the function comment. */
+        *unsupported = 1;
+        return;
+    default: {
+        /* Consuming instruction: fold in its byte set and stop -- this is
+           where the epsilon closure along this path ends. */
+        unsigned char bs[RE_BYTESET_BYTES];
+        re_consuming_first_bytes(re, in, bs);
+        for (int i = 0; i < RE_BYTESET_BYTES; i++) out->bytes[i] |= bs[i];
+        return;
+    }
+    }
+}
+
+/* The property to compute (see the module comment above): a pattern is
+   one-pass if the set of live threads can never exceed one at any input
+   position. Walked as a per-OP_SPLIT check, since OP_SPLIT is the only
+   instruction that ever forks execution -- a program with none is trivially
+   one-pass (e.g. "([0-9]{4})-([0-9]{2})-([0-9]{2})": {n} with n==m needs no
+   SPLIT at all, just repeated body copies).
+
+   Rule 4 (OP_LOOKAHEAD anywhere -> not one-pass): lookahead runs a whole
+   nested sub-VM (vm_exec_lookahead) that does its own, separate epsilon
+   closure and can itself contain arbitrary alternation; folding its
+   contents into this analysis is out of scope, so any pattern containing
+   one is rejected outright, unconditionally.
+
+   Also rejects OP_WORDBND/OP_NWORDBND (\b \B) anywhere, unconditionally, by
+   the same global-reject mechanism, for a reason specific to this analysis
+   (not called out as its own numbered rule in the design because it only
+   surfaced while implementing rule 1's "follow anchors" step): unlike ^ $
+   \A \Z, whether \b holds depends on the very byte a first-byte-set
+   computation is trying to classify (is *this* byte a word character,
+   relative to the previous one) -- it is not a pure position test. Folding
+   it in as a plain epsilon pass-through, the way the other anchors are
+   handled, would silently mix "the anchor holds" and "the anchor doesn't"
+   byte sets together under one name, which is exactly the kind of
+   imprecision this analysis cannot safely absorb. Rejecting the whole
+   pattern is the conservative answer; \b is rare enough in the extraction
+   patterns this feature targets that losing the fast path on it costs
+   little.
+
+   Rule 1+2: for each OP_SPLIT, compute FirstSet(operand_a) and
+   FirstSet(operand_b) independently (each gets its own fresh `seen`, so
+   each branch's closure is computed to completion on its own -- see
+   re_first_set's comment on why that is required, not just convenient).
+   If the two byte sets intersect, some byte could be the very next one
+   consumed via EITHER branch -- two genuinely different continuations
+   would both be live -- so the pattern is not one-pass.
+
+   Rule 3 (self-ambiguous branch, not a cross-branch comparison): a branch
+   is rejected on its own if ITS OWN closure can both consume a byte (a
+   non-empty byte set) AND reach OP_MATCH with zero further bytes consumed.
+   This is deliberately narrower than "the other branch has a non-empty
+   byte set" -- see op1-report.md for why a naive cross-branch
+   version of this check would reject the exact flat trailing-quantifier
+   shapes (`[^ ]+` at the end of a pattern, `([^\"]*)"`, ...) this whole
+   feature exists to speed up, while a plain greedy-priority "prefer to
+   keep consuming while the byte matches, only fall through to the
+   immediate-match branch once it does not" is fully deterministic and
+   correct for that flat shape -- no second live thread is ever actually
+   needed. What a same-branch check like this one catches instead is an
+   EMPTY LOOP BODY nested inside another loop, e.g. `(a*)+`: entering the
+   outer `+`'s loop branch, the inner `a*` can immediately match zero
+   times, which loops the outer `+` straight back to itself having
+   consumed nothing -- so *that one branch alone* is ambiguous between
+   "consume an 'a' now" and "match right here, zero more bytes", which is
+   a real second live thread at the very same position, not resolvable by
+   the greedy-priority-with-fallback argument above (that argument only
+   works when the "keep consuming" option and the "stop now" option are
+   the two DIFFERENT branches of the split, not two possibilities inside
+   the very branch that is supposed to unambiguously mean "keep
+   consuming"). */
+static int re_is_onepass(const ReHandle *re) {
+    if (!re || re->prog_len <= 0) return 0;
+
+    for (int i = 0; i < re->prog_len; i++) {
+        ReOpCode op = re->prog[i].op;
+        if (op == OP_LOOKAHEAD || op == OP_WORDBND || op == OP_NWORDBND) return 0;
+    }
+
+    /* seenA/seenB are sized to MAX_INSTRS (like Visited.gen elsewhere in
+       this file) so they are safe to index with any in-range pc regardless
+       of this particular pattern's prog_len; only the first prog_len
+       entries are ever touched. This runs once per compile, not on any
+       execution hot path, so the repeated zeroing here is not a concern
+       the way it was for Visited (see that struct's comment). */
+    unsigned char seenA[MAX_INSTRS];
+    unsigned char seenB[MAX_INSTRS];
+
+    for (int pc = 0; pc < re->prog_len; pc++) {
+        if (re->prog[pc].op != OP_SPLIT) continue;
+        const ReInstr *sp = &re->prog[pc];
+
+        ReFirstSet ra, rb;
+        memset(&ra, 0, sizeof(ra));
+        memset(&rb, 0, sizeof(rb));
+        int unsupported = 0;
+
+        memset(seenA, 0, (size_t)re->prog_len);
+        re_first_set(re, sp->operand_a, seenA, &ra, &unsupported);
+        memset(seenB, 0, (size_t)re->prog_len);
+        re_first_set(re, sp->operand_b, seenB, &rb, &unsupported);
+
+        if (unsupported) return 0;
+
+        if (re_byteset_intersects(ra.bytes, rb.bytes)) return 0;              /* rule 2 */
+        if (re_byteset_any(ra.bytes) && ra.can_match_empty) return 0;         /* rule 3 */
+        if (re_byteset_any(rb.bytes) && rb.can_match_empty) return 0;         /* rule 3 */
+    }
+
+    return 1;
+}
+
 /* ===== Compile API ===== */
 
 void *__ls_regex_compile(const char *pattern, int flags) {
@@ -1109,6 +1414,7 @@ void *__ls_regex_compile(const char *pattern, int flags) {
     re->n_groups = c.group_counter;
     re_build_prefilter(re);
     re_detect_anchor(re);
+    re->onepass = re_is_onepass(re);
     return re;
 }
 
@@ -1772,6 +2078,17 @@ int __ls_regex_cap_len(void *h, int group) {
 int __ls_regex_group_count(void *h) {
     ReHandle *re = (ReHandle *)h;
     return re ? re->n_groups : 0;
+}
+
+/* Diagnostic query surface for re_is_onepass (see the comment there). Does
+   not affect execution: __ls_regex_exec still always runs the Pike VM
+   (vm_exec_range), regardless of what this returns. Exists so later work
+   that DOES route execution differently based on this property can be
+   validated -- and so tests can prove which path actually ran -- before
+   anything depends on it. */
+int __ls_regex_is_onepass(void *h) {
+    ReHandle *re = (ReHandle *)h;
+    return re ? re->onepass : 0;
 }
 
 int __ls_regex_named_count(void *h) {

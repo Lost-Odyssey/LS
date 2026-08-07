@@ -40,6 +40,12 @@ int __ls_regex_cap_len(void *h, int group);     /* byte length */
 /* Number of capture groups in compiled pattern (excluding group 0) */
 int __ls_regex_group_count(void *h);
 
+/* 1 if the compiled pattern was classified one-pass at compile time (at
+   most one thread can ever be live at any input position), 0 otherwise.
+   Diagnostic only as of this commit: __ls_regex_exec's behavior does not
+   depend on it yet. See re_is_onepass in ls_regex.c for the analysis. */
+int __ls_regex_is_onepass(void *h);
+
 /* Named capture queries */
 int         __ls_regex_named_count(void *h);
 const char *__ls_regex_named_name(void *h, int i);

@@ -404,6 +404,8 @@ declare i32 @__ls_regex_cap_len(ptr %0, i32 %1)
 
 declare i32 @__ls_regex_group_count(ptr %0)
 
+declare i32 @__ls_regex_is_onepass(ptr %0)
+
 declare i32 @__ls_regex_named_count(ptr %0)
 
 declare ptr @__ls_regex_named_name(ptr %0, i32 %1)

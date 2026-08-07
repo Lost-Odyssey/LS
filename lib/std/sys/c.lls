@@ -133,6 +133,7 @@ extern def __ls_regex_exec(object h, *u8 text, int text_len, int start) -> int
 extern def __ls_regex_cap_start(object h, int group) -> int
 extern def __ls_regex_cap_len(object h, int group) -> int
 extern def __ls_regex_group_count(object h) -> int
+extern def __ls_regex_is_onepass(object h) -> int
 extern def __ls_regex_named_count(object h) -> int
 extern def __ls_regex_named_name(object h, int i) -> object
 extern def __ls_regex_named_index(object h, int i) -> int

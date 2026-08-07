@@ -115,6 +115,16 @@ methods Regex {
     def group_count(&self) -> int {
         return c.__ls_regex_group_count(self.h)
     }
+
+    // True if the pattern was classified one-pass at compile time (at most
+    // one thread can ever be live at any input position, so a future
+    // execution path could walk a single pc and write captures directly
+    // instead of running the general thread-list VM). Diagnostic surface:
+    // execution today is identical either way, this just exposes the
+    // property so it can be tested before anything depends on it.
+    def is_onepass(&self) -> bool {
+        return c.__ls_regex_is_onepass(self.h) > 0
+    }
 }
 
 // Compiles `pattern`. Returns Err with the engine's message when the pattern
