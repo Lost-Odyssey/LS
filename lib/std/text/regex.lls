@@ -10,10 +10,12 @@
 //
 //   capture()     -> Vec(Str)        — empty = no match
 //   capture_all() -> Vec(Str)        — flat: all groups from all matches
-//   capture_all_spans() -> Vec(int)  — flat, zero-alloc: (offset,len) pairs
+//   capture_all_spans()  -> Vec(int)      — flat, zero-alloc: (offset,len) pairs
+//   capture_all_slices() -> Vec(StrSlice) — flat, zero-alloc, directly usable
 //   capture_named() -> Map(Str,Str)  — empty = no match
 // Use group_count(pattern) to get the per-match stride for capture_all /
-// capture_all_spans (spans stride is (group_count+1)*2 ints).
+// capture_all_spans (spans stride is (group_count+1)*2 ints) /
+// capture_all_slices (same stride as capture_all: group_count+1).
 //
 // FFI (P5-3): the C regex engine is a direct extern taking char*/length. Str
 // values are handed across via `str.c_str()` (NUL-terminated) + `str.len()`;
@@ -321,6 +323,80 @@ def capture_all_spans(Str text, Str pattern) -> Vec(int) {
         while i < n {
             result.push(c.__ls_regex_cap_start(h, i))
             result.push(c.__ls_regex_cap_len(h, i))
+            i = i + 1
+        }
+        if l == 0 { pos = s + 1 } else { pos = s + l }
+    }
+    if owned { c.__ls_regex_free(h) }
+    return result
+}
+
+// ---- 3.3.2 Capture group slices (zero-allocation, DIRECTLY USABLE find-all) ----
+
+// Same match/group traversal as capture_all_spans, but packs StrSlice
+// (ptr+len fat views, lib/std/core/str_core.lls) instead of raw ints. Every
+// argument for capture_all_spans over capture_all applies here too (no Str
+// materialized, not even for group 0) -- this exists on top of it because a
+// caller who wants to actually USE a captured field (compare it, search it,
+// parse it with StrSlice.to_int/to_i64/to_float) had to hand-decode
+// (offset,len) pairs and call text.subslice(off, len) themselves to get
+// there. capture_all_slices does that decoding once, so the result is
+// immediately usable: `slices[j].eq_str("GET")`, `slices[j].to_int()`, no
+// arithmetic at the call site.
+//
+// Layout: [g0, g1, ..., gN] for match 0, then the same group_count+1
+// elements for match 1, and so on -- SAME stride as capture_all (not
+// doubled like capture_all_spans' int pairs, since each element is already
+// a complete StrSlice). Empty Vec if there are no matches.
+//
+// Absent vs empty (both required to be representable -- neither is a
+// crash, neither is garbage):
+//   * A group that did NOT participate in a match is encoded as the
+//     ABSENT sentinel StrSlice { ptr: nil, len: 0 } -- there is no byte
+//     range to point at, so this is the one case where a StrSlice does not
+//     point into `text`'s buffer. Check `slice.present?()` before using
+//     one you got from this function if the pattern has an optional group
+//     ((...)?/(...|)) -- calling .at()/.eq_str()/etc. on an absent slice
+//     is safe (len == 0 means every bounds-checked read degenerates to the
+//     empty case) but is never what you meant. `to_int()`/`to_i64()`/
+//     `to_float()` in particular treat it exactly like Str.to_int("") --
+//     Err("empty string") -- because len == 0 short-circuits before
+//     `ptr` is ever read; there is no null-pointer dereference here.
+//   * An empty (zero-width) match or group is StrSlice { ptr: <valid,
+//     pointing at the match position>, len: 0 } -- PRESENT (`present?()`
+//     is true), just zero bytes. `present?()` is what distinguishes the
+//     two; `len()` alone cannot (both are 0).
+//
+// SAFETY (inherited from StrSlice's own contract, see the struct doc
+// comment): every present slice borrows from `text`. It dangles if `text`
+// is destroyed, mutated (push_str/+/reserve may realloc), or was a
+// temporary -- keep `text` alive and unchanged for as long as you use the
+// result. Materialize a slice you need to keep past `text`'s lifetime with
+// `.to_str()`.
+def capture_all_slices(Str text, Str pattern) -> Vec(StrSlice) {
+    Vec(StrSlice) result = {}
+    object h = _cached(pattern, 0)
+    bool owned = false
+    if h == nil { h = _own(pattern, 0); owned = true }
+    if h == nil { return result }
+    *u8 tptr = text.c_str()
+    int tlen = text.len()
+    int pos = 0
+    while pos <= tlen {
+        int n = c.__ls_regex_exec(h, tptr, tlen, pos)
+        if n == 0 { break }
+        int s = c.__ls_regex_cap_start(h, 0)
+        int l = c.__ls_regex_cap_len(h, 0)
+        int i = 0
+        while i < n {
+            int gs = c.__ls_regex_cap_start(h, i)
+            int gl = c.__ls_regex_cap_len(h, i)
+            if gs < 0 {
+                *u8 z = nil
+                result.push(StrSlice { ptr: z, len: 0 })
+            } else {
+                result.push(StrSlice { ptr: c.__ls_ptr_at(tptr, gs as i64), len: gl })
+            }
             i = i + 1
         }
         if l == 0 { pos = s + 1 } else { pos = s + l }

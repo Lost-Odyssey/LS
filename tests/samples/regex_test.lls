@@ -192,6 +192,154 @@ def test_capture_all_spans() {
     @print("PASS: capture_all_spans")
 }
 
+def test_capture_all_slices() {
+    // Zero-allocation, DIRECTLY USABLE find-all: same match/group traversal
+    // as capture_all_spans, but returns Vec(StrSlice) instead of packed
+    // ints -- no manual offset/length arithmetic, and each element is
+    // immediately readable (eq_str/to_int/etc.) with no materialization.
+    // Same four edge cases as test_capture_all_spans, expressed through
+    // StrSlice's own API instead of raw offsets.
+
+    // -- multiple matches --
+    Vec(StrSlice) sl1 = re.capture_all_slices("a=1 b=2 c=3", "([a-zA-Z_]+)=(\\S+)")
+    if sl1.len() != 9 { @print(f"FAIL: slices multi len {sl1.len()}"); return }
+    if !sl1[0].eq_str("a=1") { @print("FAIL: slices multi[0]"); return }
+    if !sl1[1].eq_str("a")   { @print("FAIL: slices multi[1]"); return }
+    if !sl1[2].eq_str("1")   { @print("FAIL: slices multi[2]"); return }
+    if !sl1[6].eq_str("c=3") { @print("FAIL: slices multi[6]"); return }
+    // "get back to Str" without the new numeric parsing -- the S6_span path.
+    Str g0m1 = sl1[3].to_str()
+    if !g0m1.eq?("b=2") { @print(f"FAIL: slices multi to_str roundtrip [{g0m1}]"); return }
+
+    // -- non-participating group: absent, NOT the same as an empty match --
+    Vec(StrSlice) sl2 = re.capture_all_slices("b", "(a)?(b)")
+    if sl2.len() != 3 { @print(f"FAIL: slices nonpart len {sl2.len()}"); return }
+    if !sl2[0].present?() { @print("FAIL: slices nonpart[0] should be present"); return }
+    if !sl2[0].eq_str("b") { @print("FAIL: slices nonpart[0] value"); return }
+    if sl2[1].present?()  { @print("FAIL: slices nonpart[1] should be absent"); return }
+    if sl2[1].len() != 0  { @print("FAIL: slices nonpart[1] len"); return }
+    if !sl2[2].present?() { @print("FAIL: slices nonpart[2] should be present"); return }
+
+    // -- empty (zero-width) match: PRESENT, len 0 -- distinct from absent --
+    Vec(StrSlice) sl3 = re.capture_all_slices("ab", "(x?)")
+    if sl3.len() != 6 { @print(f"FAIL: slices empty len {sl3.len()}"); return }
+    int k = 0
+    while k < 6 {
+        if !sl3[k].present?() { @print(f"FAIL: slices empty[{k}] should be present"); return }
+        if sl3[k].len() != 0  { @print(f"FAIL: slices empty[{k}] should be zero-length"); return }
+        k = k + 1
+    }
+
+    // -- no match: empty Vec(StrSlice) --
+    Vec(StrSlice) sl4 = re.capture_all_slices("abc", "zzz")
+    if sl4.len() != 0 { @print(f"FAIL: slices nomatch len {sl4.len()}"); return }
+
+    @print("PASS: capture_all_slices")
+}
+
+def test_strslice_numeric() {
+    // StrSlice.to_int/to_i64/to_float mirror Str's own (str_num.lls) exactly:
+    // same sign/hex/overflow/empty-input handling, same Result(T,Str) shape,
+    // reading self.ptr/self.len directly (NO materialization). Most cases
+    // are cross-checked against the equivalent Str call on the SAME digits,
+    // pinning "identical behaviour to Str", not a hand-computed number.
+
+    // -- basic decimal --
+    Str s1 = "4821"
+    match s1.to_int() {
+        Ok(sv) => {
+            match s1.as_slice().to_int() {
+                Ok(vv) => { if sv != vv || vv != 4821 { @print(f"FAIL: strslice to_int basic {vv} vs {sv}"); return } }
+                Err(e) => { @print("FAIL: strslice to_int basic got Err"); return }
+            }
+        }
+        Err(e) => { @print("FAIL: str to_int basic got Err (test bug)"); return }
+    }
+
+    // -- negative --
+    Str s2 = "-37"
+    match s2.as_slice().to_int() {
+        Ok(v) => { if v != -37 { @print(f"FAIL: strslice to_int negative {v}"); return } }
+        Err(e) => { @print("FAIL: strslice to_int negative got Err"); return }
+    }
+
+    // -- hex prefix --
+    Str s3 = "0xFF"
+    match s3.as_slice().to_int() {
+        Ok(v) => { if v != 255 { @print(f"FAIL: strslice to_int hex {v}"); return } }
+        Err(e) => { @print("FAIL: strslice to_int hex got Err"); return }
+    }
+
+    // -- invalid digit (bad numeric input) --
+    Str s4 = "12ab"
+    match s4.as_slice().to_int() {
+        Ok(v) => { @print(f"FAIL: strslice to_int invalid should be Err, got {v}"); return }
+        Err(e) => {}
+    }
+
+    // -- empty slice, PRESENT (subslice(0,0)) -- same Err as Str.to_int("") --
+    Str s5 = "4821"
+    StrSlice empty_present = s5.subslice(0, 0)
+    if !empty_present.present?() { @print("FAIL: strslice empty-present should be present"); return }
+    match empty_present.to_int() {
+        Ok(v) => { @print(f"FAIL: strslice to_int empty-present should be Err, got {v}"); return }
+        Err(e) => { if !e.eq?("empty string") { @print(f"FAIL: strslice to_int empty-present wrong message [{e}]"); return } }
+    }
+
+    // -- absent slice, from capture_all_slices' non-participating-group
+    // encoding (ptr == nil, len == 0) -- parses identically to the
+    // present-but-empty case above (n == 0 short-circuits before self.ptr
+    // is ever read: no null-pointer dereference), exactly the contract
+    // capture_all_slices documents. --
+    Vec(StrSlice) absent_group = re.capture_all_slices("b", "(a)?(b)")
+    if absent_group[1].present?() { @print("FAIL: absent_group[1] should be absent"); return }
+    match absent_group[1].to_int() {
+        Ok(v) => { @print(f"FAIL: strslice to_int absent should be Err, got {v}"); return }
+        Err(e) => { if !e.eq?("empty string") { @print(f"FAIL: strslice to_int absent wrong message [{e}]"); return } }
+    }
+
+    // -- overflow: NO overflow check (matches Str -- lenient, parity with
+    // the old builtin). Pin that StrSlice and Str compute the SAME wrapped
+    // value for the same overflowing digit string, not a hand-predicted
+    // number (this test does not depend on what that wrapped value is,
+    // only that both paths agree bit-for-bit). --
+    Str s6 = "99999999999999"
+    match s6.to_int() {
+        Ok(sv) => {
+            match s6.as_slice().to_int() {
+                Ok(vv) => { if sv != vv { @print(f"FAIL: strslice to_int overflow parity {vv} vs {sv}"); return } }
+                Err(e) => { @print("FAIL: strslice to_int overflow got Err, Str got Ok"); return }
+            }
+        }
+        Err(e) => { @print("FAIL: str to_int overflow got Err (test bug)"); return }
+    }
+
+    // -- to_i64 / to_float: same parity approach --
+    Str s7 = "-123456789012"
+    match s7.to_i64() {
+        Ok(sv) => {
+            match s7.as_slice().to_i64() {
+                Ok(vv) => { if sv != vv { @print("FAIL: strslice to_i64 parity"); return } }
+                Err(e) => { @print("FAIL: strslice to_i64 got Err"); return }
+            }
+        }
+        Err(e) => { @print("FAIL: str to_i64 got Err (test bug)"); return }
+    }
+
+    Str s8 = "3.5e2"
+    match s8.to_float() {
+        Ok(sv) => {
+            match s8.as_slice().to_float() {
+                Ok(vv) => { if vv < sv - 0.001 || vv > sv + 0.001 { @print("FAIL: strslice to_float parity"); return } }
+                Err(e) => { @print("FAIL: strslice to_float got Err"); return }
+            }
+        }
+        Err(e) => { @print("FAIL: str to_float got Err (test bug)"); return }
+    }
+
+    @print("PASS: strslice_numeric")
+}
+
 def test_named_capture() {
     // capture_named returns Map(Str,Str); empty map = no match
     Map(Str, Str) mp = re.capture_named(
@@ -508,6 +656,8 @@ def main() {
     test_find()
     test_capture()
     test_capture_all_spans()
+    test_capture_all_slices()
+    test_strslice_numeric()
     test_named_capture()
     test_lookahead()
     test_flags()

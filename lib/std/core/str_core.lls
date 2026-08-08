@@ -368,6 +368,17 @@ methods StrSlice {
     def len(&self) -> int { return self.len }
     def empty?(&self) -> bool { return self.len == 0 }
 
+    // True for every StrSlice produced by `as_slice`/`subslice`/`sub`/
+    // `split_view` -- those always point into a real (possibly
+    // zero-length) source buffer. False only for the ABSENT sentinel
+    // `capture_all_slices` (lib/std/text/regex.lls) encodes a
+    // non-participating capture group as: `StrSlice { ptr: nil, len: 0 }`.
+    // `!present?()` and "empty" (`len() == 0`) are DIFFERENT questions --
+    // an empty (zero-width) match is present (len 0, ptr valid); an absent
+    // group is not present (len 0, ptr nil). Check this before treating a
+    // slice from an optional group as real data.
+    def present?(&self) -> bool { return self.ptr != nil }
+
     // ---- byte access (three-tier, like Str.byte_at; `!` = unchecked) ----
     def at!(&self, int i) -> int { return self.ptr[i] }
     def at(&self, int i) -> int {
