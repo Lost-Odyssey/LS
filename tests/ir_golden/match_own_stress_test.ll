@@ -427,6 +427,12 @@ declare i64 @__ls_regex_debug_onepass_execs()
 
 declare i64 @__ls_regex_debug_general_execs()
 
+declare i64 @__ls_regex_debug_dfa_execs()
+
+declare i32 @__ls_regex_exec_dfa(ptr %0, ptr %1, i32 %2, i32 %3)
+
+declare i32 @__ls_regex_is_dfa_eligible(ptr %0)
+
 declare i32 @__ls_regex_named_count(ptr %0)
 
 declare ptr @__ls_regex_named_name(ptr %0, i32 %1)
