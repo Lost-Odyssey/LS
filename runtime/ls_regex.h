@@ -48,11 +48,30 @@ int __ls_regex_is_onepass(void *h);
 
 /* Process-wide counters of how many times each exec engine actually ran
    (incremented once per candidate start position tried, i.e. once per
-   vm_exec_onepass/vm_exec_range call, not once per __ls_regex_exec call).
-   Diagnostic only, for proving which engine a given pattern/workload
-   actually exercises -- see ls_regex.c's comment on the counters. */
+   vm_exec_onepass/vm_exec_range/vm_exec_dfa call, not once per
+   __ls_regex_exec/__ls_regex_exec_dfa call). Diagnostic only, for proving
+   which engine a given pattern/workload actually exercises -- see
+   ls_regex.c's comment on the counters. */
 long long __ls_regex_debug_onepass_execs(void);
 long long __ls_regex_debug_general_execs(void);
+long long __ls_regex_debug_dfa_execs(void);
+
+/* Match-only-safe drop-in for __ls_regex_exec (see ls_regex.c's D1 comment
+   block for the full design): identical return value and group-0 span
+   contract, on every call, for every pattern. When the compiled pattern is
+   DFA-eligible (see __ls_regex_is_dfa_eligible), this skips sub-group
+   capture work and recovers it lazily -- transparently and at most once
+   per exec -- the first time a caller reads a group with index > 0
+   (__ls_regex_cap_start/_len). Ineligible patterns fall back to
+   __ls_regex_exec unchanged; it is always safe to call this in place of
+   __ls_regex_exec anywhere the caller does not need eager sub-group
+   population. */
+int __ls_regex_exec_dfa(void *h, const char *text, int text_len, int start);
+
+/* 1 if the compiled pattern is eligible for __ls_regex_exec_dfa's fast
+   path (one-pass, non-multiline, no mid-pattern BOL/BOS -- see
+   re_dfa_check_eligible in ls_regex.c), 0 otherwise. Diagnostic only. */
+int __ls_regex_is_dfa_eligible(void *h);
 
 /* Named capture queries */
 int         __ls_regex_named_count(void *h);

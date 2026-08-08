@@ -94,6 +94,23 @@ methods Regex {
         return c.__ls_regex_exec(self.h, text.as_ptr() as *u8, text.len(), start) > 0
     }
 
+    // Same question as matches?() -- true if the pattern occurs anywhere in
+    // `text` -- but a NARROWER contract in exchange for speed on patterns
+    // eligible for the D1 lazy-DFA fast path (see is_dfa_eligible()): do NOT
+    // rely on group(i) for i > 0 after calling this. group(0) (the whole
+    // match) is always exact. Reading a sub-group still WORKS (it is
+    // recovered transparently, see runtime/ls_regex.c's
+    // re_dfa_fill_captures) but costs one extra internal re-match the first
+    // time you do it -- if your call site is going to read several
+    // sub-groups every time anyway, matches?() is cheaper overall (it never
+    // pays for the DFA scan AND a fallback re-match on the same call); use
+    // is_match() only when you mostly or always just need the yes/no answer
+    // (or group(0)), which is exactly the shape a hot loop that only
+    // measures/filters on the whole match has.
+    def is_match(&self, &Str text) -> bool {
+        return c.__ls_regex_exec_dfa(self.h, text.as_ptr() as *u8, text.len(), 0) > 0
+    }
+
     // Group `i` of the last successful match on THIS Regex, materialized on
     // demand. Group 0 is the whole match. None if there was no match, if the
     // group did not participate, or if `i` is out of range.
@@ -129,6 +146,21 @@ methods Regex {
     def is_onepass(&self) -> bool {
         return c.__ls_regex_is_onepass(self.h) > 0
     }
+
+    // True if the pattern is eligible for the lazy-DFA match-only fast path
+    // (one-pass, non-multiline, no mid-pattern ^ / \A -- see
+    // re_dfa_check_eligible in runtime/ls_regex.c). Diagnostic surface, same
+    // spirit as is_onepass(): is_match() (and the free functions
+    // matches()/full_match()/find()/find_all()/replace()/replace_all()/
+    // split(), which only ever read group 0 themselves) route through the
+    // DFA exactly when this is true. matches?()/find_from() do NOT --
+    // their documented contract lets a caller read ANY group() afterward,
+    // which the DFA does not compute, so routing them through it would
+    // make every such read pay for a full internal re-match on top of the
+    // DFA scan; see is_match()'s doc comment for the trade-off this avoids.
+    def is_dfa_eligible(&self) -> bool {
+        return c.__ls_regex_is_dfa_eligible(self.h) > 0
+    }
 }
 
 // Compiles `pattern`. Returns Err with the engine's message when the pattern
@@ -157,7 +189,9 @@ def matches(Str text, Str pattern) -> bool {
     bool owned = false
     if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return false }
-    int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
+    // matches() never reads any group -- always safe for the DFA-only fast
+    // path (see __ls_regex_exec_dfa's contract in runtime/ls_regex.h).
+    int n = c.__ls_regex_exec_dfa(h, text.c_str(), text.len(), 0)
     if owned { c.__ls_regex_free(h) }
     return n > 0
 }
@@ -169,7 +203,7 @@ def full_match(Str text, Str pattern) -> bool {
     bool owned = false
     if h == nil { h = _own(anchored, 0); owned = true }
     if h == nil { return false }
-    int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
+    int n = c.__ls_regex_exec_dfa(h, text.c_str(), text.len(), 0)
     if owned { c.__ls_regex_free(h) }
     return n > 0
 }
@@ -182,7 +216,8 @@ def find(Str text, Str pattern) -> Option(Str) {
     bool owned = false
     if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return None }
-    int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
+    // Only group 0 is ever read below (_cap_str(h, text, 0)) -- safe.
+    int n = c.__ls_regex_exec_dfa(h, text.c_str(), text.len(), 0)
     if n == 0 { if owned { c.__ls_regex_free(h) }; return None }
     Str ms = _cap_str(h, text, 0)
     if owned { c.__ls_regex_free(h) }
@@ -200,7 +235,9 @@ def find_all(Str text, Str pattern) -> Vec(Str) {
     int tlen = text.len()
     int pos = 0
     while pos <= tlen {
-        int n = c.__ls_regex_exec(h, tptr, tlen, pos)
+        // Only group 0 is ever read in this loop -- safe for the DFA-only
+        // fast path.
+        int n = c.__ls_regex_exec_dfa(h, tptr, tlen, pos)
         if n == 0 { break }
         int s = c.__ls_regex_cap_start(h, 0)
         int l = c.__ls_regex_cap_len(h, 0)
@@ -442,7 +479,8 @@ def replace(Str text, Str pattern, Str replacement) -> Str {
     bool owned = false
     if h == nil { h = _own(pattern, 0); owned = true }
     if h == nil { return text.copy() }
-    int n = c.__ls_regex_exec(h, text.c_str(), text.len(), 0)
+    // Only group 0 is ever read below -- safe for the DFA-only fast path.
+    int n = c.__ls_regex_exec_dfa(h, text.c_str(), text.len(), 0)
     if n == 0 { if owned { c.__ls_regex_free(h) }; return text.copy() }
     int s = c.__ls_regex_cap_start(h, 0)
     int l = c.__ls_regex_cap_len(h, 0)
@@ -463,7 +501,8 @@ def replace_all(Str text, Str pattern, Str replacement) -> Str {
     int tlen = text.len()
     int pos = 0
     while pos <= tlen {
-        int n = c.__ls_regex_exec(h, tptr, tlen, pos)
+        // Only group 0 is ever read in this loop -- safe.
+        int n = c.__ls_regex_exec_dfa(h, tptr, tlen, pos)
         if n == 0 { break }
         int s = c.__ls_regex_cap_start(h, 0)
         int l = c.__ls_regex_cap_len(h, 0)
@@ -493,7 +532,8 @@ def split(Str text, Str pattern) -> Vec(Str) {
     int tlen = text.len()
     int pos = 0
     while pos <= tlen {
-        int n = c.__ls_regex_exec(h, tptr, tlen, pos)
+        // Only group 0 is ever read in this loop -- safe.
+        int n = c.__ls_regex_exec_dfa(h, tptr, tlen, pos)
         if n == 0 { break }
         int s = c.__ls_regex_cap_start(h, 0)
         int l = c.__ls_regex_cap_len(h, 0)

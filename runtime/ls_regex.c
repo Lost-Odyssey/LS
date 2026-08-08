@@ -27,6 +27,29 @@ extern int __ls_str_find(const char *hay, int hlen,
 #define MAX_THREADS   512
 #define NAME_MAX_LEN  64
 
+/* Lazy DFA (D1): defensive cap on how large a DFA-eligible pattern's
+   program may be. See the ReHandle.dfa_eligible comment and the big block
+   above re_dfa_resolve for why the DFA-state count is ALREADY bounded by
+   prog_len (a "state" is one pc, not a general NFA pc-set, because
+   eligibility requires re->onepass==1) -- so this is not a combinatorial
+   backstop the way a general subset-construction DFA would need, it is
+   purely a memory cap on the dfa_trans table (RE_DFA_MAX_PROG * 256 *
+   sizeof(short) bytes; 160 -> 80 KB worst case per compiled pattern, times
+   RE_CACHE_SLOTS=32 thread-local cache slots -> 2.5 MB worst case per
+   thread). Patterns above this (rare -- the benchmark's largest one-pass
+   program is well under 100 instructions) simply fall back to the
+   already-fast one-pass engine; __ls_regex_exec_dfa's fallback to
+   __ls_regex_exec makes this always safe. */
+#define RE_DFA_MAX_PROG 160
+
+/* Sentinel values stored in ReHandle.dfa_trans / returned by re_dfa_resolve
+   and re_dfa_step. Real states are pc values, always >= 0 and < prog_len
+   (<= RE_DFA_MAX_PROG), so all three sentinels are negative and disjoint
+   from any real state. */
+#define RE_DFA_UNFILLED (-2)  /* cache cell not yet computed */
+#define RE_DFA_DEAD     (-1)  /* no continuation: this path fails */
+#define RE_DFA_ACCEPT   (-3)  /* OP_MATCH reached; group 0 ends HERE, byte not consumed */
+
 /* ===== Opcodes ===== */
 
 typedef enum {
@@ -151,6 +174,52 @@ typedef struct {
        classifier is not touched by this. */
     void         *onepass_splits;  /* ReSplitInfo*, opaque here to keep the
                                        type defined next to its only user */
+
+    /* ---- Lazy DFA (match-only fast path, D1) ----
+       See the big comment block above re_dfa_resolve for the design. A
+       pattern is DFA-eligible (dfa_eligible=1) only when it is ALSO
+       one-pass (re->onepass==1): that restriction is what makes a DFA
+       "state" collapse to a single pc instead of a general NFA pc-set, so
+       there is no subset-construction blowup to bound here -- see
+       re_dfa_check_eligible for the exact rule and why it is sound.
+
+       dfa_trans is a flat prog_len*256 table of cached (state,byte)
+       transitions, lazily filled cell-by-cell as bytes are actually seen
+       (re_dfa_step): each cell starts at RE_DFA_UNFILLED and is computed
+       (and cached) at most once. NULL unless dfa_eligible==1. */
+    int           dfa_eligible;
+    short        *dfa_trans;
+
+    /* ---- DFA-only exec bookkeeping (lazy capture fallback) ----
+       The DFA answers "does it match" and "where does group 0 begin/end"
+       -- it does not populate sub-group offsets. When the most recent exec
+       on this handle ran via __ls_regex_exec_dfa's fast path AND matched,
+       dfa_only_valid is set to 1 and the exact (text, text_len, start) that
+       call was given is stashed here; re->saved[0..1] already holds the
+       real group-0 span, but re->saved[2..] are left at -1. A later
+       __ls_regex_cap_start/_len call for a group > 0 detects this and
+       transparently re-runs the (cheaper-than-general, since dfa_eligible
+       implies onepass) one-pass engine at the SAME start position before
+       answering -- see re_dfa_fill_captures. This keeps
+       __ls_regex_exec_dfa a SAFE drop-in for __ls_regex_exec at any call
+       site: a caller who never reads a sub-group pays nothing extra, and
+       one who does (Regex.group(i>0), capture_all(), ...) still gets the
+       right answer, paying one extra one-pass re-exec exactly once on
+       first such read. It is not, however, a CHEAP drop-in for a call
+       site that reads several sub-groups on every call -- that pays the
+       DFA scan AND the fallback re-exec where it used to pay only the
+       re-exec, which is why regex.lls only routes call sites that
+       provably never (find/find_all/replace/replace_all/split, which only
+       ever touch group 0 themselves) or optionally (Regex.is_match(), a
+       narrower-contract sibling of matches?()) read sub-groups through
+       this function -- see is_match()'s doc comment in regex.lls for the
+       full trade-off, discovered by benchmarking S2_fields (9 groups read
+       on every call) after initially routing matches?()/find_from()
+       through this path too and measuring a regression. */
+    int           dfa_only_valid;
+    const char   *dfa_only_text;
+    int           dfa_only_text_len;
+    int           dfa_only_start;
 } ReHandle;
 
 /* Compile failures have no handle to hang an error message on, so this one
@@ -1447,6 +1516,65 @@ static void re_build_onepass_tables(ReHandle *re) {
     re->onepass_splits = tab;
 }
 
+/* ===== Lazy DFA eligibility (D1) =====
+
+   Whether __ls_regex_exec_dfa may route this pattern through the byte-table
+   walk (re_exec_vm_dfa) instead of the one-pass NFA walk (vm_exec_onepass).
+   Called once per compile, only when re->onepass is already 1.
+
+   Requires re->onepass==1 (see the ReHandle.dfa_eligible comment): the
+   textbook lazy DFA has a state be a SET of NFA program counters (the
+   epsilon closure reached so far), and computing/caching transitions for
+   arbitrary sets is exactly where a pathological pattern can blow up
+   combinatorially. Restricting to one-pass patterns collapses every
+   reachable set to size <= 1 (that is what "one-pass" means: at most one
+   live thread at any position), so a DFA state here is literally a single
+   pc -- no subset explosion is possible by construction, and no state-count
+   budget is needed beyond RE_DFA_MAX_PROG's plain memory cap.
+
+   Two further restrictions, both about a single opcode kind (OP_ANCHOR_BOL/
+   OP_ANCHOR_BOS), because the byte-indexed transition cache
+   (re->dfa_trans, keyed only by (pc, byte)) has no room to also key on
+   "is this position 0" the way vm_exec_onepass's live pos variable can:
+
+   1. LS_RE_MULTILINE is rejected outright. Under multiline, ^ can pass at
+      ANY position immediately after a '\n', not just position 0 -- that
+      is a per-position fact the cached table cannot see (a cached
+      (pc,byte) transition, once filled, is reused at every later position
+      that lands on the same pc, regardless of what came before it).
+      re_dfa_resolve's ANCHOR_EOL handling below shows the case where this
+      IS safely knowable from the byte alone (multiline $ checking whether
+      the byte about to be read is '\n'); BOL has no such byte-local
+      substitute because it looks at the PRECEDING byte, not the current
+      one.
+
+   2. OP_ANCHOR_BOL/OP_ANCHOR_BOS anywhere except exactly pc==1 (the
+      position re_detect_anchor already proves dominates every execution
+      path, and which re_exec_vm_dfa handles OUTSIDE the per-byte cache by
+      only ever trying start position 0 when anchor_mode==1 -- see that
+      function). A mid-pattern BOL/BOS (e.g. "(^a|b)") tests "is the CURRENT
+      position 0", which is a fact about how far the outer scan has
+      advanced, not about the pc or the byte at that pc -- again not
+      representable in a (pc,byte)-keyed cache. This restriction is what
+      lets re_dfa_resolve treat a BOL/BOS it reaches (necessarily at pc==1,
+      necessarily while resolving the unique start state, necessarily at
+      position 0 -- see that function's own comment) as an unconditional
+      PASS: without it, a mid-pattern BOL/BOS could reach this same case at
+      a position that is NOT 0, and unconditionally passing it there would
+      be a silent WRONG ANSWER (accepting positions vm_exec_onepass would
+      have rejected) -- this eligibility scan is what prevents that. */
+static int re_dfa_check_eligible(const ReHandle *re) {
+    if (!re->onepass) return 0;
+    if (re->flags & LS_RE_MULTILINE) return 0;
+    if (re->prog_len <= 0 || re->prog_len > RE_DFA_MAX_PROG) return 0;
+
+    for (int pc = 0; pc < re->prog_len; pc++) {
+        ReOpCode op = re->prog[pc].op;
+        if ((op == OP_ANCHOR_BOL || op == OP_ANCHOR_BOS) && pc != 1) return 0;
+    }
+    return 1;
+}
+
 /* ===== Compile API ===== */
 
 void *__ls_regex_compile(const char *pattern, int flags) {
@@ -1490,6 +1618,28 @@ void *__ls_regex_compile(const char *pattern, int flags) {
     re_detect_anchor(re);
     re->onepass = re_is_onepass(re);
     if (re->onepass) re_build_onepass_tables(re);
+
+    re->dfa_eligible = re_dfa_check_eligible(re);
+    if (re->dfa_eligible) {
+        /* Flat prog_len*256 cache, lazily filled cell-by-cell by
+           re_dfa_step -- see the ReHandle.dfa_trans comment. Every cell
+           starts at RE_DFA_UNFILLED; a calloc'd-then-memset short array is
+           simplest and this runs once per distinct compiled pattern (the
+           thread-local pattern cache means most patterns pay this once,
+           not once per exec). Fails CLOSED like re_build_onepass_tables
+           above: if the allocation fails, dfa_eligible drops back to 0 so
+           __ls_regex_exec_dfa falls back to the (already fully verified)
+           one-pass/general engines instead of running the DFA walk with no
+           table to cache into. */
+        size_t ncells = (size_t)re->prog_len * 256;
+        short *tab = (short *)malloc(ncells * sizeof(short));
+        if (!tab) {
+            re->dfa_eligible = 0;
+        } else {
+            for (size_t i = 0; i < ncells; i++) tab[i] = RE_DFA_UNFILLED;
+            re->dfa_trans = tab;
+        }
+    }
     return re;
 }
 
@@ -1497,6 +1647,7 @@ void __ls_regex_free(void *h) {
     ReHandle *re = (ReHandle *)h;
     if (!re) return;
     free(re->onepass_splits);
+    free(re->dfa_trans);
     free(re->prog);
     free(re);
 }
@@ -2379,9 +2530,371 @@ static int re_exec_vm_general(ReHandle *re, const char *text, int text_len, int 
     return 0;
 }
 
+/* ===== Lazy DFA executor (D1) =====
+
+   Only ever entered when re->dfa_eligible is 1, i.e. re_dfa_check_eligible
+   has already proven this pattern is one-pass, non-multiline, and has no
+   mid-pattern BOL/BOS -- see that function's comment for exactly why each
+   restriction is required for what follows to be sound.
+
+   THE CORE IDEA: for a one-pass pattern, vm_exec_onepass already proves
+   that at any given (pc, input byte) pair, the ENTIRE epsilon-closure
+   resolution that follows -- skip every SAVE, follow every JUMP, and at
+   every OP_SPLIT pick a branch using the exact same disjoint first-byte
+   sets re->onepass_splits already computes -- is a DETERMINISTIC function
+   of (pc, byte) alone. It does not depend on how we got to pc, and it does
+   not depend on any OTHER live thread (there is only ever one). So instead
+   of re-walking that resolution on every single byte of every single exec
+   (which is exactly the "51% of dispatched steps are SPLIT+JUMP, consuming
+   no byte" cost the A2 attribution measured), it can be computed ONCE per
+   distinct (pc, byte) pair and cached: re->dfa_trans[pc*256 + byte].
+
+   A "DFA state" here is therefore just a pc -- specifically, the pc of the
+   NEXT consuming instruction (or 0, at the very start) -- not the general
+   textbook "set of NFA program counters" a subset-construction DFA needs
+   for an arbitrary NFA. That generality is what re_dfa_check_eligible's
+   onepass requirement trades away: it is exactly what guarantees the set
+   can never have more than one element, so representing it as a bare pc
+   loses nothing for the patterns this path is allowed to run on. See the
+   ReHandle.dfa_eligible / re_dfa_check_eligible comments for the full
+   argument, including why this also means no state-count budget beyond
+   RE_DFA_MAX_PROG's plain memory cap is needed (no combinatorial
+   explosion is possible by construction). */
+
+/* Byte test for a single consuming instruction -- deliberately mirrors
+   vm_exec_onepass's own per-opcode switch (same case-folding/DOTALL/class
+   rules) byte for byte, rather than sharing code with it, so a change to
+   one cannot silently desync from the other without both being touched
+   (the two are verified to agree via the differential oracle, not via
+   sharing a code path -- see the D1 report's injection experiment for what
+   happens when they disagree).
+
+   NOTE (pre-existing, not introduced or fixed here): OP_CLASS/OP_NCLASS
+   below has no ch<128 guard, matching vm_exec_range/vm_exec_onepass's own
+   OP_CLASS/OP_NCLASS cases exactly (only re_consuming_first_bytes, used
+   purely for the one-pass/DFA-eligibility ANALYSIS, guards it). Adding a
+   guard here that the two engines being mirrored do not have would make
+   this function DISAGREE with them on ch>=128 against an OP_CLASS pattern,
+   which is a correctness bug in the other direction from the one this
+   comment is warning about -- so it stays unguarded, bug-compatible on
+   purpose, matching the class it mirrors. */
+static int re_dfa_instr_matches(const ReHandle *re, int pc, unsigned char ch) {
+    const ReInstr *in = &re->prog[pc];
+    switch (in->op) {
+    case OP_CHAR:
+        if (re->flags & LS_RE_IGNORECASE)
+            return tolower(ch) == tolower((unsigned char)in->operand_a);
+        return ch == (unsigned char)in->operand_a;
+    case OP_ANY:
+        return (ch != '\n') || (re->flags & LS_RE_DOTALL);
+    case OP_CLASS: {
+        const ReCharClass *cls = &re->classes[in->operand_a];
+        unsigned char lc = (re->flags & LS_RE_IGNORECASE) ? (unsigned char)tolower(ch) : ch;
+        return class_test(cls, lc);
+    }
+    case OP_NCLASS: {
+        const ReCharClass *cls = &re->classes[in->operand_a];
+        unsigned char lc = (re->flags & LS_RE_IGNORECASE) ? (unsigned char)tolower(ch) : ch;
+        return !class_test(cls, lc);
+    }
+    case OP_DIGIT:  return isdigit(ch) != 0;
+    case OP_NDIGIT: return !isdigit(ch);
+    case OP_WORD:   return is_word_char(ch) != 0;
+    case OP_NWORD:  return !is_word_char(ch);
+    case OP_SPACE:  return is_space_char(ch) != 0;
+    case OP_NSPACE: return !is_space_char(ch);
+    default: return 0; /* unreachable: caller only ever passes a consuming pc */
+    }
+}
+
+/* Resolve the epsilon closure starting at pc, mirroring vm_exec_onepass's
+   own loop (SAVE skip, JUMP follow, SPLIT branch-by-first-byte-set,
+   anchors) but STOPPING at the next consuming instruction instead of also
+   testing/consuming a byte -- the caller (re_dfa_step) does that part,
+   since it is the piece that needs to be cached per (pc,byte).
+
+   have_byte/peek: peek is the byte about to be tested (text[pos], the SAME
+   byte re_dfa_step is resolving a transition for) -- have_byte is 0 only
+   at true end-of-text (pos==text_len), matching vm_exec_onepass's own
+   `pos < text_len` guard before it reads text[pos] to decide a SPLIT.
+
+   Returns RE_DFA_DEAD (no continuation -- this path fails), RE_DFA_ACCEPT
+   (OP_MATCH reached via pure epsilon: group 0 ends exactly at the CURRENT
+   position, peek is not consumed), or a consuming instruction's pc (>= 0,
+   to be tested against peek by the caller). */
+static int re_dfa_resolve(const ReHandle *re, int pc, int have_byte, unsigned char peek) {
+    const ReSplitInfo *splits = (const ReSplitInfo *)re->onepass_splits;
+    for (;;) {
+        const ReInstr *in = &re->prog[pc];
+        switch (in->op) {
+        case OP_SAVE:
+            pc++;
+            continue;
+        case OP_JUMP:
+            pc = in->operand_a;
+            continue;
+        case OP_SPLIT: {
+            const ReSplitInfo *info = &splits[pc];
+            int chosen = -1;
+            if (have_byte) {
+                int in_a = (info->a.bytes[peek >> 3] >> (peek & 7)) & 1;
+                int in_b = (info->b.bytes[peek >> 3] >> (peek & 7)) & 1;
+                /* re_is_onepass's rule 2 guarantees these are never both
+                   true (see vm_exec_onepass's identical comment). */
+                if (in_a)      chosen = in->operand_a;
+                else if (in_b) chosen = in->operand_b;
+            }
+            if (chosen < 0) {
+                if (info->a.can_match_empty)      chosen = in->operand_a;
+                else if (info->b.can_match_empty)  chosen = in->operand_b;
+                else return RE_DFA_DEAD;
+            }
+            pc = chosen;
+            continue;
+        }
+        case OP_ANCHOR_EOL:
+            /* Non-multiline (re_dfa_check_eligible rejects MULTILINE
+               outright): $ passes only at true end-of-text. Whether we are
+               at end-of-text is exactly !have_byte -- known from the SAME
+               byte-availability fact re_dfa_step already has, no separate
+               position tracking needed. */
+            if (!have_byte) { pc++; continue; }
+            return RE_DFA_DEAD;
+        case OP_ANCHOR_EOS:
+            if (!have_byte) { pc++; continue; }
+            return RE_DFA_DEAD;
+        case OP_ANCHOR_BOL:
+        case OP_ANCHOR_BOS:
+            /* re_dfa_check_eligible guarantees a BOL/BOS anywhere in the
+               program appears ONLY at pc==1 (any other pc gets the whole
+               pattern rejected as DFA-ineligible). pc==1 is the
+               instruction immediately after pc==0's unconditional group-0
+               SAVE, and nothing in a one-pass program's JUMP/SPLIT graph
+               ever targets pc==1 from anywhere else (it sits before any
+               user-pattern content a loop body could wrap back around to
+               -- a pattern that DID loop back over its leading anchor,
+               e.g. "(^a)*", puts the anchor at some pc > 1 inside the
+               loop body, which the eligibility scan already rejects). So
+               the ONLY DFA state whose resolution ever reaches pc==1 is
+               state 0, the unique initial state of every walk -- and
+               re_exec_vm_dfa only ever starts a walk at state 0 with
+               pos==0 for such a pattern (anchor_mode==1's branch, forced
+               unconditionally by re_detect_anchor whenever prog[1] is
+               ANCHOR_BOL/ANCHOR_BOS -- see that function). Reaching this
+               case therefore means "current position is 0" is ALREADY
+               established by the caller, not something this function
+               needs to re-derive from a peek byte the way ANCHOR_EOL/EOS
+               above do from have_byte -- so it always passes. */
+            pc++;
+            continue;
+        case OP_MATCH:
+            return RE_DFA_ACCEPT;
+        case OP_WORDBND:
+        case OP_NWORDBND:
+        case OP_LOOKAHEAD:
+            /* Unreachable: re_is_onepass rejects any pattern containing
+               these globally, and dfa_eligible requires onepass==1.
+               Defensive only. */
+            return RE_DFA_DEAD;
+        default:
+            return pc; /* consuming instruction: stop here, caller tests it */
+        }
+    }
+}
+
+/* One cached (state,byte) transition, computing and filling the cell on
+   first use. state is a pc (see the file comment above). Returns
+   RE_DFA_DEAD, RE_DFA_ACCEPT, or a new state pc (>= 0). */
+static int re_dfa_step(ReHandle *re, int state, const char *text, int text_len, int pos) {
+    if (pos >= text_len) {
+        /* End of text: no byte to cache against (and nothing to cache --
+           this is evaluated at most once per exec, never once per byte, so
+           there is no repeated-work cost to amortize here the way there is
+           for the have_byte==1 case below). */
+        int r = re_dfa_resolve(re, state, 0, 0);
+        return (r == RE_DFA_ACCEPT) ? RE_DFA_ACCEPT : RE_DFA_DEAD;
+    }
+
+    unsigned char byte = (unsigned char)text[pos];
+    short *cell = &re->dfa_trans[(size_t)state * 256 + byte];
+    if (*cell != RE_DFA_UNFILLED) return *cell;
+
+    int cpc = re_dfa_resolve(re, state, 1, byte);
+    int result;
+    if (cpc == RE_DFA_DEAD)          result = RE_DFA_DEAD;
+    else if (cpc == RE_DFA_ACCEPT)   result = RE_DFA_ACCEPT;
+    else if (!re_dfa_instr_matches(re, cpc, byte)) result = RE_DFA_DEAD;
+    else                              result = cpc + 1;
+
+    *cell = (short)result;
+    return result;
+}
+
+/* Walk the DFA from (start, pc=0) to either a match (group 0 = [start,pos))
+   or failure. pc=0 is always OP_SAVE(0) (group-0 open, emitted
+   unconditionally as the very first instruction by __ls_regex_compile), so
+   the very first re_dfa_step's resolve step just skips over it like any
+   other state -- no special-casing needed for the initial call.
+
+   Terminates in at most (text_len - start + 1) steps: DEAD/ACCEPT return
+   immediately, and the only way to loop again is the `state = r` branch,
+   which is only reached after re_dfa_resolve found a REAL consuming
+   instruction whose byte test passed -- i.e. pos strictly increases on
+   every iteration that does not terminate. Same O(n) bound as
+   vm_exec_onepass, by the same argument. */
+static int vm_exec_dfa(ReHandle *re, const char *text, int text_len, int start,
+                       int *out_start, int *out_end) {
+    int state = 0;
+    int pos = start;
+    for (;;) {
+        int r = re_dfa_step(re, state, text, text_len, pos);
+        if (r == RE_DFA_DEAD) return 0;
+        if (r == RE_DFA_ACCEPT) { *out_start = start; *out_end = pos; return 1; }
+        state = r;
+        pos++;
+    }
+}
+
+static long long re_dfa_debug_execs;  /* see __ls_regex_debug_dfa_execs */
+
+/* Tier 0/2/3 candidate-position selection mirrors re_exec_vm_onepass
+   exactly (see that function's comments) -- anchor_mode==2 (multiline
+   line-start) never occurs here because re_dfa_check_eligible already
+   rejects LS_RE_MULTILINE outright. */
+static int re_exec_vm_dfa(ReHandle *re, const char *text, int text_len, int start) {
+    if (re->anchor_mode == 1) {
+        if (start > 0) {
+            for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+            return 0;
+        }
+        int s0, e0;
+        re_dfa_debug_execs++;
+        if (vm_exec_dfa(re, text, text_len, 0, &s0, &e0)) {
+            for (int k = 2; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+            re->saved[0] = s0;
+            re->saved[1] = e0;
+            return re->n_groups + 1;
+        }
+        for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+        return 0;
+    }
+
+    for (int s = start; s <= text_len; s++) {
+        if (re->lit_len > 0) {
+            int at = __ls_str_find(text, text_len, re->lit, re->lit_len, s);
+            if (at < 0) {
+                for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+                return 0;
+            }
+            s = at;
+        } else if (re->has_first_bytes) {
+            while (s < text_len) {
+                unsigned char ch = (unsigned char)text[s];
+                if (ch < 128 &&
+                    ((re->first_bytes[ch >> 3] >> (ch & 7)) & 1)) break;
+                s++;
+            }
+            if (s >= text_len && text_len > 0) {
+                s = text_len;
+            }
+        }
+
+        int s0, e0;
+        re_dfa_debug_execs++;
+        if (vm_exec_dfa(re, text, text_len, s, &s0, &e0)) {
+            for (int k = 2; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+            re->saved[0] = s0;
+            re->saved[1] = e0;
+            return re->n_groups + 1;
+        }
+    }
+    for (int k = 0; k < MAX_GROUPS * 2; k++) re->saved[k] = -1;
+    return 0;
+}
+
+/* On-demand fallback for a group>0 read after an exec that ran through the
+   DFA-only fast path (__ls_regex_exec_dfa, below). See the
+   ReHandle.dfa_only_valid comment for the full contract: this re-runs the
+   one-pass engine (always sound here -- dfa_eligible implies onepass==1,
+   so vm_exec_onepass is the correct, already-fully-verified engine, never
+   the general Pike VM) at the EXACT (text, text_len, start) the DFA-only
+   exec was given, deterministically recovering the same match and every
+   sub-group offset the DFA never computed. A no-op whenever dfa_only_valid
+   is already 0 -- either this handle's last exec populated full captures
+   directly, or a previous call to this function already did the fallback
+   (it clears the flag immediately, before doing the re-exec, precisely so
+   it runs at most once per exec no matter how many group()/cap_start
+   calls follow). */
+static void re_dfa_fill_captures(ReHandle *re) {
+    if (!re->dfa_only_valid) return;
+    re->dfa_only_valid = 0;
+    (void)re_exec_vm_onepass(re, re->dfa_only_text, re->dfa_only_text_len, re->dfa_only_start);
+}
+
+/* Match-only-safe drop-in for __ls_regex_exec: identical return value and
+   re->saved[0]/re->saved[1] (group-0 span) contract on every call, for
+   every pattern -- including ones the DFA is not eligible for, via the
+   fallback below -- but skips sub-group capture work when the fast path is
+   taken, recovering it transparently and lazily (re_dfa_fill_captures,
+   triggered from __ls_regex_cap_start/_len) if and only if a caller later
+   asks for group() with index > 0.
+
+   SAFE for every call site (correctness never depends on which ones use
+   it), but only CHEAP for call sites that read group 0 or nothing at all
+   -- see the ReHandle.dfa_only_valid comment for why a call site that
+   reads several sub-groups on every call should keep using
+   __ls_regex_exec directly instead. regex.lls's routing choices, in that
+   light: find/find_all/replace/replace_all/split (only ever read group 0
+   internally) and matches()/full_match() (read nothing) route through
+   this unconditionally; Regex.is_match() is an opt-in narrower-contract
+   sibling of matches?() for callers who know they mostly want the yes/no
+   (or group 0) answer; Regex.matches?()/find_from() and capture()/
+   capture_all()/capture_named()/capture_all_spans()/capture_all_slices()
+   (which read several groups on every successful match) deliberately keep
+   calling __ls_regex_exec instead. */
+int __ls_regex_exec_dfa(void *h, const char *text, int text_len, int start) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re) return 0;
+
+    if (re->lit_is_whole && !(re->flags & LS_RE_IGNORECASE)) {
+        /* Tier 1 is engine-agnostic (no SPLIT, no onepass/DFA/general
+           distinction applies to it at all) -- delegate rather than
+           duplicate. __ls_regex_exec clears dfa_only_valid itself. */
+        return __ls_regex_exec(h, text, text_len, start);
+    }
+
+    if (!re->dfa_eligible) {
+        re->dfa_only_valid = 0;
+        return __ls_regex_exec(h, text, text_len, start);
+    }
+
+    int n = re_exec_vm_dfa(re, text, text_len, start);
+    if (n > 0) {
+        re->dfa_only_valid    = 1;
+        re->dfa_only_text     = text;
+        re->dfa_only_text_len = text_len;
+        re->dfa_only_start    = start;
+    } else {
+        re->dfa_only_valid = 0;
+    }
+    return n;
+}
+
 int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
     ReHandle *re = (ReHandle *)h;
     if (!re) return 0;
+
+    /* Defensive: this handle's captures are about to be fully repopulated
+       by one of the two engines below (or the tier-1 literal path just
+       past it), so any stale "last exec was DFA-only" bookkeeping from a
+       PREVIOUS call must not survive -- otherwise a later
+       __ls_regex_cap_start(group>0) could trigger a needless (though not
+       wrong -- re_dfa_fill_captures is idempotent and re-derives the same
+       answer either way) re-exec. No current call site mixes
+       __ls_regex_exec_dfa and __ls_regex_exec on the same handle (see the
+       D1 report), but this keeps that combination safe by construction
+       rather than by convention. */
+    re->dfa_only_valid = 0;
 
     /* Tier 1: the pattern is nothing but a literal -- answer with the shared
        BMH/Sunday search and skip BOTH engines entirely. Checked here, once,
@@ -2411,12 +2924,17 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
 int __ls_regex_cap_start(void *h, int group) {
     ReHandle *re = (ReHandle *)h;
     if (!re || group < 0 || group >= MAX_GROUPS) return -1;
+    /* Group 0 is always real (the DFA-only path computes its exact span);
+       only group>0 can be missing, and only after a DFA-only exec -- see
+       re_dfa_fill_captures. */
+    if (group > 0) re_dfa_fill_captures(re);
     return re->saved[group * 2];
 }
 
 int __ls_regex_cap_len(void *h, int group) {
     ReHandle *re = (ReHandle *)h;
     if (!re || group < 0 || group >= MAX_GROUPS) return -1;
+    if (group > 0) re_dfa_fill_captures(re);
     int s = re->saved[group * 2];
     int e = re->saved[group * 2 + 1];
     if (s < 0 || e < 0) return -1;
@@ -2448,6 +2966,19 @@ int __ls_regex_is_onepass(void *h) {
    benchmark shapes route through the new engine. */
 long long __ls_regex_debug_onepass_execs(void) { return re_onepass_debug_execs; }
 long long __ls_regex_debug_general_execs(void) { return re_general_debug_execs; }
+/* Same counter contract as the two above (incremented once per candidate
+   start position tried, i.e. once per vm_exec_dfa call), for the D1 lazy
+   DFA path -- see re_exec_vm_dfa. */
+long long __ls_regex_debug_dfa_execs(void) { return re_dfa_debug_execs; }
+
+/* Diagnostic query surface for re_dfa_check_eligible (see the comment
+   there). __ls_regex_exec_dfa routes to the DFA walk exactly when this
+   returns nonzero (whole-literal patterns aside -- those always use the
+   engine-agnostic tier-1 path regardless of this flag). */
+int __ls_regex_is_dfa_eligible(void *h) {
+    ReHandle *re = (ReHandle *)h;
+    return re ? re->dfa_eligible : 0;
+}
 
 int __ls_regex_named_count(void *h) {
     ReHandle *re = (ReHandle *)h;
