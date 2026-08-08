@@ -1791,6 +1791,23 @@ typedef struct {
 
 static void tl_init(ThreadList *tl) { tl->count = 0; }
 
+/* Reverse ReThread entries in the inclusive range [lo, hi] in place. Used
+   both by add_thread's OP_SPLIT case (to restore ascending priority order
+   after exploring the higher-priority branch first -- see the comment
+   there) and by vm_exec_range's per-position loop (to restore priority
+   order across multiple top-level threads -- see the comment above that
+   loop). No-op if lo >= hi. Defined ahead of add_thread because add_thread
+   now needs it too. */
+static void reverse_thread_range(ReThread *threads, int lo, int hi) {
+    while (lo < hi) {
+        ReThread tmp = threads[lo];
+        threads[lo] = threads[hi];
+        threads[hi] = tmp;
+        lo++;
+        hi--;
+    }
+}
+
 /* Forward declarations — both defined after add_thread.
  *
  * vm_exec_range now takes its two ThreadList working buffers as parameters
@@ -1835,13 +1852,72 @@ static int add_thread(const ReHandle *re, ThreadList *next, Visited *vis,
             continue;
 
         case OP_SPLIT: {
-            /* Fork: process B branch recursively, continue with A.
-             * Propagate B's match result into found_any so callers know. */
-            ReThread t2 = t;
-            t2.pc = in->operand_b;
-            found_any |= add_thread(re, next, vis, t2, text, text_len, pos, match_saved);
-            t.pc = in->operand_a;
-            continue;
+            /* Explore the higher-priority A branch FIRST (both operands are
+               "offset A (greedy/preferred first), offset B" per the OP_SPLIT
+               comment in the ReOp enum above). This matters for two
+               distinct reasons, both about which branch gets "first claim"
+               when A and B can reach the *same* downstream pc (an ambiguous
+               / self-overlapping split -- e.g. nested quantifiers where an
+               inner subexpression can match empty, or two alternatives that
+               both accept the empty string):
+
+               1. `vis` dedup is shared across both branches at this
+                  position. Whichever branch's traversal reaches a shared pc
+                  FIRST claims it (visited_set); the other is silently cut
+                  short there (visited_test). For leftmost-first semantics,
+                  the higher-priority branch must get first claim, so it
+                  must run first -- not the other way around.
+               2. If A's own subtree reaches OP_MATCH, B is *strictly*
+                  lower priority than an already-found match and must
+                  contribute nothing at all: not to `next` (a surviving
+                  low-priority thread there could complete a match at a
+                  later position and wrongly overwrite match_saved, since
+                  nothing else in this engine re-checks priority across
+                  positions) and not another, competing write to
+                  match_saved. So B is skipped entirely, not just
+                  out-prioritized, whenever A already matched.
+
+               (This inverts the previous B-then-A order, which gave B first
+               claim on shared pcs and let B's leftover `next` entries
+               outlive an A-side match found later in the same closure --
+               the root cause of the nested-repetition / ambiguous-
+               alternation capture bugs this comment's commit fixes.)
+
+               `next` order: every caller of `next` (this function's own
+               parent split, if nested, and vm_exec_range's per-position
+               loop) requires ASCENDING priority order -- lowest-priority
+               entry at the lowest index, so "cur->threads[count-1] is the
+               highest-priority thread" holds. Running A first appends A's
+               entries before B's, i.e. DESCENDING order for this split's
+               own contribution; swap the two resulting blocks back into
+               ascending order the same way vm_exec_range's per-position
+               loop restores it across multiple top-level threads: full-
+               range reverse, then reverse each block back to its own
+               internal order. */
+            int base = next->count;
+
+            ReThread ta = t;
+            ta.pc = in->operand_a;
+            int found_a = add_thread(re, next, vis, ta, text, text_len, pos, match_saved);
+            int len_a = next->count - base;
+
+            int found_b = 0;
+            int len_b = 0;
+            if (!found_a) {
+                ReThread tb = t;
+                tb.pc = in->operand_b;
+                int b_before = next->count;
+                found_b = add_thread(re, next, vis, tb, text, text_len, pos, match_saved);
+                len_b = next->count - b_before;
+            }
+
+            if (len_a > 0 && len_b > 0) {
+                reverse_thread_range(next->threads, base, base + len_a + len_b - 1);
+                reverse_thread_range(next->threads, base, base + len_b - 1);
+                reverse_thread_range(next->threads, base + len_b, base + len_a + len_b - 1);
+            }
+
+            return found_any || found_a || found_b;
         }
 
         case OP_JUMP:
@@ -1930,19 +2006,8 @@ static int add_thread(const ReHandle *re, ThreadList *next, Visited *vis,
    position. Callers must each own a buffer pair that is not shared with any
    other *concurrently in-progress* vm_exec_range call -- see
    vm_exec_lookahead below for why the recursive lookahead path needs its
-   own pair rather than reusing the outer match's. */
-/* Reverse ReThread entries in the inclusive range [lo, hi] in place. Used by
-   vm_exec_range to restore priority order in a thread list -- see the
-   comment above its per-position loop. No-op if lo >= hi. */
-static void reverse_thread_range(ReThread *threads, int lo, int hi) {
-    while (lo < hi) {
-        ReThread tmp = threads[lo];
-        threads[lo] = threads[hi];
-        threads[hi] = tmp;
-        lo++;
-        hi--;
-    }
-}
+   own pair rather than reusing the outer match's. reverse_thread_range is
+   now defined above (ahead of add_thread), which also uses it. */
 
 static int vm_exec_range(const ReHandle *re, const char *text, int text_len,
                          int start, int pc_start, int pc_end,

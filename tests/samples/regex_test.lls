@@ -100,6 +100,56 @@ def test_alternation_priority() {
     @print("PASS: alternation_priority")
 }
 
+def test_nested_repetition_capture() {
+    // Regression for the general Pike VM's OP_SPLIT epsilon-closure order:
+    // add_thread used to recurse into the LOWER-priority branch (operand_b)
+    // first and only continue into the HIGHER-priority branch (operand_a,
+    // "try body first"/"greedy first" per the ReOp enum comment) afterward.
+    // Two observable failure classes, both from a lower-priority branch
+    // getting first claim on a pc it shares with a higher-priority branch
+    // via the per-position `vis` dedup set:
+    //
+    //   1. Alternation priority: when the higher-priority branch's own
+    //      path to OP_MATCH is BLOCKED by a lower-priority branch that
+    //      already claimed the shared OP_MATCH pc (or a surviving
+    //      lower-priority thread outlives a higher-priority match and
+    //      wrongly overwrites it later), the wrong alternative wins.
+    //   2. Captures inside a repeated group: a group nested in `(...)+`/
+    //      `(...)*`  retained a value from an earlier iteration instead of
+    //      the correct (possibly empty, on the final zero-width iteration)
+    //      last-executed SAVE.
+    //
+    // Confirmed against Python's `re` (leftmost-first via backtracking).
+    // Before the fix (verified by rebuilding pre-fix and re-running this
+    // exact assertion set): group1 came back "c" for case 1, "baa" for
+    // case 2, and the whole match came back "ac" for case 3.
+
+    // Case 1: repeated group whose last iteration decides the value.
+    Vec(Str) c1 = re.capture("caabc", "[^a]+[a-c]([a-c]+[a-c]?)+")
+    if c1.len() != 2 { @print(f"FAIL: nested_rep c1 length {c1.len()}"); return }
+    if !c1[0].eq?("caabc") { @print(f"FAIL: nested_rep c1 group0 {c1[0]}"); return }
+    if !c1[1].eq?("abc") { @print(f"FAIL: nested_rep c1 group1 {c1[1]}"); return }
+
+    // Case 2: a group two levels deep in nested repetition ends up empty
+    // because its last iteration is zero-width.
+    Vec(Str) c2 = re.capture("bbbaac", "a*(.+(b?a?a*)+a?)+.+")
+    if c2.len() != 3 { @print(f"FAIL: nested_rep c2 length {c2.len()}"); return }
+    if !c2[0].eq?("bbbaac") { @print(f"FAIL: nested_rep c2 group0 {c2[0]}"); return }
+    if !c2[1].eq?("bbbaa") { @print(f"FAIL: nested_rep c2 group1 {c2[1]}"); return }
+    if !c2[2].eq?("") { @print(f"FAIL: nested_rep c2 group2 {c2[2]}"); return }
+
+    // Case 3: alternation where the higher-priority branch matches empty
+    // at position 0 -- it must win over a lower-priority branch that would
+    // otherwise consume real input later in the same closure.
+    Vec(Str) c3 = re.capture("acbcaabc", "((c?)|[ab]a?(a[a-c]?.|c?a?))")
+    if c3.len() != 4 { @print(f"FAIL: nested_rep c3 length {c3.len()}"); return }
+    if !c3[0].eq?("") { @print(f"FAIL: nested_rep c3 group0 {c3[0]}"); return }
+    if !c3[1].eq?("") { @print(f"FAIL: nested_rep c3 group1 {c3[1]}"); return }
+    if !c3[2].eq?("") { @print(f"FAIL: nested_rep c3 group2 {c3[2]}"); return }
+
+    @print("PASS: nested_repetition_capture")
+}
+
 def test_find() {
     Option(Str) m = re.find("price: 42.5 USD", "\\d+\\.\\d+")
     match m {
@@ -653,6 +703,7 @@ def main() {
     test_charclass()
     test_alternation()
     test_alternation_priority()
+    test_nested_repetition_capture()
     test_find()
     test_capture()
     test_capture_all_spans()
