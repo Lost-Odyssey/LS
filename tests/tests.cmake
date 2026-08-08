@@ -4463,6 +4463,19 @@ set_tests_properties(test_regex_object PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- std.regex D1 lazy DFA (match-only fast path) — JIT + AOT ----
+add_test(
+    NAME test_regex_dfa
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_dfa.cmake
+)
+set_tests_properties(test_regex_dfa PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- VR-LIM-018 / F6: cross-module generic method resolution ----
 # Consumer matches an imported enum's Vec(T) payload and calls Vec methods on
 # the binder, without importing std.vec directly (transitive template pull).
