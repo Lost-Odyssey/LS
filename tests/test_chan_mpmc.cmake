@@ -6,6 +6,10 @@
 # Soundness via JIT + repeated AOT runs with a timeout guard.
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB (repo root → LS_HOME).
+#
+# @subsystem stdlib/concurrency
+# @guards std.chan MPMC blocking
+# @sources lib/std/sync/chan.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

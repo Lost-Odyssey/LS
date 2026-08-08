@@ -2,6 +2,10 @@
 # 两层分类器前向：随机初始化 → from_vec/normals → matmul+广播 bias → relu → softmax
 # → argmax_rows 预测。seed 决定性，断言形状/概率分布合法/预测在类别范围内。
 # JIT + AOT + memcheck 0/0/0。
+#
+# @subsystem stdlib/numeric
+# @guards std.tensor end-to-end MLP demo
+# @sources lib/std/sci/tensor.lls
 cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

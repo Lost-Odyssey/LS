@@ -1,6 +1,10 @@
 # Step 4 / Gate M0 — hand-written RawVecI (POD) over raw malloc/realloc/free +
 # sizeof + p[i]. __drop frees the buffer once; memcheck 0/0/0 despite the
 # realloc migration chain. JIT + AOT + memcheck.
+#
+# @subsystem stdlib/containers
+# @guards RawVec Step 4 / Gate M0 hand-written POD vector
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

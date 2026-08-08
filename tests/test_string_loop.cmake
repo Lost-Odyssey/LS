@@ -1,5 +1,9 @@
 # test_string_loop.cmake — bug #26: string method temp allocas in loop → JIT
 # stack overflow. n=200000 would crash before the entry-block-alloca fix.
+#
+# @subsystem codegen/struct
+# @guards Bug #26 loop-body temp allocas -> JIT stack overflow
+# @sources codegen_own.c:cg_spill_owned_rvalue
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/string_loop_test.lls")

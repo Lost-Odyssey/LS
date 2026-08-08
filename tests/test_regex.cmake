@@ -1,4 +1,16 @@
 # test_regex.cmake — Tests for std.regex (Pike VM NFA engine)
+#
+# `std.regex`: the Pike VM NFA engine (runtime/ls_regex.c).
+#
+# An NFA simulation rather than backtracking, which is a deliberate choice -- it
+# gives linear time on inputs that make a backtracking engine explode. The corpus
+# therefore covers the constructs where the two approaches differ observably:
+# alternation with a shared prefix, nested quantifiers, and captures under
+# repetition.
+#
+# @subsystem stdlib/text
+# @guards std.regex Pike VM NFA engine
+# @sources runtime/ls_regex.c
 
 if(DEFINED ENV{CMAKE_SOURCE_DIR_OVERRIDE})
     set(_root "$ENV{CMAKE_SOURCE_DIR_OVERRIDE}")

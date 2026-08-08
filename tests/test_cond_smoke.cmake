@@ -7,6 +7,10 @@
 #
 # This is infrastructure validation: it proves the 2-arg sync intrinsic plumbing
 # (checker arity, codegen lowering, jit REG) is sound before Ring/Chan land.
+#
+# @subsystem stdlib/concurrency
+# @guards std.chan Phase 0 condition-variable intrinsics
+# @sources checker_call.c:check_builtin_sync
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")

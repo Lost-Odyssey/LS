@@ -108,98 +108,115 @@ target triple = "x86_64-pc-windows-msvc"
 @.ls.strlit.81 = private unnamed_addr constant [5 x i8] c"true\00", align 1
 @.ls.strlit.82 = private unnamed_addr constant [6 x i8] c"false\00", align 1
 @.ls.strlit.83 = private unnamed_addr constant [13 x i8] c"invalid bool\00", align 1
-@.ls.strlit.84 = private unnamed_addr constant [7 x i8] c"even: \00", align 1
-@.ls.strlit.85 = private unnamed_addr constant [13 x i8] c"heap payload\00", align 1
-@.ls.strlit.86 = private unnamed_addr constant [6 x i8] c"odd: \00", align 1
-@.ls.strlit.87 = private unnamed_addr constant [19 x i8] c"heap error payload\00", align 1
-@.ls.strlit.88 = private unnamed_addr constant [6 x i8] c"neg: \00", align 1
-@.ls.strlit.89 = private unnamed_addr constant [7 x i8] c"no vec\00", align 1
+@.ls.strlit.84 = private unnamed_addr constant [13 x i8] c"empty string\00", align 1
+@.ls.strlit.85 = private unnamed_addr constant [10 x i8] c"no digits\00", align 1
+@.ls.strlit.86 = private unnamed_addr constant [14 x i8] c"no hex digits\00", align 1
+@.ls.strlit.87 = private unnamed_addr constant [18 x i8] c"invalid hex digit\00", align 1
+@.ls.strlit.88 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.89 = private unnamed_addr constant [13 x i8] c"empty string\00", align 1
+@.ls.strlit.90 = private unnamed_addr constant [10 x i8] c"no digits\00", align 1
+@.ls.strlit.91 = private unnamed_addr constant [14 x i8] c"no hex digits\00", align 1
+@.ls.strlit.92 = private unnamed_addr constant [18 x i8] c"invalid hex digit\00", align 1
+@.ls.strlit.93 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.94 = private unnamed_addr constant [13 x i8] c"empty string\00", align 1
+@.ls.strlit.95 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.96 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.97 = private unnamed_addr constant [10 x i8] c"no digits\00", align 1
+@.ls.strlit.98 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.99 = private unnamed_addr constant [10 x i8] c"no digits\00", align 1
+@.ls.strlit.100 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.101 = private unnamed_addr constant [7 x i8] c"even: \00", align 1
+@.ls.strlit.102 = private unnamed_addr constant [13 x i8] c"heap payload\00", align 1
+@.ls.strlit.103 = private unnamed_addr constant [6 x i8] c"odd: \00", align 1
+@.ls.strlit.104 = private unnamed_addr constant [19 x i8] c"heap error payload\00", align 1
+@.ls.strlit.105 = private unnamed_addr constant [6 x i8] c"neg: \00", align 1
+@.ls.strlit.106 = private unnamed_addr constant [7 x i8] c"no vec\00", align 1
 @fstr.fmt = private unnamed_addr constant [9 x i8] c"elem %d \00", align 1
-@.ls.strlit.90 = private unnamed_addr constant [21 x i8] c"padded to force heap\00", align 1
-@.ls.strlit.91 = private unnamed_addr constant [32 x i8] c"default after non-returning arm\00", align 1
-@.ls.strlit.92 = private unnamed_addr constant [30 x i8] c"FAIL: bare_vec unexpected err\00", align 1
-@.ls.fmt.93 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.94 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.95 = private unnamed_addr constant [31 x i8] c"alpha (outer local kept alive)\00", align 1
-@.ls.strlit.96 = private unnamed_addr constant [17 x i8] c"beta block tail \00", align 1
-@.ls.strlit.97 = private unnamed_addr constant [5 x i8] c"heap\00", align 1
-@fstr.fmt.98 = private unnamed_addr constant [35 x i8] c"other %d padded to spill onto heap\00", align 1
-@.ls.strlit.99 = private unnamed_addr constant [28 x i8] c"FAIL: outer local corrupted\00", align 1
-@.ls.fmt.100 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.101 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.102 = private unnamed_addr constant [10 x i8] c"cond one \00", align 1
-@.ls.strlit.103 = private unnamed_addr constant [5 x i8] c"heap\00", align 1
-@fstr.fmt.104 = private unnamed_addr constant [23 x i8] c"cond two-and-a-half %f\00", align 1
-@.ls.strlit.105 = private unnamed_addr constant [11 x i8] c" after try\00", align 1
-@fstr.fmt.106 = private unnamed_addr constant [11 x i8] c"carton %d \00", align 1
-@.ls.strlit.107 = private unnamed_addr constant [9 x i8] c"heap tag\00", align 1
-@.ls.strlit.108 = private unnamed_addr constant [27 x i8] c"FAIL: binder tag corrupted\00", align 1
-@.ls.fmt.109 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.110 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@fstr.fmt.111 = private unnamed_addr constant [8 x i8] c"none %d\00", align 1
-@fstr.fmt.112 = private unnamed_addr constant [10 x i8] c"churn %d \00", align 1
-@.ls.strlit.113 = private unnamed_addr constant [33 x i8] c"0123456789abcdef0123456789abcdef\00", align 1
+@.ls.strlit.107 = private unnamed_addr constant [21 x i8] c"padded to force heap\00", align 1
+@.ls.strlit.108 = private unnamed_addr constant [32 x i8] c"default after non-returning arm\00", align 1
+@.ls.strlit.109 = private unnamed_addr constant [30 x i8] c"FAIL: bare_vec unexpected err\00", align 1
+@.ls.fmt.110 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.111 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.112 = private unnamed_addr constant [31 x i8] c"alpha (outer local kept alive)\00", align 1
+@.ls.strlit.113 = private unnamed_addr constant [17 x i8] c"beta block tail \00", align 1
+@.ls.strlit.114 = private unnamed_addr constant [5 x i8] c"heap\00", align 1
+@fstr.fmt.115 = private unnamed_addr constant [35 x i8] c"other %d padded to spill onto heap\00", align 1
+@.ls.strlit.116 = private unnamed_addr constant [28 x i8] c"FAIL: outer local corrupted\00", align 1
+@.ls.fmt.117 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.118 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.119 = private unnamed_addr constant [10 x i8] c"cond one \00", align 1
+@.ls.strlit.120 = private unnamed_addr constant [5 x i8] c"heap\00", align 1
+@fstr.fmt.121 = private unnamed_addr constant [23 x i8] c"cond two-and-a-half %f\00", align 1
+@.ls.strlit.122 = private unnamed_addr constant [11 x i8] c" after try\00", align 1
+@fstr.fmt.123 = private unnamed_addr constant [11 x i8] c"carton %d \00", align 1
+@.ls.strlit.124 = private unnamed_addr constant [9 x i8] c"heap tag\00", align 1
+@.ls.strlit.125 = private unnamed_addr constant [27 x i8] c"FAIL: binder tag corrupted\00", align 1
+@.ls.fmt.126 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.127 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@fstr.fmt.128 = private unnamed_addr constant [8 x i8] c"none %d\00", align 1
+@fstr.fmt.129 = private unnamed_addr constant [10 x i8] c"churn %d \00", align 1
+@.ls.strlit.130 = private unnamed_addr constant [33 x i8] c"0123456789abcdef0123456789abcdef\00", align 1
 @fuw.fmt = private unnamed_addr constant [87 x i8] c"[unwrap] %d:%d: unwrap failed: expected Some, got None (type: Option(Block() -> int))\0A\00", align 1
-@fuw.fmt.114 = private unnamed_addr constant [87 x i8] c"[unwrap] %d:%d: unwrap failed: expected Some, got None (type: Option(Block() -> int))\0A\00", align 1
-@.ls.strlit.115 = private unnamed_addr constant [13 x i8] c"FAIL: nested\00", align 1
-@.ls.fmt.116 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.117 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.118 = private unnamed_addr constant [16 x i8] c"FAIL: loop_drop\00", align 1
-@.ls.fmt.119 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.120 = private unnamed_addr constant [5 x i8] c" %d\0A\00", align 1
-@.ls.strlit.121 = private unnamed_addr constant [12 x i8] c"FAIL: early\00", align 1
-@.ls.fmt.122 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.123 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.124 = private unnamed_addr constant [11 x i8] c"FAIL: pick\00", align 1
-@.ls.fmt.125 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.126 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.127 = private unnamed_addr constant [22 x i8] c"fallback heap string \00", align 1
-@.ls.strlit.128 = private unnamed_addr constant [7 x i8] c"padded\00", align 1
-@.ls.strlit.129 = private unnamed_addr constant [13 x i8] c"FAIL: pick_f\00", align 1
-@.ls.fmt.130 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.131 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.132 = private unnamed_addr constant [24 x i8] c"FAIL: fallback consumed\00", align 1
+@fuw.fmt.131 = private unnamed_addr constant [87 x i8] c"[unwrap] %d:%d: unwrap failed: expected Some, got None (type: Option(Block() -> int))\0A\00", align 1
+@.ls.strlit.132 = private unnamed_addr constant [13 x i8] c"FAIL: nested\00", align 1
 @.ls.fmt.133 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
 @.ls.fmt.134 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@fstr.fmt.135 = private unnamed_addr constant [15 x i8] c"BAD ok path %d\00", align 1
-@fstr.fmt.136 = private unnamed_addr constant [16 x i8] c"BAD err path %d\00", align 1
-@fstr.fmt.137 = private unnamed_addr constant [20 x i8] c"BAD arm-err path %d\00", align 1
-@.ls.strlit.138 = private unnamed_addr constant [5 x i8] c"even\00", align 1
-@.ls.strlit.139 = private unnamed_addr constant [20 x i8] c"FAIL: try_in_arm ok\00", align 1
-@.ls.fmt.140 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.141 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.142 = private unnamed_addr constant [4 x i8] c"odd\00", align 1
-@.ls.strlit.143 = private unnamed_addr constant [21 x i8] c"FAIL: try_in_arm err\00", align 1
-@.ls.fmt.144 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.145 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.146 = private unnamed_addr constant [4 x i8] c"odd\00", align 1
-@.ls.strlit.147 = private unnamed_addr constant [25 x i8] c"FAIL: try_in_arm arm-err\00", align 1
-@.ls.fmt.148 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.149 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.150 = private unnamed_addr constant [5 x i8] c"even\00", align 1
-@.ls.strlit.151 = private unnamed_addr constant [22 x i8] c"FAIL: binder_field ok\00", align 1
-@.ls.fmt.152 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.153 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.154 = private unnamed_addr constant [4 x i8] c"odd\00", align 1
-@.ls.strlit.155 = private unnamed_addr constant [23 x i8] c"FAIL: binder_field err\00", align 1
-@.ls.fmt.156 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.157 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.158 = private unnamed_addr constant [5 x i8] c"none\00", align 1
-@.ls.strlit.159 = private unnamed_addr constant [24 x i8] c"FAIL: binder_field none\00", align 1
-@.ls.fmt.160 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.161 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.ls.strlit.162 = private unnamed_addr constant [21 x i8] c"FAIL: binder_move ok\00", align 1
-@.ls.fmt.163 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.164 = private unnamed_addr constant [5 x i8] c" %d\0A\00", align 1
-@.ls.strlit.165 = private unnamed_addr constant [22 x i8] c"FAIL: binder_move err\00", align 1
-@.ls.fmt.166 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.167 = private unnamed_addr constant [5 x i8] c" %d\0A\00", align 1
-@.ls.strlit.168 = private unnamed_addr constant [18 x i8] c"FAIL: deep_blocks\00", align 1
+@.ls.strlit.135 = private unnamed_addr constant [16 x i8] c"FAIL: loop_drop\00", align 1
+@.ls.fmt.136 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.137 = private unnamed_addr constant [5 x i8] c" %d\0A\00", align 1
+@.ls.strlit.138 = private unnamed_addr constant [12 x i8] c"FAIL: early\00", align 1
+@.ls.fmt.139 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.140 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.141 = private unnamed_addr constant [11 x i8] c"FAIL: pick\00", align 1
+@.ls.fmt.142 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.143 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.144 = private unnamed_addr constant [22 x i8] c"fallback heap string \00", align 1
+@.ls.strlit.145 = private unnamed_addr constant [7 x i8] c"padded\00", align 1
+@.ls.strlit.146 = private unnamed_addr constant [13 x i8] c"FAIL: pick_f\00", align 1
+@.ls.fmt.147 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.148 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.149 = private unnamed_addr constant [24 x i8] c"FAIL: fallback consumed\00", align 1
+@.ls.fmt.150 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.151 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@fstr.fmt.152 = private unnamed_addr constant [15 x i8] c"BAD ok path %d\00", align 1
+@fstr.fmt.153 = private unnamed_addr constant [16 x i8] c"BAD err path %d\00", align 1
+@fstr.fmt.154 = private unnamed_addr constant [20 x i8] c"BAD arm-err path %d\00", align 1
+@.ls.strlit.155 = private unnamed_addr constant [5 x i8] c"even\00", align 1
+@.ls.strlit.156 = private unnamed_addr constant [20 x i8] c"FAIL: try_in_arm ok\00", align 1
+@.ls.fmt.157 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.158 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.159 = private unnamed_addr constant [4 x i8] c"odd\00", align 1
+@.ls.strlit.160 = private unnamed_addr constant [21 x i8] c"FAIL: try_in_arm err\00", align 1
+@.ls.fmt.161 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.162 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.163 = private unnamed_addr constant [4 x i8] c"odd\00", align 1
+@.ls.strlit.164 = private unnamed_addr constant [25 x i8] c"FAIL: try_in_arm arm-err\00", align 1
+@.ls.fmt.165 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.166 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.167 = private unnamed_addr constant [5 x i8] c"even\00", align 1
+@.ls.strlit.168 = private unnamed_addr constant [22 x i8] c"FAIL: binder_field ok\00", align 1
 @.ls.fmt.169 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.170 = private unnamed_addr constant [5 x i8] c" %d\0A\00", align 1
-@.ls.strlit.171 = private unnamed_addr constant [17 x i8] c"MATCHSTRESS PASS\00", align 1
-@.ls.fmt.172 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
-@.ls.fmt.173 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.fmt.170 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.171 = private unnamed_addr constant [4 x i8] c"odd\00", align 1
+@.ls.strlit.172 = private unnamed_addr constant [23 x i8] c"FAIL: binder_field err\00", align 1
+@.ls.fmt.173 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.174 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.175 = private unnamed_addr constant [5 x i8] c"none\00", align 1
+@.ls.strlit.176 = private unnamed_addr constant [24 x i8] c"FAIL: binder_field none\00", align 1
+@.ls.fmt.177 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.178 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.ls.strlit.179 = private unnamed_addr constant [21 x i8] c"FAIL: binder_move ok\00", align 1
+@.ls.fmt.180 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.181 = private unnamed_addr constant [5 x i8] c" %d\0A\00", align 1
+@.ls.strlit.182 = private unnamed_addr constant [22 x i8] c"FAIL: binder_move err\00", align 1
+@.ls.fmt.183 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.184 = private unnamed_addr constant [5 x i8] c" %d\0A\00", align 1
+@.ls.strlit.185 = private unnamed_addr constant [18 x i8] c"FAIL: deep_blocks\00", align 1
+@.ls.fmt.186 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.187 = private unnamed_addr constant [5 x i8] c" %d\0A\00", align 1
+@.ls.strlit.188 = private unnamed_addr constant [17 x i8] c"MATCHSTRESS PASS\00", align 1
+@.ls.fmt.189 = private unnamed_addr constant [5 x i8] c"%.*s\00", align 1
+@.ls.fmt.190 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
 
 declare i32 @printf(ptr %0, ...)
 
@@ -388,25 +405,39 @@ declare ptr @__ls_readline_take()
 
 declare ptr @__ls_readline_ptr()
 
-declare i32 @__ls_regex_compile(ptr %0, i32 %1)
+declare ptr @__ls_regex_compile(ptr %0, i32 %1)
 
-declare void @__ls_regex_free(i32 %0)
+declare void @__ls_regex_free(ptr %0)
+
+declare ptr @__ls_regex_cached(ptr %0, i32 %1)
 
 declare ptr @__ls_regex_last_error()
 
-declare i32 @__ls_regex_exec(i32 %0, ptr %1, i32 %2, i32 %3)
+declare i32 @__ls_regex_exec(ptr %0, ptr %1, i32 %2, i32 %3)
 
-declare i32 @__ls_regex_cap_start(i32 %0)
+declare i32 @__ls_regex_cap_start(ptr %0, i32 %1)
 
-declare i32 @__ls_regex_cap_len(i32 %0)
+declare i32 @__ls_regex_cap_len(ptr %0, i32 %1)
 
-declare i32 @__ls_regex_group_count(i32 %0)
+declare i32 @__ls_regex_group_count(ptr %0)
 
-declare i32 @__ls_regex_named_count(i32 %0)
+declare i32 @__ls_regex_is_onepass(ptr %0)
 
-declare ptr @__ls_regex_named_name(i32 %0, i32 %1)
+declare i64 @__ls_regex_debug_onepass_execs()
 
-declare i32 @__ls_regex_named_index(i32 %0, i32 %1)
+declare i64 @__ls_regex_debug_general_execs()
+
+declare i64 @__ls_regex_debug_dfa_execs()
+
+declare i32 @__ls_regex_exec_dfa(ptr %0, ptr %1, i32 %2, i32 %3)
+
+declare i32 @__ls_regex_is_dfa_eligible(ptr %0)
+
+declare i32 @__ls_regex_named_count(ptr %0)
+
+declare ptr @__ls_regex_named_name(ptr %0, i32 %1)
+
+declare i32 @__ls_regex_named_index(ptr %0, i32 %1)
 
 define internal i64 @std_core_hash__fx_seed() {
 entry:
@@ -1650,6 +1681,14 @@ entry:
   %len = load i32, ptr %field, align 4
   %eq = icmp eq i32 %len, 0
   ret i1 %eq
+}
+
+define i1 @"std_core_str_core__StrSlice.present?"(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0) {
+entry:
+  %field = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr = load ptr, ptr %field, align 8
+  %ne = icmp ne ptr %ptr, null
+  ret i1 %ne
 }
 
 define i32 @"std_core_str_core__StrSlice.at!"(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0, i32 %1) {
@@ -5364,6 +5403,1221 @@ drop.call130:                                     ; preds = %drop.skip026
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.end.p0(i64 immarg %0, ptr nocapture %1) #1
 
+define %"Result(int,std_core_str_core__Str)" @std_core_str_core__StrSlice.to_int(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0) {
+entry:
+  %enum.ctor172 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %enum.ctor155 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %d = alloca i32, align 4
+  %val = alloca i32, align 4
+  %enum.ctor128 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %enum.ctor113 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %dig = alloca i32, align 4
+  %hd = alloca i32, align 4
+  %hv = alloca i32, align 4
+  %enum.ctor62 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %enum.ctor15 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %first = alloca i32, align 4
+  %neg = alloca i1, align 1
+  %i = alloca i32, align 4
+  %enum.ctor = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %n = alloca i32, align 4
+  %field = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 1
+  %len = load i32, ptr %field, align 4
+  store i32 %len, ptr %n, align 4
+  %n1 = load i32, ptr %n, align 4
+  %eq = icmp eq i32 %n1, 0
+  br i1 %eq, label %if.then, label %if.merge
+
+if.then:                                          ; preds = %entry
+  %1 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
+  %disc.p = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 0
+  store i8 1, ptr %disc.p, align 1
+  %payload.p = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 1
+  %field.p = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.84, i32 12, i32 0 }, ptr %field.p, align 8
+  %enum.val = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val
+
+if.merge:                                         ; preds = %entry
+  store i32 0, ptr %i, align 4
+  store i1 false, ptr %neg, align 1
+  %field2 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr = load ptr, ptr %field2, align 8
+  %ptr.idx = getelementptr i8, ptr %ptr, i64 0
+  %ptr.elem = load i8, ptr %ptr.idx, align 1
+  %widen.zext = zext i8 %ptr.elem to i32
+  store i32 %widen.zext, ptr %first, align 4
+  %first3 = load i32, ptr %first, align 4
+  %eq4 = icmp eq i32 %first3, 45
+  br i1 %eq4, label %if.then5, label %if.else
+
+if.then5:                                         ; preds = %if.merge
+  store i1 true, ptr %neg, align 1
+  store i32 1, ptr %i, align 4
+  br label %if.merge6
+
+if.merge6:                                        ; preds = %if.merge10, %if.then5
+  %i11 = load i32, ptr %i, align 4
+  %n12 = load i32, ptr %n, align 4
+  %sge = icmp sge i32 %i11, %n12
+  br i1 %sge, label %if.then13, label %if.merge14
+
+if.else:                                          ; preds = %if.merge
+  %first7 = load i32, ptr %first, align 4
+  %eq8 = icmp eq i32 %first7, 43
+  br i1 %eq8, label %if.then9, label %if.merge10
+
+if.then9:                                         ; preds = %if.else
+  store i32 1, ptr %i, align 4
+  br label %if.merge10
+
+if.merge10:                                       ; preds = %if.then9, %if.else
+  br label %if.merge6
+
+if.then13:                                        ; preds = %if.merge6
+  %2 = call ptr @memset(ptr %enum.ctor15, i32 0, i64 24)
+  %disc.p16 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor15, i32 0, i32 0
+  store i8 1, ptr %disc.p16, align 1
+  %payload.p17 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor15, i32 0, i32 1
+  %field.p18 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p17, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.85, i32 9, i32 0 }, ptr %field.p18, align 8
+  %enum.val19 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor15, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val19
+
+if.merge14:                                       ; preds = %if.merge6
+  %i20 = load i32, ptr %i, align 4
+  %add = add nsw i32 %i20, 1
+  %n21 = load i32, ptr %n, align 4
+  %slt = icmp slt i32 %add, %n21
+  br i1 %slt, label %sc.rhs, label %sc.merge
+
+sc.rhs:                                           ; preds = %if.merge14
+  %field22 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr23 = load ptr, ptr %field22, align 8
+  %i24 = load i32, ptr %i, align 4
+  %pi.idx = sext i32 %i24 to i64
+  %ptr.idx25 = getelementptr i8, ptr %ptr23, i64 %pi.idx
+  %ptr.elem26 = load i8, ptr %ptr.idx25, align 1
+  %widen.zext27 = zext i8 %ptr.elem26 to i32
+  %eq28 = icmp eq i32 %widen.zext27, 48
+  br label %sc.merge
+
+sc.merge:                                         ; preds = %sc.rhs, %if.merge14
+  %sc = phi i1 [ %slt, %if.merge14 ], [ %eq28, %sc.rhs ]
+  br i1 %sc, label %sc.rhs29, label %sc.merge30
+
+sc.rhs29:                                         ; preds = %sc.merge
+  %field31 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr32 = load ptr, ptr %field31, align 8
+  %i33 = load i32, ptr %i, align 4
+  %add34 = add nsw i32 %i33, 1
+  %pi.idx35 = sext i32 %add34 to i64
+  %ptr.idx36 = getelementptr i8, ptr %ptr32, i64 %pi.idx35
+  %ptr.elem37 = load i8, ptr %ptr.idx36, align 1
+  %widen.zext38 = zext i8 %ptr.elem37 to i32
+  %eq39 = icmp eq i32 %widen.zext38, 120
+  br i1 %eq39, label %sc.merge41, label %sc.rhs40
+
+sc.merge30:                                       ; preds = %sc.merge41, %sc.merge
+  %sc52 = phi i1 [ %sc, %sc.merge ], [ %sc51, %sc.merge41 ]
+  br i1 %sc52, label %if.then53, label %if.merge54
+
+sc.rhs40:                                         ; preds = %sc.rhs29
+  %field42 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr43 = load ptr, ptr %field42, align 8
+  %i44 = load i32, ptr %i, align 4
+  %add45 = add nsw i32 %i44, 1
+  %pi.idx46 = sext i32 %add45 to i64
+  %ptr.idx47 = getelementptr i8, ptr %ptr43, i64 %pi.idx46
+  %ptr.elem48 = load i8, ptr %ptr.idx47, align 1
+  %widen.zext49 = zext i8 %ptr.elem48 to i32
+  %eq50 = icmp eq i32 %widen.zext49, 88
+  br label %sc.merge41
+
+sc.merge41:                                       ; preds = %sc.rhs40, %sc.rhs29
+  %sc51 = phi i1 [ %eq39, %sc.rhs29 ], [ %eq50, %sc.rhs40 ]
+  br label %sc.merge30
+
+if.then53:                                        ; preds = %sc.merge30
+  %i55 = load i32, ptr %i, align 4
+  %add56 = add nsw i32 %i55, 2
+  store i32 %add56, ptr %i, align 4
+  %i57 = load i32, ptr %i, align 4
+  %n58 = load i32, ptr %n, align 4
+  %sge59 = icmp sge i32 %i57, %n58
+  br i1 %sge59, label %if.then60, label %if.merge61
+
+if.merge54:                                       ; preds = %sc.merge30
+  store i32 0, ptr %val, align 4
+  br label %while.cond134
+
+if.then60:                                        ; preds = %if.then53
+  %3 = call ptr @memset(ptr %enum.ctor62, i32 0, i64 24)
+  %disc.p63 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor62, i32 0, i32 0
+  store i8 1, ptr %disc.p63, align 1
+  %payload.p64 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor62, i32 0, i32 1
+  %field.p65 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p64, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.86, i32 13, i32 0 }, ptr %field.p65, align 8
+  %enum.val66 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor62, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val66
+
+if.merge61:                                       ; preds = %if.then53
+  store i32 0, ptr %hv, align 4
+  br label %while.cond
+
+while.cond:                                       ; preds = %if.merge84, %if.merge61
+  %i67 = load i32, ptr %i, align 4
+  %n68 = load i32, ptr %n, align 4
+  %slt69 = icmp slt i32 %i67, %n68
+  br i1 %slt69, label %while.body, label %while.end
+
+while.body:                                       ; preds = %while.cond
+  %field70 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr71 = load ptr, ptr %field70, align 8
+  %i72 = load i32, ptr %i, align 4
+  %pi.idx73 = sext i32 %i72 to i64
+  %ptr.idx74 = getelementptr i8, ptr %ptr71, i64 %pi.idx73
+  %ptr.elem75 = load i8, ptr %ptr.idx74, align 1
+  %widen.zext76 = zext i8 %ptr.elem75 to i32
+  store i32 %widen.zext76, ptr %hd, align 4
+  store i32 0, ptr %dig, align 4
+  %hd77 = load i32, ptr %hd, align 4
+  %sge78 = icmp sge i32 %hd77, 48
+  br i1 %sge78, label %sc.rhs79, label %sc.merge80
+
+while.end:                                        ; preds = %while.cond
+  %neg123 = load i1, ptr %neg, align 1
+  br i1 %neg123, label %if.then124, label %if.merge125
+
+sc.rhs79:                                         ; preds = %while.body
+  %hd81 = load i32, ptr %hd, align 4
+  %sle = icmp sle i32 %hd81, 57
+  br label %sc.merge80
+
+sc.merge80:                                       ; preds = %sc.rhs79, %while.body
+  %sc82 = phi i1 [ %sge78, %while.body ], [ %sle, %sc.rhs79 ]
+  br i1 %sc82, label %if.then83, label %if.else85
+
+if.then83:                                        ; preds = %sc.merge80
+  %hd86 = load i32, ptr %hd, align 4
+  %sub = sub nsw i32 %hd86, 48
+  store i32 %sub, ptr %dig, align 4
+  br label %if.merge84
+
+if.merge84:                                       ; preds = %if.merge95, %if.then83
+  %hv118 = load i32, ptr %hv, align 4
+  %mul = mul nsw i32 %hv118, 16
+  %dig119 = load i32, ptr %dig, align 4
+  %add120 = add nsw i32 %mul, %dig119
+  store i32 %add120, ptr %hv, align 4
+  %i121 = load i32, ptr %i, align 4
+  %add122 = add nsw i32 %i121, 1
+  store i32 %add122, ptr %i, align 4
+  br label %while.cond
+
+if.else85:                                        ; preds = %sc.merge80
+  %hd87 = load i32, ptr %hd, align 4
+  %sge88 = icmp sge i32 %hd87, 97
+  br i1 %sge88, label %sc.rhs89, label %sc.merge90
+
+sc.rhs89:                                         ; preds = %if.else85
+  %hd91 = load i32, ptr %hd, align 4
+  %sle92 = icmp sle i32 %hd91, 102
+  br label %sc.merge90
+
+sc.merge90:                                       ; preds = %sc.rhs89, %if.else85
+  %sc93 = phi i1 [ %sge88, %if.else85 ], [ %sle92, %sc.rhs89 ]
+  br i1 %sc93, label %if.then94, label %if.else96
+
+if.then94:                                        ; preds = %sc.merge90
+  %hd97 = load i32, ptr %hd, align 4
+  %sub98 = sub nsw i32 %hd97, 97
+  %add99 = add nsw i32 %sub98, 10
+  store i32 %add99, ptr %dig, align 4
+  br label %if.merge95
+
+if.merge95:                                       ; preds = %if.merge108, %if.then94
+  br label %if.merge84
+
+if.else96:                                        ; preds = %sc.merge90
+  %hd100 = load i32, ptr %hd, align 4
+  %sge101 = icmp sge i32 %hd100, 65
+  br i1 %sge101, label %sc.rhs102, label %sc.merge103
+
+sc.rhs102:                                        ; preds = %if.else96
+  %hd104 = load i32, ptr %hd, align 4
+  %sle105 = icmp sle i32 %hd104, 70
+  br label %sc.merge103
+
+sc.merge103:                                      ; preds = %sc.rhs102, %if.else96
+  %sc106 = phi i1 [ %sge101, %if.else96 ], [ %sle105, %sc.rhs102 ]
+  br i1 %sc106, label %if.then107, label %if.else109
+
+if.then107:                                       ; preds = %sc.merge103
+  %hd110 = load i32, ptr %hd, align 4
+  %sub111 = sub nsw i32 %hd110, 65
+  %add112 = add nsw i32 %sub111, 10
+  store i32 %add112, ptr %dig, align 4
+  br label %if.merge108
+
+if.merge108:                                      ; preds = %if.then107
+  br label %if.merge95
+
+if.else109:                                       ; preds = %sc.merge103
+  %4 = call ptr @memset(ptr %enum.ctor113, i32 0, i64 24)
+  %disc.p114 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor113, i32 0, i32 0
+  store i8 1, ptr %disc.p114, align 1
+  %payload.p115 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor113, i32 0, i32 1
+  %field.p116 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p115, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.87, i32 17, i32 0 }, ptr %field.p116, align 8
+  %enum.val117 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor113, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val117
+
+if.then124:                                       ; preds = %while.end
+  %hv126 = load i32, ptr %hv, align 4
+  %sub127 = sub nsw i32 0, %hv126
+  store i32 %sub127, ptr %hv, align 4
+  br label %if.merge125
+
+if.merge125:                                      ; preds = %if.then124, %while.end
+  %5 = call ptr @memset(ptr %enum.ctor128, i32 0, i64 24)
+  %disc.p129 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor128, i32 0, i32 0
+  store i8 0, ptr %disc.p129, align 1
+  %payload.p130 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor128, i32 0, i32 1
+  %hv131 = load i32, ptr %hv, align 4
+  %field.p132 = getelementptr inbounds { i32 }, ptr %payload.p130, i32 0, i32 0
+  store i32 %hv131, ptr %field.p132, align 4
+  %enum.val133 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor128, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val133
+
+while.cond134:                                    ; preds = %if.merge154, %if.merge54
+  %i137 = load i32, ptr %i, align 4
+  %n138 = load i32, ptr %n, align 4
+  %slt139 = icmp slt i32 %i137, %n138
+  br i1 %slt139, label %while.body135, label %while.end136
+
+while.body135:                                    ; preds = %while.cond134
+  %field140 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr141 = load ptr, ptr %field140, align 8
+  %i142 = load i32, ptr %i, align 4
+  %pi.idx143 = sext i32 %i142 to i64
+  %ptr.idx144 = getelementptr i8, ptr %ptr141, i64 %pi.idx143
+  %ptr.elem145 = load i8, ptr %ptr.idx144, align 1
+  %widen.zext146 = zext i8 %ptr.elem145 to i32
+  store i32 %widen.zext146, ptr %d, align 4
+  %d147 = load i32, ptr %d, align 4
+  %slt148 = icmp slt i32 %d147, 48
+  br i1 %slt148, label %sc.merge150, label %sc.rhs149
+
+while.end136:                                     ; preds = %while.cond134
+  %neg167 = load i1, ptr %neg, align 1
+  br i1 %neg167, label %if.then168, label %if.merge169
+
+sc.rhs149:                                        ; preds = %while.body135
+  %d151 = load i32, ptr %d, align 4
+  %sgt = icmp sgt i32 %d151, 57
+  br label %sc.merge150
+
+sc.merge150:                                      ; preds = %sc.rhs149, %while.body135
+  %sc152 = phi i1 [ %slt148, %while.body135 ], [ %sgt, %sc.rhs149 ]
+  br i1 %sc152, label %if.then153, label %if.merge154
+
+if.then153:                                       ; preds = %sc.merge150
+  %6 = call ptr @memset(ptr %enum.ctor155, i32 0, i64 24)
+  %disc.p156 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor155, i32 0, i32 0
+  store i8 1, ptr %disc.p156, align 1
+  %payload.p157 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor155, i32 0, i32 1
+  %field.p158 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p157, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.88, i32 13, i32 0 }, ptr %field.p158, align 8
+  %enum.val159 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor155, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val159
+
+if.merge154:                                      ; preds = %sc.merge150
+  %val160 = load i32, ptr %val, align 4
+  %mul161 = mul nsw i32 %val160, 10
+  %d162 = load i32, ptr %d, align 4
+  %sub163 = sub nsw i32 %d162, 48
+  %add164 = add nsw i32 %mul161, %sub163
+  store i32 %add164, ptr %val, align 4
+  %i165 = load i32, ptr %i, align 4
+  %add166 = add nsw i32 %i165, 1
+  store i32 %add166, ptr %i, align 4
+  br label %while.cond134
+
+if.then168:                                       ; preds = %while.end136
+  %val170 = load i32, ptr %val, align 4
+  %sub171 = sub nsw i32 0, %val170
+  store i32 %sub171, ptr %val, align 4
+  br label %if.merge169
+
+if.merge169:                                      ; preds = %if.then168, %while.end136
+  %7 = call ptr @memset(ptr %enum.ctor172, i32 0, i64 24)
+  %disc.p173 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor172, i32 0, i32 0
+  store i8 0, ptr %disc.p173, align 1
+  %payload.p174 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor172, i32 0, i32 1
+  %val175 = load i32, ptr %val, align 4
+  %field.p176 = getelementptr inbounds { i32 }, ptr %payload.p174, i32 0, i32 0
+  store i32 %val175, ptr %field.p176, align 4
+  %enum.val177 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor172, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val177
+}
+
+define %"Result(i64,std_core_str_core__Str)" @std_core_str_core__StrSlice.to_i64(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0) {
+entry:
+  %enum.ctor173 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %enum.ctor155 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %d = alloca i32, align 4
+  %val = alloca i64, align 8
+  %enum.ctor128 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %enum.ctor113 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %dig = alloca i32, align 4
+  %hd = alloca i32, align 4
+  %hv = alloca i64, align 8
+  %enum.ctor62 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %enum.ctor15 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %first = alloca i32, align 4
+  %neg = alloca i1, align 1
+  %i = alloca i32, align 4
+  %enum.ctor = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %n = alloca i32, align 4
+  %field = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 1
+  %len = load i32, ptr %field, align 4
+  store i32 %len, ptr %n, align 4
+  %n1 = load i32, ptr %n, align 4
+  %eq = icmp eq i32 %n1, 0
+  br i1 %eq, label %if.then, label %if.merge
+
+if.then:                                          ; preds = %entry
+  %1 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
+  %disc.p = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 0
+  store i8 1, ptr %disc.p, align 1
+  %payload.p = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 1
+  %field.p = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.89, i32 12, i32 0 }, ptr %field.p, align 8
+  %enum.val = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val
+
+if.merge:                                         ; preds = %entry
+  store i32 0, ptr %i, align 4
+  store i1 false, ptr %neg, align 1
+  %field2 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr = load ptr, ptr %field2, align 8
+  %ptr.idx = getelementptr i8, ptr %ptr, i64 0
+  %ptr.elem = load i8, ptr %ptr.idx, align 1
+  %widen.zext = zext i8 %ptr.elem to i32
+  store i32 %widen.zext, ptr %first, align 4
+  %first3 = load i32, ptr %first, align 4
+  %eq4 = icmp eq i32 %first3, 45
+  br i1 %eq4, label %if.then5, label %if.else
+
+if.then5:                                         ; preds = %if.merge
+  store i1 true, ptr %neg, align 1
+  store i32 1, ptr %i, align 4
+  br label %if.merge6
+
+if.merge6:                                        ; preds = %if.merge10, %if.then5
+  %i11 = load i32, ptr %i, align 4
+  %n12 = load i32, ptr %n, align 4
+  %sge = icmp sge i32 %i11, %n12
+  br i1 %sge, label %if.then13, label %if.merge14
+
+if.else:                                          ; preds = %if.merge
+  %first7 = load i32, ptr %first, align 4
+  %eq8 = icmp eq i32 %first7, 43
+  br i1 %eq8, label %if.then9, label %if.merge10
+
+if.then9:                                         ; preds = %if.else
+  store i32 1, ptr %i, align 4
+  br label %if.merge10
+
+if.merge10:                                       ; preds = %if.then9, %if.else
+  br label %if.merge6
+
+if.then13:                                        ; preds = %if.merge6
+  %2 = call ptr @memset(ptr %enum.ctor15, i32 0, i64 24)
+  %disc.p16 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor15, i32 0, i32 0
+  store i8 1, ptr %disc.p16, align 1
+  %payload.p17 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor15, i32 0, i32 1
+  %field.p18 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p17, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.90, i32 9, i32 0 }, ptr %field.p18, align 8
+  %enum.val19 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor15, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val19
+
+if.merge14:                                       ; preds = %if.merge6
+  %i20 = load i32, ptr %i, align 4
+  %add = add nsw i32 %i20, 1
+  %n21 = load i32, ptr %n, align 4
+  %slt = icmp slt i32 %add, %n21
+  br i1 %slt, label %sc.rhs, label %sc.merge
+
+sc.rhs:                                           ; preds = %if.merge14
+  %field22 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr23 = load ptr, ptr %field22, align 8
+  %i24 = load i32, ptr %i, align 4
+  %pi.idx = sext i32 %i24 to i64
+  %ptr.idx25 = getelementptr i8, ptr %ptr23, i64 %pi.idx
+  %ptr.elem26 = load i8, ptr %ptr.idx25, align 1
+  %widen.zext27 = zext i8 %ptr.elem26 to i32
+  %eq28 = icmp eq i32 %widen.zext27, 48
+  br label %sc.merge
+
+sc.merge:                                         ; preds = %sc.rhs, %if.merge14
+  %sc = phi i1 [ %slt, %if.merge14 ], [ %eq28, %sc.rhs ]
+  br i1 %sc, label %sc.rhs29, label %sc.merge30
+
+sc.rhs29:                                         ; preds = %sc.merge
+  %field31 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr32 = load ptr, ptr %field31, align 8
+  %i33 = load i32, ptr %i, align 4
+  %add34 = add nsw i32 %i33, 1
+  %pi.idx35 = sext i32 %add34 to i64
+  %ptr.idx36 = getelementptr i8, ptr %ptr32, i64 %pi.idx35
+  %ptr.elem37 = load i8, ptr %ptr.idx36, align 1
+  %widen.zext38 = zext i8 %ptr.elem37 to i32
+  %eq39 = icmp eq i32 %widen.zext38, 120
+  br i1 %eq39, label %sc.merge41, label %sc.rhs40
+
+sc.merge30:                                       ; preds = %sc.merge41, %sc.merge
+  %sc52 = phi i1 [ %sc, %sc.merge ], [ %sc51, %sc.merge41 ]
+  br i1 %sc52, label %if.then53, label %if.merge54
+
+sc.rhs40:                                         ; preds = %sc.rhs29
+  %field42 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr43 = load ptr, ptr %field42, align 8
+  %i44 = load i32, ptr %i, align 4
+  %add45 = add nsw i32 %i44, 1
+  %pi.idx46 = sext i32 %add45 to i64
+  %ptr.idx47 = getelementptr i8, ptr %ptr43, i64 %pi.idx46
+  %ptr.elem48 = load i8, ptr %ptr.idx47, align 1
+  %widen.zext49 = zext i8 %ptr.elem48 to i32
+  %eq50 = icmp eq i32 %widen.zext49, 88
+  br label %sc.merge41
+
+sc.merge41:                                       ; preds = %sc.rhs40, %sc.rhs29
+  %sc51 = phi i1 [ %eq39, %sc.rhs29 ], [ %eq50, %sc.rhs40 ]
+  br label %sc.merge30
+
+if.then53:                                        ; preds = %sc.merge30
+  %i55 = load i32, ptr %i, align 4
+  %add56 = add nsw i32 %i55, 2
+  store i32 %add56, ptr %i, align 4
+  %i57 = load i32, ptr %i, align 4
+  %n58 = load i32, ptr %n, align 4
+  %sge59 = icmp sge i32 %i57, %n58
+  br i1 %sge59, label %if.then60, label %if.merge61
+
+if.merge54:                                       ; preds = %sc.merge30
+  store i64 0, ptr %val, align 8
+  br label %while.cond134
+
+if.then60:                                        ; preds = %if.then53
+  %3 = call ptr @memset(ptr %enum.ctor62, i32 0, i64 24)
+  %disc.p63 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor62, i32 0, i32 0
+  store i8 1, ptr %disc.p63, align 1
+  %payload.p64 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor62, i32 0, i32 1
+  %field.p65 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p64, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.91, i32 13, i32 0 }, ptr %field.p65, align 8
+  %enum.val66 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor62, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val66
+
+if.merge61:                                       ; preds = %if.then53
+  store i64 0, ptr %hv, align 8
+  br label %while.cond
+
+while.cond:                                       ; preds = %if.merge84, %if.merge61
+  %i67 = load i32, ptr %i, align 4
+  %n68 = load i32, ptr %n, align 4
+  %slt69 = icmp slt i32 %i67, %n68
+  br i1 %slt69, label %while.body, label %while.end
+
+while.body:                                       ; preds = %while.cond
+  %field70 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr71 = load ptr, ptr %field70, align 8
+  %i72 = load i32, ptr %i, align 4
+  %pi.idx73 = sext i32 %i72 to i64
+  %ptr.idx74 = getelementptr i8, ptr %ptr71, i64 %pi.idx73
+  %ptr.elem75 = load i8, ptr %ptr.idx74, align 1
+  %widen.zext76 = zext i8 %ptr.elem75 to i32
+  store i32 %widen.zext76, ptr %hd, align 4
+  store i32 0, ptr %dig, align 4
+  %hd77 = load i32, ptr %hd, align 4
+  %sge78 = icmp sge i32 %hd77, 48
+  br i1 %sge78, label %sc.rhs79, label %sc.merge80
+
+while.end:                                        ; preds = %while.cond
+  %neg123 = load i1, ptr %neg, align 1
+  br i1 %neg123, label %if.then124, label %if.merge125
+
+sc.rhs79:                                         ; preds = %while.body
+  %hd81 = load i32, ptr %hd, align 4
+  %sle = icmp sle i32 %hd81, 57
+  br label %sc.merge80
+
+sc.merge80:                                       ; preds = %sc.rhs79, %while.body
+  %sc82 = phi i1 [ %sge78, %while.body ], [ %sle, %sc.rhs79 ]
+  br i1 %sc82, label %if.then83, label %if.else85
+
+if.then83:                                        ; preds = %sc.merge80
+  %hd86 = load i32, ptr %hd, align 4
+  %sub = sub nsw i32 %hd86, 48
+  store i32 %sub, ptr %dig, align 4
+  br label %if.merge84
+
+if.merge84:                                       ; preds = %if.merge95, %if.then83
+  %hv118 = load i64, ptr %hv, align 8
+  %mul = mul nsw i64 %hv118, 16
+  %dig119 = load i32, ptr %dig, align 4
+  %sext = sext i32 %dig119 to i64
+  %add120 = add nsw i64 %mul, %sext
+  store i64 %add120, ptr %hv, align 8
+  %i121 = load i32, ptr %i, align 4
+  %add122 = add nsw i32 %i121, 1
+  store i32 %add122, ptr %i, align 4
+  br label %while.cond
+
+if.else85:                                        ; preds = %sc.merge80
+  %hd87 = load i32, ptr %hd, align 4
+  %sge88 = icmp sge i32 %hd87, 97
+  br i1 %sge88, label %sc.rhs89, label %sc.merge90
+
+sc.rhs89:                                         ; preds = %if.else85
+  %hd91 = load i32, ptr %hd, align 4
+  %sle92 = icmp sle i32 %hd91, 102
+  br label %sc.merge90
+
+sc.merge90:                                       ; preds = %sc.rhs89, %if.else85
+  %sc93 = phi i1 [ %sge88, %if.else85 ], [ %sle92, %sc.rhs89 ]
+  br i1 %sc93, label %if.then94, label %if.else96
+
+if.then94:                                        ; preds = %sc.merge90
+  %hd97 = load i32, ptr %hd, align 4
+  %sub98 = sub nsw i32 %hd97, 97
+  %add99 = add nsw i32 %sub98, 10
+  store i32 %add99, ptr %dig, align 4
+  br label %if.merge95
+
+if.merge95:                                       ; preds = %if.merge108, %if.then94
+  br label %if.merge84
+
+if.else96:                                        ; preds = %sc.merge90
+  %hd100 = load i32, ptr %hd, align 4
+  %sge101 = icmp sge i32 %hd100, 65
+  br i1 %sge101, label %sc.rhs102, label %sc.merge103
+
+sc.rhs102:                                        ; preds = %if.else96
+  %hd104 = load i32, ptr %hd, align 4
+  %sle105 = icmp sle i32 %hd104, 70
+  br label %sc.merge103
+
+sc.merge103:                                      ; preds = %sc.rhs102, %if.else96
+  %sc106 = phi i1 [ %sge101, %if.else96 ], [ %sle105, %sc.rhs102 ]
+  br i1 %sc106, label %if.then107, label %if.else109
+
+if.then107:                                       ; preds = %sc.merge103
+  %hd110 = load i32, ptr %hd, align 4
+  %sub111 = sub nsw i32 %hd110, 65
+  %add112 = add nsw i32 %sub111, 10
+  store i32 %add112, ptr %dig, align 4
+  br label %if.merge108
+
+if.merge108:                                      ; preds = %if.then107
+  br label %if.merge95
+
+if.else109:                                       ; preds = %sc.merge103
+  %4 = call ptr @memset(ptr %enum.ctor113, i32 0, i64 24)
+  %disc.p114 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor113, i32 0, i32 0
+  store i8 1, ptr %disc.p114, align 1
+  %payload.p115 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor113, i32 0, i32 1
+  %field.p116 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p115, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.92, i32 17, i32 0 }, ptr %field.p116, align 8
+  %enum.val117 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor113, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val117
+
+if.then124:                                       ; preds = %while.end
+  %hv126 = load i64, ptr %hv, align 8
+  %sub127 = sub nsw i64 0, %hv126
+  store i64 %sub127, ptr %hv, align 8
+  br label %if.merge125
+
+if.merge125:                                      ; preds = %if.then124, %while.end
+  %5 = call ptr @memset(ptr %enum.ctor128, i32 0, i64 24)
+  %disc.p129 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor128, i32 0, i32 0
+  store i8 0, ptr %disc.p129, align 1
+  %payload.p130 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor128, i32 0, i32 1
+  %hv131 = load i64, ptr %hv, align 8
+  %field.p132 = getelementptr inbounds { i64 }, ptr %payload.p130, i32 0, i32 0
+  store i64 %hv131, ptr %field.p132, align 8
+  %enum.val133 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor128, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val133
+
+while.cond134:                                    ; preds = %if.merge154, %if.merge54
+  %i137 = load i32, ptr %i, align 4
+  %n138 = load i32, ptr %n, align 4
+  %slt139 = icmp slt i32 %i137, %n138
+  br i1 %slt139, label %while.body135, label %while.end136
+
+while.body135:                                    ; preds = %while.cond134
+  %field140 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr141 = load ptr, ptr %field140, align 8
+  %i142 = load i32, ptr %i, align 4
+  %pi.idx143 = sext i32 %i142 to i64
+  %ptr.idx144 = getelementptr i8, ptr %ptr141, i64 %pi.idx143
+  %ptr.elem145 = load i8, ptr %ptr.idx144, align 1
+  %widen.zext146 = zext i8 %ptr.elem145 to i32
+  store i32 %widen.zext146, ptr %d, align 4
+  %d147 = load i32, ptr %d, align 4
+  %slt148 = icmp slt i32 %d147, 48
+  br i1 %slt148, label %sc.merge150, label %sc.rhs149
+
+while.end136:                                     ; preds = %while.cond134
+  %neg168 = load i1, ptr %neg, align 1
+  br i1 %neg168, label %if.then169, label %if.merge170
+
+sc.rhs149:                                        ; preds = %while.body135
+  %d151 = load i32, ptr %d, align 4
+  %sgt = icmp sgt i32 %d151, 57
+  br label %sc.merge150
+
+sc.merge150:                                      ; preds = %sc.rhs149, %while.body135
+  %sc152 = phi i1 [ %slt148, %while.body135 ], [ %sgt, %sc.rhs149 ]
+  br i1 %sc152, label %if.then153, label %if.merge154
+
+if.then153:                                       ; preds = %sc.merge150
+  %6 = call ptr @memset(ptr %enum.ctor155, i32 0, i64 24)
+  %disc.p156 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor155, i32 0, i32 0
+  store i8 1, ptr %disc.p156, align 1
+  %payload.p157 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor155, i32 0, i32 1
+  %field.p158 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p157, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.93, i32 13, i32 0 }, ptr %field.p158, align 8
+  %enum.val159 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor155, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val159
+
+if.merge154:                                      ; preds = %sc.merge150
+  %val160 = load i64, ptr %val, align 8
+  %mul161 = mul nsw i64 %val160, 10
+  %d162 = load i32, ptr %d, align 4
+  %sub163 = sub nsw i32 %d162, 48
+  %sext164 = sext i32 %sub163 to i64
+  %add165 = add nsw i64 %mul161, %sext164
+  store i64 %add165, ptr %val, align 8
+  %i166 = load i32, ptr %i, align 4
+  %add167 = add nsw i32 %i166, 1
+  store i32 %add167, ptr %i, align 4
+  br label %while.cond134
+
+if.then169:                                       ; preds = %while.end136
+  %val171 = load i64, ptr %val, align 8
+  %sub172 = sub nsw i64 0, %val171
+  store i64 %sub172, ptr %val, align 8
+  br label %if.merge170
+
+if.merge170:                                      ; preds = %if.then169, %while.end136
+  %7 = call ptr @memset(ptr %enum.ctor173, i32 0, i64 24)
+  %disc.p174 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor173, i32 0, i32 0
+  store i8 0, ptr %disc.p174, align 1
+  %payload.p175 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor173, i32 0, i32 1
+  %val176 = load i64, ptr %val, align 8
+  %field.p177 = getelementptr inbounds { i64 }, ptr %payload.p175, i32 0, i32 0
+  store i64 %val176, ptr %field.p177, align 8
+  %enum.val178 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor173, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val178
+}
+
+define %"Result(f64,std_core_str_core__Str)" @std_core_str_core__StrSlice.to_float(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0) {
+entry:
+  %enum.ctor235 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %t = alloca i32, align 4
+  %p10 = alloca double, align 8
+  %enum.ctor204 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %d187 = alloca i32, align 4
+  %ev = alloca i32, align 4
+  %enum.ctor176 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %sc151 = alloca i32, align 4
+  %eneg = alloca i1, align 1
+  %enum.ctor139 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %ec = alloca i32, align 4
+  %enum.ctor114 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %enum.ctor95 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %d69 = alloca i32, align 4
+  %scale = alloca double, align 8
+  %enum.ctor37 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %d = alloca i32, align 4
+  %any = alloca i1, align 1
+  %val = alloca double, align 8
+  %first = alloca i32, align 4
+  %neg = alloca i1, align 1
+  %i = alloca i32, align 4
+  %enum.ctor = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %n = alloca i32, align 4
+  %field = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 1
+  %len = load i32, ptr %field, align 4
+  store i32 %len, ptr %n, align 4
+  %n1 = load i32, ptr %n, align 4
+  %eq = icmp eq i32 %n1, 0
+  br i1 %eq, label %if.then, label %if.merge
+
+if.then:                                          ; preds = %entry
+  %1 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
+  %disc.p = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 0
+  store i8 1, ptr %disc.p, align 1
+  %payload.p = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 1
+  %field.p = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.94, i32 12, i32 0 }, ptr %field.p, align 8
+  %enum.val = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val
+
+if.merge:                                         ; preds = %entry
+  store i32 0, ptr %i, align 4
+  store i1 false, ptr %neg, align 1
+  %field2 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr = load ptr, ptr %field2, align 8
+  %ptr.idx = getelementptr i8, ptr %ptr, i64 0
+  %ptr.elem = load i8, ptr %ptr.idx, align 1
+  %widen.zext = zext i8 %ptr.elem to i32
+  store i32 %widen.zext, ptr %first, align 4
+  %first3 = load i32, ptr %first, align 4
+  %eq4 = icmp eq i32 %first3, 45
+  br i1 %eq4, label %if.then5, label %if.else
+
+if.then5:                                         ; preds = %if.merge
+  store i1 true, ptr %neg, align 1
+  store i32 1, ptr %i, align 4
+  br label %if.merge6
+
+if.merge6:                                        ; preds = %if.merge10, %if.then5
+  store double 0.000000e+00, ptr %val, align 8
+  store i1 false, ptr %any, align 1
+  br label %while.cond
+
+if.else:                                          ; preds = %if.merge
+  %first7 = load i32, ptr %first, align 4
+  %eq8 = icmp eq i32 %first7, 43
+  br i1 %eq8, label %if.then9, label %if.merge10
+
+if.then9:                                         ; preds = %if.else
+  store i32 1, ptr %i, align 4
+  br label %if.merge10
+
+if.merge10:                                       ; preds = %if.then9, %if.else
+  br label %if.merge6
+
+while.cond:                                       ; preds = %if.merge36, %if.merge6
+  %i11 = load i32, ptr %i, align 4
+  %n12 = load i32, ptr %n, align 4
+  %slt = icmp slt i32 %i11, %n12
+  br i1 %slt, label %while.body, label %while.end
+
+while.body:                                       ; preds = %while.cond
+  %field13 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr14 = load ptr, ptr %field13, align 8
+  %i15 = load i32, ptr %i, align 4
+  %pi.idx = sext i32 %i15 to i64
+  %ptr.idx16 = getelementptr i8, ptr %ptr14, i64 %pi.idx
+  %ptr.elem17 = load i8, ptr %ptr.idx16, align 1
+  %widen.zext18 = zext i8 %ptr.elem17 to i32
+  store i32 %widen.zext18, ptr %d, align 4
+  %d19 = load i32, ptr %d, align 4
+  %eq20 = icmp eq i32 %d19, 46
+  br i1 %eq20, label %if.then21, label %if.merge22
+
+while.end:                                        ; preds = %if.then27, %if.then21, %while.cond
+  %i45 = load i32, ptr %i, align 4
+  %n46 = load i32, ptr %n, align 4
+  %slt47 = icmp slt i32 %i45, %n46
+  br i1 %slt47, label %sc.rhs48, label %sc.merge49
+
+if.then21:                                        ; preds = %while.body
+  br label %while.end
+
+if.merge22:                                       ; preds = %while.body
+  %d23 = load i32, ptr %d, align 4
+  %eq24 = icmp eq i32 %d23, 101
+  br i1 %eq24, label %sc.merge, label %sc.rhs
+
+sc.rhs:                                           ; preds = %if.merge22
+  %d25 = load i32, ptr %d, align 4
+  %eq26 = icmp eq i32 %d25, 69
+  br label %sc.merge
+
+sc.merge:                                         ; preds = %sc.rhs, %if.merge22
+  %sc = phi i1 [ %eq24, %if.merge22 ], [ %eq26, %sc.rhs ]
+  br i1 %sc, label %if.then27, label %if.merge28
+
+if.then27:                                        ; preds = %sc.merge
+  br label %while.end
+
+if.merge28:                                       ; preds = %sc.merge
+  %d29 = load i32, ptr %d, align 4
+  %slt30 = icmp slt i32 %d29, 48
+  br i1 %slt30, label %sc.merge32, label %sc.rhs31
+
+sc.rhs31:                                         ; preds = %if.merge28
+  %d33 = load i32, ptr %d, align 4
+  %sgt = icmp sgt i32 %d33, 57
+  br label %sc.merge32
+
+sc.merge32:                                       ; preds = %sc.rhs31, %if.merge28
+  %sc34 = phi i1 [ %slt30, %if.merge28 ], [ %sgt, %sc.rhs31 ]
+  br i1 %sc34, label %if.then35, label %if.merge36
+
+if.then35:                                        ; preds = %sc.merge32
+  %2 = call ptr @memset(ptr %enum.ctor37, i32 0, i64 24)
+  %disc.p38 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor37, i32 0, i32 0
+  store i8 1, ptr %disc.p38, align 1
+  %payload.p39 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor37, i32 0, i32 1
+  %field.p40 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p39, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.95, i32 13, i32 0 }, ptr %field.p40, align 8
+  %enum.val41 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor37, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val41
+
+if.merge36:                                       ; preds = %sc.merge32
+  %val42 = load double, ptr %val, align 8
+  %fmul = fmul contract double %val42, 1.000000e+01
+  %d43 = load i32, ptr %d, align 4
+  %sub = sub nsw i32 %d43, 48
+  %sitofp = sitofp i32 %sub to double
+  %fadd = fadd contract double %fmul, %sitofp
+  store double %fadd, ptr %val, align 8
+  store i1 true, ptr %any, align 1
+  %i44 = load i32, ptr %i, align 4
+  %add = add nsw i32 %i44, 1
+  store i32 %add, ptr %i, align 4
+  br label %while.cond
+
+sc.rhs48:                                         ; preds = %while.end
+  %field50 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr51 = load ptr, ptr %field50, align 8
+  %i52 = load i32, ptr %i, align 4
+  %pi.idx53 = sext i32 %i52 to i64
+  %ptr.idx54 = getelementptr i8, ptr %ptr51, i64 %pi.idx53
+  %ptr.elem55 = load i8, ptr %ptr.idx54, align 1
+  %widen.zext56 = zext i8 %ptr.elem55 to i32
+  %eq57 = icmp eq i32 %widen.zext56, 46
+  br label %sc.merge49
+
+sc.merge49:                                       ; preds = %sc.rhs48, %while.end
+  %sc58 = phi i1 [ %slt47, %while.end ], [ %eq57, %sc.rhs48 ]
+  br i1 %sc58, label %if.then59, label %if.merge60
+
+if.then59:                                        ; preds = %sc.merge49
+  %i61 = load i32, ptr %i, align 4
+  %add62 = add nsw i32 %i61, 1
+  store i32 %add62, ptr %i, align 4
+  store double 1.000000e-01, ptr %scale, align 8
+  br label %while.cond63
+
+if.merge60:                                       ; preds = %while.end65, %sc.merge49
+  %any111 = load i1, ptr %any, align 1
+  %not = xor i1 %any111, true
+  br i1 %not, label %if.then112, label %if.merge113
+
+while.cond63:                                     ; preds = %if.merge94, %if.then59
+  %i66 = load i32, ptr %i, align 4
+  %n67 = load i32, ptr %n, align 4
+  %slt68 = icmp slt i32 %i66, %n67
+  br i1 %slt68, label %while.body64, label %while.end65
+
+while.body64:                                     ; preds = %while.cond63
+  %field70 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr71 = load ptr, ptr %field70, align 8
+  %i72 = load i32, ptr %i, align 4
+  %pi.idx73 = sext i32 %i72 to i64
+  %ptr.idx74 = getelementptr i8, ptr %ptr71, i64 %pi.idx73
+  %ptr.elem75 = load i8, ptr %ptr.idx74, align 1
+  %widen.zext76 = zext i8 %ptr.elem75 to i32
+  store i32 %widen.zext76, ptr %d69, align 4
+  %d77 = load i32, ptr %d69, align 4
+  %eq78 = icmp eq i32 %d77, 101
+  br i1 %eq78, label %sc.merge80, label %sc.rhs79
+
+while.end65:                                      ; preds = %if.then84, %while.cond63
+  br label %if.merge60
+
+sc.rhs79:                                         ; preds = %while.body64
+  %d81 = load i32, ptr %d69, align 4
+  %eq82 = icmp eq i32 %d81, 69
+  br label %sc.merge80
+
+sc.merge80:                                       ; preds = %sc.rhs79, %while.body64
+  %sc83 = phi i1 [ %eq78, %while.body64 ], [ %eq82, %sc.rhs79 ]
+  br i1 %sc83, label %if.then84, label %if.merge85
+
+if.then84:                                        ; preds = %sc.merge80
+  br label %while.end65
+
+if.merge85:                                       ; preds = %sc.merge80
+  %d86 = load i32, ptr %d69, align 4
+  %slt87 = icmp slt i32 %d86, 48
+  br i1 %slt87, label %sc.merge89, label %sc.rhs88
+
+sc.rhs88:                                         ; preds = %if.merge85
+  %d90 = load i32, ptr %d69, align 4
+  %sgt91 = icmp sgt i32 %d90, 57
+  br label %sc.merge89
+
+sc.merge89:                                       ; preds = %sc.rhs88, %if.merge85
+  %sc92 = phi i1 [ %slt87, %if.merge85 ], [ %sgt91, %sc.rhs88 ]
+  br i1 %sc92, label %if.then93, label %if.merge94
+
+if.then93:                                        ; preds = %sc.merge89
+  %3 = call ptr @memset(ptr %enum.ctor95, i32 0, i64 24)
+  %disc.p96 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor95, i32 0, i32 0
+  store i8 1, ptr %disc.p96, align 1
+  %payload.p97 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor95, i32 0, i32 1
+  %field.p98 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p97, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.96, i32 13, i32 0 }, ptr %field.p98, align 8
+  %enum.val99 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor95, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val99
+
+if.merge94:                                       ; preds = %sc.merge89
+  %val100 = load double, ptr %val, align 8
+  %d101 = load i32, ptr %d69, align 4
+  %sub102 = sub nsw i32 %d101, 48
+  %sitofp103 = sitofp i32 %sub102 to double
+  %scale104 = load double, ptr %scale, align 8
+  %fmul105 = fmul contract double %sitofp103, %scale104
+  %fadd106 = fadd contract double %val100, %fmul105
+  store double %fadd106, ptr %val, align 8
+  %scale107 = load double, ptr %scale, align 8
+  %fmul108 = fmul contract double %scale107, 1.000000e-01
+  store double %fmul108, ptr %scale, align 8
+  store i1 true, ptr %any, align 1
+  %i109 = load i32, ptr %i, align 4
+  %add110 = add nsw i32 %i109, 1
+  store i32 %add110, ptr %i, align 4
+  br label %while.cond63
+
+if.then112:                                       ; preds = %if.merge60
+  %4 = call ptr @memset(ptr %enum.ctor114, i32 0, i64 24)
+  %disc.p115 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor114, i32 0, i32 0
+  store i8 1, ptr %disc.p115, align 1
+  %payload.p116 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor114, i32 0, i32 1
+  %field.p117 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p116, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.97, i32 9, i32 0 }, ptr %field.p117, align 8
+  %enum.val118 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor114, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val118
+
+if.merge113:                                      ; preds = %if.merge60
+  %i119 = load i32, ptr %i, align 4
+  %n120 = load i32, ptr %n, align 4
+  %slt121 = icmp slt i32 %i119, %n120
+  br i1 %slt121, label %if.then122, label %if.merge123
+
+if.then122:                                       ; preds = %if.merge113
+  %field124 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr125 = load ptr, ptr %field124, align 8
+  %i126 = load i32, ptr %i, align 4
+  %pi.idx127 = sext i32 %i126 to i64
+  %ptr.idx128 = getelementptr i8, ptr %ptr125, i64 %pi.idx127
+  %ptr.elem129 = load i8, ptr %ptr.idx128, align 1
+  %widen.zext130 = zext i8 %ptr.elem129 to i32
+  store i32 %widen.zext130, ptr %ec, align 4
+  %ec131 = load i32, ptr %ec, align 4
+  %ne = icmp ne i32 %ec131, 101
+  br i1 %ne, label %sc.rhs132, label %sc.merge133
+
+if.merge123:                                      ; preds = %if.merge224, %if.merge113
+  %neg231 = load i1, ptr %neg, align 1
+  br i1 %neg231, label %if.then232, label %if.merge233
+
+sc.rhs132:                                        ; preds = %if.then122
+  %ec134 = load i32, ptr %ec, align 4
+  %ne135 = icmp ne i32 %ec134, 69
+  br label %sc.merge133
+
+sc.merge133:                                      ; preds = %sc.rhs132, %if.then122
+  %sc136 = phi i1 [ %ne, %if.then122 ], [ %ne135, %sc.rhs132 ]
+  br i1 %sc136, label %if.then137, label %if.merge138
+
+if.then137:                                       ; preds = %sc.merge133
+  %5 = call ptr @memset(ptr %enum.ctor139, i32 0, i64 24)
+  %disc.p140 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor139, i32 0, i32 0
+  store i8 1, ptr %disc.p140, align 1
+  %payload.p141 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor139, i32 0, i32 1
+  %field.p142 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p141, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.98, i32 13, i32 0 }, ptr %field.p142, align 8
+  %enum.val143 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor139, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val143
+
+if.merge138:                                      ; preds = %sc.merge133
+  %i144 = load i32, ptr %i, align 4
+  %add145 = add nsw i32 %i144, 1
+  store i32 %add145, ptr %i, align 4
+  store i1 false, ptr %eneg, align 1
+  %i146 = load i32, ptr %i, align 4
+  %n147 = load i32, ptr %n, align 4
+  %slt148 = icmp slt i32 %i146, %n147
+  br i1 %slt148, label %if.then149, label %if.merge150
+
+if.then149:                                       ; preds = %if.merge138
+  %field152 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr153 = load ptr, ptr %field152, align 8
+  %i154 = load i32, ptr %i, align 4
+  %pi.idx155 = sext i32 %i154 to i64
+  %ptr.idx156 = getelementptr i8, ptr %ptr153, i64 %pi.idx155
+  %ptr.elem157 = load i8, ptr %ptr.idx156, align 1
+  %widen.zext158 = zext i8 %ptr.elem157 to i32
+  store i32 %widen.zext158, ptr %sc151, align 4
+  %sc159 = load i32, ptr %sc151, align 4
+  %eq160 = icmp eq i32 %sc159, 45
+  br i1 %eq160, label %if.then161, label %if.else163
+
+if.merge150:                                      ; preds = %if.merge162, %if.merge138
+  %i172 = load i32, ptr %i, align 4
+  %n173 = load i32, ptr %n, align 4
+  %sge = icmp sge i32 %i172, %n173
+  br i1 %sge, label %if.then174, label %if.merge175
+
+if.then161:                                       ; preds = %if.then149
+  store i1 true, ptr %eneg, align 1
+  %i164 = load i32, ptr %i, align 4
+  %add165 = add nsw i32 %i164, 1
+  store i32 %add165, ptr %i, align 4
+  br label %if.merge162
+
+if.merge162:                                      ; preds = %if.merge169, %if.then161
+  br label %if.merge150
+
+if.else163:                                       ; preds = %if.then149
+  %sc166 = load i32, ptr %sc151, align 4
+  %eq167 = icmp eq i32 %sc166, 43
+  br i1 %eq167, label %if.then168, label %if.merge169
+
+if.then168:                                       ; preds = %if.else163
+  %i170 = load i32, ptr %i, align 4
+  %add171 = add nsw i32 %i170, 1
+  store i32 %add171, ptr %i, align 4
+  br label %if.merge169
+
+if.merge169:                                      ; preds = %if.then168, %if.else163
+  br label %if.merge162
+
+if.then174:                                       ; preds = %if.merge150
+  %6 = call ptr @memset(ptr %enum.ctor176, i32 0, i64 24)
+  %disc.p177 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor176, i32 0, i32 0
+  store i8 1, ptr %disc.p177, align 1
+  %payload.p178 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor176, i32 0, i32 1
+  %field.p179 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p178, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.99, i32 9, i32 0 }, ptr %field.p179, align 8
+  %enum.val180 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor176, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val180
+
+if.merge175:                                      ; preds = %if.merge150
+  store i32 0, ptr %ev, align 4
+  br label %while.cond181
+
+while.cond181:                                    ; preds = %if.merge203, %if.merge175
+  %i184 = load i32, ptr %i, align 4
+  %n185 = load i32, ptr %n, align 4
+  %slt186 = icmp slt i32 %i184, %n185
+  br i1 %slt186, label %while.body182, label %while.end183
+
+while.body182:                                    ; preds = %while.cond181
+  %field188 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr189 = load ptr, ptr %field188, align 8
+  %i190 = load i32, ptr %i, align 4
+  %pi.idx191 = sext i32 %i190 to i64
+  %ptr.idx192 = getelementptr i8, ptr %ptr189, i64 %pi.idx191
+  %ptr.elem193 = load i8, ptr %ptr.idx192, align 1
+  %widen.zext194 = zext i8 %ptr.elem193 to i32
+  store i32 %widen.zext194, ptr %d187, align 4
+  %d195 = load i32, ptr %d187, align 4
+  %slt196 = icmp slt i32 %d195, 48
+  br i1 %slt196, label %sc.merge198, label %sc.rhs197
+
+while.end183:                                     ; preds = %while.cond181
+  store double 1.000000e+00, ptr %p10, align 8
+  store i32 0, ptr %t, align 4
+  br label %for.cond
+
+sc.rhs197:                                        ; preds = %while.body182
+  %d199 = load i32, ptr %d187, align 4
+  %sgt200 = icmp sgt i32 %d199, 57
+  br label %sc.merge198
+
+sc.merge198:                                      ; preds = %sc.rhs197, %while.body182
+  %sc201 = phi i1 [ %slt196, %while.body182 ], [ %sgt200, %sc.rhs197 ]
+  br i1 %sc201, label %if.then202, label %if.merge203
+
+if.then202:                                       ; preds = %sc.merge198
+  %7 = call ptr @memset(ptr %enum.ctor204, i32 0, i64 24)
+  %disc.p205 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor204, i32 0, i32 0
+  store i8 1, ptr %disc.p205, align 1
+  %payload.p206 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor204, i32 0, i32 1
+  %field.p207 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p206, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.100, i32 13, i32 0 }, ptr %field.p207, align 8
+  %enum.val208 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor204, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val208
+
+if.merge203:                                      ; preds = %sc.merge198
+  %ev209 = load i32, ptr %ev, align 4
+  %mul = mul nsw i32 %ev209, 10
+  %d210 = load i32, ptr %d187, align 4
+  %sub211 = sub nsw i32 %d210, 48
+  %add212 = add nsw i32 %mul, %sub211
+  store i32 %add212, ptr %ev, align 4
+  %i213 = load i32, ptr %i, align 4
+  %add214 = add nsw i32 %i213, 1
+  store i32 %add214, ptr %i, align 4
+  br label %while.cond181
+
+for.cond:                                         ; preds = %for.update, %while.end183
+  %t215 = load i32, ptr %t, align 4
+  %ev216 = load i32, ptr %ev, align 4
+  %slt217 = icmp slt i32 %t215, %ev216
+  br i1 %slt217, label %for.body, label %for.end
+
+for.body:                                         ; preds = %for.cond
+  %p10218 = load double, ptr %p10, align 8
+  %fmul219 = fmul contract double %p10218, 1.000000e+01
+  store double %fmul219, ptr %p10, align 8
+  br label %for.update
+
+for.update:                                       ; preds = %for.body
+  %t220 = load i32, ptr %t, align 4
+  %add221 = add nsw i32 %t220, 1
+  store i32 %add221, ptr %t, align 4
+  br label %for.cond
+
+for.end:                                          ; preds = %for.cond
+  %eneg222 = load i1, ptr %eneg, align 1
+  br i1 %eneg222, label %if.then223, label %if.else225
+
+if.then223:                                       ; preds = %for.end
+  %val226 = load double, ptr %val, align 8
+  %p10227 = load double, ptr %p10, align 8
+  %fdiv = fdiv contract double %val226, %p10227
+  store double %fdiv, ptr %val, align 8
+  br label %if.merge224
+
+if.merge224:                                      ; preds = %if.else225, %if.then223
+  br label %if.merge123
+
+if.else225:                                       ; preds = %for.end
+  %val228 = load double, ptr %val, align 8
+  %p10229 = load double, ptr %p10, align 8
+  %fmul230 = fmul contract double %val228, %p10229
+  store double %fmul230, ptr %val, align 8
+  br label %if.merge224
+
+if.then232:                                       ; preds = %if.merge123
+  %val234 = load double, ptr %val, align 8
+  %fsub = fsub contract double 0.000000e+00, %val234
+  store double %fsub, ptr %val, align 8
+  br label %if.merge233
+
+if.merge233:                                      ; preds = %if.then232, %if.merge123
+  %8 = call ptr @memset(ptr %enum.ctor235, i32 0, i64 24)
+  %disc.p236 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor235, i32 0, i32 0
+  store i8 0, ptr %disc.p236, align 1
+  %payload.p237 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor235, i32 0, i32 1
+  %val238 = load double, ptr %val, align 8
+  %field.p239 = getelementptr inbounds { double }, ptr %payload.p237, i32 0, i32 0
+  store double %val238, ptr %field.p239, align 8
+  %enum.val240 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor235, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val240
+}
+
 define void @"Result(std_core_str_core__Str,std_core_str_core__Str).__drop"(ptr %self) {
 entry:
   %disc.p = getelementptr inbounds %"Result(std_core_str_core__Str,std_core_str_core__Str)", ptr %self, i32 0, i32 0
@@ -5409,8 +6663,8 @@ if.then:                                          ; preds = %entry
   call void @llvm.lifetime.start.p0(i64 16, ptr %s)
   store i1 false, ptr %var.moved, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %s, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.84, i32 6, i32 0 }, ptr %s, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.85, i32 12, i32 0 }, ptr %struct.borrow.tmp, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.101, i32 6, i32 0 }, ptr %s, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.102, i32 12, i32 0 }, ptr %struct.borrow.tmp, align 8
   call void @std_core_str_core__Str.push_str(ptr %s, ptr %struct.borrow.tmp)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp)
   %1 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
@@ -5428,8 +6682,8 @@ if.merge:                                         ; preds = %entry
   call void @llvm.lifetime.start.p0(i64 16, ptr %e)
   store i1 false, ptr %var.moved3, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %e, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.86, i32 5, i32 0 }, ptr %e, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.87, i32 18, i32 0 }, ptr %struct.borrow.tmp4, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.103, i32 5, i32 0 }, ptr %e, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.104, i32 18, i32 0 }, ptr %struct.borrow.tmp4, align 8
   call void @std_core_str_core__Str.push_str(ptr %e, ptr %struct.borrow.tmp4)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp4)
   %2 = call ptr @memset(ptr %enum.ctor5, i32 0, i64 24)
@@ -5560,8 +6814,8 @@ if.then:                                          ; preds = %entry
   call void @llvm.lifetime.start.p0(i64 16, ptr %e)
   store i1 false, ptr %var.moved, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %e, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.88, i32 5, i32 0 }, ptr %e, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.89, i32 6, i32 0 }, ptr %struct.borrow.tmp, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.105, i32 5, i32 0 }, ptr %e, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.106, i32 6, i32 0 }, ptr %struct.borrow.tmp, align 8
   call void @std_core_str_core__Str.push_str(ptr %e, ptr %struct.borrow.tmp)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp)
   %1 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
@@ -5644,7 +6898,7 @@ fstr.done:                                        ; preds = %fstr.big, %fstr.fit
   %Str.l = insertvalue %std_core_str_core__Str %Str.d, i32 %fstr.n, 1
   %Str.c = insertvalue %std_core_str_core__Str %Str.l, i32 %fstr.cap, 2
   store %std_core_str_core__Str %Str.c, ptr %s, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.90, i32 20, i32 0 }, ptr %struct.borrow.tmp8, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.107, i32 20, i32 0 }, ptr %struct.borrow.tmp8, align 8
   call void @std_core_str_core__Str.push_str(ptr %s, ptr %struct.borrow.tmp8)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp8)
   %s9 = load %std_core_str_core__Str, ptr %s, align 8
@@ -5925,7 +7179,7 @@ match.end:                                        ; preds = %drop.cont
   call void @llvm.lifetime.start.p0(i64 16, ptr %d)
   store i1 false, ptr %var.moved, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %d, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.91, i32 31, i32 0 }, ptr %d, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.108, i32 31, i32 0 }, ptr %d, align 8
   %d11 = load %std_core_str_core__Str, ptr %d, align 8
   ret %std_core_str_core__Str %d11
 
@@ -6024,8 +7278,8 @@ match.case2:                                      ; preds = %entry
   %uc.r5 = call %std_core_str_core__Str @std_core_str_core__Str.__clone(ptr %uc.self4)
   store %std_core_str_core__Str %uc.r5, ptr %e6, align 8
   store i1 false, ptr %binder.moved7, align 1
-  %0 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.93, i32 29, ptr @.ls.strlit.92)
-  %1 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.94)
+  %0 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.110, i32 29, ptr @.ls.strlit.109)
+  %1 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.111)
   %drop.flag8 = load i1, ptr %binder.moved7, align 1
   br i1 %drop.flag8, label %drop.skip, label %drop.call
 
@@ -6058,7 +7312,7 @@ entry:
   call void @llvm.lifetime.start.p0(i64 16, ptr %a)
   store i1 false, ptr %var.moved, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %a, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.95, i32 30, i32 0 }, ptr %a, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.112, i32 30, i32 0 }, ptr %a, align 8
   call void @llvm.lifetime.start.p0(i64 16, ptr %r)
   store i1 false, ptr %var.moved1, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %r, align 8
@@ -6078,7 +7332,7 @@ match.end:                                        ; preds = %fstr.done, %match.c
 
 match.default:                                    ; preds = %entry
   %i7 = load i32, ptr %i, align 4
-  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.98, i32 %i7)
+  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.115, i32 %i7)
   %fstr.cap = add i32 %fstr.n, 1
   %fstr.cap64 = zext i32 %fstr.cap to i64
   %p = call ptr @malloc(i64 %fstr.cap64)
@@ -6096,8 +7350,8 @@ match.case4:                                      ; preds = %entry, %entry
   call void @llvm.lifetime.start.p0(i64 16, ptr %b)
   store i1 false, ptr %var.moved5, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %b, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.96, i32 16, i32 0 }, ptr %b, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.97, i32 4, i32 0 }, ptr %struct.borrow.tmp, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.113, i32 16, i32 0 }, ptr %b, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.114, i32 4, i32 0 }, ptr %struct.borrow.tmp, align 8
   call void @std_core_str_core__Str.push_str(ptr %b, ptr %struct.borrow.tmp)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp)
   %b6 = load %std_core_str_core__Str, ptr %b, align 8
@@ -6109,7 +7363,7 @@ fstr.fits8:                                       ; preds = %match.default
   br label %fstr.done
 
 fstr.big:                                         ; preds = %match.default
-  %1 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.98, i32 %i7)
+  %1 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.115, i32 %i7)
   br label %fstr.done
 
 fstr.done:                                        ; preds = %fstr.big, %fstr.fits8
@@ -6120,8 +7374,8 @@ fstr.done:                                        ; preds = %fstr.big, %fstr.fit
   br label %match.end
 
 if.then:                                          ; preds = %match.end
-  %2 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.100, i32 27, ptr @.ls.strlit.99)
-  %3 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.101)
+  %2 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.117, i32 27, ptr @.ls.strlit.116)
+  %3 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.118)
   br label %if.merge
 
 if.merge:                                         ; preds = %if.then, %match.end
@@ -6168,8 +7422,8 @@ match.then:                                       ; preds = %entry
   call void @llvm.lifetime.start.p0(i64 16, ptr %v)
   store i1 false, ptr %var.moved, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %v, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.102, i32 9, i32 0 }, ptr %v, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.103, i32 4, i32 0 }, ptr %struct.borrow.tmp, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.119, i32 9, i32 0 }, ptr %v, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.120, i32 4, i32 0 }, ptr %struct.borrow.tmp, align 8
   call void @std_core_str_core__Str.push_str(ptr %v, ptr %struct.borrow.tmp)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp)
   %v2 = load %std_core_str_core__Str, ptr %v, align 8
@@ -6182,7 +7436,7 @@ match.next:                                       ; preds = %entry
 
 match.then3:                                      ; preds = %match.next
   %x6 = load double, ptr %x, align 8
-  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.104, double %x6)
+  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.121, double %x6)
   %fstr.cap = add i32 %fstr.n, 1
   %fstr.cap64 = zext i32 %fstr.cap to i64
   %p = call ptr @malloc(i64 %fstr.cap64)
@@ -6201,7 +7455,7 @@ fstr.fits7:                                       ; preds = %match.then3
   br label %fstr.done
 
 fstr.big:                                         ; preds = %match.then3
-  %2 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.104, double %x6)
+  %2 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.121, double %x6)
   br label %fstr.done
 
 fstr.done:                                        ; preds = %fstr.big, %fstr.fits7
@@ -6304,7 +7558,7 @@ try.err:                                          ; preds = %match.case
 try.merge:                                        ; preds = %try.ok
   %try.val = load %std_core_str_core__Str, ptr %try.unwrapped, align 8
   store %std_core_str_core__Str %try.val, ptr %t, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.105, i32 10, i32 0 }, ptr %struct.borrow.tmp, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.122, i32 10, i32 0 }, ptr %struct.borrow.tmp, align 8
   call void @std_core_str_core__Str.push_str(ptr %t, ptr %struct.borrow.tmp)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp)
   %4 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
@@ -6445,7 +7699,7 @@ if.merge:                                         ; preds = %entry
   store i1 false, ptr %var.moved, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %t, align 8
   %i2 = load i32, ptr %i, align 4
-  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.106, i32 %i2)
+  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.123, i32 %i2)
   %fstr.cap = add i32 %fstr.n, 1
   %fstr.cap64 = zext i32 %fstr.cap to i64
   %p = call ptr @malloc(i64 %fstr.cap64)
@@ -6457,7 +7711,7 @@ fstr.fits3:                                       ; preds = %if.merge
   br label %fstr.done
 
 fstr.big:                                         ; preds = %if.merge
-  %2 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.106, i32 %i2)
+  %2 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.123, i32 %i2)
   br label %fstr.done
 
 fstr.done:                                        ; preds = %fstr.big, %fstr.fits3
@@ -6465,7 +7719,7 @@ fstr.done:                                        ; preds = %fstr.big, %fstr.fit
   %Str.l = insertvalue %std_core_str_core__Str %Str.d, i32 %fstr.n, 1
   %Str.c = insertvalue %std_core_str_core__Str %Str.l, i32 %fstr.cap, 2
   store %std_core_str_core__Str %Str.c, ptr %t, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.107, i32 8, i32 0 }, ptr %struct.borrow.tmp, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.124, i32 8, i32 0 }, ptr %struct.borrow.tmp, align 8
   call void @std_core_str_core__Str.push_str(ptr %t, ptr %struct.borrow.tmp)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp)
   %3 = call ptr @memset(ptr %enum.ctor4, i32 0, i64 48)
@@ -6611,8 +7865,8 @@ match.case21:                                     ; preds = %match.case
   br label %match.end7
 
 if.then:                                          ; preds = %match.end7
-  %1 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.109, i32 26, ptr @.ls.strlit.108)
-  %2 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.110)
+  %1 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.126, i32 26, ptr @.ls.strlit.125)
+  %2 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.127)
   br label %if.merge
 
 if.merge:                                         ; preds = %if.then, %match.end7
@@ -6633,7 +7887,7 @@ drop.cont:                                        ; preds = %drop.call, %drop.sk
 
 match.case30:                                     ; preds = %entry
   %i31 = load i32, ptr %i, align 4
-  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.111, i32 %i31)
+  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.128, i32 %i31)
   %fstr.cap = add i32 %fstr.n, 1
   %fstr.cap64 = zext i32 %fstr.cap to i64
   %p = call ptr @malloc(i64 %fstr.cap64)
@@ -6645,7 +7899,7 @@ fstr.fits32:                                      ; preds = %match.case30
   br label %fstr.done
 
 fstr.big:                                         ; preds = %match.case30
-  %3 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.111, i32 %i31)
+  %3 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.128, i32 %i31)
   br label %fstr.done
 
 fstr.done:                                        ; preds = %fstr.big, %fstr.fits32
@@ -7006,7 +8260,7 @@ foreach.body:                                     ; preds = %foreach.cond
   store i1 false, ptr %var.moved108, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %junk, align 8
   %i109 = load i32, ptr %i, align 4
-  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.112, i32 %i109)
+  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.129, i32 %i109)
   %fstr.cap = add i32 %fstr.n, 1
   %fstr.cap64 = zext i32 %fstr.cap to i64
   %p110 = call ptr @malloc(i64 %fstr.cap64)
@@ -7033,7 +8287,7 @@ fstr.fits111:                                     ; preds = %foreach.body
   br label %fstr.done
 
 fstr.big:                                         ; preds = %foreach.body
-  %0 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p110, i64 %fstr.cap64, ptr @fstr.fmt.112, i32 %i109)
+  %0 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p110, i64 %fstr.cap64, ptr @fstr.fmt.129, i32 %i109)
   br label %fstr.done
 
 fstr.done:                                        ; preds = %fstr.big, %fstr.fits111
@@ -7041,7 +8295,7 @@ fstr.done:                                        ; preds = %fstr.big, %fstr.fit
   %Str.l = insertvalue %std_core_str_core__Str %Str.d, i32 %fstr.n, 1
   %Str.c = insertvalue %std_core_str_core__Str %Str.l, i32 %fstr.cap, 2
   store %std_core_str_core__Str %Str.c, ptr %junk, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.113, i32 32, i32 0 }, ptr %struct.borrow.tmp, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.130, i32 32, i32 0 }, ptr %struct.borrow.tmp, align 8
   call void @std_core_str_core__Str.push_str(ptr %junk, ptr %struct.borrow.tmp)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp)
   br label %cleanup
@@ -7090,7 +8344,7 @@ fuw.ok119:                                        ; preds = %fuw.merge
   br label %fuw.merge121
 
 fuw.err120:                                       ; preds = %fuw.merge
-  %2 = call i32 (ptr, ...) @printf(ptr @fuw.fmt.114, i32 209, i32 20)
+  %2 = call i32 (ptr, ...) @printf(ptr @fuw.fmt.131, i32 209, i32 20)
   call void @__ls_proc_exit(i32 1)
   unreachable
 
@@ -7393,8 +8647,8 @@ sc.merge:                                         ; preds = %sc.rhs, %entry
   br i1 %sc, label %if.then, label %if.merge
 
 if.then:                                          ; preds = %sc.merge
-  %2 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.116, i32 12, ptr @.ls.strlit.115)
-  %3 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.117)
+  %2 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.133, i32 12, ptr @.ls.strlit.132)
+  %3 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.134)
   br label %cleanup
 
 if.merge:                                         ; preds = %sc.merge
@@ -7427,9 +8681,9 @@ drop.call1:                                       ; preds = %drop.skip0
   br label %drop.skip1
 
 if.then9:                                         ; preds = %if.merge
-  %4 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.119, i32 15, ptr @.ls.strlit.118)
+  %4 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.136, i32 15, ptr @.ls.strlit.135)
   %l11 = load i32, ptr %l, align 4
-  %5 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.120, i32 %l11)
+  %5 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.137, i32 %l11)
   br label %cleanup12
 
 if.merge10:                                       ; preds = %if.merge
@@ -7479,8 +8733,8 @@ sc.merge26:                                       ; preds = %sc.rhs25, %if.merge
   br i1 %sc29, label %if.then30, label %if.merge31
 
 if.then30:                                        ; preds = %sc.merge26
-  %6 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.122, i32 11, ptr @.ls.strlit.121)
-  %7 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.123)
+  %6 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.139, i32 11, ptr @.ls.strlit.138)
+  %7 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.140)
   br label %cleanup32
 
 if.merge31:                                       ; preds = %sc.merge26
@@ -7563,16 +8817,16 @@ sc.merge55:                                       ; preds = %sc.rhs54, %sc.merge
   br i1 %sc58, label %if.then59, label %if.merge60
 
 if.then59:                                        ; preds = %sc.merge55
-  %8 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.125, i32 10, ptr @.ls.strlit.124)
-  %9 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.126)
+  %8 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.142, i32 10, ptr @.ls.strlit.141)
+  %9 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.143)
   br label %cleanup61
 
 if.merge60:                                       ; preds = %sc.merge55
   call void @llvm.lifetime.start.p0(i64 16, ptr %fb)
   store i1 false, ptr %var.moved77, align 1
   store %std_core_str_core__Str zeroinitializer, ptr %fb, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.127, i32 21, i32 0 }, ptr %fb, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.128, i32 6, i32 0 }, ptr %struct.borrow.tmp, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.144, i32 21, i32 0 }, ptr %fb, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.145, i32 6, i32 0 }, ptr %struct.borrow.tmp, align 8
   call void @std_core_str_core__Str.push_str(ptr %fb, ptr %struct.borrow.tmp)
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp)
   call void @llvm.lifetime.start.p0(i64 16, ptr %s0)
@@ -7689,8 +8943,8 @@ sc.merge99:                                       ; preds = %sc.rhs98, %sc.merge
   br i1 %sc102, label %if.then103, label %if.merge104
 
 if.then103:                                       ; preds = %sc.merge99
-  %10 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.130, i32 12, ptr @.ls.strlit.129)
-  %11 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.131)
+  %10 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.147, i32 12, ptr @.ls.strlit.146)
+  %11 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.148)
   br label %cleanup105
 
 if.merge104:                                      ; preds = %sc.merge99
@@ -7802,8 +9056,8 @@ drop.call10:                                      ; preds = %drop.skip9
   br label %drop.skip10
 
 if.then133:                                       ; preds = %if.merge104
-  %12 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.133, i32 23, ptr @.ls.strlit.132)
-  %13 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.134)
+  %12 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.150, i32 23, ptr @.ls.strlit.149)
+  %13 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.151)
   br label %cleanup135
 
 if.merge134:                                      ; preds = %if.merge104
@@ -7964,7 +9218,7 @@ match.case175:                                    ; preds = %if.merge134
   store %std_core_str_core__Str %uc.r178, ptr %e179, align 8
   store i1 false, ptr %binder.moved180, align 1
   %call181 = call i32 @std_core_str_core__Str.len(ptr %e179)
-  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.135, i32 %call181)
+  %fstr.n = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp, i64 256, ptr @fstr.fmt.152, i32 %call181)
   %fstr.cap = add i32 %fstr.n, 1
   %fstr.cap64 = zext i32 %fstr.cap to i64
   %p = call ptr @malloc(i64 %fstr.cap64)
@@ -7976,7 +9230,7 @@ fstr.fits182:                                     ; preds = %match.case175
   br label %fstr.done
 
 fstr.big:                                         ; preds = %match.case175
-  %14 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.135, i32 %call181)
+  %14 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p, i64 %fstr.cap64, ptr @fstr.fmt.152, i32 %call181)
   br label %fstr.done
 
 fstr.done:                                        ; preds = %fstr.big, %fstr.fits182
@@ -8027,7 +9281,7 @@ match.case193:                                    ; preds = %match.end
   store %std_core_str_core__Str %uc.r197, ptr %s198, align 8
   store i1 false, ptr %binder.moved199, align 1
   %call200 = call i32 @std_core_str_core__Str.len(ptr %s198)
-  %fstr.n202 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp201, i64 256, ptr @fstr.fmt.136, i32 %call200)
+  %fstr.n202 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp201, i64 256, ptr @fstr.fmt.153, i32 %call200)
   %fstr.cap203 = add i32 %fstr.n202, 1
   %fstr.cap64204 = zext i32 %fstr.cap203 to i64
   %p205 = call ptr @malloc(i64 %fstr.cap64204)
@@ -8039,7 +9293,7 @@ fstr.fits207:                                     ; preds = %match.case193
   br label %fstr.done209
 
 fstr.big208:                                      ; preds = %match.case193
-  %15 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p205, i64 %fstr.cap64204, ptr @fstr.fmt.136, i32 %call200)
+  %15 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p205, i64 %fstr.cap64204, ptr @fstr.fmt.153, i32 %call200)
   br label %fstr.done209
 
 fstr.done209:                                     ; preds = %fstr.big208, %fstr.fits207
@@ -8077,7 +9331,7 @@ match.end229:                                     ; preds = %match.case260, %dro
   store i8 2, ptr %dead.tag.p268, align 1
   %match.val269 = load %std_core_str_core__Str, ptr %match.res230, align 8
   store %std_core_str_core__Str %match.val269, ptr %t_arm, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.138, i32 4, i32 0 }, ptr %struct.borrow.tmp270, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.155, i32 4, i32 0 }, ptr %struct.borrow.tmp270, align 8
   %call271 = call i1 @"std_core_str_core__Str.starts_with?"(ptr %t_ok, ptr %struct.borrow.tmp270)
   %not = xor i1 %call271, true
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp270)
@@ -8094,7 +9348,7 @@ match.case236:                                    ; preds = %match.end186
   store %std_core_str_core__Str %uc.r240, ptr %s241, align 8
   store i1 false, ptr %binder.moved242, align 1
   %call243 = call i32 @std_core_str_core__Str.len(ptr %s241)
-  %fstr.n245 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp244, i64 256, ptr @fstr.fmt.137, i32 %call243)
+  %fstr.n245 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %fstr.tmp244, i64 256, ptr @fstr.fmt.154, i32 %call243)
   %fstr.cap246 = add i32 %fstr.n245, 1
   %fstr.cap64247 = zext i32 %fstr.cap246 to i64
   %p248 = call ptr @malloc(i64 %fstr.cap64247)
@@ -8106,7 +9360,7 @@ fstr.fits250:                                     ; preds = %match.case236
   br label %fstr.done252
 
 fstr.big251:                                      ; preds = %match.case236
-  %16 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p248, i64 %fstr.cap64247, ptr @fstr.fmt.137, i32 %call243)
+  %16 = call i32 (ptr, i64, ptr, ...) @__ls_fstr_format(ptr %p248, i64 %fstr.cap64247, ptr @fstr.fmt.154, i32 %call243)
   br label %fstr.done252
 
 fstr.done252:                                     ; preds = %fstr.big251, %fstr.fits250
@@ -8139,12 +9393,12 @@ match.case260:                                    ; preds = %match.end186
   br label %match.end229
 
 if.then272:                                       ; preds = %match.end229
-  %17 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.140, i32 19, ptr @.ls.strlit.139)
-  %18 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.141)
+  %17 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.157, i32 19, ptr @.ls.strlit.156)
+  %18 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.158)
   br label %cleanup274
 
 if.merge273:                                      ; preds = %match.end229
-  store %std_core_str_core__Str { ptr @.ls.strlit.142, i32 3, i32 0 }, ptr %struct.borrow.tmp311, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.159, i32 3, i32 0 }, ptr %struct.borrow.tmp311, align 8
   %call312 = call i1 @"std_core_str_core__Str.starts_with?"(ptr %t_err, ptr %struct.borrow.tmp311)
   %not313 = xor i1 %call312, true
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp311)
@@ -8281,12 +9535,12 @@ drop.call13:                                      ; preds = %drop.skip12
   br label %drop.skip13
 
 if.then314:                                       ; preds = %if.merge273
-  %19 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.144, i32 20, ptr @.ls.strlit.143)
-  %20 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.145)
+  %19 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.161, i32 20, ptr @.ls.strlit.160)
+  %20 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.162)
   br label %cleanup316
 
 if.merge315:                                      ; preds = %if.merge273
-  store %std_core_str_core__Str { ptr @.ls.strlit.146, i32 3, i32 0 }, ptr %struct.borrow.tmp359, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.163, i32 3, i32 0 }, ptr %struct.borrow.tmp359, align 8
   %call360 = call i1 @"std_core_str_core__Str.starts_with?"(ptr %t_arm, ptr %struct.borrow.tmp359)
   %not361 = xor i1 %call360, true
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp359)
@@ -8423,8 +9677,8 @@ drop.call13357:                                   ; preds = %drop.skip12353
   br label %drop.skip13356
 
 if.then362:                                       ; preds = %if.merge315
-  %21 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.148, i32 24, ptr @.ls.strlit.147)
-  %22 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.149)
+  %21 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.165, i32 24, ptr @.ls.strlit.164)
+  %22 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.166)
   br label %cleanup364
 
 if.merge363:                                      ; preds = %if.merge315
@@ -8443,7 +9697,7 @@ if.merge363:                                      ; preds = %if.merge315
   store %std_core_str_core__Str zeroinitializer, ptr %bfn, align 8
   %call412 = call %std_core_str_core__Str @binder_field_subject(i32 -1)
   store %std_core_str_core__Str %call412, ptr %bfn, align 8
-  store %std_core_str_core__Str { ptr @.ls.strlit.150, i32 4, i32 0 }, ptr %struct.borrow.tmp413, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.167, i32 4, i32 0 }, ptr %struct.borrow.tmp413, align 8
   %call414 = call i1 @"std_core_str_core__Str.starts_with?"(ptr %bf0, ptr %struct.borrow.tmp413)
   %not415 = xor i1 %call414, true
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp413)
@@ -8580,12 +9834,12 @@ drop.call13405:                                   ; preds = %drop.skip12401
   br label %drop.skip13404
 
 if.then416:                                       ; preds = %if.merge363
-  %23 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.152, i32 21, ptr @.ls.strlit.151)
-  %24 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.153)
+  %23 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.169, i32 21, ptr @.ls.strlit.168)
+  %24 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.170)
   br label %cleanup418
 
 if.merge417:                                      ; preds = %if.merge363
-  store %std_core_str_core__Str { ptr @.ls.strlit.154, i32 3, i32 0 }, ptr %struct.borrow.tmp464, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.171, i32 3, i32 0 }, ptr %struct.borrow.tmp464, align 8
   %call465 = call i1 @"std_core_str_core__Str.starts_with?"(ptr %bf1, ptr %struct.borrow.tmp464)
   %not466 = xor i1 %call465, true
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp464)
@@ -8749,12 +10003,12 @@ drop.call16:                                      ; preds = %drop.skip15
   br label %drop.skip16
 
 if.then467:                                       ; preds = %if.merge417
-  %25 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.156, i32 22, ptr @.ls.strlit.155)
-  %26 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.157)
+  %25 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.173, i32 22, ptr @.ls.strlit.172)
+  %26 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.174)
   br label %cleanup469
 
 if.merge468:                                      ; preds = %if.merge417
-  store %std_core_str_core__Str { ptr @.ls.strlit.158, i32 4, i32 0 }, ptr %struct.borrow.tmp521, align 8
+  store %std_core_str_core__Str { ptr @.ls.strlit.175, i32 4, i32 0 }, ptr %struct.borrow.tmp521, align 8
   %call522 = call i1 @"std_core_str_core__Str.starts_with?"(ptr %bfn, ptr %struct.borrow.tmp521)
   %not523 = xor i1 %call522, true
   call void @std_core_str_core__Str.__drop(ptr %struct.borrow.tmp521)
@@ -8918,8 +10172,8 @@ drop.call16519:                                   ; preds = %drop.skip15515
   br label %drop.skip16518
 
 if.then524:                                       ; preds = %if.merge468
-  %27 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.160, i32 23, ptr @.ls.strlit.159)
-  %28 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.161)
+  %27 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.177, i32 23, ptr @.ls.strlit.176)
+  %28 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.178)
   br label %cleanup526
 
 if.merge525:                                      ; preds = %if.merge468
@@ -9089,9 +10343,9 @@ drop.call16576:                                   ; preds = %drop.skip15572
   br label %drop.skip16575
 
 if.then581:                                       ; preds = %if.merge525
-  %29 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.163, i32 20, ptr @.ls.strlit.162)
+  %29 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.180, i32 20, ptr @.ls.strlit.179)
   %bm0583 = load i32, ptr %bm0, align 4
-  %30 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.164, i32 %bm0583)
+  %30 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.181, i32 %bm0583)
   br label %cleanup584
 
 if.merge582:                                      ; preds = %if.merge525
@@ -9257,9 +10511,9 @@ drop.call16634:                                   ; preds = %drop.skip15630
   br label %drop.skip16633
 
 if.then638:                                       ; preds = %if.merge582
-  %31 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.166, i32 21, ptr @.ls.strlit.165)
+  %31 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.183, i32 21, ptr @.ls.strlit.182)
   %bm1640 = load i32, ptr %bm1, align 4
-  %32 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.167, i32 %bm1640)
+  %32 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.184, i32 %bm1640)
   br label %cleanup641
 
 if.merge639:                                      ; preds = %if.merge582
@@ -9427,14 +10681,14 @@ drop.call16691:                                   ; preds = %drop.skip15687
   br label %drop.skip16690
 
 if.then696:                                       ; preds = %if.merge639
-  %33 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.169, i32 17, ptr @.ls.strlit.168)
+  %33 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.186, i32 17, ptr @.ls.strlit.185)
   %db698 = load i32, ptr %db, align 4
-  %34 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.170, i32 %db698)
+  %34 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.187, i32 %db698)
   br label %cleanup699
 
 if.merge697:                                      ; preds = %if.merge639
-  %35 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.172, i32 16, ptr @.ls.strlit.171)
-  %36 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.173)
+  %35 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.189, i32 16, ptr @.ls.strlit.188)
+  %36 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.190)
   br label %cleanup751
 
 cleanup699:                                       ; preds = %if.then696

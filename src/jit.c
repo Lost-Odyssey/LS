@@ -251,6 +251,7 @@ int jit_init(JitEngine *engine) {
         /* regex engine (runtime/ls_regex.c) — used by std.regex via std.c FFI */
         extern int         __ls_regex_compile(const char *, int);
         extern void        __ls_regex_free(int);
+        extern void       *__ls_regex_cached(const char *, int);
         extern const char *__ls_regex_last_error(void);
         extern int         __ls_regex_exec(int, const char *, int, int);
         extern int         __ls_regex_cap_start(int);
@@ -259,6 +260,12 @@ int jit_init(JitEngine *engine) {
         extern int         __ls_regex_named_count(int);
         extern const char *__ls_regex_named_name(int, int);
         extern int         __ls_regex_named_index(int, int);
+        extern int         __ls_regex_is_onepass(int);
+        extern long long   __ls_regex_debug_onepass_execs(void);
+        extern long long   __ls_regex_debug_general_execs(void);
+        extern long long   __ls_regex_debug_dfa_execs(void);
+        extern int         __ls_regex_exec_dfa(int, const char *, int, int);
+        extern int         __ls_regex_is_dfa_eligible(int);
 
         LLVMOrcExecutionSessionRef es = LLVMOrcLLJITGetExecutionSession(engine->jit);
         LLVMOrcSymbolStringPoolRef sp = LLVMOrcExecutionSessionGetSymbolStringPool(es);
@@ -373,6 +380,7 @@ int jit_init(JitEngine *engine) {
         /* regex engine */
         REG(__ls_regex_compile);
         REG(__ls_regex_free);
+        REG(__ls_regex_cached);
         REG(__ls_regex_last_error);
         REG(__ls_regex_exec);
         REG(__ls_regex_cap_start);
@@ -381,6 +389,12 @@ int jit_init(JitEngine *engine) {
         REG(__ls_regex_named_count);
         REG(__ls_regex_named_name);
         REG(__ls_regex_named_index);
+        REG(__ls_regex_is_onepass);
+        REG(__ls_regex_debug_onepass_execs);
+        REG(__ls_regex_debug_general_execs);
+        REG(__ls_regex_debug_dfa_execs);
+        REG(__ls_regex_exec_dfa);
+        REG(__ls_regex_is_dfa_eligible);
         REG(__ls_readline_ptr);
         REG(ls_os_exec_stdout_ptr);
         REG(ls_os_exec_stderr_ptr);

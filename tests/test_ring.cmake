@@ -1,6 +1,10 @@
 # test_ring.cmake — std.ring (rte_ring-style fixed ring) correctness + memcheck.
 # JIT + AOT correctness ("RING PASS", no "FAIL") + JIT --memcheck 0/0/0.
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB (repo root → LS_HOME for `import std.ring`).
+#
+# @subsystem stdlib/concurrency
+# @guards std.ring rte_ring-style fixed-capacity ring
+# @sources lib/std/sync/ring.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

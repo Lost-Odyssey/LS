@@ -2,6 +2,10 @@
 # container: move-in (push), move-out (pop), per-element recursive drop (__drop),
 # nested drop (RawVec of has_drop struct / RawVec of RawVec). The new __drop_at
 # intrinsic + existing __move provide the ownership primitives. memcheck 0/0/0.
+#
+# @subsystem stdlib/containers
+# @guards RawVec Gate M1 has_drop element ownership
+# @sources codegen_own.c:cg_store_owned
 
 cmake_minimum_required(VERSION 3.20)
 

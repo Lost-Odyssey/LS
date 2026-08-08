@@ -2,6 +2,10 @@
 # (Vec.iter() -> VecIter(T); for-in desugars to while/match next()).
 # See docs/plan_userdef_for_in.md. JIT + memcheck 0/0/0 + AOT.
 # Self-verifying sample prints "ITER PASS" (and "FAIL <l>" on any failure).
+#
+# @subsystem stdlib/containers
+# @guards `for x in v` via the Iterator(T) protocol
+# @sources checker_stmt.c:check_stmt
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

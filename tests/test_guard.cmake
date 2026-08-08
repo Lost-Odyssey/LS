@@ -8,6 +8,10 @@
 #                          not thread-safe, same as task/sync); JIT + AOT x8.
 #   guard_priv_reject.lls   touching the private value field outside impl → reject.
 #   guard_literal_reject.lls  injecting data via a struct literal → reject.
+#
+# @subsystem stdlib/concurrency
+# @guards Guard(T) compile-time data-race prevention
+# @sources checker_borrow.c:checker_place_root_symbol
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

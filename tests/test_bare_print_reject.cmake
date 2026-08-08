@@ -1,6 +1,10 @@
 # test_bare_print_reject.cmake — Stage F: bare `print(...)` must be a clean compile
 # error (the intrinsic is only spelled `@print`). docs/plan_print_sink.md Stage F.
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem language/syntax
+# @guards Stage F bare print(...) retired
+# @sources checker_call.c:check_expr_call
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

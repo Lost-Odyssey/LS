@@ -2,6 +2,10 @@
 # result, e.g. `v.get_ref(i).eq?(x)` where get_ref returns &T. Used to misreport
 # "wrong number of arguments" (self counted as an explicit arg). JIT + AOT +
 # memcheck 0/0/0.
+#
+# @subsystem checker/borrow
+# @guards method call on a borrow-returning call result
+# @sources codegen_call.c:cg_call_autoderef_recv
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/method_on_borrow_call_test.lls")

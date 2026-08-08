@@ -1,3 +1,15 @@
+# test_vec_functional_p3.cmake
+#
+# Functional-method batch P3: the later additions to the functional API, checked
+# together against the ownership rules the earlier phases established.
+#
+# Batch corpora like this one are how a family stays coherent -- an individually
+# correct new method can still break the shared contract (read borrows, clone into
+# a new container, move through an accumulator).
+#
+# @subsystem stdlib/containers
+# @guards functional-method batch P3
+# @sources lib/std/core/vec.lls
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/vec_functional_p3_test.lls")

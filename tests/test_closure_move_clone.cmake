@@ -14,6 +14,10 @@
 # Positive: closure_move_clone_test.lls  — a valid list still compiles, runs and
 #           stays memcheck-clean across two monomorphisations (the clone path
 #           runs once per instantiation).
+#
+# @subsystem frontend/ast
+# @guards ast_clone_deep drops [move v] (5fb973a)
+# @sources ast.c:ast_clone_deep
 cmake_minimum_required(VERSION 3.20)
 
 # ---- negative: both diagnostics, not just the un-cloned one ----

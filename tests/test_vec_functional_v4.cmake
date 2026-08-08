@@ -1,5 +1,16 @@
 # Phase V.4 — vec.reduce(init, Block(A,T)->A) -> A
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# Phase V.4 -- `vec.reduce(init, Block(A,T)->A)`.
+#
+# The accumulator is threaded through every call and returned, so if `A` owns
+# heap, ownership moves in a loop: each iteration consumes the previous
+# accumulator and produces a new one. Dropping the old value too eagerly frees
+# something the block still holds; not dropping it leaks once per element.
+#
+# @subsystem stdlib/containers
+# @guards Phase V.4 vec.reduce(init, Block(A,T)->A)
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

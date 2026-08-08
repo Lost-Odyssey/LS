@@ -5,6 +5,10 @@
 #    Covers non-generic + generic instantiation (per-T fields) + a Str field.
 #  * memcheck: clean (by-value struct clone/drop balanced).
 #  * negative: fields(non-struct) is a clean compile error, not a crash.
+#
+# @subsystem checker/reflection
+# @guards Stage 3b comptime field iteration
+# @sources checker_comptime.c:comptime_expand_block
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/comptime_test.lls")

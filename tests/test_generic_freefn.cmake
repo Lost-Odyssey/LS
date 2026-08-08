@@ -13,6 +13,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   STDLIB    — repo root, set as LS_HOME so `import std.core.set` resolves
+#
+# @subsystem checker/generics
+# @guards generic call named with an ABSTRACT type param from inside another generic
+# @sources checker_call.c:check_expr_call, mangle.c:mangle_type_arg_name
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

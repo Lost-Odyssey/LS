@@ -2,6 +2,10 @@
 # （plan_ndarray_stdlib.md §-1）。NumPy 式 broadcasting（add/sub/mul）+ sum_axis +
 # float 激活 exp/sigmoid/softmax_rows + 带 bias 的前向 relu(X@W+b)。
 # JIT + AOT + memcheck 0/0/0。
+#
+# @subsystem stdlib/numeric
+# @guards Tensor 3b broadcasting + axis reduction
+# @sources lib/std/sci/tensor.lls
 cmake_minimum_required(VERSION 3.20)
 
 # Resolve std/ from the source tree (imports std.tensor / std.vec / std.str / math).

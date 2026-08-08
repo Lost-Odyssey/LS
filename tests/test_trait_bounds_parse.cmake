@@ -1,4 +1,15 @@
 # test_trait_bounds_parse.cmake — Trait bounds parsing tests (JIT + AOT)
+#
+# Parsing trait bounds (`where T: Order`) on generic declarations.
+#
+# A bound is a type-position construct, so it is parsed by the type parser and
+# attached to the declaration rather than being an expression. Getting this wrong
+# tends to produce a bound that parses but is never enforced -- which is invisible
+# until an instantiation that should have been rejected compiles fine.
+#
+# @subsystem frontend/parser
+# @guards trait bound parsing
+# @sources parser_type.c:parse_type
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

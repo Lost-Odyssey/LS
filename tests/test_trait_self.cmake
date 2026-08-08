@@ -1,4 +1,16 @@
 # test_trait_self.cmake — Self keyword end-to-end tests (JIT + AOT)
+#
+# `Self` in interface signatures -- `def clone(&self) -> Self`.
+#
+# `Self` is substituted with the implementing type when the impl's signature is
+# compared against the declaration, and that comparison is textual over the
+# mangled type name. That detail matters: once instance names gained module
+# prefixes, the substitution had to use the SAME name-mangling helper as the
+# instantiation, or a correct impl started failing the comparison.
+#
+# @subsystem checker/traits
+# @guards Self keyword in interface signatures
+# @sources checker.c:type_equals_with_self
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

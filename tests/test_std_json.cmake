@@ -4,6 +4,10 @@
 # BF-026 (2026-05-24): emit_scope_cleanup() called before pop_scope() in match
 #   enum arm codegen; frees string binders (is_borrowed=false, F.7 clones).
 # All three json test files now pass --memcheck with 0 leaks / 0 dfree.
+#
+# @subsystem stdlib/text
+# @guards std.json parser + stringify
+# @sources lib/std/text/json.lls
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

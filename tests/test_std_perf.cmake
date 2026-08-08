@@ -1,6 +1,16 @@
 # std/perf.lls: import std.perf as p — now / rdtsc / rdtscp / elapsed_*
 # Verifies: JIT output / AOT output / JIT memcheck 0 leaks
 # (std.perf uses no heap allocation; 0-leak check confirms no hidden allocs)
+#
+# `std.sys.perf`: the pure-LS wrapper module over the builtin perf intrinsics.
+#
+# Separate from the builtin test because the failure it catches is different --
+# the intrinsics can be fine while the module fails to reach them (import path,
+# symbol name, or the wrapper's own arithmetic on the returned counters).
+#
+# @subsystem stdlib/numeric
+# @guards std.sys.perf wrapper module
+# @sources lib/std/sys/perf.lls
 
 cmake_minimum_required(VERSION 3.20)
 

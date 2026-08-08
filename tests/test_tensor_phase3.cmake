@@ -2,6 +2,10 @@
 # elementwise（add/sub/mul/div）+ scalar（add_scalar/scale）+ reduction（sum/mean/
 # max/argmax）+ matmul（2D）+ transpose + relu + 两层前向 demo + f64 泛型。
 # JIT + AOT + memcheck 0/0/0。
+#
+# @subsystem stdlib/numeric
+# @guards Tensor 3a elementwise/reduction/matmul/transpose/relu
+# @sources lib/std/sci/tensor.lls
 cmake_minimum_required(VERSION 3.20)
 
 # Resolve std/ from the source tree (the test imports std.tensor / std.vec / std.str).

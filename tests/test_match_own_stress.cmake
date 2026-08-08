@@ -9,6 +9,10 @@
 # nested double-free guard).
 # JIT + AOT + memcheck per sample, plus one negative check: match on an
 # aggregate (Str) subject must be a clear checker error, not invalid IR.
+#
+# @subsystem codegen/ownership
+# @guards L-012, L-013, try-in-arm ledger corruption (44265c2)
+# @sources codegen_match.c:cg_match_emit_arm_body, codegen_match.c:cg_match_subject_is_owned_rvalue, codegen_match.c:codegen_try_expr, codegen_own.c:cg_flush_temps_scope_exit
 cmake_minimum_required(VERSION 3.20)
 
 foreach(pair

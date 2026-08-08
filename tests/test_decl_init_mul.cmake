@@ -4,6 +4,10 @@
 # disambiguation now only splits `*Ident Ident` at a real statement boundary, so
 # multiplication (POD and operator-overloaded) parses without parentheses.
 # Regression assertion: compiles + runs (JIT + AOT), markers print, memcheck clean.
+#
+# @subsystem frontend/parser
+# @guards `Type n = a * b` misparsed as a declaration
+# @sources parser_stmt.c:parse_statement
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/decl_init_mul.lls")

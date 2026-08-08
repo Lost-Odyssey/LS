@@ -1,5 +1,16 @@
 # Phase V.5 — vec.sort_by(Block(T,T)->int) inline insertion sort
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# Phase V.5 -- `vec.sort_by(Block(T,T)->int)` with a caller-supplied comparator.
+#
+# Sorting moves elements around inside the buffer rather than copying them out, so
+# the invariant is that every element is written exactly once per swap and nothing
+# is dropped in between -- a sort that clones on each comparison is both slow and,
+# for has_drop elements, a leak per comparison.
+#
+# @subsystem stdlib/containers
+# @guards Phase V.5 vec.sort_by(Block(T,T)->int)
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

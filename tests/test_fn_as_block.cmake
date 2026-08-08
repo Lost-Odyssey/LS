@@ -1,3 +1,17 @@
+# test_fn_as_block.cmake
+#
+# A named function used where a `Block` is expected.
+#
+# A closure value is a pair (function pointer, environment). A plain function has
+# no environment, so passing one where a Block is expected has to synthesise the
+# missing half rather than pass the bare pointer -- and the environment it
+# synthesises must be one that the Block drop protocol can safely release (there
+# is nothing to free). Getting this wrong either crashes on the indirect call or
+# frees a non-heap pointer.
+#
+# @subsystem codegen/closure
+# @guards a named function used where a Block is expected
+# @sources codegen_closure.c:codegen_closure_literal
 cmake_minimum_required(VERSION 3.20)
 
 set(SAMPLE "${SAMPLE_DIR}/fn_as_block_test.lls")

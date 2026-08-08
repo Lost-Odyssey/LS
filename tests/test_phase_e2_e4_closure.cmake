@@ -5,6 +5,10 @@
 # E.4: array(POD, N) can be captured by value; outer remains live.
 #
 # Expected output (in order): 15, 15, 2, 3, 10, 30, 50, 6, 5, 20
+#
+# @subsystem codegen/closure
+# @guards Phase E.2/E.4 borrowed closure params + array(POD,N) by-value capture
+# @sources codegen_closure.c:codegen_closure_literal
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

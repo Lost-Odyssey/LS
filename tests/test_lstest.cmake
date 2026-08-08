@@ -2,6 +2,10 @@
 #   Verifies: (1) an all-pass file exits 0 and reports "0 failed";
 #   (2) a file with a failing test exits NON-ZERO and prints FAIL
 #       (this is the anti-"假绿" guarantee — a broken assertion must fail CI).
+#
+# @subsystem tooling/cli
+# @guards `lls test` runner exit codes
+# @sources main.c
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

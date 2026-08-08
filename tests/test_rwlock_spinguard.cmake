@@ -6,6 +6,10 @@
 #   rwlock_thread_test / spinguard_thread_test  8 workers on a shared global →
 #                   exact 40000. NO --memcheck (tracker not thread-safe); AOT x8.
 #   rwlock_reader_reject.lls   a reader mutating through &T → compile error.
+#
+# @subsystem stdlib/concurrency
+# @guards RwLock(T) + SpinGuard(T) guard variants
+# @sources lib/std/sync/lock.lls
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

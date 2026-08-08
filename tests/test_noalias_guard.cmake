@@ -12,6 +12,10 @@
 # stays correct: JIT + 6x AOT. NO --memcheck (tracker not thread-safe).
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB (repo root → LS_HOME).
+#
+# @subsystem codegen/optimization
+# @guards A4 noalias-recovery safety gold standard
+# @sources codegen_noalias.c
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

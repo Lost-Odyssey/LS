@@ -125,13 +125,30 @@ extern def __ls_readline_ptr() -> object
 
 // ---- regex engine (runtime/ls_regex.c) ----
 
-extern def __ls_regex_compile(*u8 pattern, int flags) -> int
-extern def __ls_regex_free(int handle)
+extern def __ls_regex_compile(*u8 pattern, int flags) -> object
+extern def __ls_regex_free(object h)
+extern def __ls_regex_cached(*u8 pattern, int flags) -> object
 extern def __ls_regex_last_error() -> object
-extern def __ls_regex_exec(int handle, *u8 text, int text_len, int start) -> int
-extern def __ls_regex_cap_start(int group) -> int
-extern def __ls_regex_cap_len(int group) -> int
-extern def __ls_regex_group_count(int handle) -> int
-extern def __ls_regex_named_count(int handle) -> int
-extern def __ls_regex_named_name(int handle, int i) -> object
-extern def __ls_regex_named_index(int handle, int i) -> int
+extern def __ls_regex_exec(object h, *u8 text, int text_len, int start) -> int
+extern def __ls_regex_cap_start(object h, int group) -> int
+extern def __ls_regex_cap_len(object h, int group) -> int
+extern def __ls_regex_group_count(object h) -> int
+extern def __ls_regex_is_onepass(object h) -> int
+// Diagnostic-only counters proving which exec engine actually ran (see
+// re_exec_vm_onepass/re_exec_vm_general/re_exec_vm_dfa in runtime/ls_regex.c);
+// not part of the Regex object's public API, called directly via std.sys.c by
+// probes.
+extern def __ls_regex_debug_onepass_execs() -> i64
+extern def __ls_regex_debug_general_execs() -> i64
+extern def __ls_regex_debug_dfa_execs() -> i64
+// D1: match-only-safe drop-in for __ls_regex_exec that skips sub-group
+// capture work when the pattern is DFA-eligible, recovering it lazily on
+// first group()/cap_start read with index > 0. See runtime/ls_regex.h.
+// Backs Regex.is_match() and the group-0-only free functions in regex.lls
+// (NOT matches?()/find_from(), whose documented multi-group contract makes
+// this the wrong (slower, not just no-benefit) choice -- see that file).
+extern def __ls_regex_exec_dfa(object h, *u8 text, int text_len, int start) -> int
+extern def __ls_regex_is_dfa_eligible(object h) -> int
+extern def __ls_regex_named_count(object h) -> int
+extern def __ls_regex_named_name(object h, int i) -> object
+extern def __ls_regex_named_index(object h, int i) -> int

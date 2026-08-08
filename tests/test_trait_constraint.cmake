@@ -1,4 +1,16 @@
 # test_trait_constraint.cmake — Trait constraint tests (JIT + AOT + negative)
+#
+# Trait bounds actually enforced at instantiation, positives and negatives in one
+# corpus.
+#
+# The negative half is the point. A bound that is parsed but not checked lets
+# `Heap(T)` instantiate with a `T` that has no `Order`, and the failure surfaces
+# much later as a missing method on a synthesised comparison -- far from the line
+# that caused it.
+#
+# @subsystem checker/traits
+# @guards trait constraints (with negatives)
+# @sources checker_generics.c:instantiate_template
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

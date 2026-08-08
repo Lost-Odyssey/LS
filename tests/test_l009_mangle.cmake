@@ -9,6 +9,10 @@
 #     mod_a.helper()==1, mod_b.helper()==2          (distinct module-qualified)
 #     mod_a.combined()==11, mod_b.combined()==22     (bare intra-module calls)
 #     mod_a/mod_b/local read_file all distinct strings
+#
+# @subsystem modules
+# @guards L-009 cross-module function name mangling
+# @sources mangle.c:mangle_module_symbol
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/l009_mangle/main.lls")

@@ -13,6 +13,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   STDLIB    — repo root, set as LS_HOME so `import std.core.set` resolves
+#
+# @subsystem stdlib/containers
+# @guards std.core.deque Deque(T) growable ring
+# @sources lib/std/core/deque.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

@@ -1,6 +1,17 @@
 # test_vec_builtin_syntax_reject.cmake — builtin vec(T) frontend syntax is gone.
 #
 # Required: LS_EXE, SAMPLE
+#
+# Phase 3 P3-1: the builtin `vec(T)` type syntax is no longer accepted.
+#
+# Retirements need a test because the failure mode of a half-done retirement is
+# silence -- the parser still recognises the old spelling and produces something
+# subtly different from `Vec(T)`. Refusing it at the type parser is what makes the
+# migration complete rather than merely discouraged.
+#
+# @subsystem language/syntax
+# @guards Phase 3 P3-1 builtin vec(T) syntax retired
+# @sources parser_type.c:parse_type
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

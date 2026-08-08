@@ -2,6 +2,28 @@
 # of a short-circuit && / || (JIT + AOT + memcheck).
 # Pre-fix: "Instruction does not dominate all uses" (codegen crash). The regression
 # assertion is: compiles + runs, all three branch markers print, memcheck clean.
+#
+# The failure was an LLVM verifier error, not a wrong answer: "Instruction does
+# not dominate all uses".
+#
+# `vec[i].field` on a has_drop struct spills a clone into an alloca and registers
+# it for drop at the end of the statement (that is the M-4.5 machinery). Put that
+# expression on the RIGHT side of `&&` or `||` and the alloca is created inside
+# the short-circuit RHS block, while the flush still happens at the outer
+# statement boundary -- after the merge, where the RHS block does not dominate.
+# The drop then refers to an alloca that is not in scope on every path.
+#
+# The fix flushes the RHS temporaries inside the RHS block, right after the RHS is
+# evaluated and before the jump to merge. That is only safe because the RHS result
+# is a bool and holds no resource; the LHS temporaries live in the entry block,
+# dominate everything, and are still flushed by the outer statement.
+#
+# The corpus covers `&&`, `||`, triple chains, and both local and global vectors,
+# because the dominance relation differs between them.
+#
+# @subsystem codegen/match
+# @guards BF-044 has_drop vec[i].field on the RHS of && / ||
+# @sources codegen_own.c:cg_flush_temps_scope_exit
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/bf044_shortcircuit/main.lls")

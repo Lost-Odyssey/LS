@@ -5,6 +5,10 @@
 # down. JIT + AOT + memcheck.
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR
+#
+# @subsystem codegen/enum
+# @guards B4 >255 variants locks the drop-sentinel / !range fallback
+# @sources codegen_own.c:emit_enum_drop
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required_var LS_EXE SAMPLE WORK_DIR)

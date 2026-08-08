@@ -2,6 +2,10 @@
 # 硬编码 IMat（堆 *int buffer 的 2D int 矩阵）验证 NumPy 式堆存储地基：
 # 偏移 at/set、as_ptr -> *int 基址、row_ptr 子数组指针、move 语义 +
 # 显式 .copy() 独立、as_ptr 传真 C 函数（CRT memcpy）。JIT + AOT + memcheck 0/0/0。
+#
+# @subsystem stdlib/numeric
+# @guards Tensor phase 0 spike
+# @sources lib/std/sci/tensor.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/tensor_phase0_test.lls")

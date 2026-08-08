@@ -1,5 +1,9 @@
 # test_phase_c5_closure.cmake — Phase C.5: by-move string captures + per-
 # closure env_drop + Block-param borrowing.
+#
+# @subsystem codegen/closure
+# @guards Phase C.5 string by-move captures + per-closure env drop
+# @sources codegen_closure.c:codegen_closure_literal
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

@@ -15,6 +15,10 @@
 # interception next to the closure's different scope layout would double-free.
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR
+#
+# @subsystem codegen/closure
+# @guards closure braced body silently returned zero instead of its tail expression
+# @sources codegen_closure.c:codegen_closure_literal
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required_var LS_EXE SAMPLE WORK_DIR)

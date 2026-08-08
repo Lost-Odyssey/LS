@@ -5,6 +5,10 @@
 #   come from the implementing type's own generics). Comparing a real impl's arity
 #   against that placeholder rejected every non-generic FromList impl, making a
 #   documented opt-in unusable.
+#
+# @subsystem checker/generics
+# @guards L-024 generic trait-impl signatures were never validated
+# @sources checker_decl.c:check_impl_trait_decl, checker_generics.c:instantiate_template
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/iface_marker_ok.lls")

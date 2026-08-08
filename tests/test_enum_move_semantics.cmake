@@ -1,6 +1,21 @@
 # test_enum_move_semantics.cmake — L-019 (audit OWN-6): has_drop enum
 # bindings move like every other has_drop type; @dup keeps an explicit deep
 # copy; use-after-move is a checker error. JIT + AOT + reject triple.
+#
+# L-019: binding a has_drop enum MOVES it, like every other owning type.
+#
+# Before this, `Enum b = a` deep-copied -- the single clone-on-bind exception in
+# the language. Making it a move means `a` is dead afterwards and use-after-move
+# is a compile error; an explicit copy is `@dup(a)`. POD enums still copy and
+# by-value parameters still clone, matching structs.
+#
+# Worth noting what the change actually was: the user-facing documentation had
+# described enums as owning and moved for some time, so this was the
+# implementation catching up with the published model rather than a new rule.
+#
+# @subsystem codegen/ownership
+# @guards L-019
+# @sources checker_borrow.c:type_is_movable, checker_borrow.c:checker_try_mark_moved, codegen_own.c:cg_invalidate_moved_source
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/enum_move_semantics_test.lls")

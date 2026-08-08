@@ -13,6 +13,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   STDLIB    — repo root, set as LS_HOME so `import std.core.set` resolves
+#
+# @subsystem stdlib/containers
+# @guards std.core.heap BinaryHeap(T: Order)
+# @sources lib/std/core/heap.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

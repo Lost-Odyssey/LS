@@ -1,6 +1,10 @@
 # Regression for B-MAP-OPT-001: owned rvalue Option(has_drop) match subject must
 # drop exactly once even when the arm has nested control flow (for/while). Fixed
 # by idempotent emit_enum_drop. JIT + memcheck 0/0/0 + AOT. Prints "OPTPAY PASS".
+#
+# @subsystem codegen/match
+# @guards B-MAP-OPT-001 owned rvalue Option(has_drop) match subject
+# @sources codegen_match.c:cg_match_subject_is_owned_rvalue
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

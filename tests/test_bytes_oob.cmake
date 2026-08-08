@@ -3,6 +3,10 @@
 # must NOT run).
 #
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem stdlib/text
+# @guards Reader bounds check aborts past the end
+# @sources lib/std/text/bytes.lls
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

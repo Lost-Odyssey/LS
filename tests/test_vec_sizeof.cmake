@@ -1,6 +1,10 @@
 # Step 2 — sizeof(T) compile-time evaluation (primitive/pointer sizes + generic
 # struct method monomorphization + arithmetic). JIT + AOT (no allocation, so no
 # memcheck needed).
+#
+# @subsystem stdlib/containers
+# @guards RawVec Step 2 sizeof(T) compile-time evaluation
+# @sources checker_call.c:check_expr_call
 
 cmake_minimum_required(VERSION 3.20)
 

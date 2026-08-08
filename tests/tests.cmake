@@ -59,11 +59,29 @@ enable_testing()
 
 add_executable(test_scanner tests/test_scanner.c src/scanner.c)
 target_include_directories(test_scanner PRIVATE src/ include/)
+# Scanner unit test: token kinds, and the line/column carried on each one.
+#
+# Positions matter more here than the token kinds do. Every diagnostic in the
+# compiler renders a source snippet with a caret, so a scanner that is one column
+# off does not fail anything -- it just points every error at the wrong place.
+#
+# @subsystem frontend/lexer
+# @guards scanner token + line/col unit coverage
+# @sources scanner.c:scanner_next
 add_test(NAME test_scanner COMMAND test_scanner)
 
 # C2-2 did-you-mean: diag_suggest unit tests (pure logic, no LLVM)
 add_executable(test_diag_suggest tests/test_diag_suggest.c src/diag.c)
 target_include_directories(test_diag_suggest PRIVATE src/ include/)
+# did-you-mean unit test: the edit-distance suggester, pure logic and no LLVM.
+#
+# It pins the thresholds as much as the algorithm -- suggesting nothing is fine,
+# but suggesting the WRONG identifier confidently is worse than staying quiet,
+# so ties and very short names deliberately produce no suggestion.
+#
+# @subsystem diagnostics
+# @guards C2-2 did-you-mean suggestions
+# @sources diag.c:diag_suggest
 add_test(NAME test_diag_suggest COMMAND test_diag_suggest)
 
 add_executable(test_parser
@@ -75,6 +93,16 @@ add_executable(test_parser
     src/types.c
 )
 target_include_directories(test_parser PRIVATE src/ include/)
+# Parser unit test: the Pratt expression parser and declaration forms, checked
+# on the AST directly rather than through a compiled program.
+#
+# This is the only level at which precedence and associativity can be asserted
+# cleanly; by the time a program runs, a mis-parsed expression usually still
+# produces a number, just the wrong one.
+#
+# @subsystem frontend/parser
+# @guards Pratt parser unit coverage
+# @sources parser.c:parse
 add_test(NAME test_parser COMMAND test_parser)
 
 add_executable(test_types
@@ -94,6 +122,16 @@ target_include_directories(test_types PRIVATE src/ include/)
 if(NOT WIN32)
     target_link_libraries(test_types ${LS_UNIX_EXTRA_LIBS})
 endif()
+# Type-system unit test: equality, assignability and the type registry, without
+# LLVM in the picture.
+#
+# It links the checker but not codegen, which is what makes it useful as a fast
+# gate -- and also what made it go stale unnoticed once (it kept asserting that
+# by-value array parameters were accepted after policy A banned them).
+#
+# @subsystem checker/types
+# @guards type system unit coverage
+# @sources types.c:type_equals
 add_test(NAME test_types COMMAND test_types)
 
 # Phase 4 test: codegen (needs LLVM)
@@ -126,6 +164,16 @@ if(WIN32)
 else()
     target_link_libraries(test_codegen ${LS_UNIX_EXTRA_LIBS})
 endif()
+# Codegen unit test: drives the emitter directly and inspects the module,
+# instead of running a program.
+#
+# Useful for shapes whose failure is structural (a missing terminator, a value
+# that does not dominate its uses) rather than behavioural -- those show up as a
+# verifier complaint with no source location when found end-to-end.
+#
+# @subsystem codegen/core
+# @guards codegen unit coverage
+# @sources codegen.c:codegen_compile
 add_test(NAME test_codegen COMMAND test_codegen)
 
 # Phase 5 test: JIT (needs LLVM)
@@ -165,6 +213,16 @@ if(WIN32)
 else()
     target_link_libraries(test_jit ${LS_UNIX_EXTRA_LIBS})
 endif()
+# LLJIT unit test: incremental compilation and symbol resolution.
+#
+# The REPL is built on this, and its historical failures (L-010) were all in the
+# same area -- re-emitting a module whose earlier definitions are still
+# referenced, then stripping the old bodies without leaving dangling block
+# references behind.
+#
+# @subsystem codegen/core
+# @guards LLJIT incremental compilation unit coverage
+# @sources jit.c
 add_test(NAME test_jit COMMAND test_jit)
 
 # Phase 6 test: FFI (needs LLVM)
@@ -204,6 +262,14 @@ if(WIN32)
 else()
     target_link_libraries(test_ffi ${LS_UNIX_EXTRA_LIBS})
 endif()
+# FFI unit test: loading a shared library and resolving symbols out of it.
+#
+# Platform-specific by nature (LoadLibrary/GetProcAddress on Windows), which is
+# why it is exercised at the C level rather than only through `load()` in LS.
+#
+# @subsystem codegen/ffi
+# @guards dynamic library loading unit coverage
+# @sources ffi.c
 add_test(NAME test_ffi COMMAND test_ffi)
 
 # Phase 7 test: Module system (needs LLVM)
@@ -243,6 +309,15 @@ if(WIN32)
 else()
     target_link_libraries(test_module ${LS_UNIX_EXTRA_LIBS})
 endif()
+# Module-loader unit test: resolution order, the import registry and dedup.
+#
+# Deduplication is the part worth pinning: two import spellings that resolve to
+# the same file must produce ONE module, or the same functions get emitted twice
+# under two different symbol prefixes.
+#
+# @subsystem modules
+# @guards module loader unit coverage
+# @sources module.c:module_load
 add_test(NAME test_module COMMAND test_module)
 set_tests_properties(test_module PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
@@ -283,16 +358,37 @@ if(WIN32)
 else()
     target_link_libraries(test_memory ${LS_UNIX_EXTRA_LIBS})
 endif()
+# Memcheck tracker unit test: the allocation table itself.
+#
+# Everything the suite claims about leaks and double frees rests on this. If the
+# tracker miscounts, every memcheck-gated test is either falsely green or falsely
+# red -- so it is verified in isolation, not only through the programs it
+# instruments.
+#
+# @subsystem runtime/memcheck
+# @guards memcheck tracker unit coverage
+# @sources runtime/memcheck.c:ls_mc_report
 add_test(NAME test_memory COMMAND test_memory)
 
 # REPL helper unit tests (classification / completeness / highlighting).
 # Pure logic over the scanner — no LLVM needed.
 add_executable(test_repl tests/test_repl.c src/scanner.c src/repl_edit.c src/repl_term.c)
 target_include_directories(test_repl PRIVATE src/)
+# REPL unit test: the line editor and multi-line input handling.
+#
+# The editor is hand-written rather than readline-based, so cursor movement,
+# history and continuation of an unfinished construct are all our own code.
+#
+# @subsystem tooling/repl
+# @guards REPL unit coverage
+# @sources jit.c
 add_test(NAME test_repl COMMAND test_repl)
 
 # REPL import-persistence E2E: pipe `import math` + a math call into `ls repl`
 # (non-TTY → fgets fallback) and assert the result is computed.
+# @subsystem tooling/repl
+# @guards REPL import persistence
+# @sources jit.c
 add_test(
     NAME test_repl_import
     COMMAND ${CMAKE_COMMAND}
@@ -304,6 +400,9 @@ add_test(
 
 # Static reflection Stage 1.5 REPL: define a struct + method, then `:methods P`
 # must list the user method's signature. Reuses the piped-REPL driver.
+# @subsystem tooling/repl
+# @guards REPL :methods inspection
+# @sources checker.c:checker_inspect
 add_test(
     NAME test_repl_inspect
     COMMAND ${CMAKE_COMMAND}
@@ -327,6 +426,9 @@ add_test(
 # REPL variable-state persistence (Phase 1, POD scalars): a mutation to a
 # persisted scalar must survive across input lines. `int i = 1; i += 41;
 # print(i)` must print 42 (pre-fix it reset to 1 each line and printed 1).
+# @subsystem tooling/repl
+# @guards REPL variable-state persistence Phase 1 (POD scalars)
+# @sources jit.c
 add_test(
     NAME test_repl_persist
     COMMAND ${CMAKE_COMMAND}
@@ -339,6 +441,9 @@ add_test(
 # REPL variable-state persistence (Phase 2, containers/has_drop): a Vec global
 # must survive across input lines so pushes accumulate. `Vec(int) v=[1,2,3]` then
 # two pushes then `print(v.len())` must print 5 (pre-fix M-DEF reset it each line).
+# @subsystem tooling/repl
+# @guards REPL variable-state persistence Phase 2 (containers)
+# @sources jit.c
 add_test(
     NAME test_repl_persist_vec
     COMMAND ${CMAKE_COMMAND}
@@ -364,6 +469,9 @@ add_test(
 
 # std.md (Markdown writer) Phase A: build a doc with every builder + render,
 # under JIT memcheck — asserts the run is leak/double-free clean.
+# @subsystem stdlib/text
+# @guards std.md Phase A builder + render
+# @sources lib/std/text/md.lls
 add_test(
     NAME test_std_md_jit
     COMMAND ${CMAKE_COMMAND}
@@ -376,6 +484,9 @@ add_test(
 
 # std.md Phase B (parser): parse a Markdown doc into MdDoc + round-trip render,
 # under JIT memcheck.
+# @subsystem stdlib/text
+# @guards std.md Phase B parser + round-trip
+# @sources lib/std/text/md.lls
 add_test(
     NAME test_std_md_parse_jit
     COMMAND ${CMAKE_COMMAND}
@@ -387,6 +498,9 @@ add_test(
 )
 
 # std.md Phase C (inline parsing + extract helpers).
+# @subsystem stdlib/text
+# @guards std.md Phase C inline parsing
+# @sources lib/std/text/md.lls
 add_test(
     NAME test_std_md_inline_jit
     COMMAND ${CMAKE_COMMAND}
@@ -400,6 +514,9 @@ add_test(
 # @-sigil intrinsics parse/checker/codegen parity with legacy __ spellings.
 # (Full JIT+AOT parity is exercised across the whole suite once the stdlib is
 # migrated to @-names in Phase 2; this is a focused JIT+memcheck smoke test.)
+# @subsystem language/syntax
+# @guards @-sigil intrinsics vs the legacy __ spellings
+# @sources checker_call.c:intrinsic_retired_spelling
 add_test(
     NAME test_intrinsic_sigil
     COMMAND ${CMAKE_COMMAND}
@@ -411,6 +528,9 @@ add_test(
 )
 
 # FromList protocol interface: list-literal init `Vec(T) v = [..]` via the facade.
+# @subsystem checker/traits
+# @guards FromList marker protocol interface
+# @sources checker_decl.c:check_impl_trait_decl
 add_test(
     NAME test_protocol_fromlist
     COMMAND ${CMAKE_COMMAND}
@@ -422,6 +542,9 @@ add_test(
 )
 
 # FromPairs protocol interface: map-literal init `Map(K,V) m = {k:v}` via the facade.
+# @subsystem checker/traits
+# @guards FromPairs marker protocol interface
+# @sources checker_decl.c:check_impl_trait_decl
 add_test(
     NAME test_protocol_frompairs
     COMMAND ${CMAKE_COMMAND}
@@ -432,26 +555,60 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_memcheck_jit.cmake
 )
 
-# Retired legacy intrinsic spelling (__take) must be rejected at compile time.
+# The retired `__take` spelling must be rejected at compile time.
+#
+# When the intrinsics moved to @-sigils the old `__` spellings were kept
+# recognisable specifically so they could be REFUSED with a clear message rather
+# than silently becoming undefined identifiers. Registered with WILL_FAIL, so the
+# oracle is the non-zero exit code.
+#
+# @subsystem language/syntax
+# @guards retired __take spelling must be rejected
+# @sources checker_call.c:intrinsic_retired_spelling
 add_test(NAME test_retired_take
     COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_take.lls)
 set_tests_properties(test_retired_take PROPERTIES WILL_FAIL TRUE)
 
-# Hand-writing the reserved __from_list method name must be rejected.
+# Hand-writing the reserved `__from_list` method name must be rejected.
+#
+# It is the container-literal protocol hook, synthesised by the compiler. A user
+# definition would silently shadow the generated one and change what every list
+# literal of that type does. WILL_FAIL is the oracle.
+#
+# @subsystem language/syntax
+# @guards hand-writing the reserved __from_list name must be rejected
+# @sources checker_decl.c:check_impl_decl
 add_test(NAME test_retired_fromlist
     COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/retired_fromlist.lls)
 set_tests_properties(test_retired_fromlist PROPERTIES WILL_FAIL TRUE)
 
-# Extension guards for the LS→lls rename: the official source extension is now
-# `.lls`, but the legacy `.ls` must keep compiling. These two run the same kind
-# of program through each extension (both also import std.sys.io → io.lls).
+# The official `.lls` source extension after the LS -> lls rename.
+#
+# Paired with the legacy-extension test below: the resolver tries `.lls` first
+# and `.ls` second, and both legs run a program that also imports a stdlib module,
+# so the extension logic is exercised for imports and not just for the entry file.
+#
+# @subsystem language/syntax
+# @guards the .lls extension after the LS->lls rename
+# @sources main.c
 add_test(NAME test_ext_lls_smoke
     COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/rename_smoke.lls)
+# The legacy `.ls` extension must keep compiling.
+#
+# The rename kept `.ls` working on purpose; this is the guard that it stays that
+# way. Same program shape as the `.lls` twin.
+#
+# @subsystem language/syntax
+# @guards the legacy .ls extension keeps compiling
+# @sources main.c
 add_test(NAME test_ext_ls_legacy
     COMMAND $<TARGET_FILE:ls> run ${CMAKE_SOURCE_DIR}/tests/samples/legacy_ext_compat.ls)
 
 # std.html Phase H1 (generation + render): functional bottom-up construction,
 # escaping, void tags, fmt_tag. JIT + AOT correctness + memcheck.
+# @subsystem stdlib/text
+# @guards std.html H1 generation + render
+# @sources lib/std/text/html.lls
 add_test(
     NAME test_std_html_write
     COMMAND ${CMAKE_COMMAND}
@@ -467,6 +624,9 @@ add_test(
 # <script>/<style> raw text, entity decode (named + numeric), round-trip, and
 # query helpers (to_text / extract_links / find_by_tag / get_attr).
 # JIT + AOT correctness + memcheck. Reuses the std.html driver ("HTML PASS").
+# @subsystem stdlib/text
+# @guards std.html H2 tolerant recursive-descent parser
+# @sources lib/std/text/html.lls
 add_test(
     NAME test_std_html_parse
     COMMAND ${CMAKE_COMMAND}
@@ -481,6 +641,9 @@ add_test(
 # MdInline to HTML (headings, paragraphs, bold/italic/code, links, lists, code
 # blocks, hr, escaping, full-document wrapper). Lives in std.md (no std.html
 # dependency). JIT + AOT correctness + memcheck. Reuses the std.html driver.
+# @subsystem stdlib/text
+# @guards std.md Phase H3 Markdown -> HTML
+# @sources lib/std/text/md.lls
 add_test(
     NAME test_md_to_html
     COMMAND ${CMAKE_COMMAND}
@@ -508,6 +671,9 @@ add_test(
 # std/plotfmt.lls (plot infra Phase 0.2): pure-LS formatting helpers
 # (fmt_fixed/auto/sci/time, pad, clamp, rgb/hsv -> hex). Self-verifying sample
 # prints "PLOTFMT PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot infra 0.2 pure-LS formatting helpers
+# @sources lib/std/chart/plotfmt.lls
 add_test(
     NAME test_plotfmt
     COMMAND ${CMAKE_COMMAND}
@@ -522,6 +688,9 @@ add_test(
 # f-string format specifiers (plot infra Phase 0.3): {expr:.2f} / {n:03d} etc.
 # scanner+parser+ast+codegen; runtime unchanged. Self-verifying sample prints
 # "FSPEC PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/string
+# @guards f-string format specifiers {expr:.2f}
+# @sources codegen_print.c:codegen_format_string
 add_test(
     NAME test_fstring_spec
     COMMAND ${CMAKE_COMMAND}
@@ -536,6 +705,9 @@ add_test(
 # Merged std.core.math: pure-LS derived helpers (radians/degrees,
 # lib/std/core/math.lls) folded into the built-in math namespace alongside C
 # primitives. Sample prints "MATHEXT PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/numeric
+# @guards merged std.core.math derived helpers
+# @sources lib/std/core/math.lls
 add_test(
     NAME test_math_ext
     COMMAND ${CMAKE_COMMAND}
@@ -559,6 +731,9 @@ add_test(
 
 # Identifier predicate/unsafe suffixes: `name?` and `name!`, while preserving
 # `!=` and prefix `!expr`. Self-verifying sample prints "IDENTSUF PASS".
+# @subsystem frontend/lexer
+# @guards identifier ? / ! suffixes
+# @sources scanner.c:scanner_next
 add_test(
     NAME test_ident_suffix
     COMMAND ${CMAKE_COMMAND}
@@ -570,6 +745,21 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
+# Postfix `!` -- force-unwrap on Option/Result.
+#
+# It lowers to the same machinery as `try` and as a `match`: read the tag, take
+# the payload on the success path, abort with a source location on the failure
+# path. That makes it an ownership operation, not just a read. On success the
+# payload must be MOVED out -- unwrapping and then also dropping the container
+# would free the payload twice -- and on failure the diagnostic has to carry the
+# line and column, so the aborting form is exercised too.
+#
+# Note the syntax detail the corpus pins: a bare variable needs `(x)!`, because
+# `x!` is lexed as an identifier with a `!` suffix.
+#
+# @subsystem codegen/match
+# @guards postfix `!` force-unwrap
+# @sources codegen_match.c:codegen_try_expr
 add_test(
     NAME test_force_unwrap
     COMMAND ${CMAKE_COMMAND}
@@ -584,6 +774,9 @@ add_test(
 # V1 bit-pattern matching (features/bit_pattern_match.md): MSB-first field
 # extraction + binding, match-value arms, OR-pattern, wildcard, bool 1-bit field,
 # int/u16/u8/u64 subjects. JIT + AOT correctness + memcheck 0/0/0.
+# @subsystem codegen/match
+# @guards V1 bit-pattern matching
+# @sources codegen_match.c:cg_match_lower_enum
 add_test(
     NAME test_bit_match
     COMMAND ${CMAKE_COMMAND}
@@ -777,6 +970,9 @@ add_test(
 # stateful Reader cursor, feeding a bit-pattern match. Parses a synthetic O-RAN /
 # eCPRI fronthaul packet (be_u32/u16/u8 + le_u32 + owned of_bytes path).
 # JIT + AOT correctness + memcheck 0/0/0.
+# @subsystem stdlib/text
+# @guards std.bytes byte-buffer load primitives
+# @sources lib/std/text/bytes.lls
 add_test(
     NAME test_bytes
     COMMAND ${CMAKE_COMMAND}
@@ -799,6 +995,9 @@ add_test(
 # 通用 mod.fn 解析 Phase 1 (docs/plan_module_fn_resolution.md): canonical
 # module-path calls `std.x.fn()` resolve without an alias; aliased imports allow
 # both alias and canonical spellings. JIT + AOT + memcheck.
+# @subsystem modules
+# @guards canonical mod.fn call resolution (Phase 1)
+# @sources checker_call.c:check_expr_call
 add_test(
     NAME test_modfn_canonical
     COMMAND ${CMAKE_COMMAND}
@@ -815,6 +1014,9 @@ add_test(
 # path, instantiated in consumer B that never imported those modules. A's import
 # env is bound when the generic method bodies are checked in B. main.lls imports a
 # sibling defmod.lls (resolved relative to the source dir). JIT + AOT + memcheck.
+# @subsystem modules
+# @guards generic method instantiation sees the defining module's imports (Phase 2)
+# @sources checker_generics.c:instantiate_template
 add_test(
     NAME test_modfn_generic
     COMMAND ${CMAKE_COMMAND}
@@ -826,10 +1028,17 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# L-013 match-result-ownership: a match yielding an owned heap payload (string /
-# Vec / has_drop struct·enum) has exactly one owner across every consumer
-# (var-decl / call-arg / return / nested / discard). JIT+AOT correctness +
-# memcheck 0/0/0 (docs/plan_match_result_ownership.md §8).
+# L-013: the value a `match` produces is owned by whoever consumes it.
+#
+# The rule that makes this delicate is stated in the match codegen guide: a
+# has_drop match result must NEVER be registered in the statement's temp table.
+# The consumer (a binding, a call argument, a return) takes it, and a second
+# registration means a second drop of the same heap block. This corpus is the
+# guard on that specific asymmetry.
+#
+# @subsystem codegen/ownership
+# @guards L-013
+# @sources codegen_match.c:cg_match_emit_arm_body
 add_test(
     NAME test_match_result_own
     COMMAND ${CMAKE_COMMAND}
@@ -846,6 +1055,9 @@ add_test(
 # default IS Str; this pins the static-Str lowering across all positions
 # (var-decl / param / return / struct field / Vec element). JIT+AOT+
 # memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.1).
+# @subsystem stdlib/string
+# @guards P1 string literal lowered to Str
+# @sources checker_expr.c:check_expr_ident
 add_test(
     NAME test_str_p1
     COMMAND ${CMAKE_COMMAND}
@@ -861,6 +1073,9 @@ add_test(
 # rvalue (cap>0, the formatted heap buffer wrapped as Str, zero-copy), routed
 # through the unified has_drop temp/drop path. Since P5-2 the f-string default
 # IS Str. JIT+AOT+memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.2).
+# @subsystem stdlib/string
+# @guards P2 f-string with interpolations produces an owned Str
+# @sources codegen_print.c:codegen_format_string
 add_test(
     NAME test_str_p2
     COMMAND ${CMAKE_COMMAND}
@@ -876,6 +1091,9 @@ add_test(
 # "%.*s", length-bounded). Owned Str rvalues passed to print are dropped clean.
 # v1; the @print sigil + Printable trait are deferred (v2). JIT+AOT+memcheck
 # 0/0/0 (docs/plan_string_to_stdlib.md §5.3).
+# @subsystem stdlib/string
+# @guards P3 print accepts a Str
+# @sources codegen_print.c
 add_test(
     NAME test_str_p3
     COMMAND ${CMAKE_COMMAND}
@@ -891,6 +1109,9 @@ add_test(
 # `impl Str` over the byte buffer (find/contains?/starts_with?/ends_with?/substr/
 # upper/lower/trim/concat/repeat). Prerequisite to P5 (removing builtin string).
 # Pure LS, no compiler change. JIT+AOT+memcheck 0/0/0.
+# @subsystem stdlib/string
+# @guards builtin string methods reimplemented as pure LS
+# @sources lib/std/core/str.lls
 add_test(
     NAME test_str_methods
     COMMAND ${CMAKE_COMMAND}
@@ -905,6 +1126,9 @@ add_test(
 # string-to-stdlib: Str method-port batch 2 — rfind/count/compare/replace/
 # pad_left/pad_right + collection returners bytes/split/lines (Vec(Str)/Vec(int)).
 # Pure LS, no compiler change. JIT+AOT+memcheck 0/0/0.
+# @subsystem stdlib/string
+# @guards Str method port batch 2 (rfind/count/compare/replace)
+# @sources lib/std/core/str.lls
 add_test(
     NAME test_str_methods2
     COMMAND ${CMAKE_COMMAND}
@@ -919,6 +1143,9 @@ add_test(
 # string-to-stdlib: Str method-port batch 3 — parsing to_int/to_i64/to_float/
 # to_bool returning Result(T, Str). Also exercises string-literal -> Str coercion
 # in enum-payload position (Err("msg")). JIT+AOT+memcheck 0/0/0.
+# @subsystem stdlib/string
+# @guards Str method port batch 3 (to_int/to_i64/to_float)
+# @sources lib/std/core/str.lls
 add_test(
     NAME test_str_methods3
     COMMAND ${CMAKE_COMMAND}
@@ -934,6 +1161,9 @@ add_test(
 # (find/contains?/count via __ls_str_find, replace single-byte fast-path,
 # substr/concat/__clone/+/repeat via __ls_bytecopy, split_view zero-copy views)
 # must stay byte-for-byte correct. JIT+AOT+memcheck 0/0/0.
+# @subsystem stdlib/string
+# @guards strbench P0/P1/P2 runtime-accelerated methods
+# @sources runtime/builtins.c
 add_test(
     NAME test_str_perf_methods
     COMMAND ${CMAKE_COMMAND}
@@ -948,6 +1178,9 @@ add_test(
 # string-to-stdlib gap①: a string literal passed where a read-only `&Str` is
 # expected coerces to a static Str and auto-borrows (method-arg + free-fn-arg).
 # JIT+AOT+memcheck 0/0/0 (docs/plan_string_to_stdlib.md §5.1).
+# @subsystem stdlib/string
+# @guards string literal passed where a read-only &Str is expected
+# @sources checker_expr.c:check_expr_ident
 add_test(
     NAME test_str_lit_borrow
     COMMAND ${CMAKE_COMMAND}
@@ -963,6 +1196,9 @@ add_test(
 # formats via "%.*s" (length-bounded). Borrowed interps not dropped; owned Str
 # rvalue interps dropped after the result is built. Both the f-string-producing
 # path and the inline print() path. JIT+AOT+memcheck 0/0/0.
+# @subsystem stdlib/string
+# @guards f-string interpolation of Str values
+# @sources codegen_print.c:codegen_format_string
 add_test(
     NAME test_str_fstring_interp
     COMMAND ${CMAKE_COMMAND}
@@ -977,6 +1213,9 @@ add_test(
 # string-to-stdlib P7-mig: impl Hash for Str (std/str.lls, FxHash via std.hash)
 # + operator == (impl Eq for Str) => Str usable as Map key (Hash + Eq bounds);
 # covers set/get/grow/overwrite/remove with has_drop Str keys. 0/0/0.
+# @subsystem stdlib/string
+# @guards impl Hash for Str (FxHash) as a map key
+# @sources lib/std/core/str.lls
 add_test(
     NAME test_str_hash_mapkey
     COMMAND ${CMAKE_COMMAND}
@@ -992,6 +1231,9 @@ add_test(
 # view for FFI char* consumers, verified through CRT strlen in every state
 # (static literal zero-copy / owned / grown / empty / zero-init nil data).
 # Unfreezes std/c.lls + std/os.lls migration (P5-3). JIT+AOT+memcheck 0/0/0.
+# @subsystem stdlib/string
+# @guards P5-0 Str.c_str() NUL-terminated view
+# @sources lib/std/core/str.lls
 add_test(
     NAME test_str_cstr
     COMMAND ${CMAKE_COMMAND}
@@ -1007,6 +1249,9 @@ add_test(
 # Guards the has_user_clone forward-declaration in emit_struct_clone_val —
 # without it the clone fell back to field-wise shallow copy of the raw *u8
 # buffer => double-free (found migrating std/env to Str). 0/0/0.
+# @subsystem stdlib/string
+# @guards owned Str cloned inside a module function
+# @sources codegen_own.c:emit_clone_value
 add_test(
     NAME test_str_modfn_clone
     COMMAND ${CMAKE_COMMAND}
@@ -1441,6 +1686,9 @@ add_test(
 
 # Vec(T).sort / sort_by — O(n log n) stable merge sort (bugs/27_vec.txt #2):
 # larger n, explicit stability, has_drop elements, degenerate sizes.
+# @subsystem stdlib/containers
+# @guards bugs/27 #2 Vec.sort / sort_by O(n log n) stable merge sort
+# @sources lib/std/core/vec.lls
 add_test(
     NAME test_vec_sort
     COMMAND ${CMAKE_COMMAND}
@@ -1455,6 +1703,9 @@ add_test(
 # A-1 (docs/plan_runtime_primitives.md): std.c.{malloc,realloc,free,abort}
 # reachable by canonical path, incl. from generic method bodies instantiated
 # at the consumer site. JIT + AOT + memcheck.
+# @subsystem codegen/ffi
+# @guards plan_runtime_primitives A-1 std.c.{malloc,realloc,free,abort}
+# @sources codegen_call.c:cg_expr_call
 add_test(
     NAME test_stdc_prim
     COMMAND ${CMAKE_COMMAND}
@@ -1469,6 +1720,9 @@ add_test(
 # A+B (docs/plan_fma_coldpath.md): FMA contract on FP arithmetic + noreturn/cold
 # on the abort sink. FP dot product (contract) + in-bounds v[i] (cold path).
 # JIT+AOT+memcheck; FMA must not change the tolerance-checked result.
+# @subsystem codegen/optimization
+# @guards FMA contract on FP arithmetic + noreturn/cold paths
+# @sources optpipe.c:ls_opt_run_passes
 add_test(
     NAME test_fma_coldpath
     COMMAND ${CMAKE_COMMAND}
@@ -1484,6 +1738,9 @@ add_test(
 # with &T/&!T/&self/&!self borrows get nonnull/dereferenceable/align/readonly/
 # nocapture stamped. Self-verifying correctness gate (the attrs must not
 # miscompile). JIT+AOT+memcheck.
+# @subsystem codegen/optimization
+# @guards borrows lowered to LLVM parameter attributes
+# @sources codegen_noalias.c
 add_test(
     NAME test_borrow_attrs
     COMMAND ${CMAKE_COMMAND}
@@ -1498,6 +1755,9 @@ add_test(
 # Regression: `for i in 0..n` / `for i in n` with an i64 bound. The range loop
 # counter is i32; codegen must coerce i64 bounds to i32 or the cond block emits
 # a mismatched `icmp i32, i64` and fails module verification. JIT+AOT+memcheck.
+# @subsystem stdlib/containers
+# @guards `for i in 0..n` with an i64 bound
+# @sources checker_stmt.c:check_stmt
 add_test(
     NAME test_forin_i64_bound
     COMMAND ${CMAKE_COMMAND}
@@ -1527,6 +1787,9 @@ set_tests_properties(test_ident_suffix PROPERTIES DEPENDS "test_fstring_spec")
 # Exercises deeply-nested has_drop (Figure -> vec(Axes) -> vec(LineStyle) ->
 # vec(f64)), Axes MOVE into Figure, and deep-copy reads. Self-verifying sample
 # prints "PLOT PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot Phase 1 data model + builder API
+# @sources lib/std/chart/plot.lls
 add_test(
     NAME test_plot_skeleton
     COMMAND ${CMAKE_COMMAND}
@@ -1541,6 +1804,9 @@ add_test(
 # std/plot.lls tick engine (plot Phase 2): standard Heckbert nice-numbers,
 # generate_ticks, map_x/map_y, update_limits, finalize (margins + ticks).
 # Self-verifying sample prints "TICKS PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot Phase 2 Heckbert nice-numbers tick engine
+# @sources lib/std/chart/plot.lls
 add_test(
     NAME test_plot_ticks
     COMMAND ${CMAKE_COMMAND}
@@ -1555,6 +1821,9 @@ add_test(
 # std/plot.lls SVG backend (plot Phase 2b): layout, polyline, axes, ticks, grid,
 # title/labels (escaped), scatter circles. Self-verifying sample prints
 # "SVG PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot Phase 2b SVG backend
+# @sources lib/std/chart/plot.lls
 add_test(
     NAME test_plot_svg
     COMMAND ${CMAKE_COMMAND}
@@ -1569,6 +1838,9 @@ add_test(
 # std/plot.lls Text/ASCII backend (plot Phase 2c): vec(string) grid, _put_char,
 # DDA line rasterization, y/x labels + axes. Self-verifying sample prints
 # "TEXT PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot Phase 2c text/ASCII backend
+# @sources lib/std/chart/plot.lls
 add_test(
     NAME test_plot_text
     COMMAND ${CMAKE_COMMAND}
@@ -1583,6 +1855,9 @@ add_test(
 # std/plottl.lls timeline (plot TL-1): swimlane SVG (rects + <title> + time
 # ticks) and text backend. Self-verifying sample prints "TL PASS".
 # JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot TL-1 swimlane SVG timeline
+# @sources lib/std/chart/plottl.lls
 add_test(
     NAME test_plot_timeline
     COMMAND ${CMAKE_COMMAND}
@@ -1597,6 +1872,9 @@ add_test(
 # std/plottl.lls CSV input (plot TL-1.5): parse_timeline_csv (header/blank skip,
 # auto palette color), load_timeline_csv. Self-verifying sample prints
 # "CSV PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot TL-1.5 parse_timeline_csv
+# @sources lib/std/chart/plottl.lls
 add_test(
     NAME test_plot_csv
     COMMAND ${CMAKE_COMMAND}
@@ -1612,6 +1890,9 @@ add_test(
 # (cpu_hue/cpu_color via plotfmt.hsv_to_hex), SVG swimlanes + diagonal-stripe
 # HT patterns + CPU legend, text backend. Self-verifying sample prints
 # "TL2 PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot TL-2 CPU timeline + HT colouring
+# @sources lib/std/chart/plottl.lls
 add_test(
     NAME test_plot_cpu
     COMMAND ${CMAKE_COMMAND}
@@ -1627,6 +1908,9 @@ add_test(
 # self-contained single-file HTML with a fixed lane column + horizontally
 # scrollable wide SVG (pure CSS overflow, zero JS). Self-verifying sample prints
 # "HTML PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot TL-2b scrollable HTML wrapper
+# @sources lib/std/chart/plottl.lls
 add_test(
     NAME test_plot_html
     COMMAND ${CMAKE_COMMAND}
@@ -1641,6 +1925,9 @@ add_test(
 # std/plottl.lls aggregated CPU timeline (plot TL-3): cpu_timeline_aggregated
 # buckets time into windows and renders the per-(thread,window) dominant CPU.
 # Self-verifying sample prints "AGG PASS". JIT + AOT correctness + memcheck.
+# @subsystem stdlib/plot
+# @guards plot TL-3 aggregated CPU timeline
+# @sources lib/std/chart/plottl.lls
 add_test(
     NAME test_plot_agg
     COMMAND ${CMAKE_COMMAND}
@@ -1655,6 +1942,9 @@ add_test(
 # B-4 cross-module struct literal `mod.Type{...}` + struct field defaults
 # (options-struct pattern). main.lls imports opt.lls and constructs opt.PlotOpts{}.
 # Self-verifying sample prints "MSL PASS". JIT + AOT correctness + memcheck.
+# @subsystem modules
+# @guards B-4 cross-module struct literal mod.Type{...}
+# @sources checker_expr.c:check_expr_new_expr
 add_test(
     NAME test_mod_struct_literal
     COMMAND ${CMAKE_COMMAND}
@@ -1666,10 +1956,18 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
 
-# struct field defaults + partial initialization (v1: literal defaults). Omitted
-# fields fall back to their declared default; has_drop struct (string default +
-# explicit vec field) stays memcheck-clean. Self-verifying sample prints
-# "SFDEF PASS". JIT + AOT correctness + memcheck.
+# Struct field defaults with partial initialisation: `S { a: 1 }` where the
+# remaining fields carry declared defaults.
+#
+# The subtlety is that omitted fields are not left alone -- the literal must
+# still produce a fully initialised value, so the compiler synthesises the
+# missing stores from the declaration. Miss one and the field holds whatever was
+# on the stack, which for a has_drop field means the destructor later frees a
+# garbage pointer.
+#
+# @subsystem codegen/struct
+# @guards struct field defaults + partial initialization
+# @sources checker_expr.c:check_expr_new_expr
 add_test(
     NAME test_struct_field_defaults
     COMMAND ${CMAKE_COMMAND}
@@ -1684,6 +1982,9 @@ add_test(
 # struct field defaults v2: empty/literal vec defaults (vec(T) x = [] / [1,2,3])
 # built in place at the construction site, and nested struct defaults (Sub{}).
 # Self-verifying sample prints "SFD2 PASS". JIT + AOT correctness + memcheck.
+# @subsystem codegen/struct
+# @guards struct field defaults v2 (empty/literal vec defaults)
+# @sources checker_expr.c:check_expr_new_expr
 add_test(
     NAME test_struct_field_defaults_v2
     COMMAND ${CMAKE_COMMAND}
@@ -1696,6 +1997,9 @@ add_test(
 )
 
 # VR-LIM-012: user Vec(T) struct field defaults use __from_list / zero init.
+# @subsystem codegen/struct
+# @guards VR-LIM-012 user Vec(T) field defaults via __from_list
+# @sources checker_expr.c:check_expr_new_expr
 add_test(
     NAME test_struct_field_defaults_uservec
     COMMAND ${CMAKE_COMMAND}
@@ -1713,6 +2017,9 @@ set_tests_properties(test_struct_field_defaults_uservec PROPERTIES
 # params with literal/struct defaults may be omitted at the call site (checker
 # appends cloned default exprs). Self-verifying sample prints "FNDEF PASS".
 # JIT + AOT correctness + memcheck.
+# @subsystem language/syntax
+# @guards positional default parameters
+# @sources checker_call.c:check_expr_call
 add_test(
     NAME test_fn_default_params
     COMMAND ${CMAKE_COMMAND}
@@ -1752,6 +2059,9 @@ add_test(
 # Container value-semantics matrix (vec/map first-class — Phase 0 safety net).
 # Baseline-clean cases, locked under JIT memcheck. Broken target cases (D/F) are
 # tracked in tests/samples/cmatrix/MATRIX.md and registered as they turn green.
+# @subsystem stdlib/containers
+# @guards container value-semantics matrix (vec/map first-class Phase 0 safety net)
+# @sources codegen_own.c:cg_store_owned, codegen_own.c:emit_drop_value
 foreach(cm
         b01_vec_scope b02_vec_nested_get b03_vec_rvalue_arg
         b04_struct_vec_drop b05_enum_vec b06_map_scope t04_map_vec_value
@@ -1782,11 +2092,23 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_move_elision.cmake
 )
 
-# Clone-elision (A1 last-use analysis): a has_drop local whose by-value
-# consumption is its last use gets its defensive clone downgraded to a move.
-# The sample fixes the semantic baseline (authored pre-pass, pure-clone) and
-# covers the exclusions (re-read, loop back edge, one-arm read, closure
-# capture, twin args). Asserts JIT + AOT correctness + memcheck cleanliness.
+# A1 clone-elision: when a has_drop local's by-value consumption is its LAST
+# use, the defensive clone is downgraded to a move.
+#
+# The corpus was written BEFORE the pass existed, against the pure-clone
+# semantics, so its output is the contract the optimisation must preserve
+# byte for byte. It also pins the exclusions -- a later re-read, a loop back
+# edge, a one-arm read, a closure capture, twin arguments -- because each of
+# those makes the last-use claim false, and eliding there is a use-after-free
+# rather than a speedup.
+#
+# Note that clone elision is observable through destructor side effects (a
+# program that prints in `~` sees fewer calls), so `LS_NO_ELIDE=1` is a
+# documented output difference, not a parity failure.
+#
+# @subsystem codegen/ownership
+# @guards A1 clone-elision
+# @sources checker_elide.c:checker_elide_last_use
 add_test(
     NAME test_clone_elision
     COMMAND ${CMAKE_COMMAND}
@@ -1797,11 +2119,17 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_clone_elision.cmake
 )
 
-# Clone-elision v2 (owned by-value PARAM last-use): a has_drop param forwarded
-# / stashed / returned at its last use gets the clone downgraded to a move
-# (codegen's param.moved flag). Same driver, param-focused sample: forwarding
-# chains (the Map.upsert shape) as eligible, re-read / loop / capture /
-# borrowed / twin as must-clone exclusions.
+# A1-v2 extends clone-elision to owned by-value has_drop PARAMETERS whose last
+# use forwards them onward. The forwarding chain through `Map.upsert` was the
+# motivating case: it cloned at every hop.
+#
+# The pitfall this corpus guards is ordering, not semantics -- a generic method
+# instance must have its function type stamped before the elision pass runs, or
+# the pass sees no type and silently declines to elide.
+#
+# @subsystem codegen/ownership
+# @guards A1-v2 clone-elision param coverage
+# @sources checker_elide.c:checker_elide_last_use
 add_test(
     NAME test_clone_elision_param
     COMMAND ${CMAKE_COMMAND}
@@ -1857,6 +2185,10 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_struct_readthrough.cmake
 )
 
+# @subsystem runtime/memcheck
+# @guards AOT --memcheck link + atexit report path
+# @sources runtime/memcheck.c:ls_mc_report
+#
 # AOT memcheck end-to-end test: compile a sample with `ls compile --memcheck`,
 # run the produced binary, assert the runtime report shows "OK clean".
 # Driven by a cmake -P script for cross-platform process invocation.
@@ -1871,8 +2203,15 @@ add_test(
 # Order this after test_memory so the JIT memcheck path is already validated.
 set_tests_properties(test_memcheck_aot PROPERTIES DEPENDS "test_memory")
 
-# Bug-6 回归：memcheck_edge.ls（Phase B 极端场景）— JIT memcheck OK clean
-# 修复：移除 self-recursive enum 参数的 is_borrowed=true hack，callee 正确 drop 深拷贝
+# Edge cases for the allocator tracker itself rather than for a language
+# feature: allocation patterns that stress the tracking table (many small
+# allocations, reallocation chains, frees in a different order than the
+# allocations). A tracker that miscounts here would make every other memcheck
+# test either falsely green or falsely red.
+#
+# @subsystem runtime/memcheck
+# @guards memcheck edge cases under JIT
+# @sources runtime/memcheck.c
 add_test(
     NAME test_memcheck_edge_jit
     COMMAND ${CMAKE_COMMAND}
@@ -1884,7 +2223,19 @@ add_test(
 )
 set_tests_properties(test_memcheck_edge_jit PROPERTIES DEPENDS "test_memory")
 
-# M-3: 统一所有权转移 API memcheck 验证
+# M-3 (docs/memory_model_overhaul.md): the unified ownership-transfer API.
+#
+# Before M-3 every container operation that took ownership -- vec.push,
+# vec.insert, map.set, `v[i]=`, `a[i]=`, enum ctor, struct ctor, match binder,
+# closure capture -- hand-wrote its own move/clone/mark-moved branch. Adding a
+# container operation meant editing five or more places, and missing one was
+# a leak or a double free rather than a compile error. M-3 collapsed those into
+# a single decision point; this corpus drives the transfer paths through it and
+# requires the allocator report to balance.
+#
+# @subsystem runtime/memcheck
+# @guards M-3 unified ownership-transfer API under memcheck
+# @sources runtime/memcheck.c:ls_mc_report
 add_test(
     NAME test_mem_m3_jit
     COMMAND ${CMAKE_COMMAND}
@@ -1896,9 +2247,17 @@ add_test(
 )
 set_tests_properties(test_mem_m3_jit PROPERTIES DEPENDS "test_memcheck_edge_jit")
 
-# M-4: 所有权转移审计矩阵 — 覆盖 AST_VAR_DECL/ASSIGN/RETURN × 各类型，
-# vec/map 字面量，函数参数 by-value，match binder，嵌套容器等
-# 包含 BF-038 修复（fn 返回 map IDENT double-free）回归
+# M-4: the ownership-transfer decision table, applied symmetrically.
+#
+# M-3 gave the transfer one entry point; M-4 audited the callers. The corpus
+# walks var-decl / assignment / return over every type kind, because the
+# historical bugs were never in the common case -- they were the one branch
+# somebody forgot when a new type kind appeared (`v[i]=b` for a has_drop
+# element being the canonical example).
+#
+# @subsystem runtime/memcheck
+# @guards M-4 ownership-transfer decision table
+# @sources codegen_own.c:cg_store_owned
 add_test(
     NAME test_mem_m4_jit
     COMMAND ${CMAKE_COMMAND}
@@ -1910,8 +2269,18 @@ add_test(
 )
 set_tests_properties(test_mem_m4_jit PROPERTIES DEPENDS "test_mem_m3_jit")
 
-# M-4.5 回归：vec[i].field 中 has_drop struct 临时深拷贝在语句结束被 drop
-# （取字段后丢弃的临时 struct，其它 string 字段此前泄漏）。JIT path。
+# M-4.5: a has_drop struct temporary reached through `vec[i].field`.
+#
+# Reading a field out of an element produces an intermediate struct value that
+# nothing names. It has to be dropped at the end of the statement, and before
+# the fix it simply was not -- its Str field leaked on every read. The shape is
+# worth its own corpus because the leak is invisible without memcheck: the
+# value read is correct, the program prints the right thing, and only the
+# allocator knows.
+#
+# @subsystem runtime/memcheck
+# @guards M-4.5 vec[i].field has_drop struct temporaries
+# @sources codegen_own.c:cg_push_temp_drop
 add_test(
     NAME test_mem_m4_5_jit
     COMMAND ${CMAKE_COMMAND}
@@ -1923,7 +2292,15 @@ add_test(
 )
 set_tests_properties(test_mem_m4_5_jit PROPERTIES DEPENDS "test_mem_m4_jit")
 
-# M-4.5 回归：AOT path（ls compile --memcheck && exec）
+# M-4.5 again, on the AOT path (`lls compile --memcheck` + run the exe).
+#
+# Same corpus as the JIT twin on purpose. The two paths link different runtimes
+# and lay out temporaries differently, so an ownership fix that lands in one and
+# not the other is a real and previously-seen failure mode.
+#
+# @subsystem runtime/memcheck
+# @guards M-4.5 same corpus on the AOT --memcheck path
+# @sources runtime/memcheck.c:ls_mc_report
 add_test(
     NAME test_mem_m4_5_aot
     COMMAND ${CMAKE_COMMAND}
@@ -2010,6 +2387,9 @@ set_tests_properties(test_forward_ref_struct_reject PROPERTIES DEPENDS "test_exp
 # A-4 (docs/bugs_deferred_p5_4.md §4): chained-op receiver spill inside a
 # match-arm `if` body must not free uninitialized stack on the fall-through path.
 # JIT + AOT correctness + memcheck 0/0/0.
+# @subsystem codegen/match
+# @guards bugs_deferred_p5_4 A-4 chained-op receiver spill inside a match
+# @sources codegen_own.c:cg_spill_owned_rvalue
 add_test(
     NAME test_match_concat_temp
     COMMAND ${CMAKE_COMMAND}
@@ -2024,6 +2404,9 @@ set_tests_properties(test_match_concat_temp PROPERTIES DEPENDS "test_forward_ref
 
 # B-3 (docs/bugs_deferred_p5_4.md §B-3): user `impl` on an imported struct emits
 # method symbols under the struct's prefixed llvm_name. JIT+AOT+memcheck 0/0/0.
+# @subsystem modules
+# @guards bugs_deferred_p5_4 B-3 user impl on an imported struct
+# @sources codegen_decl.c:cg_struct_llvm_by_bare
 add_test(
     NAME test_impl_imported_struct
     COMMAND ${CMAKE_COMMAND}
@@ -2087,6 +2470,9 @@ add_test(
 # Phase 0 borrow-extension (docs/plan_borrow_extension.md §3): borrows escaping
 # the parameter position must be a clean compile-time rejection, never a latent
 # IR crash or a silently-accepted dangling landmine. One driver, five samples.
+# @subsystem checker/borrow
+# @guards Phase 0 escaping borrows rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_borrow_return_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2095,6 +2481,11 @@ add_test(
         "-DEXPECT=borrows cannot escape via return"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_method_return_reject
+#
+# @subsystem checker/borrow
+# @guards method returning a borrow rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_borrow_method_return_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2103,6 +2494,11 @@ add_test(
         "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_field_reject
+#
+# @subsystem checker/borrow
+# @guards escaping field borrow rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_borrow_field_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2111,6 +2507,11 @@ add_test(
         "-DEXPECT=struct fields cannot be borrows yet"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_enum_payload_reject
+#
+# @subsystem checker/borrow
+# @guards escaping enum-payload borrow rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_borrow_enum_payload_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2119,6 +2520,11 @@ add_test(
         "-DEXPECT=enum payloads cannot be borrows yet"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_typearg_reject
+#
+# @subsystem checker/borrow
+# @guards borrow used as a type argument rejected
+# @sources checker_generics.c:resolve_type_node
 add_test(
     NAME test_borrow_typearg_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2131,6 +2537,9 @@ add_test(
 # Phase 1 borrow-extension (docs/plan_borrow_extension.md §3): named non-escaping
 # local borrows `&T r = &x`. Positive: read / writable-mutate / re-borrow /
 # has_drop referent, JIT+AOT+memcheck 0/0/0.
+# @subsystem checker/borrow
+# @guards Phase 1 named non-escaping local borrows
+# @sources checker_borrow.c:checker_place_root_symbol
 add_test(
     NAME test_borrow_local
     COMMAND ${CMAKE_COMMAND}
@@ -2141,9 +2550,16 @@ add_test(
         -DMARKER=LB
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
-# Negative: every escape vector that would dangle the borrow must be a clean
-# compile-time rejection (move the referent / copy-out the borrow / capture the
-# referent by-move into a closure).
+# Moving out of a borrow must be rejected.
+#
+# A `&T` names something it does not own, so a move through it would hand out an
+# ownership it never had and leave the real owner holding freed memory. This is
+# the counterpart to the escape rejections in this family: those stop a borrow
+# from outliving its referent, this stops it from destroying it.
+#
+# @subsystem checker/borrow
+# @guards borrow-escape Phase 0
+# @sources checker_borrow.c:checker_place_root_symbol
 add_test(
     NAME test_borrow_local_move_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2152,6 +2568,11 @@ add_test(
         "-DEXPECT=is borrowed by a live local borrow"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_local_copyout_reject
+#
+# @subsystem checker/borrow
+# @guards copy-out of a borrow rejected
+# @sources checker_borrow.c:checker_place_root_symbol
 add_test(
     NAME test_borrow_local_copyout_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2160,6 +2581,11 @@ add_test(
         "-DEXPECT=value cannot be copied out"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_local_capture_reject
+#
+# @subsystem checker/borrow
+# @guards borrow captured by a closure rejected
+# @sources checker_borrow.c:checker_place_root_symbol
 add_test(
     NAME test_borrow_local_capture_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2173,6 +2599,9 @@ add_test(
 # borrows under single-input lifetime elision (`fn(&self) -> &field`). Positive:
 # immediate use / bind to a Phase-1 local / writable-borrow return + mutate /
 # has_drop field, JIT+AOT+memcheck 0/0/0.
+# @subsystem checker/borrow
+# @guards Phase 2 single-input return-borrow elision
+# @sources checker_borrow.c:checker_place_root_symbol
 add_test(
     NAME test_borrow_return
     COMMAND ${CMAKE_COMMAND}
@@ -2186,6 +2615,9 @@ add_test(
 # Negative: multi-borrow-input method (ambiguous elision) + moving the pinned
 # receiver of a bound borrow return (would dangle). (Returning a borrow of a
 # local is covered by test_borrow_method_return_reject above.)
+# @subsystem checker/borrow
+# @guards multi-borrow-input elision ambiguity rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_borrow_return_multiinput_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2194,6 +2626,11 @@ add_test(
         "-DEXPECT=exactly one borrow input"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_return_pin_reject
+#
+# @subsystem checker/borrow
+# @guards moving a pinned borrow source rejected
+# @sources checker_borrow.c:checker_try_mark_moved
 add_test(
     NAME test_borrow_return_pin_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2202,6 +2639,11 @@ add_test(
         "-DEXPECT=is borrowed by a live local borrow"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_return_temp_reject
+#
+# @subsystem checker/borrow
+# @guards borrow of a temporary returned, rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_borrow_return_temp_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2212,6 +2654,9 @@ add_test(
 )
 # Phase 2 breadth: free-function `fn(&T) -> &T` returning a local (dangling) +
 # transitively-chained borrow return through a temporary receiver.
+# @subsystem checker/borrow
+# @guards free function returning a local borrow (dangling) rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_borrow_return_freelocal_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2220,6 +2665,11 @@ add_test(
         "-DEXPECT=must derive from"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_borrow_return_chain_temp_reject
+#
+# @subsystem checker/borrow
+# @guards borrow of a chained temporary rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_borrow_return_chain_temp_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2232,6 +2682,9 @@ add_test(
 # Borrowed slices `&[T]` — {ptr,len} views over a Vec(T) range. Positive:
 # creation / index / len / for-in / slice-as-param / sub-slice / has_drop elems,
 # JIT+AOT+memcheck 0/0/0. Negative: return / struct-field would dangle → reject.
+# @subsystem checker/borrow
+# @guards borrowed slices &[T] as {ptr,len} views
+# @sources codegen_expr.c:cg_expr_index
 add_test(
     NAME test_slice
     COMMAND ${CMAKE_COMMAND}
@@ -2242,6 +2695,11 @@ add_test(
         -DMARKER=SL
         -P ${CMAKE_SOURCE_DIR}/tests/test_plotfmt.cmake
 )
+# test_slice_return_reject
+#
+# @subsystem checker/borrow
+# @guards slice return rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_slice_return_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2250,6 +2708,11 @@ add_test(
         "-DEXPECT=cannot return a slice"
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
+# test_slice_field_reject
+#
+# @subsystem checker/borrow
+# @guards slice as a struct field rejected
+# @sources checker_decl.c:check_struct_decl
 add_test(
     NAME test_slice_field_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2259,6 +2722,9 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 # Slice return under single-input elision: a view of a LOCAL still dangles → reject.
+# @subsystem checker/borrow
+# @guards returning a view of a local rejected
+# @sources checker_borrow.c:checker_reject_borrow_return
 add_test(
     NAME test_slice_return_local_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2268,6 +2734,9 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 # Storing through a read-only slice must be rejected (only &!array(T) is writable).
+# @subsystem checker/borrow
+# @guards store through a read-only slice rejected
+# @sources codegen_stmt.c:cg_stmt_assign
 add_test(
     NAME test_slice_readonly_store_reject
     COMMAND ${CMAKE_COMMAND}
@@ -2277,7 +2746,22 @@ add_test(
         -P ${CMAKE_SOURCE_DIR}/tests/test_borrow_escape_reject.cmake
 )
 
-# M-6 汇总回归套件：覆盖 M-1~M-5 所有修复路径的 30+ 极端场景，永久内存安全守护。JIT path。
+# M-6: the permanent regression baseline for the whole M-1..M-5 overhaul.
+#
+# One corpus of 30+ extreme scenarios, each mapped to a fix: dynamic string
+# arguments to print (M-1's double-registration), borrowed strings across
+# function boundaries (M-2's `cap == 0` split), element swap through index
+# assignment (M-4), enum/struct construction from a borrowed string, string
+# allocation inside a loop with `break`, match binders returned, `try` early-exit
+# paths, and closures capturing strings and structs.
+#
+# It is deliberately one big program rather than 30 small ones: several of the
+# original bugs only appeared when allocations from different features
+# interleaved in the same scope.
+#
+# @subsystem runtime/memcheck
+# @guards M-6 memory-safety regression baseline (JIT)
+# @sources runtime/memcheck.c:ls_mc_report
 add_test(
     NAME test_mem_overhaul_jit
     COMMAND ${CMAKE_COMMAND}
@@ -2289,7 +2773,12 @@ add_test(
 )
 set_tests_properties(test_mem_overhaul_jit PROPERTIES DEPENDS "test_mem_m4_5_jit")
 
-# M-6 汇总回归套件：AOT path
+# M-6 baseline on the AOT path. See the JIT twin for what the corpus covers;
+# the reason for running it twice is that JIT and AOT link different runtimes.
+#
+# @subsystem runtime/memcheck
+# @guards M-6 memory-safety regression baseline (AOT)
+# @sources runtime/memcheck.c:ls_mc_report
 add_test(
     NAME test_mem_overhaul_aot
     COMMAND ${CMAKE_COMMAND}
@@ -2328,6 +2817,9 @@ set_tests_properties(test_extern_struct_byval PROPERTIES DEPENDS "test_extern_st
 endif()
 
 # Phase E.3.1: errno() builtin
+# @subsystem codegen/ffi
+# @guards Phase E.3.1 errno() builtin
+# @sources codegen_call.c:cg_expr_call
 add_test(
     NAME test_e3_errno
     COMMAND ${CMAKE_COMMAND}
@@ -2346,6 +2838,9 @@ else()
 endif()
 
 # Phase E.3.2: conditional compilation #if WINDOWS / LINUX / MACOS
+# @subsystem frontend/parser
+# @guards Phase E.3.2 conditional compilation #if WINDOWS/LINUX/MACOS
+# @sources scanner.c:skip_whitespace
 add_test(
     NAME test_e3_condcomp
     COMMAND ${CMAKE_COMMAND}
@@ -2358,6 +2853,9 @@ add_test(
 set_tests_properties(test_e3_condcomp PROPERTIES DEPENDS "test_e3_errno")
 
 # Phase E.3.4: stdlib path resolution (LS_HOME/stdlib lookup)
+# @subsystem modules
+# @guards Phase E.3.4 stdlib path resolution (LS_HOME)
+# @sources module.c:module_load
 add_test(
     NAME test_e3_stdlib_path
     COMMAND ${CMAKE_COMMAND}
@@ -2371,6 +2869,9 @@ set_tests_properties(test_e3_stdlib_path PROPERTIES DEPENDS "test_e3_condcomp")
 
 # Phase E.4: pure-LS io stdlib (replaces builtins_io.c). Same .lls test files
 # the built-in version used to pass; output must include "ALL PASS".
+# @subsystem stdlib/sys
+# @guards Phase E.4 pure-LS io stdlib
+# @sources lib/std/sys/io.lls
 add_test(
     NAME test_e4_io_basic
     COMMAND ${CMAKE_COMMAND}
@@ -2382,6 +2883,11 @@ add_test(
 )
 set_tests_properties(test_e4_io_basic PROPERTIES DEPENDS "test_e3_stdlib_path")
 
+# test_e4_io_seek
+#
+# @subsystem stdlib/sys
+# @guards Phase E.4 io seek/tell
+# @sources lib/std/sys/io.lls
 add_test(
     NAME test_e4_io_seek
     COMMAND ${CMAKE_COMMAND}
@@ -2663,6 +3169,9 @@ set_tests_properties(test_generics_g2 PROPERTIES DEPENDS "test_generics_g1")
 
 # Cross-module generic container (Step 0): `import std.stack` + Stack(int)/Stack(string)
 # instantiated at the importer's call site. JIT + AOT correctness + memcheck.
+# @subsystem modules
+# @guards cross-module generic container (Step 0)
+# @sources checker_generics.c:instantiate_template
 add_test(
     NAME test_stack
     COMMAND ${CMAKE_COMMAND}
@@ -2678,6 +3187,9 @@ set_tests_properties(test_stack PROPERTIES DEPENDS "test_generics_g2")
 # and uses Stack(int) internally, imported alongside a direct Stack(string) use.
 # Regression for idempotent template registration + on-demand generic-method
 # forward-declaration. Reuses test_stack.cmake (STACK PASS sentinel).
+# @subsystem modules
+# @guards transitive cross-module generic container
+# @sources checker_generics.c:instantiate_template
 add_test(
     NAME test_stack_xmod
     COMMAND ${CMAKE_COMMAND}
@@ -2691,6 +3203,9 @@ add_test(
 set_tests_properties(test_stack_xmod PROPERTIES DEPENDS "test_stack")
 
 # Module-qualified generic type `st.Stack(int)` (single-owner). JIT+AOT+memcheck.
+# @subsystem modules
+# @guards module-qualified generic type st.Stack(int)
+# @sources checker_generics.c:resolve_type_node
 add_test(
     NAME test_stack_qual
     COMMAND ${CMAKE_COMMAND}
@@ -3582,7 +4097,17 @@ add_test(
 )
 set_tests_properties(test_operator_overload PROPERTIES DEPENDS "test_trait_struct_bound")
 
-# Operator method on has_drop struct (string field) — JIT memcheck must be clean.
+# Operator lowering must not leak the temporaries it creates.
+#
+# `a + b` on a user type becomes a call whose result is an owned rvalue; chained
+# expressions produce one per operator. Each needs registering for drop at the
+# end of the statement, and the lowering path is separate from ordinary call
+# codegen -- which is exactly why it could (and did) miss the registration while
+# normal calls were fine.
+#
+# @subsystem codegen/ownership
+# @guards operator lowering must not leak owned temporaries
+# @sources codegen_own.c:cg_push_temp_drop
 add_test(
     NAME test_operator_overload_memcheck
     COMMAND ${CMAKE_COMMAND}
@@ -3669,6 +4194,9 @@ set_tests_properties(test_std_json PROPERTIES
 # Deep-nesting regressions (stdfuzz-found): recursive-descent parsers overflowed
 # the native stack on deeply-nested input; json additionally hung on legal deep-
 # balanced arrays via the exponential Vec.copy clone. Both timeout-guarded.
+# @subsystem stdlib/text
+# @guards stdfuzz-found recursive-descent stack overflow
+# @sources lib/std/text/json.lls
 add_test(
     NAME test_json_deep_nesting
     COMMAND ${CMAKE_COMMAND}
@@ -3682,6 +4210,11 @@ set_tests_properties(test_json_deep_nesting PROPERTIES
     DEPENDS "test_std_json"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+# test_html_deep_nesting
+#
+# @subsystem stdlib/text
+# @guards stdfuzz-found recursive-descent stack overflow
+# @sources lib/std/text/html.lls
 add_test(
     NAME test_html_deep_nesting
     COMMAND ${CMAKE_COMMAND}
@@ -3695,6 +4228,11 @@ set_tests_properties(test_html_deep_nesting PROPERTIES
     DEPENDS "test_std_html_parse"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+# test_regex_deep_nesting
+#
+# @subsystem stdlib/text
+# @guards stdfuzz-found recursive-descent stack overflow
+# @sources lib/std/text/regex.lls
 add_test(
     NAME test_regex_deep_nesting
     COMMAND ${CMAKE_COMMAND}
@@ -3895,6 +4433,46 @@ add_test(
 )
 set_tests_properties(test_regex PROPERTIES
     DEPENDS "test_bf044_shortcircuit"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- std.regex prefilter (literal / first-byte fast paths) — JIT + AOT ----
+# Guards against the prefilter silently skipping a valid start position.
+add_test(
+    NAME test_regex_prefilter
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_prefilter.cmake
+)
+set_tests_properties(test_regex_prefilter PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- std.regex compiled Regex object — JIT + AOT ----
+add_test(
+    NAME test_regex_object
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_object.cmake
+)
+set_tests_properties(test_regex_object PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# ---- std.regex D1 lazy DFA (match-only fast path) — JIT + AOT ----
+add_test(
+    NAME test_regex_dfa
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_dfa.cmake
+)
+set_tests_properties(test_regex_dfa PROPERTIES
+    DEPENDS "test_regex"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
@@ -4880,8 +5458,23 @@ endfunction()
 # snapshot red. This facility is a local zero-behavior-change refactoring
 # gate for the Windows/MSVC primary platform; Linux CI must not run it.
 if(WIN32)
+# test_ir_snapshot_enum_basic_test
+#
+# @subsystem codegen/optimization
+# @guards zero-behaviour-change refactoring gate (golden IR)
+# @sources codegen.c:codegen_compile
 ls_ir_snapshot(NAME enum_basic_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/enum_basic_test.lls)
+# test_ir_snapshot_closure_g
+#
+# @subsystem codegen/optimization
+# @guards zero-behaviour-change refactoring gate (golden IR)
+# @sources codegen.c:codegen_compile
 ls_ir_snapshot(NAME closure_g SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/closure_g.lls)
+# test_ir_snapshot_match_own_stress_test
+#
+# @subsystem codegen/optimization
+# @guards zero-behaviour-change refactoring gate (golden IR)
+# @sources codegen.c:codegen_compile
 ls_ir_snapshot(NAME match_own_stress_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/match_own_stress_test.lls)
 endif()
 
@@ -4917,4 +5510,68 @@ add_test(
         -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_generic_depth.cmake
+)
+
+# ---- previously-orphaned drivers, registered 2026-08-02 --------------------
+# These three drivers existed on disk but no add_test() ever referenced them,
+# so they had never run. The doc generator's self-audit surfaced them; all
+# three were then executed by hand and passed unchanged, which means the
+# features below had ZERO coverage the whole time rather than broken coverage.
+# (A fourth, test_generics_g15.cmake, was deleted instead: its corpus was never
+# written, it was never registered, and generic `methods` blocks are covered by
+# test_generics_g1.)
+
+# std.sys.path: pure-LS path utilities (join / dirname / basename / extension).
+#
+# String manipulation with a long tail of edge cases -- trailing separators,
+# empty components, a path that is only a separator, drive letters -- exactly
+# the shape that returns a slightly wrong string instead of failing.
+#
+# This driver sat on disk unregistered until 2026-08-02: it had never run once.
+# It passed unchanged when finally executed, so the module was never broken --
+# it was simply unguarded.
+#
+# @subsystem stdlib/sys
+# @guards std.sys.path batch-2 utilities (unregistered until 2026-08-02)
+# @sources lib/std/sys/path.lls
+add_test(
+    NAME test_path
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/path_test.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_path.cmake
+)
+
+# `--profile` instrumentation on both the JIT and the AOT path. The flag injects
+# per-function counters, so it edits the emitted module -- a regression here is
+# a compile failure or a corrupted program under a flag nothing else exercises.
+#
+# @subsystem tooling/cli
+# @guards --profile instrumentation (unregistered until 2026-08-02)
+# @sources main.c
+add_test(
+    NAME test_profile
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/profile_test.lls
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_profile.cmake
+)
+
+# std.sys.proc and std.sys.env: process arguments/exit and environment access.
+# Both are thin wrappers over platform C, so the JIT and AOT legs matter -- the
+# JIT resolves the runtime symbol in-process while AOT links it, and only one of
+# those breaking is a realistic failure.
+#
+# @subsystem stdlib/sys
+# @guards std.sys.proc + std.sys.env (unregistered until 2026-08-02)
+# @sources lib/std/sys/proc.lls, lib/std/sys/env.lls
+add_test(
+    NAME test_proc_env
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_proc_env.cmake
 )

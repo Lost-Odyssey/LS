@@ -1,4 +1,14 @@
 # test_trait_parse.cmake — Trait declaration parsing tests (JIT + AOT)
+#
+# Parsing an `interface` declaration -- the signature-only form, with no bodies.
+#
+# Kept separate from the impl-side tests because the failure modes differ: here a
+# mistake is a parse error or a mis-shaped AST, whereas on the impl side it is a
+# signature that type-checks against the wrong thing.
+#
+# @subsystem frontend/parser
+# @guards interface declaration parsing
+# @sources parser_decl.c:parse_fn_signature
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

@@ -1,4 +1,22 @@
 # test_enum_vec_map_payload.cmake — L-006 fix: enum with vec/map payload (JIT + AOT + memcheck)
+#
+# L-006 (the 2026-05-20 report, docs/bugfix_L006_enum_vec_map_payload.md): an
+# enum carrying a container payload crashed on both the JIT and the AOT path.
+#
+# An enum with a `Vec`/`Map` payload needs three things the compiler was not
+# doing: its `has_drop` flag must propagate from the payload type, its generated
+# destructor must reach into the payload and drop it, and its clone must deep-copy
+# rather than memcpy the container header. Missing the first means the payload
+# leaks; missing the third means two enums share one buffer and the second drop is
+# a double free.
+#
+# This is the corpus the whole `has_drop` propagation machinery was first built
+# against, which is why it is still worth running: it is small, but it touches the
+# enum ctor, the destructor synthesis and the clone path in one program.
+#
+# @subsystem codegen/enum
+# @guards L-006 enum with vec/map payload
+# @sources codegen_own.c:emit_enum_drop
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

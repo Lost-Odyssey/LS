@@ -24,6 +24,21 @@ def test_quantifiers() {
     if !re.matches("aaa", "a{3}") { @print("FAIL: {n}"); return }
     if re.matches("aa", "a{3}") { @print("FAIL: {n} neg"); return }
     if !re.matches("aaaa", "a{2,4}") { @print("FAIL: {n,m}"); return }
+    // {0,m} — a zero lower bound really means zero. apply_count is handed a
+    // body copy that is already mandatory, so the zero case needs its own path;
+    // without it {0,m} silently behaved as {1,m+1} (both bounds off by one).
+    if !re.matches("b", "a{0,3}b") { @print("FAIL: {0,m} zero"); return }
+    if !re.matches("aaab", "a{0,3}b") { @print("FAIL: {0,m} max"); return }
+    if re.full_match("aaaab", "a{0,3}b") { @print("FAIL: {0,m} over"); return }
+    if !re.matches("b", "a{0,}b") { @print("FAIL: {0,} zero"); return }
+    if !re.matches("b", "a{0}b") { @print("FAIL: {0} zero"); return }
+    if re.full_match("ab", "a{0}b") { @print("FAIL: {0} over"); return }
+    if !re.matches("xy", "(ab){0,2}xy") { @print("FAIL: group {0,m} zero"); return }
+    if !re.matches("ababxy", "(ab){0,2}xy") { @print("FAIL: group {0,m} max"); return }
+    if !re.matches("b", "a{0,3}?b") { @print("FAIL: lazy {0,m} zero"); return }
+    // a non-zero lower bound must be unaffected by the {0,m} path
+    if re.matches("b", "a{1,3}b") { @print("FAIL: {1,m} zero"); return }
+    if re.full_match("aaaab", "a{1,3}b") { @print("FAIL: {1,m} over"); return }
     // lazy — capture returns Vec(Str), empty = no match
     Vec(Str) c = re.capture("aXbXc", "(a.*?c)")
     if c.len() == 0 { @print("FAIL: lazy none"); return }
@@ -49,7 +64,40 @@ def test_alternation() {
     if re.matches("bird", "cat|dog") { @print("FAIL: alt neg"); return }
     if !re.matches("red sky", "(red|blue) sky") { @print("FAIL: group alt"); return }
     if !re.matches("blue sky", "(red|blue) sky") { @print("FAIL: group alt 2"); return }
+    // Overlapping alternation branches. These are the ONLY assertions in this
+    // corpus that depend on the one-pass classifier's disjoint-first-byte rule:
+    // both branches here can start with the same byte, so the next input byte
+    // does not decide which one survives and the pattern must fall back to the
+    // general Pike VM. Classify it one-pass by mistake and the single
+    // non-speculative saved[] is written by a path that then dies, which shows
+    // up as a silent no-match with exit code 0 -- verified by injection.
+    // Every other alternation above has disjoint branch prefixes (c/d, r/b) and
+    // so stays correct even with that rule disabled.
+    Vec(Str) ov = re.capture("abc", "(a|ab)c")
+    if ov.len() != 2 { @print(f"FAIL: overlap alt length {ov.len()}"); return }
+    if !ov[0].eq?("abc") { @print(f"FAIL: overlap alt group0 {ov[0]}"); return }
+    if !ov[1].eq?("ab") { @print(f"FAIL: overlap alt group1 {ov[1]}"); return }
+    if !re.matches("aab", "[a-c]*b") { @print("FAIL: overlap star"); return }
     @print("PASS: alternation")
+}
+
+def test_alternation_priority() {
+    // Regression for the Pike VM thread-priority bug: vm_exec_range's
+    // per-position loop recorded whichever thread completed a match LAST
+    // (in array/temporal order) instead of whichever thread had the
+    // HIGHEST priority (leftmost-first: earlier alternation branches, and
+    // greedy quantifiers, win ties regardless of which thread finishes
+    // its epsilon closure first). Confirmed against Python's `re`, which
+    // implements the same leftmost-first semantics via backtracking:
+    //   re.match(r'[^a]?([a-c]|ba)[ab]', 'bab').groups() == ('a',)
+    // Before the fix this engine returned 'ba' (the second, lower-
+    // priority alternative "ba" won because its thread happened to reach
+    // OP_MATCH at a later text position than the first alternative's).
+    Vec(Str) caps = re.capture("bab", "[^a]?([a-c]|ba)[ab]")
+    if caps.len() != 2 { @print(f"FAIL: alt_priority length {caps.len()}"); return }
+    if !caps[0].eq?("bab") { @print(f"FAIL: alt_priority group0 {caps[0]}"); return }
+    if !caps[1].eq?("a") { @print(f"FAIL: alt_priority group1 {caps[1]}"); return }
+    @print("PASS: alternation_priority")
 }
 
 def test_find() {
@@ -91,6 +139,205 @@ def test_capture() {
     if !flat[5].eq?("2") { @print("FAIL: capture_all[1][2]"); return }
     if !flat[7].eq?("c") { @print("FAIL: capture_all[2][1]"); return }
     @print("PASS: capture")
+}
+
+def test_capture_all_spans() {
+    // Zero-allocation find-all: capture_all_spans returns a flat Vec(int) of
+    // (offset, len) pairs instead of materializing a Str per group. Pins the
+    // same four behaviours find_all/capture_all's loop must get right,
+    // exactly matching capture_all's own match/group traversal (same
+    // pattern used in test_capture above; stride = (group_count+1)*2 ints).
+
+    // -- multiple matches --
+    Vec(int) sp1 = re.capture_all_spans("a=1 b=2 c=3", "([a-zA-Z_]+)=(\\S+)")
+    if sp1.len() != 18 { @print(f"FAIL: spans multi len {sp1.len()}"); return }
+    Vec(int) want1 = [0,3, 0,1, 2,1,  4,3, 4,1, 6,1,  8,3, 8,1, 10,1]
+    int k = 0
+    while k < 18 {
+        if sp1[k] != want1[k] { @print(f"FAIL: spans multi[{k}] got {sp1[k]} want {want1[k]}"); return }
+        k = k + 1
+    }
+    // a span must round-trip to the same bytes capture_all() would have
+    // materialized -- this is the "get back to Str" usability requirement.
+    Str t1 = "a=1 b=2 c=3"
+    Str g0m1 = t1.substr(sp1[6], sp1[7])
+    if !g0m1.eq?("b=2") { @print(f"FAIL: spans multi substr roundtrip [{g0m1}]"); return }
+
+    // -- non-participating group: (a)? does not match, encoded as (-1,-1) --
+    Vec(int) sp2 = re.capture_all_spans("b", "(a)?(b)")
+    if sp2.len() != 6 { @print(f"FAIL: spans nonpart len {sp2.len()}"); return }
+    Vec(int) want2 = [0,1, -1,-1, 0,1]
+    k = 0
+    while k < 6 {
+        if sp2[k] != want2[k] { @print(f"FAIL: spans nonpart[{k}] got {sp2[k]} want {want2[k]}"); return }
+        k = k + 1
+    }
+
+    // -- empty matches: (x?) with no 'x' in the text matches empty at every
+    // position, a REAL zero-length span (offset >= 0, len == 0), distinct
+    // from the (-1,-1) non-participating sentinel above --
+    Vec(int) sp3 = re.capture_all_spans("ab", "(x?)")
+    if sp3.len() != 12 { @print(f"FAIL: spans empty len {sp3.len()}"); return }
+    Vec(int) want3 = [0,0, 0,0,  1,0, 1,0,  2,0, 2,0]
+    k = 0
+    while k < 12 {
+        if sp3[k] != want3[k] { @print(f"FAIL: spans empty[{k}] got {sp3[k]} want {want3[k]}"); return }
+        k = k + 1
+    }
+
+    // -- no match at all: empty Vec(int), same contract as capture_all --
+    Vec(int) sp4 = re.capture_all_spans("abc", "zzz")
+    if sp4.len() != 0 { @print(f"FAIL: spans nomatch len {sp4.len()}"); return }
+
+    @print("PASS: capture_all_spans")
+}
+
+def test_capture_all_slices() {
+    // Zero-allocation, DIRECTLY USABLE find-all: same match/group traversal
+    // as capture_all_spans, but returns Vec(StrSlice) instead of packed
+    // ints -- no manual offset/length arithmetic, and each element is
+    // immediately readable (eq_str/to_int/etc.) with no materialization.
+    // Same four edge cases as test_capture_all_spans, expressed through
+    // StrSlice's own API instead of raw offsets.
+
+    // -- multiple matches --
+    Vec(StrSlice) sl1 = re.capture_all_slices("a=1 b=2 c=3", "([a-zA-Z_]+)=(\\S+)")
+    if sl1.len() != 9 { @print(f"FAIL: slices multi len {sl1.len()}"); return }
+    if !sl1[0].eq_str("a=1") { @print("FAIL: slices multi[0]"); return }
+    if !sl1[1].eq_str("a")   { @print("FAIL: slices multi[1]"); return }
+    if !sl1[2].eq_str("1")   { @print("FAIL: slices multi[2]"); return }
+    if !sl1[6].eq_str("c=3") { @print("FAIL: slices multi[6]"); return }
+    // "get back to Str" without the new numeric parsing -- the S6_span path.
+    Str g0m1 = sl1[3].to_str()
+    if !g0m1.eq?("b=2") { @print(f"FAIL: slices multi to_str roundtrip [{g0m1}]"); return }
+
+    // -- non-participating group: absent, NOT the same as an empty match --
+    Vec(StrSlice) sl2 = re.capture_all_slices("b", "(a)?(b)")
+    if sl2.len() != 3 { @print(f"FAIL: slices nonpart len {sl2.len()}"); return }
+    if !sl2[0].present?() { @print("FAIL: slices nonpart[0] should be present"); return }
+    if !sl2[0].eq_str("b") { @print("FAIL: slices nonpart[0] value"); return }
+    if sl2[1].present?()  { @print("FAIL: slices nonpart[1] should be absent"); return }
+    if sl2[1].len() != 0  { @print("FAIL: slices nonpart[1] len"); return }
+    if !sl2[2].present?() { @print("FAIL: slices nonpart[2] should be present"); return }
+
+    // -- empty (zero-width) match: PRESENT, len 0 -- distinct from absent --
+    Vec(StrSlice) sl3 = re.capture_all_slices("ab", "(x?)")
+    if sl3.len() != 6 { @print(f"FAIL: slices empty len {sl3.len()}"); return }
+    int k = 0
+    while k < 6 {
+        if !sl3[k].present?() { @print(f"FAIL: slices empty[{k}] should be present"); return }
+        if sl3[k].len() != 0  { @print(f"FAIL: slices empty[{k}] should be zero-length"); return }
+        k = k + 1
+    }
+
+    // -- no match: empty Vec(StrSlice) --
+    Vec(StrSlice) sl4 = re.capture_all_slices("abc", "zzz")
+    if sl4.len() != 0 { @print(f"FAIL: slices nomatch len {sl4.len()}"); return }
+
+    @print("PASS: capture_all_slices")
+}
+
+def test_strslice_numeric() {
+    // StrSlice.to_int/to_i64/to_float mirror Str's own (str_num.lls) exactly:
+    // same sign/hex/overflow/empty-input handling, same Result(T,Str) shape,
+    // reading self.ptr/self.len directly (NO materialization). Most cases
+    // are cross-checked against the equivalent Str call on the SAME digits,
+    // pinning "identical behaviour to Str", not a hand-computed number.
+
+    // -- basic decimal --
+    Str s1 = "4821"
+    match s1.to_int() {
+        Ok(sv) => {
+            match s1.as_slice().to_int() {
+                Ok(vv) => { if sv != vv || vv != 4821 { @print(f"FAIL: strslice to_int basic {vv} vs {sv}"); return } }
+                Err(e) => { @print("FAIL: strslice to_int basic got Err"); return }
+            }
+        }
+        Err(e) => { @print("FAIL: str to_int basic got Err (test bug)"); return }
+    }
+
+    // -- negative --
+    Str s2 = "-37"
+    match s2.as_slice().to_int() {
+        Ok(v) => { if v != -37 { @print(f"FAIL: strslice to_int negative {v}"); return } }
+        Err(e) => { @print("FAIL: strslice to_int negative got Err"); return }
+    }
+
+    // -- hex prefix --
+    Str s3 = "0xFF"
+    match s3.as_slice().to_int() {
+        Ok(v) => { if v != 255 { @print(f"FAIL: strslice to_int hex {v}"); return } }
+        Err(e) => { @print("FAIL: strslice to_int hex got Err"); return }
+    }
+
+    // -- invalid digit (bad numeric input) --
+    Str s4 = "12ab"
+    match s4.as_slice().to_int() {
+        Ok(v) => { @print(f"FAIL: strslice to_int invalid should be Err, got {v}"); return }
+        Err(e) => {}
+    }
+
+    // -- empty slice, PRESENT (subslice(0,0)) -- same Err as Str.to_int("") --
+    Str s5 = "4821"
+    StrSlice empty_present = s5.subslice(0, 0)
+    if !empty_present.present?() { @print("FAIL: strslice empty-present should be present"); return }
+    match empty_present.to_int() {
+        Ok(v) => { @print(f"FAIL: strslice to_int empty-present should be Err, got {v}"); return }
+        Err(e) => { if !e.eq?("empty string") { @print(f"FAIL: strslice to_int empty-present wrong message [{e}]"); return } }
+    }
+
+    // -- absent slice, from capture_all_slices' non-participating-group
+    // encoding (ptr == nil, len == 0) -- parses identically to the
+    // present-but-empty case above (n == 0 short-circuits before self.ptr
+    // is ever read: no null-pointer dereference), exactly the contract
+    // capture_all_slices documents. --
+    Vec(StrSlice) absent_group = re.capture_all_slices("b", "(a)?(b)")
+    if absent_group[1].present?() { @print("FAIL: absent_group[1] should be absent"); return }
+    match absent_group[1].to_int() {
+        Ok(v) => { @print(f"FAIL: strslice to_int absent should be Err, got {v}"); return }
+        Err(e) => { if !e.eq?("empty string") { @print(f"FAIL: strslice to_int absent wrong message [{e}]"); return } }
+    }
+
+    // -- overflow: NO overflow check (matches Str -- lenient, parity with
+    // the old builtin). Pin that StrSlice and Str compute the SAME wrapped
+    // value for the same overflowing digit string, not a hand-predicted
+    // number (this test does not depend on what that wrapped value is,
+    // only that both paths agree bit-for-bit). --
+    Str s6 = "99999999999999"
+    match s6.to_int() {
+        Ok(sv) => {
+            match s6.as_slice().to_int() {
+                Ok(vv) => { if sv != vv { @print(f"FAIL: strslice to_int overflow parity {vv} vs {sv}"); return } }
+                Err(e) => { @print("FAIL: strslice to_int overflow got Err, Str got Ok"); return }
+            }
+        }
+        Err(e) => { @print("FAIL: str to_int overflow got Err (test bug)"); return }
+    }
+
+    // -- to_i64 / to_float: same parity approach --
+    Str s7 = "-123456789012"
+    match s7.to_i64() {
+        Ok(sv) => {
+            match s7.as_slice().to_i64() {
+                Ok(vv) => { if sv != vv { @print("FAIL: strslice to_i64 parity"); return } }
+                Err(e) => { @print("FAIL: strslice to_i64 got Err"); return }
+            }
+        }
+        Err(e) => { @print("FAIL: str to_i64 got Err (test bug)"); return }
+    }
+
+    Str s8 = "3.5e2"
+    match s8.to_float() {
+        Ok(sv) => {
+            match s8.as_slice().to_float() {
+                Ok(vv) => { if vv < sv - 0.001 || vv > sv + 0.001 { @print("FAIL: strslice to_float parity"); return } }
+                Err(e) => { @print("FAIL: strslice to_float got Err"); return }
+            }
+        }
+        Err(e) => { @print("FAIL: str to_float got Err (test bug)"); return }
+    }
+
+    @print("PASS: strslice_numeric")
 }
 
 def test_named_capture() {
@@ -178,6 +425,216 @@ def test_split() {
     @print("PASS: split")
 }
 
+def test_stale_pc_after_shift() {
+    // Regression for bug (b): apply_quantifier and the two alternation
+    // rewrites in parse_expr_inner make room for a new SPLIT by memmove'ing
+    // an already-emitted body forward one slot, but several opcodes carry
+    // ABSOLUTE program-counter operands (OP_JUMP.operand_a, OP_SPLIT's
+    // operand_a/b, OP_LOOKAHEAD.operand_a) that a plain memmove does not
+    // adjust. Whenever '?' or '*' wraps a body that already contains its
+    // own quantifier or alternation, every such operand pointing at or
+    // past the insertion point is left stale, corrupting control flow.
+    // Confirmed against Python's `re`.
+    if !re.full_match("aaa", "(a*)*") { @print("FAIL: stale_pc (a*)* full_match"); return }
+    Vec(Str) c1 = re.capture("aaa", "(a*)*")
+    if c1.len() != 2 { @print(f"FAIL: stale_pc (a*)* length {c1.len()}"); return }
+    if !c1[0].eq?("aaa") { @print(f"FAIL: stale_pc (a*)* group0 {c1[0]}"); return }
+
+    if !re.full_match("ab", "(a|b)*") { @print("FAIL: stale_pc (a|b)* full_match"); return }
+    Vec(Str) c2 = re.capture("ab", "(a|b)*")
+    if c2.len() != 2 { @print(f"FAIL: stale_pc (a|b)* length {c2.len()}"); return }
+    if !c2[0].eq?("ab") { @print(f"FAIL: stale_pc (a|b)* group0 {c2[0]}"); return }
+    if !c2[1].eq?("b") { @print(f"FAIL: stale_pc (a|b)* group1 {c2[1]}"); return }
+
+    // "a*b*" also exercises the border case of the fix: an EXTERNAL
+    // reference (here, none -- these are two adjacent top-level pieces,
+    // but the second quantifier's insertion point coincides with where an
+    // earlier SPLIT's "give up, exit the loop" operand points) must NOT be
+    // bumped, only references belonging to the body that physically moved.
+    // A naive "bump every operand >= insertion point" fix breaks this:
+    // a*'s exit edge would skip straight past b*'s own SPLIT into a
+    // now-mandatory 'b', making zero b's (and zero a's) impossible.
+    if !re.matches("", "a*b*") { @print("FAIL: stale_pc a*b* empty"); return }
+    if !re.matches("a", "a*b*") { @print("FAIL: stale_pc a*b* just-a"); return }
+    if !re.full_match("bb", "a*b*") { @print("FAIL: stale_pc a*b* bb"); return }
+    @print("PASS: stale_pc_after_shift")
+}
+
+def test_alt_branch_split_corruption() {
+    // Regression for bug (d): parse_expr_inner's alternation compiler used
+    // to "fix up" whatever instruction sat at the start of the LAST
+    // alternation branch, assuming it was always a dangling SPLIT it had
+    // inserted itself. That assumption is false -- every genuinely
+    // inserted placeholder SPLIT is already patched by the very next loop
+    // iteration (guaranteed to run, since the insertion only happens when
+    // another '|' was already seen). So by the time the loop exits there
+    // is nothing left to patch. When the LAST branch's own first
+    // instruction happened to be an unrelated SPLIT -- e.g. an inner
+    // alternation or a quantifier at the very front of that branch -- the
+    // bogus fix-up silently overwrote ITS targets instead, making some of
+    // its options unreachable. Confirmed against Python's `re`.
+    if !re.full_match("cd", "a|(?:b|c)d") { @print("FAIL: split_corrupt a|(?:b|c)d on cd"); return }
+    if !re.full_match("bd", "a|(?:b|c)d") { @print("FAIL: split_corrupt a|(?:b|c)d on bd"); return }
+    if !re.full_match("a", "a|(?:b|c)d") { @print("FAIL: split_corrupt a|(?:b|c)d on a"); return }
+    @print("PASS: alt_branch_split_corruption")
+}
+
+def test_stale_pc_after_copy() {
+    // Regression for bug (e): apply_count implements {n,m} by memcpy'ing an
+    // already-emitted body to new locations (mandatory-copies loop, the
+    // {n,} copy, the {n,m} optional-copies loop, and the zero-lower-bound
+    // path's own loop -- four call sites). Unlike apply_quantifier's
+    // memmove (a body shifted in place, fixed up by
+    // re_fixup_pcs_after_shift), a memcpy leaves the ORIGINAL body's
+    // ABSOLUTE pc operands (OP_JUMP, OP_SPLIT's operand_a/b,
+    // OP_LOOKAHEAD.operand_a) unchanged inside every copy. Whenever the
+    // body itself contains a nested quantifier or alternation -- so it has
+    // internal control flow, not just flat OP_CHARs -- every copy after
+    // the first branches back into the FIRST copy instead of staying
+    // inside itself. Confirmed against Python's `re`.
+
+    // Mandatory-copies loop ({n} / {n,m} with n_min >= 2): nested '*'.
+    if !re.full_match("aaaa", "(a*){2}") { @print("FAIL: stale_pc_copy (a*){2}"); return }
+    if !re.full_match("a", "(a*){2}") { @print("FAIL: stale_pc_copy (a*){2} single"); return }
+    if !re.full_match("aaaaaa", "(a*){3}") { @print("FAIL: stale_pc_copy (a*){3}"); return }
+
+    // Mandatory-copies loop: nested alternation.
+    if !re.full_match("aa", "(a|b){2}") { @print("FAIL: stale_pc_copy (a|b){2} aa"); return }
+    if !re.full_match("ab", "(a|b){2}") { @print("FAIL: stale_pc_copy (a|b){2} ab"); return }
+    if re.full_match("aab", "(a|b){2}") { @print("FAIL: stale_pc_copy (a|b){2} over"); return }
+    if !re.full_match("aba", "(a|b){3}") { @print("FAIL: stale_pc_copy (a|b){3}"); return }
+    if re.full_match("abab", "(a|b){3}") { @print("FAIL: stale_pc_copy (a|b){3} over"); return }
+
+    // {n,} copy site.
+    if !re.full_match("aaaa", "(a*){2,}") { @print("FAIL: stale_pc_copy (a*){2,}"); return }
+    if !re.full_match("abba", "(a|b){2,}") { @print("FAIL: stale_pc_copy (a|b){2,}"); return }
+
+    // {n,m} optional-copies loop (n_min > 0, n_max > n_min).
+    if !re.full_match("aaaaaa", "(a*){2,4}") { @print("FAIL: stale_pc_copy (a*){2,4}"); return }
+    if !re.full_match("abba", "(a|b){2,4}") { @print("FAIL: stale_pc_copy (a|b){2,4}"); return }
+
+    // Zero-lower-bound path's own loop (n_min == 0, n_max >= 2).
+    if !re.full_match("aaaaaa", "(a*){0,3}") { @print("FAIL: stale_pc_copy (a*){0,3}"); return }
+    if !re.full_match("", "(a*){0,3}") { @print("FAIL: stale_pc_copy (a*){0,3} empty"); return }
+
+    // Nested-quantifier-inside-{n,m}: a nested '+' inside an alternation,
+    // wrapped by {n,m} -- exercises the optional-copies loop with a body
+    // whose internal control flow (the '+' SPLIT) is itself nested one
+    // level inside the alternation's SPLIT/JUMP.
+    if !re.full_match("aabbb", "(a+|b+){2,3}") { @print("FAIL: stale_pc_copy (a+|b+){2,3}"); return }
+    if re.full_match("aabbbcc", "(a+|b+){2,3}") { @print("FAIL: stale_pc_copy (a+|b+){2,3} over"); return }
+
+    @print("PASS: stale_pc_after_copy")
+}
+
+def test_onepass() {
+    // Regression corpus for the one-pass execution path (vm_exec_onepass,
+    // runtime/ls_regex.c): patterns the compile-time classifier
+    // (re_is_onepass, Task 1) marks ONEPASS route through a single-pc,
+    // non-speculative-SAVE executor instead of the Pike VM's thread list.
+    // The one-pass hazard is that a SAVE write is no longer speculative --
+    // there is only one saved[] array, no per-thread copies -- so any
+    // capture corruption here is exactly the failure mode the classifier
+    // exists to prevent. Every pattern below is confirmed ONEPASS via
+    // is_onepass() (so this corpus stays honest if the classifier or the
+    // program shapes ever change), and every one includes a non-matching
+    // input, confirming no stale capture offsets survive from an earlier
+    // successful exec on the same handle.
+
+    // 5-group full-line log/HTTP pattern.
+    Str p1 = "([A-Za-z]+) (/[A-Za-z0-9/]*) HTTP/([0-9.]+) ([0-9]+) ([0-9]+)"
+    match re.compile(p1, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p1 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p1 compile {e}"); return }
+    }
+    Vec(Str) c1 = re.capture("GET /api/v2/orders HTTP/1.1 200 1532", p1)
+    if c1.len() != 6 { @print(f"FAIL: onepass p1 caps len {c1.len()}"); return }
+    if !c1[1].eq?("GET") { @print(f"FAIL: onepass p1 g1 {c1[1]}"); return }
+    if !c1[2].eq?("/api/v2/orders") { @print(f"FAIL: onepass p1 g2 {c1[2]}"); return }
+    if !c1[3].eq?("1.1") { @print(f"FAIL: onepass p1 g3 {c1[3]}"); return }
+    if !c1[4].eq?("200") { @print(f"FAIL: onepass p1 g4 {c1[4]}"); return }
+    if !c1[5].eq?("1532") { @print(f"FAIL: onepass p1 g5 {c1[5]}"); return }
+    Vec(Str) c1n = re.capture("not a log line at all", p1)
+    if c1n.len() != 0 { @print(f"FAIL: onepass p1 stale on no-match len {c1n.len()}"); return }
+
+    // key=value pattern (S1_kv benchmark shape).
+    Str p2 = "([a-zA-Z_]+)=(\\S+)"
+    match re.compile(p2, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p2 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p2 compile {e}"); return }
+    }
+    Vec(Str) c2 = re.capture("user_id=4821", p2)
+    if c2.len() != 3 { @print(f"FAIL: onepass p2 caps len {c2.len()}"); return }
+    if !c2[0].eq?("user_id=4821") { @print(f"FAIL: onepass p2 g0 {c2[0]}"); return }
+    if !c2[1].eq?("user_id") { @print(f"FAIL: onepass p2 g1 {c2[1]}"); return }
+    if !c2[2].eq?("4821") { @print(f"FAIL: onepass p2 g2 {c2[2]}"); return }
+    Vec(Str) c2n = re.capture("no equals sign here", p2)
+    if c2n.len() != 0 { @print(f"FAIL: onepass p2 stale on no-match len {c2n.len()}"); return }
+
+    // href pattern (S3_href benchmark shape), including an empty capture.
+    Str p3 = "href=\"([^\"]*)\""
+    match re.compile(p3, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p3 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p3 compile {e}"); return }
+    }
+    Vec(Str) c3 = re.capture("<a href=\"/cat/electronics\">Electronics</a>", p3)
+    if c3.len() != 2 { @print(f"FAIL: onepass p3 caps len {c3.len()}"); return }
+    if !c3[1].eq?("/cat/electronics") { @print(f"FAIL: onepass p3 g1 {c3[1]}"); return }
+    Vec(Str) c3e = re.capture("href=\"\"", p3)
+    if c3e.len() != 2 { @print(f"FAIL: onepass p3 empty caps len {c3e.len()}"); return }
+    if !c3e[1].eq?("") { @print(f"FAIL: onepass p3 empty g1 [{c3e[1]}]"); return }
+    Vec(Str) c3n = re.capture("no href attribute here", p3)
+    if c3n.len() != 0 { @print(f"FAIL: onepass p3 stale on no-match len {c3n.len()}"); return }
+
+    // date pattern -- {n} with n==m needs no SPLIT at all, trivially onepass.
+    Str p4 = "([0-9]{4})-([0-9]{2})-([0-9]{2})"
+    match re.compile(p4, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p4 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p4 compile {e}"); return }
+    }
+    Vec(Str) c4 = re.capture("2026-08-07", p4)
+    if c4.len() != 4 { @print(f"FAIL: onepass p4 caps len {c4.len()}"); return }
+    if !c4[1].eq?("2026") { @print(f"FAIL: onepass p4 g1 {c4[1]}"); return }
+    if !c4[2].eq?("08") { @print(f"FAIL: onepass p4 g2 {c4[2]}"); return }
+    if !c4[3].eq?("07") { @print(f"FAIL: onepass p4 g3 {c4[3]}"); return }
+    Vec(Str) c4n = re.capture("20260807", p4)
+    if c4n.len() != 0 { @print(f"FAIL: onepass p4 stale on no-match len {c4n.len()}"); return }
+
+    // Apache combined-log 9-field pattern (S2_fields benchmark shape) --
+    // largest and most anchor-dense onepass shape in the suite.
+    Str p5 = "^(\\S+) \\S+ \\S+ \\[([^\\]]+)\\] \"(\\S+) (\\S+) HTTP/([\\d.]+)\" (\\d+) (\\d+) \"([^\"]*)\" \"([^\"]*)\"$"
+    match re.compile(p5, 0) {
+        Ok(r) => {
+            if !r.is_onepass() { @print("FAIL: onepass p5 not classified onepass"); return }
+        }
+        Err(e) => { @print(f"FAIL: onepass p5 compile {e}"); return }
+    }
+    Str line5 = "10.1.2.3 - - [07/Aug/2026:14:23:01 +0000] \"GET /api/v2/orders?id=42 HTTP/1.1\" 200 1532 \"-\" \"Mozilla/5.0\""
+    Vec(Str) c5 = re.capture(line5, p5)
+    if c5.len() != 10 { @print(f"FAIL: onepass p5 caps len {c5.len()}"); return }
+    if !c5[1].eq?("10.1.2.3") { @print(f"FAIL: onepass p5 g1 {c5[1]}"); return }
+    if !c5[2].eq?("07/Aug/2026:14:23:01 +0000") { @print(f"FAIL: onepass p5 g2 {c5[2]}"); return }
+    if !c5[3].eq?("GET") { @print(f"FAIL: onepass p5 g3 {c5[3]}"); return }
+    if !c5[4].eq?("/api/v2/orders?id=42") { @print(f"FAIL: onepass p5 g4 {c5[4]}"); return }
+    if !c5[5].eq?("1.1") { @print(f"FAIL: onepass p5 g5 {c5[5]}"); return }
+    if !c5[6].eq?("200") { @print(f"FAIL: onepass p5 g6 {c5[6]}"); return }
+    if !c5[7].eq?("1532") { @print(f"FAIL: onepass p5 g7 {c5[7]}"); return }
+    if !c5[8].eq?("-") { @print(f"FAIL: onepass p5 g8 {c5[8]}"); return }
+    if !c5[9].eq?("Mozilla/5.0") { @print(f"FAIL: onepass p5 g9 {c5[9]}"); return }
+    Vec(Str) c5n = re.capture("not an apache log line", p5)
+    if c5n.len() != 0 { @print(f"FAIL: onepass p5 stale on no-match len {c5n.len()}"); return }
+
+    @print("PASS: onepass")
+}
+
 def test_error_handling() {
     // Invalid pattern — unclosed group — should return safe defaults
     bool m = re.matches("hello", "(unclosed")
@@ -195,13 +652,21 @@ def main() {
     test_quantifiers()
     test_charclass()
     test_alternation()
+    test_alternation_priority()
     test_find()
     test_capture()
+    test_capture_all_spans()
+    test_capture_all_slices()
+    test_strslice_numeric()
     test_named_capture()
     test_lookahead()
     test_flags()
     test_replace()
     test_split()
+    test_stale_pc_after_shift()
+    test_alt_branch_split_corruption()
+    test_stale_pc_after_copy()
+    test_onepass()
     test_error_handling()
     @print("ALL PASS")
 }

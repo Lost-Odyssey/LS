@@ -1,3 +1,15 @@
+# test_string_ord.cmake
+#
+# Ordering on `Str` -- what `<` and sorting mean for text.
+#
+# Comparison is byte-wise and length-aware, and the two rules interact: a prefix
+# must order before the longer string, equal-length strings order by the first
+# differing byte. Getting only one of those right still sorts most inputs
+# correctly.
+#
+# @subsystem stdlib/string
+# @guards Str ordering
+# @sources lib/std/core/str.lls
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/string_ord_test.lls")

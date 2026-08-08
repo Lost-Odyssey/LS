@@ -103,9 +103,26 @@ target triple = "x86_64-pc-windows-msvc"
 @.ls.strlit.81 = private unnamed_addr constant [5 x i8] c"true\00", align 1
 @.ls.strlit.82 = private unnamed_addr constant [6 x i8] c"false\00", align 1
 @.ls.strlit.83 = private unnamed_addr constant [13 x i8] c"invalid bool\00", align 1
-@.ls.fmt.84 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
-@.ls.fmt.85 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
-@.ls.fmt.86 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@.ls.strlit.84 = private unnamed_addr constant [13 x i8] c"empty string\00", align 1
+@.ls.strlit.85 = private unnamed_addr constant [10 x i8] c"no digits\00", align 1
+@.ls.strlit.86 = private unnamed_addr constant [14 x i8] c"no hex digits\00", align 1
+@.ls.strlit.87 = private unnamed_addr constant [18 x i8] c"invalid hex digit\00", align 1
+@.ls.strlit.88 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.89 = private unnamed_addr constant [13 x i8] c"empty string\00", align 1
+@.ls.strlit.90 = private unnamed_addr constant [10 x i8] c"no digits\00", align 1
+@.ls.strlit.91 = private unnamed_addr constant [14 x i8] c"no hex digits\00", align 1
+@.ls.strlit.92 = private unnamed_addr constant [18 x i8] c"invalid hex digit\00", align 1
+@.ls.strlit.93 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.94 = private unnamed_addr constant [13 x i8] c"empty string\00", align 1
+@.ls.strlit.95 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.96 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.97 = private unnamed_addr constant [10 x i8] c"no digits\00", align 1
+@.ls.strlit.98 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.strlit.99 = private unnamed_addr constant [10 x i8] c"no digits\00", align 1
+@.ls.strlit.100 = private unnamed_addr constant [14 x i8] c"invalid digit\00", align 1
+@.ls.fmt.101 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@.ls.fmt.102 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
+@.ls.fmt.103 = private unnamed_addr constant [4 x i8] c"%d\0A\00", align 1
 
 declare i32 @printf(ptr %0, ...)
 
@@ -294,25 +311,39 @@ declare ptr @__ls_readline_take()
 
 declare ptr @__ls_readline_ptr()
 
-declare i32 @__ls_regex_compile(ptr %0, i32 %1)
+declare ptr @__ls_regex_compile(ptr %0, i32 %1)
 
-declare void @__ls_regex_free(i32 %0)
+declare void @__ls_regex_free(ptr %0)
+
+declare ptr @__ls_regex_cached(ptr %0, i32 %1)
 
 declare ptr @__ls_regex_last_error()
 
-declare i32 @__ls_regex_exec(i32 %0, ptr %1, i32 %2, i32 %3)
+declare i32 @__ls_regex_exec(ptr %0, ptr %1, i32 %2, i32 %3)
 
-declare i32 @__ls_regex_cap_start(i32 %0)
+declare i32 @__ls_regex_cap_start(ptr %0, i32 %1)
 
-declare i32 @__ls_regex_cap_len(i32 %0)
+declare i32 @__ls_regex_cap_len(ptr %0, i32 %1)
 
-declare i32 @__ls_regex_group_count(i32 %0)
+declare i32 @__ls_regex_group_count(ptr %0)
 
-declare i32 @__ls_regex_named_count(i32 %0)
+declare i32 @__ls_regex_is_onepass(ptr %0)
 
-declare ptr @__ls_regex_named_name(i32 %0, i32 %1)
+declare i64 @__ls_regex_debug_onepass_execs()
 
-declare i32 @__ls_regex_named_index(i32 %0, i32 %1)
+declare i64 @__ls_regex_debug_general_execs()
+
+declare i64 @__ls_regex_debug_dfa_execs()
+
+declare i32 @__ls_regex_exec_dfa(ptr %0, ptr %1, i32 %2, i32 %3)
+
+declare i32 @__ls_regex_is_dfa_eligible(ptr %0)
+
+declare i32 @__ls_regex_named_count(ptr %0)
+
+declare ptr @__ls_regex_named_name(ptr %0, i32 %1)
+
+declare i32 @__ls_regex_named_index(ptr %0, i32 %1)
 
 define internal i64 @std_core_hash__fx_seed() {
 entry:
@@ -1556,6 +1587,14 @@ entry:
   %len = load i32, ptr %field, align 4
   %eq = icmp eq i32 %len, 0
   ret i1 %eq
+}
+
+define i1 @"std_core_str_core__StrSlice.present?"(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0) {
+entry:
+  %field = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr = load ptr, ptr %field, align 8
+  %ne = icmp ne ptr %ptr, null
+  ret i1 %ne
 }
 
 define i32 @"std_core_str_core__StrSlice.at!"(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0, i32 %1) {
@@ -5270,6 +5309,1221 @@ drop.call130:                                     ; preds = %drop.skip026
 ; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.lifetime.end.p0(i64 immarg %0, ptr nocapture %1) #1
 
+define %"Result(int,std_core_str_core__Str)" @std_core_str_core__StrSlice.to_int(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0) {
+entry:
+  %enum.ctor172 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %enum.ctor155 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %d = alloca i32, align 4
+  %val = alloca i32, align 4
+  %enum.ctor128 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %enum.ctor113 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %dig = alloca i32, align 4
+  %hd = alloca i32, align 4
+  %hv = alloca i32, align 4
+  %enum.ctor62 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %enum.ctor15 = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %first = alloca i32, align 4
+  %neg = alloca i1, align 1
+  %i = alloca i32, align 4
+  %enum.ctor = alloca %"Result(int,std_core_str_core__Str)", align 8
+  %n = alloca i32, align 4
+  %field = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 1
+  %len = load i32, ptr %field, align 4
+  store i32 %len, ptr %n, align 4
+  %n1 = load i32, ptr %n, align 4
+  %eq = icmp eq i32 %n1, 0
+  br i1 %eq, label %if.then, label %if.merge
+
+if.then:                                          ; preds = %entry
+  %1 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
+  %disc.p = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 0
+  store i8 1, ptr %disc.p, align 1
+  %payload.p = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 1
+  %field.p = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.84, i32 12, i32 0 }, ptr %field.p, align 8
+  %enum.val = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val
+
+if.merge:                                         ; preds = %entry
+  store i32 0, ptr %i, align 4
+  store i1 false, ptr %neg, align 1
+  %field2 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr = load ptr, ptr %field2, align 8
+  %ptr.idx = getelementptr i8, ptr %ptr, i64 0
+  %ptr.elem = load i8, ptr %ptr.idx, align 1
+  %widen.zext = zext i8 %ptr.elem to i32
+  store i32 %widen.zext, ptr %first, align 4
+  %first3 = load i32, ptr %first, align 4
+  %eq4 = icmp eq i32 %first3, 45
+  br i1 %eq4, label %if.then5, label %if.else
+
+if.then5:                                         ; preds = %if.merge
+  store i1 true, ptr %neg, align 1
+  store i32 1, ptr %i, align 4
+  br label %if.merge6
+
+if.merge6:                                        ; preds = %if.merge10, %if.then5
+  %i11 = load i32, ptr %i, align 4
+  %n12 = load i32, ptr %n, align 4
+  %sge = icmp sge i32 %i11, %n12
+  br i1 %sge, label %if.then13, label %if.merge14
+
+if.else:                                          ; preds = %if.merge
+  %first7 = load i32, ptr %first, align 4
+  %eq8 = icmp eq i32 %first7, 43
+  br i1 %eq8, label %if.then9, label %if.merge10
+
+if.then9:                                         ; preds = %if.else
+  store i32 1, ptr %i, align 4
+  br label %if.merge10
+
+if.merge10:                                       ; preds = %if.then9, %if.else
+  br label %if.merge6
+
+if.then13:                                        ; preds = %if.merge6
+  %2 = call ptr @memset(ptr %enum.ctor15, i32 0, i64 24)
+  %disc.p16 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor15, i32 0, i32 0
+  store i8 1, ptr %disc.p16, align 1
+  %payload.p17 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor15, i32 0, i32 1
+  %field.p18 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p17, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.85, i32 9, i32 0 }, ptr %field.p18, align 8
+  %enum.val19 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor15, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val19
+
+if.merge14:                                       ; preds = %if.merge6
+  %i20 = load i32, ptr %i, align 4
+  %add = add nsw i32 %i20, 1
+  %n21 = load i32, ptr %n, align 4
+  %slt = icmp slt i32 %add, %n21
+  br i1 %slt, label %sc.rhs, label %sc.merge
+
+sc.rhs:                                           ; preds = %if.merge14
+  %field22 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr23 = load ptr, ptr %field22, align 8
+  %i24 = load i32, ptr %i, align 4
+  %pi.idx = sext i32 %i24 to i64
+  %ptr.idx25 = getelementptr i8, ptr %ptr23, i64 %pi.idx
+  %ptr.elem26 = load i8, ptr %ptr.idx25, align 1
+  %widen.zext27 = zext i8 %ptr.elem26 to i32
+  %eq28 = icmp eq i32 %widen.zext27, 48
+  br label %sc.merge
+
+sc.merge:                                         ; preds = %sc.rhs, %if.merge14
+  %sc = phi i1 [ %slt, %if.merge14 ], [ %eq28, %sc.rhs ]
+  br i1 %sc, label %sc.rhs29, label %sc.merge30
+
+sc.rhs29:                                         ; preds = %sc.merge
+  %field31 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr32 = load ptr, ptr %field31, align 8
+  %i33 = load i32, ptr %i, align 4
+  %add34 = add nsw i32 %i33, 1
+  %pi.idx35 = sext i32 %add34 to i64
+  %ptr.idx36 = getelementptr i8, ptr %ptr32, i64 %pi.idx35
+  %ptr.elem37 = load i8, ptr %ptr.idx36, align 1
+  %widen.zext38 = zext i8 %ptr.elem37 to i32
+  %eq39 = icmp eq i32 %widen.zext38, 120
+  br i1 %eq39, label %sc.merge41, label %sc.rhs40
+
+sc.merge30:                                       ; preds = %sc.merge41, %sc.merge
+  %sc52 = phi i1 [ %sc, %sc.merge ], [ %sc51, %sc.merge41 ]
+  br i1 %sc52, label %if.then53, label %if.merge54
+
+sc.rhs40:                                         ; preds = %sc.rhs29
+  %field42 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr43 = load ptr, ptr %field42, align 8
+  %i44 = load i32, ptr %i, align 4
+  %add45 = add nsw i32 %i44, 1
+  %pi.idx46 = sext i32 %add45 to i64
+  %ptr.idx47 = getelementptr i8, ptr %ptr43, i64 %pi.idx46
+  %ptr.elem48 = load i8, ptr %ptr.idx47, align 1
+  %widen.zext49 = zext i8 %ptr.elem48 to i32
+  %eq50 = icmp eq i32 %widen.zext49, 88
+  br label %sc.merge41
+
+sc.merge41:                                       ; preds = %sc.rhs40, %sc.rhs29
+  %sc51 = phi i1 [ %eq39, %sc.rhs29 ], [ %eq50, %sc.rhs40 ]
+  br label %sc.merge30
+
+if.then53:                                        ; preds = %sc.merge30
+  %i55 = load i32, ptr %i, align 4
+  %add56 = add nsw i32 %i55, 2
+  store i32 %add56, ptr %i, align 4
+  %i57 = load i32, ptr %i, align 4
+  %n58 = load i32, ptr %n, align 4
+  %sge59 = icmp sge i32 %i57, %n58
+  br i1 %sge59, label %if.then60, label %if.merge61
+
+if.merge54:                                       ; preds = %sc.merge30
+  store i32 0, ptr %val, align 4
+  br label %while.cond134
+
+if.then60:                                        ; preds = %if.then53
+  %3 = call ptr @memset(ptr %enum.ctor62, i32 0, i64 24)
+  %disc.p63 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor62, i32 0, i32 0
+  store i8 1, ptr %disc.p63, align 1
+  %payload.p64 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor62, i32 0, i32 1
+  %field.p65 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p64, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.86, i32 13, i32 0 }, ptr %field.p65, align 8
+  %enum.val66 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor62, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val66
+
+if.merge61:                                       ; preds = %if.then53
+  store i32 0, ptr %hv, align 4
+  br label %while.cond
+
+while.cond:                                       ; preds = %if.merge84, %if.merge61
+  %i67 = load i32, ptr %i, align 4
+  %n68 = load i32, ptr %n, align 4
+  %slt69 = icmp slt i32 %i67, %n68
+  br i1 %slt69, label %while.body, label %while.end
+
+while.body:                                       ; preds = %while.cond
+  %field70 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr71 = load ptr, ptr %field70, align 8
+  %i72 = load i32, ptr %i, align 4
+  %pi.idx73 = sext i32 %i72 to i64
+  %ptr.idx74 = getelementptr i8, ptr %ptr71, i64 %pi.idx73
+  %ptr.elem75 = load i8, ptr %ptr.idx74, align 1
+  %widen.zext76 = zext i8 %ptr.elem75 to i32
+  store i32 %widen.zext76, ptr %hd, align 4
+  store i32 0, ptr %dig, align 4
+  %hd77 = load i32, ptr %hd, align 4
+  %sge78 = icmp sge i32 %hd77, 48
+  br i1 %sge78, label %sc.rhs79, label %sc.merge80
+
+while.end:                                        ; preds = %while.cond
+  %neg123 = load i1, ptr %neg, align 1
+  br i1 %neg123, label %if.then124, label %if.merge125
+
+sc.rhs79:                                         ; preds = %while.body
+  %hd81 = load i32, ptr %hd, align 4
+  %sle = icmp sle i32 %hd81, 57
+  br label %sc.merge80
+
+sc.merge80:                                       ; preds = %sc.rhs79, %while.body
+  %sc82 = phi i1 [ %sge78, %while.body ], [ %sle, %sc.rhs79 ]
+  br i1 %sc82, label %if.then83, label %if.else85
+
+if.then83:                                        ; preds = %sc.merge80
+  %hd86 = load i32, ptr %hd, align 4
+  %sub = sub nsw i32 %hd86, 48
+  store i32 %sub, ptr %dig, align 4
+  br label %if.merge84
+
+if.merge84:                                       ; preds = %if.merge95, %if.then83
+  %hv118 = load i32, ptr %hv, align 4
+  %mul = mul nsw i32 %hv118, 16
+  %dig119 = load i32, ptr %dig, align 4
+  %add120 = add nsw i32 %mul, %dig119
+  store i32 %add120, ptr %hv, align 4
+  %i121 = load i32, ptr %i, align 4
+  %add122 = add nsw i32 %i121, 1
+  store i32 %add122, ptr %i, align 4
+  br label %while.cond
+
+if.else85:                                        ; preds = %sc.merge80
+  %hd87 = load i32, ptr %hd, align 4
+  %sge88 = icmp sge i32 %hd87, 97
+  br i1 %sge88, label %sc.rhs89, label %sc.merge90
+
+sc.rhs89:                                         ; preds = %if.else85
+  %hd91 = load i32, ptr %hd, align 4
+  %sle92 = icmp sle i32 %hd91, 102
+  br label %sc.merge90
+
+sc.merge90:                                       ; preds = %sc.rhs89, %if.else85
+  %sc93 = phi i1 [ %sge88, %if.else85 ], [ %sle92, %sc.rhs89 ]
+  br i1 %sc93, label %if.then94, label %if.else96
+
+if.then94:                                        ; preds = %sc.merge90
+  %hd97 = load i32, ptr %hd, align 4
+  %sub98 = sub nsw i32 %hd97, 97
+  %add99 = add nsw i32 %sub98, 10
+  store i32 %add99, ptr %dig, align 4
+  br label %if.merge95
+
+if.merge95:                                       ; preds = %if.merge108, %if.then94
+  br label %if.merge84
+
+if.else96:                                        ; preds = %sc.merge90
+  %hd100 = load i32, ptr %hd, align 4
+  %sge101 = icmp sge i32 %hd100, 65
+  br i1 %sge101, label %sc.rhs102, label %sc.merge103
+
+sc.rhs102:                                        ; preds = %if.else96
+  %hd104 = load i32, ptr %hd, align 4
+  %sle105 = icmp sle i32 %hd104, 70
+  br label %sc.merge103
+
+sc.merge103:                                      ; preds = %sc.rhs102, %if.else96
+  %sc106 = phi i1 [ %sge101, %if.else96 ], [ %sle105, %sc.rhs102 ]
+  br i1 %sc106, label %if.then107, label %if.else109
+
+if.then107:                                       ; preds = %sc.merge103
+  %hd110 = load i32, ptr %hd, align 4
+  %sub111 = sub nsw i32 %hd110, 65
+  %add112 = add nsw i32 %sub111, 10
+  store i32 %add112, ptr %dig, align 4
+  br label %if.merge108
+
+if.merge108:                                      ; preds = %if.then107
+  br label %if.merge95
+
+if.else109:                                       ; preds = %sc.merge103
+  %4 = call ptr @memset(ptr %enum.ctor113, i32 0, i64 24)
+  %disc.p114 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor113, i32 0, i32 0
+  store i8 1, ptr %disc.p114, align 1
+  %payload.p115 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor113, i32 0, i32 1
+  %field.p116 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p115, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.87, i32 17, i32 0 }, ptr %field.p116, align 8
+  %enum.val117 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor113, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val117
+
+if.then124:                                       ; preds = %while.end
+  %hv126 = load i32, ptr %hv, align 4
+  %sub127 = sub nsw i32 0, %hv126
+  store i32 %sub127, ptr %hv, align 4
+  br label %if.merge125
+
+if.merge125:                                      ; preds = %if.then124, %while.end
+  %5 = call ptr @memset(ptr %enum.ctor128, i32 0, i64 24)
+  %disc.p129 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor128, i32 0, i32 0
+  store i8 0, ptr %disc.p129, align 1
+  %payload.p130 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor128, i32 0, i32 1
+  %hv131 = load i32, ptr %hv, align 4
+  %field.p132 = getelementptr inbounds { i32 }, ptr %payload.p130, i32 0, i32 0
+  store i32 %hv131, ptr %field.p132, align 4
+  %enum.val133 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor128, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val133
+
+while.cond134:                                    ; preds = %if.merge154, %if.merge54
+  %i137 = load i32, ptr %i, align 4
+  %n138 = load i32, ptr %n, align 4
+  %slt139 = icmp slt i32 %i137, %n138
+  br i1 %slt139, label %while.body135, label %while.end136
+
+while.body135:                                    ; preds = %while.cond134
+  %field140 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr141 = load ptr, ptr %field140, align 8
+  %i142 = load i32, ptr %i, align 4
+  %pi.idx143 = sext i32 %i142 to i64
+  %ptr.idx144 = getelementptr i8, ptr %ptr141, i64 %pi.idx143
+  %ptr.elem145 = load i8, ptr %ptr.idx144, align 1
+  %widen.zext146 = zext i8 %ptr.elem145 to i32
+  store i32 %widen.zext146, ptr %d, align 4
+  %d147 = load i32, ptr %d, align 4
+  %slt148 = icmp slt i32 %d147, 48
+  br i1 %slt148, label %sc.merge150, label %sc.rhs149
+
+while.end136:                                     ; preds = %while.cond134
+  %neg167 = load i1, ptr %neg, align 1
+  br i1 %neg167, label %if.then168, label %if.merge169
+
+sc.rhs149:                                        ; preds = %while.body135
+  %d151 = load i32, ptr %d, align 4
+  %sgt = icmp sgt i32 %d151, 57
+  br label %sc.merge150
+
+sc.merge150:                                      ; preds = %sc.rhs149, %while.body135
+  %sc152 = phi i1 [ %slt148, %while.body135 ], [ %sgt, %sc.rhs149 ]
+  br i1 %sc152, label %if.then153, label %if.merge154
+
+if.then153:                                       ; preds = %sc.merge150
+  %6 = call ptr @memset(ptr %enum.ctor155, i32 0, i64 24)
+  %disc.p156 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor155, i32 0, i32 0
+  store i8 1, ptr %disc.p156, align 1
+  %payload.p157 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor155, i32 0, i32 1
+  %field.p158 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p157, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.88, i32 13, i32 0 }, ptr %field.p158, align 8
+  %enum.val159 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor155, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val159
+
+if.merge154:                                      ; preds = %sc.merge150
+  %val160 = load i32, ptr %val, align 4
+  %mul161 = mul nsw i32 %val160, 10
+  %d162 = load i32, ptr %d, align 4
+  %sub163 = sub nsw i32 %d162, 48
+  %add164 = add nsw i32 %mul161, %sub163
+  store i32 %add164, ptr %val, align 4
+  %i165 = load i32, ptr %i, align 4
+  %add166 = add nsw i32 %i165, 1
+  store i32 %add166, ptr %i, align 4
+  br label %while.cond134
+
+if.then168:                                       ; preds = %while.end136
+  %val170 = load i32, ptr %val, align 4
+  %sub171 = sub nsw i32 0, %val170
+  store i32 %sub171, ptr %val, align 4
+  br label %if.merge169
+
+if.merge169:                                      ; preds = %if.then168, %while.end136
+  %7 = call ptr @memset(ptr %enum.ctor172, i32 0, i64 24)
+  %disc.p173 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor172, i32 0, i32 0
+  store i8 0, ptr %disc.p173, align 1
+  %payload.p174 = getelementptr inbounds %"Result(int,std_core_str_core__Str)", ptr %enum.ctor172, i32 0, i32 1
+  %val175 = load i32, ptr %val, align 4
+  %field.p176 = getelementptr inbounds { i32 }, ptr %payload.p174, i32 0, i32 0
+  store i32 %val175, ptr %field.p176, align 4
+  %enum.val177 = load %"Result(int,std_core_str_core__Str)", ptr %enum.ctor172, align 8
+  ret %"Result(int,std_core_str_core__Str)" %enum.val177
+}
+
+define %"Result(i64,std_core_str_core__Str)" @std_core_str_core__StrSlice.to_i64(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0) {
+entry:
+  %enum.ctor173 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %enum.ctor155 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %d = alloca i32, align 4
+  %val = alloca i64, align 8
+  %enum.ctor128 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %enum.ctor113 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %dig = alloca i32, align 4
+  %hd = alloca i32, align 4
+  %hv = alloca i64, align 8
+  %enum.ctor62 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %enum.ctor15 = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %first = alloca i32, align 4
+  %neg = alloca i1, align 1
+  %i = alloca i32, align 4
+  %enum.ctor = alloca %"Result(i64,std_core_str_core__Str)", align 8
+  %n = alloca i32, align 4
+  %field = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 1
+  %len = load i32, ptr %field, align 4
+  store i32 %len, ptr %n, align 4
+  %n1 = load i32, ptr %n, align 4
+  %eq = icmp eq i32 %n1, 0
+  br i1 %eq, label %if.then, label %if.merge
+
+if.then:                                          ; preds = %entry
+  %1 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
+  %disc.p = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 0
+  store i8 1, ptr %disc.p, align 1
+  %payload.p = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 1
+  %field.p = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.89, i32 12, i32 0 }, ptr %field.p, align 8
+  %enum.val = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val
+
+if.merge:                                         ; preds = %entry
+  store i32 0, ptr %i, align 4
+  store i1 false, ptr %neg, align 1
+  %field2 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr = load ptr, ptr %field2, align 8
+  %ptr.idx = getelementptr i8, ptr %ptr, i64 0
+  %ptr.elem = load i8, ptr %ptr.idx, align 1
+  %widen.zext = zext i8 %ptr.elem to i32
+  store i32 %widen.zext, ptr %first, align 4
+  %first3 = load i32, ptr %first, align 4
+  %eq4 = icmp eq i32 %first3, 45
+  br i1 %eq4, label %if.then5, label %if.else
+
+if.then5:                                         ; preds = %if.merge
+  store i1 true, ptr %neg, align 1
+  store i32 1, ptr %i, align 4
+  br label %if.merge6
+
+if.merge6:                                        ; preds = %if.merge10, %if.then5
+  %i11 = load i32, ptr %i, align 4
+  %n12 = load i32, ptr %n, align 4
+  %sge = icmp sge i32 %i11, %n12
+  br i1 %sge, label %if.then13, label %if.merge14
+
+if.else:                                          ; preds = %if.merge
+  %first7 = load i32, ptr %first, align 4
+  %eq8 = icmp eq i32 %first7, 43
+  br i1 %eq8, label %if.then9, label %if.merge10
+
+if.then9:                                         ; preds = %if.else
+  store i32 1, ptr %i, align 4
+  br label %if.merge10
+
+if.merge10:                                       ; preds = %if.then9, %if.else
+  br label %if.merge6
+
+if.then13:                                        ; preds = %if.merge6
+  %2 = call ptr @memset(ptr %enum.ctor15, i32 0, i64 24)
+  %disc.p16 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor15, i32 0, i32 0
+  store i8 1, ptr %disc.p16, align 1
+  %payload.p17 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor15, i32 0, i32 1
+  %field.p18 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p17, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.90, i32 9, i32 0 }, ptr %field.p18, align 8
+  %enum.val19 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor15, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val19
+
+if.merge14:                                       ; preds = %if.merge6
+  %i20 = load i32, ptr %i, align 4
+  %add = add nsw i32 %i20, 1
+  %n21 = load i32, ptr %n, align 4
+  %slt = icmp slt i32 %add, %n21
+  br i1 %slt, label %sc.rhs, label %sc.merge
+
+sc.rhs:                                           ; preds = %if.merge14
+  %field22 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr23 = load ptr, ptr %field22, align 8
+  %i24 = load i32, ptr %i, align 4
+  %pi.idx = sext i32 %i24 to i64
+  %ptr.idx25 = getelementptr i8, ptr %ptr23, i64 %pi.idx
+  %ptr.elem26 = load i8, ptr %ptr.idx25, align 1
+  %widen.zext27 = zext i8 %ptr.elem26 to i32
+  %eq28 = icmp eq i32 %widen.zext27, 48
+  br label %sc.merge
+
+sc.merge:                                         ; preds = %sc.rhs, %if.merge14
+  %sc = phi i1 [ %slt, %if.merge14 ], [ %eq28, %sc.rhs ]
+  br i1 %sc, label %sc.rhs29, label %sc.merge30
+
+sc.rhs29:                                         ; preds = %sc.merge
+  %field31 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr32 = load ptr, ptr %field31, align 8
+  %i33 = load i32, ptr %i, align 4
+  %add34 = add nsw i32 %i33, 1
+  %pi.idx35 = sext i32 %add34 to i64
+  %ptr.idx36 = getelementptr i8, ptr %ptr32, i64 %pi.idx35
+  %ptr.elem37 = load i8, ptr %ptr.idx36, align 1
+  %widen.zext38 = zext i8 %ptr.elem37 to i32
+  %eq39 = icmp eq i32 %widen.zext38, 120
+  br i1 %eq39, label %sc.merge41, label %sc.rhs40
+
+sc.merge30:                                       ; preds = %sc.merge41, %sc.merge
+  %sc52 = phi i1 [ %sc, %sc.merge ], [ %sc51, %sc.merge41 ]
+  br i1 %sc52, label %if.then53, label %if.merge54
+
+sc.rhs40:                                         ; preds = %sc.rhs29
+  %field42 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr43 = load ptr, ptr %field42, align 8
+  %i44 = load i32, ptr %i, align 4
+  %add45 = add nsw i32 %i44, 1
+  %pi.idx46 = sext i32 %add45 to i64
+  %ptr.idx47 = getelementptr i8, ptr %ptr43, i64 %pi.idx46
+  %ptr.elem48 = load i8, ptr %ptr.idx47, align 1
+  %widen.zext49 = zext i8 %ptr.elem48 to i32
+  %eq50 = icmp eq i32 %widen.zext49, 88
+  br label %sc.merge41
+
+sc.merge41:                                       ; preds = %sc.rhs40, %sc.rhs29
+  %sc51 = phi i1 [ %eq39, %sc.rhs29 ], [ %eq50, %sc.rhs40 ]
+  br label %sc.merge30
+
+if.then53:                                        ; preds = %sc.merge30
+  %i55 = load i32, ptr %i, align 4
+  %add56 = add nsw i32 %i55, 2
+  store i32 %add56, ptr %i, align 4
+  %i57 = load i32, ptr %i, align 4
+  %n58 = load i32, ptr %n, align 4
+  %sge59 = icmp sge i32 %i57, %n58
+  br i1 %sge59, label %if.then60, label %if.merge61
+
+if.merge54:                                       ; preds = %sc.merge30
+  store i64 0, ptr %val, align 8
+  br label %while.cond134
+
+if.then60:                                        ; preds = %if.then53
+  %3 = call ptr @memset(ptr %enum.ctor62, i32 0, i64 24)
+  %disc.p63 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor62, i32 0, i32 0
+  store i8 1, ptr %disc.p63, align 1
+  %payload.p64 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor62, i32 0, i32 1
+  %field.p65 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p64, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.91, i32 13, i32 0 }, ptr %field.p65, align 8
+  %enum.val66 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor62, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val66
+
+if.merge61:                                       ; preds = %if.then53
+  store i64 0, ptr %hv, align 8
+  br label %while.cond
+
+while.cond:                                       ; preds = %if.merge84, %if.merge61
+  %i67 = load i32, ptr %i, align 4
+  %n68 = load i32, ptr %n, align 4
+  %slt69 = icmp slt i32 %i67, %n68
+  br i1 %slt69, label %while.body, label %while.end
+
+while.body:                                       ; preds = %while.cond
+  %field70 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr71 = load ptr, ptr %field70, align 8
+  %i72 = load i32, ptr %i, align 4
+  %pi.idx73 = sext i32 %i72 to i64
+  %ptr.idx74 = getelementptr i8, ptr %ptr71, i64 %pi.idx73
+  %ptr.elem75 = load i8, ptr %ptr.idx74, align 1
+  %widen.zext76 = zext i8 %ptr.elem75 to i32
+  store i32 %widen.zext76, ptr %hd, align 4
+  store i32 0, ptr %dig, align 4
+  %hd77 = load i32, ptr %hd, align 4
+  %sge78 = icmp sge i32 %hd77, 48
+  br i1 %sge78, label %sc.rhs79, label %sc.merge80
+
+while.end:                                        ; preds = %while.cond
+  %neg123 = load i1, ptr %neg, align 1
+  br i1 %neg123, label %if.then124, label %if.merge125
+
+sc.rhs79:                                         ; preds = %while.body
+  %hd81 = load i32, ptr %hd, align 4
+  %sle = icmp sle i32 %hd81, 57
+  br label %sc.merge80
+
+sc.merge80:                                       ; preds = %sc.rhs79, %while.body
+  %sc82 = phi i1 [ %sge78, %while.body ], [ %sle, %sc.rhs79 ]
+  br i1 %sc82, label %if.then83, label %if.else85
+
+if.then83:                                        ; preds = %sc.merge80
+  %hd86 = load i32, ptr %hd, align 4
+  %sub = sub nsw i32 %hd86, 48
+  store i32 %sub, ptr %dig, align 4
+  br label %if.merge84
+
+if.merge84:                                       ; preds = %if.merge95, %if.then83
+  %hv118 = load i64, ptr %hv, align 8
+  %mul = mul nsw i64 %hv118, 16
+  %dig119 = load i32, ptr %dig, align 4
+  %sext = sext i32 %dig119 to i64
+  %add120 = add nsw i64 %mul, %sext
+  store i64 %add120, ptr %hv, align 8
+  %i121 = load i32, ptr %i, align 4
+  %add122 = add nsw i32 %i121, 1
+  store i32 %add122, ptr %i, align 4
+  br label %while.cond
+
+if.else85:                                        ; preds = %sc.merge80
+  %hd87 = load i32, ptr %hd, align 4
+  %sge88 = icmp sge i32 %hd87, 97
+  br i1 %sge88, label %sc.rhs89, label %sc.merge90
+
+sc.rhs89:                                         ; preds = %if.else85
+  %hd91 = load i32, ptr %hd, align 4
+  %sle92 = icmp sle i32 %hd91, 102
+  br label %sc.merge90
+
+sc.merge90:                                       ; preds = %sc.rhs89, %if.else85
+  %sc93 = phi i1 [ %sge88, %if.else85 ], [ %sle92, %sc.rhs89 ]
+  br i1 %sc93, label %if.then94, label %if.else96
+
+if.then94:                                        ; preds = %sc.merge90
+  %hd97 = load i32, ptr %hd, align 4
+  %sub98 = sub nsw i32 %hd97, 97
+  %add99 = add nsw i32 %sub98, 10
+  store i32 %add99, ptr %dig, align 4
+  br label %if.merge95
+
+if.merge95:                                       ; preds = %if.merge108, %if.then94
+  br label %if.merge84
+
+if.else96:                                        ; preds = %sc.merge90
+  %hd100 = load i32, ptr %hd, align 4
+  %sge101 = icmp sge i32 %hd100, 65
+  br i1 %sge101, label %sc.rhs102, label %sc.merge103
+
+sc.rhs102:                                        ; preds = %if.else96
+  %hd104 = load i32, ptr %hd, align 4
+  %sle105 = icmp sle i32 %hd104, 70
+  br label %sc.merge103
+
+sc.merge103:                                      ; preds = %sc.rhs102, %if.else96
+  %sc106 = phi i1 [ %sge101, %if.else96 ], [ %sle105, %sc.rhs102 ]
+  br i1 %sc106, label %if.then107, label %if.else109
+
+if.then107:                                       ; preds = %sc.merge103
+  %hd110 = load i32, ptr %hd, align 4
+  %sub111 = sub nsw i32 %hd110, 65
+  %add112 = add nsw i32 %sub111, 10
+  store i32 %add112, ptr %dig, align 4
+  br label %if.merge108
+
+if.merge108:                                      ; preds = %if.then107
+  br label %if.merge95
+
+if.else109:                                       ; preds = %sc.merge103
+  %4 = call ptr @memset(ptr %enum.ctor113, i32 0, i64 24)
+  %disc.p114 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor113, i32 0, i32 0
+  store i8 1, ptr %disc.p114, align 1
+  %payload.p115 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor113, i32 0, i32 1
+  %field.p116 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p115, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.92, i32 17, i32 0 }, ptr %field.p116, align 8
+  %enum.val117 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor113, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val117
+
+if.then124:                                       ; preds = %while.end
+  %hv126 = load i64, ptr %hv, align 8
+  %sub127 = sub nsw i64 0, %hv126
+  store i64 %sub127, ptr %hv, align 8
+  br label %if.merge125
+
+if.merge125:                                      ; preds = %if.then124, %while.end
+  %5 = call ptr @memset(ptr %enum.ctor128, i32 0, i64 24)
+  %disc.p129 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor128, i32 0, i32 0
+  store i8 0, ptr %disc.p129, align 1
+  %payload.p130 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor128, i32 0, i32 1
+  %hv131 = load i64, ptr %hv, align 8
+  %field.p132 = getelementptr inbounds { i64 }, ptr %payload.p130, i32 0, i32 0
+  store i64 %hv131, ptr %field.p132, align 8
+  %enum.val133 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor128, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val133
+
+while.cond134:                                    ; preds = %if.merge154, %if.merge54
+  %i137 = load i32, ptr %i, align 4
+  %n138 = load i32, ptr %n, align 4
+  %slt139 = icmp slt i32 %i137, %n138
+  br i1 %slt139, label %while.body135, label %while.end136
+
+while.body135:                                    ; preds = %while.cond134
+  %field140 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr141 = load ptr, ptr %field140, align 8
+  %i142 = load i32, ptr %i, align 4
+  %pi.idx143 = sext i32 %i142 to i64
+  %ptr.idx144 = getelementptr i8, ptr %ptr141, i64 %pi.idx143
+  %ptr.elem145 = load i8, ptr %ptr.idx144, align 1
+  %widen.zext146 = zext i8 %ptr.elem145 to i32
+  store i32 %widen.zext146, ptr %d, align 4
+  %d147 = load i32, ptr %d, align 4
+  %slt148 = icmp slt i32 %d147, 48
+  br i1 %slt148, label %sc.merge150, label %sc.rhs149
+
+while.end136:                                     ; preds = %while.cond134
+  %neg168 = load i1, ptr %neg, align 1
+  br i1 %neg168, label %if.then169, label %if.merge170
+
+sc.rhs149:                                        ; preds = %while.body135
+  %d151 = load i32, ptr %d, align 4
+  %sgt = icmp sgt i32 %d151, 57
+  br label %sc.merge150
+
+sc.merge150:                                      ; preds = %sc.rhs149, %while.body135
+  %sc152 = phi i1 [ %slt148, %while.body135 ], [ %sgt, %sc.rhs149 ]
+  br i1 %sc152, label %if.then153, label %if.merge154
+
+if.then153:                                       ; preds = %sc.merge150
+  %6 = call ptr @memset(ptr %enum.ctor155, i32 0, i64 24)
+  %disc.p156 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor155, i32 0, i32 0
+  store i8 1, ptr %disc.p156, align 1
+  %payload.p157 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor155, i32 0, i32 1
+  %field.p158 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p157, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.93, i32 13, i32 0 }, ptr %field.p158, align 8
+  %enum.val159 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor155, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val159
+
+if.merge154:                                      ; preds = %sc.merge150
+  %val160 = load i64, ptr %val, align 8
+  %mul161 = mul nsw i64 %val160, 10
+  %d162 = load i32, ptr %d, align 4
+  %sub163 = sub nsw i32 %d162, 48
+  %sext164 = sext i32 %sub163 to i64
+  %add165 = add nsw i64 %mul161, %sext164
+  store i64 %add165, ptr %val, align 8
+  %i166 = load i32, ptr %i, align 4
+  %add167 = add nsw i32 %i166, 1
+  store i32 %add167, ptr %i, align 4
+  br label %while.cond134
+
+if.then169:                                       ; preds = %while.end136
+  %val171 = load i64, ptr %val, align 8
+  %sub172 = sub nsw i64 0, %val171
+  store i64 %sub172, ptr %val, align 8
+  br label %if.merge170
+
+if.merge170:                                      ; preds = %if.then169, %while.end136
+  %7 = call ptr @memset(ptr %enum.ctor173, i32 0, i64 24)
+  %disc.p174 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor173, i32 0, i32 0
+  store i8 0, ptr %disc.p174, align 1
+  %payload.p175 = getelementptr inbounds %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor173, i32 0, i32 1
+  %val176 = load i64, ptr %val, align 8
+  %field.p177 = getelementptr inbounds { i64 }, ptr %payload.p175, i32 0, i32 0
+  store i64 %val176, ptr %field.p177, align 8
+  %enum.val178 = load %"Result(i64,std_core_str_core__Str)", ptr %enum.ctor173, align 8
+  ret %"Result(i64,std_core_str_core__Str)" %enum.val178
+}
+
+define %"Result(f64,std_core_str_core__Str)" @std_core_str_core__StrSlice.to_float(ptr nocapture nonnull readonly align 8 dereferenceable(16) %0) {
+entry:
+  %enum.ctor235 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %t = alloca i32, align 4
+  %p10 = alloca double, align 8
+  %enum.ctor204 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %d187 = alloca i32, align 4
+  %ev = alloca i32, align 4
+  %enum.ctor176 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %sc151 = alloca i32, align 4
+  %eneg = alloca i1, align 1
+  %enum.ctor139 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %ec = alloca i32, align 4
+  %enum.ctor114 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %enum.ctor95 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %d69 = alloca i32, align 4
+  %scale = alloca double, align 8
+  %enum.ctor37 = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %d = alloca i32, align 4
+  %any = alloca i1, align 1
+  %val = alloca double, align 8
+  %first = alloca i32, align 4
+  %neg = alloca i1, align 1
+  %i = alloca i32, align 4
+  %enum.ctor = alloca %"Result(f64,std_core_str_core__Str)", align 8
+  %n = alloca i32, align 4
+  %field = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 1
+  %len = load i32, ptr %field, align 4
+  store i32 %len, ptr %n, align 4
+  %n1 = load i32, ptr %n, align 4
+  %eq = icmp eq i32 %n1, 0
+  br i1 %eq, label %if.then, label %if.merge
+
+if.then:                                          ; preds = %entry
+  %1 = call ptr @memset(ptr %enum.ctor, i32 0, i64 24)
+  %disc.p = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 0
+  store i8 1, ptr %disc.p, align 1
+  %payload.p = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor, i32 0, i32 1
+  %field.p = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.94, i32 12, i32 0 }, ptr %field.p, align 8
+  %enum.val = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val
+
+if.merge:                                         ; preds = %entry
+  store i32 0, ptr %i, align 4
+  store i1 false, ptr %neg, align 1
+  %field2 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr = load ptr, ptr %field2, align 8
+  %ptr.idx = getelementptr i8, ptr %ptr, i64 0
+  %ptr.elem = load i8, ptr %ptr.idx, align 1
+  %widen.zext = zext i8 %ptr.elem to i32
+  store i32 %widen.zext, ptr %first, align 4
+  %first3 = load i32, ptr %first, align 4
+  %eq4 = icmp eq i32 %first3, 45
+  br i1 %eq4, label %if.then5, label %if.else
+
+if.then5:                                         ; preds = %if.merge
+  store i1 true, ptr %neg, align 1
+  store i32 1, ptr %i, align 4
+  br label %if.merge6
+
+if.merge6:                                        ; preds = %if.merge10, %if.then5
+  store double 0.000000e+00, ptr %val, align 8
+  store i1 false, ptr %any, align 1
+  br label %while.cond
+
+if.else:                                          ; preds = %if.merge
+  %first7 = load i32, ptr %first, align 4
+  %eq8 = icmp eq i32 %first7, 43
+  br i1 %eq8, label %if.then9, label %if.merge10
+
+if.then9:                                         ; preds = %if.else
+  store i32 1, ptr %i, align 4
+  br label %if.merge10
+
+if.merge10:                                       ; preds = %if.then9, %if.else
+  br label %if.merge6
+
+while.cond:                                       ; preds = %if.merge36, %if.merge6
+  %i11 = load i32, ptr %i, align 4
+  %n12 = load i32, ptr %n, align 4
+  %slt = icmp slt i32 %i11, %n12
+  br i1 %slt, label %while.body, label %while.end
+
+while.body:                                       ; preds = %while.cond
+  %field13 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr14 = load ptr, ptr %field13, align 8
+  %i15 = load i32, ptr %i, align 4
+  %pi.idx = sext i32 %i15 to i64
+  %ptr.idx16 = getelementptr i8, ptr %ptr14, i64 %pi.idx
+  %ptr.elem17 = load i8, ptr %ptr.idx16, align 1
+  %widen.zext18 = zext i8 %ptr.elem17 to i32
+  store i32 %widen.zext18, ptr %d, align 4
+  %d19 = load i32, ptr %d, align 4
+  %eq20 = icmp eq i32 %d19, 46
+  br i1 %eq20, label %if.then21, label %if.merge22
+
+while.end:                                        ; preds = %if.then27, %if.then21, %while.cond
+  %i45 = load i32, ptr %i, align 4
+  %n46 = load i32, ptr %n, align 4
+  %slt47 = icmp slt i32 %i45, %n46
+  br i1 %slt47, label %sc.rhs48, label %sc.merge49
+
+if.then21:                                        ; preds = %while.body
+  br label %while.end
+
+if.merge22:                                       ; preds = %while.body
+  %d23 = load i32, ptr %d, align 4
+  %eq24 = icmp eq i32 %d23, 101
+  br i1 %eq24, label %sc.merge, label %sc.rhs
+
+sc.rhs:                                           ; preds = %if.merge22
+  %d25 = load i32, ptr %d, align 4
+  %eq26 = icmp eq i32 %d25, 69
+  br label %sc.merge
+
+sc.merge:                                         ; preds = %sc.rhs, %if.merge22
+  %sc = phi i1 [ %eq24, %if.merge22 ], [ %eq26, %sc.rhs ]
+  br i1 %sc, label %if.then27, label %if.merge28
+
+if.then27:                                        ; preds = %sc.merge
+  br label %while.end
+
+if.merge28:                                       ; preds = %sc.merge
+  %d29 = load i32, ptr %d, align 4
+  %slt30 = icmp slt i32 %d29, 48
+  br i1 %slt30, label %sc.merge32, label %sc.rhs31
+
+sc.rhs31:                                         ; preds = %if.merge28
+  %d33 = load i32, ptr %d, align 4
+  %sgt = icmp sgt i32 %d33, 57
+  br label %sc.merge32
+
+sc.merge32:                                       ; preds = %sc.rhs31, %if.merge28
+  %sc34 = phi i1 [ %slt30, %if.merge28 ], [ %sgt, %sc.rhs31 ]
+  br i1 %sc34, label %if.then35, label %if.merge36
+
+if.then35:                                        ; preds = %sc.merge32
+  %2 = call ptr @memset(ptr %enum.ctor37, i32 0, i64 24)
+  %disc.p38 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor37, i32 0, i32 0
+  store i8 1, ptr %disc.p38, align 1
+  %payload.p39 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor37, i32 0, i32 1
+  %field.p40 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p39, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.95, i32 13, i32 0 }, ptr %field.p40, align 8
+  %enum.val41 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor37, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val41
+
+if.merge36:                                       ; preds = %sc.merge32
+  %val42 = load double, ptr %val, align 8
+  %fmul = fmul contract double %val42, 1.000000e+01
+  %d43 = load i32, ptr %d, align 4
+  %sub = sub nsw i32 %d43, 48
+  %sitofp = sitofp i32 %sub to double
+  %fadd = fadd contract double %fmul, %sitofp
+  store double %fadd, ptr %val, align 8
+  store i1 true, ptr %any, align 1
+  %i44 = load i32, ptr %i, align 4
+  %add = add nsw i32 %i44, 1
+  store i32 %add, ptr %i, align 4
+  br label %while.cond
+
+sc.rhs48:                                         ; preds = %while.end
+  %field50 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr51 = load ptr, ptr %field50, align 8
+  %i52 = load i32, ptr %i, align 4
+  %pi.idx53 = sext i32 %i52 to i64
+  %ptr.idx54 = getelementptr i8, ptr %ptr51, i64 %pi.idx53
+  %ptr.elem55 = load i8, ptr %ptr.idx54, align 1
+  %widen.zext56 = zext i8 %ptr.elem55 to i32
+  %eq57 = icmp eq i32 %widen.zext56, 46
+  br label %sc.merge49
+
+sc.merge49:                                       ; preds = %sc.rhs48, %while.end
+  %sc58 = phi i1 [ %slt47, %while.end ], [ %eq57, %sc.rhs48 ]
+  br i1 %sc58, label %if.then59, label %if.merge60
+
+if.then59:                                        ; preds = %sc.merge49
+  %i61 = load i32, ptr %i, align 4
+  %add62 = add nsw i32 %i61, 1
+  store i32 %add62, ptr %i, align 4
+  store double 1.000000e-01, ptr %scale, align 8
+  br label %while.cond63
+
+if.merge60:                                       ; preds = %while.end65, %sc.merge49
+  %any111 = load i1, ptr %any, align 1
+  %not = xor i1 %any111, true
+  br i1 %not, label %if.then112, label %if.merge113
+
+while.cond63:                                     ; preds = %if.merge94, %if.then59
+  %i66 = load i32, ptr %i, align 4
+  %n67 = load i32, ptr %n, align 4
+  %slt68 = icmp slt i32 %i66, %n67
+  br i1 %slt68, label %while.body64, label %while.end65
+
+while.body64:                                     ; preds = %while.cond63
+  %field70 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr71 = load ptr, ptr %field70, align 8
+  %i72 = load i32, ptr %i, align 4
+  %pi.idx73 = sext i32 %i72 to i64
+  %ptr.idx74 = getelementptr i8, ptr %ptr71, i64 %pi.idx73
+  %ptr.elem75 = load i8, ptr %ptr.idx74, align 1
+  %widen.zext76 = zext i8 %ptr.elem75 to i32
+  store i32 %widen.zext76, ptr %d69, align 4
+  %d77 = load i32, ptr %d69, align 4
+  %eq78 = icmp eq i32 %d77, 101
+  br i1 %eq78, label %sc.merge80, label %sc.rhs79
+
+while.end65:                                      ; preds = %if.then84, %while.cond63
+  br label %if.merge60
+
+sc.rhs79:                                         ; preds = %while.body64
+  %d81 = load i32, ptr %d69, align 4
+  %eq82 = icmp eq i32 %d81, 69
+  br label %sc.merge80
+
+sc.merge80:                                       ; preds = %sc.rhs79, %while.body64
+  %sc83 = phi i1 [ %eq78, %while.body64 ], [ %eq82, %sc.rhs79 ]
+  br i1 %sc83, label %if.then84, label %if.merge85
+
+if.then84:                                        ; preds = %sc.merge80
+  br label %while.end65
+
+if.merge85:                                       ; preds = %sc.merge80
+  %d86 = load i32, ptr %d69, align 4
+  %slt87 = icmp slt i32 %d86, 48
+  br i1 %slt87, label %sc.merge89, label %sc.rhs88
+
+sc.rhs88:                                         ; preds = %if.merge85
+  %d90 = load i32, ptr %d69, align 4
+  %sgt91 = icmp sgt i32 %d90, 57
+  br label %sc.merge89
+
+sc.merge89:                                       ; preds = %sc.rhs88, %if.merge85
+  %sc92 = phi i1 [ %slt87, %if.merge85 ], [ %sgt91, %sc.rhs88 ]
+  br i1 %sc92, label %if.then93, label %if.merge94
+
+if.then93:                                        ; preds = %sc.merge89
+  %3 = call ptr @memset(ptr %enum.ctor95, i32 0, i64 24)
+  %disc.p96 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor95, i32 0, i32 0
+  store i8 1, ptr %disc.p96, align 1
+  %payload.p97 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor95, i32 0, i32 1
+  %field.p98 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p97, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.96, i32 13, i32 0 }, ptr %field.p98, align 8
+  %enum.val99 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor95, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val99
+
+if.merge94:                                       ; preds = %sc.merge89
+  %val100 = load double, ptr %val, align 8
+  %d101 = load i32, ptr %d69, align 4
+  %sub102 = sub nsw i32 %d101, 48
+  %sitofp103 = sitofp i32 %sub102 to double
+  %scale104 = load double, ptr %scale, align 8
+  %fmul105 = fmul contract double %sitofp103, %scale104
+  %fadd106 = fadd contract double %val100, %fmul105
+  store double %fadd106, ptr %val, align 8
+  %scale107 = load double, ptr %scale, align 8
+  %fmul108 = fmul contract double %scale107, 1.000000e-01
+  store double %fmul108, ptr %scale, align 8
+  store i1 true, ptr %any, align 1
+  %i109 = load i32, ptr %i, align 4
+  %add110 = add nsw i32 %i109, 1
+  store i32 %add110, ptr %i, align 4
+  br label %while.cond63
+
+if.then112:                                       ; preds = %if.merge60
+  %4 = call ptr @memset(ptr %enum.ctor114, i32 0, i64 24)
+  %disc.p115 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor114, i32 0, i32 0
+  store i8 1, ptr %disc.p115, align 1
+  %payload.p116 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor114, i32 0, i32 1
+  %field.p117 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p116, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.97, i32 9, i32 0 }, ptr %field.p117, align 8
+  %enum.val118 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor114, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val118
+
+if.merge113:                                      ; preds = %if.merge60
+  %i119 = load i32, ptr %i, align 4
+  %n120 = load i32, ptr %n, align 4
+  %slt121 = icmp slt i32 %i119, %n120
+  br i1 %slt121, label %if.then122, label %if.merge123
+
+if.then122:                                       ; preds = %if.merge113
+  %field124 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr125 = load ptr, ptr %field124, align 8
+  %i126 = load i32, ptr %i, align 4
+  %pi.idx127 = sext i32 %i126 to i64
+  %ptr.idx128 = getelementptr i8, ptr %ptr125, i64 %pi.idx127
+  %ptr.elem129 = load i8, ptr %ptr.idx128, align 1
+  %widen.zext130 = zext i8 %ptr.elem129 to i32
+  store i32 %widen.zext130, ptr %ec, align 4
+  %ec131 = load i32, ptr %ec, align 4
+  %ne = icmp ne i32 %ec131, 101
+  br i1 %ne, label %sc.rhs132, label %sc.merge133
+
+if.merge123:                                      ; preds = %if.merge224, %if.merge113
+  %neg231 = load i1, ptr %neg, align 1
+  br i1 %neg231, label %if.then232, label %if.merge233
+
+sc.rhs132:                                        ; preds = %if.then122
+  %ec134 = load i32, ptr %ec, align 4
+  %ne135 = icmp ne i32 %ec134, 69
+  br label %sc.merge133
+
+sc.merge133:                                      ; preds = %sc.rhs132, %if.then122
+  %sc136 = phi i1 [ %ne, %if.then122 ], [ %ne135, %sc.rhs132 ]
+  br i1 %sc136, label %if.then137, label %if.merge138
+
+if.then137:                                       ; preds = %sc.merge133
+  %5 = call ptr @memset(ptr %enum.ctor139, i32 0, i64 24)
+  %disc.p140 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor139, i32 0, i32 0
+  store i8 1, ptr %disc.p140, align 1
+  %payload.p141 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor139, i32 0, i32 1
+  %field.p142 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p141, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.98, i32 13, i32 0 }, ptr %field.p142, align 8
+  %enum.val143 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor139, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val143
+
+if.merge138:                                      ; preds = %sc.merge133
+  %i144 = load i32, ptr %i, align 4
+  %add145 = add nsw i32 %i144, 1
+  store i32 %add145, ptr %i, align 4
+  store i1 false, ptr %eneg, align 1
+  %i146 = load i32, ptr %i, align 4
+  %n147 = load i32, ptr %n, align 4
+  %slt148 = icmp slt i32 %i146, %n147
+  br i1 %slt148, label %if.then149, label %if.merge150
+
+if.then149:                                       ; preds = %if.merge138
+  %field152 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr153 = load ptr, ptr %field152, align 8
+  %i154 = load i32, ptr %i, align 4
+  %pi.idx155 = sext i32 %i154 to i64
+  %ptr.idx156 = getelementptr i8, ptr %ptr153, i64 %pi.idx155
+  %ptr.elem157 = load i8, ptr %ptr.idx156, align 1
+  %widen.zext158 = zext i8 %ptr.elem157 to i32
+  store i32 %widen.zext158, ptr %sc151, align 4
+  %sc159 = load i32, ptr %sc151, align 4
+  %eq160 = icmp eq i32 %sc159, 45
+  br i1 %eq160, label %if.then161, label %if.else163
+
+if.merge150:                                      ; preds = %if.merge162, %if.merge138
+  %i172 = load i32, ptr %i, align 4
+  %n173 = load i32, ptr %n, align 4
+  %sge = icmp sge i32 %i172, %n173
+  br i1 %sge, label %if.then174, label %if.merge175
+
+if.then161:                                       ; preds = %if.then149
+  store i1 true, ptr %eneg, align 1
+  %i164 = load i32, ptr %i, align 4
+  %add165 = add nsw i32 %i164, 1
+  store i32 %add165, ptr %i, align 4
+  br label %if.merge162
+
+if.merge162:                                      ; preds = %if.merge169, %if.then161
+  br label %if.merge150
+
+if.else163:                                       ; preds = %if.then149
+  %sc166 = load i32, ptr %sc151, align 4
+  %eq167 = icmp eq i32 %sc166, 43
+  br i1 %eq167, label %if.then168, label %if.merge169
+
+if.then168:                                       ; preds = %if.else163
+  %i170 = load i32, ptr %i, align 4
+  %add171 = add nsw i32 %i170, 1
+  store i32 %add171, ptr %i, align 4
+  br label %if.merge169
+
+if.merge169:                                      ; preds = %if.then168, %if.else163
+  br label %if.merge162
+
+if.then174:                                       ; preds = %if.merge150
+  %6 = call ptr @memset(ptr %enum.ctor176, i32 0, i64 24)
+  %disc.p177 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor176, i32 0, i32 0
+  store i8 1, ptr %disc.p177, align 1
+  %payload.p178 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor176, i32 0, i32 1
+  %field.p179 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p178, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.99, i32 9, i32 0 }, ptr %field.p179, align 8
+  %enum.val180 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor176, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val180
+
+if.merge175:                                      ; preds = %if.merge150
+  store i32 0, ptr %ev, align 4
+  br label %while.cond181
+
+while.cond181:                                    ; preds = %if.merge203, %if.merge175
+  %i184 = load i32, ptr %i, align 4
+  %n185 = load i32, ptr %n, align 4
+  %slt186 = icmp slt i32 %i184, %n185
+  br i1 %slt186, label %while.body182, label %while.end183
+
+while.body182:                                    ; preds = %while.cond181
+  %field188 = getelementptr inbounds %std_core_str_core__StrSlice, ptr %0, i32 0, i32 0
+  %ptr189 = load ptr, ptr %field188, align 8
+  %i190 = load i32, ptr %i, align 4
+  %pi.idx191 = sext i32 %i190 to i64
+  %ptr.idx192 = getelementptr i8, ptr %ptr189, i64 %pi.idx191
+  %ptr.elem193 = load i8, ptr %ptr.idx192, align 1
+  %widen.zext194 = zext i8 %ptr.elem193 to i32
+  store i32 %widen.zext194, ptr %d187, align 4
+  %d195 = load i32, ptr %d187, align 4
+  %slt196 = icmp slt i32 %d195, 48
+  br i1 %slt196, label %sc.merge198, label %sc.rhs197
+
+while.end183:                                     ; preds = %while.cond181
+  store double 1.000000e+00, ptr %p10, align 8
+  store i32 0, ptr %t, align 4
+  br label %for.cond
+
+sc.rhs197:                                        ; preds = %while.body182
+  %d199 = load i32, ptr %d187, align 4
+  %sgt200 = icmp sgt i32 %d199, 57
+  br label %sc.merge198
+
+sc.merge198:                                      ; preds = %sc.rhs197, %while.body182
+  %sc201 = phi i1 [ %slt196, %while.body182 ], [ %sgt200, %sc.rhs197 ]
+  br i1 %sc201, label %if.then202, label %if.merge203
+
+if.then202:                                       ; preds = %sc.merge198
+  %7 = call ptr @memset(ptr %enum.ctor204, i32 0, i64 24)
+  %disc.p205 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor204, i32 0, i32 0
+  store i8 1, ptr %disc.p205, align 1
+  %payload.p206 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor204, i32 0, i32 1
+  %field.p207 = getelementptr inbounds { %std_core_str_core__Str }, ptr %payload.p206, i32 0, i32 0
+  store %std_core_str_core__Str { ptr @.ls.strlit.100, i32 13, i32 0 }, ptr %field.p207, align 8
+  %enum.val208 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor204, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val208
+
+if.merge203:                                      ; preds = %sc.merge198
+  %ev209 = load i32, ptr %ev, align 4
+  %mul = mul nsw i32 %ev209, 10
+  %d210 = load i32, ptr %d187, align 4
+  %sub211 = sub nsw i32 %d210, 48
+  %add212 = add nsw i32 %mul, %sub211
+  store i32 %add212, ptr %ev, align 4
+  %i213 = load i32, ptr %i, align 4
+  %add214 = add nsw i32 %i213, 1
+  store i32 %add214, ptr %i, align 4
+  br label %while.cond181
+
+for.cond:                                         ; preds = %for.update, %while.end183
+  %t215 = load i32, ptr %t, align 4
+  %ev216 = load i32, ptr %ev, align 4
+  %slt217 = icmp slt i32 %t215, %ev216
+  br i1 %slt217, label %for.body, label %for.end
+
+for.body:                                         ; preds = %for.cond
+  %p10218 = load double, ptr %p10, align 8
+  %fmul219 = fmul contract double %p10218, 1.000000e+01
+  store double %fmul219, ptr %p10, align 8
+  br label %for.update
+
+for.update:                                       ; preds = %for.body
+  %t220 = load i32, ptr %t, align 4
+  %add221 = add nsw i32 %t220, 1
+  store i32 %add221, ptr %t, align 4
+  br label %for.cond
+
+for.end:                                          ; preds = %for.cond
+  %eneg222 = load i1, ptr %eneg, align 1
+  br i1 %eneg222, label %if.then223, label %if.else225
+
+if.then223:                                       ; preds = %for.end
+  %val226 = load double, ptr %val, align 8
+  %p10227 = load double, ptr %p10, align 8
+  %fdiv = fdiv contract double %val226, %p10227
+  store double %fdiv, ptr %val, align 8
+  br label %if.merge224
+
+if.merge224:                                      ; preds = %if.else225, %if.then223
+  br label %if.merge123
+
+if.else225:                                       ; preds = %for.end
+  %val228 = load double, ptr %val, align 8
+  %p10229 = load double, ptr %p10, align 8
+  %fmul230 = fmul contract double %val228, %p10229
+  store double %fmul230, ptr %val, align 8
+  br label %if.merge224
+
+if.then232:                                       ; preds = %if.merge123
+  %val234 = load double, ptr %val, align 8
+  %fsub = fsub contract double 0.000000e+00, %val234
+  store double %fsub, ptr %val, align 8
+  br label %if.merge233
+
+if.merge233:                                      ; preds = %if.then232, %if.merge123
+  %8 = call ptr @memset(ptr %enum.ctor235, i32 0, i64 24)
+  %disc.p236 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor235, i32 0, i32 0
+  store i8 0, ptr %disc.p236, align 1
+  %payload.p237 = getelementptr inbounds %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor235, i32 0, i32 1
+  %val238 = load double, ptr %val, align 8
+  %field.p239 = getelementptr inbounds { double }, ptr %payload.p237, i32 0, i32 0
+  store double %val238, ptr %field.p239, align 8
+  %enum.val240 = load %"Result(f64,std_core_str_core__Str)", ptr %enum.ctor235, align 8
+  ret %"Result(f64,std_core_str_core__Str)" %enum.val240
+}
+
 define i32 @name(%Color %0) {
 entry:
   %match.subj = alloca %Color, align 8
@@ -5337,13 +6591,13 @@ entry:
   store %Color %enum.val6, ptr %c, align 1
   %a7 = load %Color, ptr %a, align 1
   %call = call i32 @name(%Color %a7)
-  %5 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.84, i32 %call)
+  %5 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.101, i32 %call)
   %b8 = load %Color, ptr %b, align 1
   %call9 = call i32 @name(%Color %b8)
-  %6 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.85, i32 %call9)
+  %6 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.102, i32 %call9)
   %c10 = load %Color, ptr %c, align 1
   %call11 = call i32 @name(%Color %c10)
-  %7 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.86, i32 %call11)
+  %7 = call i32 (ptr, ...) @__ls_printf(ptr @.ls.fmt.103, i32 %call11)
   call void @llvm.lifetime.end.p0(i64 1, ptr %c)
   call void @llvm.lifetime.end.p0(i64 1, ptr %b)
   call void @llvm.lifetime.end.p0(i64 1, ptr %a)

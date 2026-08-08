@@ -1,5 +1,9 @@
 # test_i64_literal.cmake — bug #23: int literals > i32 range were truncated to
 # i32 at codegen. JIT + AOT + memcheck.
+#
+# @subsystem frontend/lexer
+# @guards Bug #23 int literals above i32 were truncated
+# @sources parser_expr.c:prefix_int_lit
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/i64_literal_test.lls")

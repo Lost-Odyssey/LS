@@ -14,6 +14,10 @@
 # memcheck-clean too. They are the regression guard for L-015.
 #
 # Required: LS_EXE, SAMPLE_DIR, LS_HOME
+#
+# @subsystem runtime/memcheck
+# @guards L-015
+# @sources runtime/memcheck.c:ls_mc_report, codegen_closure.c
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE_DIR OR NOT LS_HOME)

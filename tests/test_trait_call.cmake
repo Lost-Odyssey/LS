@@ -1,4 +1,16 @@
 # test_trait_call.cmake — Trait method call tests (JIT + AOT)
+#
+# Dispatching a call through an interface method.
+#
+# LS resolves interface methods statically: there is no vtable, the call is
+# rewritten to the concrete implementation at check time. So a failure here is a
+# wrong symbol or a "no method" error, never a wrong runtime dispatch -- and the
+# same static resolution is what makes the qualified form `Iface.method(recv, ..)`
+# possible when a name is ambiguous.
+#
+# @subsystem checker/traits
+# @guards interface method dispatch
+# @sources checker_call.c:check_expr_call
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

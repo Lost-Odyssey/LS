@@ -14,6 +14,10 @@
 #
 # Four of the six were silent with rc=0, so this driver checks VALUES
 # (RESULT bad=0), not just the exit code, and requires memcheck 0/0/0.
+#
+# @subsystem codegen/ownership
+# @guards L-023
+# @sources codegen_own.c:cg_store_owned, codegen_own.c:emit_array_clone_val, checker_decl.c:type_owns_heap_for_enum, codegen_stmt.c:cg_stmt_var_decl
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/array_owned_elem_test.lls")

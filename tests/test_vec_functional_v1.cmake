@@ -1,5 +1,20 @@
 # Phase V.1 — vec functional methods: any, all, count, each
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# Phase V.1 -- `any` / `all` / `count` / `each`.
+#
+# The predicate-only half of the functional API: each takes a `Block(T)->bool`
+# (or `->void`) and never produces a new container. Worth separating from the
+# transforming methods because the ownership question is trivial here -- the
+# element is only READ -- so a failure is a logic error, not a leak.
+#
+# `any` and `all` must also short-circuit, which means the block is not called for
+# every element; an implementation that always walks the whole vector still
+# returns the right answer and hides the defect.
+#
+# @subsystem stdlib/containers
+# @guards Phase V.1 any/all/count/each
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

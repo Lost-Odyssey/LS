@@ -2,6 +2,10 @@
 #   Verifies: signatures are extracted from source (escaped), preceding
 #   doc-comments are attached, `methods` blocks group, the module name is
 #   derived, and `_`-prefixed internals are excluded.
+#
+# @subsystem tooling/cli
+# @guards `lls doc` API generator
+# @sources main.c
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

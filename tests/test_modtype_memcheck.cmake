@@ -1,6 +1,19 @@
 # test_modtype_memcheck.cmake — B-6: has_drop same-named struct/enum across two
 # modules, stressed through methods, vecs (+ Phase H deep copy), enum payloads and
 # cross-module returns. JIT + AOT + memcheck (0 leak / 0 double-free).
+#
+# B-6: the same-named-types scenario, stressed with types that OWN heap.
+#
+# The layer this adds over the other modtype corpora is destruction. Each module's
+# `Node` gets its own synthesised `__drop`, and the symbol for it is derived from
+# the prefixed type name -- so a prefixing mistake here does not produce a link
+# error, it silently calls the WRONG destructor on a value whose layout does not
+# match. Vectors, deep copies, enum payloads and cross-module returns are all
+# driven, with memcheck as the judge.
+#
+# @subsystem modules
+# @guards B-6 same-named has_drop types across modules
+# @sources checker.c:checker_module_type_llvmname, codegen_own.c:emit_auto_drop_fn
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/modtype_memcheck/main.lls")

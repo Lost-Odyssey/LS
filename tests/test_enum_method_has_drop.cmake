@@ -1,6 +1,25 @@
 # test_enum_method_has_drop.cmake — enum `impl` with has_drop payloads
 # Tests: string/vec payloads in enum methods + memcheck validates 0 leaks
 #        JIT + AOT + memcheck
+#
+# The corpus is a miniature `JsonValue` -- Null / Bool / Int / String(Str) /
+# Array(Vec(JsonValue)) -- chosen because it is SELF-RECURSIVE through a
+# container. That combination is what makes the ownership question hard: the
+# generated `__drop` for the enum has to reach into the Vec, which drops each
+# element, each of which is another JsonValue that may itself be an Array.
+# A shape with only scalar payloads would exercise none of it.
+#
+# The methods are `&self` borrows that `match self` and return a STATIC Str.
+# That is the subtle part worth keeping: reading a borrowed enum must not
+# consume or clone the payload, and returning a static literal out of an arm
+# must not make the arm think it owns something. Get either wrong and the
+# program still prints the right words -- the damage shows up only as a leak
+# or a double-free under memcheck, which is why this test is memcheck-gated
+# rather than output-gated.
+#
+# @subsystem codegen/ownership
+# @guards enum methods over has_drop payloads
+# @sources codegen_own.c:emit_enum_drop, codegen_own.c:emit_auto_drop_fn
 
 cmake_minimum_required(VERSION 3.20)
 

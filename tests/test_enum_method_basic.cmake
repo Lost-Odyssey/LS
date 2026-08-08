@@ -1,6 +1,18 @@
 # test_enum_method_basic.cmake — enum `impl` basic &self methods
 # Tests: instance method dispatch, match self in method body
 #        JIT + AOT + memcheck
+#
+# Inherent methods on an enum -- `methods E { def m(&self) ... }`.
+#
+# The reason enums need their own coverage rather than riding on struct methods:
+# the receiver is a tagged union, so `&self` is a pointer to a value whose layout
+# depends on the active variant, and the method body almost always immediately
+# `match`es on it. Getting the receiver ABI wrong here does not fail to compile,
+# it reads the payload of the wrong variant.
+#
+# @subsystem codegen/enum
+# @guards enum inherent methods
+# @sources codegen_decl.c:emit_enum_ctor
 
 cmake_minimum_required(VERSION 3.20)
 

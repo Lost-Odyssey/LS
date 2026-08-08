@@ -1,6 +1,10 @@
 # test_tensor_phase3c.cmake — std.tensor 阶段 3c：std.rand + 随机初始化 + tanh + 按轴 mean/max
 # （plan_ndarray_stdlib.md §-1）。Rng（seed/unit/between/normal）+ uniforms/normals ->
 # init_from 随机张量 + tanh + mean_axis/max_axis。JIT + AOT + memcheck 0/0/0。
+#
+# @subsystem stdlib/numeric
+# @guards Tensor 3c std.rand + init + tanh
+# @sources lib/std/sci/tensor.lls
 cmake_minimum_required(VERSION 3.20)
 
 # Resolve std/ from the source tree (imports std.tensor/std.rand/std.vec/std.str/math).

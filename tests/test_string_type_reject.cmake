@@ -1,6 +1,10 @@
 # test_string_type_reject.cmake — P5-4 S-1 negative smoke: the builtin `string`
 # type keyword no longer exists; `string s = ...` must fail at compile time with
 # a clear unknown-type error.
+#
+# @subsystem language/syntax
+# @guards P5-4 S-1 builtin `string` type retired
+# @sources parser_type.c:parse_type
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

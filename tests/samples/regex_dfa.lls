@@ -1,0 +1,216 @@
+// regex_dfa.lls — D1 lazy DFA (match-only fast path, runtime/ls_regex.c).
+//
+// Guards, in order:
+//   1. eligible patterns actually route through the DFA via is_match()
+//      (proven via the __ls_regex_debug_dfa_execs counter, not just
+//      is_dfa_eligible() -- see the op1/op2 precedent this mirrors: a path
+//      that is "eligible" but never actually taken passes every test and
+//      buys nothing)
+//   2. ineligible patterns (multiline, mid-pattern anchor, ambiguous
+//      alternation, lookahead, \b) correctly do NOT route -- the dfa_execs
+//      counter must stay flat while onepass/general absorb the calls
+//   3. a pattern whose compiled program exceeds RE_DFA_MAX_PROG falls back
+//      correctly (proves the state-budget cap, not just the eligibility
+//      rule) and still gives the right answer
+//   4. matches?() -- even on a DFA-ELIGIBLE pattern -- deliberately does
+//      NOT route through the DFA (its documented multi-group contract is
+//      why: see is_match()'s doc comment in lib/std/text/regex.lls, and
+//      the D1 report for the S2_fields measurement that caused this
+//      routing split). is_match() does route, AND group(i>0) after it
+//      still works correctly (the lazy capture-fallback contract) --
+//      slower than matches?() for a multi-group read but never wrong.
+//   5. (a+)+$ stays linear-time (the classic ReDoS shape): confirms
+//      routing an ineligible pathological pattern through this file's new
+//      code does not regress the engine's existing linear-time guarantee
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+import std.sys.c as c
+import std.sys.perf as perf
+
+int failures = 0
+
+def check_bool(Str name, bool got, bool want) {
+    if got != want {
+        @print(f"FAIL {name}: got {got} want {want}")
+        failures = failures + 1
+    }
+}
+
+def check_str(Str name, Str got, Str want) {
+    if got != want {
+        @print(f"FAIL {name}: got '{got}' want '{want}'")
+        failures = failures + 1
+    }
+}
+
+def check_int(Str name, int got, int want) {
+    if got != want {
+        @print(f"FAIL {name}: got {got} want {want}")
+        failures = failures + 1
+    }
+}
+
+// ---- 1. eligible patterns route through the DFA via is_match() ----
+
+def check_dfa_routed(Str name, Str pattern, Str text, bool want_match) {
+    match re.compile(pattern, 0) {
+        Ok(r) => {
+            check_bool(name + " dfa_eligible", r.is_dfa_eligible(), true)
+            i64 before = c.__ls_regex_debug_dfa_execs()
+            check_bool(name + " is_match", r.is_match(&text), want_match)
+            i64 after = c.__ls_regex_debug_dfa_execs()
+            check_bool(name + " dfa_execs advanced", after > before, true)
+        }
+        Err(e) => { @print(f"FAIL {name} compile: {e}"); failures = failures + 1 }
+    }
+}
+
+// ---- 2. ineligible patterns do NOT route through the DFA ----
+
+def check_dfa_not_routed(Str name, Str pattern, Str text, bool want_match) {
+    match re.compile(pattern, 0) {
+        Ok(r) => {
+            check_bool(name + " dfa_eligible", r.is_dfa_eligible(), false)
+            i64 before = c.__ls_regex_debug_dfa_execs()
+            check_bool(name + " is_match", r.is_match(&text), want_match)
+            i64 after = c.__ls_regex_debug_dfa_execs()
+            check_bool(name + " dfa_execs flat", after == before, true)
+        }
+        Err(e) => { @print(f"FAIL {name} compile: {e}"); failures = failures + 1 }
+    }
+}
+
+def main() -> int {
+    // ---- 1. eligible: real extraction shapes, matching the op1/A2 corpus ----
+    check_dfa_routed("kv", "[a-z_]+=[^ ]+", "name=value here", true)
+    check_dfa_routed("date", "^\\d{4}-\\d{2}-\\d{2}", "2026-08-08 hello", true)
+    check_dfa_routed("email_anchored", "^[a-z]+@[a-z]+\\.[a-z]+$", "user@host.com", true)
+    check_dfa_routed("email_anchored_miss", "^[a-z]+@[a-z]+\\.[a-z]+$", "not-an-email", false)
+    check_dfa_routed("href", "href=\"([^\"]*)\"", "<a href=\"/x\">y</a>", true)
+
+    // ---- 2. ineligible: each rejected for a DIFFERENT reason ----
+
+    // multiline BOL: eligibility rejects LS_RE_MULTILINE outright
+    check_dfa_not_routed("multiline", "(?m)^a", "b\na", true)
+
+    // BOL at pc != 1 (inside an alternation, not the pattern's own leading
+    // position) -- see re_dfa_check_eligible rule 2. Still one-pass (the
+    // two branches' first-byte sets are disjoint), so this specifically
+    // isolates rule 2 from onepass-ness.
+    check_dfa_not_routed("midpattern_anchor", "(^a|b)", "b", true)
+
+    // overlapping first-byte sets -> not even one-pass (op1 rule 2), so
+    // dfa_eligible is false before rule 2/multiline ever apply
+    check_dfa_not_routed("ambiguous_alt", "(a|ab)c", "abc", true)
+
+    // OP_LOOKAHEAD -> rejected globally by re_is_onepass itself
+    check_dfa_not_routed("lookahead", "(?=foo)foo", "foo", true)
+
+    // \b -> rejected globally by re_is_onepass itself
+    check_dfa_not_routed("wordbnd", "\\bfoo\\b", "a foo b", true)
+
+    // ---- 3. state-budget cap: a one-pass pattern too big for RE_DFA_MAX_PROG ----
+    // 170 literal chars + a trailing class keeps it out of BOTH the tier-1
+    // whole-literal fast path (which needs pure-literal-to-MATCH, no other
+    // opcode) and one-pass triviality tests too easy to be interesting --
+    // this is still onepass==true (no SPLIT at all: pure concatenation) but
+    // its compiled program (170 CHAR + 1 CLASS + SAVE*2 + MATCH = 174
+    // instructions) exceeds RE_DFA_MAX_PROG (160), so dfa_eligible must be
+    // false while onepass stays true -- proving the size cap specifically,
+    // not just "not one-pass".
+    Str big_lit = ("a").repeat(170)
+    Str big_pattern = big_lit + "[0-9]"
+    Str big_text = big_lit + "5 trailing text"
+    match re.compile(big_pattern, 0) {
+        Ok(r) => {
+            check_bool("big_prog onepass", r.is_onepass(), true)
+            check_bool("big_prog dfa_eligible", r.is_dfa_eligible(), false)
+            i64 before = c.__ls_regex_debug_dfa_execs()
+            check_bool("big_prog is_match", r.is_match(&big_text), true)
+            i64 after = c.__ls_regex_debug_dfa_execs()
+            check_bool("big_prog dfa_execs flat", after == before, true)
+            // still gives the right answer via the (unmodified) one-pass
+            // fallback -- the budget cap costs speed, never correctness.
+            match r.group(&big_text, 0) {
+                Some(g) => { check_int("big_prog group0 len", g.len(), 171) }
+                None    => { @print("FAIL big_prog group0: none"); failures = failures + 1 }
+            }
+        }
+        Err(e) => { @print(f"FAIL big_prog compile: {e}"); failures = failures + 1 }
+    }
+
+    // ---- 4a. matches?() does NOT route through the DFA, even when eligible ----
+    // (routing decision made after measuring a regression on S2_fields-style
+    // multi-group-read call sites -- see the D1 report)
+    match re.compile("([a-z_]+)=([^ ]+)", 0) {
+        Ok(r) => {
+            check_bool("matchesq dfa_eligible", r.is_dfa_eligible(), true)
+            Str line = "key=val extra"
+            i64 before = c.__ls_regex_debug_dfa_execs()
+            check_bool("matchesq matches?", r.matches?(&line), true)
+            i64 after = c.__ls_regex_debug_dfa_execs()
+            check_bool("matchesq dfa_execs flat", after == before, true)
+            // groups still correct (matches?() never stopped populating them)
+            match r.group(&line, 1) {
+                Some(g) => { check_str("matchesq group1", g, "key") }
+                None    => { @print("FAIL matchesq group1: none"); failures = failures + 1 }
+            }
+            match r.group(&line, 2) {
+                Some(g) => { check_str("matchesq group2", g, "val") }
+                None    => { @print("FAIL matchesq group2: none"); failures = failures + 1 }
+            }
+        }
+        Err(e) => { @print(f"FAIL matchesq compile: {e}"); failures = failures + 1 }
+    }
+
+    // ---- 4b. group(i>0) after is_match() -- the lazy capture-fallback contract ----
+    match re.compile("([a-z_]+)=([^ ]+)", 0) {
+        Ok(r) => {
+            check_bool("fallback dfa_eligible", r.is_dfa_eligible(), true)
+            Str line = "key=val extra"
+            i64 before = c.__ls_regex_debug_dfa_execs()
+            check_bool("fallback is_match", r.is_match(&line), true)
+            i64 after = c.__ls_regex_debug_dfa_execs()
+            check_bool("fallback dfa_execs advanced", after > before, true)
+            // group 0 needs no fallback (the DFA computes it directly)
+            match r.group(&line, 0) {
+                Some(g) => { check_str("fallback group0", g, "key=val") }
+                None    => { @print("FAIL fallback group0: none"); failures = failures + 1 }
+            }
+            // group 1/2 trigger re_dfa_fill_captures internally
+            match r.group(&line, 1) {
+                Some(g) => { check_str("fallback group1", g, "key") }
+                None    => { @print("FAIL fallback group1: none"); failures = failures + 1 }
+            }
+            match r.group(&line, 2) {
+                Some(g) => { check_str("fallback group2", g, "val") }
+                None    => { @print("FAIL fallback group2: none"); failures = failures + 1 }
+            }
+        }
+        Err(e) => { @print(f"FAIL fallback compile: {e}"); failures = failures + 1 }
+    }
+
+    // ---- 5. (a+)+$ stays linear-time (ineligible pathological pattern) ----
+    match re.compile("(a+)+$", 0) {
+        Ok(r) => {
+            check_bool("pathological dfa_eligible", r.is_dfa_eligible(), false)
+            Str hay = ("a").repeat(60) + "b"
+            i64 t0 = perf.now()
+            bool m = r.is_match(&hay)
+            f64 ms = perf.elapsed_ms(t0)
+            check_bool("pathological miss", m, false)
+            // linear time on 61 chars is microseconds; exponential
+            // backtracking on this shape would be seconds (Python needs
+            // ~6.4s at just 26 'a's, per the A2/op-report record). 500ms is
+            // a very loose ceiling that only a REAL exponential-blowup
+            // regression could miss.
+            check_bool("pathological fast", ms < 500.0, true)
+        }
+        Err(e) => { @print(f"FAIL pathological compile: {e}"); failures = failures + 1 }
+    }
+
+    if failures == 0 { @print("ALL PASS") } else { @print(f"FAILURES {failures}") }
+    return 0
+}

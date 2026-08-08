@@ -4,6 +4,20 @@
 #   S4. vec(Block) push/call/drop, S5. has_drop enum capture (emit_enum_clone_val),
 #   S6. inline [move] vec capture
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# Phase F.7: the closure stress corpus -- many closures, nested, stored in
+# containers and struct fields, in one program.
+#
+# Individual closure phases each test one shape. This one exists because several
+# of the historical closure bugs only appeared when shapes INTERACTED: an
+# environment cloned out of a container while another closure still referenced it,
+# a capture list on a closure that itself captures a closure. It is deliberately
+# larger and less readable than the phase corpora; when it fails, the phase tests
+# tell you which shape broke.
+#
+# @subsystem codegen/closure
+# @guards Phase F.7 closure stress
+# @sources codegen_closure.c:codegen_closure_literal
 
 cmake_minimum_required(VERSION 3.20)
 

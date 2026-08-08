@@ -3,6 +3,10 @@
 # Guards the codegen_match.c move-out (vs clone) for move-only binders that makes
 # RAII handles like io.File work with the idiomatic inline match.
 # JIT + AOT + memcheck (single owner — each resource freed exactly once).
+#
+# @subsystem codegen/ownership
+# @guards move-only RAII handles out of an owned enum subject (io.File)
+# @sources codegen_match.c:cg_match_lower_enum, checker_borrow.c:type_is_movable
 cmake_minimum_required(VERSION 3.20)
 
 # Resolve stdlib from the source tree (not the build copy) — mirrors test_e3_glue.

@@ -1,6 +1,19 @@
 # test_modtype_ns.cmake — B-2 and B-3 module struct/enum namespace tests
 # B-2: struct/enum Type name baked with module prefix; zero behavioral change
 # B-3: impl method / drop / clone names follow module prefix
+#
+# B-2 + B-3: each module gets its own namespace for the struct and enum types it
+# declares.
+#
+# Two modules may both declare `Node`. The checker registry keys them by bare
+# name, but the EMITTED artefacts cannot collide, so the LLVM type name and every
+# generated method / drop / clone symbol carry a module prefix. Get the prefixing
+# wrong and the second module's `Node` silently reuses the first one's layout --
+# reading and writing fields at the wrong offsets, with no diagnostic.
+#
+# @subsystem modules
+# @guards B-2 + B-3 module struct/enum type namespace
+# @sources checker.c:checker_module_type_llvmname
 
 cmake_minimum_required(VERSION 3.20)
 

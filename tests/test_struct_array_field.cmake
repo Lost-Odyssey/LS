@@ -11,6 +11,10 @@
 #  * Positive: struct_array_field_test.lls — JIT + AOT + memcheck 0/0/0.
 #  * Negative: struct_array_field_reject.lls — a store into an rvalue array
 #    element is a diagnostic, not a silent no-op.
+#
+# @subsystem codegen/struct
+# @guards array(T,N) reached through a non-identifier place (2026-07-25)
+# @sources codegen_expr.c:cg_array_place_ptr, codegen_expr.c:codegen_addr_of
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/struct_array_field_test.lls")

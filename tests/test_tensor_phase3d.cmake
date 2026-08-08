@@ -1,6 +1,10 @@
 # test_tensor_phase3d.cmake — std.tensor 阶段 3d：安全拷贝切片 + 数值广度
 # row/col/slice（own 拷贝）+ argmax_rows + min + neg/abs/sqrt/log/clamp + mse。
 # JIT + AOT + memcheck 0/0/0。
+#
+# @subsystem stdlib/numeric
+# @guards Tensor 3d slicing row/col/slice + argmax_rows
+# @sources lib/std/sci/tensor.lls
 cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

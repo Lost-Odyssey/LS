@@ -14,6 +14,10 @@
 # not be mistaken for an L-010 regression.
 #
 # Required -D vars: LS_EXE, SCRIPT
+#
+# @subsystem tooling/repl
+# @guards L-010 cross-snippet has_drop values crashed the REPL
+# @sources jit.c
 
 if(NOT LS_EXE OR NOT SCRIPT)
     message(FATAL_ERROR "usage: -DLS_EXE= -DSCRIPT=")

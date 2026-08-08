@@ -2,6 +2,10 @@
 # Verifies the Sink write helpers + __sink_flush redirect (stdout/stderr/file) +
 # the io.file(&!File) ownership-transfer bridge + close-on-switch, and that the
 # whole path is memcheck-clean (the redirect File handle is closed exactly once).
+#
+# @subsystem stdlib/print
+# @guards std.core.sink Stage A write helpers + redirect
+# @sources lib/std/core/sink.lls
 cmake_minimum_required(VERSION 3.20)
 
 # Resolve stdlib (new lib/std/core/sink.lls + updated io.lls) from the SOURCE tree,

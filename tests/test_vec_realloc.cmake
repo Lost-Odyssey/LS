@@ -1,5 +1,9 @@
 # Step 1 — realloc() exposed to LS surface + memcheck tracks the realloc chain.
 # Verifies: JIT run / JIT memcheck 0 leaks / AOT run / AOT memcheck 0 leaks.
+#
+# @subsystem stdlib/containers
+# @guards RawVec Step 1 realloc exposed to LS
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

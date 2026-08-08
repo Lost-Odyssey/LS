@@ -3,6 +3,10 @@
 # correctness (exact format), then memcheck 0/0/0.
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR
+#
+# @subsystem codegen/struct
+# @guards bugs_deferred_p5_4 D-1 struct auto-print of Str fields
+# @sources codegen_print.c
 cmake_minimum_required(VERSION 3.20)
 
 function(_check_out where out)

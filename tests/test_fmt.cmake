@@ -2,6 +2,10 @@
 #   Invariants: (1) --check flags a messy file (exit 1); (2) formatting in place
 #   preserves behavior (parse-equivalence: formatted file runs identically);
 #   (3) idempotence (--check on a formatted file is clean, exit 0).
+#
+# @subsystem tooling/cli
+# @guards `lls fmt` formatter + --check
+# @sources format.c
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

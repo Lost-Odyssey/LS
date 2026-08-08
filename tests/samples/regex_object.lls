@@ -1,0 +1,133 @@
+// regex_object.lls — the compiled Regex object: RAII, move-only, and the
+// non-materializing match path.
+//
+// Two things this pins that the free functions cannot:
+//   1. two live Regex handles interleaved -- captures must not clobber each
+//      other (they used to share one process-global saved[])
+//   2. group(i) reads the LAST match on THAT handle, on demand
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+
+int failures = 0
+
+def check_bool(Str name, bool got, bool want) {
+    if got != want {
+        @print(f"FAIL {name}: got {got} want {want}")
+        failures = failures + 1
+    }
+}
+
+def check_str(Str name, Str got, Str want) {
+    if got != want {
+        @print(f"FAIL {name}: got '{got}' want '{want}'")
+        failures = failures + 1
+    }
+}
+
+def main() -> int {
+    Str line = "x=42;y=7"
+
+    // ---- compile + match? + group ----
+    match re.compile("([a-z])=([0-9]+)", 0) {
+        Ok(r) => {
+            check_bool("match? hit", r.matches?(&line), true)
+            match r.group(&line, 0) {
+                Some(g) => { check_str("group 0", g, "x=42") }
+                None    => { @print("FAIL group 0: none"); failures = failures + 1 }
+            }
+            match r.group(&line, 1) {
+                Some(g) => { check_str("group 1", g, "x") }
+                None    => { @print("FAIL group 1: none"); failures = failures + 1 }
+            }
+            match r.group(&line, 2) {
+                Some(g) => { check_str("group 2", g, "42") }
+                None    => { @print("FAIL group 2: none"); failures = failures + 1 }
+            }
+            // out-of-range group is None, not a crash
+            match r.group(&line, 9) {
+                Some(g) => { @print("FAIL group 9: got some"); failures = failures + 1 }
+                None    => { }
+            }
+        }
+        Err(e) => { @print(f"FAIL compile: {e}"); failures = failures + 1 }
+    }
+
+    // ---- invalid pattern is an Err, not a crash ----
+    match re.compile("(unclosed", 0) {
+        Ok(r)  => { @print("FAIL bad pattern accepted"); failures = failures + 1 }
+        Err(e) => { check_bool("bad pattern rejected", e.len() > 0, true) }
+    }
+
+    // ---- two live handles interleaved: the old global saved[] would clobber ----
+    match re.compile("([a-z])=([0-9]+)", 0) {
+        Ok(ra) => {
+            match re.compile("(y)=([0-9]+)", 0) {
+                Ok(rb) => {
+                    check_bool("ra hit", ra.matches?(&line), true)
+                    check_bool("rb hit", rb.matches?(&line), true)
+                    // rb ran last; ra's captures must still be ra's
+                    match ra.group(&line, 1) {
+                        Some(g) => { check_str("ra group after rb", g, "x") }
+                        None    => { @print("FAIL ra group: none"); failures = failures + 1 }
+                    }
+                    match rb.group(&line, 1) {
+                        Some(g) => { check_str("rb group", g, "y") }
+                        None    => { @print("FAIL rb group: none"); failures = failures + 1 }
+                    }
+                }
+                Err(e) => { @print(f"FAIL compile rb: {e}"); failures = failures + 1 }
+            }
+        }
+        Err(e) => { @print(f"FAIL compile ra: {e}"); failures = failures + 1 }
+    }
+
+    // ---- no match: match? false, group None ----
+    match re.compile("zzz([0-9])", 0) {
+        Ok(r) => {
+            check_bool("miss", r.matches?(&line), false)
+            match r.group(&line, 1) {
+                Some(g) => { @print("FAIL miss group: got some"); failures = failures + 1 }
+                None    => { }
+            }
+        }
+        Err(e) => { @print(f"FAIL compile miss: {e}"); failures = failures + 1 }
+    }
+
+    // ---- group_count ----
+    match re.compile("(a)(b)(c)", 0) {
+        Ok(r)  => { check_bool("group_count 3", r.group_count() == 3, true) }
+        Err(e) => { @print(f"FAIL compile gc: {e}"); failures = failures + 1 }
+    }
+
+    // ---- group() with a text unrelated to the match: bounds guard ----
+    // group() reads capture offsets stored in the handle by the last
+    // matches?()/find_from() call; nothing ties the `text` argument to the
+    // text that match actually ran against (see the CONTRACT note on
+    // Regex.group in lib/std/text/regex.lls). Pin the one case the cheap
+    // guard CAN catch: the offsets from a long match don't fit inside a
+    // shorter, unrelated text, so group() returns None instead of handing
+    // back a substring that belongs to the wrong string.
+    match re.compile("xx=([0-9]+)", 0) {
+        Ok(r) => {
+            Str a = "xx=999"
+            check_bool("unrelated-text setup: match", r.matches?(&a), true)
+            match r.group(&a, 1) {
+                Some(g) => { check_str("unrelated-text setup: group", g, "999") }
+                None    => { @print("FAIL unrelated-text setup: none"); failures = failures + 1 }
+            }
+            // group 1 is offset 3, length 3 ("999") -- too long to fit in
+            // this 2-byte text, so the bounds guard must reject it.
+            Str b = "hi"
+            match r.group(&b, 1) {
+                Some(g) => { @print(f"FAIL unrelated-text guard: got Some('{g}')"); failures = failures + 1 }
+                None    => { }
+            }
+        }
+        Err(e) => { @print(f"FAIL compile unrelated-text: {e}"); failures = failures + 1 }
+    }
+
+    if failures == 0 { @print("ALL PASS") } else { @print(f"FAILURES {failures}") }
+    return 0
+}

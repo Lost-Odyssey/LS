@@ -1,4 +1,14 @@
 # test_trait_struct_bound.cmake — Step 13: trait bounds on generic structs (JIT + AOT + negative)
+#
+# Step 13: bounds on a generic STRUCT's parameters rather than on a function's.
+#
+# Different enforcement point -- the check happens when the struct template is
+# instantiated, not when a call is checked -- so it needs its own coverage even
+# though the surface syntax looks the same.
+#
+# @subsystem checker/traits
+# @guards Step 13 trait bounds on generic structs
+# @sources checker_generics.c:checker_instantiate_struct
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

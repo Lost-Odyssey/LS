@@ -2,6 +2,10 @@
 # type-arg names: mod_a.Node vs mod_b.Node fed to Option(T) must yield two distinct
 # instantiations (used to collide on "Option(Node)" → payload read through the wrong
 # layout). JIT + AOT + memcheck.
+#
+# @subsystem modules
+# @guards F6b-enum generic enum instances collided across modules
+# @sources checker_generics.c:instantiate_template, mangle.c:mangle_type_arg_name
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/modtype_generic_enum/main.lls")

@@ -1,5 +1,9 @@
 # Inferred aggregate init: `Type v = {}` zero-inits a struct (type inferred from
 # the declared LHS), and empty map literal still works. JIT + AOT + memcheck.
+#
+# @subsystem checker/types
+# @guards `Type v = {}` zero-init inferred from the LHS
+# @sources checker_stmt.c:check_stmt_var_decl
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

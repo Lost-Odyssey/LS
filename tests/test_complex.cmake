@@ -1,4 +1,16 @@
 # test_complex.cmake — std.complex / FFT foundation. JIT + AOT + memcheck 0/0/0.
+#
+# `std.complex`: a generic `Complex(T)` with operator overloads.
+#
+# This is a compiler test as much as a library one: the operators are trait
+# methods on a GENERIC type, so each `Complex(f64)` / `Complex(f32)` instantiation
+# needs its own operator symbols, and the arithmetic inside them calls back into
+# `T`'s own operations. It was the first user of the static `T.zero()` dispatch
+# that the FFT work needed.
+#
+# @subsystem stdlib/numeric
+# @guards std.complex Complex(T) + operator overloads
+# @sources lib/std/sci/complex.lls
 cmake_minimum_required(VERSION 3.20)
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

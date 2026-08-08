@@ -1,4 +1,15 @@
 # test_trait_builtin_impl.cmake — Step 11: impl trait for builtin types (JIT + AOT)
+#
+# Step 11: implementing an interface for a builtin type.
+#
+# The registry is keyed by type, and builtins have no user declaration to hang an
+# impl off, so they are registered under a bare name in a global namespace instead
+# of a module-prefixed one. This is also the mechanism that let string methods
+# move out of the compiler and into pure LS.
+#
+# @subsystem checker/traits
+# @guards Step 11 impl trait for builtin types
+# @sources checker_decl.c:check_impl_decl
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

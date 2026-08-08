@@ -1,6 +1,17 @@
 # test_proc_args.cmake — bug #22: proc.args() must work in AOT, not just JIT.
 # Before the fix, the AOT entry main() ignored argc/argv and never called
 # __ls_set_args, so proc.args() returned empty. JIT already worked.
+#
+# Bug #22: `proc.args()` worked under the JIT but not in AOT builds.
+#
+# Argument access needs the real `argc`/`argv`, which reach the program
+# differently in the two modes -- the JIT has them in-process, an AOT binary
+# receives them through its generated `main`. A JIT-only test would have stayed
+# green through this bug, which is why this one compiles and runs the executable.
+#
+# @subsystem stdlib/sys
+# @guards Bug #22 proc.args() works in AOT, not just JIT
+# @sources runtime/os_win32.c
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/proc_args_test.lls")

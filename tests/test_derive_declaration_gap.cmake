@@ -7,6 +7,10 @@
 # failing with "requires an inherent methods block" on code that had one.
 #
 # Required: LS_EXE, SAMPLE_DIR
+#
+# @subsystem checker/reflection
+# @guards @derive assumed the inherent methods block was strictly adjacent (2026-07-29)
+# @sources checker_derive.c:expand_derives
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required_var LS_EXE SAMPLE_DIR)

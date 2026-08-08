@@ -1,6 +1,18 @@
 # Phase S.P3 — std/strconv.lls: format / int_to_hex / int_to_oct / int_to_bin /
 #               float_fixed / to_string / to_string_f
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# `std.text.strconv`: `format` plus `int_to_hex` / `int_to_oct` / `int_to_bin`.
+#
+# Number-to-text is a place where "almost right" is the normal failure: a missing
+# sign, a lost leading zero, a wrong width, an off-by-one on the minimum integer
+# (whose absolute value does not fit in the same type). The corpus pins exact
+# output strings rather than round-tripping, because a round-trip passes happily
+# on two mistakes that cancel.
+#
+# @subsystem stdlib/string
+# @guards S.P3 std.text.strconv format / int_to_hex / oct / bin
+# @sources lib/std/text/strconv.lls
 
 cmake_minimum_required(VERSION 3.20)
 

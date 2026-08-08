@@ -13,6 +13,10 @@
 # valid nesting into a false rejection).
 #
 # Required: LS_EXE, SAMPLE_DIR
+#
+# @subsystem frontend/lexer
+# @guards unterminated block comment swallowed the rest of the file (2026-07-29)
+# @sources scanner.c:skip_whitespace
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required_var LS_EXE SAMPLE_DIR)

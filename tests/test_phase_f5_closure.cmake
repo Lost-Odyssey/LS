@@ -10,6 +10,10 @@
 #   Red
 #   1
 #   10
+#
+# @subsystem codegen/closure
+# @guards Phase F.5 enum capture in closures
+# @sources codegen_closure.c:codegen_closure_literal
 
 cmake_minimum_required(VERSION 3.20)
 

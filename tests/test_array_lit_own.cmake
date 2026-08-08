@@ -5,6 +5,10 @@
 # first emission's owned results leaked. Fixed by an AST pre-scan (pure literals
 # only) so the probe emits nothing for non-literal arrays.
 # Self-verifying corpus; JIT + AOT + memcheck (0 leak / 0 double-free).
+#
+# @subsystem codegen/ownership
+# @guards array-literal double emission (9bd3ca6)
+# @sources codegen_expr.c:cg_expr_array_lit, codegen_stmt.c:cg_stmt_var_decl
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/array_lit_own_test.lls")

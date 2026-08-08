@@ -7,6 +7,10 @@
 #
 # Verifies JIT + AOT exact output, then memcheck 0/0/0.
 # Required: LS_EXE, SAMPLE, WORK_DIR
+#
+# @subsystem modules
+# @guards compiler-internal constant vs user global name collision
+# @sources codegen.c:cg_emit_global_cleanup
 cmake_minimum_required(VERSION 3.20)
 
 function(_check_out where out)

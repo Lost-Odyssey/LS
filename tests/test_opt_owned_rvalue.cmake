@@ -8,6 +8,10 @@
 #   2. `map(|x| x)` identity closure lowers to `Some({ x })`; cg_store_owned
 #      now peels the block to recognize the moved binder — was DOUBLE-FREE.
 # JIT + AOT + memcheck (0 leak / 0 double-free).
+#
+# @subsystem codegen/ownership
+# @guards L-013 family
+# @sources codegen_internal.h:cg_expr_yields_owned_rvalue, codegen_own.c:cg_store_owned
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/opt_owned_rvalue_test.lls")

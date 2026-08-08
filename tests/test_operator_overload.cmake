@@ -1,4 +1,16 @@
 # test_operator_overload.cmake — operator overloading end-to-end (JIT + AOT)
+#
+# Operator overloading: Add / Sub / Mul / Div / Rem / Eq / Ord on user types.
+#
+# Lowered by the CHECKER, not codegen -- `a + b` becomes a method call before
+# codegen ever sees it. That keeps the backend unaware of operators, at the cost
+# that the lowered call has to look exactly like a hand-written one: the same
+# argument ownership, the same temporary registration. The historical bug in this
+# area was an owned temporary from an operator chain that nobody dropped.
+#
+# @subsystem checker/traits
+# @guards operator overloading Add/Sub/Mul/Div/Rem/Eq/Ord
+# @sources checker_expr.c:check_expr_binary
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

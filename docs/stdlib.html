@@ -996,12 +996,16 @@ buffer runs at the zero-copy ceiling (benchmark: <b>~20 ms</b>, vs
 <code>str_substr</code> arena ~230 ms / owned <code>substr</code> ~390 ms).</p>
 <table class="api">
 <tr><td class="s"><span class="sig">def len/empty?(&amp;self)</span></td><td class="d">Length / emptiness (field reads).</td></tr>
+<tr><td class="s"><span class="sig">def present?(&amp;self) -&gt; bool</span></td><td class="d">False only for the <code>capture_all_slices</code> absent-group sentinel (<code>ptr == nil</code>). True for every slice from <code>as_slice</code>/<code>subslice</code>/<code>sub</code>/<code>split_view</code>, including empty ones — <code>present?</code> and <code>empty?</code> answer different questions.</td></tr>
 <tr><td class="s"><span class="sig">def at(&amp;self, int i) -&gt; int · def at!(&amp;self, int i)</span></td><td class="d">Byte at <code>i</code>: checked (abort) / unchecked.</td></tr>
 <tr><td class="s"><span class="sig">def eq(&amp;self, &amp;StrSlice) · def eq_str(&amp;self, &amp;Str)</span></td><td class="d">Equality vs another view / an owned Str or literal.</td></tr>
 <tr><td class="s"><span class="sig">def find/contains?/starts_with?/ends_with?(&amp;self, &amp;Str)</span></td><td class="d">Search (runtime memchr+memcmp over ptr+len).</td></tr>
 <tr><td class="s"><span class="sig">def sub(&amp;self, int start, int len) -&gt; StrSlice</span></td><td class="d">Sub-view of a view (zero-copy, lenient clamp).</td></tr>
 <tr><td class="s"><span class="sig">def compare(&amp;self, &amp;StrSlice) -&gt; int</span></td><td class="d"><code>-1</code>/<code>0</code>/<code>1</code> lexicographic (also <code>&lt;</code> etc. via Order).</td></tr>
 <tr><td class="s"><span class="sig">def hash(&amp;self) -&gt; u64</span></td><td class="d">FxHash — <b>same value as <code>Str.hash</code></b> → interchangeable Map keys.</td></tr>
+<tr><td class="s"><span class="sig">def to_int(&amp;self) -&gt; Result(int, Str)</span></td><td class="d">Parse signed decimal (also <code>0x</code> hex) directly from <code>ptr</code>/<code>len</code> — <b>no materialization</b>. Byte-for-byte the same semantics as <code>Str.to_int</code> (sign, hex prefix, no overflow check, same <code>Err</code> text) — an absent slice (<code>present?() == false</code>) parses like <code>Str.to_int("")</code>: <code>Err("empty string")</code>, never a null-pointer read.</td></tr>
+<tr><td class="s"><span class="sig">def to_i64(&amp;self) -&gt; Result(i64, Str)</span></td><td class="d">64-bit parse, same mirroring as <code>to_int</code>.</td></tr>
+<tr><td class="s"><span class="sig">def to_float(&amp;self) -&gt; Result(f64, Str)</span></td><td class="d">Decimal float parse (with exponent), same mirroring as <code>Str.to_float</code>.</td></tr>
 <tr><td class="s"><span class="sig">def to_str(&amp;self) -&gt; Str</span></td><td class="d">Materialize an independent owned <code>Str</code> (the deferred copy; safe to keep).</td></tr>
 <tr><td class="s"><span class="sig">methods StrSlice: Equal / Hash / Order</span></td><td class="d">→ usable as a <code>Map(StrSlice, V)</code> key and in sorts.</td></tr>
 </table>
@@ -1238,6 +1242,8 @@ never freed); only the <code>fields</code>/<code>funcs</code> arrays are heap-ow
 <tr><td class="s"><span class="sig">def find_all(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d">All non-overlapping matches.</td></tr>
 <tr><td class="s"><span class="sig">def capture(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d"><code>[full, g1, g2, …]</code> for the first match.</td></tr>
 <tr><td class="s"><span class="sig">def capture_all(Str text, Str pattern) -&gt; Vec(Str)</span></td><td class="d">All matches × all groups, flat (stride = groups+1).</td></tr>
+<tr><td class="s"><span class="sig">def capture_all_spans(Str text, Str pattern) -&gt; Vec(int)</span></td><td class="d">Same traversal as <code>capture_all</code>, zero-allocation: flat <code>(offset, len)</code> pairs instead of owned <code>Str</code>s (stride = <code>(groups+1)*2</code>). See “Zero-allocation spans and slices” below.</td></tr>
+<tr><td class="s"><span class="sig">def capture_all_slices(Str text, Str pattern) -&gt; Vec(StrSlice)</span></td><td class="d">Same traversal, zero-allocation, and <em>directly usable</em>: flat <a href="#str"><code>StrSlice</code></a> views instead of raw offsets (stride = groups+1, same as <code>capture_all</code>). See “Zero-allocation spans and slices” below.</td></tr>
 <tr><td class="s"><span class="sig">def capture_named(Str text, Str pattern) -&gt; Map(Str, Str)</span></td><td class="d">Named groups → values for first match.</td></tr>
 <tr><td class="s"><span class="sig">def group_count(Str pattern) -&gt; int</span></td><td class="d">Number of capture groups.</td></tr>
 <tr><td class="s"><span class="sig">def replace(Str text, Str pattern, Str rep) -&gt; Str</span></td><td class="d">Replace first match.</td></tr>
@@ -1247,6 +1253,116 @@ never freed); only the <code>fields</code>/<code>funcs</code> arrays are heap-ow
 <div class="ex"><pre><span class="k">import</span> std.text.regex <span class="k">as</span> re
 <span class="k">if</span> re.matches(<span class="s">"abc123"</span>, <span class="s">"[0-9]+"</span>) {
     <span class="t">Vec</span>(<span class="t">Str</span>) caps = re.capture(<span class="s">"abc123"</span>, <span class="s">"([a-z]+)([0-9]+)"</span>)  <span class="c">// ["abc123","abc","123"]</span>
+}</pre></div>
+
+<h3>Compiled patterns</h3>
+<p class="purpose">The free functions above take the pattern as a <code>Str</code> and go through a
+thread-local cache — convenient for one-off calls, but each call still allocates a fresh handle
+lookup and (for <code>capture</code>/<code>capture_all</code>) materializes every group as an owned
+<code>Str</code>. When the same pattern runs many times, compile it once instead: <code>re.compile</code>
+returns a move-only <code>Regex</code> handle whose <code>matches?</code> allocates nothing and whose
+<code>group</code> slices out only the group you ask for.</p>
+<div class="types"><pre>struct Regex { object h }   // move-only RAII handle: no Clone, releases the C-side handle at scope exit</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def compile(Str pattern, int flags) -&gt; Result(Regex, Str)</span></td><td class="d">Compile once; <code>Err</code> with the engine's message if malformed.</td></tr>
+<tr><td class="s"><span class="sig">def matches?(&amp;self, &amp;Str text) -&gt; bool</span></td><td class="d">True if the pattern occurs anywhere in <code>text</code>. Allocates nothing.</td></tr>
+<tr><td class="s"><span class="sig">def find_from(&amp;self, &amp;Str text, int start) -&gt; bool</span></td><td class="d">Same, scanning from byte offset <code>start</code>.</td></tr>
+<tr><td class="s"><span class="sig">def group(&amp;self, &amp;Str text, int i) -&gt; Option(Str)</span></td><td class="d">Group <code>i</code> of the last match on <em>this</em> handle, materialized on demand. <code>None</code> if there was no match, the group didn't participate, <code>i</code> is out of range, or the stored offsets don't fit inside <code>text</code>.</td></tr>
+<tr><td class="s"><span class="sig">def group_count(&amp;self) -&gt; int</span></td><td class="d">Number of capture groups (not counting group 0).</td></tr>
+</table>
+<p><strong>Which to use:</strong> same pattern run more than once → <code>compile</code> +
+<code>matches?</code>/<code>group</code>. One-off call → the free functions (they already cache
+internally). Need every group at once → <code>re.capture</code>, which materializes the whole
+<code>Vec(Str)</code>.</p>
+<p><strong>Contract — pass the same <code>text</code>:</strong> <code>group</code> and <code>find_from</code>
+read match offsets stored in the handle by the <em>last</em> <code>matches?</code>/<code>find_from</code> call.
+Nothing ties the <code>text</code> argument to the text that match actually ran against — always pass
+<code>group</code> the exact same <code>Str</code> you last matched with. As a cheap safety net, <code>group</code>
+returns <code>None</code> when the stored offsets don't fit inside the <code>text</code> you hand it (catches a
+too-short, unrelated <code>text</code>); it cannot detect an unrelated <code>text</code> that happens to be long
+enough, which silently returns a plausible-looking but wrong substring.</p>
+<div class="ex"><pre><span class="k">match</span> re.compile(<span class="s">"([a-z]+)=([0-9]+)"</span>, <span class="n">0</span>) {
+    <span class="t">Ok</span>(r) =&gt; {
+        <span class="k">if</span> r.matches?(&amp;line) {
+            <span class="k">match</span> r.group(&amp;line, <span class="n">1</span>) { <span class="t">Some</span>(k) =&gt; @print(k)  <span class="t">None</span> =&gt; {} }
+        }
+    }  <span class="c">// r auto-releases the compiled handle here</span>
+    <span class="t">Err</span>(e) =&gt; { @print(e) }
+}</pre></div>
+
+<h3>Zero-allocation spans and slices</h3>
+<p class="purpose"><code>capture_all</code> materializes every captured group into an independently-owned
+<code>Str</code> — a deep copy of the matched bytes, needed if you're going to keep, store, or mutate that
+group after the match is gone. Measurement on this project's find-all benchmarks showed that
+allocation as 26–38% of the total cost of a <code>capture_all</code> call, on top of engine execution —
+real work when all you actually need is a length, a comparison, or a value you'll read once and
+discard. <code>capture_all_spans</code> and <code>capture_all_slices</code> both run the exact same
+match/group traversal but push something cheaper than an owned <code>Str</code>: raw <code>(offset, len)</code>
+ints, or ready-to-use <a href="#str"><code>StrSlice</code></a> views, respectively. Neither allocates a
+<code>Str</code>, not even for group 0.</p>
+<p>A non-participating group (e.g. inside <code>(a)?</code> when the <code>a</code> didn't match) is
+<b>absent</b>: <code>capture_all_spans</code> encodes it as <code>(-1, -1)</code> — the same "absent"
+sentinel the underlying engine already uses — and <code>capture_all_slices</code> encodes it as
+<code>StrSlice { ptr: nil, len: 0 }</code>, checkable with <code>slice.present?()</code>. An empty
+(zero-width) match or group is <b>present</b> with length 0 — <code>(offset, 0)</code> for spans, a
+present <code>StrSlice</code> with <code>len() == 0</code> for slices — a real span/view, not the same thing
+as absent. No match at all → an empty <code>Vec</code>, same contract as <code>capture_all</code>.</p>
+<p>Getting from a span/slice to an actual value — this is the part that matters for realistic code
+(a log line's <code>latency_ms=37</code> is only useful once it's an <code>int</code>, not a byte range):</p>
+<ul class="compact">
+<li><b>Spans</b> (<code>Vec(int)</code>) have no methods of their own — decode with what <code>Str</code>
+already offers: <code>text.substr(off, len)</code> for an owned copy (the same call <code>capture_all</code>
+makes internally), or <code>text.subslice(off, len)</code> for a zero-copy <code>StrSlice</code> view, then
+<code>.to_str()</code>/<code>.to_int()</code> from there.</li>
+<li><b>Slices</b> (<code>Vec(StrSlice)</code>) are already the fat view — no decode step. Read them
+directly: <code>slice.eq_str("GET")</code>, <code>slice.to_int()</code>, <code>slice.contains?("x")</code>,
+with <b>zero allocation anywhere in the read path</b>.</li>
+</ul>
+<p><strong>Which to use — three tiers, pick the cheapest one that does what you need:</strong></p>
+<ul class="compact">
+<li>Materializing every group as its own <code>Str</code> anyway (storing it, returning it, mutating it,
+handing it to something that wants an owned <code>Str</code>) → <code>capture_all</code>. Simplest, and the
+allocation is doing real work here.</li>
+<li>Only measuring, comparing, or reading groups <em>once</em> during the scan, and you're fine doing your
+own offset arithmetic (or the shape is already ints, e.g. summing lengths) → <code>capture_all_spans</code>.
+This project's own end-to-end benchmark (<code>benchmarks/regex_real/</code> S6 — match numeric
+<code>key=value</code> fields, extract the value, parse it to <code>int</code>) measured
+<code>capture_all_spans</code> + <code>subslice(off, len).to_str().to_int()</code> as <b>meaningfully faster</b>
+than <code>capture_all</code>, even though that path still allocates a <code>Str</code> per field — but
+<b>not for the reason it might look like</b>. It is not "spans skip allocation for the field you use" (they
+don't — <code>to_str()</code> still allocates one). It is that <code>capture_all</code> unconditionally
+materializes <em>every</em> captured group into its own <code>Str</code>, including ones a caller never
+reads (e.g. group 1's key name, when only group 2's numeric value is wanted); <code>capture_all_spans</code>
+lets you skip materializing the groups you don't touch. Reading 1 of 3 captured groups this way does
+roughly ⅓ of <code>capture_all</code>'s allocation work, not zero of it — real, but a narrower win than
+"zero-allocation" suggests once you're back to producing a <code>Str</code>.</li>
+<li>You need to actually <em>use</em> the captured value — compare it, search it, parse it as a number —
+without keeping it past the current scan → <code>capture_all_slices</code>. This is the tier that removes
+<em>all</em> per-field allocation, not just the unused groups' share:
+<code>slices[j].to_int()</code> parses straight out of <code>text</code>'s buffer, no intermediate
+<code>Str</code> ever exists. In the same S6 benchmark this measured faster again than the span-and-materialize
+path above on every tier, and the gap is largest on AOT specifically — <code>capture_all</code>'s
+<code>Vec(Str).get_ref</code> read has a separate, unexplained AOT slowdown (see this project's build notes),
+which the slice path's read pattern never triggers.</li>
+</ul>
+<div class="ex"><pre><span class="c">// spans: cheapest when you stay in span-space (e.g. summing lengths)</span>
+<span class="t">Vec</span>(<span class="t">int</span>) spans = re.capture_all_spans(html, <span class="s">"href=\"([^\"]*)\""</span>)  <span class="c">// stride = 4 (2 groups incl. g0)</span>
+<span class="t">int</span> i = <span class="n">0</span>
+<span class="t">int</span> total_href_len = <span class="n">0</span>
+<span class="k">while</span> i &lt; spans.len() {
+    <span class="t">int</span> off = spans[i + <span class="n">2</span>]   <span class="c">// group 1: the href value</span>
+    <span class="t">int</span> len = spans[i + <span class="n">3</span>]
+    <span class="k">if</span> off &gt;= <span class="n">0</span> { total_href_len = total_href_len + len }  <span class="c">// no Str allocated at all</span>
+    i = i + <span class="n">4</span>
+}
+
+<span class="c">// slices: cheapest when you need the VALUE (parse a log field to int)</span>
+<span class="t">Vec</span>(<span class="t">StrSlice</span>) fields = re.capture_all_slices(line, <span class="s">"(\\w+)=(\\d+)"</span>)  <span class="c">// stride = 3</span>
+<span class="t">int</span> j = <span class="n">0</span>
+<span class="t">int</span> total = <span class="n">0</span>
+<span class="k">while</span> j &lt; fields.len() {
+    <span class="k">match</span> fields[j + <span class="n">2</span>].to_int() { <span class="t">Ok</span>(v) =&gt; { total = total + v }  <span class="t">Err</span>(e) =&gt; {} }  <span class="c">// no Str, ever</span>
+    j = j + <span class="n">3</span>
 }</pre></div>
 </section>
 

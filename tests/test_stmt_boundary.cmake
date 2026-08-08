@@ -2,6 +2,10 @@
 #   L-003: line-leading `*K p` generic pointer decl after a value-ending stmt is
 #          not swallowed as multiplication. L-004: if/while condition starting
 #          with `(` keeps its trailing infix op. Plus multiplication guards.
+#
+# @subsystem frontend/parser
+# @guards L-003, L-004 statement boundaries
+# @sources parser_stmt.c:parse_statement
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

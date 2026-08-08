@@ -1,5 +1,9 @@
 # test_strslice.cmake — StrSlice zero-copy fat view (the &str-equivalent).
 # See docs/plan_strslice_view.md.  JIT + AOT + memcheck (0/0/0).
+#
+# @subsystem stdlib/string
+# @guards StrSlice zero-copy fat view
+# @sources lib/std/core/str.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/strslice_test.lls")

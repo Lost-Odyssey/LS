@@ -6,6 +6,10 @@
 #                        counter; the lock serialises them → exact final count.
 #                        NO --memcheck (tracker not thread-safe — like task);
 #                        correctness via repeated AOT runs.
+#
+# @subsystem stdlib/concurrency
+# @guards std.sync Mutex(T) + SpinLock(T)
+# @sources checker_call.c:check_builtin_sync
 
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")

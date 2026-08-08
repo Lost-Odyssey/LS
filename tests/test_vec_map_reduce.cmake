@@ -1,3 +1,8 @@
+# test_vec_map_reduce.cmake
+#
+# @subsystem stdlib/containers
+# @guards RawVec method-level generics map(U) / reduce(U)
+# @sources checker_generics.c:instantiate_template
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 set(SRC "${CMAKE_CURRENT_LIST_DIR}/samples/vec_map_reduce_test.lls")

@@ -2,6 +2,10 @@
 #  * Positive: in-range v[i] / get / set / get! / set! all behave (JIT+AOT+memcheck).
 #  * Negative: out-of-range v[i] (read) and v[i]=x (write) abort the process with a
 #    "out of bounds" diagnostic and a non-zero exit; the post-access line must NOT run.
+#
+# @subsystem stdlib/containers
+# @guards Vec(T) bounds checking (abort on OOB)
+# @sources lib/std/core/vec.lls
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/vec_oob_test.lls")

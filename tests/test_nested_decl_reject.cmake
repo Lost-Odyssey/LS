@@ -3,6 +3,10 @@
 # cleanly at parse time, not crash in codegen with "no terminator".
 #
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem frontend/parser
+# @guards bugs_deferred_p5_4 A-1 nested declarations
+# @sources parser_decl.c:parse_fn_signature
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

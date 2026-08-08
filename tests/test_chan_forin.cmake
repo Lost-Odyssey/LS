@@ -2,6 +2,10 @@
 # A producer thread streams N items then closes; main drains with for-in. JIT +
 # 6x AOT, no memcheck (threaded). A broken iterator skews the count or hangs.
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB.
+#
+# @subsystem stdlib/concurrency
+# @guards std.chan Phase 4 `for x in ch` Iterator protocol
+# @sources lib/std/sync/chan.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

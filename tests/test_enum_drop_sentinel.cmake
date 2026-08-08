@@ -2,6 +2,10 @@
 # (docs/plan_enum_drop_sentinel.md): legal re-drop paths stay silent,
 # slot reuse across iterations is clean, values check out.
 # JIT + AOT + memcheck (0 leak / 0 double-free).
+#
+# @subsystem codegen/ownership
+# @guards enum dead-tag sentinel (bd5048a), L-012, L-021
+# @sources codegen_own.c:emit_enum_drop, codegen_own.c:cg_enum_poison_on
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/enum_drop_sentinel_test.lls")

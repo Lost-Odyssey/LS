@@ -2,6 +2,10 @@
 #  * Serialize:   struct -> neutral Value tree -> .to_json() (nested recurses)
 #  * Deserialize: from_value(Value) rebuilds the struct; round-trips
 #  * JIT + AOT + memcheck; inspect shows to_value/from_value
+#
+# @subsystem checker/reflection
+# @guards Stage 2 @derive(Serialize)
+# @sources checker_derive.c:expand_derives
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/derive_serialize.lls")

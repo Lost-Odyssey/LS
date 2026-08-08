@@ -2,6 +2,29 @@
 # Verifies the rvalue/__move-args-move ABI: rvalue & __move args are MOVED into the
 # container (no clone), while a named-variable arg is borrowed (cloned, caller's
 # var stays valid). JIT + AOT + memcheck 0/0/0.
+#
+# The three argument forms are the whole point, and each fails differently if
+# the decision at the store site is wrong:
+#   * rvalue        `v.push(f"item_{i}")`  -- nothing else owns it, so it must be
+#                   MOVED. Cloning here is a pure leak: the temporary is never
+#                   released, and only memcheck sees it.
+#   * named var     `v.push(x)`            -- the caller keeps `x`, so the callee
+#                   must take a CLONE. Moving here leaves the caller holding a
+#                   moved-from Str that is freed twice at scope exit.
+#   * explicit move `v.push(@move(y))`     -- the user opted in; move and kill the
+#                   source.
+# The corpus therefore asserts BOTH the stored value AND that `x` is still
+# readable afterwards ("named var still valid"), because a wrong move produces
+# the correct stored value and only corrupts the source.
+#
+# It deliberately uses a hand-rolled `RawVecS` (raw `*Str` + realloc + a Destroy
+# impl looping `@dispose`) rather than `Vec(T)`: that puts the element store on
+# a raw pointer index, the same path `Vec` itself is built on, without the
+# stdlib in between to absorb a mistake.
+#
+# @subsystem codegen/ownership
+# @guards owned-param / move-into-container ABI
+# @sources codegen_own.c:cg_store_owned
 
 cmake_minimum_required(VERSION 3.20)
 

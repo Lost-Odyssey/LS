@@ -3,6 +3,10 @@
 # Map-as-struct-field auto-drop — all memcheck 0/0/0. Also exercises the owned-
 # rvalue-enum match double-drop fix (match m.get(k) for container values).
 # See docs/plan_std_map.md §8. Self-verifying sample prints "OWNDROP PASS".
+#
+# @subsystem codegen/ownership
+# @guards std.map M-2, owned-rvalue enum match double-drop
+# @sources codegen_own.c:cg_store_owned, codegen_own.c:emit_drop_value, lib/std/core/map.lls
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

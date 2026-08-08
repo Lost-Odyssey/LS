@@ -7,6 +7,10 @@
 # thread-safe (the worker frees its closure env concurrently with the main
 # thread), so it would race. Double-free soundness is covered instead by
 # repeated AOT runs — a cross-thread double-free surfaces as a crash (~rc!=0).
+#
+# @subsystem stdlib/concurrency
+# @guards std.task generic structured concurrency Task(T)
+# @sources checker_call.c:check_builtin_task
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

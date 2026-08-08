@@ -7,6 +7,10 @@
 #  * memcheck: clean (constants allocate nothing).
 #  * negative: assigning to a comptime constant / array length mismatch are clean
 #    compile errors.
+#
+# @subsystem checker/reflection
+# @guards compile-time constant evaluation
+# @sources checker_comptime.c:comptime_expand_block
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/comptime_const_test.lls")

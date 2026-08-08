@@ -10,6 +10,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (AOT binary + file round-trip scratch)
 #   TEST_NAME — test name (for error messages)
+#
+# @subsystem stdlib/text
+# @guards std.text.csv RFC 4180 reader/writer
+# @sources lib/std/text/csv.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

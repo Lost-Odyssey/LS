@@ -10,6 +10,10 @@
 # Fixture: tests/samples/l0091_modgen/{main,mod_a,mod_b}.lls
 #   main asserts: mod_a.use_int()==7 (A1), mod_a.run_tag()==1 & mod_b.run_tag()==2
 #   (A2), and a root-module generic id(int)(42)==42 (unprefixed, unaffected).
+#
+# @subsystem modules
+# @guards L-009.1 module generics (instantiation + cross-module mangling)
+# @sources mangle.c:mangle_module_symbol, checker_generics.c:instantiate_template
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/l0091_modgen/main.lls")

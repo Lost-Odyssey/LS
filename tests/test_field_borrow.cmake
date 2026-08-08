@@ -2,6 +2,10 @@
 # `&!field` writable field borrow). `&obj.field` / `&arr[i]` to a read-only `&T`
 # param (fn or Block) lends a zero-copy read-only borrow of a has_drop field/
 # element; the source stays alive. JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem checker/borrow
+# @guards read-only &field / &element borrows
+# @sources codegen_expr.c:codegen_addr_of
 cmake_minimum_required(VERSION 3.20)
 set(LS "${LS_EXE}")
 if(STDLIB)

@@ -1,4 +1,4 @@
-# test_mangle_deep_collision.cmake ¡ª Task 7.2 method-symbol exactness
+# test_mangle_deep_collision.cmake â€” Task 7.2 method-symbol exactness
 # (docs/plan_arch_round2_backlog.md Batch 7.2).
 #
 # Two 70-deep generic chains (Box(...Box(int)...) / Box(...Box(Str)...))
@@ -10,6 +10,10 @@
 # exact. Asserts:
 #   1. emit-ir contains BOTH full-length .__drop symbols (red on pre-fix).
 #   2. JIT run prints the correct core tags and exits 0.
+#
+# @subsystem checker/generics
+# @guards Task 7.2 qualified method symbols truncated at 255 -> wrong drop fn
+# @sources mangle.c:mangle_method_symbol
 cmake_minimum_required(VERSION 3.20)
 if(NOT LS_EXE OR NOT SAMPLE)
     message(FATAL_ERROR "test_mangle_deep_collision.cmake requires LS_EXE and SAMPLE")

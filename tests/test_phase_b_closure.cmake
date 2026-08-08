@@ -4,6 +4,10 @@
 # asserts every expected line is produced. Each line corresponds to one of
 # the 6 shapes the test exercises (prefix / trailing / multi-arg / no-arg /
 # bool-return / multi-stmt body).
+#
+# @subsystem codegen/closure
+# @guards Phase B closure codegen with no captures
+# @sources codegen_closure.c:codegen_closure_literal
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

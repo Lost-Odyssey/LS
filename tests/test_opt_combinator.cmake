@@ -5,6 +5,10 @@
 #    diagnostic, post-access line not run).
 #  * Negative (reject): `.unwrap()` consumes a has_drop receiver — reusing it is
 #    a compile-time move error (non-zero exit, "moved" diagnostic).
+#
+# @subsystem codegen/match
+# @guards C1 Option/Result combinators lowered by the checker
+# @sources checker_call.c:check_expr_call
 cmake_minimum_required(VERSION 3.20)
 
 set(POS "${SAMPLE_DIR}/opt_combinator_test.lls")

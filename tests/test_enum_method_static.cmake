@@ -1,6 +1,18 @@
 # test_enum_method_static.cmake — enum `impl` static fn methods
 # Tests: EnumType.method() static call via type name
 #        JIT + AOT + memcheck
+#
+# `static def` on an enum: constructors and factories that have no receiver.
+#
+# Worth its own corpus because the symbol path differs -- a static method is
+# resolved and mangled off the TYPE, not off a value, which is the same machinery
+# that qualified method symbols and cross-module type prefixes go through. A
+# regression here shows up as an unresolved symbol at JIT time rather than as a
+# type error.
+#
+# @subsystem codegen/enum
+# @guards enum static methods
+# @sources codegen_decl.c:emit_enum_ctor
 
 cmake_minimum_required(VERSION 3.20)
 

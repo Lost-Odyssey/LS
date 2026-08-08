@@ -16,6 +16,10 @@
 #   SAMPLE    — absolute path to the .lls sample
 #   WORK_DIR  — build directory (for the AOT binary)
 #   TEST_NAME — test name (for error messages)
+#
+# @subsystem codegen/struct
+# @guards by-value has_drop struct argument ownership
+# @sources codegen_own.c:emit_struct_clone_val
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

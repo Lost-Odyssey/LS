@@ -3,6 +3,10 @@
 # gracefully (rc != 0), NOT segfault (rc 139 / 0xC0000005).
 #
 # Required: LS_EXE, SAMPLE
+#
+# @subsystem checker/types
+# @guards bugs_deferred_p5_4 A-3 forward field reference
+# @sources checker_decl.c:check_struct_decl
 cmake_minimum_required(VERSION 3.20)
 
 execute_process(

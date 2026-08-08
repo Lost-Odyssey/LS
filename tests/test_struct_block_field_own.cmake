@@ -5,6 +5,10 @@
 # the VALUE (captured int after heap churn) is the judge. Fix:
 # emit_struct_clone_val / emit_array_clone_val deep-clone Block fields via
 # cg_emit_block_env_clone (audit B-1 / BUG-2). JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem codegen/ownership
+# @guards BUG-2 (audit B-1/B-3), 988d3fa
+# @sources codegen_own.c:emit_struct_clone_val, codegen_own.c:emit_array_clone_val, codegen_stmt.c:cg_emit_block_env_clone
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/struct_block_field_own_test.lls")

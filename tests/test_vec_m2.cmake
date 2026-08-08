@@ -1,6 +1,10 @@
 # Step 6 / Gate M2 — generic std.vec Vec(T) across element types
 # (int / string / Pt) under monomorphization, matching vec semantics.
 # JIT + AOT + memcheck 0/0/0. Imports std.vec, so LS_HOME must point at repo.
+#
+# @subsystem stdlib/containers
+# @guards RawVec Gate M2 generic Vec(T)
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

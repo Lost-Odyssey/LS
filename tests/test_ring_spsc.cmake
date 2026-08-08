@@ -7,6 +7,10 @@
 # repeated AOT runs (a torn handle / double-free would crash or skew the count).
 #
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB (repo root → LS_HOME).
+#
+# @subsystem stdlib/concurrency
+# @guards std.ring Phase 1 SPSC lock-free cross-thread
+# @sources lib/std/sync/ring.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

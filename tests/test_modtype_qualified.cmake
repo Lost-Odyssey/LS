@@ -1,5 +1,16 @@
 # test_modtype_qualified.cmake — B-4: module-qualified types `A.Config`/`mod.Config`
 # let two modules' same-named (different-layout) structs coexist. JIT + AOT + memcheck.
+#
+# B-4: module-qualified type names -- `mod.Type` / `alias.Type` in type position.
+#
+# This is the escape hatch that makes B-1 usable: when a bare name is ambiguous
+# the compiler refuses it, and qualification is how the user says which one they
+# meant. It has to work in every type position (declarations, parameters, return
+# types, generic arguments), not just the easy one.
+#
+# @subsystem modules
+# @guards B-4 module-qualified types mod.Type
+# @sources checker_generics.c:resolve_type_node
 cmake_minimum_required(VERSION 3.20)
 
 set(MAIN "${SAMPLE_DIR}/modtype_qualified/main.lls")

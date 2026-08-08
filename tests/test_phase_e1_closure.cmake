@@ -2,6 +2,10 @@
 # Vec(T) is by-move capture (struct ABI). The closure body clones via .copy()
 # to avoid moving the closure's internal value.
 # Expected output: 60, 5, 24, 24, 2, 2
+#
+# @subsystem codegen/closure
+# @guards Phase E.1 capture ABI (historical by-ref era)
+# @sources codegen_closure.c:capture_type_is_by_ref_cg
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

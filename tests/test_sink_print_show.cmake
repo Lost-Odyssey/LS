@@ -2,6 +2,10 @@
 # prints via Show (`Name { f: v }`); a plain struct stays structural (`Name{f=v}`);
 # POD/Str keep the fast path. Verifies exact output + memcheck clean (the to_str
 # rewrite's owned Str rvalue is dropped). docs/plan_print_sink.md Stage C.
+#
+# @subsystem stdlib/print
+# @guards Stage C-2 print honours Show
+# @sources codegen_print.c
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

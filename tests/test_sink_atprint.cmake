@@ -1,6 +1,10 @@
 # test_sink_atprint.cmake — Stage F: `@print` is the print intrinsic (dedicated
 # @-token like @time/@bench; the only spelling, bare print retired). Composes with
 # C-2 Show dispatch + D f-string Show. docs/plan_print_sink.md Stage F.
+#
+# @subsystem stdlib/print
+# @guards Stage F @print syntax
+# @sources codegen_print.c
 cmake_minimum_required(VERSION 3.20)
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)

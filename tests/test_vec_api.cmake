@@ -1,6 +1,10 @@
 # Comprehensive RawVec(T) API parity with builtin vec: push/insert/pop/remove/
 # swap/reverse/truncate/clear/get/set/first/last/index_of/contains/count/resize/
 # copy/shrink_to_fit on int (POD) + string (has_drop). JIT + AOT + memcheck 0/0/0.
+#
+# @subsystem stdlib/containers
+# @guards Vec API parity (insert/remove/swap/reverse/first/last)
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 set(LS  "${LS_EXE}")

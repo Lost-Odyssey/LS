@@ -1,5 +1,17 @@
 # Phase V.2 — vec functional methods: filter, find, find_index
 # Verifies: JIT output / JIT memcheck 0 leaks / AOT output / AOT memcheck 0 leaks
+#
+# Phase V.2 -- `filter` / `find` / `find_index`.
+#
+# Here ownership starts to matter: `filter` builds a NEW vector, so surviving
+# elements have to be cloned into it while the source keeps its own copies, and
+# `find` returns an element rather than a bool. Getting the clone wrong gives two
+# containers sharing one buffer -- correct-looking values until the second
+# destructor runs.
+#
+# @subsystem stdlib/containers
+# @guards Phase V.2 filter/find/find_index
+# @sources lib/std/core/vec.lls
 
 cmake_minimum_required(VERSION 3.20)
 

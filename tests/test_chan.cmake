@@ -1,6 +1,10 @@
 # test_chan.cmake — std.chan single-threaded correctness + memcheck.
 # JIT + AOT ("CHAN PASS", no "FAIL") + JIT --memcheck 0/0/0 (incl. __drop residual).
 # Required: LS_EXE, SAMPLE, WORK_DIR, STDLIB (repo root → LS_HOME).
+#
+# @subsystem stdlib/concurrency
+# @guards std.chan Phase 2 blocking bounded channel
+# @sources lib/std/sync/chan.lls
 cmake_minimum_required(VERSION 3.20)
 
 if(NOT LS_EXE OR NOT SAMPLE)

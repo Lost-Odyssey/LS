@@ -1,4 +1,17 @@
 # test_generics_g1.cmake — Phase G1: user-defined generic structs (JIT + AOT + memcheck)
+#
+# Phase G1: user-defined generic structs.
+#
+# The first end-to-end coverage of monomorphisation -- a template is registered,
+# each concrete instantiation gets its own Type, its own LLVM struct, its own
+# mangled methods and its own synthesised drop/clone. Nearly every generics bug
+# found since (instance-name truncation, cross-module key collisions, missing
+# signature validation) has been a defect in one of those four per-instance
+# artefacts, so this corpus is the floor the rest of the family stands on.
+#
+# @subsystem checker/generics
+# @guards G1 user generic structs
+# @sources checker_generics.c:checker_instantiate_struct
 
 get_filename_component(_ls_stdlib_root "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 set(ENV{LS_HOME} "${_ls_stdlib_root}")

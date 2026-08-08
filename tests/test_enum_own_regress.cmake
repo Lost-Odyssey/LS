@@ -6,6 +6,10 @@
 #      cg_flush_temps_scope_exit -> the subject's heap payload LEAKED
 #      (fixed: flush hoisted out of the value-expr guard, codegen_stmt.c).
 # JIT + AOT + memcheck (0 leak / 0 double-free).
+#
+# @subsystem codegen/ownership
+# @guards BF: recursive enum ctor double-free + bare-return leak (29b4fa3)
+# @sources codegen_decl.c:emit_enum_ctor, codegen_own.c:cg_store_owned, codegen_stmt.c:cg_stmt_return, codegen_own.c:cg_flush_temps_scope_exit
 cmake_minimum_required(VERSION 3.20)
 
 set(SRC "${SAMPLE_DIR}/enum_own_regress_test.lls")
