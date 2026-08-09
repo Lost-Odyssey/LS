@@ -1268,12 +1268,55 @@ returns a move-only <code>Regex</code> handle whose <code>matches?</code> alloca
 <tr><td class="s"><span class="sig">def matches?(&amp;self, &amp;Str text) -&gt; bool</span></td><td class="d">True if the pattern occurs anywhere in <code>text</code>. Allocates nothing.</td></tr>
 <tr><td class="s"><span class="sig">def find_from(&amp;self, &amp;Str text, int start) -&gt; bool</span></td><td class="d">Same, scanning from byte offset <code>start</code>.</td></tr>
 <tr><td class="s"><span class="sig">def group(&amp;self, &amp;Str text, int i) -&gt; Option(Str)</span></td><td class="d">Group <code>i</code> of the last match on <em>this</em> handle, materialized on demand. <code>None</code> if there was no match, the group didn't participate, <code>i</code> is out of range, or the stored offsets don't fit inside <code>text</code>.</td></tr>
+<tr><td class="s"><span class="sig">def group_span(&amp;self, int i) -&gt; Option(Span)</span></td><td class="d">Byte span of group <code>i</code> of the last match. <strong>Takes no <code>text</code></strong> — the offsets live in the handle, so the "pass the same text" contract below does not apply. Allocates nothing.</td></tr>
+<tr><td class="s"><span class="sig">def group_slice(&amp;self, &amp;Str text, int i) -&gt; Option(StrSlice)</span></td><td class="d">Group <code>i</code> as a borrowed <code>(ptr, len)</code> view into <code>text</code>. Allocates nothing; the result is only valid while <code>text</code> is alive.</td></tr>
+<tr><td class="s"><span class="sig">def caps(&amp;self, &amp;Str text) -&gt; Option(Caps)</span></td><td class="d">Match <code>text</code> and bind the result to it, so the per-group reads need no further <code>text</code> argument. <code>None</code> if it didn't match.</td></tr>
 <tr><td class="s"><span class="sig">def group_count(&amp;self) -&gt; int</span></td><td class="d">Number of capture groups (not counting group 0).</td></tr>
 </table>
 <p><strong>Which to use:</strong> same pattern run more than once → <code>compile</code> +
 <code>matches?</code>/<code>group</code>. One-off call → the free functions (they already cache
 internally). Need every group at once → <code>re.capture</code>, which materializes the whole
-<code>Vec(Str)</code>.</p>
+<code>Vec(Str)</code>. <strong>Only need the length or position → <code>group_span</code></strong>;
+need the bytes but not ownership → <code>group_slice</code> / <code>caps</code> (see below).</p>
+
+<h4>Allocation-free group access on a compiled handle</h4>
+<p><code>group</code> hands back an owned <code>Str</code>, which means a heap allocation and a copy per
+group. When you only need the length, the position, or a comparison, that copy is the dominant cost:
+on this project's <code>S1_head</code> shape (match a log line, read two groups, 300k iterations)
+switching to <code>group_span</code> measured <strong>1.78× at <code>-O2</code> and 2.58× at
+<code>-O0</code></strong> — 92&nbsp;ms → 52&nbsp;ms — for a byte-identical checksum.</p>
+<div class="types"><pre>struct Span { int start; int len }        // POD: no allocation, no destructor, no borrow
+struct Caps { object h; *u8 base; int base_len }   // POD; borrows the handle AND the text</pre></div>
+<table class="api">
+<tr><td class="s"><span class="sig">def end_offset(&amp;self) -&gt; int</span></td><td class="d"><code>Span</code>: <code>start + len</code>. (Not named <code>end</code> — that's a reserved keyword.)</td></tr>
+<tr><td class="s"><span class="sig">def empty?(&amp;self) -&gt; bool</span></td><td class="d"><code>Span</code>: <code>len == 0</code>.</td></tr>
+<tr><td class="s"><span class="sig">def len(&amp;self, int i) -&gt; int</span></td><td class="d"><code>Caps</code>: length of group <code>i</code>, or <code>-1</code> if the group is absent.</td></tr>
+<tr><td class="s"><span class="sig">def span(&amp;self, int i) -&gt; Option(Span)</span></td><td class="d"><code>Caps</code>: byte span of group <code>i</code>. No <code>text</code> argument.</td></tr>
+<tr><td class="s"><span class="sig">def slice(&amp;self, int i) -&gt; Option(StrSlice)</span></td><td class="d"><code>Caps</code>: borrowed view of group <code>i</code>. No <code>text</code> argument — this is the point of the layer.</td></tr>
+<tr><td class="s"><span class="sig">def str(&amp;self, int i) -&gt; Option(Str)</span></td><td class="d"><code>Caps</code>: owned copy of group <code>i</code>. Allocates; use when the value must outlive the text.</td></tr>
+<tr><td class="s"><span class="sig">def group_count(&amp;self) -&gt; int</span></td><td class="d"><code>Caps</code>: number of capture groups (not counting group 0).</td></tr>
+</table>
+<p><strong>Absent is not empty.</strong> A group that didn't participate reports <code>None</code>
+(<code>Caps.len</code> → <code>-1</code>); a group that participated and matched zero bytes reports
+<code>Some(Span{start, 0})</code> (<code>Caps.len</code> → <code>0</code>). These are different facts and
+stay different across every accessor.</p>
+<p><strong>Why <code>Caps</code> and not a text pointer inside <code>Regex</code>?</strong> Stashing the text
+in the handle would also remove the argument, but a <code>Regex</code> normally outlives the text it runs
+against — compiled once outside a loop, matched against a fresh per-iteration <code>Str</code> — so it
+would hold a dangling pointer most of the time, with nothing left at the call site to check it against.
+Putting the borrow on a short-lived per-call value instead is the same structure Rust uses
+(<code>Regex</code> is text-free; it's <code>Captures&lt;'t&gt;</code> that carries the lifetime), minus the
+static proof. Two consequences to respect: a <code>Caps</code> is only valid while both the handle and the
+text are alive, and re-running the same <code>Regex</code> invalidates it — take the values you need
+before matching again.</p>
+<div class="ex"><pre><span class="c">// Rust's `c[1].len() + c[2].len()`, spelled in LS</span>
+<span class="k">match</span> rx.caps(&amp;line) {
+    <span class="t">Some</span>(c) =&gt; { total = total + c.span(<span class="n">1</span>)!.len + c.span(<span class="n">2</span>)!.len }
+    <span class="t">None</span> =&gt; {}
+}
+
+<span class="c">// parse a numeric group without ever building a Str</span>
+<span class="k">match</span> rx.group_slice(&amp;line, <span class="n">2</span>)!.to_int() { <span class="t">Ok</span>(v) =&gt; { sum = sum + v }  <span class="t">Err</span>(e) =&gt; {} }</pre></div>
 <p><strong>Contract — pass the same <code>text</code>:</strong> <code>group</code> and <code>find_from</code>
 read match offsets stored in the handle by the <em>last</em> <code>matches?</code>/<code>find_from</code> call.
 Nothing ties the <code>text</code> argument to the text that match actually ran against — always pass
@@ -1291,6 +1334,10 @@ enough, which silently returns a plausible-looking but wrong substring.</p>
 }</pre></div>
 
 <h3>Zero-allocation spans and slices</h3>
+<p class="purpose"><em>This section covers the <strong>free functions</strong>, which are find-all shaped:
+they walk every match in the text and return one flat <code>Vec</code>. For the same idea on a
+<strong>compiled handle</strong> — one match at a time, no <code>Vec</code> at all — see
+<code>group_span</code> / <code>group_slice</code> / <code>caps</code> under "Compiled patterns" above.</em></p>
 <p class="purpose"><code>capture_all</code> materializes every captured group into an independently-owned
 <code>Str</code> — a deep copy of the matched bytes, needed if you're going to keep, store, or mutate that
 group after the match is gone. Measurement on this project's find-all benchmarks showed that

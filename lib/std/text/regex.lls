@@ -41,6 +41,86 @@ def _own(Str pattern, int flags) -> object {
     return c.__ls_regex_compile(pattern.c_str(), flags)
 }
 
+// ---- Allocation-free match results ----
+
+// Byte range of one capture group: [start, start+len) into the matched text.
+// A plain POD value -- no allocation, no destructor, no borrow. This is what
+// you want when the position or the length is the answer; reach for StrSlice
+// (below) only when you need the bytes.
+struct Span {
+    int start
+    int len
+}
+
+methods Span {
+    // Not named `end`: that is a reserved keyword (see src/scanner.c's
+    // keyword table), so `def end(...)` is a parse error.
+    def end_offset(&self) -> int { return self.start + self.len }
+    def empty?(&self) -> bool { return self.len == 0 }
+}
+
+// A successful match, bound to the text it was made against: LS's shape of
+// Rust's Captures<'t>, minus the static lifetime proof.
+//
+// POD by construction (an opaque handle plus a fat pointer): no destructor,
+// no ownership, nothing to free. It BORROWS both the Regex's handle and the
+// text, so:
+//   * it is only valid while both are alive -- nothing checks this;
+//   * running the same Regex again invalidates it, because the offsets it
+//     reads are the handle's "last match" state, the same state group()
+//     reads. Take the values you need before re-matching.
+// Both facts are the price of not copying the offsets out on every call,
+// which is exactly the cost this whole layer exists to avoid.
+struct Caps {
+    object h
+    *u8 base
+    int base_len
+}
+
+methods Caps {
+    // Length of group `i`, or -1 when the group is absent (did not
+    // participate, no match, or out of range). -1 rather than 0 because an
+    // empty group that DID participate is a different fact and reports 0.
+    def len(&self, int i) -> int {
+        if i < 0 || i > c.__ls_regex_group_count(self.h) { return -1 }
+        return c.__ls_regex_cap_len(self.h, i)
+    }
+
+    // Byte span of group `i`, or None if absent. No text needed.
+    def span(&self, int i) -> Option(Span) {
+        if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
+        int s = c.__ls_regex_cap_start(self.h, i)
+        int l = c.__ls_regex_cap_len(self.h, i)
+        if s < 0 || l < 0 { return None }
+        return Some(Span { start: s, len: l })
+    }
+
+    // Group `i` as a borrowed view into the text this Caps was made from.
+    // No text argument -- that is the point of this layer.
+    def slice(&self, int i) -> Option(StrSlice) {
+        if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
+        int s = c.__ls_regex_cap_start(self.h, i)
+        int l = c.__ls_regex_cap_len(self.h, i)
+        if s < 0 || l < 0 { return None }
+        if s + l > self.base_len { return None }
+        return Some(StrSlice { ptr: c.__ls_ptr_at(self.base, s as i64), len: l })
+    }
+
+    // Group `i` as an owned Str. Allocates; the escape hatch for when the
+    // value has to outlive the text.
+    def str(&self, int i) -> Option(Str) {
+        match self.slice(i) {
+            Some(sl) => { return Some(sl.to_str()) }
+            None     => { return None }
+        }
+    }
+
+    // Number of capture groups, not counting group 0.
+    def group_count(&self) -> int {
+        return c.__ls_regex_group_count(self.h)
+    }
+}
+
 // ---- Compiled pattern object ----
 //
 // Regex owns a C-side handle and releases it at scope exit. It has a
@@ -130,6 +210,63 @@ methods Regex {
         if s < 0 || l < 0 { return None }
         if s + l > text.len() { return None }
         return Some(text.substr(s, l))
+    }
+
+    // Byte span of group `i` of the last successful match, or None if there
+    // was no match, the group did not participate, or `i` is out of range.
+    //
+    // Takes NO text. The offsets live in the handle, so there is nothing a
+    // caller could pass wrong here -- the "must be the same `text` you last
+    // matched with" contract that group()/group_slice() carry does not apply
+    // to this method at all. Prefer it whenever the length or position is
+    // what you actually want: it allocates nothing, and on a two-group
+    // extract it is ~1.9x the whole shape's cost at -O2 against group().
+    //
+    // An absent group and a participating-but-empty group are different
+    // facts and stay different here: absent is None, empty is
+    // Some(Span{start, 0}).
+    def group_span(&self, int i) -> Option(Span) {
+        if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
+        int s = c.__ls_regex_cap_start(self.h, i)
+        int l = c.__ls_regex_cap_len(self.h, i)
+        if s < 0 || l < 0 { return None }
+        return Some(Span { start: s, len: l })
+    }
+
+    // Group `i` of the last successful match as a borrowed view into `text`.
+    // Allocates nothing -- StrSlice is a (ptr, len) fat value, and it already
+    // carries the operations you would reach for on the bytes themselves
+    // (len/at/==/compare/find/to_int/to_str/hash, see std.core.str).
+    //
+    // CONTRACT: same as group() -- `text` MUST be the `Str` passed to the
+    // preceding matches?/find_from on this handle. The `s + l > text.len()`
+    // net below catches a shorter unrelated `text`; it cannot catch one that
+    // happens to be long enough. Unlike group(), the value you get back is a
+    // BORROW: it is only valid while `text` is alive, and nothing checks
+    // that. Use group_span() instead when you do not need the bytes.
+    def group_slice(&self, &Str text, int i) -> Option(StrSlice) {
+        if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
+        int s = c.__ls_regex_cap_start(self.h, i)
+        int l = c.__ls_regex_cap_len(self.h, i)
+        if s < 0 || l < 0 { return None }
+        if s + l > text.len() { return None }
+        return Some(StrSlice { ptr: c.__ls_ptr_at(text.as_ptr() as *u8, s as i64), len: l })
+    }
+
+    // Match `text` and, on success, hand back a Caps value bound to it, so
+    // the per-group reads below it need no further `text` argument.
+    //
+    // This is where the borrow belongs. Stashing the text pointer in the
+    // Regex itself would remove the same argument, but a Regex normally
+    // outlives the text it is run against (compiled once outside a loop,
+    // matched against a fresh per-iteration Str) -- it would hold a dangling
+    // pointer most of the time, and there would be nothing left at the call
+    // site to check it against. Rust does not do that either: its Regex is
+    // text-free and it is Captures<'t>, a per-call value, that carries the
+    // lifetime. Caps is that shape without the static proof.
+    def caps(&self, &Str text) -> Option(Caps) {
+        if !self.matches?(text) { return None }
+        return Some(Caps { h: self.h, base: text.as_ptr() as *u8, base_len: text.len() })
     }
 
     // Number of capture groups, not counting group 0.
