@@ -320,6 +320,33 @@ static void comp_error(Compiler *c, const char *msg) {
     }
 }
 
+/* Allocate the next capture-group id, or -1 (with a diagnostic already set)
+   when the pattern would exceed what saved[] can hold.
+
+   Group N occupies slots N*2 and N*2+1 of `int saved[MAX_GROUPS * 2]`, so the
+   last usable id is MAX_GROUPS - 1: group MAX_GROUPS writes one int past the
+   end. Nothing used to enforce that anywhere on the path -- not this
+   allocation, not `re->n_groups`, not the emitted OP_SAVE slot index, and not
+   the two stores that finally commit it -- so a 17-group pattern silently
+   corrupted the adjacent ReThread's pc field and 18+ killed the process
+   (rc=127, all buffered output lost).
+
+   The check belongs HERE, at the single allocation point, for two reasons:
+   the stores that would overflow (`t.saved[in->operand_a]` in the thread-list
+   VM, `match_saved[in->operand_a]` in the one-pass VM) are the hottest writes
+   in the engine and must not grow a per-execution bounds check; and clamping
+   the id instead of rejecting the pattern would quietly return offsets
+   belonging to a different group, which is worse than an error. Pinned by
+   tests/samples/regex_group_limit.lls. */
+static int re_alloc_group(Compiler *c) {
+    if (c->group_counter + 1 >= MAX_GROUPS) {
+        comp_error(c, "too many capture groups (max 16); "
+                      "use (?:...) for grouping that does not capture");
+        return -1;
+    }
+    return ++c->group_counter;
+}
+
 static int  emit(ReHandle *re, ReOpCode op, int a, int b) {
     if (re->prog_len >= MAX_INSTRS - 1) return -1;
     if (re->prog_len >= re->prog_cap) {
@@ -781,7 +808,8 @@ static int parse_atom(Compiler *c) {
                 if (c->pos >= c->pat_len) { comp_error(c, "unclosed named group"); return -1; }
                 c->pos++; /* consume '>' */
                 name[nlen] = '\0';
-                group_id = ++c->group_counter;
+                group_id = re_alloc_group(c);
+                if (group_id < 0) return -1;
                 if (re->n_named < MAX_NAMED) {
                     NamedGroup *ng = &re->named[re->n_named++];
                     strncpy(ng->name, name, NAME_MAX_LEN - 1);
@@ -842,7 +870,8 @@ static int parse_atom(Compiler *c) {
             }
         } else {
             /* regular capturing group */
-            group_id = ++c->group_counter;
+            group_id = re_alloc_group(c);
+            if (group_id < 0) return -1;
         }
 
         int save_open = -1;
