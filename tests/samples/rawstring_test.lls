@@ -73,7 +73,15 @@ def main() -> int {
     // ---- multi-line raw string (line breaks are allowed, as in "...") ----
     Str two = r"a
 b"
-    if two.len() != 3 { fail(f"multi-line raw length = {two.len()}, want 3") }
+    // Raw means verbatim, so the break is whatever the FILE holds: 1 byte on an
+    // LF checkout, 2 on CRLF. Asserted line-ending agnostically -- this was first
+    // written as != 3 and went red the moment git handed the file back as CRLF,
+    // which is the portability hazard worth pinning rather than hiding.
+    int tl = two.len()
+    if tl < 3 { fail(f"multi-line raw too short: {tl}") }
+    if tl > 4 { fail(f"multi-line raw too long: {tl}") }
+    if two.byte_at(0) != 97 { fail("multi-line raw should start with a") }
+    if two.byte_at(tl - 1) != 98 { fail("multi-line raw should end with b") }
 
     // ---- Windows paths, the other place doubling hurts ----
     eq("windows path", r"C:\Users\test\file.txt", "C:\\Users\\test\\file.txt")
