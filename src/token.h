@@ -7,6 +7,7 @@ typedef enum {
     TOKEN_INT_LIT,          /* 42, 0xFF, 0b1010 */
     TOKEN_FLOAT_LIT,        /* 3.14, 1.0e-5 */
     TOKEN_STRING_LIT,       /* "hello" */
+    TOKEN_RAWSTRING_LIT,    /* r"\d+" or r'\d+' — no escape processing */
     TOKEN_CHAR_LIT,         /* 'a' */
     TOKEN_TRUE,             /* true */
     TOKEN_FALSE,            /* false */

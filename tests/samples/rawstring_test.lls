@@ -1,0 +1,99 @@
+// rawstring_test.lls — r"..." and r'...' raw string literals.
+//
+// A normal string literal processes escapes, and the scanner rejects unknown
+// ones, so a regex has to be written with every backslash doubled: "\\d+" to
+// mean \d+. That is noisy, and it is a silent-error hazard in one direction --
+// "\\\\d" quietly means "a literal backslash then d", which still compiles and
+// still matches something, just not what was intended.
+//
+// Raw strings process nothing: a backslash is a byte. Two quote flavours
+// because a raw string cannot contain its own delimiter; between them they
+// cover everything except content with BOTH quote kinds, which falls back to an
+// ordinary escaped string (i.e. to the previous behaviour, not to something
+// worse). That gap is asserted at the bottom so it stays a known, documented
+// limit rather than a surprise.
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+
+int failures = 0
+
+def fail(Str msg) {
+    @print(f"FAIL {msg}")
+    failures = failures + 1
+}
+
+def eq(Str label, Str got, Str want) {
+    if got != want { fail(f"{label}: got '{got}' want '{want}'") }
+}
+
+def main() -> int {
+    // ---- the raw form and the escaped form must produce identical bytes ----
+    eq("backslash-d", r"\d+", "\\d+")
+    eq("many escapes", r"\d{4}-\d{2}-\d{2}", "\\d{4}-\\d{2}-\\d{2}")
+    eq("lone backslash", r"\", "\\")
+    eq("double backslash is TWO bytes", r"\\", "\\\\")
+    eq("single quotes inside double", r"it's", "it's")
+    eq("double quotes inside single", r'say "hi"', "say \"hi\"")
+    eq("no escape processing at all", r"\n\t\r", "\\n\\t\\r")
+
+    // ---- length is the byte count, not the escaped count ----
+    if r"\d".len() != 2 { fail(f"r\"\\d\" length = {r"\d".len()}, want 2") }
+    if r"\n".len() != 2 { fail("r-backslash-n should be 2 bytes, not 1") }
+    if "\n".len()  != 1 { fail("escaped newline should still be 1 byte") }
+
+    // ---- empty raw strings ----
+    if r"".len() != 0 { fail("empty raw double-quoted should be 0") }
+    if r''.len() != 0 { fail("empty raw single-quoted should be 0") }
+
+    // ---- they work where a Str works: as a regex pattern ----
+    Regex rx = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")!
+    Str date = "2026-08-09"
+    match rx.caps(&date) {
+        Some(c) => {
+            match c.slice(1) { Some(s) => { eq("year", s.to_str(), "2026") } None => { fail("year absent") } }
+            match c.slice(3) { Some(s) => { eq("day",  s.to_str(), "09")   } None => { fail("day absent") } }
+        }
+        None => { fail("raw pattern did not match") }
+    }
+
+    // The Apache-log shape: quotes in the pattern, so the single-quoted raw
+    // form is the one that works. This is the case that motivated having two.
+    Regex log = re.compile(r'^(\S+) \[([^\]]+)\] "(\S+) (\S+)" (\d{3})$')!
+    Str line = "10.1.2.3 [07/Aug/2026] \"GET /api\" 200"
+    match log.caps(&line) {
+        Some(c) => {
+            match c.slice(3) { Some(s) => { eq("method", s.to_str(), "GET") } None => { fail("method absent") } }
+            match c.slice(5) { Some(s) => { eq("status", s.to_str(), "200") } None => { fail("status absent") } }
+        }
+        None => { fail("raw access-log pattern did not match") }
+    }
+
+    // ---- multi-line raw string (line breaks are allowed, as in "...") ----
+    Str two = r"a
+b"
+    if two.len() != 3 { fail(f"multi-line raw length = {two.len()}, want 3") }
+
+    // ---- Windows paths, the other place doubling hurts ----
+    eq("windows path", r"C:\Users\test\file.txt", "C:\\Users\\test\\file.txt")
+
+    // ---- the known gap, pinned ----
+    // Content with BOTH quote kinds cannot be a raw string in either flavour;
+    // an ordinary escaped string is the documented fallback. If a counted or
+    // triple-quoted form is ever added, this assertion is where to revisit.
+    Str both = "href=[\"']([^\"']*)[\"']"
+    if both.len() != 21 { fail(f"both-quote fallback length = {both.len()}") }
+    Regex any = re.compile(both)!
+    Str h1 = "href=\"/a\""
+    Str h2 = "href='/b'"
+    if !any.matches?(&h1) { fail("both-quote pattern should match double-quoted") }
+    if !any.matches?(&h2) { fail("both-quote pattern should match single-quoted") }
+
+    if failures == 0 {
+        @print("ALL PASS")
+    } else {
+        @print(f"{failures} FAILURE(S)")
+    }
+    return failures
+}

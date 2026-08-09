@@ -1,0 +1,151 @@
+// regex_group_limit.lls — the capture-group ceiling must be a diagnostic, not
+// an out-of-bounds write.
+//
+// runtime/ls_regex.c stores capture offsets in `int saved[MAX_GROUPS * 2]`
+// (MAX_GROUPS 17, so slots 0..33 are legal: group 0 plus captures 1..16).
+// Group N writes slots N*2 and N*2+1, so group 17 already writes past the end.
+// Nothing on the path enforced that: neither the group allocator
+// (`++c->group_counter`), nor the recorded count (`re->n_groups = ...`), nor
+// the emitted slot index (`emit(re, OP_SAVE, group_id * 2, 0)`), nor the two
+// stores that actually execute it (`t.saved[in->operand_a] = pos` and
+// `match_saved[in->operand_a] = pos`) — a grep for a bound on operand_a found
+// zero hits. re_slot_count() does clamp, which is why thread propagation was
+// safe and only the SAVE store corrupted memory.
+//
+// Observed before the fix: 17 groups "worked" (the two out-of-range ints land
+// in the next ReThread's pc field — silent corruption), 18+ groups crashed the
+// process with rc=127 and lost all buffered output.
+//
+// The ceiling therefore has to be rejected at COMPILE time. Not at run time:
+// OP_SAVE is the hottest store in the VM, and silently clamping the group
+// would hand back wrong offsets instead of an error.
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+
+int failures = 0
+
+def fail(Str msg) {
+    @print(f"FAIL {msg}")
+    failures = failures + 1
+}
+
+// Build "^(a)(b)(c)...$" with `k` capture groups, plus the matching subject.
+def pattern_with(int k) -> Str {
+    Str letters = "abcdefghijklmnopqrstuvwxyz"
+    Str pat = "^"
+    int i = 0
+    while i < k {
+        pat.push_str("(")
+        pat.push_str(letters.substr(i, 1))
+        pat.push_str(")")
+        i = i + 1
+    }
+    pat.push_str("$")
+    return pat
+}
+
+def subject_with(int k) -> Str {
+    Str letters = "abcdefghijklmnopqrstuvwxyz"
+    Str t = ""
+    int i = 0
+    while i < k {
+        t.push_str(letters.substr(i, 1))
+        i = i + 1
+    }
+    return t
+}
+
+def main() -> int {
+    Str NEED = "capture group"   // literals cannot be borrowed directly
+
+    // ---- at or below the ceiling: must work, and every group must read back ----
+    int k = 1
+    while k <= 16 {
+        Str pat = pattern_with(k)
+        Str txt = subject_with(k)
+        match re.compile(pat, 0) {
+            Ok(rx) => {
+                if !rx.matches?(&txt) { fail(f"{k} groups should match") }
+                if rx.group_count() != k { fail(f"{k} groups: group_count={rx.group_count()}") }
+                // every group participates and is one byte long
+                int j = 1
+                while j <= k {
+                    match rx.group_span(j) {
+                        Some(sp) => { if sp.len != 1 { fail(f"{k} groups: g{j} len={sp.len}") } }
+                        None     => { fail(f"{k} groups: g{j} absent") }
+                    }
+                    j = j + 1
+                }
+            }
+            Err(e) => { fail(f"{k} groups rejected: {e}") }
+        }
+        k = k + 1
+    }
+
+    // ---- above the ceiling: must be a clean Err, not a crash ----
+    // 17 is the first offending count (it writes saved[34..35]); it used to
+    // "pass" by silently corrupting adjacent memory, which is why it is
+    // asserted here explicitly rather than starting at 18.
+    k = 17
+    while k <= 20 {
+        match re.compile(pattern_with(k), 0) {
+            Ok(rx) => { fail(f"{k} groups was accepted; the ceiling is 16") }
+            Err(e) => {
+                if !e.contains?(&NEED) {
+                    fail(f"{k} groups: unhelpful message '{e}'")
+                }
+            }
+        }
+        k = k + 1
+    }
+
+    // ---- non-capturing groups must NOT count against the ceiling ----
+    // 20 groups, all (?:...), so zero capture groups are allocated.
+    Str nc = "^"
+    Str nctxt = ""
+    Str letters = "abcdefghijklmnopqrstuvwxyz"
+    int m = 0
+    while m < 20 {
+        nc.push_str("(?:")
+        nc.push_str(letters.substr(m, 1))
+        nc.push_str(")")
+        nctxt.push_str(letters.substr(m, 1))
+        m = m + 1
+    }
+    nc.push_str("$")
+    match re.compile(nc, 0) {
+        Ok(rx) => {
+            if !rx.matches?(&nctxt) { fail("20 non-capturing groups should match") }
+            if rx.group_count() != 0 { fail(f"non-capturing: group_count={rx.group_count()}") }
+        }
+        Err(e) => { fail(f"20 non-capturing groups rejected: {e}") }
+    }
+
+    // ---- named groups share the same counter, so the ceiling applies ----
+    Str named = "^"
+    int q = 0
+    while q < 17 {
+        named.push_str("(?<g")
+        named.push_str(letters.substr(q, 1))
+        named.push_str(">")
+        named.push_str(letters.substr(q, 1))
+        named.push_str(")")
+        q = q + 1
+    }
+    named.push_str("$")
+    match re.compile(named, 0) {
+        Ok(rx) => { fail("17 named groups was accepted; the ceiling is 16") }
+        Err(e) => {
+            if !e.contains?(&NEED) { fail(f"named: unhelpful message '{e}'") }
+        }
+    }
+
+    if failures == 0 {
+        @print("ALL PASS")
+    } else {
+        @print(f"{failures} FAILURE(S)")
+    }
+    return failures
+}

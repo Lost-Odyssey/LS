@@ -87,6 +87,8 @@
   <a class="item" href="#en-match">match</a>
   <a class="item" href="#en-bits">bit-pattern match</a>
   <div class="group">Errors</div>
+  <a class="item" href="#li-raw">raw strings</a>
+  <a class="item" href="#fn-defaults">default parameters</a>
   <a class="item" href="#er-types">Option / Result</a>
   <a class="item" href="#er-try">try operator</a>
   <a class="item" href="#er-bang">force-unwrap !</a>
@@ -506,6 +508,51 @@ b.tag()           <span class="c">// "inherent"</span>
   but they get first-class ergonomics: the <code>try</code> operator, the <code>!</code>
   force-unwrap, and a family of combinators, so error handling stays terse without hiding
   control flow.</p>
+
+  <section id="li-raw">
+    <h2>Raw string literals</h2>
+    <p>A normal string literal processes escape sequences, and the scanner <em>rejects</em> ones it
+    does not recognise — so <code>"\d"</code> is an error and a regex has to be written with every
+    backslash doubled. <code>r"..."</code> and <code>r'...'</code> process nothing: a backslash is
+    just a byte.</p>
+    <div class="ex"><pre><span class="k">import</span> std.core.str
+
+<span class="t">Str</span> a = r<span class="s">"\d{4}-\d{2}"</span>       <span class="c">// 12 bytes, backslashes intact</span>
+<span class="t">Str</span> b = <span class="s">"\\d{4}-\\d{2}"</span>      <span class="c">// identical bytes, written the hard way</span>
+<span class="t">Str</span> c = r<span class="s">"C:\Users\test"</span>       <span class="c">// Windows paths, same win</span>
+<span class="t">Str</span> d = r<span class="s">'he said "hi"'</span>        <span class="c">// single-quoted: content may contain "</span>
+<span class="t">Str</span> e = r<span class="s">"it's fine"</span>           <span class="c">// double-quoted: content may contain '</span>
+
+<span class="c">// r"\n" is TWO bytes (backslash, n). "\n" is ONE (a newline).</span></pre></div>
+    <p>Line breaks are allowed inside either form, so these double as multi-line raw strings. The
+    <code>r</code> prefix is only special immediately before a quote — <code>r</code> remains an
+    ordinary identifier everywhere else, including as a <code>match</code> binder.</p>
+    <p><strong>The one gap.</strong> A raw string cannot contain its own delimiter, so content that
+    needs <em>both</em> quote kinds — a pattern like <code>href=["']([^"']*)["']</code> — cannot be
+    written as a raw string in either flavour. Use an ordinary escaped string there; only the quotes
+    need escaping, and that is exactly what you would have written before raw strings existed.</p>
+    <p>Escaped strings keep their advantage when you <em>want</em> escape processing:
+    <code>"a\tb"</code> is a real tab, <code>r"a\tb"</code> is a backslash and a <code>t</code>.
+    There is no raw f-string — interpolation and raw are deliberately not combined.</p>
+  </section>
+
+  <section id="fn-defaults">
+    <h2>Default parameter values</h2>
+    <p>A parameter may carry a default. Callers omitting trailing arguments get the declared values.
+    The default must be a <strong>literal</strong> — a number, string, <code>bool</code>,
+    <code>nil</code>, a vec literal <code>[..]</code>, or a struct literal <code>Foo{..}</code>; an
+    arbitrary expression is rejected with a message saying so.</p>
+    <div class="ex"><pre><span class="k">def</span> pad(<span class="t">Str</span> s, <span class="t">int</span> width, <span class="t">Str</span> fill = <span class="s">" "</span>) -&gt; <span class="t">Str</span> { <span class="c">/* ... */</span> }
+
+pad(<span class="s">"x"</span>, <span class="n">8</span>)              <span class="c">// fill == " "</span>
+pad(<span class="s">"x"</span>, <span class="n">8</span>, <span class="s">"."</span>)         <span class="c">// fill == "."</span>
+
+<span class="c">// Only trailing arguments may be omitted; there is no way to skip a middle one.</span></pre></div>
+    <p>This works for module functions too, which is how <code>std.text.regex</code>'s
+    <code>flags</code> argument became optional — <code>re.compile(r"^\d+$")</code> needs no second
+    argument. It composes with <code>!</code> on the result, which is why the everyday shape of a
+    compiled regex is one line rather than a <code>match</code> wrapper.</p>
+  </section>
 
   <section id="er-types">
     <h2><code>Option(T)</code> / <code>Result(T, E)</code></h2>

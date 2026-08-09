@@ -1232,9 +1232,60 @@ never freed); only the <code>fields</code>/<code>funcs</code> arrays are heap-ow
 <!-- ===================== REGEX ===================== -->
 <section id="regex">
 <h2>regex<span class="imp">import std.text.regex as re</span></h2>
-<p class="purpose">Regular expressions (Pike-VM NFA backend). Invalid patterns return false/empty/0 — never crash. Group nesting is capped at 256 levels; a deeper pattern is rejected as invalid.</p>
-<p>Flags (OR together, or inline <code>(?i)</code>/<code>(?m)</code>/<code>(?s)</code>):
-<code>LS_RE_IGNORECASE=1</code>, <code>LS_RE_MULTILINE=2</code>, <code>LS_RE_DOTALL=4</code>.</p>
+<p class="purpose">Regular expressions, Pike-VM NFA backend — the RE2 family, same architecture as Go's
+<code>regexp</code> and Rust's <code>regex</code> crate. <strong>Linear time, no backtracking</strong>: there is no
+input that makes matching blow up exponentially, which is why the classic
+<code>(a+)+$</code> catastrophe finishes in microseconds here and hangs a backtracker for minutes.
+The price is that backreferences cannot exist (they require backtracking) — see “What the syntax
+supports” below. Invalid patterns come back as an error, never a crash.</p>
+
+<p><strong>Write patterns as raw strings.</strong> A normal string literal processes escapes, so
+<code>\d</code> has to be doubled; <code>r"..."</code> and <code>r'...'</code> pass every byte through
+untouched. Use the single-quoted form when the pattern itself contains <code>"</code>, which access-log
+and HTML patterns usually do. See <a href="#str">Raw strings</a> for the one case neither form covers.</p>
+<div class="ex"><pre><span class="c">// same pattern, three ways to write it</span>
+<span class="s">"^(\\d{4})-(\\d{2})$"</span>      <span class="c">// doubled: legal, noisy, and "\\\\d" quietly means something else</span>
+r<span class="s">"^(\d{4})-(\d{2})$"</span>       <span class="c">// raw — reads exactly like the pattern</span>
+r<span class="s">'^"(\S+)" (\d{3})$'</span>        <span class="c">// raw, single-quoted, so the pattern can contain "</span></pre></div>
+
+<p><strong>Flags</strong> are a bitmask; OR them together. Every one also has an inline form that needs
+no flags argument at all, and <code>flags</code> defaults to <code>0</code>, so most calls pass nothing.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">re.IGNORECASE</span> = 1</td><td class="d">Case-insensitive. Inline: <code>(?i)</code>.</td></tr>
+<tr><td class="s"><span class="sig">re.MULTILINE</span> = 2</td><td class="d"><code>^</code> and <code>$</code> also match at line boundaries. Inline: <code>(?m)</code>.</td></tr>
+<tr><td class="s"><span class="sig">re.DOTALL</span> = 4</td><td class="d"><code>.</code> also matches <code>\n</code>. Inline: <code>(?s)</code>.</td></tr>
+</table>
+<div class="ex"><pre>re.compile(r<span class="s">"^abc$"</span>)                              <span class="c">// flags omitted == 0</span>
+re.compile(r<span class="s">"^abc$"</span>, re.IGNORECASE)               <span class="c">// named constant</span>
+re.compile(r<span class="s">"^a.c$"</span>, re.IGNORECASE | re.DOTALL)   <span class="c">// composed</span>
+re.compile(r<span class="s">"(?i)^abc$"</span>)                          <span class="c">// or inline, no argument needed</span></pre></div>
+
+<h3>What the syntax supports</h3>
+<p>Verified against the engine rather than transcribed from another dialect — a few things that look
+standard are not here.</p>
+<table class="api">
+<tr><td class="s"><strong>Supported</strong></td><td class="d">
+<code>.</code> <code>*</code> <code>+</code> <code>?</code> <code>|</code> <code>^</code> <code>$</code> ·
+<code>{n}</code> <code>{n,}</code> <code>{n,m}</code> · non-greedy <code>*?</code> <code>+?</code> ·
+classes <code>[abc]</code> <code>[^abc]</code> <code>[a-z0-9]</code> ·
+<code>\d \D \w \W \s \S</code> · <code>\b \B</code> · <code>\A \Z</code> · <code>\xHH</code> ·
+escaped punctuation <code>\. \+ \( \\</code> ·
+groups <code>(...)</code>, non-capturing <code>(?:...)</code>, named <code>(?&lt;name&gt;...)</code> ·
+lookahead <code>(?=...)</code> and <code>(?!...)</code></td></tr>
+<tr><td class="s"><strong>Not supported</strong></td><td class="d">
+<code>\1</code>–<code>\9</code> <strong>backreferences</strong> — rejected at compile time; they need
+backtracking, which is exactly what this engine does not do. Capture the group and compare the text
+yourself.<br>
+<strong>Lookbehind</strong> <code>(?&lt;=...)</code> — rejected (it collides with named-group syntax).<br>
+<code>(?P&lt;name&gt;...)</code> — use <code>(?&lt;name&gt;...)</code>.</td></tr>
+<tr><td class="s"><strong>Limits</strong></td><td class="d">
+<strong>16 capture groups</strong> — a 17th is a compile error, because capture offsets live in a
+fixed slot array. <code>(?:...)</code> does not count toward it, so wrap grouping you do not need to
+capture.<br>
+Group nesting is capped at 256 levels; deeper is rejected.</td></tr>
+</table>
+<p>An unrecognised <em>letter</em> escape is the letter itself (<code>r"\q"</code> matches
+<code>q</code>) — the same rule that makes <code>\.</code> a literal dot.</p>
 <table class="api">
 <tr><td class="s"><span class="sig">def matches(Str text, Str pattern) -&gt; bool</span></td><td class="d">True if pattern appears anywhere.</td></tr>
 <tr><td class="s"><span class="sig">def full_match(Str text, Str pattern) -&gt; bool</span></td><td class="d">True if the whole text matches (anchored).</td></tr>
@@ -1340,14 +1391,99 @@ invalidates the offsets in general, so refusing is right for almost all of them;
 case is <code>c_str()</code>, which looks read-only but takes <code>&amp;!self</code> and may reallocate. Closing
 either gap needs lifetimes, which LS does not have. Cost is unmeasurable — one pointer compare against a
 match that already dominates.</p>
-<div class="ex"><pre><span class="k">match</span> re.compile(<span class="s">"([a-z]+)=([0-9]+)"</span>, <span class="n">0</span>) {
-    <span class="t">Ok</span>(r) =&gt; {
-        <span class="k">if</span> r.matches?(&amp;line) {
-            <span class="k">match</span> r.group(&amp;line, <span class="n">1</span>) { <span class="t">Some</span>(k) =&gt; @print(k)  <span class="t">None</span> =&gt; {} }
-        }
-    }  <span class="c">// r auto-releases the compiled handle here</span>
-    <span class="t">Err</span>(e) =&gt; { @print(e) }
+<div class="ex"><pre><span class="c">// Everyday form: the pattern is a literal, so a compile failure is a bug in
+// your source, not a runtime condition -- force-unwrap it and keep the body flat.</span>
+<span class="t">Regex</span> rx = re.compile(r<span class="s">"([a-z]+)=([0-9]+)"</span>)!
+<span class="k">match</span> rx.caps(&amp;line) {
+    <span class="t">Some</span>(c) =&gt; { @print(c.slice(<span class="n">1</span>)!.to_str()) }
+    <span class="t">None</span> =&gt; {}
+}   <span class="c">// rx auto-releases the compiled handle at scope exit</span>
+
+<span class="c">// When the pattern comes from user input or config, handle the Err instead.</span>
+<span class="k">match</span> re.compile(user_pattern) {
+    <span class="t">Ok</span>(rx2) =&gt; { <span class="k">if</span> rx2.matches?(&amp;line) { @print(<span class="s">"hit"</span>) } }
+    <span class="t">Err</span>(e)  =&gt; { @print(f<span class="s">"bad pattern: {e}"</span>) }
 }</pre></div>
+
+<h4>Which groups actually took part</h4>
+<p><code>group_count()</code> answers a question about the <em>pattern</em> — it is a compile-time
+property and never changes. Whether a given group <em>participated in this match</em> is a different
+fact, and with optional groups or alternation it varies line by line. The judge is
+<code>len(i) &gt;= 0</code>: an absent group reports <code>-1</code>, and a group that took part but
+matched zero bytes reports <code>0</code>.</p>
+<div class="ex"><pre><span class="c">// three sometimes-present groups: an optional query string, and an
+// alternation where the byte count is either a number or a dash</span>
+<span class="t">Regex</span> rx = re.compile(r<span class="s">"^(GET|POST) (/[a-z/]*)(\?[a-z0-9=&amp;]+)? ([0-9]{3}) (?:([0-9]+)|(-))$"</span>)!
+
+<span class="c">// GET /api/orders?id=42 200 1532
+//   g1='GET'  g2='/api/orders'  g3='?id=42'  g4='200'  g5='1532'  g6=absent
+// GET /health 200 15
+//   g1='GET'  g2='/health'      g3=absent    g4='200'  g5='15'    g6=absent
+// POST /api/carts 204 -
+//   g1='POST' g2='/api/carts'   g3=absent    g4='204'  g5=absent  g6='-'</span>
+
+<span class="k">match</span> rx.caps(&amp;line) {
+    <span class="t">Some</span>(c) =&gt; {
+        <span class="k">if</span> c.len(<span class="n">3</span>) &gt;= <span class="n">0</span> { <span class="c">// the request carried a query string</span> }
+        <span class="k">if</span> c.len(<span class="n">5</span>) &gt;= <span class="n">0</span> {
+            <span class="c">// numeric branch. The `!` is safe here: len &gt;= 0 already proved it took part.</span>
+            <span class="k">match</span> c.slice(<span class="n">5</span>)!.to_int() { <span class="t">Ok</span>(n) =&gt; { total = total + n }  <span class="t">Err</span>(e) =&gt; {} }
+        }
+    }
+    <span class="t">None</span> =&gt; {}
+}</pre></div>
+<p><strong>Absent is not empty.</strong> <code>r"^a(x*)b(y+)?$"</code> against <code>"ab"</code> gives
+group 1 <code>len 0</code> (it participated, matching nothing) and group 2 <code>len -1</code> (never
+reached). Testing <code>len(i) &gt; 0</code> instead of <code>&gt;= 0</code> conflates the two, and so
+does checking whether the extracted string is <code>""</code> — a real distinction when parsing CSV,
+HTTP headers or config files, where “present but empty” and “not present” mean different things.</p>
+<p>To count how many groups took part, loop to <code>group_count()</code> and tally. There is no direct
+accessor, deliberately: <em>which</em> ones are missing is the more useful answer, and a count would
+throw that away. The loop is not a cost worth engineering around — on a four-group pattern it measured
+~16&nbsp;ns against a ~626&nbsp;ns match, i.e. 1.5%.</p>
+
+<h3>Idioms</h3>
+<p>Each snippet assumes <code>Regex rx = re.compile(...)!</code> once, outside the loop.</p>
+<div class="ex"><pre><span class="c">// FILTER -- does the line mention it at all. is_match is the narrow-contract
+// sibling of matches?: cheaper, but do not read sub-groups after it.</span>
+<span class="k">if</span> rx.is_match(&amp;line) { hits = hits + <span class="n">1</span> }
+
+<span class="c">// VALIDATE one of several alternatives. This is where a regex genuinely beats
+// hand-written Str code: one pass, instead of one scan per alternative.</span>
+<span class="t">Regex</span> lvl = re.compile(r<span class="s">" (INFO|WARN|ERROR|DEBUG) "</span>)!
+<span class="k">if</span> lvl.is_match(&amp;line) { ok = ok + <span class="n">1</span> }
+
+<span class="c">// LENGTH or POSITION only -- takes no text, allocates nothing.</span>
+<span class="k">if</span> rx.matches?(&amp;line) { total = total + rx.group_span(<span class="n">1</span>)!.len }
+
+<span class="c">// COMPARE bytes without building a Str.</span>
+<span class="k">if</span> rx.group_slice(&amp;line, <span class="n">2</span>)!.eq_str(&amp;WANTED) { n = n + <span class="n">1</span> }
+
+<span class="c">// EXTRACT AND CONVERT -- parses straight out of the borrowed slice, no Str.</span>
+<span class="k">match</span> rx.caps(&amp;line) {
+    <span class="t">Some</span>(c) =&gt; { <span class="k">match</span> c.slice(<span class="n">1</span>)!.to_int() { <span class="t">Ok</span>(v) =&gt; { sum = sum + v }  <span class="t">Err</span>(e) =&gt; {} } }
+    <span class="t">None</span> =&gt; {}
+}
+
+<span class="c">// ...or as one expression, when a default for the no-match case is fine.
+// and_then is lowered into the match arm -- no closure value or env is built.</span>
+sum = sum + rx.caps(&amp;line).and_then(<span class="t">int</span>)(|c| c.slice(<span class="n">1</span>)!.to_int().ok()).unwrap_or(<span class="n">0</span>)
+
+<span class="c">// KEEP the value past the text's lifetime -- this is when you do want an owned Str.</span>
+<span class="k">match</span> rx.group(&amp;line, <span class="n">1</span>) { <span class="t">Some</span>(g) =&gt; { collected.push(g) }  <span class="t">None</span> =&gt; {} }
+
+<span class="c">// ALL matches in one text: the free functions walk every match and cache the
+// compiled pattern per thread, so a compiled handle is not needed for this shape.</span>
+<span class="t">Vec</span>(<span class="t">StrSlice</span>) all = re.capture_all_slices(text, r<span class="s">"(\w+)=(\d+)"</span>)</pre></div>
+
+<p><strong>When not to reach for a regex.</strong> Measured on log-shaped work, per call: filtering on
+a literal is 24.6&nbsp;ns against 18.0&nbsp;ns for <code>Str.contains?</code> — a wash, so pick whichever
+reads better. Validating one-of-four alternatives is 37.4&nbsp;ns against 98.3&nbsp;ns hand-written, so
+the regex <em>wins</em> 2.6×. But pulling a known field out of a known format is 104.8&nbsp;ns against
+43.0&nbsp;ns for <code>find</code> + <code>subslice</code> — hand-written stays ~2.4× ahead, because you
+know the structure and the engine has to rediscover it every call. Reach for the regex when the shape
+is genuinely variable or needs validating; hand-write when the format is fixed and you are in a hot
+loop.</p>
 
 <h3>Zero-allocation spans and slices</h3>
 <p class="purpose"><em>This section covers the <strong>free functions</strong>, which are find-all shaped:

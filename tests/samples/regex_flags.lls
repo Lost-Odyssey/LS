@@ -1,0 +1,90 @@
+// regex_flags.lls — named flag constants and the defaulted flags argument.
+//
+// Two ergonomic gaps, both of which showed up as documentation that did not
+// work. docs/stdlib.html and regex.lls's own header comment listed
+// LS_RE_IGNORECASE=1 / LS_RE_MULTILINE=2 / LS_RE_DOTALL=4 as if they were
+// names you could use, but they existed only as C macros in
+// runtime/ls_regex.h -- writing `re.compile(p, LS_RE_IGNORECASE)` was
+// "undefined variable". So callers had to pass the magic numbers.
+//
+// And `flags` had no default, so every call had to end in `, 0` even though
+// LS supports literal parameter defaults (`def f(int a, int b = 3)`), which is
+// itself an undocumented language feature.
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+
+int failures = 0
+
+def fail(Str msg) {
+    @print(f"FAIL {msg}")
+    failures = failures + 1
+}
+
+def want(Str label, Str pat, int flags, Str text, bool expect) {
+    match re.compile(pat, flags) {
+        Ok(rx) => {
+            Str s = text
+            bool m = rx.matches?(&s)
+            if m != expect { fail(f"{label}: vs '{s}' got {m} want {expect}") }
+        }
+        Err(e) => { fail(f"{label}: rejected -> {e}") }
+    }
+}
+
+def main() -> int {
+    // ---- the constants exist and carry the documented values ----
+    if re.IGNORECASE != 1 { fail(f"IGNORECASE = {re.IGNORECASE}, want 1") }
+    if re.MULTILINE  != 2 { fail(f"MULTILINE = {re.MULTILINE}, want 2") }
+    if re.DOTALL     != 4 { fail(f"DOTALL = {re.DOTALL}, want 4") }
+
+    // ---- and they actually reach the engine ----
+    want("no flags, case matters ", "^abc$", 0,               "ABC",  false)
+    want("IGNORECASE             ", "^abc$", re.IGNORECASE,   "ABC",  true)
+    want("DOTALL off: . vs \\n    ", "^a.c$", 0,               "a\nc", false)
+    want("DOTALL on               ", "^a.c$", re.DOTALL,       "a\nc", true)
+    want("MULTILINE off           ", "^b$",   0,               "a\nb", false)
+    want("MULTILINE on            ", "^b$",   re.MULTILINE,    "a\nb", true)
+
+    // ---- they compose with bitwise or ----
+    want("IGNORECASE|DOTALL       ", "^a.c$", re.IGNORECASE | re.DOTALL, "A\nC", true)
+    want("all three               ", "^b.d$",
+         re.IGNORECASE | re.MULTILINE | re.DOTALL, "a\nB\nD", true)
+
+    // ---- flags defaults to 0, so the argument can be omitted entirely ----
+    match re.compile("^([a-z]+)=([0-9]+)$") {
+        Ok(rx) => {
+            Str line = "count=42"
+            match rx.caps(&line) {
+                Some(c) => {
+                    match c.slice(1) {
+                        Some(sl) => { if sl.to_str() != "count" { fail("one-arg compile: g1 wrong") } }
+                        None     => { fail("one-arg compile: g1 absent") }
+                    }
+                    match c.slice(2) {
+                        Some(sl) => { if sl.to_str() != "42" { fail("one-arg compile: g2 wrong") } }
+                        None     => { fail("one-arg compile: g2 absent") }
+                    }
+                }
+                None => { fail("one-arg compile: did not match") }
+            }
+            // omitting flags must mean 0, not some other level
+            Str upper = "COUNT=42"
+            if rx.matches?(&upper) { fail("one-arg compile: should be case-sensitive") }
+        }
+        Err(e) => { fail(f"one-arg compile rejected -> {e}") }
+    }
+
+    // ---- and it composes with force-unwrap, which is the flat idiom ----
+    Regex rx2 = re.compile("^[0-9]+$")!
+    Str n = "12345"
+    if !rx2.matches?(&n) { fail("flat construction: should match") }
+
+    if failures == 0 {
+        @print("ALL PASS")
+    } else {
+        @print(f"{failures} FAILURE(S)")
+    }
+    return failures
+}

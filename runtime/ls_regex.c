@@ -313,11 +313,45 @@ typedef struct {
    patterns never nest anywhere near this; found by stdfuzz (crash at ~2000). */
 #define RE_MAX_DEPTH 256
 
+/* Value of one hex digit. Caller must have checked isxdigit(). */
+static int hex_val(unsigned char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    return ch - 'A' + 10;
+}
+
 static void comp_error(Compiler *c, const char *msg) {
     if (!c->had_error) {
         snprintf(c->error, sizeof(c->error), "%s", msg);
         c->had_error = 1;
     }
+}
+
+/* Allocate the next capture-group id, or -1 (with a diagnostic already set)
+   when the pattern would exceed what saved[] can hold.
+
+   Group N occupies slots N*2 and N*2+1 of `int saved[MAX_GROUPS * 2]`, so the
+   last usable id is MAX_GROUPS - 1: group MAX_GROUPS writes one int past the
+   end. Nothing used to enforce that anywhere on the path -- not this
+   allocation, not `re->n_groups`, not the emitted OP_SAVE slot index, and not
+   the two stores that finally commit it -- so a 17-group pattern silently
+   corrupted the adjacent ReThread's pc field and 18+ killed the process
+   (rc=127, all buffered output lost).
+
+   The check belongs HERE, at the single allocation point, for two reasons:
+   the stores that would overflow (`t.saved[in->operand_a]` in the thread-list
+   VM, `match_saved[in->operand_a]` in the one-pass VM) are the hottest writes
+   in the engine and must not grow a per-execution bounds check; and clamping
+   the id instead of rejecting the pattern would quietly return offsets
+   belonging to a different group, which is worse than an error. Pinned by
+   tests/samples/regex_group_limit.lls. */
+static int re_alloc_group(Compiler *c) {
+    if (c->group_counter + 1 >= MAX_GROUPS) {
+        comp_error(c, "too many capture groups (max 16); "
+                      "use (?:...) for grouping that does not capture");
+        return -1;
+    }
+    return ++c->group_counter;
 }
 
 static int  emit(ReHandle *re, ReOpCode op, int a, int b) {
@@ -742,6 +776,44 @@ static int parse_escape(Compiler *c) {
         case 't': return emit(re, OP_CHAR, '\t', 0);
         case 'f': return emit(re, OP_CHAR, '\f', 0);
         case 'v': return emit(re, OP_CHAR, '\v', 0);
+
+        /* \xHH — one byte, two hex digits, either case. Must be handled
+           explicitly: the `default` arm below would otherwise turn it into the
+           literal characters "xHH", silently, so `^\x41$` matched the text
+           "x41" instead of "A". */
+        case 'x': {
+            if (c->pos + 1 >= c->pat_len ||
+                !isxdigit((unsigned char)c->pat[c->pos]) ||
+                !isxdigit((unsigned char)c->pat[c->pos + 1])) {
+                comp_error(c, "\\xHH needs exactly two hex digits");
+                return -1;
+            }
+            int hi = hex_val((unsigned char)c->pat[c->pos]);
+            int lo = hex_val((unsigned char)c->pat[c->pos + 1]);
+            c->pos += 2;
+            return emit(re, OP_CHAR, (hi << 4) | lo, 0);
+        }
+
+        /* \1 .. \9 — backreference syntax in every other engine. This one is a
+           Pike-VM: a thread carries only a pc and the capture slots, and the
+           linear-time guarantee comes precisely from never backtracking, so a
+           backreference is not implementable here rather than merely missing.
+           Rejecting is the only honest answer: the `default` arm below used to
+           make `(ab)\1` mean "ab" followed by a literal '1', so it matched
+           "ab1" and not "abab", with rc=0 and no diagnostic. */
+        case '1': case '2': case '3': case '4': case '5':
+        case '6': case '7': case '8': case '9':
+            comp_error(c, "backreference (\\1-\\9) is not supported: this engine "
+                          "never backtracks; capture the group and compare the "
+                          "text yourself");
+            return -1;
+
+        /* Anything else is the literal character. This is what makes `\.`,
+           `\+`, `\(`, `\\` and friends work, and it matches every other
+           engine's treatment of escaped punctuation. It also means an
+           unrecognised letter escape (`\q`) is just that letter -- pinned in
+           tests/samples/regex_escapes.lls so narrowing this to a whitelist
+           would be a deliberate change rather than an accident. */
         default:  return emit(re, OP_CHAR, esc, 0);
     }
 }
@@ -781,7 +853,8 @@ static int parse_atom(Compiler *c) {
                 if (c->pos >= c->pat_len) { comp_error(c, "unclosed named group"); return -1; }
                 c->pos++; /* consume '>' */
                 name[nlen] = '\0';
-                group_id = ++c->group_counter;
+                group_id = re_alloc_group(c);
+                if (group_id < 0) return -1;
                 if (re->n_named < MAX_NAMED) {
                     NamedGroup *ng = &re->named[re->n_named++];
                     strncpy(ng->name, name, NAME_MAX_LEN - 1);
@@ -842,7 +915,8 @@ static int parse_atom(Compiler *c) {
             }
         } else {
             /* regular capturing group */
-            group_id = ++c->group_counter;
+            group_id = re_alloc_group(c);
+            if (group_id < 0) return -1;
         }
 
         int save_open = -1;
