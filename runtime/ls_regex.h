@@ -37,6 +37,15 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start);
 int __ls_regex_cap_start(void *h, int group);   /* byte offset, -1 = absent */
 int __ls_regex_cap_len(void *h, int group);     /* byte length */
 
+/* 1 if (text, text_len) is exactly what the last exec on this handle ran
+   against, 0 otherwise. Captures are offsets, so an accessor handed a
+   different text would slice it at foreign offsets and return a
+   plausible-looking wrong substring; gating on this turns that into a
+   refusal. Pointer identity + length, O(1). A detector, not a proof: a freed
+   text whose allocation is reused at the same address and length is
+   indistinguishable, and detecting that would need lifetimes. */
+int __ls_regex_text_is(void *h, const char *text, int text_len);
+
 /* Number of capture groups in compiled pattern (excluding group 0) */
 int __ls_regex_group_count(void *h);
 

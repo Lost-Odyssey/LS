@@ -4463,6 +4463,19 @@ set_tests_properties(test_regex_group_span PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- std.regex "pass the same text" misuse detection ----
+add_test(
+    NAME test_regex_text_fingerprint
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_text_fingerprint.cmake
+)
+set_tests_properties(test_regex_text_fingerprint PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- std.regex compiled Regex object — JIT + AOT ----
 add_test(
     NAME test_regex_object

@@ -1,0 +1,206 @@
+// regex_text_fingerprint.lls — misuse detection for the "pass the same text"
+// contract on a compiled Regex.
+//
+// The offsets a match produces live in the handle, not in the text, so every
+// accessor that turns them back into bytes has to be handed the text again --
+// and nothing in the type system ties that argument to the text the match
+// actually ran against. The old safety net was only `s + l > text.len()`,
+// which catches a SHORTER unrelated text and nothing else. Handing over a
+// different text of the same length returned a plausible-looking, completely
+// wrong substring, with rc=0 and no diagnostic:
+//
+//     matches?("abc12"); group("99xyz", 1)   ->  Some("99x")
+//
+// The handle now records the (pointer, length) of whatever the last exec ran
+// against, and the byte-producing accessors refuse to answer when it does not
+// match. Two distinct misuses are covered:
+//
+//   1. wrong text passed to group()/group_slice()
+//   2. a stale Caps: the Regex was re-run against another text since, so the
+//      offsets a Caps reads no longer describe the text it is bound to
+//
+// This is a DETECTOR, not a proof. It cannot catch a text that was freed and
+// whose allocation was reused at the same address with the same length, and it
+// deliberately does not try -- that would need lifetimes. What it does buy is
+// that the realistic mistake (handing over another live Str) stops being
+// silent.
+//
+// group_span() is deliberately NOT covered: it takes no text, so it has
+// nothing to be wrong about. It always reports the last match's offsets, which
+// is exactly its contract -- pinned below so nobody "fixes" it into failing.
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+
+int failures = 0
+
+def fail(Str msg) {
+    @print(f"FAIL {msg}")
+    failures = failures + 1
+}
+
+def check_int(Str name, int got, int want) {
+    if got != want { fail(f"{name}: got {got} want {want}") }
+}
+
+def check_str(Str name, Str got, Str want) {
+    if got != want { fail(f"{name}: got '{got}' want '{want}'") }
+}
+
+// Expect Some, and expect the bytes to be `want`.
+def want_some_str(Str name, Option(Str) got, Str want) {
+    match got {
+        Some(g) => { check_str(name, g, want) }
+        None    => { fail(f"{name}: got None, want '{want}'") }
+    }
+}
+
+def main() -> int {
+    Str t1 = "abc12"
+    Str same_len = "99xyz"   // same length; offsets from t1 are meaningless here
+    Str shorter  = "ab"      // caught even by the old length-only net
+    Str other    = "zz7ab"   // also matches, but at DIFFERENT offsets
+
+    match re.compile("([a-z]+)([0-9]+)", 0) {
+        Ok(rx) => {
+            // ---- positive control: correct usage keeps working ----
+            if !rx.matches?(&t1) { fail("t1 should match") }
+            want_some_str("group(t1,1)", rx.group(&t1, 1), "abc")
+            want_some_str("group(t1,2)", rx.group(&t1, 2), "12")
+            match rx.group_slice(&t1, 1) {
+                Some(s) => { check_str("slice(t1,1)", s.to_str(), "abc") }
+                None    => { fail("slice(t1,1) should be Some") }
+            }
+
+            // ---- misuse 1: wrong text, same length ----
+            match rx.group(&same_len, 1) {
+                Some(g) => { fail(f"group(wrong same-length text) returned '{g}', want None") }
+                None    => {}
+            }
+            match rx.group_slice(&same_len, 1) {
+                Some(s) => { fail(f"slice(wrong same-length text) returned '{s.to_str()}', want None") }
+                None    => {}
+            }
+
+            // ---- misuse 1b: wrong text, shorter (the pre-existing net) ----
+            match rx.group(&shorter, 1) {
+                Some(g) => { fail(f"group(shorter text) returned '{g}', want None") }
+                None    => {}
+            }
+
+            // ---- group_span needs no text and is unaffected ----
+            match rx.group_span(1) {
+                Some(sp) => {
+                    check_int("group_span(1).start after misuse", sp.start, 0)
+                    check_int("group_span(1).len after misuse", sp.len, 3)
+                }
+                None => { fail("group_span(1) should still report the last match") }
+            }
+
+            // ---- misuse 2: stale Caps ----
+            match rx.caps(&t1) {
+                Some(c) => {
+                    match c.slice(1) {
+                        Some(s) => { check_str("fresh caps.slice(1)", s.to_str(), "abc") }
+                        None    => { fail("fresh caps.slice(1) should be Some") }
+                    }
+                    check_int("fresh caps.len(1)", c.len(1), 3)
+
+                    // Re-run the same Regex against a different text. `c` is
+                    // now stale: the handle's offsets describe `other`, not
+                    // the text `c` is bound to.
+                    if !rx.matches?(&other) { fail("other should match") }
+
+                    match c.slice(1) {
+                        Some(s) => { fail(f"stale caps.slice(1) returned '{s.to_str()}', want None") }
+                        None    => {}
+                    }
+                    match c.span(1) {
+                        Some(sp) => { fail("stale caps.span(1) should be None") }
+                        None     => {}
+                    }
+                    match c.str(1) {
+                        Some(s) => { fail(f"stale caps.str(1) returned '{s}', want None") }
+                        None    => {}
+                    }
+                    check_int("stale caps.len(1)", c.len(1), -1)
+
+                    // A fresh Caps on the current text works normally -- the
+                    // detector must not have poisoned the handle.
+                    match rx.caps(&other) {
+                        Some(c2) => {
+                            match c2.slice(1) {
+                                Some(s) => { check_str("caps(other).slice(1)", s.to_str(), "zz") }
+                                None    => { fail("caps(other).slice(1) should be Some") }
+                            }
+                        }
+                        None => { fail("caps(other) should be Some") }
+                    }
+                }
+                None => { fail("caps(t1) should be Some") }
+            }
+
+            // ---- find_from re-arms the fingerprint on its own text ----
+            Str multi = "aa11 bb22"
+            if !rx.find_from(&multi, 4) { fail("find_from should match the second pair") }
+            want_some_str("group after find_from", rx.group(&multi, 1), "bb")
+            match rx.group(&t1, 1) {
+                Some(g) => { fail(f"group(t1) after find_from(multi) returned '{g}', want None") }
+                None    => {}
+            }
+        }
+        Err(e) => { fail("compile failed") }
+    }
+
+    // ---- KNOWN LIMITATION, pinned deliberately ----
+    //
+    // The fingerprint is pointer identity, so a subject whose buffer MOVES
+    // between the match and the read reads as a different text and the
+    // accessors report absent -- even though the bytes are unchanged. Any
+    // mutation of the subject invalidates the offsets in general, so refusing
+    // is the right answer for almost all of them; the one byte-preserving
+    // case is `c_str()`, which looks read-only but takes `&!self` and may
+    // reserve(len+1) and reallocate.
+    //
+    // Reachable only when the buffer is exactly full (cap doubles from 8, so
+    // this builds a len==cap==8 Str on purpose). Before the fingerprint this
+    // returned "aaaaaaa"; it is now None. That is a real, if narrow,
+    // behaviour change, and it is asserted here so it stays a specified
+    // property rather than a surprise -- if this line ever starts failing,
+    // someone changed the detector and needs to decide which behaviour they
+    // meant.
+    match re.compile("([a-z]+)([0-9]+)", 0) {
+        Ok(rx5) => {
+            Str full = ""
+            for i in 0..7 { full.push_byte(97) }   // "aaaaaaa"
+            full.push_byte(49)                     // '1' -> len 8 == cap 8
+            if !rx5.matches?(&full) { fail("full-buffer subject should match") }
+            *u8 before = full.as_ptr() as *u8
+            *u8 z = full.c_str()                   // reserve(9) -> reallocates
+            *u8 after = full.as_ptr() as *u8
+            if before == after {
+                // The premise of this case no longer holds; the assertion
+                // below would pass for the wrong reason.
+                fail("expected c_str() to move a full buffer -- probe is stale")
+            }
+            match rx5.group(&full, 1) {
+                Some(g) => { fail(f"moved-buffer group returned '{g}'; the detector cannot see through a realloc, so None is expected") }
+                None    => {}
+            }
+        }
+        Err(e) => { fail("compile of the full-buffer pattern failed") }
+    }
+
+    // ---- the free functions are untouched by any of this ----
+    Str kv = "k=7"
+    Vec(Str) caps = re.capture(kv, "(\\w+)=(\\d+)")
+    check_int("free capture len", caps.len(), 3)
+
+    if failures == 0 {
+        @print("ALL PASS")
+    } else {
+        @print(f"{failures} FAILURE(S)")
+    }
+    return failures
+}

@@ -220,6 +220,31 @@ typedef struct {
     const char   *dfa_only_text;
     int           dfa_only_text_len;
     int           dfa_only_start;
+
+    /* ---- "which text did the last exec run against" fingerprint ----
+       Captures are offsets, not bytes, so every accessor that turns them back
+       into a substring has to be handed the text again -- and nothing ties
+       that argument to the text the match actually ran against. Recording the
+       (pointer, length) the last public exec was given lets those accessors
+       refuse to answer for a different text instead of slicing it at foreign
+       offsets and returning a plausible-looking wrong substring (which is
+       what `group("99xyz", 1)` did after matching "abc12": Some("99x"), rc=0,
+       no diagnostic).
+
+       Set at the ENTRY of __ls_regex_exec / __ls_regex_exec_dfa, before any
+       dispatch, so no early-return path can leave it stale. Deliberately NOT
+       touched by re_dfa_fill_captures's internal re-exec: that replays the
+       same text and must not look like a new call.
+
+       A DETECTOR, NOT A PROOF. It cannot distinguish a freed text whose
+       allocation was reused at the same address and length, and it does not
+       try -- that needs lifetimes, which this language does not have. Two
+       benign false "matches" are also possible and harmless: distinct Str
+       values that share one .rodata literal, and a text mutated between exec
+       and the read without changing pointer or length (whose offsets were
+       already invalid, so refusing is right but not guaranteed). */
+    const char   *last_text;
+    int           last_text_len;
 } ReHandle;
 
 /* Compile failures have no handle to hang an error message on, so this one
@@ -2921,6 +2946,11 @@ int __ls_regex_exec_dfa(void *h, const char *text, int text_len, int start) {
     ReHandle *re = (ReHandle *)h;
     if (!re) return 0;
 
+    /* Record which text this exec ran against, before any dispatch below can
+       return early -- see the last_text comment on ReHandle. */
+    re->last_text     = text;
+    re->last_text_len = text_len;
+
     if (re->lit_is_whole && !(re->flags & LS_RE_IGNORECASE)) {
         /* Tier 1 is engine-agnostic (no SPLIT, no onepass/DFA/general
            distinction applies to it at all) -- delegate rather than
@@ -2948,6 +2978,11 @@ int __ls_regex_exec_dfa(void *h, const char *text, int text_len, int start) {
 int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
     ReHandle *re = (ReHandle *)h;
     if (!re) return 0;
+
+    /* Record which text this exec ran against, before any dispatch below can
+       return early -- see the last_text comment on ReHandle. */
+    re->last_text     = text;
+    re->last_text_len = text_len;
 
     /* Defensive: this handle's captures are about to be fully repopulated
        by one of the two engines below (or the tier-1 literal path just
@@ -2984,6 +3019,20 @@ int __ls_regex_exec(void *h, const char *text, int text_len, int start) {
 
     if (re->onepass) return re_exec_vm_onepass(re, text, text_len, start);
     return re_exec_vm_general(re, text, text_len, start);
+}
+
+/* 1 if (text, text_len) is the exact text the last exec on this handle ran
+   against, 0 otherwise (including a handle that has never been exec'd). The
+   byte-producing accessors in regex.lls gate on this so a wrong text yields
+   None instead of a plausible-looking wrong substring; see the last_text
+   comment on ReHandle for what this can and cannot detect. Pointer identity
+   plus length, not a content compare: this must stay O(1), and a content
+   compare would additionally accept an unrelated text that merely looks the
+   same, which is not the question being asked. */
+int __ls_regex_text_is(void *h, const char *text, int text_len) {
+    ReHandle *re = (ReHandle *)h;
+    if (!re || re->last_text == NULL) return 0;
+    return (re->last_text == text && re->last_text_len == text_len) ? 1 : 0;
 }
 
 int __ls_regex_cap_start(void *h, int group) {
