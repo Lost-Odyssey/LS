@@ -1286,6 +1286,62 @@ Group nesting is capped at 256 levels; deeper is rejected.</td></tr>
 </table>
 <p>An unrecognised <em>letter</em> escape is the letter itself (<code>r"\q"</code> matches
 <code>q</code>) — the same rule that makes <code>\.</code> a literal dot.</p>
+
+<h4>Anchors</h4>
+<p>Four anchors, in two pairs. The difference is whether <code>re.MULTILINE</code> can move them.</p>
+<table class="api">
+<tr><td class="s"><span class="sig">^</span> / <span class="sig">$</span></td><td class="d">Start / end of the text — and, under <code>re.MULTILINE</code>, also after / before every <code>\n</code>.</td></tr>
+<tr><td class="s"><span class="sig">\A</span> / <span class="sig">\Z</span></td><td class="d">Start / end of the text, <strong>always</strong>. <code>re.MULTILINE</code> has no effect on them.</td></tr>
+</table>
+<div class="ex"><pre><span class="c">// text = "abc\ndef", with re.MULTILINE:
+//   ^def   -> true    ^ moved to the second line
+//   \Adef  -> false   \A refuses to move
+//   abc$   -> true    $ moved to the first line's end
+//   abc\Z  -> false   \Z refuses to move</span>
+
+<span class="c">// Use \A...\Z when a pattern must validate the WHOLE input regardless of
+// what flags the caller passes -- ^...$ would silently accept "any one line".</span>
+<span class="t">Regex</span> ip = re.compile(r<span class="s">"\A\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\Z"</span>)!</pre></div>
+<p>With flags at <code>0</code> the two pairs behave identically, so the value of <code>\A</code>/<code>\Z</code>
+is precisely that a stray <code>(?m)</code> cannot change what they mean.</p>
+
+<p><strong><code>$</code> does not match before a trailing newline.</strong> This is worth stating
+because Python and Perl behave the other way, and the difference is silent:</p>
+<div class="ex"><pre><span class="c">// text = "abc\n"
+//   abc$   -> false     (in Python: true)
+//   abc\Z  -> false</span></pre></div>
+<p>So a pattern carried over from Python that relied on <code>$</code> tolerating the newline left on a
+line read from a file will simply stop matching, with no diagnostic. Write <code>\n?$</code>, or
+<code>trim()</code> the line first. Go and Rust agree with LS here.</p>
+<p>Only the uppercase <code>\Z</code> exists. Lowercase <code>\z</code> falls under the
+“unrecognised letter escape is that letter” rule, so <code>r"a\z"</code> matches the two characters
+<code>az</code> — it is not an error. Perl spells the absolute end <code>\z</code> and gives
+<code>\Z</code> the newline-tolerant meaning; LS has one anchor, spelled <code>\Z</code>, with the
+absolute meaning.</p>
+
+<h4>Coming from another language</h4>
+<p>The engine is the RE2 family — architecturally Go's <code>regexp</code> and Rust's
+<code>regex</code> crate — with two deliberate divergences and a mixed surface spelling.</p>
+<table class="api">
+<tr><td class="s">Same as <strong>Go / Rust</strong></td><td class="d">
+Linear time, no backtracking. No backreferences (a consequence of the same decision, not a separate
+omission). <code>$</code> ignores a trailing newline.</td></tr>
+<tr><td class="s">Unlike <strong>Go / Rust</strong></td><td class="d">
+<strong>Lookahead <code>(?=)</code>/<code>(?!)</code> works here</strong> — both of those engines refuse
+it. Lookbehind does not, in any of the three.<br>
+<strong>An unrecognised letter escape is accepted</strong> as that letter; Go, Rust and Python all
+reject it.</td></tr>
+<tr><td class="s">Same as <strong>Python</strong></td><td class="d">
+The absolute end anchor is spelled <code>\Z</code> (Go and Rust spell it <code>\z</code>).</td></tr>
+<tr><td class="s">Migrating <strong>from Python</strong></td><td class="d">
+<code>$</code> no longer tolerates a trailing newline. <code>\1</code>–<code>\9</code> are a compile
+error. <code>\z</code> silently means the letter <code>z</code>.</td></tr>
+<tr><td class="s">Migrating <strong>from Go</strong></td><td class="d">
+<code>(?P&lt;name&gt;)</code> is rejected — use <code>(?&lt;name&gt;)</code>.</td></tr>
+<tr><td class="s">From <strong>anywhere</strong></td><td class="d">
+<strong>16 capture groups</strong> maximum. This is an LS implementation limit, not a property of the
+family; <code>(?:...)</code> does not count toward it.</td></tr>
+</table>
 <table class="api">
 <tr><td class="s"><span class="sig">def matches(Str text, Str pattern) -&gt; bool</span></td><td class="d">True if pattern appears anywhere.</td></tr>
 <tr><td class="s"><span class="sig">def full_match(Str text, Str pattern) -&gt; bool</span></td><td class="d">True if the whole text matches (anchored).</td></tr>
