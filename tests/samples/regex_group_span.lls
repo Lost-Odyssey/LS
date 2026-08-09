@@ -109,6 +109,17 @@ def main() -> int {
                     }
                     // Rust's c[1].len() + c[2].len(), spelled in LS.
                     check_int("caps sum", c.span(1)!.len + c.span(2)!.len, 28)
+
+                    // Caps must stay POD. If it ever gained a destructor (or
+                    // a has_drop field) this binding would MOVE instead of
+                    // copy and `c` below would be a use-after-move compile
+                    // error -- which is the whole assertion: this block only
+                    // builds while Caps is a plain value. The two lengths are
+                    // deliberately different so a copy that silently aliased
+                    // the wrong group could not pass by coincidence.
+                    Caps dup = c
+                    check_int("caps POD: source still live", c.len(1), 24)
+                    check_int("caps POD: copy reads independently", dup.len(2), 4)
                 }
                 None => { fail("caps() None on a matching line") }
             }
