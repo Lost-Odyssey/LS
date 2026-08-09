@@ -258,6 +258,42 @@ static Token scan_number(Scanner *s) {
 
 /* ---- String Literals ---- */
 
+/* r"..." / r'...' — raw string: no escape processing at all, so a backslash is
+   just a byte. Exists because regex patterns are the common case for
+   backslash-dense text and doubling every one of them is both noisy and a
+   silent-error hazard: `"\d"` is the right way to write `\d`, but `"\\d"`
+   quietly means "a literal backslash then d" instead.
+ 
+   Two quote flavours rather than a counted delimiter (r#"..."#) or a
+   chooseable one (%q{...}): the content of a raw string cannot contain its own
+   delimiter, and measuring this repo's real patterns showed the two flavours
+   cover all but the case where BOTH quote kinds appear (a pattern like
+   href=["']([^"']*)["']). That case falls back to an ordinary escaped string,
+   i.e. to today's behaviour, so it is not a cliff. Adding a counted or
+   triple-quoted form later is purely additive.
+ 
+   Line breaks are allowed, matching scan_string, which makes these multi-line
+   raw strings too. The opening `r` and quote are already consumed; `quote`
+   says which one closes it. */
+static Token scan_raw_string(Scanner *s, char quote) {
+    while (!is_at_end(s) && peek(s) != quote) {
+        if (peek(s) == '\n') {
+            s->line++;
+            s->current++;
+            s->column = 1;
+            continue;
+        }
+        advance(s);
+    }
+    if (is_at_end(s)) {
+        return error_token(s, quote == '"'
+            ? "unterminated raw string (started with r\")"
+            : "unterminated raw string (started with r')");
+    }
+    advance(s); /* closing quote */
+    return make_token(s, TOKEN_RAWSTRING_LIT);
+}
+
 static Token scan_string(Scanner *s) {
     while (!is_at_end(s) && peek(s) != '"') {
         if (peek(s) == '\n') {
@@ -330,6 +366,16 @@ static Token scan_identifier(Scanner *s) {
     /* Single underscore is TOKEN_UNDERSCORE (match wildcard) */
     if (length == 1 && s->start[0] == '_') {
         return make_token(s, TOKEN_UNDERSCORE);
+    }
+
+    /* r"..." / r'...' raw string: single 'r' followed by either quote. Same
+       shape as the f-string check below; see scan_raw_string for why two
+       quote flavours. `ident'` is not valid syntax otherwise, so neither
+       spelling takes anything away. */
+    if (length == 1 && s->start[0] == 'r' && (peek(s) == '"' || peek(s) == 0x27)) {
+        char q = peek(s);
+        advance(s); /* consume the opening quote */
+        return scan_raw_string(s, q);
     }
 
     /* f"..." format string: single 'f' followed by '"' */
@@ -713,6 +759,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_INT_LIT:       return "INT_LIT";
     case TOKEN_FLOAT_LIT:     return "FLOAT_LIT";
     case TOKEN_STRING_LIT:    return "STRING_LIT";
+    case TOKEN_RAWSTRING_LIT: return "RAWSTRING_LIT";
     case TOKEN_CHAR_LIT:      return "CHAR_LIT";
     case TOKEN_TRUE:          return "TRUE";
     case TOKEN_FALSE:         return "FALSE";

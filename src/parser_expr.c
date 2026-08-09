@@ -84,6 +84,29 @@ static AstNode *prefix_string_lit(Parser *p) {
     return n;
 }
 
+/* r"..." / r'...' — the bytes between the quotes, verbatim. The token spans
+   `r`, the opening quote, the body and the closing quote, so the body starts at
+   +2 and is (length - 3) long. Deliberately does NOT call
+   process_string_token: not processing escapes is the whole point, so this
+   produces the same AST_STRING_LIT node with a plain copy and everything
+   downstream (checker, codegen) is untouched.
+ 
+   A raw string may contain a NUL only by being written as one, which the
+   scanner cannot produce, so strlen-free length bookkeeping is not needed
+   here any more than it is for the escaped path. */
+static AstNode *prefix_rawstring_lit(Parser *p) {
+    Token tok = p->previous;
+    int body_len = tok.length - 3;          /* r + quote + ... + quote */
+    if (body_len < 0) body_len = 0;         /* defensive; scanner rejects these */
+    char *val = (char *)malloc_safe((size_t)body_len + 1);
+    memcpy(val, tok.start + 2, (size_t)body_len);
+    val[body_len] = 0;
+    AstNode *n = new_node(AST_STRING_LIT, tok.line, tok.column);
+    n->as.string_lit.value = val;
+    n->as.string_lit.length = body_len;
+    return n;
+}
+
 /* Process escape sequences in an f-string text segment (no surrounding quotes) */
 static char *process_fstring_text(const char *start, int length) {
     char *result = (char *)malloc_safe((size_t)length + 1);
@@ -1673,6 +1696,7 @@ static const ParseRule rules[TOKEN_ERROR + 1] = {
     [TOKEN_INT_LIT]    = { prefix_int_lit,   NULL,              PREC_NONE },
     [TOKEN_FLOAT_LIT]  = { prefix_float_lit, NULL,              PREC_NONE },
     [TOKEN_STRING_LIT] = { prefix_string_lit,NULL,              PREC_NONE },
+    [TOKEN_RAWSTRING_LIT] = { prefix_rawstring_lit,NULL,        PREC_NONE },
     [TOKEN_FSTRING_START]= { prefix_fstring,   NULL,              PREC_NONE },
     [TOKEN_CHAR_LIT]   = { prefix_char_lit,  NULL,              PREC_NONE },
     [TOKEN_TRUE]       = { prefix_true,      NULL,              PREC_NONE },
