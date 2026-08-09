@@ -4463,6 +4463,19 @@ set_tests_properties(test_regex_group_span PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- std.regex flag constants + defaulted flags argument ----
+add_test(
+    NAME test_regex_flags
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_flags.cmake
+)
+set_tests_properties(test_regex_flags PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- std.regex escape semantics: backreference rejection + \xHH ----
 add_test(
     NAME test_regex_escapes

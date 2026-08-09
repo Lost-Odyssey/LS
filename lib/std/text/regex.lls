@@ -3,10 +3,11 @@
 // Import:  import std.text.regex as re
 // All functions return false/empty/0 on invalid pattern (no crash).
 //
-// Flags passed to compile:
-//   LS_RE_IGNORECASE = 1  (also activated by (?i) inside pattern)
-//   LS_RE_MULTILINE  = 2  (also activated by (?m))
-//   LS_RE_DOTALL     = 4  (also activated by (?s))
+// Flags passed to compile -- use the named constants below (IGNORECASE /
+// MULTILINE / DOTALL), or write them inline in the pattern ((?i)/(?m)/(?s))
+// and leave the flags argument off entirely. The LS_RE_* spellings that used
+// to be listed here are C macros in runtime/ls_regex.h and were never LS
+// symbols: `re.compile(p, LS_RE_IGNORECASE)` was an undefined variable.
 //
 //   capture()     -> Vec(Str)        — empty = no match
 //   capture_all() -> Vec(Str)        — flat: all groups from all matches
@@ -26,6 +27,16 @@ import std.core.vec
 import std.core.map
 import std.sys.c as c
 import std.core.str
+
+// ---- flags ----
+//
+// Bitmask, OR them together. Each also has an inline pattern form, which needs
+// no flags argument at all: (?i) (?m) (?s). Values must stay in step with
+// LS_RE_* in runtime/ls_regex.h -- pinned by tests/samples/regex_flags.lls.
+int IGNORECASE = 1   // (?i) -- case-insensitive
+int MULTILINE  = 2   // (?m) -- ^ and $ match at line boundaries
+int DOTALL     = 4   // (?s) -- . also matches 
+
 
 // ---- internal helpers ----
 
@@ -322,7 +333,7 @@ methods Regex {
 
 // Compiles `pattern`. Returns Err with the engine's message when the pattern
 // is malformed.
-def compile(Str pattern, int flags) -> Result(Regex, Str) {
+def compile(Str pattern, int flags = 0) -> Result(Regex, Str) {
     object h = _own(pattern, flags)
     if h == nil {
         return Err(from_cstr(c.__ls_regex_last_error()))
