@@ -49,26 +49,26 @@ int jit_add_module(JitEngine *engine, LLVMModuleRef module);
 /* Look up a symbol by name and return its address. Returns 0 on failure. */
 uint64_t jit_lookup(JitEngine *engine, const char *name);
 
-/* Execute a file via JIT: parse -> check -> codegen -> run main() */
+/* Execute a file via JIT: parse -> check -> codegen -> run main().
+   Sole entry point for `lls run`; the three knobs are orthogonal and any
+   combination is valid, which is why they are parameters rather than the
+   family of fixed-combination wrappers this replaced (those hard-coded
+   LS_OPT_O0 for the memcheck and profile shapes, so `-O2`/`LS_OPT` was
+   silently dropped whenever either was requested -- see test_ls_opt_env).
+
+     memcheck  route every alloc/free through ls_mc_* and print a
+               leak/double-free report at exit
+     profile   inject ls_prof_enter/leave at every function boundary and
+               print a sorted timing report at exit
+     level     run the IR optimization pipeline at this level (native CPU)
+               before execution; LS_OPT_O0 means no passes at all
+
+   Callers resolve `level` themselves (CLI -O, then ls_opt_env_level, then
+   O0); this function does not consult the environment for it. */
+int jit_run_file_ex(const char *path, bool memcheck, bool profile, LsOptLevel level);
+
+/* Plain unoptimized run without instrumentation == jit_run_file_ex(p,0,0,O0). */
 int jit_run_file(const char *path);
-
-/* Same as jit_run_file but with memcheck tracking enabled. Routes every
-   alloc/free through ls_mc_* and prints a leak/double-free report at exit. */
-int jit_run_file_memcheck(const char *path);
-
-/* Same as jit_run_file but with function-level profiling instrumentation.
-   Injects ls_prof_enter/leave at every function boundary and prints a
-   sorted timing report at exit. */
-int jit_run_file_profile(const char *path);
-
-/* Same as jit_run_file but runs the full O2 optimization pipeline on each
-   JIT module before execution. Enables inlining, loop vectorization, DCE, etc.
-   Trade-off: larger modules (e.g. std.json) take ~1s extra to compile. */
-int jit_run_file_optimize(const char *path);
-
-/* Same as jit_run_file but runs the IR optimization pipeline at the given level
-   (native CPU) before execution. LS_OPT_O0 means no passes (== jit_run_file). */
-int jit_run_file_optlevel(const char *path, LsOptLevel level);
 
 /* Run the REPL (interactive incremental JIT) */
 int jit_repl(void);

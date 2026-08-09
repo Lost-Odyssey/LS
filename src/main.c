@@ -1576,10 +1576,22 @@ static int handle_run(int argc, char *argv[]) {
         char **script_argv = &argv[file_idx];
         __ls_set_args(script_argc, script_argv);
     }
-    if (memcheck) return jit_run_file_memcheck(file);
-    if (profile) return jit_run_file_profile(file);
-    if (cf.opt_set) return jit_run_file_optlevel(file, cf.opt_level);
-    return jit_run_file(file);
+    /* Effective JIT level: CLI `-O<n>` first, then LS_OPT, then O0.
+       O0 is the default on purpose and must stay reachable by doing nothing:
+       enabling any level costs +80~150% end to end on `lls run` (the B1
+       tiering spike, docs/plan_jit_tiering.md §7), which is why this reads
+       LS_OPT through ls_opt_env_level -- ls_opt_default_jit().level would
+       substitute optpipe's AOT fallback of O2 whenever LS_OPT is unset or
+       malformed and thereby flip the default for everyone. Pinned by
+       test_ls_opt_env. */
+    LsOptLevel level = LS_OPT_O0;
+    if (cf.opt_set) {
+        level = cf.opt_level;
+    } else {
+        ls_opt_env_level(&level);
+    }
+
+    return jit_run_file_ex(file, memcheck, profile, level);
 }
 
 static int handle_repl(int argc, char *argv[]) {

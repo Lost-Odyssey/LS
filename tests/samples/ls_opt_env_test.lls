@@ -1,0 +1,34 @@
+// tests/samples/ls_opt_env_test.lls — discriminator for "did the JIT actually
+// run the optimization pipeline?", used by tests/ls_opt_env.cmake to verify
+// that LS_OPT reaches the JIT (`lls run`) and that the CLI `-O<n>` flag wins
+// over it.
+//
+// There is no diagnostic surface that reports the JIT's effective -O level, so
+// this sample instead relies on a *behavioural* difference: the optimizer is
+// allowed to reassociate/contract this floating-point accumulation, which
+// changes the low bits of the result. The residual against the exact decimal
+// answer is amplified by 1e18 so that @print's six-digit precision can show
+// it -- the raw sum prints as a flat 0.800000 at every level.
+//
+// The test driver never hardcodes the two magic numbers (they depend on the
+// host CPU and LLVM version); it only asserts that O0 and O2 disagree and that
+// the LS_OPT / -O runs land on the right side of that divide. If a future LLVM
+// stops producing any difference here, the driver fails loudly and asks for a
+// new observable rather than silently degrading into a test that proves
+// nothing.
+//
+// Deliberately float-only and tiny: no heap, no stdlib imports, so the sample
+// stays fast (it is run four times per test) and cannot be perturbed by
+// ownership/container switches.
+
+def fma_chain(f64 a, f64 b, f64 c) -> f64 {
+    return a * b + c
+}
+
+def main() {
+    f64 acc = 0.0
+    for i in 0..40 {
+        acc = fma_chain(0.1, 0.2, acc)
+    }
+    @print((acc - 0.8) * 1000000000000000000.0)
+}

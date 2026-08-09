@@ -11,16 +11,27 @@
 #include <llvm-c/Error.h>
 #include <llvm-c/Transforms/PassBuilder.h>
 
+/* Recognise an LS_OPT env value ("0".."3","s","z"). Writes *out and returns
+   true only on a recognised value; leaves *out alone and returns false for
+   NULL, empty, or anything else. Sole authority for the accepted spellings --
+   both parse_level_str (fallback-substituting) and ls_opt_env_level
+   (absence-reporting) route through it, so the two views cannot drift. */
+static bool parse_level_strict(const char *s, LsOptLevel *out) {
+    if (s == NULL || s[0] == '\0') return false;
+    if (strcmp(s, "0") == 0) { *out = LS_OPT_O0; return true; }
+    if (strcmp(s, "1") == 0) { *out = LS_OPT_O1; return true; }
+    if (strcmp(s, "2") == 0) { *out = LS_OPT_O2; return true; }
+    if (strcmp(s, "3") == 0) { *out = LS_OPT_O3; return true; }
+    if (strcmp(s, "s") == 0 || strcmp(s, "S") == 0) { *out = LS_OPT_OS; return true; }
+    if (strcmp(s, "z") == 0 || strcmp(s, "Z") == 0) { *out = LS_OPT_OZ; return true; }
+    return false;
+}
+
 /* Parse the LS_OPT env value ("0".."3","s","z") into a level. */
 static LsOptLevel parse_level_str(const char *s, LsOptLevel fallback) {
-    if (s == NULL || s[0] == '\0') return fallback;
-    if (strcmp(s, "0") == 0) return LS_OPT_O0;
-    if (strcmp(s, "1") == 0) return LS_OPT_O1;
-    if (strcmp(s, "2") == 0) return LS_OPT_O2;
-    if (strcmp(s, "3") == 0) return LS_OPT_O3;
-    if (strcmp(s, "s") == 0 || strcmp(s, "S") == 0) return LS_OPT_OS;
-    if (strcmp(s, "z") == 0 || strcmp(s, "Z") == 0) return LS_OPT_OZ;
-    return fallback;
+    LsOptLevel level;
+    if (!parse_level_strict(s, &level)) return fallback;
+    return level;
 }
 
 /* An env flag is "on" unless it is set and starts with '0'. */
@@ -54,6 +65,13 @@ LsOptConfig ls_opt_default_jit(void) {
     c.target_cpu = NULL;  /* JIT always targets the host; cannot run foreign ISA */
     c.verify_each = env_flag("LS_VERIFY_EACH", false);
     return c;
+}
+
+/* See optpipe.h: reports absence rather than substituting a fallback, so a
+   caller whose default is not O2 keeps its own default when LS_OPT is unset
+   or malformed. */
+bool ls_opt_env_level(LsOptLevel *out) {
+    return parse_level_strict(getenv("LS_OPT"), out);
 }
 
 bool ls_opt_parse_flag(const char *arg, LsOptLevel *out) {
