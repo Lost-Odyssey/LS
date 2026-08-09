@@ -86,17 +86,26 @@ b"
     // ---- Windows paths, the other place doubling hurts ----
     eq("windows path", r"C:\Users\test\file.txt", "C:\\Users\\test\\file.txt")
 
-    // ---- the known gap, pinned ----
-    // Content with BOTH quote kinds cannot be a raw string in either flavour;
-    // an ordinary escaped string is the documented fallback. If a counted or
-    // triple-quoted form is ever added, this assertion is where to revisit.
-    Str both = "href=[\"']([^\"']*)[\"']"
-    if both.len() != 21 { fail(f"both-quote fallback length = {both.len()}") }
+    // ---- content needing BOTH quote kinds: the triple-quoted form ----
+    // This is why r"""...""" exists. Without it the single-quote forms
+    // could not express this at all, AND r"""x""" silently scanned as an
+    // empty r"" followed by stray literals, producing "" with no diagnostic.
+    Str both = r"""href=["']([^"']*)["']"""
+    eq("both quotes", both, "href=[\"']([^\"']*)[\"']")
+    if both.len() != 21 { fail(f"both-quote len={both.len()} want 21") }
     Regex any = re.compile(both)!
     Str h1 = "href=\"/a\""
     Str h2 = "href='/b'"
     if !any.matches?(&h1) { fail("both-quote pattern should match double-quoted") }
     if !any.matches?(&h2) { fail("both-quote pattern should match single-quoted") }
+
+    // triple form: single-quoted flavour, empties, and inner runs of 1-2 quotes
+    eq("triple single", r'''a"b'c''', "a\"b'c")
+    eq("triple escapes untouched", r"""\d+\n""", "\\d+\\n")
+    if r"""""".len() != 0 { fail("empty triple double") }
+    if r''''''.len() != 0 { fail("empty triple single") }
+    eq("one quote inside", r"""a"b""", "a\"b")
+    eq("two quotes inside", r"""a""b""", "a\"\"b")
 
     if failures == 0 {
         @print("ALL PASS")

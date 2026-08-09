@@ -94,17 +94,34 @@ static AstNode *prefix_string_lit(Parser *p) {
    A raw string may contain a NUL only by being written as one, which the
    scanner cannot produce, so strlen-free length bookkeeping is not needed
    here any more than it is for the escaped path. */
-static AstNode *prefix_rawstring_lit(Parser *p) {
-    Token tok = p->previous;
-    int body_len = tok.length - 3;          /* r + quote + ... + quote */
-    if (body_len < 0) body_len = 0;         /* defensive; scanner rejects these */
-    char *val = (char *)malloc_safe((size_t)body_len + 1);
-    memcpy(val, tok.start + 2, (size_t)body_len);
-    val[body_len] = 0;
+/* Shared by both raw forms: copy `len` bytes verbatim into a fresh
+   AST_STRING_LIT. Deliberately does not call process_string_token -- not
+   processing escapes is the entire point. */
+static AstNode *make_raw_string_node(Token tok, const char *body, int len) {
+    if (len < 0) len = 0;                 /* defensive; scanner rejects these */
+    char *val = (char *)malloc_safe((size_t)len + 1);
+    memcpy(val, body, (size_t)len);
+    val[len] = 0;
     AstNode *n = new_node(AST_STRING_LIT, tok.line, tok.column);
     n->as.string_lit.value = val;
-    n->as.string_lit.length = body_len;
+    n->as.string_lit.length = len;
     return n;
+}
+
+static AstNode *prefix_rawstring_lit(Parser *p) {
+    Token tok = p->previous;
+    /* token spans r + quote + body + quote */
+    return make_raw_string_node(tok, tok.start + 2, tok.length - 3);
+}
+
+/* r"""...""" / r'''...''' -- same verbatim copy, wider
+   delimiters. The token spans r + three quotes + body + three quotes, so the
+   body starts at +4 and is (length - 7) long. Python's shape, chosen because
+   f-strings already follow Python, and because without it `r"""x"""` scanned as
+   an empty r"" followed by two stray literals and silently produced "". */
+static AstNode *prefix_rawstring3_lit(Parser *p) {
+    Token tok = p->previous;
+    return make_raw_string_node(tok, tok.start + 4, tok.length - 7);
 }
 
 /* Process escape sequences in an f-string text segment (no surrounding quotes) */
@@ -1697,6 +1714,7 @@ static const ParseRule rules[TOKEN_ERROR + 1] = {
     [TOKEN_FLOAT_LIT]  = { prefix_float_lit, NULL,              PREC_NONE },
     [TOKEN_STRING_LIT] = { prefix_string_lit,NULL,              PREC_NONE },
     [TOKEN_RAWSTRING_LIT] = { prefix_rawstring_lit,NULL,        PREC_NONE },
+    [TOKEN_RAWSTRING3_LIT] = { prefix_rawstring3_lit,NULL,      PREC_NONE },
     [TOKEN_FSTRING_START]= { prefix_fstring,   NULL,              PREC_NONE },
     [TOKEN_CHAR_LIT]   = { prefix_char_lit,  NULL,              PREC_NONE },
     [TOKEN_TRUE]       = { prefix_true,      NULL,              PREC_NONE },

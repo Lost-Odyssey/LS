@@ -8,6 +8,7 @@ typedef enum {
     TOKEN_FLOAT_LIT,        /* 3.14, 1.0e-5 */
     TOKEN_STRING_LIT,       /* "hello" */
     TOKEN_RAWSTRING_LIT,    /* r"\d+" or r'\d+' — no escape processing */
+    TOKEN_RAWSTRING3_LIT,   /* r"""...""" or r'''...''' — same, may hold both quote kinds */
     TOKEN_CHAR_LIT,         /* 'a' */
     TOKEN_TRUE,             /* true */
     TOKEN_FALSE,            /* false */

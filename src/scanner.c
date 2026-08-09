@@ -275,6 +275,39 @@ static Token scan_number(Scanner *s) {
    Line breaks are allowed, matching scan_string, which makes these multi-line
    raw strings too. The opening `r` and quote are already consumed; `quote`
    says which one closes it. */
+/* r"""...""" / r'''...''' — the triple-quoted raw form, same as Python's.
+   Exists because the single-quote forms cannot hold content that needs BOTH
+   quote kinds (a pattern like href=["']([^"']*)["']), and because without it
+   `r"""x"""` scanned as an empty raw string followed by two stray literals and
+   silently produced "" -- a Python habit turning into a wrong value with no
+   diagnostic. Ends at the first run of three closing quotes, so content ending
+   in the quote character has to use the other flavour (four quotes in a row
+   close the string and leave a stray one behind, exactly as in Python). The
+   opening `r` and all three quotes are already consumed. */
+static Token scan_raw_string3(Scanner *s, char quote) {
+    for (;;) {
+        if (is_at_end(s)) {
+            return error_token(s, quote == '"'
+                ? "unterminated raw string (started with r\"\"\")"
+                : "unterminated raw string (started with r''')");
+        }
+        if (peek(s) == '\n') {
+            s->line++;
+            s->current++;
+            s->column = 1;
+            continue;
+        }
+        /* Reading current[2] is safe once [0] and [1] are both the quote: the
+           source is NUL-terminated, so at worst [2] is that NUL, which is not
+           the quote. */
+        if (peek(s) == quote && peek_next(s) == quote && s->current[2] == quote) {
+            advance(s); advance(s); advance(s);
+            return make_token(s, TOKEN_RAWSTRING3_LIT);
+        }
+        advance(s);
+    }
+}
+
 static Token scan_raw_string(Scanner *s, char quote) {
     while (!is_at_end(s) && peek(s) != quote) {
         if (peek(s) == '\n') {
@@ -375,6 +408,12 @@ static Token scan_identifier(Scanner *s) {
     if (length == 1 && s->start[0] == 'r' && (peek(s) == '"' || peek(s) == 0x27)) {
         char q = peek(s);
         advance(s); /* consume the opening quote */
+        /* Triple form first: r"""...""" must not be read as an empty r"" that
+           happens to be followed by more quotes. */
+        if (peek(s) == q && peek_next(s) == q) {
+            advance(s); advance(s);
+            return scan_raw_string3(s, q);
+        }
         return scan_raw_string(s, q);
     }
 
@@ -760,6 +799,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_FLOAT_LIT:     return "FLOAT_LIT";
     case TOKEN_STRING_LIT:    return "STRING_LIT";
     case TOKEN_RAWSTRING_LIT: return "RAWSTRING_LIT";
+    case TOKEN_RAWSTRING3_LIT: return "RAWSTRING3_LIT";
     case TOKEN_CHAR_LIT:      return "CHAR_LIT";
     case TOKEN_TRUE:          return "TRUE";
     case TOKEN_FALSE:         return "FALSE";

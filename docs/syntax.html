@@ -527,10 +527,15 @@ b.tag()           <span class="c">// "inherent"</span>
     <p>Line breaks are allowed inside either form, so these double as multi-line raw strings. The
     <code>r</code> prefix is only special immediately before a quote — <code>r</code> remains an
     ordinary identifier everywhere else, including as a <code>match</code> binder.</p>
-    <p><strong>The one gap.</strong> A raw string cannot contain its own delimiter, so content that
-    needs <em>both</em> quote kinds — a pattern like <code>href=["']([^"']*)["']</code> — cannot be
-    written as a raw string in either flavour. Use an ordinary escaped string there; only the quotes
-    need escaping, and that is exactly what you would have written before raw strings existed.</p>
+    <p><strong>Both quote kinds at once.</strong> A raw string cannot contain its own delimiter, so
+    content needing <em>both</em> — a pattern like <code>href=["']([^"']*)["']</code> — fits in
+    neither single-quote form. Use the <strong>triple-quoted</strong> form, exactly as in Python:</p>
+    <div class="ex"><pre><span class="t">Str</span> p = r<span class="s">"""href=["&#39;]([^"&#39;]*)["&#39;]"""</span>
+<span class="t">Str</span> q = r<span class="s">'''also raw, and may hold " and &#39;&#39;'''</span></pre></div>
+    <p>A triple-quoted raw string ends at the first run of three closing quotes, so content ending in
+    that quote character needs the other flavour — four in a row close the string and leave a stray
+    one behind, same as in Python. There is still no fully general escape hatch; if content contains
+    both <code>"""</code> and <code>'''</code>, fall back to an ordinary escaped string.</p>
     <p>Escaped strings keep their advantage when you <em>want</em> escape processing:
     <code>"a\tb"</code> is a real tab, <code>r"a\tb"</code> is a backslash and a <code>t</code>.
     There is no raw f-string — interpolation and raw are deliberately not combined.</p>
