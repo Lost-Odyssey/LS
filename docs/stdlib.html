@@ -1319,11 +1319,27 @@ before matching again.</p>
 <span class="k">match</span> rx.group_slice(&amp;line, <span class="n">2</span>)!.to_int() { <span class="t">Ok</span>(v) =&gt; { sum = sum + v }  <span class="t">Err</span>(e) =&gt; {} }</pre></div>
 <p><strong>Contract — pass the same <code>text</code>:</strong> <code>group</code> and <code>find_from</code>
 read match offsets stored in the handle by the <em>last</em> <code>matches?</code>/<code>find_from</code> call.
-Nothing ties the <code>text</code> argument to the text that match actually ran against — always pass
-<code>group</code> the exact same <code>Str</code> you last matched with. As a cheap safety net, <code>group</code>
-returns <code>None</code> when the stored offsets don't fit inside the <code>text</code> you hand it (catches a
-too-short, unrelated <code>text</code>); it cannot detect an unrelated <code>text</code> that happens to be long
-enough, which silently returns a plausible-looking but wrong substring.</p>
+Nothing in the type system ties the <code>text</code> argument to the text that match actually ran against —
+always pass <code>group</code> the exact same <code>Str</code> you last matched with.</p>
+<p><strong>This is now checked.</strong> The handle records the <code>(pointer, length)</code> of whatever the
+last exec ran against, and every byte-producing accessor
+(<code>group</code>, <code>group_slice</code>, and all the <code>Caps</code> readers) reports absent
+— <code>None</code>, or <code>-1</code> from <code>Caps.len</code> — when it doesn't match. Two
+misuses that used to return a plausible-looking wrong substring with no diagnostic now don't:</p>
+<div class="ex"><pre>rx.matches?(&amp;<span class="n">"abc12"</span>); rx.group(&amp;<span class="n">"99xyz"</span>, <span class="n">1</span>)   <span class="c">// was Some("99x"), now None</span>
+
+<span class="k">match</span> rx.caps(&amp;a) { <span class="t">Some</span>(c) =&gt; { rx.matches?(&amp;b); c.slice(<span class="n">1</span>) } ... }
+                                        <span class="c">// stale: was a wrong substring, now None</span></pre></div>
+<p><code>group_span</code> is exempt and needs no check — it takes no <code>text</code>, so it has nothing to be
+wrong about; it always reports the last match's offsets.</p>
+<p><strong>A detector, not a proof — two limits worth knowing.</strong> It compares pointer identity, so
+(1) a text that was freed and whose allocation was reused at the same address and length is
+indistinguishable, and (2) a subject whose buffer <em>moves</em> between the match and the read reads as a
+different text and yields <code>None</code> even though the bytes are unchanged. Any mutation of the subject
+invalidates the offsets in general, so refusing is right for almost all of them; the one byte-preserving
+case is <code>c_str()</code>, which looks read-only but takes <code>&amp;!self</code> and may reallocate. Closing
+either gap needs lifetimes, which LS does not have. Cost is unmeasurable — one pointer compare against a
+match that already dominates.</p>
 <div class="ex"><pre><span class="k">match</span> re.compile(<span class="s">"([a-z]+)=([0-9]+)"</span>, <span class="n">0</span>) {
     <span class="t">Ok</span>(r) =&gt; {
         <span class="k">if</span> r.matches?(&amp;line) {

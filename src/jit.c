@@ -254,6 +254,7 @@ int jit_init(JitEngine *engine) {
         extern void       *__ls_regex_cached(const char *, int);
         extern const char *__ls_regex_last_error(void);
         extern int         __ls_regex_exec(int, const char *, int, int);
+        extern int         __ls_regex_text_is(int, const char *, int);
         extern int         __ls_regex_cap_start(int);
         extern int         __ls_regex_cap_len(int);
         extern int         __ls_regex_group_count(int);
@@ -383,6 +384,7 @@ int jit_init(JitEngine *engine) {
         REG(__ls_regex_cached);
         REG(__ls_regex_last_error);
         REG(__ls_regex_exec);
+        REG(__ls_regex_text_is);
         REG(__ls_regex_cap_start);
         REG(__ls_regex_cap_len);
         REG(__ls_regex_group_count);

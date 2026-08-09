@@ -459,6 +459,8 @@ declare ptr @__ls_regex_last_error()
 
 declare i32 @__ls_regex_exec(ptr %0, ptr %1, i32 %2, i32 %3)
 
+declare i32 @__ls_regex_text_is(ptr %0, ptr %1, i32 %2)
+
 declare i32 @__ls_regex_cap_start(ptr %0, i32 %1)
 
 declare i32 @__ls_regex_cap_len(ptr %0, i32 %1)

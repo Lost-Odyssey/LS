@@ -78,16 +78,33 @@ struct Caps {
 }
 
 methods Caps {
+    // False once the Regex has been run against some other text: the offsets
+    // every reader below would read describe THAT text, not the one this Caps
+    // is bound to. Reading through a stale Caps used to hand back a
+    // plausible-looking wrong substring (bind to "abc12", re-match "zz7ab",
+    // read group 1 -> "ab"), so every reader gates on this and reports
+    // absent instead.
+    //
+    // Not public: there is no useful "is it still fresh?" question a caller
+    // can act on that None/-1 does not already answer.
+    def _fresh?(&self) -> bool {
+        return c.__ls_regex_text_is(self.h, self.base, self.base_len) != 0
+    }
+
     // Length of group `i`, or -1 when the group is absent (did not
-    // participate, no match, or out of range). -1 rather than 0 because an
-    // empty group that DID participate is a different fact and reports 0.
+    // participate, no match, or out of range) or this Caps is stale. -1
+    // rather than 0 because an empty group that DID participate is a
+    // different fact and reports 0.
     def len(&self, int i) -> int {
+        if !self._fresh?() { return -1 }
         if i < 0 || i > c.__ls_regex_group_count(self.h) { return -1 }
         return c.__ls_regex_cap_len(self.h, i)
     }
 
-    // Byte span of group `i`, or None if absent. No text needed.
+    // Byte span of group `i`, or None if absent or this Caps is stale. No
+    // text needed.
     def span(&self, int i) -> Option(Span) {
+        if !self._fresh?() { return None }
         if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
         int s = c.__ls_regex_cap_start(self.h, i)
         int l = c.__ls_regex_cap_len(self.h, i)
@@ -98,6 +115,7 @@ methods Caps {
     // Group `i` as a borrowed view into the text this Caps was made from.
     // No text argument -- that is the point of this layer.
     def slice(&self, int i) -> Option(StrSlice) {
+        if !self._fresh?() { return None }
         if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
         int s = c.__ls_regex_cap_start(self.h, i)
         int l = c.__ls_regex_cap_len(self.h, i)
@@ -205,6 +223,7 @@ methods Regex {
     // returns a plausible-looking but wrong substring.
     def group(&self, &Str text, int i) -> Option(Str) {
         if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
+        if c.__ls_regex_text_is(self.h, text.as_ptr() as *u8, text.len()) == 0 { return None }
         int s = c.__ls_regex_cap_start(self.h, i)
         int l = c.__ls_regex_cap_len(self.h, i)
         if s < 0 || l < 0 { return None }
@@ -246,6 +265,7 @@ methods Regex {
     // that. Use group_span() instead when you do not need the bytes.
     def group_slice(&self, &Str text, int i) -> Option(StrSlice) {
         if i < 0 || i > c.__ls_regex_group_count(self.h) { return None }
+        if c.__ls_regex_text_is(self.h, text.as_ptr() as *u8, text.len()) == 0 { return None }
         int s = c.__ls_regex_cap_start(self.h, i)
         int l = c.__ls_regex_cap_len(self.h, i)
         if s < 0 || l < 0 { return None }
