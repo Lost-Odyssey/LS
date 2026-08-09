@@ -313,6 +313,13 @@ typedef struct {
    patterns never nest anywhere near this; found by stdfuzz (crash at ~2000). */
 #define RE_MAX_DEPTH 256
 
+/* Value of one hex digit. Caller must have checked isxdigit(). */
+static int hex_val(unsigned char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    return ch - 'A' + 10;
+}
+
 static void comp_error(Compiler *c, const char *msg) {
     if (!c->had_error) {
         snprintf(c->error, sizeof(c->error), "%s", msg);
@@ -769,6 +776,44 @@ static int parse_escape(Compiler *c) {
         case 't': return emit(re, OP_CHAR, '\t', 0);
         case 'f': return emit(re, OP_CHAR, '\f', 0);
         case 'v': return emit(re, OP_CHAR, '\v', 0);
+
+        /* \xHH — one byte, two hex digits, either case. Must be handled
+           explicitly: the `default` arm below would otherwise turn it into the
+           literal characters "xHH", silently, so `^\x41$` matched the text
+           "x41" instead of "A". */
+        case 'x': {
+            if (c->pos + 1 >= c->pat_len ||
+                !isxdigit((unsigned char)c->pat[c->pos]) ||
+                !isxdigit((unsigned char)c->pat[c->pos + 1])) {
+                comp_error(c, "\\xHH needs exactly two hex digits");
+                return -1;
+            }
+            int hi = hex_val((unsigned char)c->pat[c->pos]);
+            int lo = hex_val((unsigned char)c->pat[c->pos + 1]);
+            c->pos += 2;
+            return emit(re, OP_CHAR, (hi << 4) | lo, 0);
+        }
+
+        /* \1 .. \9 — backreference syntax in every other engine. This one is a
+           Pike-VM: a thread carries only a pc and the capture slots, and the
+           linear-time guarantee comes precisely from never backtracking, so a
+           backreference is not implementable here rather than merely missing.
+           Rejecting is the only honest answer: the `default` arm below used to
+           make `(ab)\1` mean "ab" followed by a literal '1', so it matched
+           "ab1" and not "abab", with rc=0 and no diagnostic. */
+        case '1': case '2': case '3': case '4': case '5':
+        case '6': case '7': case '8': case '9':
+            comp_error(c, "backreference (\\1-\\9) is not supported: this engine "
+                          "never backtracks; capture the group and compare the "
+                          "text yourself");
+            return -1;
+
+        /* Anything else is the literal character. This is what makes `\.`,
+           `\+`, `\(`, `\\` and friends work, and it matches every other
+           engine's treatment of escaped punctuation. It also means an
+           unrecognised letter escape (`\q`) is just that letter -- pinned in
+           tests/samples/regex_escapes.lls so narrowing this to a whitelist
+           would be a deliberate change rather than an accident. */
         default:  return emit(re, OP_CHAR, esc, 0);
     }
 }

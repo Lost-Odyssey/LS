@@ -1,0 +1,107 @@
+// regex_escapes.lls — escapes that used to mean something else, silently.
+//
+// runtime/ls_regex.c's parse_escape ends in
+//     default: return emit(re, OP_CHAR, esc, 0);
+// which turns any unrecognised escape into the literal character. That is the
+// right behaviour for punctuation (`\.` must mean a literal dot, `\+` a literal
+// plus) and it is what every engine does. But it also silently swallowed two
+// escapes that mean something specific in every other engine:
+//
+//   \1 .. \9   backreference   -> became the literal digit
+//              (ab)\1 matched "ab1", not "abab"
+//   \xHH       hex byte        -> became the literal chars "xHH"
+//              ^\x41$ matched "x41", not "A"
+//
+// Both were rc=0 with no diagnostic. Backreferences cannot be supported at all
+// here -- this is a Pike-VM/RE2-family engine with no backtracking, which is
+// exactly what buys the linear-time guarantee -- so the only honest answer is
+// to reject them at compile time. \xHH, by contrast, is cheap and expected, so
+// it is now implemented rather than rejected.
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+
+int failures = 0
+
+def fail(Str msg) {
+    @print(f"FAIL {msg}")
+    failures = failures + 1
+}
+
+// Pattern must compile and match/not-match `text` as stated.
+def want(Str label, Str pat, Str text, bool expect) {
+    match re.compile(pat, 0) {
+        Ok(rx) => {
+            Str s = text
+            bool m = rx.matches?(&s)
+            if m != expect { fail(f"{label}: vs '{s}' got {m} want {expect}") }
+        }
+        Err(e) => { fail(f"{label}: unexpectedly rejected -> {e}") }
+    }
+}
+
+// Pattern must be rejected, with `needle` somewhere in the message.
+def want_reject(Str label, Str pat, &Str needle) {
+    match re.compile(pat, 0) {
+        Ok(rx) => { fail(f"{label}: was accepted, should be rejected") }
+        Err(e) => {
+            if !e.contains?(needle) { fail(f"{label}: unhelpful message '{e}'") }
+        }
+    }
+}
+
+def main() -> int {
+    Str BACKREF = "backreference"
+    Str HEX     = "\\xHH"
+
+    // ---- backreferences: rejected, all nine, capturing or not ----
+    want_reject("(ab)\\1     ", "(ab)\\1",       &BACKREF)
+    want_reject("(a)(b)\\2   ", "(a)(b)\\2",     &BACKREF)
+    want_reject("\\9 alone   ", "x\\9",          &BACKREF)
+    // inside a group, and after other constructs, still caught
+    want_reject("(a)(\\1)    ", "(a)(\\1)",      &BACKREF)
+    want_reject("a+\\1       ", "(a)+\\1",       &BACKREF)
+
+    // ---- \xHH: now real ----
+    want("^\\x41$ vs A     ", "^\\x41$",   "A",    true)
+    want("^\\x41$ vs x41   ", "^\\x41$",   "x41",  false)
+    want("^\\x61\\x62$     ", "^\\x61\\x62$", "ab", true)
+    want("lower hex \\x4a  ", "^\\x4a$",   "J",    true)
+    want("upper hex \\x4A  ", "^\\x4A$",   "J",    true)
+    want("\\x00 is a NUL   ", "^a\\x41b$", "aAb",  true)
+    // malformed hex must be a diagnostic, not a literal
+    want_reject("\\x with 1 digit", "^\\x4$",  &HEX)
+    want_reject("\\x with 0 digits", "^\\xzz$", &HEX)
+    want_reject("\\x at end     ", "^a\\x",    &HEX)
+
+    // ---- punctuation pass-through must be untouched ----
+    want("\\. is a dot     ", "^a\\.b$",  "a.b",  true)
+    want("\\. is not any   ", "^a\\.b$",  "axb",  false)
+    want("\\+ is a plus    ", "^a\\+$",   "a+",   true)
+    want("\\* is a star    ", "^a\\*$",   "a*",   true)
+    want("\\( is a paren   ", "^\\($",    "(",    true)
+    want("\\[ is a bracket ", "^\\[$",    "[",    true)
+    want("\\\\ is a slash  ", "^\\\\$",   "\\",   true)
+    want("\\? is a question", "^a\\?$",   "a?",   true)
+
+    // ---- the recognised class/anchor escapes still work ----
+    want("\\d              ", "^\\d+$",   "42",   true)
+    want("\\w \\s          ", "^\\w\\s\\w$", "a b", true)
+    want("\\b              ", "\\bthere\\b", "hi there", true)
+    want("\\A \\Z          ", "\\Aab\\Z", "ab",   true)
+    want("\\D              ", "^\\D$",    "a",    true)
+
+    // ---- a letter with no meaning still passes through as itself ----
+    // Deliberately pinned: this is the `default` arm doing its job, and it is
+    // how `\.`-style escapes work. If someone ever narrows it to a whitelist,
+    // this line documents that the change is intentional.
+    want("\\q is a q       ", "^\\q$",    "q",    true)
+
+    if failures == 0 {
+        @print("ALL PASS")
+    } else {
+        @print(f"{failures} FAILURE(S)")
+    }
+    return failures
+}
