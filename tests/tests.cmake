@@ -4450,6 +4450,19 @@ set_tests_properties(test_regex_prefilter PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- std.regex allocation-free group access (span / slice / Caps) ----
+add_test(
+    NAME test_regex_group_span
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_regex_group_span.cmake
+)
+set_tests_properties(test_regex_group_span PROPERTIES
+    DEPENDS "test_regex"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- std.regex compiled Regex object — JIT + AOT ----
 add_test(
     NAME test_regex_object

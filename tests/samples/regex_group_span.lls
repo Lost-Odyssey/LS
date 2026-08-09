@@ -1,0 +1,176 @@
+// regex_group_span.lls — allocation-free group access on a compiled Regex.
+//
+// Three layers, all pinned against the same oracle: the existing group(),
+// which materializes an owned Str. Whatever the new paths report must match
+// it exactly, group for group, or the optimization is a lie.
+//
+//   1. Regex.group_span(i)         -> Option(Span)      -- takes NO text
+//   2. Regex.group_slice(&t, i)    -> Option(StrSlice)  -- zero allocation
+//   3. Regex.caps(&t)              -> Option(Caps), then Caps.span/slice/len(i)
+//                                                       -- text passed once
+//
+// Layer 1 is the safety-relevant one: with no text parameter there is nothing
+// to pass wrong, so the "must be the same Str you matched with" contract that
+// group()/group_slice() carry does not apply to it at all.
+//
+// Layer 3 is the LS-shaped analogue of Rust's Captures<'t>: the borrow rides
+// on a short-lived per-call value instead of on the long-lived Regex, which is
+// what keeps `rx` reusable across texts (and what stops a stashed pointer in
+// the handle from dangling once the text goes out of scope).
+//
+// Absent groups are covered deliberately: an optional group that did not
+// participate must read as None on every layer, not as an empty span at
+// offset 0 -- those are different facts and conflating them is exactly how a
+// silently-wrong-value bug gets in.
+
+import std.core.vec
+import std.core.str
+import std.text.regex as re
+
+int failures = 0
+
+def fail(Str msg) {
+    @print(f"FAIL {msg}")
+    failures = failures + 1
+}
+
+def check_int(Str name, int got, int want) {
+    if got != want { fail(f"{name}: got {got} want {want}") }
+}
+
+def check_bool(Str name, bool got, bool want) {
+    if got != want { fail(f"{name}: got {got} want {want}") }
+}
+
+def check_str(Str name, Str got, Str want) {
+    if got != want { fail(f"{name}: got '{got}' want '{want}'") }
+}
+
+def main() -> int {
+    // ---- layer 1 + 2: agreement with group() on a log line ----
+    Str line = "2026-08-07T14:23:01.123Z INFO user_id=4821"
+    Str pat = "^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z) (INFO|WARN|ERROR|DEBUG)"
+
+    match re.compile(pat, 0) {
+        Ok(rx) => {
+            check_bool("matches?", rx.matches?(&line), true)
+
+            int i = 0
+            while i <= 2 {
+                // Oracle: the materializing path.
+                Str want = ""
+                bool have = false
+                match rx.group(&line, i) {
+                    Some(g) => { want = g; have = true }
+                    None    => { fail(f"group({i}) unexpectedly None") }
+                }
+
+                if have {
+                    // Layer 1: span, no text argument at all.
+                    match rx.group_span(i) {
+                        Some(sp) => {
+                            check_int(f"span({i}).len", sp.len, want.len())
+                            check_str(f"span({i}) bytes", line.substr(sp.start, sp.len), want)
+                        }
+                        None => { fail(f"group_span({i}) None but group() had a value") }
+                    }
+
+                    // Layer 2: slice, zero allocation.
+                    match rx.group_slice(&line, i) {
+                        Some(sl) => {
+                            check_int(f"slice({i}).len", sl.len(), want.len())
+                            check_bool(f"slice({i}) eq", sl.eq_str(&want), true)
+                        }
+                        None => { fail(f"group_slice({i}) None but group() had a value") }
+                    }
+                }
+                i = i + 1
+            }
+
+            // Out of range: None on every layer, no abort.
+            match rx.group_span(9) { Some(sp) => { fail("span(9) should be None") } None => {} }
+            match rx.group_slice(&line, 9) { Some(sl) => { fail("slice(9) should be None") } None => {} }
+
+            // ---- layer 3: Caps, the per-call value ----
+            match rx.caps(&line) {
+                Some(c) => {
+                    check_int("caps.len(1)", c.len(1), 24)
+                    check_int("caps.len(2)", c.len(2), 4)
+                    match c.span(1) {
+                        Some(sp) => { check_int("caps.span(1).start", sp.start, 0) }
+                        None     => { fail("caps.span(1) None") }
+                    }
+                    // A literal cannot be borrowed directly (`&"INFO"` is a
+                    // *Str, not a &Str), so bind it first.
+                    Str info = "INFO"
+                    match c.slice(2) {
+                        Some(sl) => { check_bool("caps.slice(2) eq", sl.eq_str(&info), true) }
+                        None     => { fail("caps.slice(2) None") }
+                    }
+                    // Rust's c[1].len() + c[2].len(), spelled in LS.
+                    check_int("caps sum", c.span(1)!.len + c.span(2)!.len, 28)
+                }
+                None => { fail("caps() None on a matching line") }
+            }
+        }
+        Err(e) => { fail("compile of the log pattern failed") }
+    }
+
+    // ---- absent group: did-not-participate must read as None, not empty ----
+    Str bare = "b"
+    match re.compile("(a)?(b)", 0) {
+        Ok(rx2) => {
+            check_bool("optional matches?", rx2.matches?(&bare), true)
+            // group() itself reports None for the non-participating group.
+            match rx2.group(&bare, 1) { Some(g) => { fail("group(1) should be None") } None => {} }
+            match rx2.group_span(1) { Some(sp) => { fail("span(1) should be None") } None => {} }
+            match rx2.group_slice(&bare, 1) { Some(sl) => { fail("slice(1) should be None") } None => {} }
+            match rx2.caps(&bare) {
+                Some(c) => {
+                    match c.span(1) { Some(sp) => { fail("caps.span(1) should be None") } None => {} }
+                    check_int("caps.len(1) absent", c.len(1), -1)
+                    check_int("caps.len(2) present", c.len(2), 1)
+                }
+                None => { fail("caps() None on a matching optional pattern") }
+            }
+            // A group that participated but is empty is NOT the same as absent.
+            match re.compile("(x*)y", 0) {
+                Ok(rx3) => {
+                    Str y = "y"
+                    check_bool("empty-group matches?", rx3.matches?(&y), true)
+                    match rx3.group_span(1) {
+                        Some(sp) => { check_int("empty group len", sp.len, 0) }
+                        None     => { fail("span(1) None for a participating empty group") }
+                    }
+                }
+                Err(e) => { fail("compile of the empty-group pattern failed") }
+            }
+        }
+        Err(e) => { fail("compile of the optional pattern failed") }
+    }
+
+    // ---- extract-and-convert: parse straight out of the slice, no Str ----
+    Str kv = "latency_ms=812 status=429"
+    match re.compile("(\\w+)=(\\d+)", 0) {
+        Ok(rx4) => {
+            check_bool("kv matches?", rx4.matches?(&kv), true)
+            match rx4.group_slice(&kv, 2) {
+                Some(sl) => {
+                    match sl.to_int() {
+                        Ok(v)  => { check_int("slice to_int", v, 812) }
+                        Err(e) => { fail("slice to_int returned Err") }
+                    }
+                }
+                None => { fail("group_slice(2) None on the kv line") }
+            }
+        }
+        Err(e) => { fail("compile of the kv pattern failed") }
+    }
+
+    if failures == 0 {
+        @print("ALL PASS")
+    } else {
+        @print(f"{failures} FAILURE(S)")
+    }
+    return failures
+}
