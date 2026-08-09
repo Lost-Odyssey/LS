@@ -5478,6 +5478,30 @@ ls_ir_snapshot(NAME closure_g SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/closure_g
 ls_ir_snapshot(NAME match_own_stress_test SAMPLE ${CMAKE_SOURCE_DIR}/tests/samples/match_own_stress_test.lls)
 endif()
 
+# test_ls_opt_env
+#
+# @subsystem driver/optimization
+# @guards LS_OPT reaching the JIT; CLI -O beating it; O0 staying the default
+# @sources main.c:handle_run optpipe.c:ls_opt_env_level
+#
+# LS_OPT was parsed by ls_opt_default_jit() but then discarded: `lls run`
+# hard-coded LS_OPT_O0 and jit_run_file_impl overwrote .level unconditionally,
+# so exporting it changed nothing for JIT while working normally for AOT. This
+# pins the fix in both directions -- the env var must take effect, and it must
+# NOT be able to move the default off O0 when unset or malformed (optpipe's own
+# fallback for AOT is O2, which is the wrong default here: the B1 tiering spike
+# measured +80~150% end-to-end cost for optimizing `lls run`).
+add_test(
+    NAME test_ls_opt_env
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE=${CMAKE_SOURCE_DIR}/tests/samples/ls_opt_env_test.lls
+        -P ${CMAKE_SOURCE_DIR}/tests/ls_opt_env.cmake
+)
+set_tests_properties(test_ls_opt_env PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- interface signature validation (2026-07-30) ----
 # Three defects, one family. (1) FromList/FromPairs are marker protocol
 # interfaces registered with param_count 0 on purpose, so comparing a real

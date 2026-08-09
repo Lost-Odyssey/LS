@@ -43,6 +43,16 @@ typedef struct {
 LsOptConfig ls_opt_default_aot(void);
 LsOptConfig ls_opt_default_jit(void);
 
+/* Read LS_OPT as an explicit user request. Returns true and writes *out only
+   when the variable is set to a value the level parser accepts ("0".."3","s",
+   "z"); returns false (out untouched) when it is unset, empty, or malformed.
+   Unlike ls_opt_default_{aot,jit}, this reports *absence* instead of
+   substituting a fallback level, which is what a caller whose own default is
+   not O2 needs -- notably `lls run`, where the default is deliberately O0
+   (docs/plan_jit_tiering.md: enabling any level costs +80~150% end to end).
+   Use this, not ls_opt_default_jit().level, to honour LS_OPT there. */
+bool ls_opt_env_level(LsOptLevel *out);
+
 /* Parse a CLI token ("-O0".."-O3","-Os","-Oz"). Returns true and writes *out on
    match; false (out untouched) otherwise. "-O" alone is treated as O2. */
 bool ls_opt_parse_flag(const char *arg, LsOptLevel *out);

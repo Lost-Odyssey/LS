@@ -753,13 +753,15 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
 
     /* Optionally run O2 optimization pipeline on the module before handing it
        to LLJIT. Enables inlining, loop vectorization, DCE, etc. — the same
-       passes AOT gets. Controlled by engine->jit_optimize, which is derived
-       solely from the CLI level (`-O<n>` / `--optimize`) in jit_run_file_impl —
-       there is no env knob: the plain `lls run` entry points hard-code
-       LS_OPT_O0, and jit_run_file_impl then overwrites .level unconditionally,
-       so LS_OPT does not reach the JIT either (only .native / .verify_each come
-       from the environment, via ls_opt_default_jit). Off by default: O2 adds
-       ~1s compile time for large modules (e.g. std.json). */
+       passes AOT gets. Controlled by engine->jit_optimize, derived from the
+       level jit_run_file_impl was handed. That level is resolved entirely by
+       the caller (main.c's handle_run: CLI `-O<n>`/`--optimize` first, then
+       LS_OPT via ls_opt_env_level, then O0) — this function never reads the
+       environment for it, and .native / .verify_each still come from the
+       environment via ls_opt_default_jit. Off by default: O2 adds ~1s compile
+       time for large modules (e.g. std.json), and the B1 tiering spike
+       measured +80~150% end to end, which is why O0 stays the default rather
+       than inheriting optpipe's AOT fallback of O2. */
     if (engine->jit_optimize) {
         char *target_triple = LLVMGetDefaultTargetTriple();
         LLVMTargetMachineRef tm = ls_opt_create_target_machine(target_triple, &engine->opt);
@@ -782,11 +784,10 @@ static LLVMModuleRef build_jit_module(JitEngine *engine, AstNode *ast, const cha
 
 static int jit_run_file_impl(const char *path, bool memcheck, bool profile, LsOptLevel opt_level);
 
+int jit_run_file_ex(const char *path, bool memcheck, bool profile, LsOptLevel level) {
+    return jit_run_file_impl(path, memcheck, profile, level);
+}
 int jit_run_file(const char *path) { return jit_run_file_impl(path, false, false, LS_OPT_O0); }
-int jit_run_file_memcheck(const char *path) { return jit_run_file_impl(path, true, false, LS_OPT_O0); }
-int jit_run_file_profile(const char *path) { return jit_run_file_impl(path, false, true, LS_OPT_O0); }
-int jit_run_file_optimize(const char *path) { return jit_run_file_impl(path, false, false, LS_OPT_O2); }
-int jit_run_file_optlevel(const char *path, LsOptLevel level) { return jit_run_file_impl(path, false, false, level); }
 
 static int jit_run_file_impl(const char *path, bool memcheck, bool profile, LsOptLevel opt_level) {
     char *source = read_file(path);
