@@ -167,9 +167,15 @@ def main() -> int {
     // this builds a len==cap==8 Str on purpose). Before the fingerprint this
     // returned "aaaaaaa"; it is now None. That is a real, if narrow,
     // behaviour change, and it is asserted here so it stays a specified
-    // property rather than a surprise -- if this line ever starts failing,
-    // someone changed the detector and needs to decide which behaviour they
-    // meant.
+    // property rather than a surprise -- if this stops holding, someone
+    // changed the detector and needs to decide which behaviour they meant.
+    //
+    // Whether reserve() actually MOVES the buffer is the allocator's call, not
+    // ours: glibc typically grows an 8-byte chunk in place while the MSVC CRT
+    // typically relocates it, so this used to pass on Windows and fail on every
+    // Linux CI run. The pointer decides, so the pointer selects which half of
+    // the same rule gets asserted -- moved means absent, in place means the
+    // original bytes. Do not "fix" this by demanding one outcome.
     match re.compile("([a-z]+)([0-9]+)", 0) {
         Ok(rx5) => {
             Str full = ""
@@ -177,16 +183,22 @@ def main() -> int {
             full.push_byte(49)                     // '1' -> len 8 == cap 8
             if !rx5.matches?(&full) { fail("full-buffer subject should match") }
             *u8 before = full.as_ptr() as *u8
-            *u8 z = full.c_str()                   // reserve(9) -> reallocates
+            *u8 z = full.c_str()                   // reserve(9) may reallocate
             *u8 after = full.as_ptr() as *u8
-            if before == after {
-                // The premise of this case no longer holds; the assertion
-                // below would pass for the wrong reason.
-                fail("expected c_str() to move a full buffer -- probe is stale")
-            }
             match rx5.group(&full, 1) {
-                Some(g) => { fail(f"moved-buffer group returned '{g}'; the detector cannot see through a realloc, so None is expected") }
-                None    => {}
+                Some(g) => {
+                    if before != after {
+                        fail(f"moved-buffer group returned '{g}'; the detector cannot see through a realloc, so None is expected")
+                    }
+                    // Buffer stayed put: same pointer, same bytes, so the
+                    // fingerprint matches and the original capture is correct.
+                    check_str("in-place buffer group", g, "aaaaaaa")
+                }
+                None => {
+                    if before == after {
+                        fail("in-place buffer read as absent -- the pointer never moved, so the fingerprint should have matched")
+                    }
+                }
             }
         }
         Err(e) => { fail("compile of the full-buffer pattern failed") }
