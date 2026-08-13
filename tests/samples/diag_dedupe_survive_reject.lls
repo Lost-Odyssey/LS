@@ -1,0 +1,23 @@
+// diag_dedupe_survive_reject.lls — the counterweight to diag_dedupe_reject.lls.
+//
+// De-duplicating loop diagnostics must not be bought by throwing one away.
+// Silencing all diagnostics on pass 1 (the obvious way to kill the duplicate)
+// makes the error below VANISH: a suppressed checker_error returns before
+// setting had_error, and had_error is what stops a failed generic instantiation
+// from being queued as if it succeeded -- so pass 2 finds the instance cached,
+// never re-checks its body, and Vec(int).get_ref -> &int reaches codegen as
+// invalid IR with rc=0.
+//
+// This file must contain NO OTHER ERROR.  With any earlier diagnostic present,
+// had_error is already set when the instantiation is attempted, the instance is
+// not cached, pass 2 re-checks it, and the error survives -- masking exactly the
+// regression this corpus exists to catch.  (Found by injection: the case
+// initially lived at the bottom of diag_dedupe_reject.lls and was silently
+// inert there.)
+import std.core.vec
+
+def main() {
+    Vec(int) v = [1]
+    int i = 0
+    while i < 1 { v.get_ref(0); i = i + 1 }
+}

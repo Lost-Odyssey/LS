@@ -31,6 +31,18 @@ typedef struct ImplTabEntry {
     int idx;            /* index into impl_registry */
 } ImplTabEntry;
 
+/* One diagnostic already emitted by checker_error / checker_error_help, for the
+   duplicate suppression described on Checker::diag_seen. Identity is the full
+   anchor plus the rendered text: same file, same position, same words is the
+   same diagnostic, whichever pass produced it. `file` is copied because
+   source_path is swapped while checking a generic template's body. */
+typedef struct CheckerDiagSeen {
+    char *file;   /* owned */
+    char *msg;    /* owned */
+    int line;
+    int col;
+} CheckerDiagSeen;
+
 typedef struct Checker {
     Scope *current_scope;       /* Current symbol scope */
     Type *current_fn_return;    /* Expected return type of current function */
@@ -216,6 +228,24 @@ typedef struct Checker {
        or enum. Only one is set at a time (mutually exclusive). */
     Type *current_impl_struct_type;
     Type *current_impl_enum_type;
+
+    /* Duplicate-diagnostic suppression, see checker_error.
+       The loop cases in check_stmt deliberately check the body TWICE (pass 1
+       discovers moves, pass 2 reports them) and silence only MOVE diagnostics on
+       pass 1 — so a type error inside any loop was emitted once per pass, while
+       the same error inside an `if` was emitted once.
+       Silencing type errors on pass 1 instead does not work: checker_error
+       returns before setting had_error when suppressed, and had_error is exactly
+       what keeps a failed generic instantiation from being queued as successful.
+       With it suppressed the instance is cached, pass 2 skips the body check, and
+       the error vanishes — measured: `while c { v.get_ref(0) }` on a Vec(int)
+       went from 1 diagnostic to 0 with rc=0, sending invalid IR to codegen.
+       So duplicates are filtered where they are emitted, keeping error_count
+       accurate and leaving the two-pass control flow untouched.
+       Bounded by CHECKER_MAX_ERRORS because that cap is enforced before a
+       diagnostic ever reaches the filter, so the table can never need to grow. */
+    CheckerDiagSeen diag_seen[CHECKER_MAX_ERRORS];
+    int diag_seen_count;
 
     /* Move semantics tracking */
     bool in_return_expr;       /* true if currently checking a return expression */

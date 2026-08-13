@@ -4792,6 +4792,19 @@ set_tests_properties(test_vec_oob PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- one diagnostic per mistake, in every statement context ----
+add_test(
+    NAME test_diag_dedupe
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DREPO_DIR=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_diag_dedupe.cmake
+)
+set_tests_properties(test_diag_dedupe PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- generic-template diagnostics carry the DEFINING file's path ----
 add_test(
     NAME test_pod_borrow_forin_reject

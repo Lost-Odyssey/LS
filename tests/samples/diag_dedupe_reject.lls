@@ -1,0 +1,16 @@
+// diag_dedupe_reject.lls — one diagnostic per mistake, regardless of the
+// statement it sits in.
+//
+// The loop cases in check_stmt run their body twice (pass 1 discovers moves,
+// pass 2 reports them) and silence only MOVE diagnostics on pass 1, so a type
+// error inside any loop used to be printed once per pass while the same error
+// inside an `if` was printed once.  Each name below is unique so the driver can
+// count its occurrences exactly.
+def main() {
+    int i = 0
+
+    if i == 0 { dedupe_in_if() }
+    while i < 1 { dedupe_in_while(); i = i + 1 }
+    for (int k = 0; k < 1; k = k + 1) { dedupe_in_forc() }
+    for k in 0..1 { dedupe_in_range() }
+}

@@ -49,6 +49,34 @@ static bool path_is_under_stdlib(const char *path)
 
 /* ---- Error reporting ---- */
 
+/* True if (file, line, col, msg) was already emitted; records it otherwise.
+   See Checker::diag_seen for why the filtering lives here and not in the
+   two-pass loop analysis that produces the duplicates. On allocation failure the
+   entry is simply not recorded — that risks a duplicate line, never a lost
+   diagnostic. */
+static bool checker_diag_is_dup(Checker *c, int line, int col, const char *msg)
+{
+    const char *file = c->source_path ? c->source_path : "";
+    for (int i = 0; i < c->diag_seen_count; i++)
+    {
+        CheckerDiagSeen *s = &c->diag_seen[i];
+        if (s->line == line && s->col == col &&
+            strcmp(s->msg, msg) == 0 && strcmp(s->file, file) == 0)
+            return true;
+    }
+    if (c->diag_seen_count >= CHECKER_MAX_ERRORS)
+        return false;
+    char *fcopy = strdup(file);
+    char *mcopy = strdup(msg);
+    if (fcopy == NULL || mcopy == NULL) { free(fcopy); free(mcopy); return false; }
+    CheckerDiagSeen *slot = &c->diag_seen[c->diag_seen_count++];
+    slot->file = fcopy;
+    slot->line = line;
+    slot->col  = col;
+    slot->msg  = mcopy;
+    return false;
+}
+
 void checker_error(Checker *c, int line, int col, const char *fmt, ...)
 {
     /* Suppressed during transitive trait re-registration: the trait was already
@@ -58,13 +86,25 @@ void checker_error(Checker *c, int line, int col, const char *fmt, ...)
         return;
     if (c->error_count >= CHECKER_MAX_ERRORS)
         return;
+
+    /* Same size as Diagnostic::message, so the text compared here is exactly
+       the text the user sees -- a longer buffer would compare bytes that get
+       truncated on the way out. */
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof buf, fmt, args);
+    va_end(args);
+
+    /* Checked before had_error/error_count so a re-reported error neither
+       double-counts against CHECKER_MAX_ERRORS nor prints twice. */
+    if (checker_diag_is_dup(c, line, col, buf))
+        return;
+
     c->had_error = true;
     c->error_count++;
 
-    va_list args;
-    va_start(args, fmt);
-    diag_vemitf(DIAG_TYPE_ERROR, c->source_path, line, col, 1, NULL, fmt, args);
-    va_end(args);
+    diag_emitf(DIAG_TYPE_ERROR, c->source_path, line, col, 1, NULL, "%s", buf);
 }
 
 void checker_warning(Checker *c, int line, int col, const char *fmt, ...)
@@ -84,13 +124,25 @@ void checker_error_help(Checker *c, int line, int col, int len,
         return;
     if (c->error_count >= CHECKER_MAX_ERRORS)
         return;
+
+    /* Same size as Diagnostic::message, so the text compared here is exactly
+       the text the user sees -- a longer buffer would compare bytes that get
+       truncated on the way out. */
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof buf, fmt, args);
+    va_end(args);
+
+    /* Same de-duplication as checker_error; `help` is not part of the identity
+       because it is derived from the same position and message. */
+    if (checker_diag_is_dup(c, line, col, buf))
+        return;
+
     c->had_error = true;
     c->error_count++;
 
-    va_list args;
-    va_start(args, fmt);
-    diag_vemitf(DIAG_TYPE_ERROR, c->source_path, line, col, len, help, fmt, args);
-    va_end(args);
+    diag_emitf(DIAG_TYPE_ERROR, c->source_path, line, col, len, help, "%s", buf);
 }
 
 /* ---- did-you-mean candidate iterators (C2-2) ----
@@ -1606,6 +1658,11 @@ static void checker_teardown(Checker *c, CheckerGenericMethods *out_gm)
         }
         free(c->pending_generic_methods);
         if (out_gm) { out_gm->methods = NULL; out_gm->count = 0; }
+    }
+
+    for (int i = 0; i < c->diag_seen_count; i++) {
+        free(c->diag_seen[i].file);
+        free(c->diag_seen[i].msg);
     }
 
     /* Cleanup */
