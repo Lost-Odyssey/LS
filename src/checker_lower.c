@@ -1045,13 +1045,14 @@ static AstNode *fb_call1(AstNode *recv, const char *method, AstNode *arg, int li
    v (the operand of the `&`) must be a Vec-like with get_ref(i)->&T and len().
    Desugars to an index loop binding x as a borrow &T via get_ref:
 
-     { __i = 0
-       while __i < V.len() {
-         x = V.get_ref(__i)     // inferred &T (get_ref returns a borrow)
-         BODY
-         __i = __i + 1
-       }
+     for (__i = 0; __i < V.len(); __i = __i + 1) {
+       x = V.get_ref(__i)       // inferred &T (get_ref returns a borrow)
+       BODY
      }
+
+   The index bump MUST be the C-for update clause, not the last statement of a
+   while body: `continue` branches to the update block here, but to the
+   condition block in a while, which would re-read the same element forever.
 
    x is a non-escaping borrow: the body may read it (auto-deref) but not move or
    store it (enforced by the borrow checker). Zero per-element clone — the win
@@ -1068,34 +1069,33 @@ AstNode *build_foreach_borrow_desugar(AstNode *node)
     AstNode *iter = node->as.for_stmt.iter;          /* AST_UNARY(&, V) */
     AstNode *V = iter->as.unary.operand;
 
-    AstNode *outer[2];
-    int oc = 0;
-
-    /* __i = 0 */
-    outer[oc++] = foreach_mk_let(iname, fb_int_lit(0, line, col), line, col);
+    /* init: __i = 0 */
+    AstNode *init = foreach_mk_let(iname, fb_int_lit(0, line, col), line, col);
 
     /* cond: __i < V.len() */
     AstNode *len_call = foreach_mk_call0(ast_clone_deep(V), "len", line, col);
     AstNode *cond = fb_binary(TOKEN_LT, foreach_mk_ident(iname, line, col), len_call, line, col);
 
-    /* body: { x = V.get_ref(__i); BODY; __i = __i + 1 } */
-    AstNode *getref = fb_call1(ast_clone_deep(V), "get_ref",
-                               foreach_mk_ident(iname, line, col), line, col);
-    AstNode *bind_x = foreach_mk_let(var, getref, line, col);   /* inferred &T */
-    AstNode *user_body = ast_clone_deep(node->as.for_stmt.body);
+    /* update: __i = __i + 1 */
     AstNode *incr = fb_assign(foreach_mk_ident(iname, line, col),
                               fb_binary(TOKEN_PLUS, foreach_mk_ident(iname, line, col),
                                         fb_int_lit(1, line, col), line, col),
                               line, col);
-    AstNode *body_stmts[3] = { bind_x, user_body, incr };
-    AstNode *while_body = foreach_mk_block(body_stmts, 3, line, col);
 
-    AstNode *whl = ast_new(AST_WHILE, line, col);
-    whl->as.while_stmt.cond = cond;
-    whl->as.while_stmt.body = while_body;
-    outer[oc++] = whl;
+    /* body: { x = V.get_ref(__i); BODY } */
+    AstNode *getref = fb_call1(ast_clone_deep(V), "get_ref",
+                               foreach_mk_ident(iname, line, col), line, col);
+    AstNode *bind_x = foreach_mk_let(var, getref, line, col);   /* inferred &T */
+    AstNode *user_body = ast_clone_deep(node->as.for_stmt.body);
+    AstNode *body_stmts[2] = { bind_x, user_body };
+    AstNode *for_body = foreach_mk_block(body_stmts, 2, line, col);
 
-    return foreach_mk_block(outer, oc, line, col);
+    AstNode *fr = ast_new(AST_FOR_C, line, col);
+    fr->as.for_c_stmt.init = init;
+    fr->as.for_c_stmt.cond = cond;
+    fr->as.for_c_stmt.update = incr;
+    fr->as.for_c_stmt.body = for_body;
+    return fr;
 }
 
 /* The 7 soft-reserved built-in operator traits. */

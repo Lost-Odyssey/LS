@@ -52,6 +52,87 @@ def main() -> int {
     for x in &empty { ec = ec + 1 }
     check(ec == 0, "empty borrow loop runs 0 times")
 
+    // ---- `continue` must advance to the next element ----
+    // The borrow form desugars to an index loop; `continue` has to reach the
+    // index bump or it re-reads the same element forever.  Every loop below is
+    // bounded by a trip counter so a regression FAILs instead of hanging.
+    Vec(Str) w = ["aa", "bbb", "c", "dddd"]
+
+    int trips = 0
+    i64 kept = 0
+    for x in &w {
+        trips = trips + 1
+        if trips > 20 { break }
+        if x.len() == 3 { continue }
+        kept = kept + x.len() as i64
+    }
+    check(trips == 4, "borrow continue: 4 trips (no re-read)")
+    check(kept == 7, "borrow continue: skipped the len-3 element")
+
+    // continue nested inside an if/else, and as the last statement of a block
+    int trips2 = 0
+    int odd = 0
+    for x in &w {
+        trips2 = trips2 + 1
+        if trips2 > 20 { break }
+        if x.len() % 2 == 0 {
+            continue
+        } else {
+            odd = odd + 1
+        }
+    }
+    check(trips2 == 4, "borrow continue in if/else: 4 trips")
+    check(odd == 2, "borrow continue in if/else: 2 odd-length elements")
+
+    // continue in the inner loop must not disturb the outer borrow loop
+    int outer_trips = 0
+    int inner_trips = 0
+    for x in &w {
+        outer_trips = outer_trips + 1
+        if outer_trips > 20 { break }
+        for y in &w {
+            inner_trips = inner_trips + 1
+            if inner_trips > 40 { break }
+            if y.len() == 1 { continue }
+        }
+    }
+    check(outer_trips == 4, "nested borrow continue: outer ran 4 times")
+    check(inner_trips == 16, "nested borrow continue: inner ran 4x4 times")
+
+    // `break` still leaves the loop (guards against fixing continue by breaking break)
+    int btrips = 0
+    for x in &w {
+        btrips = btrips + 1
+        if btrips == 2 { break }
+    }
+    check(btrips == 2, "borrow break still exits")
+
+    // owning for-in `continue` (advances via next(), regression guard)
+    int otrips = 0
+    i64 okept = 0
+    for x in w {
+        otrips = otrips + 1
+        if otrips > 20 { break }
+        if x.len() == 3 { continue }
+        okept = okept + x.len() as i64
+    }
+    check(otrips == 4, "owning continue: 4 trips")
+    check(okept == 7, "owning continue: skipped the len-3 element")
+
+    // range for-in `continue` (codegen path, regression guard)
+    int rtrips = 0
+    int rsum = 0
+    for i in 0..4 {
+        rtrips = rtrips + 1
+        if rtrips > 20 { break }
+        if i == 1 { continue }
+        rsum = rsum + i
+    }
+    check(rtrips == 4, "range continue: 4 trips")
+    check(rsum == 5, "range continue: skipped i == 1")
+
+    check(w.len() == 4, "w survives the continue loops")
+
     @print("BORROW FORIN PASS")
     return 0
 }
