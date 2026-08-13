@@ -1,0 +1,23 @@
+// pod_borrow_forin_reject.lls — POD-scalar elements and borrows, two diagnostics
+// in one pass, each pinned to a different file by the driver.
+//
+// (1) `for x in &v` over POD elements is screened at the loop itself, so the
+//     error lands on the user's own line with an actionable fix.  Before that
+//     screen it desugared first and the user got the container's internals plus
+//     a cascaded "undefined variable" for the binder.
+//
+// (2) Calling get_ref directly still instantiates Vec(int).get_ref -> &int and
+//     trips the aggregate-only borrow-return rule inside the TEMPLATE.  That
+//     diagnostic must name lib/std/core/vec.lls: a template's AST carries the
+//     defining file's line numbers, while the checker's source_path during
+//     monomorphization is this consumer file.  Mixing the two stamped a stdlib
+//     line number onto this file, at a line it does not have.
+import std.core.vec
+
+def main() {
+    Vec(int) v = [1, 2, 3]
+    int s = 0
+    for x in &v { s = s + 1 }
+    v.get_ref(0)
+    @print(s)
+}

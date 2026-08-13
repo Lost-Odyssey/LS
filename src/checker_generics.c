@@ -1376,7 +1376,20 @@ static bool check_and_queue_generic_method(Checker *c, Type *struct_type,
     Type *saved_impl_st = c->current_impl_struct_type;
     if (struct_type && struct_type->kind == TYPE_STRUCT)
         c->current_impl_struct_type = struct_type;
+    /* Every node in `cloned` carries a line number from the template's DEFINING
+       file, but during monomorphization c->source_path is the CONSUMER's file --
+       so a diagnostic raised in here lands on the consumer's file at a line that
+       often does not exist there (a POD `Vec(int)` hitting the aggregate-only
+       borrow-return rule reported `probe.lls:185` for a 7-line probe.lls).  Swap
+       for the duration of the body check; same treatment as the Phase B
+       signature check below, via the same helper. */
+    const char *saved_src_path = c->source_path;
+    {
+        const char *def_file = generic_template_source_file(c, struct_type);
+        if (def_file != NULL) c->source_path = def_file;
+    }
     check_stmt(c, cloned->as.fn_decl.body);
+    c->source_path = saved_src_path;
     /* Stamp the instantiated fn type BEFORE the elide pass: its v2 param
        candidates read fn_decl->resolved_type for the concrete param types
        (the assignment further down is now a no-op re-stamp; Type is shared,

@@ -665,10 +665,39 @@ void check_stmt(Checker *c, AstNode *node)
                 Type *ct = check_expr(c, itn->as.unary.operand);
                 if (ct != NULL && ct->kind == TYPE_STRUCT)
                 {
-                    bool has_getref = find_method_ensured(c, ct, "get_ref") != NULL;
+                    Type *getref  = find_method_ensured(c, ct, "get_ref");
                     bool has_len    = find_method_ensured(c, ct, "len") != NULL;
-                    if (has_getref && has_len)
+                    if (getref != NULL && has_len)
                     {
+                        /* Screen POD-scalar elements HERE, before desugaring.
+                           Otherwise the synthesized get_ref() call trips the
+                           aggregate-only borrow-return rule inside the
+                           CONTAINER's source: the user gets the template's
+                           `return self.data[i]` (a stdlib line they never
+                           wrote) plus a cascaded "undefined variable" for the
+                           loop binder.  find_method_ensured only registers the
+                           instance's methods -- it does not body-check them --
+                           so the signature is available this early.
+                           Scalars are whitelisted rather than aggregates
+                           blacklisted: an element type that is still abstract
+                           takes the normal path instead of being rejected. */
+                        Type *elem = NULL;
+                        if (getref->kind == TYPE_FUNCTION &&
+                            getref->as.function.return_type != NULL &&
+                            getref->as.function.return_type->kind == TYPE_REFERENCE)
+                            elem = getref->as.function.return_type->as.pointer_to;
+                        if (elem != NULL && (type_is_numeric(elem) ||
+                                             elem->kind == TYPE_BOOL ||
+                                             elem->kind == TYPE_CHAR))
+                        {
+                            checker_error(c, node->line, node->column,
+                                "cannot borrow elements of '%s': it yields '&%s', and "
+                                "element borrows are supported for struct/enum elements "
+                                "only — drop the '&' and write `for %s in ...` (copying "
+                                "a POD element costs nothing)",
+                                type_name(ct), type_name(elem), node->as.for_stmt.var);
+                            break;
+                        }
                         AstNode *d = build_foreach_borrow_desugar(node);
                         node->as.for_stmt.desugared = d;
                         check_stmt(c, d);

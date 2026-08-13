@@ -4792,6 +4792,19 @@ set_tests_properties(test_vec_oob PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 
+# ---- generic-template diagnostics carry the DEFINING file's path ----
+add_test(
+    NAME test_pod_borrow_forin_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DSAMPLE_DIR=${CMAKE_SOURCE_DIR}/tests/samples
+        -DREPO_DIR=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_pod_borrow_forin_reject.cmake
+)
+set_tests_properties(test_pod_borrow_forin_reject PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
 # ---- borrowing for-in: `for x in &v` zero-copy element read (non-escaping &T) ----
 add_test(
     NAME test_borrow_for_in
