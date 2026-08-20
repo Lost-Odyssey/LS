@@ -1,0 +1,136 @@
+// AVX-512 (16-wide) kernels vs the scalar reference, bit-exact. Deliberately
+// bypasses cgemm_vl() and calls the _w16 entry points directly, so this
+// corpus's behaviour does not depend on what the running machine detects --
+// it always exercises the 16-wide path, which is the point: this file is
+// meant to be cross-compiled with --target=graniterapids and run under
+// Intel SDE (see tests/test_cgemm_sde_avx512.cmake), where the host CPU
+// itself has no AVX-512.
+import std.sci.cgemm as cg
+import std.sys.c as c
+import cgemm_testutil as tu
+
+// N-vec path: uk_4x16c (4 rows x 16 cols) + uk_1x16c (M tail / N tail).
+def check_nvec(int M, int N, int K, int acc, int has_bias, int act, &!tu.Seed seed) -> bool {
+    int asz = M * K
+    int bsz = K * N
+    int csz = M * N
+    *f32 Ar = c.malloc((asz * 4) as i64) as *f32
+    *f32 Ai = c.malloc((asz * 4) as i64) as *f32
+    *f32 Br = c.malloc((bsz * 4) as i64) as *f32
+    *f32 Bi = c.malloc((bsz * 4) as i64) as *f32
+    *f32 R0 = c.malloc((csz * 4) as i64) as *f32
+    *f32 I0 = c.malloc((csz * 4) as i64) as *f32
+    *f32 R1 = c.malloc((csz * 4) as i64) as *f32
+    *f32 I1 = c.malloc((csz * 4) as i64) as *f32
+    *f32 Br32 = c.malloc((N * 4) as i64) as *f32
+    *f32 Bi32 = c.malloc((N * 4) as i64) as *f32
+
+    tu.fill(Ar, asz, &!seed); tu.fill(Ai, asz, &!seed)
+    tu.fill(Br, bsz, &!seed); tu.fill(Bi, bsz, &!seed)
+    tu.fill(R0, csz, &!seed); tu.fill(I0, csz, &!seed)
+    for i in 0..csz { R1[i] = R0[i]; I1[i] = I0[i] }
+
+    *f32 bias_r = nil
+    *f32 bias_i = nil
+    if has_bias != 0 {
+        tu.fill(Br32, N, &!seed); tu.fill(Bi32, N, &!seed)
+        bias_r = Br32
+        bias_i = Bi32
+    }
+
+    cg.cgemm_ref(Ar, Ai, K, 0, Br, Bi, N, R0, I0, N, M, N, K,
+                 bias_r, bias_i, act, acc)
+    cg.cgemm_soa_nvec_w16(Ar, Ai, K, Br, Bi, N, R1, I1, N, M, N, K, acc, 0,
+                          bias_r, bias_i, act)
+
+    bool ok = tu.same_bits(R0, R1, csz) && tu.same_bits(I0, I1, csz)
+    if !ok { @print(f"FAIL nvec_w16 M={M} N={N} K={K} acc={acc} bias={has_bias} act={act}") }
+
+    c.free(Ar as *u8); c.free(Ai as *u8); c.free(Br as *u8); c.free(Bi as *u8)
+    c.free(R0 as *u8); c.free(I0 as *u8); c.free(R1 as *u8); c.free(I1 as *u8)
+    c.free(Br32 as *u8); c.free(Bi32 as *u8)
+    return ok
+}
+
+// M-vec path: uk_16x1c_mvec, driven through cgemm_soa_mvec_w16. A is
+// column-major (K x M), same shape as cgemm_trans_a.lls's check_t.
+def check_mvec(int M, int N, int K, int has_bias, int act, &!tu.Seed seed) -> bool {
+    int asz = M * K
+    *f32 Ar  = c.malloc((asz * 4) as i64) as *f32   // row-major M x K
+    *f32 Ai  = c.malloc((asz * 4) as i64) as *f32
+    *f32 Atr = c.malloc((asz * 4) as i64) as *f32   // col-major K x M
+    *f32 Ati = c.malloc((asz * 4) as i64) as *f32
+    *f32 Br = c.malloc((K * N * 4) as i64) as *f32
+    *f32 Bi = c.malloc((K * N * 4) as i64) as *f32
+    *f32 R0 = c.malloc((M * N * 4) as i64) as *f32
+    *f32 I0 = c.malloc((M * N * 4) as i64) as *f32
+    *f32 R1 = c.malloc((M * N * 4) as i64) as *f32
+    *f32 I1 = c.malloc((M * N * 4) as i64) as *f32
+
+    tu.fill(Ar, asz, &!seed); tu.fill(Ai, asz, &!seed)
+    tu.fill(Br, K * N, &!seed); tu.fill(Bi, K * N, &!seed)
+    for i in 0..M { for k in 0..K {
+        Atr[k * M + i] = Ar[i * K + k]
+        Ati[k * M + i] = Ai[i * K + k]
+    } }
+    for i in 0..(M * N) { R0[i] = 0.0 as f32; I0[i] = 0.0 as f32; R1[i] = 0.0 as f32; I1[i] = 0.0 as f32 }
+
+    *f32 Ur = c.malloc((N * 4) as i64) as *f32
+    *f32 Ui = c.malloc((N * 4) as i64) as *f32
+    tu.fill(Ur, N, &!seed); tu.fill(Ui, N, &!seed)
+    *f32 Vr = nil
+    *f32 Vi = nil
+    if has_bias != 0 { Vr = Ur; Vi = Ui }
+
+    cg.cgemm_ref(Ar, Ai, K, 0, Br, Bi, N, R0, I0, N, M, N, K,
+                 Vr, Vi, act, 0)
+    cg.cgemm_soa_mvec_w16(Atr, Ati, M, Br, Bi, N, R1, I1, N, M, N, K, 0,
+                          Vr, Vi, act)
+
+    bool ok = tu.same_bits(R0, R1, M * N) && tu.same_bits(I0, I1, M * N)
+    if !ok { @print(f"FAIL mvec_w16 M={M} N={N} K={K} bias={has_bias} act={act}") }
+
+    c.free(Ar as *u8);  c.free(Ai as *u8);  c.free(Atr as *u8); c.free(Ati as *u8)
+    c.free(Br as *u8);  c.free(Bi as *u8)
+    c.free(R0 as *u8);  c.free(I0 as *u8);  c.free(R1 as *u8);  c.free(I1 as *u8)
+    c.free(Ur as *u8);  c.free(Ui as *u8)
+    return ok
+}
+
+// SHAPE SELECTION: see the note above main() in cgemm_soa.lls. Shapes are picked
+// for the code path they exercise (here VL=16, so the N tails and the N < VL
+// fallback move), not copied from any caller's dimensions.
+def main() {
+    tu.Seed seed = tu.Seed{ v: 88172645463325252 }
+    int bad = 0
+    // divisible shapes: M %4 == 0, N %16 == 0
+    if !check_nvec(4,  16,  1, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(4,  16,  7, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(8,  32, 17, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(32, 16, 17, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(32, 128, 64, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(8,  32, 17, 1, 0, 0, &!seed) { bad = bad + 1 }   // accumulate
+    // non-divisible shapes: M tail, N tail, both at once
+    if !check_nvec(1,  1,  1, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(3,  7,  8, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(31, 17, 17, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(33, 65, 64, 0, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_nvec(32, 65, 17, 1, 0, 0, &!seed) { bad = bad + 1 }
+    // fused bias/activation epilogue
+    if !check_nvec(32, 16, 17, 0, 1, 0, &!seed) { bad = bad + 1 }   // bias only
+    if !check_nvec(32, 16, 17, 0, 0, 1, &!seed) { bad = bad + 1 }   // relu only
+    if !check_nvec(32, 65, 17, 0, 1, 1, &!seed) { bad = bad + 1 }   // bias + relu
+    if !check_nvec(32, 65, 17, 1, 1, 1, &!seed) { bad = bad + 1 }   // acc + bias + relu
+
+    // M-vec path (N < VL, column-major A) -- exercises uk_16x1c_mvec.
+    if !check_mvec(32, 1, 17, 0, 0, &!seed) { bad = bad + 1 }    // GEMV, the M-vec case
+    if !check_mvec(32, 3, 17, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_mvec(16, 1,  1, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_mvec(31, 7, 64, 0, 0, &!seed) { bad = bad + 1 }    // M tail
+    if !check_mvec(64, 7,  8, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_mvec(32, 1, 17, 1, 0, &!seed) { bad = bad + 1 }    // bias only
+    if !check_mvec(32, 3, 17, 0, 1, &!seed) { bad = bad + 1 }    // activation only
+    if !check_mvec(31, 7, 64, 1, 1, &!seed) { bad = bad + 1 }    // both, with M tail
+
+    if bad == 0 { @print("ALL PASS") }
+}

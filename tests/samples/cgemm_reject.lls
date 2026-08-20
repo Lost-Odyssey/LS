@@ -1,0 +1,48 @@
+// Unimplemented combinations must return a status, not silently compute
+// something plausible. Silent degradation is the failure mode this family is
+// most exposed to: every rejected combination has a "close enough" path that
+// would produce numbers.
+import std.sci.cgemm as cg
+import std.sys.c as c
+
+def main() {
+    *f32 p = c.malloc(64) as *f32
+    for i in 0..16 { p[i] = 1.0 as f32 }
+
+    *f32 no_bias = nil
+    cg.CEpilogue e = {bias_re: no_bias, bias_im: no_bias, act: ActNone}
+    int bad = 0
+
+    // AoS operand -> NotImplemented
+    cg.CMat a_aos = {planes: AoS(p), ld: 2, op: NoTrans}
+    cg.CMat b_soa = {planes: SoA(p, p), ld: 2, op: NoTrans}
+    cg.CMat c_soa = {planes: SoA(p, p), ld: 2, op: NoTrans}
+    match cg.cgemm(&a_aos, &b_soa, &!c_soa, 2, 2, 2, &e, false) {
+        NotImplemented => {}
+        _ => { bad = bad + 1; @print("FAIL AoS not rejected") }
+    }
+
+    // ConjTrans -> NotImplemented
+    cg.CMat a_ct = {planes: SoA(p, p), ld: 2, op: ConjTrans}
+    match cg.cgemm(&a_ct, &b_soa, &!c_soa, 2, 2, 2, &e, false) {
+        NotImplemented => {}
+        _ => { bad = bad + 1; @print("FAIL ConjTrans not rejected") }
+    }
+
+    // B.op != NoTrans -> NotImplemented
+    cg.CMat b_t = {planes: SoA(p, p), ld: 2, op: Trans}
+    cg.CMat a_ok = {planes: SoA(p, p), ld: 2, op: NoTrans}
+    match cg.cgemm(&a_ok, &b_t, &!c_soa, 2, 2, 2, &e, false) {
+        NotImplemented => {}
+        _ => { bad = bad + 1; @print("FAIL B.op=Trans not rejected") }
+    }
+
+    // bad dims -> InvalidArg
+    match cg.cgemm(&a_ok, &b_soa, &!c_soa, 0, 2, 2, &e, false) {
+        InvalidArg => {}
+        _ => { bad = bad + 1; @print("FAIL M=0 not rejected") }
+    }
+
+    c.free(p as *u8)
+    if bad == 0 { @print("ALL PASS") }
+}

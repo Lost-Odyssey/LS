@@ -1,0 +1,40 @@
+// Shared corpus helpers for the cgemm tests. Sibling-module import: the
+// consumers say `import cgemm_testutil as tu`.
+// NOTE: plain `def`, never `public def` -- a top-level `public def` is not
+// visible to importers in this compiler (measured 2026-08-15).
+//
+// DEVIATION from the brief: the brief's `rnd`/`fill` take `&!i64` directly,
+// but this compiler only supports `&struct` / `&!struct` / `&enum` borrows
+// (measured here) -- a bare `&!i64` is a type error. Wrapped the seed in a
+// one-field struct instead; the RNG algorithm and call sites are unchanged.
+struct Seed { i64 v }
+
+// deterministic xorshift so the corpora are reproducible across runs and machines
+def rnd(&!Seed s) -> f32 {
+    i64 x = s.v
+    x = x ^ (x << 13)
+    x = x ^ (x >> 7)
+    x = x ^ (x << 17)
+    s.v = x
+    int m = (x & 2047) as int
+    return ((m as f32) - (1024.0 as f32)) / (128.0 as f32)
+}
+
+def fill(*f32 p, int n, &!Seed s) {
+    for i in 0..n { p[i] = rnd(&!s) }
+}
+
+// bit-exact comparison of two f32 buffers: reinterpret each element as its
+// raw u32 pattern and compare integers. This is a real bitwise compare, so
+// it correctly tells +0.0 apart from -0.0 (different patterns) and treats
+// two identically-encoded NaNs as equal (unlike f32 `!=`, which is true for
+// any NaN operand). Pointer-to-pointer casts are a no-op reinterpret in this
+// compiler (opaque LLVM pointers), so `a as *u32` views the same bytes.
+def same_bits(*f32 a, *f32 b, int n) -> bool {
+    *u32 ua = a as *u32
+    *u32 ub = b as *u32
+    for i in 0..n {
+        if ua[i] != ub[i] { return false }
+    }
+    return true
+}

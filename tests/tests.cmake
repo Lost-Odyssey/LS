@@ -5702,3 +5702,58 @@ add_test(
         -DWORK_DIR=${CMAKE_BINARY_DIR}
         -P ${CMAKE_SOURCE_DIR}/tests/test_proc_env.cmake
 )
+
+# ---- complex GEMM: scalar reference ----
+add_test(
+    NAME test_cgemm_ref
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_cgemm_ref.cmake
+)
+
+# ---- complex GEMM: N-vec AVX2 micro-kernel vs scalar reference ----
+add_test(
+    NAME test_cgemm_soa
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_cgemm_soa.cmake
+)
+
+# ---- complex GEMM: M-vec micro-kernel (column-major A) vs scalar reference ----
+add_test(
+    NAME test_cgemm_trans_a
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_cgemm_trans_a.cmake
+)
+
+# ---- complex GEMM: unimplemented combinations return a status, not a value ----
+add_test(
+    NAME test_cgemm_reject
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_cgemm_reject.cmake
+)
+
+# ---- complex GEMM: AVX-512 (16-wide) kernels vs scalar reference, under Intel
+# SDE (skips cleanly if the SDE executable is not present on this machine) ----
+add_test(
+    NAME test_cgemm_sde_avx512
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_cgemm_sde_avx512.cmake
+)
+
+# ---- complex GEMM: generic layout converters (AoS<->SoA, transpose, conjugate) ----
+add_test(
+    NAME test_cgemm_convert
+    COMMAND ${CMAKE_COMMAND}
+        -DLS_EXE=$<TARGET_FILE:ls>
+        -DWORK_DIR=${CMAKE_BINARY_DIR}
+        -P ${CMAKE_SOURCE_DIR}/tests/test_cgemm_convert.cmake
+)

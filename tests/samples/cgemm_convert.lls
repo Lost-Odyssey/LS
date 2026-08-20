@@ -1,0 +1,229 @@
+// Round-trip identities for the generic layout converters: aos->soa->aos,
+// transpose twice, conj twice. A round-trip needs no expected values, so the
+// corpus cannot drift out of sync with the implementation the way a table of
+// literals would.
+//
+// A round-trip alone is too weak on its own: two mutually-inverse bugs (e.g.
+// cconv_aos_to_soa and cconv_soa_to_aos both swapping re/im the same way)
+// cancel out and an identity function passes every round-trip trivially. So
+// each check below also asserts something a no-op/copy implementation would
+// fail: that AoS actually deinterleaves into the right plane (not just the
+// right bits somewhere), that transpose actually moves a value from (i,j) to
+// (j,i) and not just leaves it at (i,j), and that conj actually flips a known
+// nonzero imaginary sign rather than passing it through.
+import std.sci.cgemm_kernels as uk
+import std.sys.c as c
+import cgemm_testutil as tu
+
+// Bit-exact compare of one f32 at arbitrary offsets into two buffers -- same
+// reinterpret-as-u32 trick as tu.same_bits, but for a single indexed element
+// instead of a contiguous range (needed to compare across two different
+// strides/layouts).
+def eq_at(*f32 a, int ia, *f32 b, int ib) -> bool {
+    *u32 ua = a as *u32
+    *u32 ub = b as *u32
+    return ua[ia] == ub[ib]
+}
+
+// aos -> soa -> aos must reproduce the original AoS buffer bit for bit.
+// ld_z/ld_p are deliberately padded past cols/rows on some calls (see main)
+// to catch a converter that hardcodes the stride instead of using `ld`.
+def check_aos_soa_roundtrip(int rows, int cols, int ldz_pad, int ldp_pad,
+                            &!tu.Seed seed) -> bool {
+    int ld_z = cols + ldz_pad
+    int ld_p = cols + ldp_pad
+    int zsz = rows * ld_z * 2
+    int psz = rows * ld_p
+    *f32 z0 = c.malloc((zsz * 4) as i64) as *f32
+    *f32 z1 = c.malloc((zsz * 4) as i64) as *f32
+    *f32 re = c.malloc((psz * 4) as i64) as *f32
+    *f32 im = c.malloc((psz * 4) as i64) as *f32
+    tu.fill(z0, zsz, &!seed)
+    tu.fill(z1, zsz, &!seed)   // pre-dirty the destination, not zero
+    int i = 0
+    while i < psz { re[i] = 0.0 as f32; im[i] = 0.0 as f32; i = i + 1 }
+
+    uk.cconv_aos_to_soa(z0, ld_z, re, im, ld_p, rows, cols)
+    uk.cconv_soa_to_aos(re, im, ld_p, z1, ld_z, rows, cols)
+
+    bool ok = true
+    i = 0
+    while i < rows {
+        int j = 0
+        while j < cols {
+            if !eq_at(z0, i * ld_z * 2 + j * 2, z1, i * ld_z * 2 + j * 2) { ok = false }
+            if !eq_at(z0, i * ld_z * 2 + j * 2 + 1, z1, i * ld_z * 2 + j * 2 + 1) { ok = false }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if !ok { @print(f"FAIL aos_soa_roundtrip rows={rows} cols={cols} ldz_pad={ldz_pad} ldp_pad={ldp_pad}") }
+
+    // Would-catch-a-copy check: verify SoA really deinterleaved into the
+    // correct plane (real -> re, imaginary -> im), not e.g. both planes
+    // holding a copy of the interleaved buffer or re/im swapped.
+    bool deint_ok = true
+    i = 0
+    while i < rows {
+        int j = 0
+        while j < cols {
+            if !eq_at(z0, i * ld_z * 2 + j * 2, re, i * ld_p + j) { deint_ok = false }
+            if !eq_at(z0, i * ld_z * 2 + j * 2 + 1, im, i * ld_p + j) { deint_ok = false }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if !deint_ok {
+        ok = false
+        @print(f"FAIL aos_soa_deinterleave rows={rows} cols={cols} ldz_pad={ldz_pad} ldp_pad={ldp_pad}")
+    }
+
+    c.free(z0 as *u8); c.free(z1 as *u8); c.free(re as *u8); c.free(im as *u8)
+    return ok
+}
+
+// transpose(transpose(A)) must reproduce A bit for bit.
+def check_transpose_roundtrip(int rows, int cols, int lds_pad, int ldd_pad,
+                              &!tu.Seed seed) -> bool {
+    int ld_s = cols + lds_pad
+    int ld_d = rows + ldd_pad
+    int ssz = rows * ld_s
+    int dsz = cols * ld_d
+    *f32 sr = c.malloc((ssz * 4) as i64) as *f32
+    *f32 si = c.malloc((ssz * 4) as i64) as *f32
+    *f32 dr = c.malloc((dsz * 4) as i64) as *f32
+    *f32 di = c.malloc((dsz * 4) as i64) as *f32
+    *f32 sr2 = c.malloc((ssz * 4) as i64) as *f32
+    *f32 si2 = c.malloc((ssz * 4) as i64) as *f32
+    tu.fill(sr, ssz, &!seed)
+    tu.fill(si, ssz, &!seed)
+    tu.fill(dr, dsz, &!seed)   // pre-dirty
+    tu.fill(di, dsz, &!seed)
+    tu.fill(sr2, ssz, &!seed)
+    tu.fill(si2, ssz, &!seed)
+
+    uk.ctranspose_soa(sr, si, ld_s, dr, di, ld_d, rows, cols)
+    uk.ctranspose_soa(dr, di, ld_d, sr2, si2, ld_s, cols, rows)
+
+    bool ok = true
+    int i = 0
+    while i < rows {
+        int j = 0
+        while j < cols {
+            if !eq_at(sr, i * ld_s + j, sr2, i * ld_s + j) { ok = false }
+            if !eq_at(si, i * ld_s + j, si2, i * ld_s + j) { ok = false }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if !ok { @print(f"FAIL transpose_roundtrip rows={rows} cols={cols} lds_pad={lds_pad} ldd_pad={ldd_pad}") }
+
+    // Would-catch-a-copy check: a genuine transpose moves (0,1) to (1,0). A
+    // copy-the-input implementation (or one that ignores ld_d and reuses
+    // ld_s) would leave it at (0,1) or land it somewhere else entirely.
+    if rows > 1 && cols > 1 {
+        bool pos_ok = eq_at(sr, 0 * ld_s + 1, dr, 1 * ld_d + 0)
+        pos_ok = pos_ok && eq_at(si, 0 * ld_s + 1, di, 1 * ld_d + 0)
+        if !pos_ok {
+            ok = false
+            @print(f"FAIL transpose_position rows={rows} cols={cols} lds_pad={lds_pad} ldd_pad={ldd_pad}")
+        }
+    }
+
+    c.free(sr as *u8); c.free(si as *u8); c.free(dr as *u8); c.free(di as *u8)
+    c.free(sr2 as *u8); c.free(si2 as *u8)
+    return ok
+}
+
+// conj(conj(A)) must reproduce A bit for bit.
+def check_conj_roundtrip(int rows, int cols, int lds_pad, int ldd_pad,
+                         &!tu.Seed seed) -> bool {
+    int ld_s = cols + lds_pad
+    int ld_d = cols + ldd_pad
+    int ssz = rows * ld_s
+    int dsz = rows * ld_d
+    *f32 sr = c.malloc((ssz * 4) as i64) as *f32
+    *f32 si = c.malloc((ssz * 4) as i64) as *f32
+    *f32 dr = c.malloc((dsz * 4) as i64) as *f32
+    *f32 di = c.malloc((dsz * 4) as i64) as *f32
+    *f32 sr2 = c.malloc((ssz * 4) as i64) as *f32
+    *f32 si2 = c.malloc((ssz * 4) as i64) as *f32
+    tu.fill(sr, ssz, &!seed)
+    tu.fill(si, ssz, &!seed)
+    tu.fill(dr, dsz, &!seed)
+    tu.fill(di, dsz, &!seed)
+    tu.fill(sr2, ssz, &!seed)
+    tu.fill(si2, ssz, &!seed)
+    // Pin a known nonzero imaginary value so the sign-flip check below can't
+    // land on the rare rnd() output that is exactly zero.
+    f32 im0 = 2.25 as f32
+    si[0] = im0
+
+    uk.cconj_soa(sr, si, ld_s, dr, di, ld_d, rows, cols)
+    uk.cconj_soa(dr, di, ld_d, sr2, si2, ld_s, rows, cols)
+
+    bool ok = true
+    int i = 0
+    while i < rows {
+        int j = 0
+        while j < cols {
+            if !eq_at(sr, i * ld_s + j, sr2, i * ld_s + j) { ok = false }
+            if !eq_at(si, i * ld_s + j, si2, i * ld_s + j) { ok = false }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    if !ok { @print(f"FAIL conj_roundtrip rows={rows} cols={cols} lds_pad={lds_pad} ldd_pad={ldd_pad}") }
+
+    // Would-catch-a-copy check: real part passes through unchanged, but the
+    // pinned nonzero imaginary part must actually have its sign flipped, not
+    // just be copied through as-is.
+    bool sign_ok = eq_at(sr, 0, dr, 0)
+    if dr[0] != sr[0] { sign_ok = false }
+    if di[0] != (-im0) { sign_ok = false }
+    if !sign_ok {
+        ok = false
+        @print(f"FAIL conj_sign_flip rows={rows} cols={cols} lds_pad={lds_pad} ldd_pad={ldd_pad}")
+    }
+
+    c.free(sr as *u8); c.free(si as *u8); c.free(dr as *u8); c.free(di as *u8)
+    c.free(sr2 as *u8); c.free(si2 as *u8)
+    return ok
+}
+
+def main() {
+    tu.Seed seed = tu.Seed{ v: 305441741 as i64 }
+    int bad = 0
+
+    // (rows, cols, ld pad #1, ld pad #2) -- square, non-square, and shapes
+    // whose dimensions are not multiples of 8, some with padded strides to
+    // catch a converter that hardcodes cols/rows instead of using `ld`.
+    if !check_aos_soa_roundtrip(1, 1, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_aos_soa_roundtrip(8, 8, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_aos_soa_roundtrip(16, 16, 3, 2, &!seed) { bad = bad + 1 }
+    if !check_aos_soa_roundtrip(4, 12, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_aos_soa_roundtrip(12, 4, 2, 0, &!seed) { bad = bad + 1 }
+    if !check_aos_soa_roundtrip(5, 7, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_aos_soa_roundtrip(7, 5, 0, 3, &!seed) { bad = bad + 1 }
+    if !check_aos_soa_roundtrip(3, 15, 1, 1, &!seed) { bad = bad + 1 }
+
+    if !check_transpose_roundtrip(1, 1, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_transpose_roundtrip(8, 8, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_transpose_roundtrip(16, 16, 2, 3, &!seed) { bad = bad + 1 }
+    if !check_transpose_roundtrip(4, 12, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_transpose_roundtrip(12, 4, 1, 0, &!seed) { bad = bad + 1 }
+    if !check_transpose_roundtrip(5, 7, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_transpose_roundtrip(7, 5, 2, 0, &!seed) { bad = bad + 1 }
+    if !check_transpose_roundtrip(3, 15, 0, 2, &!seed) { bad = bad + 1 }
+
+    if !check_conj_roundtrip(1, 1, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_conj_roundtrip(8, 8, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_conj_roundtrip(16, 16, 3, 1, &!seed) { bad = bad + 1 }
+    if !check_conj_roundtrip(4, 12, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_conj_roundtrip(12, 4, 0, 2, &!seed) { bad = bad + 1 }
+    if !check_conj_roundtrip(5, 7, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_conj_roundtrip(7, 5, 1, 0, &!seed) { bad = bad + 1 }
+    if !check_conj_roundtrip(3, 15, 0, 1, &!seed) { bad = bad + 1 }
+
+    if bad == 0 { @print("ALL PASS") }
+}

@@ -1,0 +1,795 @@
+// std/sci/cgemm_kernels.lls -- the register-resident complex GEMM micro-kernels.
+//
+// This file is deliberately restricted to the `ls emit-c` subset: free functions
+// over f32 pointers, Simd(T,N) and control flow. No enums, no Str/Vec, no
+// methods. That is what lets `ls emit-c` regenerate the C peer's kernels from
+// this exact source, so the two implementations cannot drift.
+//
+// Accumulators are hand-unrolled ON PURPOSE. Parameterising them as
+// array(Simd(f32,N), MR) indexed by a loop variable was measured to be a
+// catastrophic regression: LLVM cannot SROA-promote a dynamically indexed Simd
+// array, so the accumulators fall to the stack (docs/plan_arch_cleanup.md S6).
+//
+// Bit-exactness contract, do not violate:
+//   * no k-blocking into partial sums   * no horizontal reduce
+//   * the four FMAs stay in this order: +ar*br, -ai*bi, +ar*bi, +ai*br
+//   * the accumulator starts at C when acc != 0
+//
+// Epilogue (bias, then activation) runs in registers after the k-loop and
+// before the store -- never a separate pass over C. bias_r/bias_i == nil
+// means no bias; act: 0 = none, 1 = CRelu (relu independently on re and im).
+//
+// CRelu, and why the trailing `+ z` is load-bearing:
+//   `__simd_max(x, zero)` lowers to llvm.maxnum, whose result for a NEGATIVE
+//   ZERO input is "either operand" -- and LLVM canonicalises the operand order
+//   differently at -O0 than at -O1+. Measured: with x = -0.0 the kernel
+//   returned -0.0 at -O0 but +0.0 at -O2, while the scalar reference (a plain
+//   `x < 0` branch) always kept -0.0. That is a bit-exactness divergence that
+//   only appears once the optimiser is on, i.e. exactly where it matters.
+//   Adding `+ zero` afterwards forces the zero case to +0.0 deterministically:
+//   `x + 0.0` is the identity for every value EXCEPT -0.0, which it normalises.
+//   The reference uses `x <= 0` for the same reason, so both sides agree at
+//   every optimisation level. Verified that the fadd survives -O2 (it is not
+//   foldable without fast-math, precisely because it is not the identity).
+//   NaN is still unspecified here and the corpora deliberately contain none.
+//
+// MR (register-block height) for the AVX2 8-wide N-vec kernel: BOTH 4 and 6
+// exist (uk_4x8c and uk_6x8c) and cgemm_soa_nvec picks between them from M.
+// Task 12 measured them against the same driver structure, same shapes and
+// epilogue, on the same machine (Get-RobustStat, >= 7 process launches per
+// point, `lls compile -O2 --native`, all runs clean -- no dropped launches).
+// Median ns/call, Mr4 vs Mr6, at N=K=32 across M:
+//   M= 8:   717.5 vs  836.3   Mr4
+//   M=12:  1048.8 vs  940.3   Mr6
+//   M=16:  1414.4 vs 1656.9   Mr4
+//   M=20:  1762.8 vs 1788.8   Mr4
+//   M=24:  2122.1 vs 1847.0   Mr6
+//   M=32:  2818.5 vs 2695.5   Mr6
+//   M=48:  4216.2 vs 3714.5   Mr6
+// The deciding factor is DIVISIBILITY, not size. 4 divides every M in this
+// table; 6 divides only 12, 24 and 48. When 6 divides M, Mr6 wins outright:
+// 12 accumulators amortise each B column-vector load over 6 rows instead of
+// 4, and there is no tail. When it does not, Mr6 pays an (M mod 6)-row
+// uk_1x8c tail whose per-row overhead is a large fraction of a small M (2 of
+// 8 rows = 25%) and a small one of a large M (2 of 32 = 6%) -- so Mr4 wins
+// below the crossover and loses above it. The crossover sits between M=20
+// (Mr4 by 1.5%) and M=32 (Mr6 by 4.4%).
+//
+// Register pressure is the reason Mr6 cannot simply be raised further: 6 rows
+// need 12 ymm accumulators, plus the B real/imag pair and the broadcast pair
+// = 16, exactly the AVX2 register file. Mr=7 or 8 spills. This was confirmed
+// independently on the C++ peer, where an Mr sweep at the same shapes put the
+// optimum at 6 and showed Mr=7/8 losing 15-45%.
+//
+// AVX-512 (16-wide) keeps Mr=4 (uk_4x16c) -- out of scope for this
+// measurement, not re-evaluated.
+
+// N-vec, 6 rows x 8 complex columns. One B column-vector pair feeds 6 rows.
+// a_trans != 0 means A is column-major (K x M) instead of row-major (M x K).
+// A only ever contributes a broadcast scalar here, so this is purely an
+// index choice -- no data movement.
+def uk_6x8c(*f32 Ar, *f32 Ai, int lda,
+            *f32 Br, *f32 Bi, int ldb,
+            *f32 Cr, *f32 Ci, int ldc,
+            int K, int ai, int bj, int acc, int a_trans,
+            *f32 bias_r, *f32 bias_i, int has_bias, int act) {
+    Simd(f32, 8) cr0 = __simd_zero()
+    Simd(f32, 8) ci0 = __simd_zero()
+    Simd(f32, 8) cr1 = __simd_zero()
+    Simd(f32, 8) ci1 = __simd_zero()
+    Simd(f32, 8) cr2 = __simd_zero()
+    Simd(f32, 8) ci2 = __simd_zero()
+    Simd(f32, 8) cr3 = __simd_zero()
+    Simd(f32, 8) ci3 = __simd_zero()
+    Simd(f32, 8) cr4 = __simd_zero()
+    Simd(f32, 8) ci4 = __simd_zero()
+    Simd(f32, 8) cr5 = __simd_zero()
+    Simd(f32, 8) ci5 = __simd_zero()
+    if acc != 0 {
+        cr0 = __simd_load(Cr, (ai + 0) * ldc + bj)
+        ci0 = __simd_load(Ci, (ai + 0) * ldc + bj)
+        cr1 = __simd_load(Cr, (ai + 1) * ldc + bj)
+        ci1 = __simd_load(Ci, (ai + 1) * ldc + bj)
+        cr2 = __simd_load(Cr, (ai + 2) * ldc + bj)
+        ci2 = __simd_load(Ci, (ai + 2) * ldc + bj)
+        cr3 = __simd_load(Cr, (ai + 3) * ldc + bj)
+        ci3 = __simd_load(Ci, (ai + 3) * ldc + bj)
+        cr4 = __simd_load(Cr, (ai + 4) * ldc + bj)
+        ci4 = __simd_load(Ci, (ai + 4) * ldc + bj)
+        cr5 = __simd_load(Cr, (ai + 5) * ldc + bj)
+        ci5 = __simd_load(Ci, (ai + 5) * ldc + bj)
+    }
+    int k = 0
+    while k < K {
+        Simd(f32, 8) br = __simd_load(Br, k * ldb + bj)
+        Simd(f32, 8) bi = __simd_load(Bi, k * ldb + bj)
+
+        int aoff0 = (ai + 0) * lda + k
+        if a_trans != 0 { aoff0 = k * lda + (ai + 0) }
+        f32 ar0 = Ar[aoff0]
+        f32 am0 = Ai[aoff0]
+        Simd(f32, 8) sar0 = __simd_splat(ar0)
+        Simd(f32, 8) sam0 = __simd_splat(am0)
+        Simd(f32, 8) sng0 = __simd_splat(-am0)
+        cr0 = __simd_fma(sar0, br, cr0)
+        cr0 = __simd_fma(sng0, bi, cr0)
+        ci0 = __simd_fma(sar0, bi, ci0)
+        ci0 = __simd_fma(sam0, br, ci0)
+
+        int aoff1 = (ai + 1) * lda + k
+        if a_trans != 0 { aoff1 = k * lda + (ai + 1) }
+        f32 ar1 = Ar[aoff1]
+        f32 am1 = Ai[aoff1]
+        Simd(f32, 8) sar1 = __simd_splat(ar1)
+        Simd(f32, 8) sam1 = __simd_splat(am1)
+        Simd(f32, 8) sng1 = __simd_splat(-am1)
+        cr1 = __simd_fma(sar1, br, cr1)
+        cr1 = __simd_fma(sng1, bi, cr1)
+        ci1 = __simd_fma(sar1, bi, ci1)
+        ci1 = __simd_fma(sam1, br, ci1)
+
+        int aoff2 = (ai + 2) * lda + k
+        if a_trans != 0 { aoff2 = k * lda + (ai + 2) }
+        f32 ar2 = Ar[aoff2]
+        f32 am2 = Ai[aoff2]
+        Simd(f32, 8) sar2 = __simd_splat(ar2)
+        Simd(f32, 8) sam2 = __simd_splat(am2)
+        Simd(f32, 8) sng2 = __simd_splat(-am2)
+        cr2 = __simd_fma(sar2, br, cr2)
+        cr2 = __simd_fma(sng2, bi, cr2)
+        ci2 = __simd_fma(sar2, bi, ci2)
+        ci2 = __simd_fma(sam2, br, ci2)
+
+        int aoff3 = (ai + 3) * lda + k
+        if a_trans != 0 { aoff3 = k * lda + (ai + 3) }
+        f32 ar3 = Ar[aoff3]
+        f32 am3 = Ai[aoff3]
+        Simd(f32, 8) sar3 = __simd_splat(ar3)
+        Simd(f32, 8) sam3 = __simd_splat(am3)
+        Simd(f32, 8) sng3 = __simd_splat(-am3)
+        cr3 = __simd_fma(sar3, br, cr3)
+        cr3 = __simd_fma(sng3, bi, cr3)
+        ci3 = __simd_fma(sar3, bi, ci3)
+        ci3 = __simd_fma(sam3, br, ci3)
+
+        int aoff4 = (ai + 4) * lda + k
+        if a_trans != 0 { aoff4 = k * lda + (ai + 4) }
+        f32 ar4 = Ar[aoff4]
+        f32 am4 = Ai[aoff4]
+        Simd(f32, 8) sar4 = __simd_splat(ar4)
+        Simd(f32, 8) sam4 = __simd_splat(am4)
+        Simd(f32, 8) sng4 = __simd_splat(-am4)
+        cr4 = __simd_fma(sar4, br, cr4)
+        cr4 = __simd_fma(sng4, bi, cr4)
+        ci4 = __simd_fma(sar4, bi, ci4)
+        ci4 = __simd_fma(sam4, br, ci4)
+
+        int aoff5 = (ai + 5) * lda + k
+        if a_trans != 0 { aoff5 = k * lda + (ai + 5) }
+        f32 ar5 = Ar[aoff5]
+        f32 am5 = Ai[aoff5]
+        Simd(f32, 8) sar5 = __simd_splat(ar5)
+        Simd(f32, 8) sam5 = __simd_splat(am5)
+        Simd(f32, 8) sng5 = __simd_splat(-am5)
+        cr5 = __simd_fma(sar5, br, cr5)
+        cr5 = __simd_fma(sng5, bi, cr5)
+        ci5 = __simd_fma(sar5, bi, ci5)
+        ci5 = __simd_fma(sam5, br, ci5)
+
+        k = k + 1
+    }
+    if has_bias != 0 {
+        Simd(f32, 8) bvr = __simd_load(bias_r, bj)
+        Simd(f32, 8) bvi = __simd_load(bias_i, bj)
+        cr0 = cr0 + bvr
+        ci0 = ci0 + bvi
+        cr1 = cr1 + bvr
+        ci1 = ci1 + bvi
+        cr2 = cr2 + bvr
+        ci2 = ci2 + bvi
+        cr3 = cr3 + bvr
+        ci3 = ci3 + bvi
+        cr4 = cr4 + bvr
+        ci4 = ci4 + bvi
+        cr5 = cr5 + bvr
+        ci5 = ci5 + bvi
+    }
+    if act == 1 {
+        Simd(f32, 8) z = __simd_zero()
+        cr0 = __simd_max(cr0, z) + z
+        ci0 = __simd_max(ci0, z) + z
+        cr1 = __simd_max(cr1, z) + z
+        ci1 = __simd_max(ci1, z) + z
+        cr2 = __simd_max(cr2, z) + z
+        ci2 = __simd_max(ci2, z) + z
+        cr3 = __simd_max(cr3, z) + z
+        ci3 = __simd_max(ci3, z) + z
+        cr4 = __simd_max(cr4, z) + z
+        ci4 = __simd_max(ci4, z) + z
+        cr5 = __simd_max(cr5, z) + z
+        ci5 = __simd_max(ci5, z) + z
+    }
+    __simd_store(Cr, (ai + 0) * ldc + bj, cr0)
+    __simd_store(Ci, (ai + 0) * ldc + bj, ci0)
+    __simd_store(Cr, (ai + 1) * ldc + bj, cr1)
+    __simd_store(Ci, (ai + 1) * ldc + bj, ci1)
+    __simd_store(Cr, (ai + 2) * ldc + bj, cr2)
+    __simd_store(Ci, (ai + 2) * ldc + bj, ci2)
+    __simd_store(Cr, (ai + 3) * ldc + bj, cr3)
+    __simd_store(Ci, (ai + 3) * ldc + bj, ci3)
+    __simd_store(Cr, (ai + 4) * ldc + bj, cr4)
+    __simd_store(Ci, (ai + 4) * ldc + bj, ci4)
+    __simd_store(Cr, (ai + 5) * ldc + bj, cr5)
+    __simd_store(Ci, (ai + 5) * ldc + bj, ci5)
+}
+
+// N-vec, 4 rows x 8 complex columns. One B column-vector pair feeds 4 rows.
+// a_trans != 0 means A is column-major (K x M) instead of row-major (M x K).
+// A only ever contributes a broadcast scalar here, so this is purely an
+// index choice -- no data movement.
+def uk_4x8c(*f32 Ar, *f32 Ai, int lda,
+            *f32 Br, *f32 Bi, int ldb,
+            *f32 Cr, *f32 Ci, int ldc,
+            int K, int ai, int bj, int acc, int a_trans,
+            *f32 bias_r, *f32 bias_i, int has_bias, int act) {
+    Simd(f32, 8) cr0 = __simd_zero()
+    Simd(f32, 8) ci0 = __simd_zero()
+    Simd(f32, 8) cr1 = __simd_zero()
+    Simd(f32, 8) ci1 = __simd_zero()
+    Simd(f32, 8) cr2 = __simd_zero()
+    Simd(f32, 8) ci2 = __simd_zero()
+    Simd(f32, 8) cr3 = __simd_zero()
+    Simd(f32, 8) ci3 = __simd_zero()
+    if acc != 0 {
+        cr0 = __simd_load(Cr, (ai + 0) * ldc + bj)
+        ci0 = __simd_load(Ci, (ai + 0) * ldc + bj)
+        cr1 = __simd_load(Cr, (ai + 1) * ldc + bj)
+        ci1 = __simd_load(Ci, (ai + 1) * ldc + bj)
+        cr2 = __simd_load(Cr, (ai + 2) * ldc + bj)
+        ci2 = __simd_load(Ci, (ai + 2) * ldc + bj)
+        cr3 = __simd_load(Cr, (ai + 3) * ldc + bj)
+        ci3 = __simd_load(Ci, (ai + 3) * ldc + bj)
+    }
+    int k = 0
+    while k < K {
+        Simd(f32, 8) br = __simd_load(Br, k * ldb + bj)
+        Simd(f32, 8) bi = __simd_load(Bi, k * ldb + bj)
+
+        int aoff0 = (ai + 0) * lda + k
+        if a_trans != 0 { aoff0 = k * lda + (ai + 0) }
+        f32 ar0 = Ar[aoff0]
+        f32 am0 = Ai[aoff0]
+        Simd(f32, 8) sar0 = __simd_splat(ar0)
+        Simd(f32, 8) sam0 = __simd_splat(am0)
+        Simd(f32, 8) sng0 = __simd_splat(-am0)
+        cr0 = __simd_fma(sar0, br, cr0)
+        cr0 = __simd_fma(sng0, bi, cr0)
+        ci0 = __simd_fma(sar0, bi, ci0)
+        ci0 = __simd_fma(sam0, br, ci0)
+
+        int aoff1 = (ai + 1) * lda + k
+        if a_trans != 0 { aoff1 = k * lda + (ai + 1) }
+        f32 ar1 = Ar[aoff1]
+        f32 am1 = Ai[aoff1]
+        Simd(f32, 8) sar1 = __simd_splat(ar1)
+        Simd(f32, 8) sam1 = __simd_splat(am1)
+        Simd(f32, 8) sng1 = __simd_splat(-am1)
+        cr1 = __simd_fma(sar1, br, cr1)
+        cr1 = __simd_fma(sng1, bi, cr1)
+        ci1 = __simd_fma(sar1, bi, ci1)
+        ci1 = __simd_fma(sam1, br, ci1)
+
+        int aoff2 = (ai + 2) * lda + k
+        if a_trans != 0 { aoff2 = k * lda + (ai + 2) }
+        f32 ar2 = Ar[aoff2]
+        f32 am2 = Ai[aoff2]
+        Simd(f32, 8) sar2 = __simd_splat(ar2)
+        Simd(f32, 8) sam2 = __simd_splat(am2)
+        Simd(f32, 8) sng2 = __simd_splat(-am2)
+        cr2 = __simd_fma(sar2, br, cr2)
+        cr2 = __simd_fma(sng2, bi, cr2)
+        ci2 = __simd_fma(sar2, bi, ci2)
+        ci2 = __simd_fma(sam2, br, ci2)
+
+        int aoff3 = (ai + 3) * lda + k
+        if a_trans != 0 { aoff3 = k * lda + (ai + 3) }
+        f32 ar3 = Ar[aoff3]
+        f32 am3 = Ai[aoff3]
+        Simd(f32, 8) sar3 = __simd_splat(ar3)
+        Simd(f32, 8) sam3 = __simd_splat(am3)
+        Simd(f32, 8) sng3 = __simd_splat(-am3)
+        cr3 = __simd_fma(sar3, br, cr3)
+        cr3 = __simd_fma(sng3, bi, cr3)
+        ci3 = __simd_fma(sar3, bi, ci3)
+        ci3 = __simd_fma(sam3, br, ci3)
+
+        k = k + 1
+    }
+    if has_bias != 0 {
+        Simd(f32, 8) bvr = __simd_load(bias_r, bj)
+        Simd(f32, 8) bvi = __simd_load(bias_i, bj)
+        cr0 = cr0 + bvr
+        ci0 = ci0 + bvi
+        cr1 = cr1 + bvr
+        ci1 = ci1 + bvi
+        cr2 = cr2 + bvr
+        ci2 = ci2 + bvi
+        cr3 = cr3 + bvr
+        ci3 = ci3 + bvi
+    }
+    if act == 1 {
+        Simd(f32, 8) z = __simd_zero()
+        cr0 = __simd_max(cr0, z) + z
+        ci0 = __simd_max(ci0, z) + z
+        cr1 = __simd_max(cr1, z) + z
+        ci1 = __simd_max(ci1, z) + z
+        cr2 = __simd_max(cr2, z) + z
+        ci2 = __simd_max(ci2, z) + z
+        cr3 = __simd_max(cr3, z) + z
+        ci3 = __simd_max(ci3, z) + z
+    }
+    __simd_store(Cr, (ai + 0) * ldc + bj, cr0)
+    __simd_store(Ci, (ai + 0) * ldc + bj, ci0)
+    __simd_store(Cr, (ai + 1) * ldc + bj, cr1)
+    __simd_store(Ci, (ai + 1) * ldc + bj, ci1)
+    __simd_store(Cr, (ai + 2) * ldc + bj, cr2)
+    __simd_store(Ci, (ai + 2) * ldc + bj, ci2)
+    __simd_store(Cr, (ai + 3) * ldc + bj, cr3)
+    __simd_store(Ci, (ai + 3) * ldc + bj, ci3)
+}
+
+// N-vec M-tail: one row x 8 complex columns, with an optional column mask.
+// `full != 0` means all 8 columns are live; otherwise only the first `rem`
+// lanes are loaded/stored and the rest of the buffer is left untouched.
+// a_trans != 0 means A is column-major (K x M) instead of row-major (M x K);
+// same broadcast-scalar reasoning as uk_4x8c above.
+def uk_1x8c(*f32 Ar, *f32 Ai, int lda,
+            *f32 Br, *f32 Bi, int ldb,
+            *f32 Cr, *f32 Ci, int ldc,
+            int K, int ai, int bj, int rem, int full, int acc, int a_trans,
+            *f32 bias_r, *f32 bias_i, int has_bias, int act) {
+    Simd(f32, 8) cr0 = __simd_zero()
+    Simd(f32, 8) ci0 = __simd_zero()
+    if acc != 0 {
+        if full != 0 {
+            cr0 = __simd_load(Cr, ai * ldc + bj)
+            ci0 = __simd_load(Ci, ai * ldc + bj)
+        } else {
+            cr0 = __simd_load_masked(Cr, ai * ldc + bj, rem)
+            ci0 = __simd_load_masked(Ci, ai * ldc + bj, rem)
+        }
+    }
+    int k = 0
+    while k < K {
+        Simd(f32, 8) br = __simd_zero()
+        Simd(f32, 8) bi = __simd_zero()
+        if full != 0 {
+            br = __simd_load(Br, k * ldb + bj)
+            bi = __simd_load(Bi, k * ldb + bj)
+        } else {
+            br = __simd_load_masked(Br, k * ldb + bj, rem)
+            bi = __simd_load_masked(Bi, k * ldb + bj, rem)
+        }
+        int aoff0 = ai * lda + k
+        if a_trans != 0 { aoff0 = k * lda + ai }
+        f32 ar0 = Ar[aoff0]
+        f32 am0 = Ai[aoff0]
+        Simd(f32, 8) sar0 = __simd_splat(ar0)
+        Simd(f32, 8) sam0 = __simd_splat(am0)
+        Simd(f32, 8) sng0 = __simd_splat(-am0)
+        cr0 = __simd_fma(sar0, br, cr0)
+        cr0 = __simd_fma(sng0, bi, cr0)
+        ci0 = __simd_fma(sar0, bi, ci0)
+        ci0 = __simd_fma(sam0, br, ci0)
+        k = k + 1
+    }
+    if has_bias != 0 {
+        Simd(f32, 8) bvr = __simd_zero()
+        Simd(f32, 8) bvi = __simd_zero()
+        if full != 0 {
+            bvr = __simd_load(bias_r, bj)
+            bvi = __simd_load(bias_i, bj)
+        } else {
+            bvr = __simd_load_masked(bias_r, bj, rem)
+            bvi = __simd_load_masked(bias_i, bj, rem)
+        }
+        cr0 = cr0 + bvr
+        ci0 = ci0 + bvi
+    }
+    if act == 1 {
+        Simd(f32, 8) z = __simd_zero()
+        cr0 = __simd_max(cr0, z) + z
+        ci0 = __simd_max(ci0, z) + z
+    }
+    if full != 0 {
+        __simd_store(Cr, ai * ldc + bj, cr0)
+        __simd_store(Ci, ai * ldc + bj, ci0)
+    } else {
+        __simd_store_masked(Cr, ai * ldc + bj, cr0, rem)
+        __simd_store_masked(Ci, ai * ldc + bj, ci0, rem)
+    }
+}
+
+// M-vec: 8 consecutive rows (one Simd along m) x 1 complex column.
+// At is column-major (K x M, row stride lda = M) so the m direction is
+// contiguous; B's elements are broadcast scalars, so B's layout is free.
+// `rem`/`full` mask the M direction here (not N).
+//
+// C IS CONTIGUOUS HERE: Cr/Ci point at an 8-element staging buffer owned by the
+// caller and are indexed with stride 1. The caller gathers the strided C values
+// in before the call (only when acc != 0) and scatters the results back out
+// after. That is not a stylistic choice: this compiler has no lane-write
+// intrinsic, arrays do not decay to pointers, and `&arr[0]` is outside the
+// `ls emit-c` subset -- so a Simd cannot be built from strided memory inside
+// this file at all.
+def uk_8x1c_mvec(*f32 At, *f32 Ati, int lda,
+                 *f32 Br, *f32 Bi, int ldb,
+                 *f32 Cr, *f32 Ci,
+                 int K, int ai, int bj, int rem, int full, int acc,
+                 *f32 bias_r, *f32 bias_i, int has_bias, int act) {
+    Simd(f32, 8) cr0 = __simd_zero()
+    Simd(f32, 8) ci0 = __simd_zero()
+    if acc != 0 {
+        cr0 = __simd_load(Cr, 0)
+        ci0 = __simd_load(Ci, 0)
+    }
+    int k = 0
+    while k < K {
+        Simd(f32, 8) ar = __simd_zero()
+        Simd(f32, 8) am = __simd_zero()
+        if full != 0 {
+            ar = __simd_load(At,  k * lda + ai)
+            am = __simd_load(Ati, k * lda + ai)
+        } else {
+            ar = __simd_load_masked(At,  k * lda + ai, rem)
+            am = __simd_load_masked(Ati, k * lda + ai, rem)
+        }
+        f32 br = Br[k * ldb + bj]
+        f32 bi = Bi[k * ldb + bj]
+        Simd(f32, 8) sbr = __simd_splat(br)
+        Simd(f32, 8) sbi = __simd_splat(bi)
+        // The reference negates the imaginary A term: (-aim)*bi. Here `am`
+        // (imaginary A) is the vector and `bi` is the scalar, so negate the
+        // scalar before splatting instead -- same pattern uk_4x8c/uk_1x8c use
+        // (they negate whichever operand is scalar). (-am)*bi == am*(-bi)
+        // bit-exactly under IEEE-754 (sign flip is exact, magnitude/rounding
+        // unaffected); a vector unary '-' would also be outside the emit-c
+        // subset.
+        Simd(f32, 8) snbi = __simd_splat(-bi)
+        cr0 = __simd_fma(ar,  sbr,  cr0)
+        cr0 = __simd_fma(am,  snbi, cr0)
+        ci0 = __simd_fma(ar,  sbi,  ci0)
+        ci0 = __simd_fma(am,  sbr,  ci0)
+        k = k + 1
+    }
+    // Bias here is one complex scalar for the whole column `bj` (not a
+    // per-lane vector like the N-vec kernels): every one of the 8 lanes in
+    // this register is a different ROW of the same output column, so the
+    // single bias value must be splatted across all 8 lanes.
+    if has_bias != 0 {
+        cr0 = cr0 + __simd_splat(bias_r[bj])
+        ci0 = ci0 + __simd_splat(bias_i[bj])
+    }
+    if act == 1 {
+        Simd(f32, 8) z = __simd_zero()
+        cr0 = __simd_max(cr0, z) + z
+        ci0 = __simd_max(ci0, z) + z
+    }
+    __simd_store(Cr, 0, cr0)
+    __simd_store(Ci, 0, ci0)
+}
+
+// ============================================================================
+// AVX-512 (16-wide) twins of the three kernels above. Hand-unrolled copies,
+// not a parameterised width, per the S6 ban on dynamically indexed Simd
+// arrays (see file header). Each twin differs from its 8-wide counterpart
+// only in Simd(f32, 8) -> Simd(f32, 16) and the column/lane-count constants
+// 8 -> 16; the FMA order and epilogue shape are byte-for-byte identical.
+// ============================================================================
+
+// N-vec, 4 rows x 16 complex columns. See uk_4x8c for the field-by-field
+// rationale (broadcast-scalar A, fused epilogue).
+def uk_4x16c(*f32 Ar, *f32 Ai, int lda,
+            *f32 Br, *f32 Bi, int ldb,
+            *f32 Cr, *f32 Ci, int ldc,
+            int K, int ai, int bj, int acc, int a_trans,
+            *f32 bias_r, *f32 bias_i, int has_bias, int act) {
+    Simd(f32, 16) cr0 = __simd_zero()
+    Simd(f32, 16) ci0 = __simd_zero()
+    Simd(f32, 16) cr1 = __simd_zero()
+    Simd(f32, 16) ci1 = __simd_zero()
+    Simd(f32, 16) cr2 = __simd_zero()
+    Simd(f32, 16) ci2 = __simd_zero()
+    Simd(f32, 16) cr3 = __simd_zero()
+    Simd(f32, 16) ci3 = __simd_zero()
+    if acc != 0 {
+        cr0 = __simd_load(Cr, (ai + 0) * ldc + bj)
+        ci0 = __simd_load(Ci, (ai + 0) * ldc + bj)
+        cr1 = __simd_load(Cr, (ai + 1) * ldc + bj)
+        ci1 = __simd_load(Ci, (ai + 1) * ldc + bj)
+        cr2 = __simd_load(Cr, (ai + 2) * ldc + bj)
+        ci2 = __simd_load(Ci, (ai + 2) * ldc + bj)
+        cr3 = __simd_load(Cr, (ai + 3) * ldc + bj)
+        ci3 = __simd_load(Ci, (ai + 3) * ldc + bj)
+    }
+    int k = 0
+    while k < K {
+        Simd(f32, 16) br = __simd_load(Br, k * ldb + bj)
+        Simd(f32, 16) bi = __simd_load(Bi, k * ldb + bj)
+
+        int aoff0 = (ai + 0) * lda + k
+        if a_trans != 0 { aoff0 = k * lda + (ai + 0) }
+        f32 ar0 = Ar[aoff0]
+        f32 am0 = Ai[aoff0]
+        Simd(f32, 16) sar0 = __simd_splat(ar0)
+        Simd(f32, 16) sam0 = __simd_splat(am0)
+        Simd(f32, 16) sng0 = __simd_splat(-am0)
+        cr0 = __simd_fma(sar0, br, cr0)
+        cr0 = __simd_fma(sng0, bi, cr0)
+        ci0 = __simd_fma(sar0, bi, ci0)
+        ci0 = __simd_fma(sam0, br, ci0)
+
+        int aoff1 = (ai + 1) * lda + k
+        if a_trans != 0 { aoff1 = k * lda + (ai + 1) }
+        f32 ar1 = Ar[aoff1]
+        f32 am1 = Ai[aoff1]
+        Simd(f32, 16) sar1 = __simd_splat(ar1)
+        Simd(f32, 16) sam1 = __simd_splat(am1)
+        Simd(f32, 16) sng1 = __simd_splat(-am1)
+        cr1 = __simd_fma(sar1, br, cr1)
+        cr1 = __simd_fma(sng1, bi, cr1)
+        ci1 = __simd_fma(sar1, bi, ci1)
+        ci1 = __simd_fma(sam1, br, ci1)
+
+        int aoff2 = (ai + 2) * lda + k
+        if a_trans != 0 { aoff2 = k * lda + (ai + 2) }
+        f32 ar2 = Ar[aoff2]
+        f32 am2 = Ai[aoff2]
+        Simd(f32, 16) sar2 = __simd_splat(ar2)
+        Simd(f32, 16) sam2 = __simd_splat(am2)
+        Simd(f32, 16) sng2 = __simd_splat(-am2)
+        cr2 = __simd_fma(sar2, br, cr2)
+        cr2 = __simd_fma(sng2, bi, cr2)
+        ci2 = __simd_fma(sar2, bi, ci2)
+        ci2 = __simd_fma(sam2, br, ci2)
+
+        int aoff3 = (ai + 3) * lda + k
+        if a_trans != 0 { aoff3 = k * lda + (ai + 3) }
+        f32 ar3 = Ar[aoff3]
+        f32 am3 = Ai[aoff3]
+        Simd(f32, 16) sar3 = __simd_splat(ar3)
+        Simd(f32, 16) sam3 = __simd_splat(am3)
+        Simd(f32, 16) sng3 = __simd_splat(-am3)
+        cr3 = __simd_fma(sar3, br, cr3)
+        cr3 = __simd_fma(sng3, bi, cr3)
+        ci3 = __simd_fma(sar3, bi, ci3)
+        ci3 = __simd_fma(sam3, br, ci3)
+
+        k = k + 1
+    }
+    if has_bias != 0 {
+        Simd(f32, 16) bvr = __simd_load(bias_r, bj)
+        Simd(f32, 16) bvi = __simd_load(bias_i, bj)
+        cr0 = cr0 + bvr
+        ci0 = ci0 + bvi
+        cr1 = cr1 + bvr
+        ci1 = ci1 + bvi
+        cr2 = cr2 + bvr
+        ci2 = ci2 + bvi
+        cr3 = cr3 + bvr
+        ci3 = ci3 + bvi
+    }
+    if act == 1 {
+        Simd(f32, 16) z = __simd_zero()
+        cr0 = __simd_max(cr0, z) + z
+        ci0 = __simd_max(ci0, z) + z
+        cr1 = __simd_max(cr1, z) + z
+        ci1 = __simd_max(ci1, z) + z
+        cr2 = __simd_max(cr2, z) + z
+        ci2 = __simd_max(ci2, z) + z
+        cr3 = __simd_max(cr3, z) + z
+        ci3 = __simd_max(ci3, z) + z
+    }
+    __simd_store(Cr, (ai + 0) * ldc + bj, cr0)
+    __simd_store(Ci, (ai + 0) * ldc + bj, ci0)
+    __simd_store(Cr, (ai + 1) * ldc + bj, cr1)
+    __simd_store(Ci, (ai + 1) * ldc + bj, ci1)
+    __simd_store(Cr, (ai + 2) * ldc + bj, cr2)
+    __simd_store(Ci, (ai + 2) * ldc + bj, ci2)
+    __simd_store(Cr, (ai + 3) * ldc + bj, cr3)
+    __simd_store(Ci, (ai + 3) * ldc + bj, ci3)
+}
+
+// N-vec M-tail: one row x 16 complex columns, with an optional column mask.
+// See uk_1x8c for the field-by-field rationale.
+def uk_1x16c(*f32 Ar, *f32 Ai, int lda,
+            *f32 Br, *f32 Bi, int ldb,
+            *f32 Cr, *f32 Ci, int ldc,
+            int K, int ai, int bj, int rem, int full, int acc, int a_trans,
+            *f32 bias_r, *f32 bias_i, int has_bias, int act) {
+    Simd(f32, 16) cr0 = __simd_zero()
+    Simd(f32, 16) ci0 = __simd_zero()
+    if acc != 0 {
+        if full != 0 {
+            cr0 = __simd_load(Cr, ai * ldc + bj)
+            ci0 = __simd_load(Ci, ai * ldc + bj)
+        } else {
+            cr0 = __simd_load_masked(Cr, ai * ldc + bj, rem)
+            ci0 = __simd_load_masked(Ci, ai * ldc + bj, rem)
+        }
+    }
+    int k = 0
+    while k < K {
+        Simd(f32, 16) br = __simd_zero()
+        Simd(f32, 16) bi = __simd_zero()
+        if full != 0 {
+            br = __simd_load(Br, k * ldb + bj)
+            bi = __simd_load(Bi, k * ldb + bj)
+        } else {
+            br = __simd_load_masked(Br, k * ldb + bj, rem)
+            bi = __simd_load_masked(Bi, k * ldb + bj, rem)
+        }
+        int aoff0 = ai * lda + k
+        if a_trans != 0 { aoff0 = k * lda + ai }
+        f32 ar0 = Ar[aoff0]
+        f32 am0 = Ai[aoff0]
+        Simd(f32, 16) sar0 = __simd_splat(ar0)
+        Simd(f32, 16) sam0 = __simd_splat(am0)
+        Simd(f32, 16) sng0 = __simd_splat(-am0)
+        cr0 = __simd_fma(sar0, br, cr0)
+        cr0 = __simd_fma(sng0, bi, cr0)
+        ci0 = __simd_fma(sar0, bi, ci0)
+        ci0 = __simd_fma(sam0, br, ci0)
+        k = k + 1
+    }
+    if has_bias != 0 {
+        Simd(f32, 16) bvr = __simd_zero()
+        Simd(f32, 16) bvi = __simd_zero()
+        if full != 0 {
+            bvr = __simd_load(bias_r, bj)
+            bvi = __simd_load(bias_i, bj)
+        } else {
+            bvr = __simd_load_masked(bias_r, bj, rem)
+            bvi = __simd_load_masked(bias_i, bj, rem)
+        }
+        cr0 = cr0 + bvr
+        ci0 = ci0 + bvi
+    }
+    if act == 1 {
+        Simd(f32, 16) z = __simd_zero()
+        cr0 = __simd_max(cr0, z) + z
+        ci0 = __simd_max(ci0, z) + z
+    }
+    if full != 0 {
+        __simd_store(Cr, ai * ldc + bj, cr0)
+        __simd_store(Ci, ai * ldc + bj, ci0)
+    } else {
+        __simd_store_masked(Cr, ai * ldc + bj, cr0, rem)
+        __simd_store_masked(Ci, ai * ldc + bj, ci0, rem)
+    }
+}
+
+// M-vec: 16 consecutive rows (one Simd along m) x 1 complex column. See
+// uk_8x1c_mvec for the field-by-field rationale (contiguous staging buffer,
+// broadcast-scalar B, why the M direction is what gets masked).
+def uk_16x1c_mvec(*f32 At, *f32 Ati, int lda,
+                 *f32 Br, *f32 Bi, int ldb,
+                 *f32 Cr, *f32 Ci,
+                 int K, int ai, int bj, int rem, int full, int acc,
+                 *f32 bias_r, *f32 bias_i, int has_bias, int act) {
+    Simd(f32, 16) cr0 = __simd_zero()
+    Simd(f32, 16) ci0 = __simd_zero()
+    if acc != 0 {
+        cr0 = __simd_load(Cr, 0)
+        ci0 = __simd_load(Ci, 0)
+    }
+    int k = 0
+    while k < K {
+        Simd(f32, 16) ar = __simd_zero()
+        Simd(f32, 16) am = __simd_zero()
+        if full != 0 {
+            ar = __simd_load(At,  k * lda + ai)
+            am = __simd_load(Ati, k * lda + ai)
+        } else {
+            ar = __simd_load_masked(At,  k * lda + ai, rem)
+            am = __simd_load_masked(Ati, k * lda + ai, rem)
+        }
+        f32 br = Br[k * ldb + bj]
+        f32 bi = Bi[k * ldb + bj]
+        Simd(f32, 16) sbr = __simd_splat(br)
+        Simd(f32, 16) sbi = __simd_splat(bi)
+        // Same negate-the-scalar pattern as uk_8x1c_mvec: (-am)*bi == am*(-bi)
+        // bit-exactly under IEEE-754, and a vector unary '-' is outside the
+        // emit-c subset.
+        Simd(f32, 16) snbi = __simd_splat(-bi)
+        cr0 = __simd_fma(ar,  sbr,  cr0)
+        cr0 = __simd_fma(am,  snbi, cr0)
+        ci0 = __simd_fma(ar,  sbi,  ci0)
+        ci0 = __simd_fma(am,  sbr,  ci0)
+        k = k + 1
+    }
+    // Bias here is one complex scalar for the whole column `bj`; every lane
+    // is a different ROW of the same output column, so the single bias value
+    // must be splatted across all 16 lanes. See uk_8x1c_mvec.
+    if has_bias != 0 {
+        cr0 = cr0 + __simd_splat(bias_r[bj])
+        ci0 = ci0 + __simd_splat(bias_i[bj])
+    }
+    if act == 1 {
+        Simd(f32, 16) z = __simd_zero()
+        cr0 = __simd_max(cr0, z) + z
+        ci0 = __simd_max(ci0, z) + z
+    }
+    __simd_store(Cr, 0, cr0)
+    __simd_store(Ci, 0, ci0)
+}
+
+// ============================================================================
+// Generic layout converters. Plain nested loops, no Simd -- these are how a
+// caller with interleaved (AoS) data gets into the SoA form every kernel
+// above requires, and how a caller produces the column-major A the M-vec
+// kernels need. Kept in this file (not cgemm.lls) because they stay inside
+// the emit-c subset: free functions over f32 pointers and control flow only.
+// ============================================================================
+
+// AoS (interleaved re,im) -> SoA planes. `ld_z` and `ld_p` are both in COMPLEX
+// elements; the AoS side scales by two internally, the SoA side does not.
+def cconv_aos_to_soa(*f32 z, int ld_z, *f32 re, *f32 im, int ld_p,
+                     int rows, int cols) {
+    int i = 0
+    while i < rows {
+        int j = 0
+        while j < cols {
+            re[i * ld_p + j] = z[i * ld_z * 2 + j * 2]
+            im[i * ld_p + j] = z[i * ld_z * 2 + j * 2 + 1]
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+def cconv_soa_to_aos(*f32 re, *f32 im, int ld_p, *f32 z, int ld_z,
+                     int rows, int cols) {
+    int i = 0
+    while i < rows {
+        int j = 0
+        while j < cols {
+            z[i * ld_z * 2 + j * 2]     = re[i * ld_p + j]
+            z[i * ld_z * 2 + j * 2 + 1] = im[i * ld_p + j]
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+// rows x cols (source) -> cols x rows (destination). Produces the column-major
+// A that the M-vec kernels require. For constant operands (weights) this is an
+// offline, one-time cost.
+def ctranspose_soa(*f32 sr, *f32 si, int ld_s, *f32 dr, *f32 di, int ld_d,
+                   int rows, int cols) {
+    int i = 0
+    while i < rows {
+        int j = 0
+        while j < cols {
+            dr[j * ld_d + i] = sr[i * ld_s + j]
+            di[j * ld_d + i] = si[i * ld_s + j]
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+// Conjugate without transposing. Groundwork for COp.Conj / COp.ConjTrans.
+def cconj_soa(*f32 sr, *f32 si, int ld_s, *f32 dr, *f32 di, int ld_d,
+              int rows, int cols) {
+    int i = 0
+    while i < rows {
+        int j = 0
+        while j < cols {
+            dr[i * ld_d + j] = sr[i * ld_s + j]
+            di[i * ld_d + j] = -si[i * ld_s + j]
+            j = j + 1
+        }
+        i = i + 1
+    }
+}

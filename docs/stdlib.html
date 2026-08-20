@@ -167,6 +167,7 @@
     <a class="item" href="#rand">rand</a>
     <a class="item" href="#simd">simd</a>
     <a class="item" href="#nn">nn</a>
+    <a class="item" href="#cgemm">cgemm</a>
     <div class="group">Concurrency</div>
     <a class="item" href="#task">task — Task(T)</a>
     <a class="item" href="#chan">chan — Chan(T)</a>
@@ -245,6 +246,7 @@ are built-in types, not a module.</p>
 <tr><td class="m"><a href="#rand">rand</a></td><td>Seeded PRNG (xorshift64*)</td></tr>
 <tr><td class="m"><a href="#simd">simd</a></td><td>Vectorized activations on <code>Simd(f32,16)</code> (tanh/sigmoid/silu/relu)</td></tr>
 <tr><td class="m"><a href="#nn">nn</a></td><td>FP32 neural-net kernels — blocked GEMM (<code>sgemm</code>)</td></tr>
+<tr><td class="m"><a href="#cgemm">cgemm</a></td><td>Complex-f32 GEMM, bit-exact by construction, fused bias + activation</td></tr>
 <tr><td class="grp" colspan="2">Concurrency</td></tr>
 <tr><td class="m"><a href="#task">task</a></td><td><code>Task(T)</code> structured concurrency</td></tr>
 <tr><td class="m"><a href="#chan">chan</a></td><td><code>Chan(T)</code> blocking channel (message passing)</td></tr>
@@ -2150,6 +2152,66 @@ instead of the sum of all activations). Manual <code>reset()</code> at dead-acti
 p.reserve(peak_floats)              <span class="c">// one malloc, up front</span>
 p.reset()                          <span class="c">// per frame</span>
 <span class="t">*f32</span> h1 = p.tensor(201 * 256)    <span class="c">// no malloc on the hot path</span></pre></div>
+</section>
+
+<!-- ===================== CGEMM ===================== -->
+<section id="cgemm">
+<h2>cgemm<span class="imp">import std.sci.cgemm</span></h2>
+<p class="purpose">Complex-f32 GEMM (<code>C = op(A)&middot;op(B)</code>) with a fused bias +
+activation epilogue. Bit-exact across vector widths, dispatch choices and optimisation levels
+<b>by construction</b>: no k-blocking into partial sums, no horizontal reduce, and one fixed FMA
+order for every complex multiply-accumulate (<code>cr=fma(ar,br,cr); cr=fma(-ai,bi,cr);
+ci=fma(ar,bi,ci); ci=fma(ai,br,ci)</code>) shared by the scalar reference and every kernel.</p>
+<div class="types"><pre>enum CPlanes { SoA(*f32, *f32), AoS(*f32) }   // (real, imag) planes, or one interleaved buffer
+enum COp { NoTrans, Trans, ConjTrans, Conj }  // ConjTrans / Conj reserved
+enum CAct { ActNone, ActCRelu }               // ActCRelu = relu(re) + i&middot;relu(im)
+enum CStatus { Ok, NotImplemented, InvalidArg }
+struct CMat { CPlanes planes; int ld; COp op }
+struct CEpilogue { *f32 bias_re; *f32 bias_im; CAct act }   // bias_re == nil means no bias</pre></div>
+<div class="note"><b>Only SoA is implemented.</b> <code>CPlanes.AoS</code>, <code>COp.ConjTrans</code>,
+<code>COp.Conj</code>, and any <code>B.op</code> other than <code>NoTrans</code> all return
+<code>NotImplemented</code> rather than a plausible-looking wrong answer — that is what the status
+exists to prevent. <code>A.op</code> may be <code>NoTrans</code> or <code>Trans</code>. Non-positive
+<code>M</code>/<code>N</code>/<code>K</code> returns <code>InvalidArg</code>. <code>ld</code> (row
+stride) is always counted in <b>complex elements</b>, in both layouts — the (reserved) AoS path is
+the only one that additionally scales by two internally.</div>
+<table class="api">
+<tr><td class="s"><span class="sig">def cgemm(&amp;CMat A, &amp;CMat B, &amp;!CMat C, int M, int N, int K, &amp;CEpilogue epi, bool accumulate) -&gt; CStatus</span></td><td class="d">Dispatches to an ISA-selected micro-kernel (AVX2/AVX-512, probed once). <b>Order of operations</b>: the accumulator starts at <code>C</code> when <code>accumulate</code> is true (else at 0) — <i>not</i> "compute the product, then add C", the two round differently — then the K-loop runs, then <code>epi.bias_re</code>/<code>bias_im</code> is added (one complex value per output column, length N, skipped when <code>bias_re == nil</code>), then <code>epi.act</code> is applied.</td></tr>
+</table>
+<div class="note"><b>Dispatch is by shape, not just by ISA.</b> Beyond picking the vector width from CPUID, <code>cgemm</code> picks direction from <code>N</code> (an <code>N &lt; VL</code> shape takes the M-vec kernels, which want a column-major <code>A</code> — see <code>ctranspose_soa</code>) and, on the AVX2 N-vec path, picks the register-block height from <code>M</code>: <code>MR=6</code> when <code>M % 6 == 0</code> or <code>M &gt;= 24</code>, else <code>MR=4</code>. The deciding factor is divisibility rather than size — a block height that does not divide <code>M</code> leaves a row tail whose per-row cost is a large fraction of a small <code>M</code> and a small one of a large <code>M</code>. Six rows need 12 of the 16 AVX2 vector registers for accumulators, so <code>MR</code> cannot simply be raised further. None of this affects results: every path is bit-identical to the scalar reference.</div>
+<div class="note"><code>CAct.ActCRelu</code> applies <code>relu</code> independently to the real and
+imaginary parts, and <b>normalises <code>-0.0</code> to <code>+0.0</code></b> — deliberately, not
+an accident. The vector kernels build relu from a max, whose result on a negative-zero input is
+optimisation-level-dependent (LS has no compare/select SIMD primitive to branch on the sign bit
+instead), so both the kernels and the scalar reference add a trailing <code>+ 0.0</code> to force
+the zero case to a single deterministic sign at every optimisation level. Code that compares raw
+bit patterns after CReLU should not expect a negative zero to survive it.</div>
+<h3>Layout converters<span class="imp">import std.sci.cgemm_kernels</span></h3>
+<p>Flat functions over raw <code>*f32</code> planes (not <code>CMat</code> views) — they live in
+the kernels module because it is restricted to the <code>ls emit-c</code> subset. Use them to get
+data into the SoA form <code>cgemm</code> requires, or to prepare the column-major A the N&lt;VL
+dispatch path wants (see the note below the table).</p>
+<table class="api">
+<tr><td class="s"><span class="sig">def cconv_aos_to_soa(*f32 z, int ld_z, *f32 re, *f32 im, int ld_p, int rows, int cols)</span></td><td class="d">Deinterleave AoS (<code>re,im,re,im,...</code>) into SoA planes.</td></tr>
+<tr><td class="s"><span class="sig">def cconv_soa_to_aos(*f32 re, *f32 im, int ld_p, *f32 z, int ld_z, int rows, int cols)</span></td><td class="d">Interleave SoA planes back into AoS.</td></tr>
+<tr><td class="s"><span class="sig">def ctranspose_soa(*f32 sr, *f32 si, int ld_s, *f32 dr, *f32 di, int ld_d, int rows, int cols)</span></td><td class="d">rows&times;cols &rarr; cols&times;rows. Produces the column-major A that the <code>N &lt; VL</code> dispatch path needs; for constant operands (e.g. weights) this is an offline, one-time cost.</td></tr>
+<tr><td class="s"><span class="sig">def cconj_soa(*f32 sr, *f32 si, int ld_s, *f32 dr, *f32 di, int ld_d, int rows, int cols)</span></td><td class="d">Conjugate without transposing. Groundwork for <code>COp.Conj</code> / <code>COp.ConjTrans</code>, which <code>cgemm</code> itself does not implement yet.</td></tr>
+</table>
+<div class="ex"><pre><span class="k">import</span> std.sci.cgemm <span class="k">as</span> cg
+<span class="k">import</span> std.sys.c <span class="k">as</span> c
+
+<span class="t">*f32</span> Ar = c.malloc(16) <span class="k">as</span> <span class="t">*f32</span>  <span class="c">// ... allocate/fill Ai, Br, Bi, Cr, Ci the same way (2x2 each)</span>
+<span class="c">// fill A and B with data; C need not be pre-zeroed unless accumulating</span>
+
+cg.<span class="t">CMat</span> A = {planes: SoA(Ar, Ai), ld: 2, op: NoTrans}
+cg.<span class="t">CMat</span> B = {planes: SoA(Br, Bi), ld: 2, op: NoTrans}
+cg.<span class="t">CMat</span> C = {planes: SoA(Cr, Ci), ld: 2, op: NoTrans}
+
+<span class="t">*f32</span> no_bias = nil
+cg.<span class="t">CEpilogue</span> epi = {bias_re: no_bias, bias_im: no_bias, act: ActCRelu}
+
+cg.<span class="t">CStatus</span> st = cg.cgemm(&amp;A, &amp;B, &amp;!C, 2, 2, 2, &amp;epi, false)  <span class="c">// C = relu(A&middot;B)</span>
+<span class="k">match</span> st { Ok =&gt; { @print(f<span class="s">"C[0,0] = {Cr[0]} + {Ci[0]}i"</span>) } _ =&gt; { @print(<span class="s">"failed"</span>) } }</pre></div>
 </section>
 
 <!-- ===================== TASK ===================== -->

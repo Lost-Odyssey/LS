@@ -834,4 +834,42 @@ array(Str,2) c = s.d         // 整体读出不 clone 元素 → 与 s 共享堆
   **错的**：`std.core.vec` 自己从不实例化具体 `Vec(int)`，该方案会让 stdlib
   模板完全不被检查——同一个注入实验实证了它变哑。
 
+## L-025 · enum 变体无法限定书写（`Enum.Variant` / `mod.Enum.Variant` 全不支持）
+
+**现象**（2026-08-16 实测，同模块内即可复现，与跨模块无关）：
+
+```lls
+enum St { Ok, Bad }
+def g() -> St { return St.Ok }               // [type error] undefined variable 'St'
+def main() {
+    match g() { St.Ok => { } _ => { } }      // [type error] invalid pattern for enum 'St'
+}
+```
+
+只有**裸变体名**可用（`return Ok` / `match x { Ok => .. }`）。
+
+**⭐ 不是正确性问题。** 变体靠**类型上下文**解析，同名变体跨 enum 不会撞——实测
+`enum A { Ok, Bad }` 与 `enum B { Ok, Worse }` 并存时，`def fa() -> A { return Ok }`
+与 `def fb() -> B { return Ok }` 各自解析正确，两个 `match` 也分别命中。LS 是显式
+类型语言，几乎总有上下文可用。缺的是**显式性与可读性**，不是安全性。
+
+**根因位置**：
+- 模式位置——`src/checker_expr.c` 的 match 臂解析只认 `AST_IDENT`（裸变体）与
+  `AST_CALL`+IDENT callee（带载荷变体）；`St.Ok` 解析成 `AST_FIELD`，直接落进
+  `else` 分支报 `invalid pattern for enum '%s'`。
+- 值位置——`St.Ok` 是 `AST_FIELD`，基名 `St` 被当普通变量查找，报
+  `undefined variable`。字段访问检查从不考虑"基名其实是个 enum 类型名"。
+
+**修复范围**（三种形态 × 两个位置，故不是一行补丁）：
+`Enum.Variant` / `Enum.Variant(payload)` / `mod.Enum.Variant`，值与模式两处各要
+支持；外加正反测试、`docs/syntax.html`（**入库文件**）同步。
+
+**为什么现在不修**：它是**编译器**改动，而当时在做的 cgemm 是 **stdlib** 改动，
+混进同一条分支会让评审与回退都变难；且受影响的只有一处测试语料，改成裸变体名是
+五分钟的事。按本项目惯例，这个特性值得独立走一遍设计→计划→施工。
+
+**⭐ 值得注意的一点**：写 cgemm 施工书时我默认了限定写法可用（Task 7 的拒绝语料
+通篇 `cg.CStatus.NotImplemented`），直到实施时才撞上。**这个缺口会被反复重新
+发现**——凡是有 Rust/Swift 背景的人都会先写限定形式。这是记录它的主要理由。
+
 <!-- 后续新增限制条目请沿用 L-NNN · 标题 格式 -->

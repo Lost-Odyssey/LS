@@ -1,0 +1,487 @@
+// std/sci/cgemm.lls -- complex f32 GEMM: C = op(A)*op(B) with a fused
+// bias + activation epilogue.
+//
+// Layout: split (SoA). A complex matrix is TWO f32 planes, each row-major with
+// row stride `ld`. `ld` is always counted in COMPLEX elements; for a plane that
+// is numerically the same as the float stride, so the SoA path never scales by
+// two. Only the (reserved) AoS path multiplies by two.
+//
+// Every complex multiply-accumulate is exactly four FMAs, in this order:
+//     cr = fma( ar, br, cr)     cr = fma(-ai, bi, cr)
+//     ci = fma( ar, bi, ci)     ci = fma( ai, br, ci)
+// The scalar reference below DEFINES that order; every vector kernel copies it
+// lane by lane. Combined with "no k-blocking, no horizontal reduce", results are
+// bit-identical across vector widths, dispatch choices and tile sizes -- the
+// property is constructed, not measured.
+//
+// The accumulator STARTS at C when accumulating (it is not "compute the product,
+// then add C") -- the two round differently, so reference and kernels must agree.
+import std.sys.c as c
+import std.sci.cgemm_kernels as uk
+
+// A complex matrix view. The planes and the layout tag are inseparable: an AoS
+// view has nowhere to put a second plane, so an inconsistent view cannot be
+// built.
+enum CPlanes {
+    SoA(*f32, *f32),   // (real plane, imaginary plane)
+    AoS(*f32)          // one interleaved buffer: re,im,re,im,...
+}
+
+// op(X). Phase 1 implements A in {NoTrans, Trans} and B = NoTrans; Trans is a
+// stride choice, not a data movement. ConjTrans / Conj are reserved.
+enum COp { NoTrans, Trans, ConjTrans, Conj }
+
+enum CAct { ActNone, ActCRelu }        // ActCRelu = relu(re) + i*relu(im)
+
+enum CStatus { Ok, NotImplemented, InvalidArg }
+
+struct CMat { CPlanes planes; int ld; COp op }
+
+// bias == nil means no bias. When present, its length is N (one complex value
+// per output column).
+struct CEpilogue { *f32 bias_re; *f32 bias_im; CAct act }
+
+// ---- scalar reference -------------------------------------------------------
+// Flat parameters (no views) so this stays inside the `ls emit-c` subset shape
+// and so the C peer can mirror it exactly. a_trans != 0 means A is column-major
+// (K x M) instead of row-major (M x K). act: 0 = none, 1 = CRelu.
+//
+// Accumulator semantics: the accumulator starts at `acc != 0 ? C : 0`, then the
+// k-loop runs, then bias, then activation. It is NOT "compute the product, then
+// add C" -- the two round differently, so this order is load-bearing for every
+// bit-exactness claim downstream.
+def cgemm_ref(*f32 Ar, *f32 Ai, int lda, int a_trans,
+              *f32 Br, *f32 Bi, int ldb,
+              *f32 Cr, *f32 Ci, int ldc,
+              int M, int N, int K,
+              *f32 bias_r, *f32 bias_i, int act, int acc) {
+    int i = 0
+    while i < M {
+        int j = 0
+        while j < N {
+            f32 cr = 0.0 as f32
+            f32 ci = 0.0 as f32
+            if acc != 0 {
+                cr = Cr[i * ldc + j]
+                ci = Ci[i * ldc + j]
+            }
+            int k = 0
+            while k < K {
+                int aidx = i * lda + k
+                if a_trans != 0 { aidx = k * lda + i }
+                f32 ar = Ar[aidx]
+                f32 aim = Ai[aidx]
+                f32 br = Br[k * ldb + j]
+                f32 bi = Bi[k * ldb + j]
+                cr = ar * br + cr
+                cr = (-aim) * bi + cr
+                ci = ar * bi + ci
+                ci = aim * br + ci
+                k = k + 1
+            }
+            if bias_r != nil {
+                cr = cr + bias_r[j]
+                ci = ci + bias_i[j]
+            }
+            if act == 1 {
+                // `<=` not `<`: this must also normalise -0.0 to +0.0, to match
+                // the kernels' `max(x,0) + 0`. A plain `<` keeps -0.0, and the
+                // kernels cannot reproduce that deterministically (see the
+                // CRelu note in cgemm_kernels.lls).
+                if cr <= 0.0 { cr = 0.0 as f32 }
+                if ci <= 0.0 { ci = 0.0 as f32 }
+            }
+            Cr[i * ldc + j] = cr
+            Ci[i * ldc + j] = ci
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+// ---- ISA cache ----------------------------------------------------------------
+// Cached once per process, same shape as nn.lls's g_sgemm_isa.
+int g_cgemm_vl = -1
+
+def cgemm_vl() -> int {
+    if g_cgemm_vl < 0 {
+        if c.__ls_cpu_has_avx512() != 0 { g_cgemm_vl = 16 }
+        else { g_cgemm_vl = 8 }
+    }
+    return g_cgemm_vl
+}
+
+// ---- N-vec driver (AVX2, any shape) ------------------------------------------
+// Handles the M tail (rows past the last multiple of 6) with the 1x8c kernel,
+// and the N tail (columns past the last multiple of 8) with its masked mode --
+// both independently, so a shape with both tails runs the 1x8c kernel with
+// `full=0` for its very last block. a_trans != 0 means A is column-major
+// (K x M); bias_r/bias_i/act are the fused epilogue, forwarded to every
+// kernel call unchanged. Size-aware dispatch lands in Task 5 (done).
+//
+// MR=6 vs MR=4: BOTH are kept, and cgemm_soa_nvec picks between them from M.
+// Task 12 measured the two against this exact driver shape (only the row-step
+// constant and the kernel called differ). Neither wins outright -- the
+// deciding factor is whether the tile divides M, not how big M is. See the
+// measured table at the dispatch site in cgemm_soa_nvec, and
+// cgemm_kernels.lls's file header for the register-pressure reasoning. This
+// function is the MR=6 arm; cgemm_soa_nvec_w8_mr4 just below is the MR=4 one.
+def cgemm_soa_nvec_w8(*f32 Ar, *f32 Ai, int lda,
+                   *f32 Br, *f32 Bi, int ldb,
+                   *f32 Cr, *f32 Ci, int ldc,
+                   int M, int N, int K, int acc, int a_trans,
+                   *f32 bias_r, *f32 bias_i, int act) {
+    int has_bias = 0
+    if bias_r != nil { has_bias = 1 }
+    int m6 = (M / 6) * 6
+    int n8 = (N / 8) * 8
+    int rem = N - n8
+
+    int i = 0
+    while i < m6 {
+        int j = 0
+        while j < n8 {
+            uk.uk_6x8c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, K, i, j, acc,
+                       a_trans, bias_r, bias_i, has_bias, act)
+            j = j + 8
+        }
+        if rem > 0 {
+            int r = 0
+            while r < 6 {
+                uk.uk_1x8c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc,
+                           K, i + r, n8, rem, 0, acc, a_trans,
+                           bias_r, bias_i, has_bias, act)
+                r = r + 1
+            }
+        }
+        i = i + 6
+    }
+    while i < M {
+        int j = 0
+        while j < n8 {
+            uk.uk_1x8c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, K, i, j, 8, 1, acc,
+                       a_trans, bias_r, bias_i, has_bias, act)
+            j = j + 8
+        }
+        if rem > 0 {
+            uk.uk_1x8c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc,
+                       K, i, n8, rem, 0, acc, a_trans, bias_r, bias_i, has_bias, act)
+        }
+        i = i + 1
+    }
+}
+
+// MR=4 twin of cgemm_soa_nvec_w8 -- identical in every respect except the
+// row-block height (4 instead of 6) and the core kernel called (uk_4x8c
+// instead of uk_6x8c). It is NOT dead code and NOT a benchmark leftover: for
+// M values that 4 divides and 6 does not (8, 16, 20 -- and 32, though 6 wins
+// there for a different reason), MR=6 pays an M tail of 2 rows that is a
+// large fraction of a small M, and this arm is measurably faster. 12 ymm
+// accumulators become 8, which also leaves register headroom that MR=6 has
+// none of. cgemm_soa_nvec selects between the two; call this directly only
+// to pin the blocking (as benchmarks/cgemm/bench.lls does).
+def cgemm_soa_nvec_w8_mr4(*f32 Ar, *f32 Ai, int lda,
+                   *f32 Br, *f32 Bi, int ldb,
+                   *f32 Cr, *f32 Ci, int ldc,
+                   int M, int N, int K, int acc, int a_trans,
+                   *f32 bias_r, *f32 bias_i, int act) {
+    int has_bias = 0
+    if bias_r != nil { has_bias = 1 }
+    int m4 = (M / 4) * 4
+    int n8 = (N / 8) * 8
+    int rem = N - n8
+
+    int i = 0
+    while i < m4 {
+        int j = 0
+        while j < n8 {
+            uk.uk_4x8c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, K, i, j, acc,
+                       a_trans, bias_r, bias_i, has_bias, act)
+            j = j + 8
+        }
+        if rem > 0 {
+            int r = 0
+            while r < 4 {
+                uk.uk_1x8c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc,
+                           K, i + r, n8, rem, 0, acc, a_trans,
+                           bias_r, bias_i, has_bias, act)
+                r = r + 1
+            }
+        }
+        i = i + 4
+    }
+    while i < M {
+        int j = 0
+        while j < n8 {
+            uk.uk_1x8c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, K, i, j, 8, 1, acc,
+                       a_trans, bias_r, bias_i, has_bias, act)
+            j = j + 8
+        }
+        if rem > 0 {
+            uk.uk_1x8c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc,
+                       K, i, n8, rem, 0, acc, a_trans, bias_r, bias_i, has_bias, act)
+        }
+        i = i + 1
+    }
+}
+
+// 16-wide twin of cgemm_soa_nvec_w8, for the AVX-512 path -- identical shape,
+// column step and lane count changed from 8 to 16. Kept as a hand-unrolled
+// copy rather than parameterised on width, per the S6 ban on dynamically
+// indexed Simd arrays.
+def cgemm_soa_nvec_w16(*f32 Ar, *f32 Ai, int lda,
+                   *f32 Br, *f32 Bi, int ldb,
+                   *f32 Cr, *f32 Ci, int ldc,
+                   int M, int N, int K, int acc, int a_trans,
+                   *f32 bias_r, *f32 bias_i, int act) {
+    int has_bias = 0
+    if bias_r != nil { has_bias = 1 }
+    int m4 = (M / 4) * 4
+    int n16 = (N / 16) * 16
+    int rem = N - n16
+
+    int i = 0
+    while i < m4 {
+        int j = 0
+        while j < n16 {
+            uk.uk_4x16c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, K, i, j, acc,
+                       a_trans, bias_r, bias_i, has_bias, act)
+            j = j + 16
+        }
+        if rem > 0 {
+            int r = 0
+            while r < 4 {
+                uk.uk_1x16c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc,
+                           K, i + r, n16, rem, 0, acc, a_trans,
+                           bias_r, bias_i, has_bias, act)
+                r = r + 1
+            }
+        }
+        i = i + 4
+    }
+    while i < M {
+        int j = 0
+        while j < n16 {
+            uk.uk_1x16c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, K, i, j, 16, 1, acc,
+                       a_trans, bias_r, bias_i, has_bias, act)
+            j = j + 16
+        }
+        if rem > 0 {
+            uk.uk_1x16c(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc,
+                       K, i, n16, rem, 0, acc, a_trans, bias_r, bias_i, has_bias, act)
+        }
+        i = i + 1
+    }
+}
+
+// Width-selecting entry point: picks the 8-wide or 16-wide driver based on the
+// cached ISA probe. Callers who need to force a specific width for a
+// deterministic bit-exactness test call cgemm_soa_nvec_w8/_w16 directly.
+def cgemm_soa_nvec(*f32 Ar, *f32 Ai, int lda,
+                   *f32 Br, *f32 Bi, int ldb,
+                   *f32 Cr, *f32 Ci, int ldc,
+                   int M, int N, int K, int acc, int a_trans,
+                   *f32 bias_r, *f32 bias_i, int act) {
+    int vl = cgemm_vl()
+    if vl == 16 {
+        cgemm_soa_nvec_w16(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, M, N, K, acc,
+                           a_trans, bias_r, bias_i, act)
+    } else {
+        // MR choice, measured (N=32, K=32, 7 launches/point, ns/call):
+        //   M   MR=4     MR=6    winner
+        //    8   717.5    836.3  MR=4
+        //   12  1048.8    940.3  MR=6
+        //   16  1414.4   1656.9  MR=4
+        //   20  1762.8   1788.8  MR=4
+        //   24  2122.1   1847.0  MR=6
+        //   32  2818.5   2695.5  MR=6
+        //   48  4216.2   3714.5  MR=6
+        // The pattern is DIVISIBILITY, not size: when 6 divides M neither tile
+        // leaves an M tail and MR=6 wins outright on B-load amortisation. When
+        // it does not, MR=6 pays a tail of (M mod 6) rows whose cost is a large
+        // fraction of a small M (2 of 8 rows = 25%) and a small one of a large
+        // M (2 of 32 = 6%), so MR=4 -- which divides every M here evenly --
+        // wins below the crossover and loses above it. The crossover sits
+        // between M=20 (MR=4 by 1.5%) and M=32 (MR=6 by 4.4%); 24 is the
+        // threshold used. This rule reproduces all seven measured points.
+        if M % 6 == 0 || M >= 24 {
+            cgemm_soa_nvec_w8(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, M, N, K, acc,
+                              a_trans, bias_r, bias_i, act)
+        } else {
+            cgemm_soa_nvec_w8_mr4(Ar, Ai, lda, Br, Bi, ldb, Cr, Ci, ldc, M, N, K, acc,
+                                  a_trans, bias_r, bias_i, act)
+        }
+    }
+}
+
+// ---- M-vec driver (AVX2, N < VL) ---------------------------------------------
+// A is column-major (K x M, lda = M). Vectorises along M, so it is the right
+// choice when N < 8 (the extreme being N = 1, a GEMV).
+//
+// The kernel needs C contiguous along m, but C is row-major, so this driver
+// stages each 8-row slice through a stack buffer: gather in (only when
+// accumulating), call, scatter out. Both loops sit outside the K reduction, so
+// the cost amortises over K. No heap allocation. bias_r/bias_i/act are the
+// fused epilogue, forwarded to the kernel unchanged.
+def cgemm_soa_mvec_w8(*f32 At, *f32 Ati, int lda,
+                   *f32 Br, *f32 Bi, int ldb,
+                   *f32 Cr, *f32 Ci, int ldc,
+                   int M, int N, int K, int acc,
+                   *f32 bias_r, *f32 bias_i, int act) {
+    int has_bias = 0
+    if bias_r != nil { has_bias = 1 }
+    array(f32, 8) sr
+    array(f32, 8) si
+    int m8 = (M / 8) * 8
+    int tail = M - m8
+    int j = 0
+    while j < N {
+        int i = 0
+        while i < M {
+            int rows = 8
+            int full = 1
+            if i >= m8 { rows = tail; full = 0 }
+            int t = 0
+            while t < 8 { sr[t] = 0.0 as f32; si[t] = 0.0 as f32; t = t + 1 }
+            if acc != 0 {
+                t = 0
+                while t < rows {
+                    sr[t] = Cr[(i + t) * ldc + j]
+                    si[t] = Ci[(i + t) * ldc + j]
+                    t = t + 1
+                }
+            }
+            uk.uk_8x1c_mvec(At, Ati, lda, Br, Bi, ldb, &sr[0], &si[0],
+                            K, i, j, rows, full, acc, bias_r, bias_i, has_bias, act)
+            t = 0
+            while t < rows {
+                Cr[(i + t) * ldc + j] = sr[t]
+                Ci[(i + t) * ldc + j] = si[t]
+                t = t + 1
+            }
+            i = i + rows
+        }
+        j = j + 1
+    }
+}
+
+// 16-wide twin of cgemm_soa_mvec_w8 -- staging buffers widened to 16, rows
+// step by 16 instead of 8, calling uk_16x1c_mvec.
+def cgemm_soa_mvec_w16(*f32 At, *f32 Ati, int lda,
+                   *f32 Br, *f32 Bi, int ldb,
+                   *f32 Cr, *f32 Ci, int ldc,
+                   int M, int N, int K, int acc,
+                   *f32 bias_r, *f32 bias_i, int act) {
+    int has_bias = 0
+    if bias_r != nil { has_bias = 1 }
+    array(f32, 16) sr
+    array(f32, 16) si
+    int m16 = (M / 16) * 16
+    int tail = M - m16
+    int j = 0
+    while j < N {
+        int i = 0
+        while i < M {
+            int rows = 16
+            int full = 1
+            if i >= m16 { rows = tail; full = 0 }
+            int t = 0
+            while t < 16 { sr[t] = 0.0 as f32; si[t] = 0.0 as f32; t = t + 1 }
+            if acc != 0 {
+                t = 0
+                while t < rows {
+                    sr[t] = Cr[(i + t) * ldc + j]
+                    si[t] = Ci[(i + t) * ldc + j]
+                    t = t + 1
+                }
+            }
+            uk.uk_16x1c_mvec(At, Ati, lda, Br, Bi, ldb, &sr[0], &si[0],
+                            K, i, j, rows, full, acc, bias_r, bias_i, has_bias, act)
+            t = 0
+            while t < rows {
+                Cr[(i + t) * ldc + j] = sr[t]
+                Ci[(i + t) * ldc + j] = si[t]
+                t = t + 1
+            }
+            i = i + rows
+        }
+        j = j + 1
+    }
+}
+
+// Width-selecting entry point, same rationale as cgemm_soa_nvec above.
+def cgemm_soa_mvec(*f32 At, *f32 Ati, int lda,
+                   *f32 Br, *f32 Bi, int ldb,
+                   *f32 Cr, *f32 Ci, int ldc,
+                   int M, int N, int K, int acc,
+                   *f32 bias_r, *f32 bias_i, int act) {
+    int vl = cgemm_vl()
+    if vl == 16 {
+        cgemm_soa_mvec_w16(At, Ati, lda, Br, Bi, ldb, Cr, Ci, ldc, M, N, K, acc,
+                           bias_r, bias_i, act)
+    } else {
+        cgemm_soa_mvec_w8(At, Ati, lda, Br, Bi, ldb, Cr, Ci, ldc, M, N, K, acc,
+                          bias_r, bias_i, act)
+    }
+}
+
+// ---- dispatch -----------------------------------------------------------------
+// Purely static -- no runtime probing beyond the cached ISA width.
+//
+//   N >= VL                  -> N-vec (reads either A layout via a_trans)
+//   N <  VL and A is Trans   -> M-vec
+//   N <  VL and A is NoTrans -> masked N-vec (deliberate fallback)
+//
+// The fallback is deliberate: packing A into column-major at call time costs
+// O(M*K), which at N = 1 is the same order as the whole multiply. Callers who
+// want that path's speed should store A column-major offline (weights are
+// constant; see ctranspose_soa in Task 9).
+def cgemm(&CMat A, &CMat B, &!CMat C,
+          int M, int N, int K,
+          &CEpilogue epi, bool accumulate) -> CStatus {
+    if M <= 0 || N <= 0 || K <= 0 { return InvalidArg }
+
+    // Phase 1 supports A in {NoTrans, Trans}, B = NoTrans, SoA only.
+    match B.op { NoTrans => {} _ => { return NotImplemented } }
+    match A.op {
+        NoTrans => {}
+        Trans => {}
+        _ => { return NotImplemented }
+    }
+
+    int acc = 0
+    if accumulate { acc = 1 }
+
+    int act = 0
+    match epi.act { ActCRelu => { act = 1 } _ => {} }
+
+    match A.planes {
+        AoS(p) => { return NotImplemented }
+        SoA(ar, ai) => {
+            match B.planes {
+                AoS(q) => { return NotImplemented }
+                SoA(br, bi) => {
+                    match C.planes {
+                        AoS(r) => { return NotImplemented }
+                        SoA(cr, ci) => {
+                            bool a_t = false
+                            match A.op { Trans => { a_t = true } _ => {} }
+                            int a_trans = 0
+                            if a_t { a_trans = 1 }
+                            if N >= 8 || !a_t {
+                                cgemm_soa_nvec(ar, ai, A.ld, br, bi, B.ld,
+                                               cr, ci, C.ld, M, N, K, acc, a_trans,
+                                               epi.bias_re, epi.bias_im, act)
+                            } else {
+                                cgemm_soa_mvec(ar, ai, A.ld, br, bi, B.ld,
+                                               cr, ci, C.ld, M, N, K, acc,
+                                               epi.bias_re, epi.bias_im, act)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return Ok
+}

@@ -1,0 +1,200 @@
+// Differential: every vector kernel against the scalar reference, compared as
+// exact bit patterns (not a tolerance) -- the whole point of the design is that
+// they are bit-identical, so a tolerance would hide the only failure that matters.
+import std.sci.cgemm as cg
+import std.sys.c as c
+import cgemm_testutil as tu
+
+def check(int M, int N, int K, int acc, &!tu.Seed seed) -> bool {
+    int asz = M * K
+    int bsz = K * N
+    int csz = M * N
+    *f32 Ar = c.malloc((asz * 4) as i64) as *f32
+    *f32 Ai = c.malloc((asz * 4) as i64) as *f32
+    *f32 Br = c.malloc((bsz * 4) as i64) as *f32
+    *f32 Bi = c.malloc((bsz * 4) as i64) as *f32
+    *f32 R0 = c.malloc((csz * 4) as i64) as *f32
+    *f32 I0 = c.malloc((csz * 4) as i64) as *f32
+    *f32 R1 = c.malloc((csz * 4) as i64) as *f32
+    *f32 I1 = c.malloc((csz * 4) as i64) as *f32
+
+    tu.fill(Ar, asz, &!seed); tu.fill(Ai, asz, &!seed)
+    tu.fill(Br, bsz, &!seed); tu.fill(Bi, bsz, &!seed)
+    tu.fill(R0, csz, &!seed); tu.fill(I0, csz, &!seed)
+    for i in 0..csz { R1[i] = R0[i]; I1[i] = I0[i] }
+
+    cg.cgemm_ref(Ar, Ai, K, 0, Br, Bi, N, R0, I0, N, M, N, K,
+                 nil, nil, 0, acc)
+    cg.cgemm_soa_nvec(Ar, Ai, K, Br, Bi, N, R1, I1, N, M, N, K, acc, 0,
+                      nil, nil, 0)
+
+    bool ok = tu.same_bits(R0, R1, csz) && tu.same_bits(I0, I1, csz)
+    if !ok { @print(f"FAIL M={M} N={N} K={K} acc={acc}") }
+
+    c.free(Ar as *u8); c.free(Ai as *u8); c.free(Br as *u8); c.free(Bi as *u8)
+    c.free(R0 as *u8); c.free(I0 as *u8); c.free(R1 as *u8); c.free(I1 as *u8)
+    return ok
+}
+
+// Same as check, but also exercises the fused bias/activation epilogue: bias
+// is one complex value per output column (length N), act is 0 = none,
+// 1 = CRelu. Passed to both the reference and the kernel driver so the two
+// sides run the identical epilogue.
+def check_e(int M, int N, int K, int acc, int has_bias, int act, &!tu.Seed seed) -> bool {
+    int asz = M * K
+    int bsz = K * N
+    int csz = M * N
+    *f32 Ar = c.malloc((asz * 4) as i64) as *f32
+    *f32 Ai = c.malloc((asz * 4) as i64) as *f32
+    *f32 Br = c.malloc((bsz * 4) as i64) as *f32
+    *f32 Bi = c.malloc((bsz * 4) as i64) as *f32
+    *f32 R0 = c.malloc((csz * 4) as i64) as *f32
+    *f32 I0 = c.malloc((csz * 4) as i64) as *f32
+    *f32 R1 = c.malloc((csz * 4) as i64) as *f32
+    *f32 I1 = c.malloc((csz * 4) as i64) as *f32
+    *f32 Br32 = c.malloc((N * 4) as i64) as *f32
+    *f32 Bi32 = c.malloc((N * 4) as i64) as *f32
+
+    tu.fill(Ar, asz, &!seed); tu.fill(Ai, asz, &!seed)
+    tu.fill(Br, bsz, &!seed); tu.fill(Bi, bsz, &!seed)
+    tu.fill(R0, csz, &!seed); tu.fill(I0, csz, &!seed)
+    for i in 0..csz { R1[i] = R0[i]; I1[i] = I0[i] }
+
+    *f32 bias_r = nil
+    *f32 bias_i = nil
+    if has_bias != 0 {
+        tu.fill(Br32, N, &!seed); tu.fill(Bi32, N, &!seed)
+        bias_r = Br32
+        bias_i = Bi32
+    }
+
+    cg.cgemm_ref(Ar, Ai, K, 0, Br, Bi, N, R0, I0, N, M, N, K,
+                 bias_r, bias_i, act, acc)
+    cg.cgemm_soa_nvec(Ar, Ai, K, Br, Bi, N, R1, I1, N, M, N, K, acc, 0,
+                      bias_r, bias_i, act)
+
+    bool ok = tu.same_bits(R0, R1, csz) && tu.same_bits(I0, I1, csz)
+    if !ok { @print(f"FAIL_E M={M} N={N} K={K} acc={acc} bias={has_bias} act={act}") }
+
+    c.free(Ar as *u8); c.free(Ai as *u8); c.free(Br as *u8); c.free(Bi as *u8)
+    c.free(R0 as *u8); c.free(I0 as *u8); c.free(R1 as *u8); c.free(I1 as *u8)
+    c.free(Br32 as *u8); c.free(Bi32 as *u8)
+    return ok
+}
+
+// Standing regression for the CReLU / -0.0 interaction flagged by the C++
+// peer's Task 10a implementer: `_mm256_max_ps` and a scalar `if(x<0)x=0`
+// branch are not guaranteed to agree on -0.0 (max's result can depend on
+// operand order), and the LS kernels use exactly that pairing (__simd_max
+// against a branch in cgemm_ref). K=1, acc=1, C starts at -0.0, and every
+// product feeding the accumulator is also -0.0 (A=(-0.0,+0.0), B=(+1.0,+0.0))
+// -- that combination is required: -0.0 + +0.0 = +0.0 would destroy the sign
+// before it ever reached the activation. M=1/N=1 routes through uk_1x8c's
+// masked (full=0) branch. Compared with same_bits, not `==`, because
+// +0.0 == -0.0 numerically and would silently pass either way.
+def check_negzero() -> bool {
+    *f32 Ar = c.malloc(4 as i64) as *f32
+    *f32 Ai = c.malloc(4 as i64) as *f32
+    *f32 Br = c.malloc(4 as i64) as *f32
+    *f32 Bi = c.malloc(4 as i64) as *f32
+    *f32 R0 = c.malloc(4 as i64) as *f32
+    *f32 I0 = c.malloc(4 as i64) as *f32
+    *f32 R1 = c.malloc(4 as i64) as *f32
+    *f32 I1 = c.malloc(4 as i64) as *f32
+
+    f32 z = 0.0 as f32
+    f32 nz = -z
+
+    Ar[0] = nz
+    Ai[0] = z
+    Br[0] = 1.0 as f32
+    Bi[0] = z
+    R0[0] = nz
+    I0[0] = nz
+    R1[0] = nz
+    I1[0] = nz
+
+    cg.cgemm_ref(Ar, Ai, 1, 0, Br, Bi, 1, R0, I0, 1, 1, 1, 1,
+                 nil, nil, 1, 1)
+    cg.cgemm_soa_nvec(Ar, Ai, 1, Br, Bi, 1, R1, I1, 1, 1, 1, 1, 1, 0,
+                      nil, nil, 1)
+
+    bool ok = tu.same_bits(R0, R1, 1) && tu.same_bits(I0, I1, 1)
+    if !ok { @print(f"FAIL_NEGZERO -0.0 CReLU: ref/kernel bit patterns disagree") }
+
+    c.free(Ar as *u8); c.free(Ai as *u8); c.free(Br as *u8); c.free(Bi as *u8)
+    c.free(R0 as *u8); c.free(I0 as *u8); c.free(R1 as *u8); c.free(I1 as *u8)
+    return ok
+}
+
+// SHAPE SELECTION -- two rules, both load-bearing.
+//
+// (1) Shapes are chosen for the CODE PATH they exercise: M above/below the MR
+// dispatch threshold, M divisible by 6 or not, N below VL, the N % 8 tail
+// widths, K = 1 / odd / large, and the degenerate 1x1x1 -- never because some
+// application happens to use that shape.
+//
+// (2) Every dimension is a NEUTRAL number -- a power of two or a small offset
+// from one (1,3,4,7,8,9,12,16,17,20,24,31,32,33,64,65) -- never a value that
+// looks computed from a real workload. Kernels in lib/std are generic, but
+// three integers in the right COMBINATION are themselves information about the
+// caller they came from, and a keyword grep cannot catch that kind of leak.
+// Application-shaped measurement belongs in the (untracked) benchmark suite.
+//
+// Changing a shape means matching its DIVISIBILITY PROFILE, not just picking
+// another number: N % VL (tail width), M % MR (row tail), whether N < VL, and
+// how many full blocks precede the tail. Same profile => coverage provably
+// unchanged, rather than merely believed unchanged.
+def main() {
+    tu.Seed seed = tu.Seed{ v: 88172645463325252 }
+    int bad = 0
+    // divisible shapes only in this task: M %4 == 0, N %8 == 0
+    if !check(4,  8,  1, 0, &!seed) { bad = bad + 1 }
+    if !check(4,  8,  7, 0, &!seed) { bad = bad + 1 }
+    if !check(8, 16, 17, 0, &!seed) { bad = bad + 1 }
+    if !check(32, 8, 17, 0, &!seed) { bad = bad + 1 }
+    if !check(32,64, 64, 0, &!seed) { bad = bad + 1 }
+    if !check(8, 16, 17, 1, &!seed) { bad = bad + 1 }   // accumulate
+    // non-divisible shapes: exercise the M tail, the N tail, and both at once
+    //
+    // check(1,1,1,0)'s out-of-bounds detection is a special case worth being
+    // honest about: runtime/memcheck.c tracks only leaks and double-frees, it
+    // has no redzone/bounds checking, so this shape's protection against a
+    // masked-store-turned-full-store fault (see the injection log in
+    // test_cgemm_soa.cmake) comes from the allocator crashing on corrupted
+    // heap metadata, not from same_bits catching a wrong value. A future
+    // out-of-bounds write that happens to land in unused heap space could go
+    // undetected here.
+    if !check(1,  1,  1, 0, &!seed) { bad = bad + 1 }
+    if !check(3,  7,  8, 0, &!seed) { bad = bad + 1 }
+    if !check(31, 9, 17, 0, &!seed) { bad = bad + 1 }
+    if !check(33,33, 64, 0, &!seed) { bad = bad + 1 }
+    if !check(32,33, 17, 1, &!seed) { bad = bad + 1 }
+    // M tail with NO N tail (M%4=1, N%8=0): every prior non-divisible shape
+    // also had N%8!=0, so the M-tail loop's full=1 branch (uk_1x8c called
+    // with rem=8,full=1) was always exercised alongside a masked corner call
+    // in the same shape and never in isolation.
+    if !check(33, 16, 8, 0, &!seed) { bad = bad + 1 }
+    // MR dispatch boundaries. cgemm_soa_nvec picks the MR=6 driver when
+    // M % 6 == 0 OR M >= 24, and the MR=4 driver otherwise (see the measured
+    // table at that dispatch site). Every shape above happens to land on one
+    // side or the other by accident; these pin BOTH arms deliberately, and in
+    // particular the `M % 6 == 0` clause below the M >= 24 threshold, which no
+    // other shape in this file reaches.
+    if !check(12, 16, 17, 0, &!seed) { bad = bad + 1 }   // MR=6 arm, M<24, no tail
+    if !check(18,  9,  8, 0, &!seed) { bad = bad + 1 }   // MR=6 arm, M<24, N tail
+    if !check(20, 16, 17, 0, &!seed) { bad = bad + 1 }   // MR=4 arm, M%4==0
+    if !check(24, 33, 17, 0, &!seed) { bad = bad + 1 }   // MR=6 arm, at threshold
+    // The MR=4 arm's fused epilogue: every check_e below uses M=32, which the
+    // dispatch sends to the MR=6 arm, so without this the MR=4 driver's bias
+    // and CReLU forwarding is written but never executed.
+    if !check_e(8, 33, 17, 0, 1, 1, &!seed) { bad = bad + 1 }  // MR=4 arm, bias+relu
+    // fused bias/activation epilogue
+    if !check_e(32, 8, 17, 0, 1, 0, &!seed) { bad = bad + 1 }   // bias only
+    if !check_e(32, 8, 17, 0, 0, 1, &!seed) { bad = bad + 1 }   // relu only
+    if !check_e(32,33, 17, 0, 1, 1, &!seed) { bad = bad + 1 }   // bias + relu
+    if !check_e(32,33, 17, 1, 1, 1, &!seed) { bad = bad + 1 }   // acc + bias + relu
+    // -0.0 CReLU regression (see check_negzero's header comment)
+    if !check_negzero() { bad = bad + 1 }
+    if bad == 0 { @print("ALL PASS") }
+}

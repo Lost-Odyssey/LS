@@ -1,0 +1,159 @@
+// tests/samples/cgemm_dump.lls -- LS-side twin of the (gitignored) C++ peer's
+// `--dump` mode (Task 10b). Reproduces that file's documented "DUMP FORMAT
+// (v1)" byte-for-byte: same case list/order, same fill order (A, then B,
+// then bias when bias=1), same header line, same
+// "<i> <j> <cr_hex8> <ci_hex8>" data lines in row-major order, same
+// 8-lowercase-hex-digit float bit pattern. See that file's top-of-file
+// comment block for the full format contract.
+//
+// This file intentionally duplicates main.cpp's kDumpCases table and the
+// fill/transpose order rather than sharing code with it -- the two dumpers
+// are meant to be independent producers of the same documented format, not
+// one driving the other. That is also why this reuses cgemm_testutil.lls's
+// rnd/fill instead of reimplementing the PRNG a third time: those already
+// verified bit-for-bit against the C++ rnd/fill from the same seed.
+import std.sci.cgemm as cg
+import std.sys.c as c
+import cgemm_testutil as tu
+
+// ---- u32 bit pattern -> 8 lowercase hex digits, matching C++'s plain
+// "%08x" of bits_of(float) (most significant nibble first). Same digit
+// encoding as std.text.strconv's _to_base (48+d for 0-9, 87+d for a-f) but
+// written locally since strconv's int_to_hex takes a signed `int` and is
+// neither zero-padded nor guaranteed 32-bit-safe for a value with the top
+// bit set -- exactly the values this dump prints routinely.
+def hex8(u32 v) -> Str {
+    Str out = ""
+    int shift = 28
+    while shift >= 0 {
+        u32 nib = (v >> (shift as u32)) & (15 as u32)
+        int d = nib as int
+        int ch = 48 + d
+        if d >= 10 { ch = 87 + d }
+        out.push_byte(ch)
+        shift = shift - 4
+    }
+    return out
+}
+
+// f32 -> raw u32 bit pattern. Same reinterpret technique as
+// cgemm_testutil.lls's same_bits (pointer-to-pointer cast is a no-op
+// reinterpret on this compiler's opaque LLVM pointers): spill the value to
+// a one-element buffer, view that buffer as *u32, load it back.
+def bits_of(f32 x) -> u32 {
+    array(f32, 1) tmp
+    tmp[0] = x
+    *f32 p = &tmp[0]
+    *u32 up = p as *u32
+    return up[0]
+}
+
+// Row-major (rows x cols, stride ld_src) -> column-major-of-the-original
+// (dst[j*rows+i] = src[i*ld_src+j]) -- same shape as main.cpp's transpose().
+def transpose_soa(*f32 src, int rows, int cols, int ld_src, *f32 dst) {
+    for i in 0..rows {
+        for j in 0..cols {
+            dst[j * rows + i] = src[i * ld_src + j]
+        }
+    }
+}
+
+def build_a_mat(int a_trans, *f32 Ar, *f32 Ai, int K, *f32 At, *f32 Ati, int M) -> cg.CMat {
+    if a_trans != 0 {
+        return {planes: SoA(At, Ati), ld: M, op: Trans}
+    }
+    return {planes: SoA(Ar, Ai), ld: K, op: NoTrans}
+}
+
+def build_act(int act) -> cg.CAct {
+    if act == 1 { return ActCRelu }
+    return ActNone
+}
+
+def op_a_str(int a_trans) -> Str {
+    if a_trans != 0 { return "T" }
+    return "N"
+}
+
+def run_case(Str name, int M, int N, int K, int acc, int bias, int act, int a_trans, i64 seed) {
+    int asz = M * K
+    int bsz = K * N
+    int csz = M * N
+    *f32 Ar  = c.malloc((asz * 4) as i64) as *f32
+    *f32 Ai  = c.malloc((asz * 4) as i64) as *f32
+    *f32 At  = c.malloc((asz * 4) as i64) as *f32
+    *f32 Ati = c.malloc((asz * 4) as i64) as *f32
+    *f32 Br  = c.malloc((bsz * 4) as i64) as *f32
+    *f32 Bi  = c.malloc((bsz * 4) as i64) as *f32
+    *f32 Cr  = c.malloc((csz * 4) as i64) as *f32
+    *f32 Ci  = c.malloc((csz * 4) as i64) as *f32
+
+    for i in 0..csz { Cr[i] = 0.0 as f32; Ci[i] = 0.0 as f32 }
+
+    tu.Seed s = tu.Seed{ v: seed }
+    tu.fill(Ar, asz, &!s)
+    tu.fill(Ai, asz, &!s)
+    tu.fill(Br, bsz, &!s)
+    tu.fill(Bi, bsz, &!s)
+
+    // Bias buffers only exist when bias=1 -- allocated (and filled) AFTER
+    // A/B, matching main.cpp's fill order exactly.
+    *f32 bias_r = nil
+    *f32 bias_i = nil
+    *f32 br_buf = nil
+    *f32 bi_buf = nil
+    if bias != 0 {
+        br_buf = c.malloc((N * 4) as i64) as *f32
+        bi_buf = c.malloc((N * 4) as i64) as *f32
+        tu.fill(br_buf, N, &!s)
+        tu.fill(bi_buf, N, &!s)
+        bias_r = br_buf
+        bias_i = bi_buf
+    }
+
+    // Transpose is computed unconditionally, same as main.cpp -- it doesn't
+    // consume any randomness, so doing it regardless of a_trans can't
+    // desync the input matrices.
+    transpose_soa(Ar, M, K, K, At)
+    transpose_soa(Ai, M, K, K, Ati)
+
+    cg.CMat a_mat = build_a_mat(a_trans, Ar, Ai, K, At, Ati, M)
+    cg.CMat b_mat = {planes: SoA(Br, Bi), ld: N, op: NoTrans}
+    cg.CMat c_mat = {planes: SoA(Cr, Ci), ld: N, op: NoTrans}
+    cg.CEpilogue epi = {bias_re: bias_r, bias_im: bias_i, act: build_act(act)}
+
+    bool accumulate = false
+    if acc != 0 { accumulate = true }
+
+    match cg.cgemm(&a_mat, &b_mat, &!c_mat, M, N, K, &epi, accumulate) {
+        Ok => {}
+        _ => {
+            @print(f"dump case {name}: cgemm() did not return Ok")
+            c.abort()
+        }
+    }
+
+    @print(f"case {name} M={M} N={N} K={K} acc={acc} bias={bias} act={act} op_a={op_a_str(a_trans)}")
+    for i in 0..M {
+        for j in 0..N {
+            u32 cr = bits_of(Cr[i * N + j])
+            u32 ci = bits_of(Ci[i * N + j])
+            @print(f"{i} {j} {hex8(cr)} {hex8(ci)}")
+        }
+    }
+
+    c.free(Ar as *u8);  c.free(Ai as *u8);  c.free(At as *u8);  c.free(Ati as *u8)
+    c.free(Br as *u8);  c.free(Bi as *u8);  c.free(Cr as *u8);  c.free(Ci as *u8)
+    if bias != 0 { c.free(br_buf as *u8); c.free(bi_buf as *u8) }
+}
+
+// Fixed, documented set -- must match main.cpp's kDumpCases exactly (name,
+// M, N, K, acc, bias, act, a_trans, seed), same order.
+def main() {
+    @print("# cgemm cross-validation dump v1")
+    run_case("basic_nvec",      4,  8, 8, 0, 0, 0, 0, 1)
+    run_case("tail_n_and_m",    3,  9, 5, 0, 0, 0, 0, 2)
+    run_case("mvec_gemv",      17,  1, 6, 0, 0, 0, 1, 3)
+    run_case("bias_act_acc",    8, 16, 8, 1, 1, 1, 0, 4)
+    run_case("trans_a_small_n", 6,  3, 4, 0, 0, 0, 1, 5)
+}

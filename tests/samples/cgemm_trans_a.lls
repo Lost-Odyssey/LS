@@ -1,0 +1,69 @@
+// A.op = Trans (column-major A) must give bit-identical results to the
+// equivalent NoTrans (row-major) input, for every shape -- including the N < VL
+// shapes where the two take different kernels (M-vec vs the masked N-vec
+// fallback). Same numbers from different code paths is exactly what the
+// "no k-blocking, no horizontal reduce" contract buys.
+import std.sci.cgemm as cg
+import std.sys.c as c
+import cgemm_testutil as tu
+
+def check_t(int M, int N, int K, int bias, int act, &!tu.Seed seed) -> bool {
+    int asz = M * K
+    *f32 Ar  = c.malloc((asz * 4) as i64) as *f32   // row-major M x K
+    *f32 Ai  = c.malloc((asz * 4) as i64) as *f32
+    *f32 Atr = c.malloc((asz * 4) as i64) as *f32   // col-major K x M
+    *f32 Ati = c.malloc((asz * 4) as i64) as *f32
+    *f32 Br = c.malloc((K * N * 4) as i64) as *f32
+    *f32 Bi = c.malloc((K * N * 4) as i64) as *f32
+    *f32 R0 = c.malloc((M * N * 4) as i64) as *f32
+    *f32 I0 = c.malloc((M * N * 4) as i64) as *f32
+    *f32 R1 = c.malloc((M * N * 4) as i64) as *f32
+    *f32 I1 = c.malloc((M * N * 4) as i64) as *f32
+
+    tu.fill(Ar, asz, &!seed); tu.fill(Ai, asz, &!seed)
+    tu.fill(Br, K * N, &!seed); tu.fill(Bi, K * N, &!seed)
+    // transpose A into column-major: Atr[k*M + i] = Ar[i*K + k]
+    for i in 0..M { for k in 0..K {
+        Atr[k * M + i] = Ar[i * K + k]
+        Ati[k * M + i] = Ai[i * K + k]
+    } }
+    for i in 0..(M * N) { R0[i] = 0.0 as f32; I0[i] = 0.0 as f32; R1[i] = 0.0 as f32; I1[i] = 0.0 as f32 }
+
+    *f32 Ur = c.malloc((N * 4) as i64) as *f32
+    *f32 Ui = c.malloc((N * 4) as i64) as *f32
+    tu.fill(Ur, N, &!seed); tu.fill(Ui, N, &!seed)
+    *f32 Vr = nil
+    *f32 Vi = nil
+    if bias != 0 { Vr = Ur; Vi = Ui }
+
+    cg.cgemm_ref(Ar, Ai, K, 0, Br, Bi, N, R0, I0, N, M, N, K,
+                 Vr, Vi, act, 0)
+    cg.cgemm_soa_mvec(Atr, Ati, M, Br, Bi, N, R1, I1, N, M, N, K, 0,
+                      Vr, Vi, act)
+
+    bool ok = tu.same_bits(R0, R1, M * N) && tu.same_bits(I0, I1, M * N)
+    if !ok { @print(f"FAIL trans M={M} N={N} K={K} bias={bias} act={act}") }
+
+    c.free(Ar as *u8);  c.free(Ai as *u8);  c.free(Atr as *u8); c.free(Ati as *u8)
+    c.free(Br as *u8);  c.free(Bi as *u8)
+    c.free(R0 as *u8);  c.free(I0 as *u8);  c.free(R1 as *u8);  c.free(I1 as *u8)
+    c.free(Ur as *u8);  c.free(Ui as *u8)
+    return ok
+}
+
+def main() {
+    tu.Seed seed = tu.Seed{ v: 88172645463325252 }
+    int bad = 0
+    if !check_t(32, 1, 17, 0, 0, &!seed) { bad = bad + 1 }    // GEMV, the M-vec case
+    if !check_t(32, 3, 17, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_t(8,  1,  1, 0, 0, &!seed) { bad = bad + 1 }
+    if !check_t(31, 7, 64, 0, 0, &!seed) { bad = bad + 1 }    // M tail + N < 8
+    if !check_t(64, 7,  8, 0, 0, &!seed) { bad = bad + 1 }
+    // The M-vec epilogue is the one place bias is a SCALAR splat rather than a
+    // vector load (a register holds 8 rows of ONE column). Without these it is
+    // written but never executed.
+    if !check_t(32, 1, 17, 1, 0, &!seed) { bad = bad + 1 }    // bias only
+    if !check_t(32, 3, 17, 0, 1, &!seed) { bad = bad + 1 }    // activation only
+    if !check_t(31, 7, 64, 1, 1, &!seed) { bad = bad + 1 }    // both, with M tail
+    if bad == 0 { @print("ALL PASS") }
+}

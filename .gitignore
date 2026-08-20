@@ -80,6 +80,13 @@ cpu_timeline_zoom.html
 json_e2e_out.json
 string.cod
 
+# Application-side work, kept local only: models, weights, layer parameters,
+# application code, the standalone C++ cgemm implementation, the cross-language
+# cross-validation harness, and all their docs. Nothing under here is ever
+# committed -- the repo carries only the generic, application-agnostic kernels
+# (lib/std/sci/cgemm*.lls and their tests).
+mlp/
+
 # benchmarks: untracked, kept local only (temporarily)
 benchmarks/
 
